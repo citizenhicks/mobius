@@ -49,7 +49,7 @@ struct Definition {
     message_busy: String,
     message_unavailable: String,
 }
-crate::embedded_config! { static DEFINITION: Definition = include_str!("questions.toml"); }
+crate::embedded_config! { static DEFINITION: Definition = include_str!("questions.toml") => limit_schema; }
 super::manifest::middleware_manifest! {
     /// Configuration and presentation metadata for durable user questions.
     "questions", DEFINITION, required: false, settings: &[]
@@ -58,6 +58,21 @@ const STATE_KEY: &str = "questions.v1";
 const MAX_TITLE_BYTES: usize = 1024;
 const MAX_OPTIONS: usize = 6;
 const MAX_OPTION_BYTES: usize = 200;
+
+fn limit_schema(definition: &mut Definition) {
+    super::tools::limit_schema(
+        &mut definition.ask_user.tool,
+        [
+            ("/properties/title", "maxLength", MAX_TITLE_BYTES.into()),
+            ("/properties/options", "maxItems", MAX_OPTIONS.into()),
+            (
+                "/properties/options/items",
+                "maxLength",
+                MAX_OPTION_BYTES.into(),
+            ),
+        ],
+    );
+}
 const MAX_OPEN: usize = 16;
 const MAX_CLOSED: usize = 50;
 const MAX_ANSWER_BYTES: usize = 4096;
@@ -65,7 +80,7 @@ const MAX_ANSWER_BYTES: usize = 4096;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Question {
-    id: String,
+    id: Arc<str>,
     title: String,
     options: Vec<String>,
     asked_at: i64,
@@ -91,11 +106,17 @@ struct AskArgs {
 #[derive(Default)]
 pub struct Questions {
     // Middleware instances may be reused across sessions; each session serializes its own writes.
-    sessions: Mutex<BTreeMap<String, Arc<QuestionSession>>>,
+    sessions: Mutex<BTreeMap<Arc<str>, Arc<QuestionSession>>>,
+}
+
+impl std::fmt::Debug for Questions {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("Questions").finish_non_exhaustive()
+    }
 }
 
 struct QuestionSession {
-    id: String,
+    id: Arc<str>,
     checkpoints: Arc<dyn CheckpointStore>,
     sender: WeakAgentSender,
     frontend: FrontendEventSink,
@@ -124,17 +145,18 @@ impl Command {
 }
 
 impl Questions {
-    fn sessions(&self) -> Result<MutexGuard<'_, BTreeMap<String, Arc<QuestionSession>>>> {
-        self.sessions
-            .lock()
-            .map_err(|_| Error::Poisoned("questions sessions"))
+    fn sessions(&self) -> Result<MutexGuard<'_, BTreeMap<Arc<str>, Arc<QuestionSession>>>> {
+        self.sessions.lock().map_err(|error| {
+            tracing::warn!(%error, "questions sessions lock poisoned");
+            Error::Poisoned("questions sessions")
+        })
     }
 
     fn session(&self, id: &str) -> Result<Arc<QuestionSession>> {
         self.sessions()?
             .get(id)
             .map(Arc::clone)
-            .ok_or_else(|| Error::Tool(DEFINITION.message_unavailable.clone()))
+            .ok_or_else(|| Error::Tool(DEFINITION.message_unavailable.clone())) // rules-allow: the error owns a copy of the embedded message
     }
 }
 
@@ -148,14 +170,15 @@ impl Middleware for Questions {
             return Ok(());
         }
         let session = Arc::new(QuestionSession {
-            id: runtime.session_id.clone(),
+            id: Arc::clone(&runtime.session_id),
             checkpoints: Arc::clone(&runtime.checkpoints),
-            sender: runtime.sender.clone(),
+            sender: runtime.sender.clone(), // rules-allow: the session owns its weak sender handle
             frontend: Arc::clone(&runtime.frontend),
             access: tokio::sync::Mutex::new(()),
         });
         catalog.register(Arc::new(AskUser(Arc::clone(&session))))?;
-        self.sessions()?.insert(runtime.session_id.clone(), session);
+        self.sessions()?
+            .insert(Arc::clone(&runtime.session_id), session);
         Ok(())
     }
 
@@ -170,7 +193,7 @@ impl Middleware for Questions {
             .map(|(name, description)| FrontendCommand {
                 name: name.as_str().into(),
                 arguments: "<question-id>".into(),
-                description: description.to_owned(),
+                description: description.to_owned().into(),
                 requires_idle: false,
             })
             .collect(),
@@ -226,7 +249,7 @@ impl Middleware for Questions {
             // The tool future is suspended while this hook runs: never wait for its lock.
             let Ok(_access) = session.access.try_lock() else {
                 return Ok(Some(SubmissionResult::Rejected(
-                    DEFINITION.message_busy.clone(),
+                    DEFINITION.message_busy.clone(), // rules-allow: the rejection owns a copy of the embedded message
                 )));
             };
             match session
@@ -255,7 +278,7 @@ impl QuestionSession {
             .await?
             .map(serde_json::from_value)
             .transpose()
-            .map(|questions| questions.unwrap_or_default())
+            .map(std::option::Option::unwrap_or_default)
             .map_err(Into::into)
     }
 
@@ -268,7 +291,7 @@ impl QuestionSession {
     fn publish(&self, questions: Vec<Question>) -> Result<()> {
         (self.frontend)(FrontendEvent::Widget {
             capability: MANIFEST.id.into(),
-            item: widget(questions),
+            item: Arc::new(widget(questions)),
         })
     }
 
@@ -280,20 +303,20 @@ impl QuestionSession {
         turn_id: Option<&str>,
     ) -> Result<()> {
         let mut questions = self.load().await?;
-        let index = questions
-            .iter()
-            .position(|question| question.id == id)
-            .ok_or_else(|| Error::Tool(DEFINITION.message_not_found.clone()))?;
-        let question = &mut questions[index];
+        let (index, question) = questions
+            .iter_mut()
+            .enumerate()
+            .find(|(_, question)| *question.id == *id)
+            .ok_or_else(|| Error::Tool(DEFINITION.message_not_found.clone()))?; // rules-allow: the error owns a copy of the embedded message
         if question.outcome.is_some() {
-            return Err(Error::Tool(DEFINITION.message_closed.clone()));
+            return Err(Error::Tool(DEFINITION.message_closed.clone())); // rules-allow: the error owns a copy of the embedded message
         }
         let at = chrono::Utc::now().timestamp_millis();
         let message = match Command::parse(command)? {
             Command::Answer => {
                 let answer = input
                     .filter(|answer| !answer.trim().is_empty() && answer.len() <= MAX_ANSWER_BYTES)
-                    .ok_or_else(|| Error::Tool(DEFINITION.message_empty_answer.clone()))?;
+                    .ok_or_else(|| Error::Tool(DEFINITION.message_empty_answer.clone()))?; // rules-allow: the error owns a copy of the embedded message
                 question.outcome = Some(Outcome::Answered {
                     text: answer.into(),
                     at,
@@ -326,7 +349,7 @@ impl QuestionSession {
             let sent = self
                 .sender
                 .upgrade()
-                .ok_or_else(|| Error::Stopped(DEFINITION.message_unavailable.clone()))
+                .ok_or_else(|| Error::Stopped(DEFINITION.message_unavailable.clone())) // rules-allow: the error owns a copy of the embedded message
                 .and_then(|sender| {
                     sender.send(Submission::message(MessageSubmission {
                         author: MessageAuthor::User,
@@ -338,7 +361,9 @@ impl QuestionSession {
                     }))
                 });
             if let Err(error) = sent {
-                questions[index].outcome = None;
+                if let Some(question) = questions.get_mut(index) {
+                    question.outcome = None;
+                }
                 if let Err(rollback) = self.save(&questions).await {
                     return Err(Error::Rollback {
                         primary: Box::new(error),
@@ -359,12 +384,8 @@ impl QuestionSession {
 
 struct AskUser(Arc<QuestionSession>);
 impl Tool for AskUser {
-    fn definition(&self) -> ToolDefinition {
-        let mut tool = DEFINITION.ask_user.tool.clone();
-        tool.parameters["properties"]["title"]["maxLength"] = MAX_TITLE_BYTES.into();
-        tool.parameters["properties"]["options"]["maxItems"] = MAX_OPTIONS.into();
-        tool.parameters["properties"]["options"]["items"]["maxLength"] = MAX_OPTION_BYTES.into();
-        tool
+    fn definition(&self) -> &Arc<ToolDefinition> {
+        &DEFINITION.ask_user.tool
     }
     fn exposure(&self) -> ToolExposure {
         ToolExposure::Direct
@@ -375,14 +396,15 @@ impl Tool for AskUser {
     fn approval(&self) -> ApprovalRequirement {
         ApprovalRequirement::Never
     }
-    fn call<'a>(
-        &'a self,
+    fn call(
+        &self,
         context: ToolContext,
         arguments: Value,
-    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
+    ) -> BoxFuture<'_, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
-            let args: AskArgs = serde_json::from_value(arguments)
-                .map_err(|_| Error::Tool(DEFINITION.message_invalid_question.clone()))?;
+            let args: AskArgs = serde_json::from_value(arguments).map_err(|error| {
+                Error::Tool(format!("{}: {error}", DEFINITION.message_invalid_question))
+            })?;
             validate(&args)?;
             let _access = self.0.access.lock().await;
             let mut questions = self.0.load().await?;
@@ -398,7 +420,7 @@ impl Tool for AskUser {
                     .count()
                     >= MAX_OPEN
                 {
-                    return Err(Error::Tool(DEFINITION.message_too_many_open.clone()));
+                    return Err(Error::Tool(DEFINITION.message_too_many_open.clone())); // rules-allow: the error owns a copy of the embedded message
                 }
                 questions.push(Question {
                     id: context.call_id,
@@ -424,7 +446,7 @@ fn validate(args: &AskArgs) -> Result<()> {
             option.trim().is_empty() || option.len() > MAX_OPTION_BYTES || !options.insert(option)
         })
     {
-        return Err(Error::Tool(DEFINITION.message_invalid_question.clone()));
+        return Err(Error::Tool(DEFINITION.message_invalid_question.clone())); // rules-allow: the error owns a copy of the embedded message
     }
     Ok(())
 }
@@ -479,7 +501,7 @@ fn widget(mut questions: Vec<Question>) -> FrontendWidget {
         progress: None,
         action: None,
         content: Some(FrontendWidgetContent::ActionList {
-            title: DEFINITION.widget_title.clone(),
+            title: DEFINITION.widget_title.clone(), // rules-allow: the widget record owns a copy of the embedded text
             items: questions.into_iter().map(question_item).collect(),
             actions: Vec::new(),
         }),
@@ -509,7 +531,7 @@ fn question_item(question: Question) -> FrontendActionListItem {
                             &question.id,
                             index.to_string(),
                             option,
-                            Command::Answer,
+                            &Command::Answer,
                             true,
                         )
                     }),
@@ -517,22 +539,22 @@ fn question_item(question: Question) -> FrontendActionListItem {
             let mut other = action(
                 &question.id,
                 "other".into(),
-                DEFINITION.action_other_label.clone(),
-                Command::Answer,
+                DEFINITION.action_other_label.clone(), // rules-allow: the widget record owns a copy of the embedded text
+                &Command::Answer,
                 false,
             );
             other.editor = Some(FrontendEditor {
-                title: DEFINITION.editor_title.clone(),
-                label: DEFINITION.editor_label.clone(),
-                description: DEFINITION.editor_description.clone(),
-                submit_label: DEFINITION.editor_submit_label.clone(),
+                title: DEFINITION.editor_title.clone(), // rules-allow: the widget record owns a copy of the embedded text
+                label: DEFINITION.editor_label.clone(), // rules-allow: the widget record owns a copy of the embedded text
+                description: DEFINITION.editor_description.clone(), // rules-allow: the widget record owns a copy of the embedded text
+                submit_label: DEFINITION.editor_submit_label.clone(), // rules-allow: the widget record owns a copy of the embedded text
             });
             actions.push(other);
             actions.push(action(
                 &question.id,
                 "skip".into(),
-                DEFINITION.action_skip_label.clone(),
-                Command::Skip,
+                DEFINITION.action_skip_label.clone(), // rules-allow: the widget record owns a copy of the embedded text
+                &Command::Skip,
                 false,
             ));
         }
@@ -553,7 +575,7 @@ fn action(
     question_id: &str,
     id: String,
     label: String,
-    command: Command,
+    command: &Command,
     input_from_label: bool,
 ) -> FrontendAction {
     FrontendAction {

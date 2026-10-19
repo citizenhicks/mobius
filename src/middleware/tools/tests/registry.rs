@@ -1,28 +1,24 @@
 use super::*;
 
 struct InterruptibleTool {
-    name: &'static str,
+    definition: Arc<ToolDefinition>,
     interruptible: bool,
 }
 
 impl Tool for InterruptibleTool {
-    fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: self.name.into(),
-            description: String::new(),
-            parameters: serde_json::json!({}),
-        }
+    fn definition(&self) -> &Arc<ToolDefinition> {
+        &self.definition
     }
 
     fn cancel_on_input(&self) -> bool {
         self.interruptible
     }
 
-    fn call<'a>(
-        &'a self,
+    fn call(
+        &self,
         _context: ToolContext,
         _arguments: Value,
-    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
+    ) -> BoxFuture<'_, Result<crate::protocol::ToolResponse>> {
         Box::pin(async { Ok(String::new().into()) })
     }
 }
@@ -33,7 +29,11 @@ fn only_wholly_cancellable_batches_stop_for_new_input() {
     for (name, interruptible) in [("wait", true), ("write", false)] {
         catalog
             .register(Arc::new(InterruptibleTool {
-                name,
+                definition: Arc::new(ToolDefinition {
+                    name: name.into(),
+                    description: String::new(),
+                    parameters: serde_json::json!({}),
+                }),
                 interruptible,
             }))
             .expect("register tool");
@@ -55,7 +55,7 @@ fn only_inspection_tools_declare_read_only() {
     let mut catalog = Catalog::default();
     for tool in [
         Arc::new(ReadFile {
-            store: crate::backend::session_files::SessionFileStore::new(files.path(), None),
+            store: crate::backend::session_files::SessionFileStore::new(files.path(), None).into(),
         }) as Arc<dyn Tool>,
         Arc::new(WriteFile),
         Arc::new(ApplyPatch),

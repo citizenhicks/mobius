@@ -22,8 +22,9 @@ use crate::backend::model::{
     MAX_TOOL_CALLS, ModelCancellation, ModelCancellationReason, ModelEventSink, ModelInput,
     ModelOutput, ModelRequest, PromptCacheIdentity, StreamingToolCalls, ToolDefinition,
     durable_visible_message_index, insert_before_open_tool_calls, internal_user_message,
-    prompt_cache_key, reset_prompt_cache_breakpoint, reset_shared_prompt_cache_breakpoint,
-    strip_provider_reasoning, strip_shared_provider_reasoning,
+    prepare_turn_input, prompt_cache_key, reset_prompt_cache_breakpoint,
+    reset_shared_prompt_cache_breakpoint, strip_provider_reasoning,
+    strip_shared_provider_reasoning,
 };
 use crate::backend::sandbox::SandboxAuthorization;
 use crate::middleware::tools::{PreparedToolSet, ToolResult};
@@ -63,6 +64,10 @@ enum PreparedModel {
     },
 }
 
+#[expect(
+    clippy::rc_buffer,
+    reason = "shares the checkpoint's copy-on-write context without copying it"
+)]
 enum PreparedInput {
     Shared(Arc<Vec<Arc<Value>>>),
     Request(Vec<Value>),
@@ -85,10 +90,10 @@ struct PreparedTools {
 }
 
 struct CompletedModelStep {
-    started: ModelStepStartedEvent,
+    started: Arc<ModelStepStartedEvent>,
     output: ModelOutput,
     tools: PreparedToolSet<'static>,
-    model_events: ModelEventTracker,
+    model_events: Arc<ModelEventTracker>,
     streamed: StreamedTools,
 }
 
@@ -106,7 +111,7 @@ enum ModelStepRequest {
 }
 
 impl Runner {
-    async fn stage_message_input(&mut self, turn_id: &str) -> Result<()> {
+    async fn stage_message_input(&mut self, turn_id: &Arc<str>) -> Result<()> {
         if !self
             .config
             .middleware
@@ -115,7 +120,7 @@ impl Runner {
             return Ok(());
         }
         // Hooks consume a staged queue; a rejected hook or failed save must leave live input intact.
-        let mut pending_messages = self.state.pending_messages.clone();
+        let mut pending_messages = self.state.pending_messages.clone(); // rules-allow: hooks consume a staged queue so failure keeps live input
         let messages = self
             .config
             .middleware
@@ -159,7 +164,7 @@ impl Runner {
             );
             if let Some(rejection) = submitted.rejection {
                 events.push(Event {
-                    submission_id: Some(message.submission_id.into()),
+                    submission_id: Some(message.submission_id),
                     msg: EventMsg::SubmissionRejected(SubmissionRejectedEvent {
                         message: rejection,
                     }),
@@ -173,9 +178,7 @@ impl Runner {
             {
                 context.push(Arc::new(item));
             }
-            self.config
-                .model
-                .prepare_turn_input(context.input(), &mut message.input);
+            prepare_turn_input(context.input(), &mut message.input);
             let target = message.event.message_target_mut().ok_or_else(|| {
                 Error::Checkpoint("prepared input event has no message target".into())
             })?;
@@ -187,7 +190,7 @@ impl Runner {
             context.push(Arc::clone(&input));
             transcript.push(input);
             events.push(Event {
-                submission_id: Some(message.submission_id.into()),
+                submission_id: Some(message.submission_id),
                 msg: message.event,
             });
         }
@@ -213,7 +216,7 @@ impl Runner {
 
     async fn persist_model_hook_changes(
         &mut self,
-        submission_id: &str,
+        submission_id: &Arc<str>,
         mut middleware_events: Vec<EventMsg>,
         accounting_usage: Option<&TokenUsage>,
         checkpoint_changed: bool,
@@ -255,8 +258,8 @@ impl Runner {
     async fn prepare_model_phase(
         &mut self,
         inbox: &mut SubmissionInbox,
-        submission_id: &str,
-        turn_id: &str,
+        submission_id: &Arc<str>,
+        turn_id: &Arc<str>,
         model_step: usize,
     ) -> Result<PreparedModel> {
         self.stage_message_input(turn_id).await?;
@@ -279,17 +282,17 @@ impl Runner {
         let mut allow_hosted_tools = true;
         // Compact session-start hooks may read this queue after awaiting a provider.
         // wait_active can replace/edit the live queue meanwhile, so its Vec cannot stay borrowed.
-        let queued_messages = self.state.pending_messages.clone();
+        let queued_messages = self.state.pending_messages.clone(); // rules-allow: the live queue may change while preparation awaits
         let model = Arc::clone(&self.config.model);
-        let provider = self.config.provider.clone();
-        let context_provider = self.state.context_model_route.clone();
-        let session_id = self.config.session_id.clone();
+        let provider = Arc::clone(&self.config.provider);
+        let context_provider = self.state.context_model_route.as_ref().map(Arc::clone);
+        let session_id = Arc::clone(&self.config.session_id);
         let instructions = Arc::clone(&self.system_prompt);
-        let last_usage = self.state.last_usage.clone();
+        let last_usage = self.state.last_usage;
         let catalog = Arc::clone(&self.catalog);
         let runtime = Arc::clone(&self.runtime);
-        let middleware = self.config.middleware.clone();
-        let author = self.active_author()?.clone();
+        let middleware = Arc::clone(&self.config.middleware);
+        let author = Arc::clone(self.active_author()?);
         let mut preparation_notices = PreparationNotices::new(&runtime.frontend);
         let cancellation = ModelCancellation::default();
         let control = {
@@ -425,7 +428,7 @@ impl Runner {
             self.state.make_mut().last_usage = None;
             self.state.make_mut().last_context_rewrite = Some(ContextRewrite {
                 epoch: self.state.context_epoch,
-                reasons: rewrite_reasons.clone(),
+                reasons: rewrite_reasons.clone(), // rules-allow: the step result also reports the rewrite reasons
             });
         }
         checkpoint_changed |= usage_changed;
@@ -502,7 +505,7 @@ impl Runner {
     }
 
     fn model_step_terminal_events(
-        submission_id: &str,
+        submission_id: &Arc<str>,
         started: &ModelStepStartedEvent,
         outcome: ModelStepOutcome,
         model_events: &ModelEventTracker,
@@ -531,7 +534,7 @@ impl Runner {
 
     async fn retry_model_step(
         &mut self,
-        submission_id: &str,
+        submission_id: &Arc<str>,
         started: &ModelStepStartedEvent,
         model_events: &ModelEventTracker,
     ) -> Result<()> {
@@ -553,7 +556,7 @@ impl Runner {
 
     async fn fail_model_step(
         &mut self,
-        submission_id: &str,
+        submission_id: &Arc<str>,
         started: &ModelStepStartedEvent,
         model_events: &ModelEventTracker,
         error: Error,
@@ -570,8 +573,8 @@ impl Runner {
 
     async fn interrupt_model_step(
         &mut self,
-        submission_id: &str,
-        interrupt_submission_id: &str,
+        submission_id: &Arc<str>,
+        interrupt_submission_id: &Arc<str>,
         started: &ModelStepStartedEvent,
         model_events: &ModelEventTracker,
     ) -> Result<()> {
@@ -594,58 +597,69 @@ impl Runner {
     async fn request_model_step(
         &mut self,
         inbox: &mut SubmissionInbox,
-        submission_id: &str,
-        turn_id: &str,
+        submission_id: &Arc<str>,
+        turn_id: &Arc<str>,
         model_step: usize,
         request_input: ModelInput<'_>,
         tools: Box<PreparedTools>,
     ) -> Result<ModelStepRequest> {
         let model = Arc::clone(&self.config.model);
-        let provider = self.config.provider.clone();
-        let model_session_id: Arc<str> = self.state.session_id.as_str().into();
+        let provider = Arc::clone(&self.config.provider);
+        let model_session_id = Arc::clone(&self.state.session_id);
         let cache_key = prompt_cache_key(&model_session_id);
         let instructions = Arc::clone(&self.system_prompt);
+        let estimate = self.config.token_estimate;
+        let mut context = self.prompt_estimate;
+        context.add_input(request_input.iter(), estimate);
+        context.add_tools(
+            tools.catalog.direct(),
+            tools.catalog.deferred(),
+            tools.catalog.materialized(),
+            estimate,
+        )?;
+        self.context_estimate = Some(context);
         let mut stream_retries = 0;
         loop {
-            let started = ModelStepStartedEvent {
+            let started = Arc::new(ModelStepStartedEvent {
                 session_id: Arc::clone(&model_session_id),
-                turn_id: Arc::from(turn_id),
+                turn_id: Arc::clone(turn_id),
                 model_step_id: Uuid::new_v4().to_string().into(),
                 step_index: model_step,
                 started_at_ms: unix_timestamp_ms()?,
-            };
+            });
             self.record_model_call()?;
             self.state.make_mut().active_model_step = Some(ActiveModelStep {
-                model_step_id: started.model_step_id.to_string(),
+                model_step_id: Arc::clone(&started.model_step_id),
                 step_index: started.step_index,
                 started_at_ms: started.started_at_ms,
             });
             self.persist_with_events(
                 vec![turn_event(
                     submission_id,
-                    EventMsg::ModelStepStarted(started.clone()),
+                    EventMsg::ModelStepStarted(Arc::clone(&started)),
                 )],
                 None,
             )
             .await?;
-            let event_submission_id: Arc<str> = submission_id.into();
+            let event_submission_id = Arc::clone(submission_id);
             let event_turn_id = Arc::clone(&started.turn_id);
             let event_session_id = Arc::clone(&started.session_id);
             let event_model_step_id = Arc::clone(&started.model_step_id);
-            let model_events = ModelEventTracker::default();
-            let streamed_events = model_events.clone();
+            let model_events = Arc::new(ModelEventTracker::default());
+            let streamed_events = Arc::clone(&model_events);
             let catalog_revision = self.catalog.revision()?.to_owned();
             let recorder = Arc::downgrade(&self.events);
             let (response_open, response_closed) = tokio::sync::watch::channel(());
             let (ready_calls_tx, ready_calls) = tokio::sync::mpsc::channel(MAX_TOOL_CALLS);
+            let ready_calls_tx = Arc::new(ready_calls_tx);
             let call_validation = Arc::new(Mutex::new(StreamingToolCalls::default()));
             let stream: ModelEventSink = Arc::new(move |event| {
-                let mut response_closed = response_closed.clone();
+                let mut response_closed = response_closed.clone(); // rules-allow: each streamed event future owns its handles
                 let call_validation = Arc::clone(&call_validation);
-                let ready_calls_tx = ready_calls_tx.clone();
-                let streamed_events = streamed_events.clone();
+                let ready_calls_tx = Arc::clone(&ready_calls_tx);
+                let streamed_events = Arc::clone(&streamed_events);
                 // Only a weak recorder handle enters this callback future, avoiding an ownership cycle.
-                let recorder = recorder.clone();
+                let recorder = std::sync::Weak::clone(&recorder);
                 let event_submission_id = Arc::clone(&event_submission_id);
                 let event_turn_id = Arc::clone(&event_turn_id);
                 let event_session_id = Arc::clone(&event_session_id);
@@ -655,8 +669,10 @@ impl Runner {
                         if let ModelEvent::ToolCallReady(call) = event {
                             call_validation
                                 .lock()
-                                .map_err(|_| {
-                                    Error::Stopped("streamed tool validation unavailable".into())
+                                .map_err(|error| {
+                                    Error::Stopped(format!(
+                                        "streamed tool validation unavailable: {error}"
+                                    ))
                                 })?
                                 .accept(&call)?;
                             recorder
@@ -664,8 +680,8 @@ impl Runner {
                                 .ok_or_else(|| Error::Stopped("event recorder stopped".into()))?
                                 .flush()
                                 .await?;
-                            return ready_calls_tx.send(call).await.map_err(|_| {
-                                Error::Stopped("streamed tool queue unavailable".into())
+                            return ready_calls_tx.send(call).await.map_err(|error| {
+                                Error::Stopped(format!("streamed tool queue unavailable: {error}"))
                             });
                         }
                         streamed_events.observe(&event)?;
@@ -756,8 +772,10 @@ impl Runner {
                 {
                     let transport = model.transport_settings_for(&provider)?;
                     let retry_limit =
-                        usize::try_from(transport.stream_retry_limit).map_err(|_| {
-                            Error::Config("stream retry limit exceeds platform range".into())
+                        usize::try_from(transport.stream_retry_limit).map_err(|error| {
+                            Error::Config(format!(
+                                "stream retry limit exceeds platform range: {error}"
+                            ))
                         })?;
                     let delay = crate::backend::model::retry_delay(
                         &error,
@@ -857,7 +875,7 @@ impl Runner {
 
     async fn fail_completed_model_step(
         &mut self,
-        submission_id: &str,
+        submission_id: &Arc<str>,
         mut step: CompletedModelStep,
         error: Error,
     ) -> Result<Option<NormalizedModelStep>> {
@@ -870,18 +888,18 @@ impl Runner {
     async fn normalize_and_persist_model_step(
         &mut self,
         inbox: &mut SubmissionInbox,
-        submission_id: &str,
-        turn_id: &str,
+        submission_id: &Arc<str>,
+        turn_id: &Arc<str>,
         rewrite_reasons: &[ContextRewriteReason],
         mut step: CompletedModelStep,
     ) -> Result<Option<NormalizedModelStep>> {
-        let provider = self.config.provider.clone();
+        let provider = Arc::clone(&self.config.provider);
         if let Err(error) = self.record_usage(&provider, &step.output.usage).await {
             return self
                 .fail_completed_model_step(submission_id, step, error)
                 .await;
         }
-        self.state.make_mut().last_usage = Some(step.output.usage.clone());
+        self.state.make_mut().last_usage = Some(step.output.usage);
         if !step.output.tool_calls.starts_with(&step.streamed.originals) {
             return self
                 .fail_completed_model_step(
@@ -986,7 +1004,11 @@ impl Runner {
         insert_before_open_tool_calls(&mut durable_output, hook_input);
         self.extend_context(durable_output);
         let message_index = durable_visible_message_index(
-            self.state.context[context_before..].into(),
+            self.state
+                .context
+                .get(context_before..)
+                .unwrap_or_default()
+                .into(),
             self.state.context.as_slice().into(),
             context_before,
         );
@@ -1041,9 +1063,9 @@ impl Runner {
                     .output
                     .tool_calls
                     .iter()
-                    .map(|call| call.call_id.clone())
+                    .map(|call| Arc::clone(&call.call_id))
                     .collect(),
-                usage: step.output.usage.clone(),
+                usage: std::mem::take(&mut step.output.usage),
             },
             Some(diagnostics),
         )?];
@@ -1092,8 +1114,8 @@ impl Runner {
     async fn resolve_turn_completion(
         &mut self,
         inbox: &mut SubmissionInbox,
-        submission_id: &str,
-        turn_id: &str,
+        submission_id: &Arc<str>,
+        turn_id: &Arc<str>,
     ) -> Result<bool> {
         if let Some(interrupt_submission_id) =
             self.drain_submissions(inbox, turn_id).await?.interrupted
@@ -1204,8 +1226,8 @@ impl Runner {
     async fn authorize_and_execute(
         &mut self,
         inbox: &mut SubmissionInbox,
-        submission_id: &str,
-        turn_id: &str,
+        submission_id: &Arc<str>,
+        turn_id: &Arc<str>,
         calls: Vec<ToolCall>,
     ) -> Result<bool> {
         let live_tools = self.live_tools().await?;
@@ -1234,7 +1256,7 @@ impl Runner {
         let mutation_call_ids = calls
             .iter()
             .filter(|call| self.catalog.requires_approval(&call.name))
-            .map(|call| call.call_id.as_str());
+            .map(|call| call.call_id.as_ref());
         let authorization =
             self.config
                 .sandbox
@@ -1277,8 +1299,8 @@ impl Runner {
     pub(in crate::agent) async fn continue_turn(
         &mut self,
         inbox: &mut SubmissionInbox,
-        submission_id: String,
-        turn_id: String,
+        submission_id: &Arc<str>,
+        turn_id: &Arc<str>,
     ) -> Result<()> {
         loop {
             let phase = &self
@@ -1289,7 +1311,7 @@ impl Runner {
                 .phase;
             if matches!(phase, ExecutionPhase::Completion { .. }) {
                 if self
-                    .resolve_turn_completion(inbox, &submission_id, &turn_id)
+                    .resolve_turn_completion(inbox, submission_id, turn_id)
                     .await?
                 {
                     return Ok(());
@@ -1297,11 +1319,11 @@ impl Runner {
                 continue;
             }
             if let Some(interrupt_submission_id) =
-                self.drain_submissions(inbox, &turn_id).await?.interrupted
+                self.drain_submissions(inbox, turn_id).await?.interrupted
             {
                 self.abort(
                     &interrupt_submission_id,
-                    &turn_id,
+                    turn_id,
                     TURN_INTERRUPTED_REASON,
                     ExecutionOutcome::Aborted,
                 )
@@ -1323,18 +1345,18 @@ impl Runner {
             let mut rewrite_reasons = Vec::new();
             let (request_input, tools) = loop {
                 match self
-                    .prepare_model_phase(inbox, &submission_id, &turn_id, model_step)
+                    .prepare_model_phase(inbox, submission_id, turn_id, model_step)
                     .await?
                 {
                     PreparedModel::Aborted => return Ok(()),
                     PreparedModel::Stopped(reason) => {
                         self.complete_turn(
-                            &submission_id,
-                            &turn_id,
+                            submission_id,
+                            turn_id,
                             vec![turn_event(
-                                &submission_id,
+                                submission_id,
                                 EventMsg::Warning(crate::protocol::WarningEvent {
-                                    message: reason,
+                                    message: reason.into(),
                                 }),
                             )],
                         )
@@ -1358,8 +1380,8 @@ impl Runner {
             let step = match self
                 .request_model_step(
                     inbox,
-                    &submission_id,
-                    &turn_id,
+                    submission_id,
+                    turn_id,
                     model_step,
                     request_input.input(),
                     tools,
@@ -1380,8 +1402,8 @@ impl Runner {
             }) = self
                 .normalize_and_persist_model_step(
                     inbox,
-                    &submission_id,
-                    &turn_id,
+                    submission_id,
+                    turn_id,
                     &rewrite_reasons,
                     step,
                 )
@@ -1392,16 +1414,16 @@ impl Runner {
             if output.tool_calls.is_empty() {
                 continue;
             }
-            let streamed = self.wait_active(inbox, &turn_id, streamed.finish()).await?;
-            let Some(streamed) = self.ready_or_aborted(streamed, &turn_id).await? else {
+            let streamed = self.wait_active(inbox, turn_id, streamed.finish()).await?;
+            let Some(streamed) = self.ready_or_aborted(streamed, turn_id).await? else {
                 return Ok(());
             };
             let mut completion = streamed?;
-            self.post_tool_results(&turn_id, &output.tool_calls, &mut completion)
+            self.post_tool_results(turn_id, &output.tool_calls, &mut completion)
                 .await?;
             completion.results.extend(denied_results);
             completion.results = order_results(&output.tool_calls, completion.results);
-            self.persist_tool_results(&submission_id, &turn_id, completion)
+            self.persist_tool_results(submission_id, turn_id, completion)
                 .await?;
             if executable_calls.is_empty() {
                 continue;
@@ -1419,7 +1441,7 @@ impl Runner {
                 })
                 .collect();
             if self
-                .authorize_and_execute(inbox, &submission_id, &turn_id, calls)
+                .authorize_and_execute(inbox, submission_id, turn_id, calls)
                 .await?
             {
                 return Ok(());
@@ -1429,7 +1451,7 @@ impl Runner {
 }
 
 fn model_step_completed_event(
-    submission_id: &str,
+    submission_id: &Arc<str>,
     started: &ModelStepStartedEvent,
     outcome: ModelStepOutcome,
     diagnostics: Option<ModelStepDiagnostics>,

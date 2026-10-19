@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use mobius::protocol::{
     EventMsg, MessageAuthor, MessageSubmission, ModelStepContentPhase, Op, ReviewDecision,
     Submission,
@@ -16,15 +18,15 @@ use crate::gateway_error;
 pub async fn run(
     sender: GatewaySender,
     mut events: GatewayEvents,
-    session_id: String,
+    session_id: Arc<str>,
     task: String,
 ) -> Result<Option<String>> {
-    let submission_id = Uuid::new_v4().to_string();
+    let submission_id: Arc<str> = Uuid::new_v4().to_string().into();
     sender
         .send(ClientMessage::Submit {
-            session_id: session_id.clone(),
+            session_id: Arc::clone(&session_id),
             submission: Submission {
-                id: submission_id.clone(),
+                id: Arc::clone(&submission_id),
                 op: Op::Message {
                     message: MessageSubmission {
                         author: MessageAuthor::User,
@@ -57,7 +59,7 @@ pub async fn run(
                 session_id: actual,
                 record,
                 ..
-            } if actual.as_ref() == session_id => record.event,
+            } if *actual == *session_id => record.event,
             _ => continue,
         };
         match event.msg {
@@ -67,7 +69,7 @@ pub async fn run(
                 turn_id = Some(turn.turn_id);
             }
             EventMsg::ExecApprovalRequest(request)
-                if turn_id.as_deref() == Some(request.turn_id.as_str()) =>
+                if turn_id.as_deref() == Some(&*request.turn_id) =>
             {
                 approval_error = Some(Error::Config(
                     "headless run requested tool approval; configure a no-prompt gateway sandbox policy"
@@ -75,9 +77,9 @@ pub async fn run(
                 ));
                 sender
                     .send(ClientMessage::Submit {
-                        session_id: session_id.clone(),
+                        session_id: Arc::clone(&session_id),
                         submission: Submission {
-                            id: Uuid::new_v4().to_string(),
+                            id: Uuid::new_v4().to_string().into(),
                             op: Op::ExecApproval {
                                 id: request.id,
                                 decision: ReviewDecision::Abort,
@@ -87,9 +89,7 @@ pub async fn run(
                     .await
                     .map_err(gateway_error)?;
             }
-            EventMsg::Error(error)
-                if event.submission_id.as_deref() == Some(submission_id.as_str()) =>
-            {
+            EventMsg::Error(error) if event.submission_id.as_ref() == Some(&submission_id) => {
                 first_error.get_or_insert(error.message);
             }
             EventMsg::AssistantMessage(message)
@@ -105,18 +105,19 @@ pub async fn run(
                     last_assistant_message = Some(final_answer);
                 }
             }
-            EventMsg::TurnComplete(turn) if turn_id.as_deref() == Some(turn.turn_id.as_str()) => {
+            EventMsg::TurnComplete(turn) if turn_id.as_deref() == Some(&*turn.turn_id) => {
                 if let Some(error) = approval_error {
                     return Err(error);
                 }
                 if let Some(error) = first_error {
-                    return Err(Error::Stopped(error));
+                    return Err(Error::Stopped(error.to_string()));
                 }
                 return Ok(last_assistant_message);
             }
-            EventMsg::TurnAborted(turn) if turn_id.as_deref() == Some(turn.turn_id.as_str()) => {
-                return Err(approval_error
-                    .unwrap_or_else(|| Error::Stopped(first_error.unwrap_or(turn.reason))));
+            EventMsg::TurnAborted(turn) if turn_id.as_deref() == Some(&*turn.turn_id) => {
+                return Err(approval_error.unwrap_or_else(|| {
+                    Error::Stopped(first_error.unwrap_or(turn.reason).to_string())
+                }));
             }
             _ => {}
         }

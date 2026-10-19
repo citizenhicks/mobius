@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use mobius::Error;
 use mobius::Result;
@@ -19,7 +20,7 @@ pub(crate) struct UiCatalog {
     commands: Vec<UiCommand>,
     references: Vec<UiReference>,
     reference_triggers: Vec<char>,
-    widgets: Vec<(String, FrontendWidget)>,
+    widgets: Vec<(Arc<str>, Arc<FrontendWidget>)>,
     workspace: Option<PathBuf>,
     workspace_references: Vec<UiReference>,
 }
@@ -28,14 +29,14 @@ pub(crate) struct UiCatalog {
 pub(crate) struct MenuItem {
     pub value: String,
     pub label: String,
-    pub description: String,
+    pub description: Arc<str>,
 }
 
 #[derive(Clone)]
 struct UiCommand {
-    name: String,
-    arguments: String,
-    description: String,
+    name: Arc<str>,
+    arguments: Arc<str>,
+    description: Arc<str>,
     requires_idle: bool,
     handler: CommandHandler,
 }
@@ -68,19 +69,19 @@ enum CommandHandler {
     Status,
     Interrupt,
     Exit,
-    Capability { capability: String },
+    Capability { capability: Arc<str> },
 }
 
 struct UiReference {
     trigger: char,
-    value: String,
-    description: String,
+    value: Arc<str>,
+    description: Arc<str>,
     replacement: String,
 }
 
 #[derive(Clone, Copy)]
 pub(crate) struct CommandContext<'a> {
-    pub active_turn: Option<&'a str>,
+    pub active_turn: Option<&'a Arc<str>>,
     pub status: &'a str,
 }
 
@@ -117,7 +118,7 @@ pub(crate) enum GatewayAction {
     Profile,
     Rename(String),
     SetPinned(bool),
-    Reassign(String),
+    Reassign(Arc<str>),
     AttachFolder(PathBuf),
     DeleteCurrent,
     ListSessionFiles,
@@ -151,26 +152,25 @@ impl UiCatalog {
 
         for contribution in contributions {
             commands.extend(contribution.commands.iter().map(|command| UiCommand {
-                name: command.name.clone(),
-                arguments: command.arguments.clone(),
-                description: command.description.clone(),
+                name: Arc::clone(&command.name),
+                arguments: Arc::clone(&command.arguments),
+                description: Arc::clone(&command.description),
                 requires_idle: command.requires_idle,
                 handler: CommandHandler::Capability {
-                    capability: contribution.capability.clone(),
+                    capability: Arc::clone(&contribution.capability),
                 },
             }));
             references.extend(contribution.references.iter().map(|reference| UiReference {
                 trigger: reference.trigger,
-                value: reference.value.clone(),
-                description: reference.description.clone(),
+                value: Arc::clone(&reference.value),
+                description: Arc::clone(&reference.description),
                 replacement: format!("{}{}", reference.trigger, reference.value),
             }));
             widgets.extend(
                 contribution
                     .widgets
                     .iter()
-                    .cloned()
-                    .map(|widget| (contribution.capability.clone(), widget)),
+                    .map(|widget| (Arc::clone(&contribution.capability), Arc::clone(widget))),
             );
         }
 
@@ -197,16 +197,14 @@ impl UiCatalog {
             .map(|path| UiReference {
                 trigger: WORKSPACE_REFERENCE_TRIGGER,
                 replacement: workspace_replacement(&path),
-                value: path,
+                value: path.into(),
                 description: "file".into(),
             })
             .collect();
     }
 
-    pub(crate) fn widgets(&self) -> impl Iterator<Item = (&str, &FrontendWidget)> {
-        self.widgets
-            .iter()
-            .map(|(capability, widget)| (capability.as_str(), widget))
+    pub(crate) fn widgets(&self) -> impl Iterator<Item = &(Arc<str>, Arc<FrontendWidget>)> {
+        self.widgets.iter()
     }
 
     pub(crate) fn workspace(&self) -> Option<&Path> {
@@ -215,16 +213,16 @@ impl UiCatalog {
 
     pub(crate) fn command_suggestions(&self, input: &str, cursor: usize) -> Option<Vec<MenuItem>> {
         let query = input.strip_prefix(COMMAND_PREFIX)?;
-        let token_end = input.find(char::is_whitespace).unwrap_or(input.len());
-        if cursor > token_end {
+        let (token, _) = query.split_once(char::is_whitespace).unwrap_or((query, ""));
+        if cursor > COMMAND_PREFIX.len_utf8() + token.len() {
             return None;
         }
-        let query = query[..token_end.saturating_sub(COMMAND_PREFIX.len_utf8())].to_lowercase();
+        let query = token.to_lowercase();
         let (exact, prefix): (Vec<_>, Vec<_>) = self
             .commands
             .iter()
             .filter(|command| command.name.starts_with(&query))
-            .map(|command| (command.name == query, command.menu_item()))
+            .map(|command| (*command.name == *query, command.menu_item()))
             .partition(|(is_exact, _)| *is_exact);
         Some(
             exact
@@ -294,9 +292,8 @@ impl UiCatalog {
         )
     }
 
-    pub(crate) fn composer_hint(&self) -> &'static str {
-        "Enter send · / commands · @ files · Ctrl-J newline · Ctrl-T transcript"
-    }
+    pub(crate) const COMPOSER_HINT: &'static str =
+        "Enter send · / commands · @ files · Ctrl-J newline · Ctrl-T transcript";
 
     pub(crate) fn dispatch(
         &self,
@@ -310,7 +307,7 @@ impl UiCatalog {
         if name.is_empty() {
             return Some(CommandAction::ShowMenu);
         }
-        let Some(command) = self.commands.iter().find(|command| command.name == name) else {
+        let Some(command) = self.commands.iter().find(|command| *command.name == *name) else {
             return Some(CommandAction::Print(format!(
                 "unknown command `{COMMAND_PREFIX}{name}`"
             )));
@@ -326,15 +323,10 @@ impl UiCatalog {
             CommandHandler::GatewaySettings if arguments.is_empty() => {
                 CommandAction::GatewaySettings
             }
-            CommandHandler::GatewaySettings => command.usage(),
             CommandHandler::Extensions if arguments.is_empty() => CommandAction::Extensions,
-            CommandHandler::Extensions => command.usage(),
             CommandHandler::Bot if arguments.is_empty() => CommandAction::Bots,
-            CommandHandler::Bot => command.usage(),
             CommandHandler::Conversation if arguments.is_empty() => CommandAction::Conversation,
-            CommandHandler::Conversation => command.usage(),
-            CommandHandler::Workspace if arguments.is_empty() => command.usage(),
-            CommandHandler::Workspace => CommandAction::ChooseBot {
+            CommandHandler::Workspace if !arguments.is_empty() => CommandAction::ChooseBot {
                 workspace: Some(PathBuf::from(arguments)),
                 clear: false,
             },
@@ -344,43 +336,34 @@ impl UiCatalog {
                     provider: (!arguments.is_empty()).then(|| arguments.into()),
                 }
             }
-            CommandHandler::Login => command.usage(),
             CommandHandler::Pair => CommandAction::Gateway(GatewayAction::Pair),
             CommandHandler::Profile => CommandAction::Gateway(GatewayAction::Profile),
             CommandHandler::Events if arguments.is_empty() => CommandAction::Events,
-            CommandHandler::Events => command.usage(),
             CommandHandler::New => CommandAction::ChooseBot {
-                workspace: self.workspace.clone(),
+                workspace: self.workspace.clone(), // rules-allow: the action owns the workspace while the catalog keeps it for later commands
                 clear: false,
             },
             CommandHandler::Clear => CommandAction::ChooseBot {
-                workspace: self.workspace.clone(),
+                workspace: self.workspace.clone(), // rules-allow: the action owns the workspace while the catalog keeps it for later commands
                 clear: true,
             },
-            CommandHandler::Rename if arguments.is_empty() => command.usage(),
-            CommandHandler::Rename => {
+            CommandHandler::Rename if !arguments.is_empty() => {
                 CommandAction::Gateway(GatewayAction::Rename(arguments.into()))
             }
             CommandHandler::Pin if arguments.is_empty() => {
                 CommandAction::Gateway(GatewayAction::SetPinned(true))
             }
-            CommandHandler::Pin => command.usage(),
             CommandHandler::Unpin if arguments.is_empty() => {
                 CommandAction::Gateway(GatewayAction::SetPinned(false))
             }
-            CommandHandler::Unpin => command.usage(),
             CommandHandler::Reassign if arguments.is_empty() => CommandAction::ReassignBot,
-            CommandHandler::Reassign => command.usage(),
-            CommandHandler::Attach if arguments.is_empty() => command.usage(),
-            CommandHandler::Attach => {
+            CommandHandler::Attach if !arguments.is_empty() => {
                 CommandAction::Gateway(GatewayAction::AttachFolder(PathBuf::from(arguments)))
             }
             CommandHandler::Delete if arguments.is_empty() => CommandAction::ConfirmDelete,
-            CommandHandler::Delete => command.usage(),
             CommandHandler::Files if arguments.is_empty() => {
                 CommandAction::Gateway(GatewayAction::ListSessionFiles)
             }
-            CommandHandler::Files => command.usage(),
             CommandHandler::Diff => match arguments {
                 "" | "unstaged" => {
                     CommandAction::Gateway(GatewayAction::GitDiff(GitDiffScope::Unstaged))
@@ -392,28 +375,42 @@ impl UiCatalog {
                 _ => command.usage(),
             },
             CommandHandler::Branch if arguments.is_empty() => CommandAction::Branches,
-            CommandHandler::Branch => command.usage(),
             CommandHandler::Attention if arguments.is_empty() => CommandAction::Attention,
-            CommandHandler::Attention => command.usage(),
             CommandHandler::Queued if arguments.is_empty() => CommandAction::Queued,
-            CommandHandler::Queued => command.usage(),
-            CommandHandler::Status => CommandAction::Print(context.status.to_string()),
+            CommandHandler::Status => CommandAction::Print(context.status.to_owned()),
             CommandHandler::Interrupt => context.active_turn.map_or_else(
                 || CommandAction::Print("no active turn to interrupt".into()),
                 |turn_id| {
                     CommandAction::Submit(Box::new(Op::Interrupt {
-                        turn_id: turn_id.to_string(),
+                        turn_id: Arc::clone(turn_id),
                     }))
                 },
             ),
             CommandHandler::Exit => CommandAction::Exit,
             CommandHandler::Capability { capability } => {
                 CommandAction::Submit(Box::new(Op::command(
-                    capability.clone(),
-                    command.name.clone(),
-                    arguments.to_string(),
+                    Arc::clone(capability),
+                    Arc::clone(&command.name),
+                    arguments.to_owned(),
                 )))
             }
+            CommandHandler::GatewaySettings
+            | CommandHandler::Extensions
+            | CommandHandler::Bot
+            | CommandHandler::Conversation
+            | CommandHandler::Workspace
+            | CommandHandler::Login
+            | CommandHandler::Events
+            | CommandHandler::Rename
+            | CommandHandler::Pin
+            | CommandHandler::Unpin
+            | CommandHandler::Reassign
+            | CommandHandler::Attach
+            | CommandHandler::Delete
+            | CommandHandler::Files
+            | CommandHandler::Branch
+            | CommandHandler::Attention
+            | CommandHandler::Queued => command.usage(),
         })
     }
 }
@@ -428,16 +425,15 @@ impl UiCommand {
     }
 
     fn menu_item(&self) -> MenuItem {
-        let command = format!("{COMMAND_PREFIX}{}", self.name);
         let label = if self.arguments.is_empty() {
-            command.clone()
+            format!("{COMMAND_PREFIX}{}", self.name)
         } else {
-            format!("{command} {}", self.arguments)
+            format!("{COMMAND_PREFIX}{} {}", self.name, self.arguments)
         };
         MenuItem {
-            value: command,
+            value: format!("{COMMAND_PREFIX}{}", self.name),
             label,
-            description: self.description.clone(),
+            description: Arc::clone(&self.description),
         }
     }
 }
@@ -445,9 +441,9 @@ impl UiCommand {
 impl UiReference {
     fn menu_item(&self) -> MenuItem {
         MenuItem {
-            value: self.replacement.clone(),
+            value: self.replacement.clone(), // rules-allow: menu items own their text while the catalog keeps the reference
             label: format!("{}{}", self.trigger, self.value),
-            description: self.description.clone(),
+            description: Arc::clone(&self.description),
         }
     }
 }
@@ -641,7 +637,7 @@ fn validate(commands: &[UiCommand], references: &[UiReference]) -> Result<()> {
                 reference.trigger, reference.value
             )));
         }
-        if !registered.insert((reference.trigger, reference.value.as_str())) {
+        if !registered.insert((reference.trigger, &*reference.value)) {
             return Err(Error::Duplicate(format!(
                 "frontend reference `{}{}`",
                 reference.trigger, reference.value
@@ -705,7 +701,7 @@ mod tests {
             count: None,
             commands: vec![FrontendCommand {
                 name: command.into(),
-                arguments: String::new(),
+                arguments: String::new().into(),
                 description: "test command".into(),
                 requires_idle: true,
             }],
@@ -717,9 +713,8 @@ mod tests {
     #[test]
     fn rejects_middleware_command_collisions_with_the_shell() {
         let workspace = tempfile::tempdir().expect("workspace");
-        let error = match UiCatalog::build(&[contribution("exit")], Some(workspace.path())) {
-            Ok(_) => panic!("duplicate command"),
-            Err(error) => error,
+        let Err(error) = UiCatalog::build(&[contribution("exit")], Some(workspace.path())) else {
+            panic!("duplicate command");
         };
 
         assert_eq!(

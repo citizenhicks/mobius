@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::sync::Arc;
 
 use crate::Error;
 use crate::Result;
@@ -26,7 +27,7 @@ use super::{AdmissionReply, MessageAcceptance, ReceivedSubmission};
 
 pub(super) enum Wait<T> {
     Ready { value: T, input_changed: bool },
-    Interrupted { submission_id: String },
+    Interrupted { submission_id: Arc<str> },
 }
 
 pub(super) enum ActiveRoute {
@@ -34,16 +35,16 @@ pub(super) enum ActiveRoute {
         input_changed: bool,
     },
     Interrupted {
-        submission_id: String,
+        submission_id: Arc<str>,
     },
     Approval {
-        submission_id: String,
+        submission_id: Arc<str>,
         decision: ReviewDecision,
     },
 }
 
 struct ActiveChange {
-    submission_id: String,
+    submission_id: Arc<str>,
     pending_messages: Vec<QueuedMessage>,
     events: Vec<EventMsg>,
     input_changed: bool,
@@ -54,10 +55,10 @@ enum UncommittedRoute {
     Rejected(String),
     Changed(ActiveChange),
     Interrupted {
-        submission_id: String,
+        submission_id: Arc<str>,
     },
     Approval {
-        submission_id: String,
+        submission_id: Arc<str>,
         decision: ReviewDecision,
     },
 }
@@ -81,22 +82,21 @@ struct ActiveTurnRouter<'a> {
 impl Runner {
     pub(super) async fn admit_idle_message(
         &mut self,
-        submission_id: String,
+        submission_id: Arc<str>,
         message: MessageSubmission,
         admission: Option<AdmissionReply>,
     ) -> Result<()> {
         if self.message_accepted(&submission_id).await? {
             if let Some(reply) = admission {
-                let _ = reply.send(Ok(MessageAcceptance::AlreadyAccepted));
+                reply_admission(reply, Ok(MessageAcceptance::AlreadyAccepted));
             }
             return Ok(());
         }
         let result = self.route_idle_message(submission_id, message).await;
-        finish_admission(admission, result.as_ref());
-        result.map(|_| ())
+        finish_admission(admission, result.map(|outcome| ((), outcome)))
     }
 
-    async fn message_accepted(&self, submission_id: &str) -> Result<bool> {
+    async fn message_accepted(&self, submission_id: &Arc<str>) -> Result<bool> {
         self.config
             .checkpoints
             .message_accepted(&self.config.session_id, submission_id)
@@ -105,11 +105,11 @@ impl Runner {
 
     async fn route_idle_message(
         &mut self,
-        submission_id: String,
+        submission_id: Arc<str>,
         mut message: MessageSubmission,
     ) -> Result<AdmissionOutcome> {
         // Admission hooks stage edits; rejection or publication failure must retain the live queue.
-        let mut pending_messages = self.state.pending_messages.clone();
+        let mut pending_messages = self.state.pending_messages.clone(); // rules-allow: hooks edit a staged queue so failure keeps the live one
         let mut messages = Vec::new();
         let result = self
             .config
@@ -147,7 +147,7 @@ impl Runner {
     pub(super) async fn wait_active<F, T>(
         &mut self,
         inbox: &mut SubmissionInbox,
-        turn_id: &str,
+        turn_id: &Arc<str>,
         future: F,
     ) -> Result<Wait<T>>
     where
@@ -216,7 +216,7 @@ impl Runner {
     pub(super) async fn route_active_submission(
         &mut self,
         received: ReceivedSubmission,
-        turn_id: &str,
+        turn_id: &Arc<str>,
         expected_approval: Option<&str>,
     ) -> Result<ActiveRoute> {
         let ReceivedSubmission {
@@ -227,7 +227,7 @@ impl Runner {
             && self.message_accepted(&submission.id).await?
         {
             if let Some(reply) = admission {
-                let _ = reply.send(Ok(MessageAcceptance::AlreadyAccepted));
+                reply_admission(reply, Ok(MessageAcceptance::AlreadyAccepted));
             }
             return Ok(ActiveRoute::Continue {
                 input_changed: false,
@@ -236,21 +236,20 @@ impl Runner {
         let result = self
             .route_active_submission_inner(submission, turn_id, expected_approval)
             .await;
-        finish_admission(admission, result.as_ref().map(|(_, outcome)| outcome));
-        result.map(|(route, _)| route)
+        finish_admission(admission, result)
     }
 
     async fn route_active_submission_inner(
         &mut self,
         submission: Submission,
-        turn_id: &str,
+        turn_id: &Arc<str>,
         expected_approval: Option<&str>,
     ) -> Result<(ActiveRoute, AdmissionOutcome)> {
         let route = (ActiveTurnRouter {
             checkpoints: self.config.checkpoints.as_ref(),
             middleware: &self.config.middleware,
             session_id: &self.config.session_id,
-            metadata: &self.config.metadata,
+            metadata: &self.runtime.metadata,
             turn_id,
             queued_messages: &mut self.state.make_mut().pending_messages,
             events: &self.events,
@@ -297,28 +296,43 @@ impl Runner {
     }
 }
 
-fn finish_admission(
+fn reply_admission(reply: AdmissionReply, outcome: Result<MessageAcceptance>) {
+    if let Err(Err(error)) = reply.send(outcome) {
+        tracing::warn!(%error, "message sender stopped before receiving its admission failure");
+    }
+}
+
+/// Answers the admission handle, if any, and returns the routed value.
+fn finish_admission<T>(
     admission: Option<AdmissionReply>,
-    result: std::result::Result<&AdmissionOutcome, &Error>,
-) {
+    result: Result<(T, AdmissionOutcome)>,
+) -> Result<T> {
     let Some(reply) = admission else {
-        return;
+        return result.map(|(value, _)| value);
     };
-    let accepted = match result {
-        Ok(AdmissionOutcome::Accepted) => Ok(MessageAcceptance::Accepted),
-        Ok(AdmissionOutcome::Rejected(message)) => Err(Error::Config(message.clone())),
-        Err(error) => Err(Error::Checkpoint(error.to_string())),
-    };
-    let _ = reply.send(accepted);
+    match result {
+        Ok((value, AdmissionOutcome::Accepted)) => {
+            reply_admission(reply, Ok(MessageAcceptance::Accepted));
+            Ok(value)
+        }
+        Ok((value, AdmissionOutcome::Rejected(message))) => {
+            reply_admission(reply, Err(Error::Config(message)));
+            Ok(value)
+        }
+        Err(error) => {
+            reply_admission(reply, Err(Error::Checkpoint(error.to_string())));
+            Err(error)
+        }
+    }
 }
 
 impl ActiveTurnRouter<'_> {
-    async fn route(&mut self, submission: Submission) -> Result<UncommittedRoute> {
+    async fn route(&self, submission: Submission) -> Result<UncommittedRoute> {
         let Submission { id, op } = submission;
         match op {
             Op::Message { mut message } => {
                 // Stage hook mutations until the accepted route is durably committed.
-                let mut pending_messages = self.queued_messages.clone();
+                let mut pending_messages = self.queued_messages.clone(); // rules-allow: hooks edit a staged queue so failure keeps the live one
                 let mut messages = Vec::new();
                 let result = self
                     .middleware
@@ -334,7 +348,7 @@ impl ActiveTurnRouter<'_> {
                     .await?;
                 route_submission_result(self.events, id, result, pending_messages, messages).await
             }
-            Op::Interrupt { turn_id } if turn_id == self.turn_id => {
+            Op::Interrupt { turn_id } if *turn_id == *self.turn_id => {
                 Ok(UncommittedRoute::Interrupted { submission_id: id })
             }
             Op::Interrupt { .. } => {
@@ -344,12 +358,10 @@ impl ActiveTurnRouter<'_> {
             Op::ExecApproval {
                 id: approval_id,
                 decision,
-            } if self.expected_approval == Some(approval_id.as_str()) => {
-                Ok(UncommittedRoute::Approval {
-                    submission_id: id,
-                    decision,
-                })
-            }
+            } if self.expected_approval == Some(&*approval_id) => Ok(UncommittedRoute::Approval {
+                submission_id: id,
+                decision,
+            }),
             Op::ExecApproval { .. } => {
                 warn(
                     self.events,
@@ -367,7 +379,7 @@ impl ActiveTurnRouter<'_> {
                 target,
             } => {
                 // Commands can fail after modifying their queue; keep those changes provisional.
-                let mut pending_messages = self.queued_messages.clone();
+                let mut pending_messages = self.queued_messages.clone(); // rules-allow: hooks edit a staged queue so failure keeps the live one
                 let mut messages = Vec::new();
                 let result = self
                     .middleware
@@ -414,7 +426,7 @@ impl ActiveTurnRouter<'_> {
 
 async fn route_submission_result(
     events: &EventRecorder,
-    submission_id: String,
+    submission_id: Arc<str>,
     result: SubmissionResult,
     pending_messages: Vec<QueuedMessage>,
     messages: Vec<EventMsg>,
@@ -437,9 +449,9 @@ async fn route_submission_result(
             send_event(
                 events,
                 Event {
-                    submission_id: Some(submission_id.into()),
+                    submission_id: Some(submission_id),
                     msg: EventMsg::SubmissionRejected(SubmissionRejectedEvent {
-                        message: message.clone(),
+                        message: message.clone(), // rules-allow: the rejection event and the returned outcome both own the reason
                     }),
                 },
             )
@@ -451,7 +463,7 @@ async fn route_submission_result(
 
 async fn send_messages(
     events: &EventRecorder,
-    submission_id: &str,
+    submission_id: &Arc<str>,
     messages: Vec<EventMsg>,
 ) -> Result<()> {
     for msg in messages {
@@ -460,11 +472,11 @@ async fn send_messages(
     Ok(())
 }
 
-async fn warn(events: &EventRecorder, id: String, message: &str) -> Result<()> {
+async fn warn(events: &EventRecorder, id: Arc<str>, message: &str) -> Result<()> {
     send_event(
         events,
         Event {
-            submission_id: Some(id.into()),
+            submission_id: Some(id),
             msg: EventMsg::Warning(WarningEvent {
                 message: message.into(),
             }),
@@ -506,9 +518,9 @@ mod tests {
                 .expect("checkpoint store"),
         );
         let mut checkpoint = Checkpoint::empty("session-1");
-        checkpoint.session_context.owner_id = "test-bot".into();
+        std::sync::Arc::make_mut(&mut checkpoint.session_context).owner_id = "test-bot".into();
         checkpoints
-            .save(&checkpoint, &[], None)
+            .save(checkpoint.clone(), Vec::new(), None)
             .await
             .expect("initial checkpoint");
         let (recorder, events) = crate::agent::recorder::RecorderIngress::spawn(

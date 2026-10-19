@@ -45,8 +45,9 @@ pub(crate) async fn run(terminal: &mut GatewayTerminal, connected: &str) -> Resu
                     state.insert(&value);
                     Ok(Action::None)
                 }
-                Event::Resize(_, _) => Ok(Action::None),
-                Event::FocusGained | Event::FocusLost | Event::Mouse(_) => Ok(Action::None),
+                Event::Resize(_, _) | Event::FocusGained | Event::FocusLost | Event::Mouse(_) => {
+                    Ok(Action::None)
+                }
             };
             match action {
                 Ok(Action::None) => {}
@@ -76,7 +77,7 @@ pub(crate) async fn run(terminal: &mut GatewayTerminal, connected: &str) -> Resu
                     match paired {
                         Ok((_client, paired)) => {
                             // Publish the new account state only after the durable save succeeds.
-                            let mut accounts = state.accounts.clone();
+                            let mut accounts = state.accounts.clone(); // rules-allow: edits go to a copy so the shown accounts stay intact if the save fails
                             let saved = accounts
                                 .add(&endpoint, paired.token)
                                 .and_then(|()| accounts.save());
@@ -235,7 +236,7 @@ impl State {
             return self.open_add();
         };
         // Keep the current selection and credentials intact if saving the edited account list fails.
-        let mut accounts = self.accounts.clone();
+        let mut accounts = self.accounts.clone(); // rules-allow: edits go to a copy so the shown accounts stay intact if the save fails
         accounts.select(endpoint)?;
         accounts.save()?;
         self.accounts = accounts;
@@ -248,7 +249,7 @@ impl State {
             return Ok(Action::None);
         };
         // Keep the current selection and credentials intact if saving the edited account list fails.
-        let mut accounts = self.accounts.clone();
+        let mut accounts = self.accounts.clone(); // rules-allow: edits go to a copy so the shown accounts stay intact if the save fails
         accounts.forget(endpoint);
         accounts.save()?;
         self.accounts = accounts;
@@ -279,7 +280,12 @@ impl State {
         if rows == 0 {
             return;
         }
-        self.selection = (self.selection as isize + direction).rem_euclid(rows as isize) as usize;
+        let step = direction.unsigned_abs() % rows;
+        self.selection = if direction >= 0 {
+            (self.selection + step) % rows
+        } else {
+            (self.selection + rows - step) % rows
+        };
     }
 
     fn account_row_count(&self) -> usize {

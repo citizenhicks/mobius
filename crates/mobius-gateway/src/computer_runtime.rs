@@ -16,7 +16,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
-use mobius::backend::model::provider::{HttpCertificate, HttpClient};
+use mobius::backend::model::provider::{HttpCertificate, HttpClient, HttpResponse};
 #[cfg(unix)]
 use mobius::backend::sandbox::ProcessGroupGuard;
 use mobius::middleware::computer_control::{self, ComputerRuntime};
@@ -157,7 +157,7 @@ async fn install(destination: &Path, config: &ComputerConfig) -> Result<()> {
         install_locked(destination, config),
     )
     .await
-    .map_err(|_| Error::Config("runtime installation timed out".into()))?
+    .map_err(|elapsed| Error::Config(format!("runtime installation timed out: {elapsed}")))?
 }
 
 async fn install_locked(destination: &Path, config: &ComputerConfig) -> Result<()> {
@@ -503,7 +503,7 @@ async fn download(
         .get(url)
         .send()
         .await
-        .and_then(|response| response.error_for_status())
+        .and_then(HttpResponse::error_for_status)
         .map_err(|error| Error::Config(error.to_string()))?;
     let mut file = tokio::fs::File::create(destination).await?;
     let mut hash = Sha256::new();
@@ -611,8 +611,9 @@ async fn ca_certificates(path: &Path) -> Result<Vec<HttpCertificate>> {
     tokio::fs::File::open(path)
         .await?
         .take(
-            u64::try_from(MAX_CA_BYTES.saturating_add(1))
-                .map_err(|_| Error::Config("computer CA limit is not representable".into()))?,
+            u64::try_from(MAX_CA_BYTES.saturating_add(1)).map_err(|error| {
+                Error::Config(format!("computer CA limit is not representable: {error}"))
+            })?,
         )
         .read_to_end(&mut bytes)
         .await?;
@@ -621,8 +622,9 @@ async fn ca_certificates(path: &Path) -> Result<Vec<HttpCertificate>> {
             "computer CA bundle exceeds its size limit".into(),
         ));
     }
-    let certificates = HttpCertificate::from_pem_bundle(&bytes)
-        .map_err(|_| Error::Config("invalid computer CA certificate bundle".into()))?;
+    let certificates = HttpCertificate::from_pem_bundle(&bytes).map_err(|error| {
+        Error::Config(format!("invalid computer CA certificate bundle: {error}"))
+    })?;
     if certificates.is_empty() {
         return Err(Error::Config(
             "computer CA bundle contains no certificates".into(),

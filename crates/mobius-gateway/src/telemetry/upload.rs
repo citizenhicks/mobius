@@ -1,10 +1,12 @@
-use super::*;
+use super::{
+    Arc, Deserialize, Duration, GatewayHost, Telemetry, TelemetrySection, Value, deliver, json,
+};
 use crate::host::Rejection;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct UploadDecision {
-    request_id: String,
+    request_id: Arc<str>,
     allowed: bool,
     code: Option<String>,
     message: Option<String>,
@@ -16,7 +18,9 @@ impl Telemetry {
         request_id: &str,
         bytes: u64,
     ) -> std::result::Result<(), Rejection> {
-        let config = host.telemetry.config().map_err(|_| unavailable())?;
+        let config = host.telemetry.config().map_err(unavailable_after(
+            "upload admission configuration is unavailable",
+        ))?;
         tokio::time::timeout(
             Duration::from_secs(config.policy.upload_admission_timeout_seconds),
             async {
@@ -30,7 +34,7 @@ impl Telemetry {
                 let mut envelope = host
                     .telemetry_snapshot(&[TelemetrySection::Storage], 0)
                     .await
-                    .map_err(|_| unavailable())?;
+                    .map_err(unavailable_after("upload admission snapshot failed"))?;
                 let object = envelope.as_object_mut().ok_or_else(unavailable)?;
                 if let Value::Object(header) =
                     host.telemetry.header(sink, chrono::Utc::now().timestamp())
@@ -46,13 +50,13 @@ impl Telemetry {
                 // the soft allowance. Add Cloud reservations only if an exact cap is required.
                 let (status, body) = deliver(&host.telemetry, sink, &envelope, 4096)
                     .await
-                    .map_err(|_| unavailable())?;
+                    .map_err(unavailable_after("upload admission delivery failed"))?;
                 if status != 200 {
                     return Err(unavailable());
                 }
-                let decision: UploadDecision =
-                    serde_json::from_slice(&body).map_err(|_| unavailable())?;
-                if decision.request_id != request_id {
+                let decision: UploadDecision = serde_json::from_slice(&body)
+                    .map_err(unavailable_after("upload admission decision is invalid"))?;
+                if *decision.request_id != *request_id {
                     return Err(unavailable());
                 }
                 if decision.allowed {
@@ -74,7 +78,15 @@ impl Telemetry {
             },
         )
         .await
-        .map_err(|_| unavailable())?
+        .map_err(unavailable_after("upload admission timed out"))?
+    }
+}
+
+/// Keeps the client-facing rejection generic while recording why admission failed.
+fn unavailable_after<E: std::fmt::Display>(context: &'static str) -> impl FnOnce(E) -> Rejection {
+    move |error| {
+        tracing::warn!(%error, "{context}");
+        unavailable()
     }
 }
 

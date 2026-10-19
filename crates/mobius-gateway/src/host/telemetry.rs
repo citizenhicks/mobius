@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    Arc, AtomicU64, CheckpointStore, Error, EventMsg, EventPageRequest, ExecutionOutcome,
+    GatewayHost, Mutex, Ordering, Rejection, Result, Utc, gateway_run_stats,
+    gateway_session_summaries, internal, invalid_config, local_machine_name, session_catalog,
+};
 use crate::bots::TelemetryEvent;
 use crate::telemetry::{TelemetrySection, TelemetrySink, TelemetrySinkReport};
 use crate::wire::{HookData, HookEvent, HookSource};
@@ -61,7 +65,7 @@ async fn session_cancellation(
         let EventMsg::TurnAborted(turn) = record.event.msg else {
             return None;
         };
-        (record.sequence == sequence && &turn.turn_id == turn_id).then(|| {
+        (record.sequence == sequence && *turn.turn_id == **turn_id).then(|| {
             json!({
                 "reason": cancellation_reason(&turn.reason, *outcome == ExecutionOutcome::Failed),
                 "timestamp_ms": record.recorded_at_ms,
@@ -93,7 +97,7 @@ impl GatewayHost {
         let mut live = state
             .config
             .lock()
-            .map_err(|_| internal("configuration lock poisoned"))?;
+            .map_err(|error| internal(format!("configuration lock poisoned: {error}")))?;
         if live.telemetry.revision != expected {
             return Err(invalid_config(
                 "telemetry revision changed; refresh and retry",
@@ -129,7 +133,7 @@ impl GatewayHost {
         let revision = expected
             .checked_add(1)
             .ok_or_else(|| invalid_config("telemetry revision overflow"))?;
-        self.telemetry.configure_after(|| {
+        let configured = self.telemetry.configure_after(|| {
             // Keep only replaced fields; restore memory only after establishing which file is visible.
             let mut previous = std::mem::replace(&mut live.telemetry.sinks, sinks);
             live.telemetry.revision = revision;
@@ -161,14 +165,20 @@ impl GatewayHost {
                             "telemetry configuration remains changed; cursor synchronization failed: {error}; rollback failed: {rollback}"
                         )));
                         // Runtime follows the visible config; missing cursor state continues to fail closed.
-                        return Ok((live.telemetry.clone(), crate::publication::Outcome::applied(Err(failure))?));
+                        return Ok((live.telemetry.clone(), crate::publication::Outcome::applied(Err(failure))?)); // rules-allow: the runtime receives a snapshot while the configuration stays live
                     }
                 }
             }
-            Ok((live.telemetry.clone(), publication))
-        }).map_err(internal)
+            Ok((live.telemetry.clone(), publication)) // rules-allow: the runtime receives a snapshot while the configuration stays live
+        });
+        drop(live);
+        configured.map_err(internal)
     }
 
+    #[expect(
+        clippy::unused_async,
+        reason = "server dispatch awaits this like the other telemetry requests"
+    )]
     pub(crate) async fn schedule_telemetry(&self, id: String) -> Result<()> {
         self.telemetry.request_manual(id)?;
         self.telemetry.notify.notify_one();
@@ -200,21 +210,26 @@ impl GatewayHost {
             self.storage_reads.completed.lock(),
         )
         .await
-        .map_err(|_| internal("storage measurement timed out waiting for an active measurement"))?;
+        .map_err(|error| {
+            internal(format!(
+                "storage measurement timed out waiting for an active measurement: {error}"
+            ))
+        })?;
         let revision = self.storage_reads.revision.load(Ordering::Acquire);
         if let Some(previous) = completed.as_ref()
             && previous.revision == revision
             && previous.completed_at.elapsed() < std::time::Duration::from_secs(5)
         {
             // Both the retained snapshot and each wire response require owned data.
-            return Ok(previous.usage.clone());
+            return Ok(previous.usage.clone()); // rules-allow: the retained snapshot and the response both own the usage
         }
         let usage = self.storage_usage().await.map_err(internal)?;
         *completed = Some(CompletedStorageMeasurement {
             completed_at: std::time::Instant::now(),
             revision,
-            usage: usage.clone(),
+            usage: usage.clone(), // rules-allow: the retained snapshot and the response both own the usage
         });
+        drop(completed);
         Ok(usage)
     }
 
@@ -224,7 +239,7 @@ impl GatewayHost {
         let mut reports = Vec::new();
         for configured in &config.sinks {
             // Reporting redacts credentials without changing the live sink configuration.
-            let mut sink = configured.clone();
+            let mut sink = configured.clone(); // rules-allow: redaction must not change the live sink
             let mut status = self.telemetry.status(&sink.id)?;
             if !sink.events.is_empty() {
                 status.events_pending = state.bots.telemetry_count(&sink)?;
@@ -239,6 +254,7 @@ impl GatewayHost {
             sink.redact_report()?;
             reports.push(TelemetrySinkReport { sink, auth, status });
         }
+        drop(state);
         Ok((config.revision, reports))
     }
 
@@ -247,48 +263,56 @@ impl GatewayHost {
         sections: &[TelemetrySection],
         connected_clients: usize,
     ) -> Result<Value> {
-        let mut snapshot = json!({"machine_name": local_machine_name()?});
+        let mut snapshot = serde_json::Map::new();
+        snapshot.insert("machine_name".into(), json!(local_machine_name()?));
         if sections.is_empty() {
-            return Ok(snapshot);
+            return Ok(Value::Object(snapshot));
         }
         if sections.contains(&TelemetrySection::Activity) {
             let activity = self
                 .runtime_activity()
                 .await
-                .map_err(|e| Error::Config(e.message))?;
-            snapshot["activity"] = json!({"idle": activity.idle && connected_clients == 0, "connected_clients": connected_clients, "activity_revision": activity.activity_revision, "next_routine_at": activity.next_routine_at, "active_sessions": activity.active_sessions, "running_routines": activity.running_routines});
+                .map_err(|e| Error::Config(e.message.to_string()))?;
+            snapshot.insert("activity".into(), json!({"idle": activity.idle && connected_clients == 0, "connected_clients": connected_clients, "activity_revision": activity.activity_revision, "next_routine_at": activity.next_routine_at, "active_sessions": activity.active_sessions, "running_routines": activity.running_routines}));
         }
         if sections.contains(&TelemetrySection::Resources) {
-            snapshot["resources"] = self.telemetry.resources().await;
+            snapshot.insert("resources".into(), self.telemetry.resources().await);
+        }
+        if sections.contains(&TelemetrySection::Context) {
+            snapshot.insert("context".into(), self.telemetry.contexts());
         }
         if sections.contains(&TelemetrySection::Storage) {
             let mut usage = self.storage_usage().await?;
             usage.bound_telemetry_details();
-            snapshot["storage"] = serde_json::to_value(usage)?;
+            snapshot.insert("storage".into(), serde_json::to_value(usage)?);
         }
         if sections.contains(&TelemetrySection::Usage) {
             let state = self.state.lock().await;
             let config = state
                 .config
                 .lock()
-                .map_err(|_| Error::Config("configuration lock poisoned".into()))?;
+                .map_err(|error| Error::Config(format!("configuration lock poisoned: {error}")))?;
             let cutoff = u64::try_from(Utc::now().timestamp().max(0)).unwrap_or_default() / 86_400;
-            snapshot["usage"] = serde_json::to_value(
-                config
-                    .profile()
-                    .daily_usage
-                    .into_iter()
-                    .filter(|day| day.unix_day >= cutoff.saturating_sub(30))
-                    .collect::<Vec<_>>(),
-            )?;
+            let usage = config
+                .profile()
+                .daily_usage
+                .into_iter()
+                .filter(|day| day.unix_day >= cutoff.saturating_sub(30))
+                .collect::<Vec<_>>();
+            drop(config);
+            drop(state);
+            snapshot.insert("usage".into(), serde_json::to_value(usage)?);
         }
         if sections.contains(&TelemetrySection::Runs) {
             let checkpoints = Arc::clone(&self.state.lock().await.checkpoints);
-            snapshot["runs"] = serde_json::to_value(
-                gateway_run_stats(&gateway_session_summaries(&checkpoints).await?)?.completed,
-            )?;
+            snapshot.insert(
+                "runs".into(),
+                serde_json::to_value(
+                    gateway_run_stats(&gateway_session_summaries(&checkpoints).await?)?.completed,
+                )?,
+            );
         }
-        Ok(snapshot)
+        Ok(Value::Object(snapshot))
     }
 
     pub(crate) async fn telemetry_events(
@@ -322,18 +346,19 @@ impl GatewayHost {
         {
             let mut value = serde_json::to_value(&event)?;
             if let crate::wire::HookSource::Session { session_id } = &event.source
-                && let Some(session) = sessions.iter().find(|s| &s.session_id == session_id)
+                && let Some(session) = sessions.iter().find(|s| *s.session_id == **session_id)
             {
                 let bot = bots.find_bot(&session.session_context.owner_id)?;
-                let mut enrichment =
-                    json!({"title": session.title, "run_count": session.execution_stats.run_count});
+                let mut enrichment = serde_json::Map::new();
+                enrichment.insert("title".into(), json!(session.title));
+                enrichment.insert("run_count".into(), json!(session.execution_stats.run_count));
                 if let Some(bot) = bot {
-                    enrichment["bot_name"] = json!(bot.name);
+                    enrichment.insert("bot_name".into(), json!(bot.name));
                 }
                 if let Some(cancellation) =
                     session_cancellation(checkpoints.as_ref(), &event, journal_sequence).await?
                 {
-                    enrichment["cancellation"] = cancellation;
+                    enrichment.insert("cancellation".into(), cancellation);
                 }
                 if matches!(
                     event.data,
@@ -342,18 +367,24 @@ impl GatewayHost {
                         ..
                     }
                 ) {
-                    enrichment["final_message"] = json!(
-                        session
-                            .activity
-                            .message
-                            .as_deref()
-                            .unwrap_or_default()
-                            .chars()
-                            .take(1000)
-                            .collect::<String>()
+                    enrichment.insert(
+                        "final_message".into(),
+                        json!(
+                            session
+                                .activity
+                                .message
+                                .as_deref()
+                                .unwrap_or_default()
+                                .chars()
+                                .take(1000)
+                                .collect::<String>()
+                        ),
                     );
                 }
-                value["session"] = enrichment;
+                value
+                    .as_object_mut()
+                    .ok_or_else(|| Error::Config("telemetry event is not a JSON object".into()))?
+                    .insert("session".into(), Value::Object(enrichment));
             }
             let size = serde_json::to_vec(&value)?.len();
             if !events.is_empty() && bytes.saturating_add(size) > 48 * 1024 {
@@ -376,7 +407,7 @@ impl GatewayHost {
         if state
             .config
             .lock()
-            .map_err(|_| Error::Config("configuration lock poisoned".into()))?
+            .map_err(|error| Error::Config(format!("configuration lock poisoned: {error}")))?
             .telemetry
             .revision
             != revision
@@ -393,20 +424,22 @@ impl GatewayHost {
         let (root, checkpoints, files, bots, limit_bytes, tls) = {
             let state = tokio::time::timeout_at(budget.deadline(), self.state.lock())
                 .await
-                .map_err(|_| {
-                    Error::Config("storage measurement timed out waiting for gateway state".into())
+                .map_err(|error| {
+                    Error::Config(format!(
+                        "storage measurement timed out waiting for gateway state: {error}"
+                    ))
                 })?;
             let config = state
                 .config
                 .lock()
-                .map_err(|_| Error::Config("configuration lock poisoned".into()))?;
+                .map_err(|error| Error::Config(format!("configuration lock poisoned: {error}")))?;
             (
                 state.store.state_dir().to_path_buf(),
                 Arc::clone(&state.checkpoints),
-                state.session_files.clone(),
+                Arc::clone(&state.session_files),
                 Arc::clone(&state.bots),
                 config.runtime.storage_limit_bytes,
-                config.tls.clone(),
+                config.tls.clone(), // rules-allow: measurement runs after the configuration lock is released
             )
         };
         crate::storage_usage::measure_usage(

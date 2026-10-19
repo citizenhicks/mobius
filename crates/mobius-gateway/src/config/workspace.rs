@@ -61,7 +61,9 @@ pub(crate) fn create_workspace_directory(
     match created {
         Ok(path) => Ok(path),
         Err(error) => {
-            let _ = fs::remove_dir_all(&path);
+            if let Err(cleanup) = fs::remove_dir_all(&path) {
+                tracing::warn!(path = %path.display(), %cleanup, "failed to remove the unfinished workspace");
+            }
             Err(error)
         }
     }

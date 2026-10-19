@@ -59,7 +59,7 @@ pub enum Error {
     PublicationApplied {
         /// Failure after the replacement became visible, such as parent-directory synchronization.
         #[source]
-        source: Box<Error>,
+        source: Box<Self>,
     },
     #[error(transparent)]
     /// Selects the JSON case.

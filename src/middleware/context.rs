@@ -187,7 +187,7 @@ impl<'a> QueuedMessageView<'a> {
 }
 
 /// Read-only startup snapshot containing only one middleware's queued messages.
-#[derive(Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct QueuedMessageSnapshot<'a> {
     items: &'a [DurableQueuedMessage],
     owner: &'a str,
@@ -208,6 +208,7 @@ impl<'a> QueuedMessageSnapshot<'a> {
 }
 
 /// Mutable scoped view of messages retained until their delivery boundary.
+#[derive(Debug)]
 pub struct MessageQueue<'a> {
     items: &'a mut Vec<DurableQueuedMessage>,
     owner: Option<&'static str>,
@@ -304,7 +305,10 @@ impl<'a> MessageQueue<'a> {
         }) {
             return Ok(false);
         }
-        self.items[index].replace(replacement_id, event)?;
+        let Some(item) = self.items.get_mut(index) else {
+            return Ok(false);
+        };
+        item.replace(replacement_id, event)?;
         Ok(true)
     }
 
@@ -331,7 +335,6 @@ impl<'a> MessageQueue<'a> {
             .iter()
             .find(|item| item.owner() == owner && item.boundary().starts_turn())
             // Keep the queued message durable until the prepared turn is successfully admitted.
-            .cloned()
             .map(PreparedMessage::try_from)
             .transpose()
     }
@@ -366,24 +369,21 @@ impl<'a> MessageQueue<'a> {
 
 /// One queued message prepared for its model boundary.
 pub(crate) struct PreparedMessage {
-    pub(crate) submission_id: String,
+    pub(crate) submission_id: Arc<str>,
     pub(crate) input: Value,
     pub(crate) event: EventMsg,
     pub(crate) title_seed: Option<String>,
     pub(crate) boundary_events: Vec<EventMsg>,
 }
 
-impl TryFrom<DurableQueuedMessage> for PreparedMessage {
-    type Error = Error;
-
-    fn try_from(message: DurableQueuedMessage) -> Result<Self> {
-        let (submission_id, event) = message.into_parts();
+impl PreparedMessage {
+    fn new(submission_id: Arc<str>, event: MessageEvent) -> Result<Self> {
         let input = message_input(&event)?;
         let title_seed = matches!(
             event.author,
             MessageAuthor::User | MessageAuthor::Source { .. }
         )
-        .then(|| event.text.trim().to_string())
+        .then(|| event.text.trim().to_owned())
         .filter(|title| !title.is_empty());
         Ok(Self {
             submission_id,
@@ -395,6 +395,23 @@ impl TryFrom<DurableQueuedMessage> for PreparedMessage {
     }
 }
 
+impl TryFrom<DurableQueuedMessage> for PreparedMessage {
+    type Error = Error;
+
+    fn try_from(message: DurableQueuedMessage) -> Result<Self> {
+        let (submission_id, event) = message.into_parts();
+        Self::new(submission_id, event)
+    }
+}
+
+impl TryFrom<&DurableQueuedMessage> for PreparedMessage {
+    type Error = Error;
+
+    fn try_from(message: &DurableQueuedMessage) -> Result<Self> {
+        Self::new(Arc::clone(message.submission_id()), message.event())
+    }
+}
+
 /// Durable runtime identity exposed while middleware starts a session.
 #[derive(Clone)]
 pub struct RuntimeContext {
@@ -403,15 +420,15 @@ pub struct RuntimeContext {
     /// The checkpoints.
     pub checkpoints: Arc<dyn CheckpointStore>,
     /// The session identifier.
-    pub session_id: String,
+    pub session_id: Arc<str>,
     /// The model route.
-    pub model_route: String,
+    pub model_route: Arc<str>,
     /// The model.
-    pub model: String,
+    pub model: Arc<str>,
     /// The approval policy.
     pub approval_policy: ApprovalPolicy,
     /// The session context.
-    pub session_context: SessionContext,
+    pub session_context: Arc<SessionContext>,
     /// The metadata.
     pub metadata: BTreeMap<String, Value>,
     /// The role.
@@ -420,6 +437,17 @@ pub struct RuntimeContext {
     pub children: crate::agent::ChildAgents,
     /// The frontend.
     pub frontend: FrontendEventSink,
+}
+
+impl std::fmt::Debug for RuntimeContext {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RuntimeContext")
+            .field("session_id", &self.session_id)
+            .field("model_route", &self.model_route)
+            .field("model", &self.model)
+            .finish_non_exhaustive()
+    }
 }
 
 impl RuntimeContext {
@@ -474,6 +502,15 @@ pub struct SessionStartContext<'a> {
     pub(crate) input: &'a mut Vec<Arc<Value>>,
     pub(crate) input_changed: bool,
     pub(crate) stop_reason: Option<String>,
+}
+
+impl std::fmt::Debug for SessionStartContext<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SessionStartContext")
+            .field("input_changed", &self.input_changed)
+            .finish_non_exhaustive()
+    }
 }
 
 impl SessionStartContext<'_> {
@@ -537,6 +574,15 @@ pub struct MessageSubmitContext<'a> {
     pub(crate) rejection: Option<String>,
 }
 
+impl std::fmt::Debug for MessageSubmitContext<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MessageSubmitContext")
+            .field("message", &self.message)
+            .finish_non_exhaustive()
+    }
+}
+
 impl MessageSubmitContext<'_> {
     /// Appends guidance once per session and middleware, before this submitted message.
     /// Rejected submissions do not consume the delivery receipt.
@@ -571,11 +617,19 @@ pub(crate) struct MessageSubmitResult {
 
 /// Provisional history borrows its immutable prefix and owns only new or replaced items.
 pub(crate) struct StagedInput {
+    #[expect(
+        clippy::rc_buffer,
+        reason = "shares the session history Arc<Vec> that commit extends in place with Arc::make_mut"
+    )]
     original: Arc<Vec<Arc<Value>>>,
     appended: Vec<Arc<Value>>,
     replacement: Option<Vec<Arc<Value>>>,
 }
 
+#[expect(
+    clippy::rc_buffer,
+    reason = "callers own the session history as Arc<Vec> so commit can extend it in place with Arc::make_mut"
+)]
 impl StagedInput {
     pub(crate) fn new(original: Arc<Vec<Arc<Value>>>) -> Self {
         Self {
@@ -678,7 +732,23 @@ pub struct ModelContext<'a> {
     pub(crate) preparation_notices: &'a mut Vec<PreparationNotice>,
 }
 
+impl std::fmt::Debug for ModelContext<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ModelContext")
+            .field("provider", &self.provider)
+            .field("context_provider", &self.context_provider)
+            .field("session_id", &self.session_id)
+            .field("turn_id", &self.turn_id)
+            .field("model_step", &self.model_step)
+            .field("instructions", &self.instructions)
+            .field("checkpoint_sequence", &self.checkpoint_sequence)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Live capability state used to hide registered tools at a model boundary.
+#[derive(Debug)]
 pub struct ToolExposureContext<'a> {
     /// The session identifier.
     pub session_id: &'a str,
@@ -900,6 +970,18 @@ pub struct ModelRequestContext<'a> {
     pub(crate) replacement: Option<Vec<Value>>,
 }
 
+impl std::fmt::Debug for ModelRequestContext<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ModelRequestContext")
+            .field("provider", &self.provider)
+            .field("session_id", &self.session_id)
+            .field("turn_id", &self.turn_id)
+            .field("model_step", &self.model_step)
+            .finish_non_exhaustive()
+    }
+}
+
 impl ModelRequestContext<'_> {
     /// Returns the input currently prepared for this one model request.
     #[must_use]
@@ -929,6 +1011,15 @@ pub struct PreToolUseContext<'a> {
     pub(crate) denial: Option<String>,
 }
 
+impl std::fmt::Debug for PreToolUseContext<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PreToolUseContext")
+            .field("changed", &self.changed)
+            .finish_non_exhaustive()
+    }
+}
+
 impl PreToolUseContext<'_> {
     /// Appends guidance once per session and middleware, before this tool call.
     /// Interrupted preparation does not consume the delivery receipt.
@@ -954,7 +1045,7 @@ impl PreToolUseContext<'_> {
     /// # Errors
     ///
     /// Returns an error if validation or an operation required by this function fails.
-    pub fn replace(&mut self, name: impl Into<String>, arguments: Value) -> Result<()> {
+    pub fn replace(&mut self, name: impl Into<Arc<str>>, arguments: Value) -> Result<()> {
         let name = name.into();
         let changed = self.call.name != name || self.call.arguments != arguments;
         self.call.replace(name, arguments)?;
@@ -993,13 +1084,23 @@ pub struct PermissionRequestContext<'a> {
     /// The calls.
     pub calls: &'a [ToolCall],
     /// The requested call identifiers.
-    pub requested_call_ids: &'a [String],
+    pub requested_call_ids: &'a [Arc<str>],
     /// The reason.
     pub reason: &'a str,
     /// The events.
     pub events: &'a mut Vec<EventMsg>,
     pub(crate) tools: &'a Catalog,
     pub(crate) decision: Option<ReviewDecision>,
+}
+
+impl std::fmt::Debug for PermissionRequestContext<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PermissionRequestContext")
+            .field("requested_call_ids", &self.requested_call_ids)
+            .field("reason", &self.reason)
+            .finish_non_exhaustive()
+    }
 }
 
 impl PermissionRequestContext<'_> {
@@ -1042,6 +1143,14 @@ pub struct PostToolUseContext<'a> {
     pub(crate) result: &'a mut ToolResult,
 }
 
+impl std::fmt::Debug for PostToolUseContext<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PostToolUseContext")
+            .finish_non_exhaustive()
+    }
+}
+
 impl PostToolUseContext<'_> {
     /// Appends guidance once per session and middleware, after this tool result.
     /// The receipt is saved atomically with the accepted result context.
@@ -1070,6 +1179,7 @@ impl PostToolUseContext<'_> {
 }
 
 /// State exposed immediately before or after context compaction.
+#[derive(Debug)]
 pub struct CompactContext<'a> {
     /// The session identifier.
     pub session_id: &'a str,
@@ -1101,6 +1211,7 @@ impl CompactContext<'_> {
 }
 
 /// Mutable policy boundary immediately before normal turn completion.
+#[derive(Debug)]
 pub struct StopContext<'a> {
     /// The turn.
     pub turn: TurnIdentity<'a>,
@@ -1211,6 +1322,17 @@ pub struct MessageRouteContext<'a> {
     pub events: &'a mut Vec<EventMsg>,
 }
 
+impl std::fmt::Debug for MessageRouteContext<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MessageRouteContext")
+            .field("session_id", &self.session_id)
+            .field("submission_id", &self.submission_id)
+            .field("active_turn_id", &self.active_turn_id)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Mutable turn state exposed to a capability command that can run immediately.
 pub struct ActiveCommandContext<'a> {
     /// The checkpoints.
@@ -1237,6 +1359,20 @@ pub struct ActiveCommandContext<'a> {
     pub events: &'a mut Vec<EventMsg>,
 }
 
+impl std::fmt::Debug for ActiveCommandContext<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ActiveCommandContext")
+            .field("submission_id", &self.submission_id)
+            .field("session_id", &self.session_id)
+            .field("active_turn_id", &self.active_turn_id)
+            .field("command", &self.command)
+            .field("arguments", &self.arguments)
+            .field("input", &self.input)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Result of one middleware-owned submission.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubmissionResult {
@@ -1252,6 +1388,7 @@ pub enum SubmissionResult {
 }
 
 /// State exposed when the loop finishes or aborts a turn.
+#[derive(Debug)]
 pub struct TurnEndContext<'a> {
     /// The session identifier.
     pub session_id: &'a str,
@@ -1299,6 +1436,18 @@ pub struct MiddlewareCommandContext<'a> {
     pub checkpoint: &'a Checkpoint,
     /// The checkpoints.
     pub checkpoints: Arc<dyn CheckpointStore>,
+}
+
+impl std::fmt::Debug for MiddlewareCommandContext<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MiddlewareCommandContext")
+            .field("command", &self.command)
+            .field("arguments", &self.arguments)
+            .field("input", &self.input)
+            .field("session_id", &self.session_id)
+            .finish_non_exhaustive()
+    }
 }
 
 #[cfg(test)]

@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use super::*;
+use super::{Arc, AsyncWrite, BTreeMap, BTreeSet, Result, ServerFrame, ServerMessage, write_frame};
 use crate::wire::{
     BotRecord, CatalogHint, READY_SECTIONS, ReadySection, SessionRecord, SessionSlot,
     apply_session_changes, content_revision,
@@ -115,7 +115,7 @@ impl ClientView {
     pub(super) async fn write_sessions(
         &mut self,
         writer: &mut (impl AsyncWrite + Unpin),
-        request_id: Option<String>,
+        request_id: Option<Arc<str>>,
         sessions: Vec<SessionRecord>,
     ) -> Result<()> {
         self.held
@@ -135,7 +135,7 @@ impl ClientView {
     pub(super) async fn write_bots(
         &mut self,
         writer: &mut (impl AsyncWrite + Unpin),
-        request_id: Option<String>,
+        request_id: Option<Arc<str>>,
         bots: Vec<BotRecord>,
     ) -> Result<()> {
         let revision = content_revision(&bots);
@@ -201,15 +201,15 @@ fn unchanged_positions(
     let index: HashMap<&str, usize> = previous
         .iter()
         .enumerate()
-        .map(|(position, session)| (session.session_id.as_str(), position))
+        .map(|(position, session)| (session.session_id.as_ref(), position))
         .collect();
     current
         .iter()
         .map(|session| {
             index
-                .get(session.session_id.as_str())
+                .get(session.session_id.as_ref())
                 .copied()
-                .filter(|&position| previous[position] == *session)
+                .filter(|&position| previous.get(position) == Some(session))
         })
         .collect()
 }

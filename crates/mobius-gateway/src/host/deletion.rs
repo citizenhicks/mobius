@@ -3,7 +3,13 @@ use std::collections::HashSet;
 use mobius::backend::checkpoint::SessionSummary;
 use mobius::backend::session_files::{SessionFileDeletion, SessionFileSelection};
 
-use super::*;
+use super::{
+    Arc, Error, GatewayHost, GatewayState, HashMap, MAX_SESSION_DELETE_ROOTS, Rejection, Result,
+    ServerFrame, ServerMessage, Utc, Uuid, bot_delete_rejection, gateway_session_summaries,
+    internal, invalid_bot, invalid_session_id, load_session_metadata, reject_persistent_session,
+    save_session_metadata, session_file_rejection, session_tree_ids, unknown_session,
+    validate_session_id,
+};
 use crate::wire::{HookData, HookEvent, HookSource};
 
 const SESSION_HOOK_CLOSURES: &str = "session_hook_closures";
@@ -43,21 +49,27 @@ pub(super) async fn recover_session_hook_closures(state: &GatewayState) -> Resul
 
 impl GatewayHost {
     pub(super) fn cleanup_session_files(&self, mut deletion: SessionFileDeletion) {
-        let events = self.events.clone();
+        let events = self.events.clone(); // rules-allow: the spawned cleanup task owns an event sender
         let storage_reads = Arc::clone(&self.storage_reads);
         tokio::spawn(async move {
             let result = deletion.delete().await;
             storage_reads.invalidate();
-            if let Err(error) = result {
-                let _ = events.send(ServerFrame::new(ServerMessage::Error {
+            if let Err(error) = result
+                && let Err(error) = events.send(ServerFrame::new(ServerMessage::Error {
                     code: "session_cleanup".into(),
-                    message: error.to_string(),
+                    message: error.to_string().into(),
                     fatal: false,
-                }));
+                }))
+            {
+                tracing::debug!(%error, "session cleanup failure had no subscribers");
             }
         });
     }
 
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "remove_session_trees updates the file deletion before cleanup_session_files consumes it"
+    )]
     pub(crate) async fn reconcile_pending_bot_deletion(
         &self,
     ) -> std::result::Result<(), Rejection> {
@@ -73,7 +85,7 @@ impl GatewayHost {
         }
         let mutation_gate = Arc::clone(&self.state.lock().await.session_mutations);
         let _mutation = mutation_gate.write_owned().await;
-        let mut state = self.state.lock().await;
+        let state = self.state.lock().await;
         let Some(intent) = state.bots.pending_bot_deletion().map_err(internal)? else {
             return Ok(());
         };
@@ -82,7 +94,7 @@ impl GatewayHost {
             .bots()
             .map_err(internal)?
             .iter()
-            .any(|bot| bot.id == intent.bot_id)
+            .any(|bot| *bot.id == *intent.bot_id)
             .then(|| {
                 state
                     .bots
@@ -93,19 +105,16 @@ impl GatewayHost {
         if let Some(deletion) = &mut deletion {
             deletion.release_state_lock();
         }
-        let mut file_deletion = prepare_session_tree_deletion(
-            &mut state,
-            &intent.session_ids,
-            SessionFileSelection::All,
-        )
-        .await?;
+        let mut file_deletion =
+            prepare_session_tree_deletion(&state, &intent.session_ids, SessionFileSelection::All)
+                .await?;
         let bot_store = Arc::clone(&state.bots);
         drop(state);
 
         if let Some(deletion) = deletion {
             bot_store.delete_bot(deletion).map_err(invalid_bot)?;
         }
-        bot_store.prepared.lock().await.remove(&intent.bot_id);
+        bot_store.prepared.lock().await.remove(&*intent.bot_id);
         let mut state = self.state.lock().await;
         let file_warning = remove_session_trees(
             &mut state,
@@ -117,12 +126,14 @@ impl GatewayHost {
         .await?;
         drop(state);
         self.cleanup_session_files(file_deletion);
-        if let Some(warning) = file_warning {
-            let _ = self.events.send(ServerFrame::new(ServerMessage::Error {
+        if let Some(warning) = file_warning
+            && let Err(error) = self.events.send(ServerFrame::new(ServerMessage::Error {
                 code: "session_cleanup".into(),
                 message: warning.message,
                 fatal: false,
-            }));
+            }))
+        {
+            tracing::debug!(%error, "session cleanup warning had no subscribers");
         }
         bot_store
             .cleanup_bot_deletion_files(&intent)
@@ -138,7 +149,7 @@ impl GatewayHost {
         expected_revision: u64,
     ) -> std::result::Result<(Vec<crate::wire::BotRecord>, Vec<String>), Rejection> {
         let _mutation = self.begin_exclusive_mutation().await?;
-        let mut state = self.state.lock().await;
+        let state = self.state.lock().await;
         let bot = state.bots.bot(id).map_err(invalid_bot)?;
         if bot.config.revision != expected_revision {
             return Err(Rejection::new(
@@ -146,14 +157,14 @@ impl GatewayHost {
                 format!("Bot configuration revision is now {}", bot.config.revision),
             ));
         }
-        if bot.handle == "mobius" {
+        if &*bot.handle == "mobius" {
             return Err(bot_delete_rejection(
                 "bot_undeletable",
                 "the built-in @mobius Bot cannot be deleted",
             ));
         }
         let (session_roots, session_ids, mut file_deletion) =
-            prepare_bot_session_tree_deletion(&mut state, id).await?;
+            prepare_bot_session_tree_deletion(&state, id).await?;
         let mut deletion = state
             .bots
             .prepare_bot_deletion(id, expected_revision)
@@ -194,15 +205,21 @@ impl GatewayHost {
         }
         self.broadcast_bots(&bots);
         for message in cleanup_errors {
-            let _ = self.events.send(ServerFrame::new(ServerMessage::Error {
+            if let Err(error) = self.events.send(ServerFrame::new(ServerMessage::Error {
                 code: "bot_cleanup".into(),
                 message,
                 fatal: false,
-            }));
+            })) {
+                tracing::debug!(%error, "Bot cleanup warning had no subscribers");
+            }
         }
         Ok((bots, session_ids))
     }
 
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "remove_session_trees updates the file deletion before cleanup_session_files consumes it"
+    )]
     pub(crate) async fn delete_sessions(
         &self,
         session_ids: &[String],
@@ -218,12 +235,16 @@ impl GatewayHost {
         let selected = session_ids
             .iter()
             .filter(|session_id| seen.insert(session_id.as_str()))
-            .cloned()
+            .cloned() // rules-allow: the deduplicated selection is returned to the caller
             .collect::<Vec<_>>();
         for session_id in &selected {
-            validate_session_id(session_id).map_err(|_| invalid_session_id())?;
+            validate_session_id(session_id).map_err(|error| {
+                let mut rejection = invalid_session_id();
+                rejection.message = format!("{}: {error}", rejection.message).into();
+                rejection
+            })?;
         }
-        let _mutation = self.begin_exclusive_mutation().await?;
+        let mutation = self.begin_exclusive_mutation().await?;
         let mut state = self.state.lock().await;
         let summaries = gateway_session_summaries(&state.checkpoints)
             .await
@@ -231,22 +252,21 @@ impl GatewayHost {
         if selected.iter().any(|selected| {
             !summaries
                 .iter()
-                .any(|session| session.catalog_visible && session.session_id == *selected)
+                .any(|session| session.catalog_visible && *session.session_id == **selected)
         }) {
             return Err(unknown_session());
         }
         if selection != SessionFileSelection::All {
-            let mut deletion =
-                prepare_session_tree_deletion(&mut state, &selected, selection).await?;
+            let mut deletion = prepare_session_tree_deletion(&state, &selected, selection).await?;
             drop(state);
-            drop(_mutation);
+            drop(mutation);
             let result = deletion.delete().await;
             self.invalidate_storage_usage();
             result.map_err(session_file_rejection)?;
             return Ok(selected);
         }
         for summary in &summaries {
-            if selected.contains(&summary.session_id) {
+            if selected.iter().any(|id| **id == *summary.session_id) {
                 reject_persistent_session(summary)?;
             }
         }
@@ -255,7 +275,7 @@ impl GatewayHost {
             .iter()
             .map(|session| {
                 (
-                    session.session_id.as_str(),
+                    session.session_id.as_ref(),
                     session.parent_session_id.as_deref(),
                 )
             })
@@ -276,28 +296,32 @@ impl GatewayHost {
                 }
                 true
             })
-            .cloned()
+            .cloned() // rules-allow: the selection stays borrowed by the ancestor lookup
             .collect::<Vec<_>>();
         let (roots, deleted) = session_trees(roots, &summaries);
         let mut file_deletion =
-            prepare_session_tree_deletion(&mut state, &deleted, SessionFileSelection::All).await?;
+            prepare_session_tree_deletion(&state, &deleted, SessionFileSelection::All).await?;
         let cleanup =
             remove_session_trees(&mut state, &roots, &deleted, &mut file_deletion, false).await?;
         drop(state);
         self.cleanup_session_files(file_deletion);
-        if let Some(rejection) = cleanup {
-            let _ = self.events.send(ServerFrame::new(ServerMessage::Error {
+        if let Some(rejection) = cleanup
+            && let Err(error) = self.events.send(ServerFrame::new(ServerMessage::Error {
                 code: "session_cleanup".into(),
                 message: rejection.message,
                 fatal: false,
-            }));
+            }))
+        {
+            tracing::debug!(%error, "session cleanup warning had no subscribers");
         }
-        if let Err(rejection) = self.broadcast_sessions().await {
-            let _ = self.events.send(ServerFrame::new(ServerMessage::Error {
+        if let Err(rejection) = self.broadcast_sessions().await
+            && let Err(error) = self.events.send(ServerFrame::new(ServerMessage::Error {
                 code: "session_catalog".into(),
                 message: rejection.message,
                 fatal: false,
-            }));
+            }))
+        {
+            tracing::debug!(%error, "session catalog failure had no subscribers");
         }
         Ok(deleted)
     }
@@ -306,25 +330,25 @@ impl GatewayHost {
 fn bot_session_trees(bot_id: &str, summaries: &[SessionSummary]) -> (Vec<String>, Vec<String>) {
     let owned = summaries
         .iter()
-        .filter(|session| session.session_context.owner_id == bot_id)
-        .map(|session| session.session_id.as_str())
+        .filter(|session| *session.session_context.owner_id == *bot_id)
+        .map(|session| session.session_id.as_ref())
         .collect::<HashSet<_>>();
     let roots = summaries
         .iter()
         .filter(|session| {
-            owned.contains(session.session_id.as_str())
+            owned.contains(session.session_id.as_ref())
                 && session
                     .parent_session_id
                     .as_ref()
                     .is_none_or(|parent| !owned.contains(parent.as_str()))
         })
-        .map(|session| session.session_id.clone())
+        .map(|session| String::from(&*session.session_id))
         .collect::<Vec<_>>();
     session_trees(roots, summaries)
 }
 
 pub(super) async fn prepare_bot_session_tree_deletion(
-    state: &mut GatewayState,
+    state: &GatewayState,
     bot_id: &str,
 ) -> std::result::Result<(Vec<String>, Vec<String>, SessionFileDeletion), Rejection> {
     if mobius::sync::recover_lock(&state.starting_sessions)
@@ -353,22 +377,26 @@ pub(super) fn session_trees(
     roots: Vec<String>,
     summaries: &[SessionSummary],
 ) -> (Vec<String>, Vec<String>) {
+    let trees = roots
+        .iter()
+        .filter_map(|root| session_tree_ids(root, summaries))
+        .flatten()
+        .collect::<Vec<_>>();
     let mut seen = HashSet::new();
-    let mut session_ids = Vec::new();
-    for root in &roots {
-        if let Some(tree) = session_tree_ids(root, summaries) {
-            for session_id in tree {
-                if seen.insert(session_id.clone()) {
-                    session_ids.push(session_id);
-                }
-            }
-        }
-    }
+    let first = trees
+        .iter()
+        .map(|session_id| seen.insert(session_id.as_str()))
+        .collect::<Vec<_>>();
+    let session_ids = trees
+        .into_iter()
+        .zip(first)
+        .filter_map(|(session_id, first)| first.then_some(session_id))
+        .collect();
     (roots, session_ids)
 }
 
 pub(super) async fn prepare_session_tree_deletion(
-    state: &mut GatewayState,
+    state: &GatewayState,
     session_ids: &[String],
     selection: SessionFileSelection,
 ) -> std::result::Result<SessionFileDeletion, Rejection> {
@@ -445,7 +473,7 @@ pub(super) async fn remove_session_trees(
                 .map_err(internal)?
                 .is_some()
             {
-                existing.push(root.clone());
+                existing.push(root.clone()); // rules-allow: the caller keeps its root list
             }
         }
         std::borrow::Cow::Owned(existing)
@@ -461,13 +489,13 @@ pub(super) async fn remove_session_trees(
             .map_err(internal)?
         {
             closures.push(HookEvent {
-                id: format!("deleted-{session_id}-{}", Uuid::new_v4()),
+                id: format!("deleted-{session_id}-{}", Uuid::new_v4()).into(),
                 bot_id: summary.session_context.owner_id,
                 source: HookSource::Session {
-                    session_id: session_id.clone(),
+                    session_id: session_id.clone(), // rules-allow: the closure event names the session twice
                 },
                 data: HookData::SessionDeleted {
-                    session_id: session_id.clone(),
+                    session_id: session_id.clone(), // rules-allow: the closure event names the session twice
                 },
                 occurred_at: Utc::now().timestamp(),
                 cause_id: None,
@@ -516,8 +544,13 @@ pub(super) async fn remove_session_trees(
         Err(error) => cleanup_errors.push(error.to_string()),
     }
     let mut catalog = state.activities.lock().await;
-    catalog.activities.retain(|id, _| !session_ids.contains(id));
-    catalog.approvals.retain(|id, _| !session_ids.contains(id));
+    catalog
+        .activities
+        .retain(|id, _| !session_ids.iter().any(|deleted| **deleted == **id));
+    catalog
+        .approvals
+        .retain(|id, _| !session_ids.iter().any(|deleted| **deleted == **id));
     catalog.snapshot = None;
+    drop(catalog);
     Ok((!cleanup_errors.is_empty()).then(|| internal(cleanup_errors.join("; "))))
 }

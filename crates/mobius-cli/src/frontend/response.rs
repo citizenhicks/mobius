@@ -24,7 +24,7 @@ pub async fn await_response<T>(
         if request_id.is_none()
             && let ServerMessage::Rejected { message, .. } = message
         {
-            return Err(Error::Stopped(message));
+            return Err(Error::Stopped(message.to_string()));
         }
         if let Some(error) = message.response_error(request_id) {
             return Err(Error::Stopped(error.message.into()));
@@ -36,7 +36,7 @@ pub async fn await_response<T>(
         match (gateway.as_deref_mut(), message) {
             (Some(gateway), ServerMessage::Ready { payload }) => gateway.update(payload),
             (Some(gateway), ServerMessage::Sessions { sessions, .. }) => {
-                gateway.sessions = sessions
+                gateway.sessions = sessions;
             }
             (Some(gateway), ServerMessage::SessionsChanged { sessions, .. }) => {
                 apply_session_changes(&mut gateway.sessions, sessions);
@@ -75,7 +75,7 @@ mod tests {
             .expect("endpoint");
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.expect("accept");
-            let _: ClientFrame =
+            let _authentication: ClientFrame =
                 read_frame(&mut mobius_gateway::wire::FrameReader::new(&mut stream))
                     .await
                     .expect("authentication")
@@ -108,7 +108,7 @@ mod tests {
             .expect("connect");
         let (_, mut events) = client.into_parts();
         await_response(&mut events, Some("owned"), None, |message| match message {
-            ServerMessage::Accepted { request_id } if request_id == "owned" => {
+            ServerMessage::Accepted { request_id } if request_id.as_ref() == "owned" => {
                 ControlFlow::Break(())
             }
             message => ControlFlow::Continue(message),
@@ -117,7 +117,7 @@ mod tests {
         .expect("matching response");
         assert!(
             matches!(events.next().await.expect("event").expect("deferred").message,
-            ServerMessage::Rejected { request_id, .. } if request_id == "other")
+            ServerMessage::Rejected { request_id, .. } if request_id.as_ref() == "other")
         );
         let error = await_response::<()>(&mut events, Some("failed"), None, ControlFlow::Continue)
             .await

@@ -1,5 +1,7 @@
 //! Session approvals use the same attention list as contributed decisions.
 
+use std::sync::Arc;
+
 use super::{TuiState, input::UiAction};
 use mobius::protocol::{
     FrontendAction, FrontendActionListItem, FrontendEditor, FrontendEvent, FrontendListItemState,
@@ -16,8 +18,8 @@ impl TuiState {
             .approvals
             .iter()
             .map(|approval| FrontendActionListItem {
-                id: approval.id.clone(),
-                text: approval.reason.clone(),
+                id: Arc::clone(&approval.id),
+                text: approval.reason.clone(), // rules-allow: the pending approval stays queued while the overlay owns its row
                 state: FrontendListItemState::Pending,
                 actions: [
                     ("Approve", ReviewDecision::Approved),
@@ -45,7 +47,7 @@ impl TuiState {
                         symbol: FrontendSymbol::ShieldCheck,
                         tone: FrontendTone::Neutral,
                         op: Op::ExecApproval {
-                            id: approval.id.clone(),
+                            id: Arc::clone(&approval.id),
                             decision,
                         },
                         input_from_label: false,
@@ -63,7 +65,7 @@ impl TuiState {
         } else {
             FrontendEvent::Widget {
                 capability: "approval".into(),
-                item: FrontendWidget {
+                item: Arc::new(FrontendWidget {
                     id: "pending".into(),
                     slot: FrontendSlot::Attention,
                     text: "Approvals".into(),
@@ -77,7 +79,7 @@ impl TuiState {
                         items,
                         actions: Vec::new(),
                     }),
-                },
+                }),
             }
         };
         overlay.apply(event);

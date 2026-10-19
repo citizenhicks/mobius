@@ -40,7 +40,7 @@ impl From<Vec<ToolResult>> for ToolCompletion {
 impl Runner {
     pub(super) async fn prepare_tool_call(
         &self,
-        turn_id: &str,
+        turn_id: &Arc<str>,
         call: &mut ToolCall,
         events: &mut Vec<EventMsg>,
         input: &mut Vec<serde_json::Value>,
@@ -76,7 +76,7 @@ impl Runner {
 
     pub(super) async fn post_tool_results(
         &self,
-        turn_id: &str,
+        turn_id: &Arc<str>,
         calls: &[impl Borrow<ToolCall> + Sync],
         completion: &mut ToolCompletion,
     ) -> Result<()> {
@@ -107,8 +107,8 @@ impl Runner {
     pub(super) async fn execute_tools(
         &mut self,
         inbox: &mut SubmissionInbox,
-        submission_id: &str,
-        turn_id: &str,
+        submission_id: &Arc<str>,
+        turn_id: &Arc<str>,
         calls: &[impl Borrow<ToolCall> + Sync],
         permissions: SandboxPermissions,
     ) -> Result<Wait<ToolCompletion>> {
@@ -120,12 +120,12 @@ impl Runner {
         );
         for call in &callable {
             self.emit(
-                submission_id,
+                Arc::clone(submission_id),
                 EventMsg::ToolCallBegin(ToolCallBeginEvent {
-                    turn_id: turn_id.to_string(),
-                    call_id: call.call_id.clone(),
-                    name: call.name.clone(),
-                    arguments: call.arguments.clone(),
+                    turn_id: Arc::clone(turn_id),
+                    call_id: Arc::clone(&call.call_id),
+                    name: Arc::clone(&call.name),
+                    arguments: call.arguments.clone(), // rules-allow: the begin event owns the borrowed call's fields
                 }),
             )
             .await?;
@@ -153,8 +153,8 @@ impl Runner {
                 input_changed: true,
             });
         }
-        let model_route = self.config.provider.clone();
-        let author = self.active_author()?.clone();
+        let model_route = Arc::clone(&self.config.provider);
+        let author = Arc::clone(self.active_author()?);
         let execution = execute_batch(
             &catalog,
             bound_calls,
@@ -257,8 +257,8 @@ impl Runner {
 
     pub(super) async fn persist_tool_results(
         &mut self,
-        submission_id: &str,
-        turn_id: &str,
+        submission_id: &Arc<str>,
+        turn_id: &Arc<str>,
         completion: impl Into<ToolCompletion>,
     ) -> Result<()> {
         let ToolCompletion {
@@ -274,16 +274,14 @@ impl Runner {
             .collect::<Vec<_>>();
         let tool_usage = batch_usage(&results)?;
         // Failed persistence restores calls removed by the tentative result application.
-        let pending_tools = self.state.pending_tools.clone();
-        let active_accounting = self.state.active_execution.as_ref().map(|active| {
-            (
-                active.tool_calls,
-                active.failed_tool_calls,
-                active.usage.clone(),
-            )
-        });
+        let pending_tools = self.state.pending_tools.clone(); // rules-allow: restored if persisting the results fails
+        let active_accounting = self
+            .state
+            .active_execution
+            .as_ref()
+            .map(|active| (active.tool_calls, active.failed_tool_calls, active.usage));
         // Paid-tool totals must roll back with the same failed checkpoint.
-        let total_usage = self.state.total_usage.clone();
+        let total_usage = self.state.total_usage;
         let context_len = self.state.context.len();
         let transcript_len = self.transcript_delta.len();
         let outcome = async {
@@ -299,7 +297,7 @@ impl Runner {
         }
         .await;
         match outcome {
-            Ok(_) => Ok(()),
+            Ok(()) => Ok(()),
             Err(error) => {
                 self.state.make_mut().pending_tools = pending_tools;
                 if let Some((tool_calls, failed_tool_calls, usage)) = active_accounting
@@ -313,7 +311,7 @@ impl Runner {
                 let state = self.state.make_mut();
                 crate::middleware::delivery_once::rollback(
                     &mut state.delivered_once,
-                    &state.context[context_len..],
+                    state.context.get(context_len..).unwrap_or_default(),
                 );
                 Arc::make_mut(&mut self.state.make_mut().context).truncate(context_len);
                 self.transcript_delta.truncate(transcript_len);
@@ -324,8 +322,8 @@ impl Runner {
 
     pub(super) async fn complete_tool_step(
         &mut self,
-        submission_id: &str,
-        turn_id: &str,
+        submission_id: &Arc<str>,
+        turn_id: &Arc<str>,
         completion: ToolCompletion,
     ) -> Result<()> {
         let pending_approval = self.state.make_mut().pending_approval.take();
@@ -342,24 +340,29 @@ impl Runner {
     }
 
     async fn append_tool_results(&mut self, results: &mut [ToolResult]) -> Result<()> {
-        let tool_calls = u64::try_from(results.len())
-            .map_err(|_| Error::Checkpoint("execution tool-call count is unsupported".into()))?;
+        let tool_calls = u64::try_from(results.len()).map_err(|error| {
+            Error::Checkpoint(format!("execution tool-call count is unsupported: {error}"))
+        })?;
         let failed_tool_calls = u64::try_from(
             results.iter().filter(|result| result.is_error).count(),
         )
-        .map_err(|_| Error::Checkpoint("execution failed-tool count is unsupported".into()))?;
+        .map_err(|error| {
+            Error::Checkpoint(format!(
+                "execution failed-tool count is unsupported: {error}"
+            ))
+        })?;
         self.record_tools(tool_calls, failed_tool_calls)?;
         for (route, usage) in results.iter().filter_map(|result| result.usage.as_ref()) {
             self.record_usage(route, usage).await?;
         }
         let completed = results
             .iter()
-            .map(|result| result.call_id.as_str())
+            .map(|result| result.call_id.as_ref())
             .collect::<BTreeSet<_>>();
         self.state
             .make_mut()
             .pending_tools
-            .retain(|call| !completed.contains(call.call_id.as_str()));
+            .retain(|call| !completed.contains(call.call_id.as_ref()));
         for result in results {
             self.push_context(tool_output(
                 &result.call_id,
@@ -373,8 +376,8 @@ impl Runner {
 
     pub(super) async fn finish_pending_tools(
         &mut self,
-        submission_id: &str,
-        turn_id: &str,
+        submission_id: &Arc<str>,
+        turn_id: &Arc<str>,
         reason: &str,
     ) -> Result<Vec<Event>> {
         let calls = std::mem::take(&mut self.state.make_mut().pending_tools);
@@ -421,13 +424,17 @@ pub(super) fn tool_call_inputs(calls: &[ToolCall]) -> Result<Vec<serde_json::Val
         .collect()
 }
 
-fn tool_result_events(submission_id: &str, turn_id: &str, results: Vec<ToolResult>) -> Vec<Event> {
+fn tool_result_events(
+    submission_id: &Arc<str>,
+    turn_id: &Arc<str>,
+    results: Vec<ToolResult>,
+) -> Vec<Event> {
     let mut events = Vec::with_capacity(results.len() * 2);
     for result in results {
         events.push(crate::agent::turn::turn_event(
             submission_id,
             EventMsg::ToolCallEnd(ToolCallEndEvent {
-                turn_id: turn_id.to_string(),
+                turn_id: Arc::clone(turn_id),
                 call_id: result.call_id,
                 name: result.name,
                 output: result.output,
@@ -457,16 +464,17 @@ fn interrupted_results<'a>(
 
 pub(super) fn order_results(
     calls: &[impl Borrow<ToolCall>],
-    results: Vec<ToolResult>,
+    mut results: Vec<ToolResult>,
 ) -> Vec<ToolResult> {
-    let mut results = results
-        .into_iter()
-        .map(|result| (result.call_id.clone(), result))
-        .collect::<std::collections::BTreeMap<_, _>>();
     calls
         .iter()
         .map(Borrow::borrow)
-        .filter_map(|call| results.remove(&call.call_id))
+        .filter_map(|call| {
+            let index = results
+                .iter()
+                .rposition(|result| result.call_id == call.call_id)?;
+            Some(results.swap_remove(index))
+        })
         .collect()
 }
 
@@ -480,7 +488,7 @@ mod tests {
             .map(|index| {
                 ToolResult::error(
                     &ToolCall {
-                        call_id: index.to_string(),
+                        call_id: index.to_string().into(),
                         name: "paid_tool".into(),
                         arguments: serde_json::Value::Null,
                     },

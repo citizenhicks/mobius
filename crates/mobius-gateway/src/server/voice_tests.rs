@@ -1,4 +1,7 @@
 use super::*;
+use crate::bots::BotStore;
+use crate::config::{ConfigStore, CredentialStore};
+use crate::host::GatewayHost;
 use mobius::backend::checkpoint::{CheckpointStore, sqlite::SqliteCheckpoint};
 use mobius::backend::model::{
     ModelRouter, RealtimeVoiceCall, RealtimeVoiceCommand, RealtimeVoiceEvent, openai::OpenAi,
@@ -6,7 +9,9 @@ use mobius::backend::model::{
 use mobius::middleware::voice::VoiceCallContext;
 use mobius::middleware::voice::transcript::VoiceTranscript;
 use mobius::protocol::ConversationRole;
+use std::fmt::Write as _;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 
 #[tokio::test]
 async fn voice_delegation_preserves_committed_speech_and_delayed_final_transcripts() {
@@ -66,7 +71,10 @@ async fn voice_delegation_preserves_committed_speech_and_delayed_final_transcrip
             let body = [
                 serde_json::json!({"type":"response.output_item.done","output_index":0,"item":output}),
                 serde_json::json!({"type":"response.completed","response":{"id":"response-1","output":[]}}),
-            ].into_iter().map(|event| format!("data: {event}\n\n")).collect::<String>();
+            ].into_iter().fold(String::new(), |mut body, event| {
+                write!(body, "data: {event}\n\n").expect("write event");
+                body
+            });
             stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
         }
     });
@@ -137,7 +145,7 @@ async fn voice_delegation_preserves_committed_speech_and_delayed_final_transcrip
     .to_owned();
     let voice = "voice-test::gpt-live-1::sol";
     let mut router = ModelRouter::new(
-        &route,
+        Arc::clone(&route),
         Arc::new(OpenAi::new("test-key", &base, "local-test").unwrap()),
     );
     router
@@ -161,7 +169,7 @@ async fn voice_delegation_preserves_committed_speech_and_delayed_final_transcrip
         )
         .unwrap();
     let context = VoiceCallContext {
-        session_id: host.session_id().into(),
+        session_id: Arc::clone(host.session_id()),
         router: Arc::new(router),
         voice: voice.into(),
         bot_name: "Builder".into(),
@@ -313,5 +321,6 @@ async fn voice_delegation_preserves_committed_speech_and_delayed_final_transcrip
         .unwrap();
     assert!(history.events.iter().any(|record| matches!(&record.event.msg, EventMsg::Message(message) if message.text == "Yes, do it.")));
     gateway.shutdown().await;
+    drop(gateway);
     server.abort();
 }

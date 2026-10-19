@@ -7,11 +7,9 @@ use serde::Deserialize;
 use serde_json::Value;
 use uuid::Uuid;
 
-use super::runtime::{
-    AgentPresentation, MAX_MESSAGE_BYTES, Shared, Wake, WakeTarget, monitor_agent,
-};
+use super::runtime::{AgentPresentation, MAX_MESSAGE_BYTES, Wake, WakeTarget, monitor_agent};
 use super::{
-    AgentScope, DEFAULT_WAIT_MS, ForkTurns, MAX_TASK_NAME_BYTES, MAX_WAIT_MS, MIN_WAIT_MS, text,
+    Collaboration, DEFAULT_WAIT_MS, ForkTurns, MAX_TASK_NAME_BYTES, MAX_WAIT_MS, MIN_WAIT_MS, text,
 };
 use crate::backend::model::ToolDefinition;
 use crate::middleware::tools::{HookIdentity, Tool, ToolContext};
@@ -19,11 +17,7 @@ use crate::protocol::strip_attachment_references;
 use crate::protocol::{MessageAuthor, MessageSubmission, Submission, is_internal_message};
 use crate::{BoxFuture, Error, Result};
 
-pub(super) struct SpawnAgent {
-    pub(super) default_model: Option<Arc<str>>,
-    pub(super) shared: Arc<Shared>,
-    pub(super) scope: Arc<AgentScope>,
-}
+pub(super) struct SpawnAgent(pub(super) Arc<Collaboration>);
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -36,8 +30,8 @@ struct SpawnArgs {
 }
 
 impl Tool for SpawnAgent {
-    fn definition(&self) -> ToolDefinition {
-        spawn_definition()
+    fn definition(&self) -> &Arc<ToolDefinition> {
+        &text::DEFINITION.spawn_agent.tool
     }
 
     fn hook_identity(&self) -> Option<HookIdentity> {
@@ -47,59 +41,61 @@ impl Tool for SpawnAgent {
         })
     }
 
-    fn call<'a>(
-        &'a self,
+    fn call(
+        &self,
         context: ToolContext,
         arguments: Value,
-    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
+    ) -> BoxFuture<'_, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             let arguments: SpawnArgs = serde_json::from_value(arguments)?;
             validate_task_name(&arguments.task_name)?;
             let text = validate_text(arguments.text)?;
             let turns = parse_fork_turns(arguments.fork_turns.as_deref())?;
-            let model = arguments
-                .model
-                .or_else(|| self.default_model.as_deref().map(str::to_owned))
-                .unwrap_or_else(|| self.scope.model.clone());
+            let model: Arc<str> = match arguments.model {
+                Some(model) => model.into(),
+                None => Arc::clone(self.0.default_model.as_ref().unwrap_or(&self.0.scope.model)),
+            };
             let reasoning_effort = arguments.reasoning_effort;
-            let path = format!(
+            let path: Arc<str> = format!(
                 "{}/{}",
-                self.scope.agent_path.trim_end_matches('/'),
+                self.0.scope.agent_path.trim_end_matches('/'),
                 arguments.task_name
-            );
-            let session_id = Uuid::new_v4().to_string();
-            let shared = Arc::clone(&self.shared);
-            let scope = Arc::clone(&self.scope);
+            )
+            .into();
+            let session_id: Arc<str> = Uuid::new_v4().to_string().into();
+            let collaboration = Arc::clone(&self.0);
             let submission = peer_submission(
-                &scope.session_id,
-                &scope.agent_path,
+                &collaboration.scope.session_id,
+                &collaboration.scope.agent_path,
                 text,
                 &context.author,
                 &format!(
                     "{}:{}:{}",
-                    scope.session_id, context.turn_id, context.call_id
+                    collaboration.scope.session_id, context.turn_id, context.call_id
                 ),
             );
             supervise(async move {
+                let shared = &collaboration.shared;
+                let scope = &collaboration.scope;
                 let lifetime = shared.track_execution(&scope.root_session_id).await?;
                 shared
                     .reserve(
                         &scope.root_session_id,
                         &path,
                         &scope.agent_path,
-                        session_id.clone(),
+                        Arc::clone(&session_id),
                         scope.next_depth()?,
                         AgentPresentation {
-                            model: model.clone(),
+                            model: Arc::clone(&model),
                             spawn_context: turns.label(),
                         },
                     )
                     .await?;
                 let agent = match scope
                     .fork(
-                        session_id,
-                        path.clone(),
-                        model,
+                        &session_id,
+                        &path,
+                        &model,
                         reasoning_effort,
                         turns,
                         context.turn_id,
@@ -114,10 +110,10 @@ impl Tool for SpawnAgent {
                         ));
                     }
                 };
-                let model = agent.model_route().to_string();
+                let model = Arc::from(agent.model_route());
                 let (sender, events) = agent.into_parts();
                 if let Err(error) = shared
-                    .attach(&scope.root_session_id, &path, sender.clone(), Some(model))
+                    .attach(&scope.root_session_id, &path, sender.clone(), Some(model)) // rules-allow: the root keeps the sender while this task admits the first message
                     .await
                 {
                     drop(sender);
@@ -129,9 +125,8 @@ impl Tool for SpawnAgent {
                     ));
                 }
                 tokio::spawn(monitor_agent(
-                    Arc::clone(&shared),
-                    Arc::clone(&scope.root_session_id),
-                    path.clone(),
+                    Arc::clone(&collaboration),
+                    Arc::clone(&path),
                     events,
                     lifetime,
                 ));
@@ -149,10 +144,7 @@ impl Tool for SpawnAgent {
     }
 }
 
-pub(super) struct SendMessage {
-    pub(super) shared: Arc<Shared>,
-    pub(super) scope: Arc<AgentScope>,
-}
+pub(super) struct SendMessage(pub(super) Arc<Collaboration>);
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -162,32 +154,33 @@ struct MessageArgs {
 }
 
 impl Tool for SendMessage {
-    fn definition(&self) -> ToolDefinition {
-        text::DEFINITION.send_message.tool.clone()
+    fn definition(&self) -> &Arc<ToolDefinition> {
+        &text::DEFINITION.send_message.tool
     }
 
-    fn call<'a>(
-        &'a self,
+    fn call(
+        &self,
         context: ToolContext,
         arguments: Value,
-    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
+    ) -> BoxFuture<'_, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             let arguments: MessageArgs = serde_json::from_value(arguments)?;
             let message = peer_submission(
-                &self.scope.session_id,
-                &self.scope.agent_path,
+                &self.0.scope.session_id,
+                &self.0.scope.agent_path,
                 validate_text(arguments.text)?,
                 &context.author,
                 &format!(
                     "{}:{}:{}",
-                    self.scope.session_id, context.turn_id, context.call_id
+                    self.0.scope.session_id, context.turn_id, context.call_id
                 ),
             );
-            let shared = Arc::clone(&self.shared);
-            let scope = Arc::clone(&self.scope);
-            let target = arguments.target;
+            let collaboration = Arc::clone(&self.0);
+            let target: Arc<str> = arguments.target.into();
             let turn_id = context.turn_id;
             supervise(async move {
+                let shared = &collaboration.shared;
+                let scope = &collaboration.scope;
                 let lifetime = shared.track_execution(&scope.root_session_id).await?;
                 let wake = shared
                     .send_message(&scope.root_session_id, &scope.agent_path, &target, message)
@@ -208,7 +201,7 @@ impl Tool for SendMessage {
                         model,
                     } => {
                         let agent = match scope
-                            .resume(session_id, target.clone(), depth, model, turn_id)
+                            .resume(&session_id, &target, depth, &model, turn_id)
                             .await
                         {
                             Ok(agent) => agent,
@@ -221,13 +214,13 @@ impl Tool for SendMessage {
                                 ));
                             }
                         };
-                        let model = agent.model_route().to_string();
+                        let model = Arc::from(agent.model_route());
                         let (sender, events) = agent.into_parts();
                         (sender, Some(events), Some(model))
                     }
                 };
                 if let Err(error) = shared
-                    .attach(&scope.root_session_id, &target, sender.clone(), model)
+                    .attach(&scope.root_session_id, &target, sender.clone(), model) // rules-allow: the root keeps the sender while this task admits the message
                     .await
                 {
                     drop(sender);
@@ -243,9 +236,8 @@ impl Tool for SendMessage {
                 }
                 if let Some(events) = events {
                     tokio::spawn(monitor_agent(
-                        Arc::clone(&shared),
-                        Arc::clone(&scope.root_session_id),
-                        target.clone(),
+                        Arc::clone(&collaboration),
+                        Arc::clone(&target),
                         events,
                         lifetime,
                     ));
@@ -266,10 +258,7 @@ impl Tool for SendMessage {
     }
 }
 
-pub(super) struct ListAgents {
-    pub(super) shared: Arc<Shared>,
-    pub(super) scope: Arc<AgentScope>,
-}
+pub(super) struct ListAgents(pub(super) Arc<Collaboration>);
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -278,21 +267,22 @@ struct ListArgs {
 }
 
 impl Tool for ListAgents {
-    fn definition(&self) -> ToolDefinition {
-        text::DEFINITION.list_agents.tool.clone()
+    fn definition(&self) -> &Arc<ToolDefinition> {
+        &text::DEFINITION.list_agents.tool
     }
 
-    fn call<'a>(
-        &'a self,
+    fn call(
+        &self,
         _context: ToolContext,
         arguments: Value,
-    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
+    ) -> BoxFuture<'_, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             let arguments: ListArgs = serde_json::from_value(arguments)?;
             let agents = self
+                .0
                 .shared
                 .list(
-                    &self.scope.root_session_id,
+                    &self.0.scope.root_session_id,
                     arguments.path_prefix.as_deref(),
                 )
                 .await?;
@@ -301,10 +291,7 @@ impl Tool for ListAgents {
     }
 }
 
-pub(super) struct InterruptAgent {
-    pub(super) shared: Arc<Shared>,
-    pub(super) scope: Arc<AgentScope>,
-}
+pub(super) struct InterruptAgent(pub(super) Arc<Collaboration>);
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -313,30 +300,28 @@ struct TargetArgs {
 }
 
 impl Tool for InterruptAgent {
-    fn definition(&self) -> ToolDefinition {
-        text::DEFINITION.interrupt_agent.tool.clone()
+    fn definition(&self) -> &Arc<ToolDefinition> {
+        &text::DEFINITION.interrupt_agent.tool
     }
 
-    fn call<'a>(
-        &'a self,
+    fn call(
+        &self,
         _context: ToolContext,
         arguments: Value,
-    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
+    ) -> BoxFuture<'_, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             let arguments: TargetArgs = serde_json::from_value(arguments)?;
             let previous_status = self
+                .0
                 .shared
-                .interrupt(&self.scope.root_session_id, &arguments.target)
+                .interrupt(&self.0.scope.root_session_id, &arguments.target)
                 .await?;
             Ok((serde_json::json!({"previous_status": previous_status}).to_string()).into())
         })
     }
 }
 
-pub(super) struct WaitAgent {
-    pub(super) shared: Arc<Shared>,
-    pub(super) scope: Arc<AgentScope>,
-}
+pub(super) struct WaitAgent(pub(super) Arc<Collaboration>);
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -345,25 +330,30 @@ struct WaitArgs {
 }
 
 impl Tool for WaitAgent {
-    fn definition(&self) -> ToolDefinition {
-        wait_definition()
+    fn definition(&self) -> &Arc<ToolDefinition> {
+        &text::DEFINITION.wait_agent.tool
     }
 
     fn cancel_on_input(&self) -> bool {
         true
     }
 
-    fn call<'a>(
-        &'a self,
+    fn call(
+        &self,
         _context: ToolContext,
         arguments: Value,
-    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
+    ) -> BoxFuture<'_, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             let arguments: WaitArgs = serde_json::from_value(arguments)?;
             let timeout = wait_timeout(arguments.timeout_ms)?;
             let agents = self
+                .0
                 .shared
-                .wait(&self.scope.root_session_id, &self.scope.agent_path, timeout)
+                .wait(
+                    &self.0.scope.root_session_id,
+                    &self.0.scope.agent_path,
+                    timeout,
+                )
                 .await?;
             Ok((serde_json::json!({
                 "updated": !agents.is_empty(),
@@ -373,24 +363,6 @@ impl Tool for WaitAgent {
             .into())
         })
     }
-}
-
-fn spawn_definition() -> ToolDefinition {
-    let mut tool = text::DEFINITION.spawn_agent.tool.clone();
-    let task_name = &mut tool.parameters["properties"]["task_name"]["description"];
-    if let Some(description) = task_name.as_str() {
-        *task_name = description
-            .replace("{max_bytes}", &MAX_TASK_NAME_BYTES.to_string())
-            .into();
-    }
-    tool
-}
-
-pub(super) fn wait_definition() -> ToolDefinition {
-    let mut tool = text::DEFINITION.wait_agent.tool.clone();
-    tool.parameters["properties"]["timeout_ms"]["minimum"] = MIN_WAIT_MS.into();
-    tool.parameters["properties"]["timeout_ms"]["maximum"] = MAX_WAIT_MS.into();
-    tool
 }
 
 pub(super) fn wait_timeout(timeout_ms: Option<u64>) -> Result<Duration> {
@@ -422,8 +394,9 @@ pub(super) fn fork_context(
             .nth(turns.saturating_sub(1))
             .map_or(0, |(index, _)| index),
     };
-    let mut fork = context[start..]
+    let mut fork = context
         .iter()
+        .skip(start)
         .filter(|item| {
             item.get("type").and_then(Value::as_str) != Some("function_call")
                 || item
@@ -497,7 +470,7 @@ fn peer_submission(
     MessageSubmission {
         author: MessageAuthor::Source {
             message_id: if command_id.is_empty() {
-                Uuid::new_v4().to_string()
+                Uuid::new_v4().to_string().into()
             } else {
                 command_id.into()
             },
@@ -573,8 +546,8 @@ mod tests {
                 },
                 text,
                 ..
-            } if session_id == "session-reviewer"
-                && handle == "reviewer"
+            } if &*session_id == "session-reviewer"
+                && &*handle == "reviewer"
                 && text == "Review the parser"
         ));
     }

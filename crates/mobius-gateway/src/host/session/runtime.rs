@@ -1,4 +1,14 @@
-use super::*;
+use super::{
+    ActiveRoutine, ActiveRoutineRun, Arc, BotStore, ChatSpec, Error, EventPageRequest, HostCommand,
+    HostSnapshot, HostState, JournalDelivery, MessageAuthor, MessageSubmission, Op, Ordering, Path,
+    PathBuf, ProviderCutoverStatus, RealtimeModel, Rejection, Result, ReviewDecision,
+    RoutineRunStatus, RunningAgent, ServerFrame, ServerMessage, SessionHistoryPage, SharedFrame,
+    SourceAdmission, Submission, Uuid, ValidatedSubmission, delete_workspace_file,
+    durable_history_page, event_sequence, event_turn_page, fail_active_routine, internal,
+    invalid_config, invalid_workspace, list_workspace_files, mpsc, oneshot, project_record,
+    read_workspace_file, replayable, shutdown_agent, start_agent, stopped,
+    try_begin_session_mutation, write_workspace_file,
+};
 use futures_util::StreamExt as _;
 
 impl HostState {
@@ -85,50 +95,49 @@ impl HostState {
                         && admission.reserved && self.pending_messages.remove(&admission.id) {
                         self.pending_turns = self.pending_turns.saturating_sub(1);
                     }
-                    let _ = admission.reply.send(admission.result.map(|_| ()).map_err(source_rejection));
+                    respond(admission.reply, admission.result.map(|_| ()).map_err(source_rejection), "source admission");
                     if self.is_idle() {
                         self.running.gateway_sandbox.release_desktop_use().await;
-                        for waiter in self.idle_waiters.drain(..) { let _ = waiter.send(()); }
+                        for waiter in self.idle_waiters.drain(..) {
+                            respond(waiter, (), "idle waiter");
+                        }
                     }
                 }
                 command = self.commands.recv() => {
                     let Some(command) = command else { break };
                     if !Box::pin(self.handle(command)).await { break; }
                 }
-                event = self.running.events.recv() => match event {
-                    Some(event) => {
-                        if let Err(error) = self.apply_event(event).await {
-                            let message = error.to_string();
-                            self.broadcast(ServerMessage::Error {
-                                code: "host_error".into(),
-                                message: message.clone(),
-                                fatal: true,
-                            });
-                            if let Err(activity_error) = self.fail_activity(&message).await {
-                                self.broadcast(ServerMessage::Error {
-                                    code: "session_activity".into(),
-                                    message: activity_error.to_string(),
-                                    fatal: false,
-                                });
-                            }
-                            break;
-                        }
-                    }
-                    None => {
+                event = self.running.events.recv() => if let Some(event) = event {
+                    if let Err(error) = self.apply_event(event).await {
+                        let message: Arc<str> = error.to_string().into();
                         self.broadcast(ServerMessage::Error {
-                            code: "agent_stopped".into(),
-                            message: "the agent stopped".into(),
+                            code: "host_error".into(),
+                            message: Arc::clone(&message),
                             fatal: true,
                         });
-                        if let Err(error) = self.fail_activity("the agent stopped").await {
+                        if let Err(activity_error) = self.fail_activity(&message).await {
                             self.broadcast(ServerMessage::Error {
                                 code: "session_activity".into(),
-                                message: error.to_string(),
+                                message: activity_error.to_string().into(),
                                 fatal: false,
                             });
                         }
                         break;
                     }
+                } else {
+                    self.broadcast(ServerMessage::Error {
+                        code: "agent_stopped".into(),
+                        message: "the agent stopped".into(),
+                        fatal: true,
+                    });
+                    if let Err(error) = self.fail_activity("the agent stopped").await {
+                        self.broadcast(ServerMessage::Error {
+                            code: "session_activity".into(),
+                            message: error.to_string().into(),
+                            fatal: false,
+                        });
+                    }
+                    break;
                 }
             }
         }
@@ -150,12 +159,12 @@ impl HostState {
         ) {
             self.broadcast(ServerMessage::Error {
                 code: "routine_state_error".into(),
-                message: error.to_string(),
+                message: error.to_string().into(),
                 fatal: false,
             });
         }
         for waiter in self.idle_waiters.drain(..) {
-            let _ = waiter.send(());
+            respond(waiter, (), "idle waiter");
         }
         shutdown_agent(self.running).await;
         self.alive.store(false, Ordering::Release);
@@ -171,11 +180,11 @@ impl HostState {
                 } else {
                     Ok(false)
                 };
-                let _ = reply.send(result);
+                respond(reply, result, "session command");
             }
             #[cfg(test)]
             HostCommand::BotId { reply } => {
-                let _ = reply.send(self.spec.bot_id.clone());
+                respond(reply, Arc::clone(&self.spec.bot_id), "bot id");
             }
             HostCommand::AcceptsFileAttachments { reply } => {
                 let result = async {
@@ -184,7 +193,7 @@ impl HostState {
                     Ok(self.running.prepared.bot.accepts_file_attachments)
                 }
                 .await;
-                let _ = reply.send(result);
+                respond(reply, result, "session command");
             }
             HostCommand::RealtimeModel { reply } => {
                 let result = async {
@@ -212,7 +221,7 @@ impl HostState {
                         )
                     })?;
                     let active_turn_id = self.activity().await.map_err(internal)?.turn_id;
-                    let voice = voice.route.as_str().into();
+                    let voice = Arc::clone(&voice.route);
                     Ok(RealtimeModel {
                         route: router.default_provider().into(),
                         call: mobius::middleware::voice::VoiceCallContext {
@@ -229,22 +238,26 @@ impl HostState {
                     })
                 }
                 .await;
-                let _ = reply.send(result);
+                respond(reply, result, "session command");
             }
             HostCommand::Snapshot {
                 last_sequence,
                 reply,
             } => {
-                let _ = reply.send(self.snapshot_value(last_sequence).await);
+                respond(reply, self.snapshot_value(last_sequence).await, "snapshot");
             }
             HostCommand::Ready { reply } => {
-                let _ = reply.send(self.ready().await.map_err(internal));
+                respond(reply, self.ready().await.map_err(internal), "ready");
             }
             HostCommand::HistoryPage {
                 before_sequence,
                 reply,
             } => {
-                let _ = reply.send(self.history_page_value(before_sequence).await);
+                respond(
+                    reply,
+                    self.history_page_value(before_sequence).await,
+                    "history page",
+                );
             }
             HostCommand::Submit { submission, reply } => {
                 let result = async {
@@ -277,14 +290,14 @@ impl HostState {
                     {
                         self.broadcast(ServerMessage::Error {
                             code: "session_activity".into(),
-                            message: error.to_string(),
+                            message: error.to_string().into(),
                             fatal: false,
                         });
                     }
                     result
                 }
                 .await;
-                let _ = reply.send(result);
+                respond(reply, result, "session command");
             }
             HostCommand::DeliverSource {
                 submission,
@@ -298,9 +311,9 @@ impl HostState {
                     if self.spec.bot_id == bot_id {
                         return Ok(());
                     }
-                    let mut next = self.spec.clone();
+                    let mut next = self.spec.clone(); // rules-allow: the current spec stays until the replacement starts
                     let previous_bot_id = std::mem::replace(&mut next.bot_id, bot_id);
-                    self.replace_running(next, None).await?;
+                    self.replace_running(Some(next), None).await?;
                     super::super::bot_events::close_reassigned_source(
                         &self.checkpoints,
                         &self.bots,
@@ -311,11 +324,11 @@ impl HostState {
                     .map_err(internal)
                 }
                 .await;
-                let _ = reply.send(result);
+                respond(reply, result, "session command");
             }
             HostCommand::AttachFolder { folder, reply } => {
                 let result = self.attach_folder(folder).await;
-                let _ = reply.send(result);
+                respond(reply, result, "session command");
             }
             HostCommand::SetMessagePinned {
                 target,
@@ -323,7 +336,7 @@ impl HostState {
                 reply,
             } => {
                 let result = self.set_message_pinned(target, pinned).await;
-                let _ = reply.send(result);
+                respond(reply, result, "session command");
             }
             HostCommand::GitWorkspace { reply } => {
                 let result = self.project().map(|workspace| {
@@ -332,7 +345,7 @@ impl HostState {
                         workspace.to_owned(),
                     )
                 });
-                let _ = reply.send(result);
+                respond(reply, result, "session command");
             }
             HostCommand::WorkspaceFiles { scope, reply } => {
                 let result = async {
@@ -340,7 +353,7 @@ impl HostState {
                     list_workspace_files(&self.running.gateway_sandbox, workspace, scope).await
                 }
                 .await;
-                let _ = reply.send(result);
+                respond(reply, result, "session command");
             }
             HostCommand::ReadWorkspaceFile {
                 path,
@@ -348,13 +361,15 @@ impl HostState {
                 max_bytes,
                 reply,
             } => {
-                let result = async {
-                    self.project()?;
-                    read_workspace_file(&self.running.gateway_sandbox, &path, offset, max_bytes)
-                        .await
-                }
+                let result = read_workspace_file(
+                    &self.running.gateway_sandbox,
+                    self.spec.workspace.as_deref(),
+                    &path,
+                    offset,
+                    max_bytes,
+                )
                 .await;
-                let _ = reply.send(result);
+                respond(reply, result, "session command");
             }
             HostCommand::DeleteWorkspaceFile { path, reply } => {
                 let result = async {
@@ -364,7 +379,7 @@ impl HostState {
                     delete_workspace_file(&self.running.gateway_sandbox, &path).await
                 }
                 .await;
-                let _ = reply.send(result);
+                respond(reply, result, "session command");
             }
             HostCommand::WriteWorkspaceFile {
                 path,
@@ -378,7 +393,7 @@ impl HostState {
                     write_workspace_file(&self.running.gateway_sandbox, &path, &content).await
                 }
                 .await;
-                let _ = reply.send(result);
+                respond(reply, result, "session command");
             }
             HostCommand::SwitchGitBranch { branch, reply } => {
                 let result = async {
@@ -387,12 +402,13 @@ impl HostState {
                     self.switch_git_branch(&branch).await
                 }
                 .await;
-                let _ = reply.send(result);
+                respond(reply, result, "session command");
             }
             HostCommand::ProviderCutoverStatus { reply } => {
-                let _ = reply.send(ProviderCutoverStatus {
+                let status = ProviderCutoverStatus {
                     idle: self.is_idle(),
-                });
+                };
+                respond(reply, status, "provider cutover status");
             }
             HostCommand::RunRoutine { run, input, reply } => {
                 let result = match self.begin_session_mutation() {
@@ -402,7 +418,7 @@ impl HostState {
                             let result = self.bots.finish_run(
                                 run,
                                 RoutineRunStatus::Failed,
-                                Some(rejection.message.clone()),
+                                Some(Arc::clone(&rejection.message)),
                             );
                             result.map_err(internal).and(Err(rejection))
                         }
@@ -410,28 +426,28 @@ impl HostState {
                     Err(rejection) => match self.bots.finish_run(
                         run,
                         RoutineRunStatus::Failed,
-                        Some(rejection.message.clone()),
+                        Some(Arc::clone(&rejection.message)),
                     ) {
                         Ok(_) => Err(rejection),
                         Err(error) => Err(internal(error)),
                     },
                 };
-                let _ = reply.send(result);
+                respond(reply, result, "session command");
             }
             HostCommand::WaitIdle { reply } => {
                 if self.is_idle() {
-                    let _ = reply.send(());
+                    respond(reply, (), "idle waiter");
                 } else {
                     self.idle_waiters.push(reply);
                 }
             }
             HostCommand::StopIfIdle { reply } => {
                 if !self.is_idle() {
-                    let _ = reply.send(false);
+                    respond(reply, false, "stop-if-idle");
                     return true;
                 }
                 self.alive.store(false, Ordering::Release);
-                let _ = reply.send(true);
+                respond(reply, true, "stop-if-idle");
                 return false;
             }
             HostCommand::Shutdown => return false,
@@ -442,14 +458,14 @@ impl HostState {
     async fn accept_source(
         &mut self,
         submission: ValidatedSubmission,
-        bot_id: String,
+        bot_id: Arc<str>,
         reply: oneshot::Sender<std::result::Result<(), Rejection>>,
     ) {
         if !matches!(submission.submission().op, Op::Message { .. }) {
             let result = async {
                 let _mutation = self.begin_session_mutation()?;
                 self.bind_bot().await?;
-                if self.spec.bot_id != bot_id {
+                if *self.spec.bot_id != *bot_id {
                     return Err(invalid_config("the chat now belongs to another Bot"));
                 }
                 if !matches!(submission.submission().op, Op::Interrupt { .. }) {
@@ -460,7 +476,7 @@ impl HostState {
                 self.submit_validated(submission)
             }
             .await;
-            let _ = reply.send(result);
+            respond(reply, result, "source command");
             return;
         }
         let result = async {
@@ -478,13 +494,13 @@ impl HostState {
             };
             let _mutation = self.begin_session_mutation()?;
             self.bind_bot().await?;
-            if self.spec.bot_id != bot_id {
+            if *self.spec.bot_id != *bot_id {
                 return Err(Rejection::new(
                     "invalid_submission",
                     "the chat now belongs to another Bot",
                 ));
             }
-            let id = submission.submission().id.to_owned();
+            let id = Arc::clone(&submission.submission().id);
             self.running
                 .sender
                 .as_ref()
@@ -496,7 +512,7 @@ impl HostState {
         .await;
         match result {
             Ok((id, admission)) => {
-                let reserved = self.pending_messages.insert(id.clone());
+                let reserved = self.pending_messages.insert(Arc::clone(&id));
                 self.pending_turns += usize::from(reserved);
                 self.work_activity.mark();
                 self.admissions.push(Box::pin(async move {
@@ -509,7 +525,7 @@ impl HostState {
                 }));
             }
             Err(error) => {
-                let _ = reply.send(Err(error));
+                respond(reply, Err(error), "source delivery");
             }
         }
     }
@@ -562,7 +578,7 @@ impl HostState {
             return Ok(self
                 .replay
                 .iter()
-                .map(|entry| entry.frame.clone())
+                .map(|entry| entry.frame.clone()) // rules-allow: the replay buffer keeps its shared frames
                 .collect());
         };
         if last_sequence > self.sequence {
@@ -589,7 +605,7 @@ impl HostState {
             .filter(|entry| {
                 event_sequence(&entry.frame).is_some_and(|sequence| sequence > last_sequence)
             })
-            .map(|entry| entry.frame.clone())
+            .map(|entry| entry.frame.clone()) // rules-allow: the replay buffer keeps its shared frames
             .collect())
     }
 
@@ -608,15 +624,9 @@ impl HostState {
                 .map_err(internal)?;
             return Err(rejection);
         }
-        let submission_id = Uuid::new_v4().to_string();
-        self.active_routine = Some(ActiveRoutine {
-            run,
-            submission_id: submission_id.clone(),
-            turn_id: None,
-            failure: None,
-        });
+        let submission_id: Arc<str> = Uuid::new_v4().to_string().into();
         let submission = Submission {
-            id: submission_id,
+            id: Arc::clone(&submission_id),
             op: Op::Message {
                 message: MessageSubmission {
                     author: MessageAuthor::User,
@@ -629,19 +639,21 @@ impl HostState {
             },
         };
         if let Err(rejection) = self.submit(submission) {
-            let active = self
-                .active_routine
-                .take()
-                .expect("active routine was just set");
             self.bots
                 .finish_run(
-                    active.run,
+                    run,
                     RoutineRunStatus::Failed,
-                    Some(rejection.message.clone()),
+                    Some(Arc::clone(&rejection.message)),
                 )
                 .map_err(internal)?;
             return Err(rejection);
         }
+        self.active_routine = Some(ActiveRoutine {
+            run,
+            submission_id,
+            turn_id: None,
+            failure: None,
+        });
         Ok(())
     }
 
@@ -657,7 +669,7 @@ impl HostState {
         submission: ValidatedSubmission,
     ) -> std::result::Result<(), Rejection> {
         let message_submission_id = matches!(submission.submission().op, Op::Message { .. })
-            .then(|| submission.submission().id.to_owned());
+            .then(|| Arc::clone(&submission.submission().id));
         let resolves_approval = matches!(submission.submission().op, Op::ExecApproval { .. });
         self.running
             .sender
@@ -670,7 +682,7 @@ impl HostState {
                     mobius::Error::Stopped(_) => "agent_stopped",
                     _ => "invalid_submission",
                 },
-                message: error.to_string(),
+                message: error.to_string().into(),
                 fatal: matches!(error, mobius::Error::Stopped(_)),
             })?;
         self.work_activity.mark();
@@ -697,7 +709,7 @@ impl HostState {
             return Ok(());
         }
         if self.runtime_is_idle().await? {
-            self.replace_running(self.spec.clone(), None).await?;
+            self.replace_running(None, None).await?;
         }
         Ok(())
     }
@@ -744,77 +756,76 @@ impl HostState {
     async fn attach_folder(&mut self, folder: PathBuf) -> std::result::Result<(), Rejection> {
         self.require_idle_runtime().await?;
         let _mutation = self.begin_session_mutation()?;
-        let tls = self
-            .gateway
-            .lock()
-            .map_err(|_| internal("gateway configuration lock is poisoned"))?
-            .tls
-            .clone();
-        let Some(next) = self
-            .spec
-            .with_attached_folder(&folder, self.store.state_dir(), tls.as_ref())
-            .map_err(invalid_workspace)?
-        else {
+        let next = {
+            let gateway = self.gateway.lock().map_err(|error| {
+                internal(format!("gateway configuration lock is poisoned: {error}"))
+            })?;
+            self.spec
+                .with_attached_folder(&folder, self.store.state_dir(), gateway.tls.as_ref())
+        };
+        let Some(next) = next.map_err(invalid_workspace)? else {
             return Ok(());
         };
-        self.replace_running(next, Some(Arc::clone(&self.running.prepared)))
-            .await
+        let prepared = Arc::clone(&self.running.prepared);
+        self.replace_running(Some(next), Some(prepared)).await
     }
 
+    async fn start_replacement(
+        &self,
+        spec: &ChatSpec,
+        label: &str,
+        prepared: Option<Arc<crate::assembly::PreparedBot>>,
+    ) -> Result<RunningAgent> {
+        start_agent(
+            Arc::clone(&self.gateway),
+            spec,
+            &self.store,
+            Arc::clone(&self.credentials),
+            Arc::clone(&self.bots),
+            Arc::clone(&self.checkpoints),
+            Arc::clone(&self.scratchpad),
+            Arc::clone(&self.session_files),
+            Arc::clone(&self.discovery_gate),
+            Arc::clone(&self.desktop),
+            Arc::clone(&self.remote_desktop),
+            &self.running.session_id,
+            label,
+            prepared,
+            Arc::clone(&self.provider_epoch),
+            Arc::clone(&self.live_chats),
+            Arc::clone(&self.host_access),
+        )
+        .await
+    }
+
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the replacement or recovery agent moves into the running slot"
+    )]
     async fn replace_running(
         &mut self,
-        next: ChatSpec,
+        next: Option<ChatSpec>,
         prepared: Option<Arc<crate::assembly::PreparedBot>>,
     ) -> std::result::Result<(), Rejection> {
         // Keep replacement and rollback futures off every command handler's stack.
         Box::pin(async {
-            let session_id = Arc::clone(&self.running.session_id);
             // Failed replacement restarts from the old prepared bot after draining the running agent.
             let old_prepared = Arc::clone(&self.running.prepared);
             self.stop_and_drain_running().await.map_err(internal)?;
-            let replacement = match start_agent(
-                Arc::clone(&self.gateway),
-                &next,
-                &self.store,
-                Arc::clone(&self.credentials),
-                Arc::clone(&self.bots),
-                Arc::clone(&self.checkpoints),
-                Arc::clone(&self.scratchpad),
-                self.session_files.clone(),
-                Arc::clone(&self.discovery_gate),
-                Arc::clone(&self.desktop),
-                Arc::clone(&self.remote_desktop),
-                &session_id,
-                "mobius-gateway",
-                prepared,
-                Arc::clone(&self.provider_epoch),
-                Arc::clone(&self.live_chats),
-                Arc::clone(&self.host_access),
-            )
-            .await
+            let spec = next.as_ref().unwrap_or(&self.spec);
+            let replacement = match self
+                .start_replacement(spec, "mobius-gateway", prepared)
+                .await
             {
                 Ok(replacement) => replacement,
                 Err(primary) => {
-                    let recovery = start_agent(
-                        Arc::clone(&self.gateway),
-                        &self.spec,
-                        &self.store,
-                        Arc::clone(&self.credentials),
-                        Arc::clone(&self.bots),
-                        Arc::clone(&self.checkpoints),
-                        Arc::clone(&self.scratchpad),
-                        self.session_files.clone(),
-                        Arc::clone(&self.discovery_gate),
-                        Arc::clone(&self.desktop),
-                        Arc::clone(&self.remote_desktop),
-                        &self.running.session_id,
-                        "mobius-gateway-rollback",
-                        Some(old_prepared),
-                        Arc::clone(&self.provider_epoch),
-                        Arc::clone(&self.live_chats),
-                        Arc::clone(&self.host_access),
-                    )
-                    .await;
+                    let recovery = self
+                        .start_replacement(
+                            &self.spec,
+                            "mobius-gateway-rollback",
+                            Some(old_prepared),
+                        )
+                        .await;
                     let recovery = match recovery {
                         Ok(recovery) => recovery,
                         Err(rollback) => {
@@ -835,7 +846,9 @@ impl HostState {
                 }
             };
             let previous = std::mem::replace(&mut self.running, replacement);
-            self.spec = next;
+            if let Some(next) = next {
+                self.spec = next;
+            }
             drop(previous);
             self.reconcile_replacement_startup()
                 .await
@@ -871,14 +884,14 @@ pub(in crate::host) fn fail_queued_routine_commands(
         ) {
             Ok(_) => stopped(),
             Err(error) => {
-                let rejection = internal(error);
-                first_error.get_or_insert_with(|| rejection.clone());
+                let rejection = internal(&error);
+                first_error.get_or_insert(error);
                 rejection
             }
         };
-        let _ = reply.send(Err(rejection));
+        respond(reply, Err(rejection), "routine");
     }
-    first_error
+    first_error.map(internal)
 }
 
 fn source_rejection(error: mobius::Error) -> Rejection {
@@ -889,12 +902,18 @@ fn source_rejection(error: mobius::Error) -> Rejection {
         _ => "invalid_submission",
     };
     let message = match error {
-        mobius::Error::Config(message) => message,
-        error => error.to_string(),
+        mobius::Error::Config(message) => message.into(),
+        error => error.to_string().into(),
     };
     Rejection {
         code,
         message,
         fatal: false,
+    }
+}
+
+fn respond<T>(reply: oneshot::Sender<T>, value: T, waiter: &str) {
+    if reply.send(value).is_err() {
+        tracing::debug!(waiter, "requester stopped waiting");
     }
 }

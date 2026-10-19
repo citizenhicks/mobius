@@ -19,7 +19,7 @@ use crate::protocol::ReviewDecision;
 use crate::truncate_utf8;
 
 impl Shared {
-    async fn turn_started(&self, root_id: &str, path: &str, turn_id: String) -> Result<()> {
+    async fn turn_started(&self, root_id: &str, path: &str, turn_id: Arc<str>) -> Result<()> {
         self.mutate_root(root_id, |root| {
             root.parent_reports.remove(path);
             let entry = root
@@ -35,7 +35,7 @@ impl Shared {
         .await
     }
 
-    async fn approval_pending(&self, root_id: &str, path: &str, turn_id: String) -> Result<()> {
+    async fn approval_pending(&self, root_id: &str, path: &str, turn_id: Arc<str>) -> Result<()> {
         self.mutate_root(root_id, |root| {
             let entry = root
                 .tree
@@ -56,7 +56,7 @@ impl Shared {
                 .agents
                 .get_mut(path)
                 .ok_or_else(|| Error::Unknown(format!("agent `{path}`")))?;
-            entry.last_message = Some(bounded(message));
+            entry.last_message = Some(bounded(message.into()));
             Ok(())
         })
         .await
@@ -68,10 +68,10 @@ impl Shared {
         root_id: &str,
         path: &str,
         status: AgentStatus,
-        message: Option<String>,
+        message: Option<Arc<str>>,
     ) -> Result<()> {
         let message = message.map(bounded);
-        let repair_path = path.to_string();
+        let repair_path = path.to_owned();
         let stage = self
             .commit_root(
                 root_id,
@@ -85,8 +85,8 @@ impl Shared {
                     let message = message.or_else(|| entry.last_message.take());
                     entry.status = status;
                     entry.active_turn_id = None;
-                    entry.last_message.clone_from(&message);
-                    let parent = entry.parent.clone();
+                    entry.last_message = message.as_ref().map(Arc::clone);
+                    let parent = Arc::clone(&entry.parent);
                     root.senders.remove(path);
                     let reports = root.parent_reports.remove(path).unwrap_or_default();
                     let reported_message_ids = if matches!(&status, AgentStatus::Completed) {
@@ -98,29 +98,30 @@ impl Shared {
                     } else {
                         Vec::new()
                     };
-                    push_finished(root, path, parent, &status, message, reported_message_ids);
+                    push_finished(root, path, parent, status, message, reported_message_ids);
                     Ok(Stage::Changed(()))
                 },
                 OnPersistFailure::RepairRetry(Box::new(move |candidate, error| {
-                    let failure = bounded(format!("subagent state persistence failed: {error}"));
+                    let failure: Arc<str> =
+                        bounded(format!("subagent state persistence failed: {error}").into());
                     if let Some(entry) = candidate.tree.agents.get_mut(repair_path.as_str()) {
                         entry.status = AgentStatus::Errored;
-                        entry.last_message = Some(failure.clone());
+                        entry.last_message = Some(Arc::clone(&failure));
                     }
                     if let Some(update) = candidate
                         .tree
                         .updates
                         .iter_mut()
                         .rev()
-                        .find(|update| update.agent == repair_path)
+                        .find(|update| *update.agent == *repair_path)
                     {
                         update.status = AgentStatus::Errored.label().into();
-                        update.text = Some(failure.clone());
+                        update.text = Some(Arc::clone(&failure));
                         update.reported_message_ids.clear();
                     }
                     (
                         format!("{repair_path} state persistence retry failed"),
-                        subagent_error_notice(failure),
+                        subagent_error_notice(failure.to_string()),
                     )
                 })),
             )
@@ -148,10 +149,10 @@ impl Shared {
 fn push_finished(
     root: &mut super::Root,
     path: &str,
-    parent: String,
-    status: &AgentStatus,
-    message: Option<String>,
-    reported_message_ids: Vec<String>,
+    parent: Arc<str>,
+    status: AgentStatus,
+    message: Option<Arc<str>>,
+    reported_message_ids: Vec<Arc<str>>,
 ) {
     if root.tree.updates.len() >= MAX_PENDING_UPDATES {
         root.tree.updates.pop_front();
@@ -167,14 +168,19 @@ fn push_finished(
 }
 
 pub(in crate::middleware::subagents) async fn monitor_agent(
-    shared: Arc<Shared>,
-    root_id: Arc<str>,
-    path: String,
+    collaboration: Arc<super::super::Collaboration>,
+    path: Arc<str>,
     mut events: AgentEvents,
     lifetime: super::ExecutionGuard,
 ) -> Result<()> {
     let _lifetime = lifetime;
-    let result = monitor_events(&shared, &root_id, &path, &mut events).await;
+    let result = monitor_events(
+        &collaboration.shared,
+        &collaboration.scope.root_session_id,
+        &path,
+        &mut events,
+    )
+    .await;
     // A final turn event precedes session_end. Keep the lifetime until worker and
     // background-command teardown closes the event channel.
     while events.recv().await.is_some() {}
@@ -210,18 +216,21 @@ async fn monitor_events(
                     shared
                         .approval_pending(root_id, path, request.turn_id)
                         .await?;
-                    let sender = shared.sender(root_id, path).await?;
-                    sender
-                        .submit(Op::ExecApproval {
-                            id: request.id,
-                            decision: ReviewDecision::Denied {
-                                rejection: super::super::text::DEFINITION
-                                    .approval_denied
-                                    .as_str()
-                                    .into(),
+                    shared
+                        .submit(
+                            root_id,
+                            path,
+                            Op::ExecApproval {
+                                id: request.id,
+                                decision: ReviewDecision::Denied {
+                                    rejection: super::super::text::DEFINITION
+                                        .approval_denied
+                                        .as_str()
+                                        .into(),
+                                },
                             },
-                        })
-                        .map(|_| ())
+                        )
+                        .await
                 }
                 .await
             }
@@ -248,7 +257,7 @@ async fn monitor_events(
                     root_id,
                     path,
                     AgentStatus::Errored,
-                    Some(format!("subagent monitor failed: {error}")),
+                    Some(format!("subagent monitor failed: {error}").into()),
                 )
                 .await;
         }
@@ -266,11 +275,13 @@ async fn monitor_events(
     Ok(())
 }
 
-fn bounded(mut value: String) -> String {
+fn bounded(value: Arc<str>) -> Arc<str> {
     if value.len() <= MAX_MESSAGE_BYTES {
         return value;
     }
-    value.truncate(truncate_utf8(&value, MAX_MESSAGE_BYTES - '…'.len_utf8()).len());
-    value.push('…');
-    value
+    format!(
+        "{}…",
+        truncate_utf8(&value, MAX_MESSAGE_BYTES - '…'.len_utf8())
+    )
+    .into()
 }

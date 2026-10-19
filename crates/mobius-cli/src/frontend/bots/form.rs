@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use mobius::protocol::MAX_MESSAGE_BYTES;
 use mobius_gateway::bots::{MAX_BOT_DESCRIPTION_BYTES, MAX_BOT_NAME_BYTES};
@@ -61,7 +62,7 @@ impl TextForm {
 
 pub(super) enum BotFormMode {
     Create,
-    Update { id: String, revision: u64 },
+    Update { id: Arc<str>, revision: u64 },
 }
 
 pub(super) struct BotForm {
@@ -88,11 +89,11 @@ impl BotForm {
     pub(super) fn update(bot: &BotRecord) -> Self {
         Self {
             mode: BotFormMode::Update {
-                id: bot.id.clone(),
+                id: Arc::clone(&bot.id),
                 revision: bot.config.revision,
             },
-            name: TextForm::new(&bot.name, MAX_BOT_NAME_BYTES),
-            description: TextForm::new(&bot.description, MAX_BOT_DESCRIPTION_BYTES),
+            name: TextForm::new(&*bot.name, MAX_BOT_NAME_BYTES),
+            description: TextForm::new(&*bot.description, MAX_BOT_DESCRIPTION_BYTES),
             prompt: Some(TextForm::multiline(
                 &bot.config.config.system_prompt,
                 64 * 1024,
@@ -104,8 +105,8 @@ impl BotForm {
 }
 
 pub(super) enum RoutineFormMode {
-    Create(String),
-    Update(String),
+    Create(Arc<str>),
+    Update(Arc<str>),
 }
 
 pub(super) struct RoutineForm {
@@ -118,7 +119,7 @@ pub(super) struct RoutineForm {
     pub(super) ends_at: TextForm,
     pub(super) schedule_enabled: bool,
     bindings: Vec<RoutineBinding>,
-    timer_binding_id: String,
+    timer_binding_id: Arc<str>,
     pub(super) row: usize,
     pub(super) error: Option<String>,
 }
@@ -128,7 +129,7 @@ impl RoutineForm {
         matches!(self.mode, RoutineFormMode::Update(_))
     }
 
-    pub(super) fn create(bot_id: String) -> Self {
+    pub(super) fn create(bot_id: Arc<str>) -> Self {
         Self {
             mode: RoutineFormMode::Create(bot_id),
             workspace: TextForm::new("", MAX_MESSAGE_BYTES),
@@ -139,7 +140,7 @@ impl RoutineForm {
             ends_at: TextForm::new("", MAX_MESSAGE_BYTES),
             schedule_enabled: true,
             bindings: Vec::new(),
-            timer_binding_id: uuid::Uuid::new_v4().to_string(),
+            timer_binding_id: uuid::Uuid::new_v4().to_string().into(),
             row: 0,
             error: None,
         }
@@ -169,11 +170,11 @@ impl RoutineForm {
         let schedule_value = match schedule.kind {
             RoutineScheduleKind::Once => schedule.at.map(|value| value.to_string()),
             RoutineScheduleKind::Interval => schedule.every_seconds.map(|value| value.to_string()),
-            RoutineScheduleKind::Cron => schedule.expression.clone(),
+            RoutineScheduleKind::Cron => schedule.expression.clone(), // rules-allow: owned copy from the borrowed routine
         }
         .unwrap_or_default();
         Self {
-            mode: RoutineFormMode::Update(routine.id.clone()),
+            mode: RoutineFormMode::Update(Arc::clone(&routine.id)),
             workspace: TextForm::new(routine.workspace.display().to_string(), MAX_MESSAGE_BYTES),
             instructions: TextForm::multiline(&routine.instructions, MAX_MESSAGE_BYTES),
             schedule_kind: schedule.kind,
@@ -187,10 +188,10 @@ impl RoutineForm {
                 MAX_MESSAGE_BYTES,
             ),
             schedule_enabled: timer.is_some(),
-            bindings: routine.bindings.clone(),
+            bindings: routine.bindings.clone(), // rules-allow: owned copy from the borrowed routine
             timer_binding_id: timer.map_or_else(
-                || uuid::Uuid::new_v4().to_string(),
-                |binding| binding.id.clone(),
+                || uuid::Uuid::new_v4().to_string().into(),
+                |binding| Arc::clone(&binding.id),
             ),
             row: 0,
             error: None,
@@ -299,20 +300,20 @@ impl BotForm {
                 }))
             }
             BotFormMode::Update { id, revision } => {
-                let Some(bot) = gateway.bots.iter().find(|bot| bot.id == *id) else {
+                let Some(bot) = gateway.bots.iter().find(|bot| *bot.id == **id) else {
                     self.error = Some("The selected Bot is no longer available.".into());
                     return FormFlow::Stay;
                 };
                 let current = &bot.config.config;
                 let config = AgentComposition {
-                    provider: current.provider.clone(),
-                    middleware: current.middleware.clone(),
-                    extensions: current.extensions.clone(),
+                    provider: current.provider.clone(), // rules-allow: owned copy from the gateway catalog
+                    middleware: current.middleware.clone(), // rules-allow: owned copy from the gateway catalog
+                    extensions: current.extensions.clone(), // rules-allow: owned copy from the gateway catalog
                     system_prompt: self
                         .prompt
                         .as_ref()
                         .map_or(&current.system_prompt, |prompt| &prompt.value)
-                        .clone(),
+                        .clone(), // rules-allow: the prompt or the gateway copy stays in place
                     max_model_steps: current.max_model_steps,
                 };
                 FormFlow::Send(request_action(
@@ -320,10 +321,10 @@ impl BotForm {
                     FollowUp::None,
                     |request_id| ClientMessage::UpdateBot {
                         request_id,
-                        id: id.clone(),
+                        id: Arc::clone(id),
                         expected_revision: *revision,
-                        name,
-                        description,
+                        name: name.into(),
+                        description: description.into(),
                         tint: bot.tint,
                         shape: bot.shape,
                         config,
@@ -335,24 +336,18 @@ impl BotForm {
 }
 
 impl RoutineForm {
-    fn row_count(&self) -> usize {
-        7
-    }
-
-    pub(super) fn save_row(&self) -> usize {
-        self.row_count() - 1
-    }
+    const ROW_COUNT: usize = 7;
+    pub(super) const SAVE_ROW: usize = Self::ROW_COUNT - 1;
 
     fn handle_key(&mut self, key: KeyEvent) -> FormFlow {
-        let length = self.row_count();
         match key.code {
-            KeyCode::Up | KeyCode::BackTab => self.row = moved(self.row, length, -1),
-            KeyCode::Down | KeyCode::Tab => self.row = moved(self.row, length, 1),
+            KeyCode::Up | KeyCode::BackTab => self.row = moved(self.row, Self::ROW_COUNT, -1),
+            KeyCode::Down | KeyCode::Tab => self.row = moved(self.row, Self::ROW_COUNT, 1),
             KeyCode::Left if self.row == 2 => self.change_schedule(-1),
-            KeyCode::Right if self.row == 2 => self.change_schedule(1),
-            KeyCode::Char(' ') if self.row == 2 => self.change_schedule(1),
-            KeyCode::Enter if self.row == self.save_row() => return self.submit(),
-            KeyCode::Enter if self.row == 2 => self.change_schedule(1),
+            KeyCode::Right | KeyCode::Char(' ') | KeyCode::Enter if self.row == 2 => {
+                self.change_schedule(1);
+            }
+            KeyCode::Enter if self.row == Self::SAVE_ROW => return self.submit(),
             KeyCode::Enter => self.row += 1,
             KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 return self.submit();
@@ -436,10 +431,10 @@ impl RoutineForm {
             None
         };
         // The form stays open until the gateway answers, so a rejection keeps every edit.
-        let mut bindings = self.bindings.clone();
+        let mut bindings = self.bindings.clone(); // rules-allow: the form stays open until the gateway answers, so it keeps its edits
         if let Some((schedule, ends_at)) = timer {
             let binding = RoutineBinding {
-                id: self.timer_binding_id.clone(),
+                id: Arc::clone(&self.timer_binding_id),
                 on: HookSelector::Schedule { schedule, ends_at },
                 action: RoutineAction::Start,
             };
@@ -454,7 +449,7 @@ impl RoutineForm {
         }
         let definition = RoutineDefinition {
             workspace: PathBuf::from(workspace),
-            instructions: self.instructions.value.clone(),
+            instructions: self.instructions.value.clone(), // rules-allow: the form stays open until the gateway answers, so it keeps its edits
             bindings,
         };
         match &self.mode {
@@ -463,7 +458,7 @@ impl RoutineForm {
                 FollowUp::Routines,
                 |request_id| ClientMessage::CreateRoutine {
                     request_id,
-                    bot_id: bot_id.clone(),
+                    bot_id: Arc::clone(bot_id),
                     definition,
                 },
             )),
@@ -473,7 +468,7 @@ impl RoutineForm {
                 |request_id| ClientMessage::RoutineCommand {
                     request_id,
                     command: RoutineCommand {
-                        routine_id: id.clone(),
+                        routine_id: Arc::clone(id),
                         action: RoutineAction::Update { definition },
                     },
                 },
@@ -492,9 +487,9 @@ impl RoutineForm {
                 time_zone: None,
             }),
             RoutineScheduleKind::Interval => {
-                let seconds = value
-                    .parse::<u64>()
-                    .map_err(|_| "Interval must be a whole number of seconds.".to_owned())?;
+                let seconds = value.parse::<u64>().map_err(|error| {
+                    format!("Interval must be a whole number of seconds: {error}.")
+                })?;
                 Ok(RoutineSchedule {
                     kind: self.schedule_kind,
                     at: None,
@@ -539,5 +534,5 @@ fn optional_i64(value: &str, label: &str) -> std::result::Result<Option<i64>, St
 fn parse_i64(value: &str, label: &str) -> std::result::Result<i64, String> {
     value
         .parse()
-        .map_err(|_| format!("Routine {label} must be a Unix timestamp."))
+        .map_err(|error| format!("Routine {label} must be a Unix timestamp: {error}."))
 }

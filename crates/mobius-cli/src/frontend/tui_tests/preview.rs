@@ -33,7 +33,7 @@ fn another_clients_preview_cannot_open_or_replace_the_requested_preview() {
     );
     assert!(state.preview_request_id.is_none());
     events::handle_gateway_event(&mut state, foreign(), true);
-    assert_eq!(snapshot(&state).id, "ours");
+    assert_eq!(snapshot(&state).id, "ours".into());
     assert_eq!(preview_messages(snapshot(&state)), ["› ours"]);
 }
 
@@ -67,7 +67,7 @@ fn snapshot_preview_prepends_an_older_page_without_losing_the_latest_page() {
     let snapshot = snapshot(&state);
     assert_eq!(
         (
-            snapshot.id.as_str(),
+            &*snapshot.id,
             snapshot.page_ids.len(),
             preview_messages(snapshot),
             snapshot.next.as_ref(),
@@ -105,7 +105,7 @@ fn snapshot_preview_does_not_merge_a_page_for_another_preview_id() {
 
     let snapshot = snapshot(&state);
     assert_eq!(
-        (snapshot.id.as_str(), preview_messages(snapshot)),
+        (&*snapshot.id, preview_messages(snapshot)),
         ("/root/agent", vec!["› latest"])
     );
 }

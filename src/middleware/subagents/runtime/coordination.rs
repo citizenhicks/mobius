@@ -21,22 +21,19 @@ use tokio::time::timeout_at;
 #[serde(deny_unknown_fields)]
 pub(in crate::middleware::subagents) struct CompletionUpdate {
     pub(super) id: String,
-    pub(super) recipient: String,
-    pub(super) agent: String,
+    pub(super) recipient: Arc<str>,
+    pub(super) agent: Arc<str>,
     pub(super) status: String,
-    pub(super) text: Option<String>,
-    pub(super) reported_message_ids: Vec<String>,
+    pub(super) text: Option<Arc<str>>,
+    pub(super) reported_message_ids: Vec<Arc<str>>,
 }
 
 impl CompletionUpdate {
-    pub(in crate::middleware::subagents) fn internal_kind(&self) -> String {
+    fn internal_kind(&self) -> String {
         format!("subagent_update:{}", self.id)
     }
 
-    pub(in crate::middleware::subagents) fn render(
-        &self,
-        delivered_message_ids: &BTreeSet<String>,
-    ) -> String {
+    fn render(&self, delivered_message_ids: &BTreeSet<Arc<str>>) -> String {
         let text = self.text.as_deref().filter(|_| {
             self.reported_message_ids
                 .iter()
@@ -60,28 +57,31 @@ pub(in crate::middleware::subagents) struct Wake {
 pub(in crate::middleware::subagents) enum WakeTarget {
     Live(AgentSender),
     Resume {
-        session_id: String,
+        session_id: Arc<str>,
         depth: u8,
-        model: String,
+        model: Arc<str>,
     },
 }
 
 impl Shared {
+    /// Returns each pending update for `recipient` as its internal kind and rendered text.
     pub(in crate::middleware::subagents) async fn receive_updates(
         &self,
         root_id: &str,
         recipient: &str,
         acknowledged: &BTreeSet<&str>,
-    ) -> Result<Vec<CompletionUpdate>> {
+        delivered_message_ids: &BTreeSet<Arc<str>>,
+    ) -> Result<Vec<(String, String)>> {
         if !acknowledged.is_empty() {
             let root = self.root(root_id).await?;
             let has_acknowledged = root.state.lock().await.tree.updates.iter().any(|update| {
-                update.recipient == recipient && acknowledged.contains(update.id.as_str())
+                &*update.recipient == recipient && acknowledged.contains(update.id.as_str())
             });
             if has_acknowledged {
                 self.mutate_root(root_id, |root| {
                     root.tree.updates.retain(|update| {
-                        update.recipient != recipient || !acknowledged.contains(update.id.as_str())
+                        &*update.recipient != recipient
+                            || !acknowledged.contains(update.id.as_str())
                     });
                     Ok(())
                 })
@@ -96,8 +96,8 @@ impl Shared {
             .tree
             .updates
             .iter()
-            .filter(|update| update.recipient == recipient)
-            .cloned()
+            .filter(|update| &*update.recipient == recipient)
+            .map(|update| (update.internal_kind(), update.render(delivered_message_ids)))
             .collect())
     }
 
@@ -112,7 +112,7 @@ impl Shared {
             return Err(Error::Tool("an agent cannot message itself".into()));
         }
         let root_slot = self.root(root_id).await?;
-        let _writer = root_slot.writer.lock().await;
+        let writer = root_slot.writer.lock().await;
         if !self
             .roots
             .lock()
@@ -127,13 +127,13 @@ impl Shared {
             let sender = root
                 .root_sender
                 .as_ref()
-                .and_then(|sender| sender.upgrade())
+                .and_then(crate::agent::WeakAgentSender::upgrade)
                 .ok_or_else(|| Error::Stopped("agent `/root` is not running".into()))?;
             let reports_to_parent = root
                 .tree
                 .agents
                 .get(from)
-                .is_some_and(|entry| entry.parent == target);
+                .is_some_and(|entry| &*entry.parent == target);
             let report = reports_to_parent
                 .then(|| super::ParentReport::of(&message))
                 .flatten();
@@ -145,7 +145,7 @@ impl Shared {
                     .push(report);
             }
             drop(root);
-            drop(_writer);
+            drop(writer);
             admission.wait().await?;
             return Ok(None);
         }
@@ -165,7 +165,7 @@ impl Shared {
                     .tree
                     .agents
                     .get(from)
-                    .is_some_and(|entry| entry.parent == target);
+                    .is_some_and(|entry| &*entry.parent == target);
                 let sender = root
                     .senders
                     .get(target)
@@ -181,7 +181,7 @@ impl Shared {
                         .push(report);
                 }
                 drop(root);
-                drop(_writer);
+                drop(writer);
                 admission.wait().await?;
                 Ok(None)
             }
@@ -203,11 +203,11 @@ impl Shared {
                             .get_mut(target)
                             .ok_or_else(|| unknown_target(target))?;
                         let wake_target = match root.senders.get(target) {
-                            Some(sender) => WakeTarget::Live(sender.clone()),
+                            Some(sender) => WakeTarget::Live(sender.clone()), // rules-allow: the root keeps the live sender
                             None => WakeTarget::Resume {
-                                session_id: entry.session_id.clone(),
+                                session_id: Arc::clone(&entry.session_id),
                                 depth: entry.depth,
-                                model: entry.model.clone(),
+                                model: Arc::clone(&entry.model),
                             },
                         };
                         entry.status = AgentStatus::PendingInit;
@@ -231,7 +231,7 @@ impl Shared {
         root_id: &str,
         recipient: &str,
         duration: Duration,
-    ) -> Result<Vec<String>> {
+    ) -> Result<Vec<Arc<str>>> {
         let deadline = Instant::now() + duration;
         loop {
             let notified = self.changed.notified();
@@ -250,24 +250,29 @@ impl Shared {
         }
     }
 
-    async fn pending_sources(&self, root_id: &str, recipient: &str) -> Result<(Vec<String>, bool)> {
+    async fn pending_sources(
+        &self,
+        root_id: &str,
+        recipient: &str,
+    ) -> Result<(Vec<Arc<str>>, bool)> {
         let root = self.root(root_id).await?;
         let root = root.state.lock().await;
         let sources = root
             .tree
             .updates
             .iter()
-            .filter(|update| update.recipient == recipient)
+            .filter(|update| &*update.recipient == recipient)
             .map(|update| &update.agent)
             .collect::<BTreeSet<_>>()
             .into_iter()
-            .cloned()
+            .map(Arc::clone)
             .collect();
         let active = root
             .tree
             .agents
             .iter()
             .any(|(path, agent)| path != recipient && agent.status.is_active());
+        drop(root);
         Ok((sources, active))
     }
 }

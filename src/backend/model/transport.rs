@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use reqwest::Client;
 use reqwest::Response;
+use std::sync::Arc;
 
 use crate::Error;
 use crate::ProviderError;
@@ -177,7 +178,8 @@ pub fn streaming_client() -> Result<Client> {
 #[cfg(test)]
 fn streaming_client_with_idle_timeout(idle_timeout: Duration) -> Result<Client> {
     ModelTransportSettings {
-        http_idle_timeout_ms: u64::try_from(idle_timeout.as_millis()).expect("test timeout fits"),
+        http_idle_timeout_ms: u64::try_from(idle_timeout.as_millis())
+            .map_err(|error| Error::Config(format!("test timeout does not fit: {error}")))?,
         ..ModelTransportSettings::default()
     }
     .streaming_client()
@@ -238,9 +240,10 @@ impl SseDecoder {
         let start = self.frame_start;
         let mut index = self.scan.max(start);
         while index < self.bytes.len() {
-            let width = if self.bytes[index..].starts_with(b"\r\n\r\n") {
+            let rest = self.bytes.get(index..).unwrap_or_default();
+            let width = if rest.starts_with(b"\r\n\r\n") {
                 4
-            } else if self.bytes[index..].starts_with(b"\n\n") {
+            } else if rest.starts_with(b"\n\n") {
                 2
             } else {
                 index += 1;
@@ -251,21 +254,19 @@ impl SseDecoder {
             }
             self.frame_start = index + width;
             self.scan = self.frame_start;
-            return std::str::from_utf8(&self.bytes[start..index])
+            return std::str::from_utf8(self.bytes.get(start..index).unwrap_or_default())
                 .map(Some)
                 .map_err(|error| Error::Provider(format!("invalid SSE UTF-8: {error}").into()));
         }
         self.scan = self.bytes.len().saturating_sub(3).max(start);
-        let unfinished = &self.bytes[start..];
+        let unfinished = self.bytes.get(start..).unwrap_or_default();
         // An incomplete delimiter is framing, rather than part of the payload budget.
         let delimiter_prefix = if unfinished.ends_with(b"\r\n\r") {
             3
         } else if unfinished.ends_with(b"\r\n") {
             2
-        } else if unfinished.ends_with(b"\r") || unfinished.ends_with(b"\n") {
-            1
         } else {
-            0
+            usize::from(unfinished.ends_with(b"\r") || unfinished.ends_with(b"\n"))
         };
         if unfinished.len() - delimiter_prefix > MAX_SSE_FRAME_BYTES {
             return Err(Error::Provider("SSE frame exceeded size limit".into()));
@@ -321,7 +322,7 @@ pub(super) async fn status_error(mut response: Response, provider: &str) -> Erro
         match response.chunk().await {
             Ok(Some(chunk)) => {
                 let remaining = MAX_ERROR_BYTES - bytes.len();
-                bytes.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+                bytes.extend_from_slice(chunk.get(..remaining).unwrap_or(&chunk));
             }
             Ok(None) => break,
             Err(error) => {
@@ -406,8 +407,8 @@ pub(super) struct ApiKeyModel {
     pub(super) transport: ModelTransportSettings,
     pub(super) api_key: Option<String>,
     pub(super) base_url: String,
-    pub(super) model: String,
-    pub(super) reasoning_effort: Option<String>,
+    pub(super) model: Arc<str>,
+    pub(super) reasoning_effort: Option<Arc<str>>,
 }
 
 impl std::fmt::Debug for ApiKeyModel {
@@ -440,7 +441,7 @@ impl ApiKeyModel {
             client,
             api_key,
             base_url,
-            model,
+            model: model.into(),
             reasoning_effort: None,
             transport: ModelTransportSettings::default(),
         })
@@ -451,15 +452,14 @@ impl ApiKeyModel {
         if effort.trim().is_empty() {
             return Err(Error::Config("reasoning effort cannot be empty".into()));
         }
-        self.reasoning_effort = Some(effort);
+        self.reasoning_effort = Some(effort.into());
         Ok(())
     }
 
     pub(super) fn info(&self) -> crate::protocol::ModelInfo {
-        // ModelInfo owns its labels while the transport retains its configuration.
         crate::protocol::ModelInfo {
-            model: self.model.clone(),
-            reasoning_effort: self.reasoning_effort.clone(),
+            model: Arc::clone(&self.model),
+            reasoning_effort: self.reasoning_effort.as_ref().map(Arc::clone),
         }
     }
 }

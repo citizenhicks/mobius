@@ -44,7 +44,7 @@ fn completed_execution_stats_keep_the_flat_wire_shape() {
         },
     };
 
-    let mut expected = serde_json::to_value(&stats).expect("execution totals");
+    let mut expected = serde_json::to_value(stats).expect("execution totals");
     expected["active"] = serde_json::Value::Null;
     let projected = RunStats {
         completed: stats,

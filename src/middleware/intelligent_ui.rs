@@ -52,6 +52,7 @@ const MAX_PIE_SLICES: usize = 12;
 const MAX_SERIES: usize = 4;
 
 /// Shows native interface documents composed by the model.
+#[derive(Debug)]
 pub struct IntelligentUi;
 
 impl Middleware for IntelligentUi {
@@ -76,7 +77,7 @@ impl Middleware for IntelligentUi {
 
     fn render(&self, event: &EventMsg, _session_id: &str) -> Option<FrontendBlock> {
         match event {
-            EventMsg::ToolCallBegin(call) if call.name == DEFINITION.show_ui.tool.name => {
+            EventMsg::ToolCallBegin(call) if *call.name == *DEFINITION.show_ui.tool.name => {
                 let Ok(UiDocument { title, blocks }) = parse(&call.arguments) else {
                     return DEFINITION.show_ui.render(event);
                 };
@@ -93,7 +94,7 @@ impl Middleware for IntelligentUi {
             }
             // Complete the registered tool without replacing the document.
             EventMsg::ToolCallEnd(result)
-                if result.name == DEFINITION.show_ui.tool.name && !result.is_error =>
+                if *result.name == *DEFINITION.show_ui.tool.name && !result.is_error =>
             {
                 Some(FrontendBlock {
                     id: Some(format!("{}/{}", result.turn_id, result.call_id)),
@@ -111,9 +112,8 @@ impl Middleware for IntelligentUi {
 struct ShowUi;
 
 impl Tool for ShowUi {
-    fn definition(&self) -> ToolDefinition {
-        // The Tool contract requires an owned definition from this shared embedded spec.
-        DEFINITION.show_ui.tool.clone()
+    fn definition(&self) -> &Arc<ToolDefinition> {
+        &DEFINITION.show_ui.tool
     }
 
     fn execution_mode(&self) -> ExecutionMode {
@@ -124,11 +124,7 @@ impl Tool for ShowUi {
         true
     }
 
-    fn call<'a>(
-        &'a self,
-        _context: ToolContext,
-        arguments: Value,
-    ) -> BoxFuture<'a, Result<ToolResponse>> {
+    fn call(&self, _context: ToolContext, arguments: Value) -> BoxFuture<'_, Result<ToolResponse>> {
         Box::pin(async move {
             parse(&arguments).map_err(Error::Tool)?;
             Ok(DEFINITION.result_shown.as_str().into())
@@ -192,11 +188,12 @@ fn document_text(blocks: &[UiBlock]) -> String {
                 unit,
                 ..
             } => {
-                let mut lines: Vec<String> = title.iter().map(String::to_owned).collect();
+                let mut lines: Vec<std::borrow::Cow<'_, str>> =
+                    title.iter().map(|title| title.as_str().into()).collect();
                 for series in series {
-                    lines.push(series.name.to_owned());
+                    lines.push(series.name.as_str().into());
                     lines.extend(labels.iter().zip(&series.values).map(|(label, value)| {
-                        format!("{label}: {value}{}", unit.as_deref().unwrap_or_default())
+                        format!("{label}: {value}{}", unit.as_deref().unwrap_or_default()).into()
                     }));
                 }
                 lines.join("\n")
@@ -211,7 +208,16 @@ fn parse(arguments: &Value) -> std::result::Result<UiDocument, String> {
     if crate::serialized_len(arguments).map_err(|error| error.to_string())? > MAX_DOCUMENT_BYTES {
         return Err(format!("document exceeds {MAX_DOCUMENT_BYTES} bytes"));
     }
-    let document = UiDocument::deserialize(arguments).map_err(|error| error.to_string())?;
+    let document = if let Ok(document) = UiDocument::deserialize(arguments) {
+        document
+    } else {
+        let mut presentation_arguments = arguments.clone(); // rules-allow: history events are borrowed; only a rejected document needs an owned repair copy
+        super::tools::arguments::normalize(
+            &mut presentation_arguments,
+            &DEFINITION.show_ui.tool.parameters,
+        )?;
+        UiDocument::deserialize(presentation_arguments).map_err(|error| error.to_string())?
+    };
     if document.title.trim().is_empty() {
         return Err("title must not be empty".into());
     }
@@ -233,9 +239,10 @@ fn check(block: &UiBlock) -> std::result::Result<(), String> {
         UiBlock::Table { columns, rows } => {
             within("columns", columns.len(), MAX_COLUMNS)?;
             within("rows", rows.len(), MAX_ROWS)?;
-            match rows.iter().any(|row| row.len() != columns.len()) {
-                true => Err("every table row needs one cell per column".into()),
-                false => Ok(()),
+            if rows.iter().any(|row| row.len() != columns.len()) {
+                Err("every table row needs one cell per column".into())
+            } else {
+                Ok(())
             }
         }
         UiBlock::Stats { items } => within("stats", items.len(), MAX_STATS),
@@ -269,9 +276,10 @@ fn check(block: &UiBlock) -> std::result::Result<(), String> {
                     .values
                     .iter()
                     .any(|value| value.as_f64().is_none_or(|value| value < 0.0));
-                match *kind == UiChartKind::Pie && negative {
-                    true => Err("pie values must be non-negative".into()),
-                    false => Ok(()),
+                if *kind == UiChartKind::Pie && negative {
+                    Err("pie values must be non-negative".into())
+                } else {
+                    Ok(())
                 }
             })
         }
@@ -279,9 +287,10 @@ fn check(block: &UiBlock) -> std::result::Result<(), String> {
 }
 
 fn within(name: &str, count: usize, max: usize) -> std::result::Result<(), String> {
-    match (1..=max).contains(&count) {
-        true => Ok(()),
-        false => Err(format!("{name} must number 1–{max}")),
+    if (1..=max).contains(&count) {
+        Ok(())
+    } else {
+        Err(format!("{name} must number 1–{max}"))
     }
 }
 
@@ -300,6 +309,28 @@ fn optional_https(url: Option<&str>) -> std::result::Result<(), String> {
 mod tests {
     use super::*;
     use crate::protocol::{ToolCallBeginEvent, ToolCallEndEvent};
+
+    #[test]
+    fn repaired_documents_render_from_raw_history_without_rewriting_it() {
+        let raw = serde_json::json!({
+            "title": "Tokyo", "blocks": {"item": {"type": "text", "markdown": "Day 1"}}
+        })
+        .to_string();
+        let history = [(
+            crate::protocol::MessageTarget {
+                checkpoint_sequence: 1,
+                batch_item_count: 1,
+            },
+            serde_json::json!({"type": "function_call", "call_id": "call", "name": "show_ui", "arguments": raw}),
+        )];
+        let events = crate::protocol::replay_events(&history, "session");
+        let block = IntelligentUi
+            .render(&events[0], "session")
+            .expect("document");
+        assert_eq!(block.format, FrontendBlockFormat::Ui);
+        assert!(matches!(block.ui.as_slice(), [UiBlock::Text { markdown }] if markdown == "Day 1"));
+        assert_eq!(history[0].1["arguments"], raw);
+    }
 
     #[test]
     fn documents_validate_render_text_and_do_not_claim_other_tools() {

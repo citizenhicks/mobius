@@ -106,7 +106,7 @@ impl StreamBatch {
 impl RecorderIngress {
     pub(super) fn spawn(
         checkpoints: Arc<dyn CheckpointStore>,
-        session_id: String,
+        session_id: Arc<str>,
     ) -> (Arc<Self>, mpsc::Receiver<JournalEvent>) {
         let (commands, receiver) = mpsc::channel(RECORDER_COMMAND_CAPACITY);
         let (events, event_receiver) = mpsc::channel(EVENT_QUEUE_CAPACITY);
@@ -131,10 +131,8 @@ impl RecorderIngress {
                 result: Some(result),
             })))
             .await
-            .map_err(|_| Error::Stopped("event recorder stopped".into()))?;
-        recorded
-            .await
-            .map_err(|_| Error::Stopped("event recorder stopped".into()))?
+            .map_err(stopped)?;
+        recorded.await.map_err(stopped)?
     }
 
     pub(super) fn try_record(&self, event: Event) -> Result<()> {
@@ -158,7 +156,7 @@ impl RecorderIngress {
         &self,
         checkpoint: Arc<Checkpoint>,
         transcript_delta: &[Arc<Value>],
-        execution: Option<&ExecutionRecord>,
+        execution: Option<ExecutionRecord>,
         events: Vec<Event>,
     ) -> Result<()> {
         let mut event_bytes = 0_usize;
@@ -176,16 +174,14 @@ impl RecorderIngress {
             .send(RecorderCommand::Save(Box::new(SaveCommand {
                 checkpoint,
                 transcript_delta: transcript_delta.to_vec(),
-                execution: execution.cloned(),
+                execution,
                 events,
                 byte_permit,
                 result,
             })))
             .await
-            .map_err(|_| Error::Stopped("event recorder stopped".into()))?;
-        saved
-            .await
-            .map_err(|_| Error::Stopped("event recorder stopped".into()))?
+            .map_err(stopped)?;
+        saved.await.map_err(stopped)?
     }
 
     pub(super) async fn flush(&self) -> Result<()> {
@@ -193,10 +189,8 @@ impl RecorderIngress {
         self.commands
             .send(RecorderCommand::Flush(flushed))
             .await
-            .map_err(|_| Error::Stopped("event recorder stopped".into()))?;
-        result
-            .await
-            .map_err(|_| Error::Stopped("event recorder stopped".into()))?
+            .map_err(stopped)?;
+        result.await.map_err(stopped)?
     }
 
     async fn reserve_bytes(&self, bytes: usize) -> Result<OwnedSemaphorePermit> {
@@ -204,14 +198,17 @@ impl RecorderIngress {
         Arc::clone(&self.event_bytes)
             .acquire_many_owned(permits)
             .await
-            .map_err(|_| Error::Stopped("event recorder stopped".into()))
+            .map_err(stopped)
     }
 
     fn try_reserve_bytes(&self, bytes: usize) -> Result<OwnedSemaphorePermit> {
         let permits = byte_permits(bytes)?;
         Arc::clone(&self.event_bytes)
             .try_acquire_many_owned(permits)
-            .map_err(|_| queue_full())
+            .map_err(|error| match error {
+                tokio::sync::TryAcquireError::NoPermits => queue_full(),
+                tokio::sync::TryAcquireError::Closed => stopped(error),
+            })
     }
 }
 
@@ -230,16 +227,30 @@ fn byte_permits(bytes: usize) -> Result<u32> {
     if bytes > RECORDER_EVENT_BYTE_BUDGET {
         return Err(queue_full());
     }
-    u32::try_from(bytes).map_err(|_| queue_full())
+    u32::try_from(bytes).map_err(|error| Error::Stopped(format!("{RECORDER_QUEUE_FULL}: {error}")))
 }
 
 fn queue_full() -> Error {
     Error::Stopped(RECORDER_QUEUE_FULL.into())
 }
 
+fn stopped(error: impl std::fmt::Display) -> Error {
+    Error::Stopped(format!("event recorder stopped: {error}"))
+}
+
+fn reply(result: oneshot::Sender<Result<()>>, outcome: Result<()>) {
+    if let Err(Err(error)) = result.send(outcome) {
+        tracing::warn!(%error, "event recorder caller stopped before receiving its failure");
+    }
+}
+
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the stream batch and current command are loop state; each branch drops them at its own transition"
+)]
 async fn run_recorder(
     checkpoints: Arc<dyn CheckpointStore>,
-    session_id: String,
+    session_id: Arc<str>,
     mut commands: mpsc::Receiver<RecorderCommand>,
     events: mpsc::Sender<JournalEvent>,
 ) {
@@ -249,14 +260,14 @@ async fn run_recorder(
     loop {
         let command = tokio::select! {
             biased;
-            _ = tokio::time::sleep_until(pending.as_ref().map_or_else(Instant::now, |batch| batch.deadline)), if pending.is_some() => {
+            () = tokio::time::sleep_until(pending.as_ref().map_or_else(Instant::now, |batch| batch.deadline)), if pending.is_some() => {
                 terminal_error = flush_stream(&mut pending, &checkpoints, &session_id, &events).await.err();
                 continue;
             }
             command = commands.recv() => command,
         };
         let Some(command) = command else {
-            let _ = flush_stream(&mut pending, &checkpoints, &session_id, &events).await;
+            flush_on_shutdown(&mut pending, &checkpoints, &session_id, &events).await;
             return;
         };
         if let Some(error) = &terminal_error {
@@ -271,7 +282,7 @@ async fn run_recorder(
             {
                 batch.append.byte_permit.merge(append.byte_permit);
                 if let Some(result) = append.result {
-                    let _ = result.send(Ok(()));
+                    reply(result, Ok(()));
                 }
                 continue;
             }
@@ -288,7 +299,7 @@ async fn run_recorder(
             {
                 // Streaming callbacks acknowledge bounded admission; barriers wait for durability.
                 if let Some(result) = append.result.take() {
-                    let _ = result.send(Ok(()));
+                    reply(result, Ok(()));
                 }
                 pending = Some(StreamBatch {
                     append: *append,
@@ -317,40 +328,62 @@ async fn run_recorder(
         terminal_error = match command {
             RecorderCommand::Append(_) => unreachable!("appends were handled above"),
             RecorderCommand::Save(command) => {
-                let SaveCommand {
-                    checkpoint,
-                    transcript_delta,
-                    execution,
-                    events: pending,
-                    byte_permit: _byte_permit,
-                    result,
-                } = *command;
-                let recorded = checkpoints
-                    .save_with_events(checkpoint, transcript_delta, execution, pending)
-                    .await;
-                let recorded = match recorded {
-                    Ok(recorded) => recorded,
-                    Err(error) => {
-                        let _ = result.send(Err(error));
-                        return;
-                    }
-                };
-                match publish_all(recorded, &events).await {
-                    Ok(()) => {
-                        let _ = result.send(Ok(()));
-                        None
-                    }
-                    Err(_) => {
-                        let _ = result.send(Ok(()));
-                        return;
-                    }
+                if !record_save(*command, &checkpoints, &events).await {
+                    return;
                 }
+                None
             }
             RecorderCommand::Flush(result) => {
-                let _ = result.send(Ok(()));
+                reply(result, Ok(()));
                 None
             }
         };
+    }
+}
+
+async fn flush_on_shutdown(
+    pending: &mut Option<StreamBatch>,
+    checkpoints: &Arc<dyn CheckpointStore>,
+    session_id: &str,
+    events: &mpsc::Sender<JournalEvent>,
+) {
+    if let Err(failure) = flush_stream(pending, checkpoints, session_id, events).await {
+        tracing::warn!(error = %failure.message, "event recorder failed to flush streamed output on shutdown");
+    }
+}
+
+/// Saves one checkpoint with its events; returns whether the recorder may continue.
+async fn record_save(
+    command: SaveCommand,
+    checkpoints: &Arc<dyn CheckpointStore>,
+    events: &mpsc::Sender<JournalEvent>,
+) -> bool {
+    let SaveCommand {
+        checkpoint,
+        transcript_delta,
+        execution,
+        events: pending,
+        byte_permit: _byte_permit,
+        result,
+    } = command;
+    let recorded = match checkpoints
+        .save_with_events(checkpoint, transcript_delta, execution, pending)
+        .await
+    {
+        Ok(recorded) => recorded,
+        Err(error) => {
+            reply(result, Err(error));
+            return false;
+        }
+    };
+    let published = publish_all(recorded, events).await;
+    reply(result, Ok(()));
+    match published {
+        Ok(()) => true,
+        Err(error) => {
+            tracing::warn!(%error, "saved checkpoint events could not reach the frontend; stopping the recorder");
+            false
+        }
     }
 }
 
@@ -378,21 +411,21 @@ async fn record_append(
         result,
     } = command;
     let recorded = match checkpoints
-        .append_event(session_id, event.recorded_at_ms, &event.event)
+        .append_event(session_id, event.recorded_at_ms, event.event)
         .await
     {
         Ok(recorded) => recorded,
         Err(error) => {
             let terminal = RecorderFailure::from(&error);
             if let Some(result) = result {
-                let _ = result.send(Err(error));
+                reply(result, Err(error));
             }
             return Err(terminal);
         }
     };
     let published = publish(recorded, events).await;
     if let Some(result) = result {
-        let _ = result.send(Ok(()));
+        reply(result, Ok(()));
     }
     published.map_err(|error| RecorderFailure::from(&error))
 }
@@ -404,7 +437,7 @@ struct RecorderFailure {
 impl From<&Error> for RecorderFailure {
     fn from(error: &Error) -> Self {
         let message = match error {
-            Error::Stopped(message) => message.clone(),
+            Error::Stopped(message) => message.clone(), // rules-allow: the failure outlives the borrowed error
             error => error.to_string(),
         };
         Self { message }
@@ -413,7 +446,7 @@ impl From<&Error> for RecorderFailure {
 
 impl RecorderFailure {
     fn error(&self) -> Error {
-        Error::Stopped(self.message.clone())
+        Error::Stopped(self.message.clone()) // rules-allow: one failure rejects every later command
     }
 }
 
@@ -421,16 +454,16 @@ fn reject(command: RecorderCommand, failure: &RecorderFailure) -> bool {
     match command {
         RecorderCommand::Append(command) => {
             if let Some(result) = command.result {
-                let _ = result.send(Err(failure.error()));
+                reply(result, Err(failure.error()));
             }
             false
         }
         RecorderCommand::Save(command) => {
-            let _ = command.result.send(Err(failure.error()));
+            reply(command.result, Err(failure.error()));
             false
         }
         RecorderCommand::Flush(result) => {
-            let _ = result.send(Err(failure.error()));
+            reply(result, Err(failure.error()));
             true
         }
     }
@@ -440,7 +473,7 @@ async fn publish(record: JournalEvent, events: &mpsc::Sender<JournalEvent>) -> R
     events
         .send(record)
         .await
-        .map_err(|_| Error::Stopped("frontend event channel closed".into()))
+        .map_err(|error| Error::Stopped(format!("frontend event channel closed: {error}")))
 }
 
 async fn publish_all(
@@ -451,7 +484,7 @@ async fn publish_all(
         events
             .send(record)
             .await
-            .map_err(|_| Error::Stopped("frontend event channel closed".into()))?;
+            .map_err(|error| Error::Stopped(format!("frontend event channel closed: {error}")))?;
     }
     Ok(())
 }

@@ -11,9 +11,9 @@ use crate::backend::checkpoint::ExecutionOutcome;
 use crate::protocol::EventMsg;
 use crate::protocol::ModelStepOutcome;
 
-fn checkpoint(session_id: impl Into<String>) -> Checkpoint {
+fn checkpoint(session_id: impl Into<Arc<str>>) -> Checkpoint {
     let mut checkpoint = Checkpoint::empty(session_id);
-    checkpoint.session_context.owner_id = "test-bot".into();
+    Arc::make_mut(&mut checkpoint.session_context).owner_id = "test-bot".into();
     checkpoint
 }
 
@@ -25,7 +25,10 @@ async fn admission_receipts_commit_with_queue_and_survive_consumption() {
     let directory = tempfile::tempdir().expect("directory");
     let store = SqliteCheckpoint::new(directory.path().join("receipts.sqlite3")).expect("store");
     let mut state = checkpoint("session");
-    store.save(&state, &[], None).await.expect("seed");
+    store
+        .save(state.clone(), Vec::new(), None)
+        .await
+        .expect("seed");
     state.pending_messages.push(
         QueuedMessage::new(
             "messages",
@@ -42,7 +45,7 @@ async fn admission_receipts_commit_with_queue_and_survive_consumption() {
         )
         .expect("message"),
     );
-    assert!(store.save(&state, &[], None).await.is_err());
+    assert!(store.save(state.clone(), Vec::new(), None).await.is_err());
     assert!(
         !store
             .message_accepted("session", "input")
@@ -50,10 +53,16 @@ async fn admission_receipts_commit_with_queue_and_survive_consumption() {
             .expect("absent receipt")
     );
     state.sequence += 1;
-    store.save(&state, &[], None).await.expect("admit");
+    store
+        .save(state.clone(), Vec::new(), None)
+        .await
+        .expect("admit");
     state.sequence += 1;
     state.pending_messages.clear();
-    store.save(&state, &[], None).await.expect("consume");
+    store
+        .save(state.clone(), Vec::new(), None)
+        .await
+        .expect("consume");
     assert!(
         store
             .message_accepted("session", "input")
@@ -82,9 +91,9 @@ fn execution(session_id: &str, turn: u64) -> ExecutionRecord {
     let started_at_ms = i64::try_from(turn * 100).expect("execution start");
     ExecutionRecord {
         session_id: session_id.into(),
-        submission_id: format!("submission-{turn}"),
-        author: crate::protocol::MessageAuthor::User,
-        turn_id: format!("turn-{turn}"),
+        submission_id: format!("submission-{turn}").into(),
+        author: crate::protocol::MessageAuthor::User.into(),
+        turn_id: format!("turn-{turn}").into(),
         started_at_ms,
         finished_at_ms: started_at_ms + 25,
         elapsed_ms: 25,

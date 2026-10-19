@@ -50,7 +50,6 @@ mod text {
         pub(super) render_compaction_cancelled: String,
         pub(super) message_disabled: String,
         pub(super) message_empty_notes: String,
-        pub(super) message_notes_too_long: String,
         pub(super) message_checkpoint_too_large: String,
         pub(super) message_one_handoff_call: String,
         pub(super) message_input_too_large: String,
@@ -85,7 +84,24 @@ pub struct Compaction {
     at_tokens: i64,
     allow_model_compaction: bool,
     reserve_tokens: i64,
-    counts: Mutex<BTreeMap<String, SessionCount>>,
+    checkpoint_percent: i64,
+    counts: Mutex<BTreeMap<Arc<str>, SessionCount>>,
+    /// The last count of each session that unloaded, so an idle chat still reports it.
+    // ponytail: one integer per chat this gateway run has unloaded; prune if that ever matters.
+    unloaded: Mutex<BTreeMap<Arc<str>, u64>>,
+}
+
+impl std::fmt::Debug for Compaction {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Compaction")
+            .field("model_route", &self.model_route)
+            .field("at_tokens", &self.at_tokens)
+            .field("allow_model_compaction", &self.allow_model_compaction)
+            .field("reserve_tokens", &self.reserve_tokens)
+            .field("checkpoint_percent", &self.checkpoint_percent)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Default for Compaction {
@@ -101,7 +117,12 @@ impl Default for Compaction {
                 &text::DEFINITION.settings,
                 "reserve_tokens",
             ),
+            checkpoint_percent: super::manifest::integer_default(
+                &text::DEFINITION.settings,
+                "checkpoint_percent",
+            ),
             counts: Mutex::default(),
+            unloaded: Mutex::default(),
         }
     }
 }
@@ -174,6 +195,7 @@ impl Compaction {
         };
         Ok(Self {
             model_route,
+            checkpoint_percent: integer("checkpoint_percent")?,
             ..Self::new(integer("at_tokens")?)?
                 .reserve_tokens(integer("reserve_tokens")?)?
                 .allow_model_compaction(allow)
@@ -194,6 +216,14 @@ impl Compaction {
         self
     }
 
+    /// Token target for checkpoint notes: a share of the summarizing model's window.
+    fn checkpoint_tokens(&self, window: i64) -> i64 {
+        window
+            .saturating_mul(self.checkpoint_percent)
+            .saturating_div(100)
+            .max(1)
+    }
+
     fn reserve(&self, window: i64) -> i64 {
         (window.max(1) / 8).max(1).min(self.reserve_tokens)
     }
@@ -206,10 +236,10 @@ impl Compaction {
             .max(1)
     }
 
-    fn counts(&self) -> Result<std::sync::MutexGuard<'_, BTreeMap<String, SessionCount>>> {
-        self.counts
-            .lock()
-            .map_err(|_| Error::Checkpoint("compaction count lock is poisoned".into()))
+    fn counts(&self) -> Result<std::sync::MutexGuard<'_, BTreeMap<Arc<str>, SessionCount>>> {
+        self.counts.lock().map_err(|error| {
+            Error::Checkpoint(format!("compaction count lock is poisoned: {error}"))
+        })
     }
 
     fn stage(&self, session_id: &str, epoch: u64) -> Result<()> {
@@ -269,12 +299,19 @@ impl Middleware for Compaction {
     }
 
     fn frontend(&self, session_id: &str) -> FrontendContribution {
-        let count = self.counts.lock().map_or(0, |counts| {
-            counts.get(session_id).map_or(0, |session| session.count)
-        });
+        // A chat this gateway has not loaded yet has no known count: unknown, not zero.
+        let count = self
+            .counts
+            .lock()
+            .ok()
+            .and_then(|counts| counts.get(session_id).map(|session| session.count))
+            .or_else(|| {
+                let unloaded = self.unloaded.lock().ok()?;
+                unloaded.get(session_id).copied()
+            });
         FrontendContribution {
             capability: MANIFEST.id.into(),
-            count: Some(usize::try_from(count).unwrap_or(usize::MAX)),
+            count: count.map(|count| usize::try_from(count).unwrap_or(usize::MAX)),
             ..FrontendContribution::default()
         }
     }
@@ -296,7 +333,7 @@ impl Middleware for Compaction {
                 .transpose()?
                 .unwrap_or_default();
             self.counts()?.insert(
-                runtime.session_id.as_str().into(),
+                Arc::clone(&runtime.session_id),
                 SessionCount {
                     checkpoints: Arc::clone(&runtime.checkpoints),
                     count: state.count,
@@ -314,7 +351,11 @@ impl Middleware for Compaction {
     fn session_end<'a>(&'a self, runtime: &'a RuntimeContext) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             let settled = self.settle(&runtime.session_id).await;
-            self.counts()?.remove(&runtime.session_id);
+            if let Some(session) = self.counts()?.remove(&runtime.session_id)
+                && let Ok(mut unloaded) = self.unloaded.lock()
+            {
+                unloaded.insert(Arc::clone(&runtime.session_id), session.count);
+            }
             settled
         })
     }
@@ -352,7 +393,7 @@ impl Middleware for Compaction {
             update: crate::protocol::FrontendBlockUpdate::Replace,
             state: crate::protocol::FrontendBlockState::Complete,
             role: crate::protocol::FrontendBlockRole::Notice,
-            title: text::DEFINITION.render_context_compacted.clone(),
+            title: text::DEFINITION.render_context_compacted.clone(), // rules-allow: owned frontend record built from static text
             text: String::new(),
             symbol: None,
             links: Vec::new(),
@@ -469,6 +510,50 @@ fn validate_active_message_metadata(input: ModelInput<'_>, expected: Option<&Val
 mod tests {
     use super::*;
 
+    #[test]
+    fn checkpoint_target_is_a_share_of_the_window() {
+        let policy = Compaction::default();
+        assert_eq!(policy.checkpoint_tokens(400_000), 80_000);
+        let small = Compaction::from_settings(|id| {
+            (id == "checkpoint_percent").then_some(&FrontendSettingValue::Integer(10))
+        })
+        .expect("valid settings");
+        assert_eq!(small.checkpoint_tokens(128_000), 12_800);
+    }
+
+    #[tokio::test]
+    async fn idle_chats_keep_their_count_and_unknown_chats_report_none() {
+        let directory = tempfile::tempdir().expect("directory");
+        let runtime = super::super::tests::lifecycle_runtime(directory.path());
+        runtime
+            .checkpoints
+            .save_state("session", STATE_KEY, &serde_json::json!({ "count": 3 }))
+            .await
+            .expect("saved count");
+        let policy = Arc::new(Compaction::default());
+        let stack = super::super::MiddlewareStack::new(vec![Arc::<Compaction>::clone(&policy)])
+            .expect("stack");
+        assert_eq!(policy.frontend("session").count, None);
+        for source in [
+            super::super::SessionStartSource::Startup,
+            super::super::SessionStartSource::Resume,
+        ] {
+            stack
+                .session_start(
+                    &runtime,
+                    &[],
+                    source,
+                    &mut Vec::new(),
+                    &mut Default::default(),
+                )
+                .await
+                .expect("session start");
+            assert_eq!(policy.frontend("session").count, Some(3));
+            stack.session_end(&runtime).await.expect("session end");
+            assert_eq!(policy.frontend("session").count, Some(3));
+        }
+    }
+
     #[tokio::test]
     async fn count_settlement_retries_storage_failures_without_counting_rollbacks_twice() {
         use crate::backend::checkpoint::{Checkpoint, sqlite::SqliteCheckpoint};
@@ -478,17 +563,17 @@ mod tests {
             let path = directory.path().join("checkpoints.sqlite3");
             let checkpoints = Arc::new(SqliteCheckpoint::new(&path).expect("store"));
             let mut checkpoint = Checkpoint::empty("session");
-            checkpoint.session_context.owner_id = "test-bot".into();
+            std::sync::Arc::make_mut(&mut checkpoint.session_context).owner_id = "test-bot".into();
             checkpoint.context_epoch = 1;
             checkpoints
-                .save(&checkpoint, &[], None)
+                .save(checkpoint.clone(), Vec::new(), None)
                 .await
                 .expect("save");
             let policy = Compaction::default();
             policy.counts().expect("counts").insert(
                 "session".into(),
                 SessionCount {
-                    checkpoints: checkpoints.clone(),
+                    checkpoints: Arc::<SqliteCheckpoint>::clone(&checkpoints),
                     count: 3,
                     pending_epoch: None,
                 },

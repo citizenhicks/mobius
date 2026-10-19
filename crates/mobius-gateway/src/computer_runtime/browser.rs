@@ -61,8 +61,8 @@ impl BrowserHost {
         let request = Uuid::new_v4();
         let (reply, answer) = oneshot::channel();
         {
-            let mut app = self.app();
-            let app = app.as_mut()?;
+            let mut guard = self.app();
+            let app = guard.as_mut()?;
             // Cancelled calls need no reply; keep their senders only until the next request.
             app.pending.retain(|_, reply| !reply.is_closed());
             if app.pending.len() >= MAX_PENDING_PAGES {
@@ -70,17 +70,18 @@ impl BrowserHost {
             }
             app.outgoing
                 .try_send(ServerMessage::BrowserPageRequested {
-                    request_id: request.to_string(),
+                    request_id: request.to_string().into(),
                     session_id: session_id.to_owned(),
                     foreground,
                 })
                 .ok()?;
             app.pending.insert(request, reply);
+            drop(guard);
         }
         let endpoint = tokio::time::timeout(PAGE_TIMEOUT, answer)
             .await
             .ok()
-            .and_then(|answer| answer.ok())
+            .and_then(std::result::Result::ok)
             .flatten();
         if let Some(app) = self.app().as_mut() {
             app.pending.remove(&request);
@@ -92,7 +93,11 @@ impl BrowserHost {
 impl BrowserConnection {
     fn reply(&self, request_id: &str, endpoint: Option<String>) -> Result<()> {
         let stale = || Error::Sandbox("browser reply is stale or belongs to another app".into());
-        let request: Uuid = request_id.parse().map_err(|_| stale())?;
+        let request: Uuid = request_id.parse().map_err(|error| {
+            Error::Sandbox(format!(
+                "browser reply is stale or belongs to another app: {error}"
+            ))
+        })?;
         let reply = self
             .host
             .app()
@@ -100,7 +105,15 @@ impl BrowserConnection {
             .filter(|app| app.id == self.id)
             .and_then(|app| app.pending.remove(&request))
             .ok_or_else(stale)?;
-        let _ = reply.send(endpoint.filter(|endpoint| scoped_endpoint(endpoint)));
+        if reply
+            .send(endpoint.filter(|endpoint| scoped_endpoint(endpoint)))
+            .is_err()
+        {
+            tracing::debug!(
+                request_id,
+                "browser page call ended before its reply arrived"
+            );
+        }
         Ok(())
     }
 }
@@ -153,14 +166,11 @@ pub(crate) async fn write_update(
     message: Option<ServerMessage>,
     writer: &mut (impl tokio::io::AsyncWrite + Unpin),
 ) -> crate::Result<()> {
-    match message {
-        Some(message) => {
-            crate::wire::write_frame(writer, &crate::wire::ServerFrame::new(message)).await
-        }
-        None => {
-            *connection = None;
-            Ok(())
-        }
+    if let Some(message) = message {
+        crate::wire::write_frame(writer, &crate::wire::ServerFrame::new(message)).await
+    } else {
+        *connection = None;
+        Ok(())
     }
 }
 
@@ -179,17 +189,17 @@ pub(crate) async fn handle_message(
             request_id,
             enabled,
         } => {
-            let result = if !(available
+            let result = if available
                 && cfg!(target_os = "macos")
                 && local
-                && client_kind == crate::wire::ClientKind::Macos)
+                && client_kind == crate::wire::ClientKind::Macos
             {
+                *connection = enabled.then(|| host.attach());
+                Ok(())
+            } else {
                 Err(Error::Sandbox(
                     "only the local Mac app can register its browser renderer".into(),
                 ))
-            } else {
-                *connection = enabled.then(|| host.attach());
-                Ok(())
             };
             (request_id, result)
         }
@@ -216,7 +226,7 @@ pub(crate) async fn handle_message(
         Err(error) => ServerMessage::Rejected {
             request_id,
             code: "browser".into(),
-            message: error.to_string(),
+            message: error.to_string().into(),
             fatal: false,
         },
     };

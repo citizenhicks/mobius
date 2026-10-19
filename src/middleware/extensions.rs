@@ -152,6 +152,18 @@ pub struct Extensions {
     hook_runtime: Option<hooks::HookRuntime>,
 }
 
+impl std::fmt::Debug for Extensions {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Extensions")
+            .field("skills", &self.skills.keys().collect::<Vec<_>>())
+            .field("plugins", &self.plugins)
+            .field("plugin_roots", &self.plugin_roots)
+            .field("hook_workspace", &self.hook_workspace)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Extensions {
     /// Discovers direct child `SKILL.md` files under each root.
     /// # Errors
@@ -261,10 +273,11 @@ impl Extensions {
             if package.kind != ExtensionPackageKind::Plugin {
                 return Err(Error::Config("activated extension is not a plugin".into()));
             }
-            if !self.plugins.insert(package.name.clone()) {
+            let inserted = self.plugins.insert(package.name.clone()); // rules-allow: the plugin set and the hook set each own the name
+            if !inserted {
                 return Err(Error::Duplicate(format!("plugin `{}`", package.name)));
             }
-            self.plugin_roots.insert(root.clone());
+            self.plugin_roots.insert(root.clone()); // rules-allow: the resource roots and the hook set each own the root
             let data = data_root.join(&package.name);
             data_root_dir.create_dir_all(&package.name)?;
             let data = canonical_directory(&data, "plugin data directory")?;
@@ -284,7 +297,7 @@ impl Extensions {
                 self.skills.insert(name, skill);
             }
             let hooks = hooks
-                .map(|definitions| hooks::HookSet::new(package.name, root, data, definitions))
+                .map(|definitions| hooks::HookSet::new(package.name, root, &data, definitions))
                 .transpose()?;
             if let (Some(authorization), Some(hooks)) = (authorization, hooks)
                 && !hooks.is_empty()
@@ -308,7 +321,7 @@ impl Extensions {
     /// Returns an error if the hook runtime cannot start.
     pub fn start_hooks(mut self, backend: Arc<dyn SandboxBackend>) -> Result<Self> {
         if let Some(workspace) = self.hook_workspace.take() {
-            self.hook_runtime = Some(hooks::HookRuntime::new(backend, workspace)?);
+            self.hook_runtime = Some(hooks::HookRuntime::new(backend, &workspace)?);
         }
         Ok(self)
     }
@@ -320,7 +333,7 @@ impl Extensions {
         self.skills
             .values()
             .filter_map(|skill| skill.location.parent().map(Path::to_path_buf))
-            .chain(self.plugin_roots.iter().cloned())
+            .chain(self.plugin_roots.iter().cloned()) // rules-allow: callers receive owned roots
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect()
@@ -340,7 +353,7 @@ impl Extensions {
             capability: MANIFEST.id.into(),
             count: Some(count),
             commands: Vec::new(),
-            widgets: vec![FrontendWidget {
+            widgets: vec![Arc::new(FrontendWidget {
                 id: "count".into(),
                 slot: FrontendSlot::Header,
                 text: text::DEFINITION
@@ -352,14 +365,14 @@ impl Extensions {
                 progress: None,
                 content: None,
                 action: None,
-            }],
+            })],
             references: self
                 .skills
                 .iter()
                 .map(|(name, skill)| FrontendReference {
                     trigger: '$',
-                    value: name.clone(),
-                    description: skill.description.clone(),
+                    value: name.clone().into(), // rules-allow: owned frontend record built from the discovered skill
+                    description: skill.description.clone().into(), // rules-allow: owned frontend record built from the discovered skill
                 })
                 .collect(),
         }
@@ -677,18 +690,18 @@ fn hook_notices(outcomes: &[hooks::HookOutcome]) -> Vec<String> {
                 messages.push(text::DEFINITION.notice_omitted.as_str().into());
                 return messages;
             }
-            messages.push(message.clone());
+            messages.push(message.clone()); // rules-allow: warning events own copies of the borrowed hook outcomes
         }
     }
     messages
 }
 
 fn push_hook_notices(events: &mut Vec<EventMsg>, outcomes: &[hooks::HookOutcome]) {
-    events.extend(
-        hook_notices(outcomes)
-            .into_iter()
-            .map(|message| EventMsg::Warning(WarningEvent { message })),
-    );
+    events.extend(hook_notices(outcomes).into_iter().map(|message| {
+        EventMsg::Warning(WarningEvent {
+            message: message.into(),
+        })
+    }));
 }
 
 fn publish_hook_notices(runtime: &RuntimeContext, outcomes: &[hooks::HookOutcome]) -> Result<()> {
@@ -786,7 +799,7 @@ impl Middleware for Extensions {
                     input.extend([
                         (
                             "agent_id".into(),
-                            Value::String(context.runtime.session_id.clone()),
+                            Value::String(context.runtime.session_id.to_string()),
                         ),
                         ("agent_type".into(), Value::String("subagent".into())),
                     ]);
@@ -806,7 +819,10 @@ impl Middleware for Extensions {
                         .iter()
                         .rev()
                         .find(|item| internal_message_kind(item) == Some(kind))
-                        .is_some_and(|item| item["content"][0]["text"].as_str() == Some(additional))
+                        .is_some_and(|item| {
+                            item.pointer("/content/0/text").and_then(Value::as_str)
+                                == Some(additional)
+                        })
                 {
                     return Ok(false);
                 }
@@ -891,11 +907,15 @@ impl Middleware for Extensions {
                 ("tool_name".into(), Value::String(tool.name)),
                 (
                     "tool_use_id".into(),
-                    Value::String(context.call().call_id.clone()),
+                    Value::String(context.call().call_id.to_string()), // rules-allow: the hook input owns its JSON values
                 ),
                 ("tool_input".into(), tool.input),
             ]);
-            let subjects = tool.subjects.iter().map(String::as_str).collect::<Vec<_>>();
+            let subjects = tool
+                .subjects
+                .iter()
+                .map(AsRef::as_ref)
+                .collect::<Vec<&str>>();
             let outcomes = self
                 .run_hooks(
                     hooks::HookEvent::PreToolUse,
@@ -927,7 +947,7 @@ impl Middleware for Extensions {
             if rewrites.any(|candidate| candidate != rewrite) {
                 return context.deny(text::DEFINITION.hook_conflicting_rewrites.as_str());
             }
-            let original_name = context.call().name.clone();
+            let original_name = Arc::clone(&context.call().name);
             match context
                 .tools
                 .rewrite_hook_input(&original_name, rewrite)
@@ -952,7 +972,7 @@ impl Middleware for Extensions {
                 let call = context
                     .calls
                     .iter()
-                    .find(|call| &call.call_id == call_id)
+                    .find(|call| call.call_id == *call_id)
                     .ok_or_else(|| Error::Config("approval hook call is missing".into()))?;
                 let tool = context.tools.hook_tool(call, Some(context.reason));
                 let mut input = hook_input(
@@ -965,7 +985,11 @@ impl Middleware for Extensions {
                     ("tool_name".into(), Value::String(tool.name)),
                     ("tool_input".into(), tool.input),
                 ]);
-                let subjects = tool.subjects.iter().map(String::as_str).collect::<Vec<_>>();
+                let subjects = tool
+                    .subjects
+                    .iter()
+                    .map(AsRef::as_ref)
+                    .collect::<Vec<&str>>();
                 let outcomes = self
                     .run_hooks(
                         hooks::HookEvent::PermissionRequest,
@@ -1010,7 +1034,7 @@ impl Middleware for Extensions {
                 ("tool_name".into(), Value::String(tool.name)),
                 (
                     "tool_use_id".into(),
-                    Value::String(context.call.call_id.clone()),
+                    Value::String(context.call.call_id.to_string()), // rules-allow: the hook input owns its JSON values
                 ),
                 ("tool_input".into(), tool.input),
                 (
@@ -1018,7 +1042,11 @@ impl Middleware for Extensions {
                     serde_json::to_value(&context.result().output)?,
                 ),
             ]);
-            let subjects = tool.subjects.iter().map(String::as_str).collect::<Vec<_>>();
+            let subjects = tool
+                .subjects
+                .iter()
+                .map(AsRef::as_ref)
+                .collect::<Vec<&str>>();
             let outcomes = self
                 .run_hooks(
                     hooks::HookEvent::PostToolUse,
@@ -1172,17 +1200,17 @@ fn read_skill_resource(directory: &Dir, path: &Path) -> Result<String> {
     // Avoid blocking on static special files, then verify the opened handle again.
     if !directory
         .metadata(path)
-        .map_err(|_| unavailable_skill_resource())?
+        .map_err(|error| skill_resource_error(&error))?
         .is_file()
     {
         return Err(unavailable_skill_resource());
     }
     let file = directory
         .open(path)
-        .map_err(|_| unavailable_skill_resource())?;
+        .map_err(|error| skill_resource_error(&error))?;
     if !file
         .metadata()
-        .map_err(|_| unavailable_skill_resource())?
+        .map_err(|error| skill_resource_error(&error))?
         .is_file()
     {
         return Err(unavailable_skill_resource());
@@ -1190,17 +1218,22 @@ fn read_skill_resource(directory: &Dir, path: &Path) -> Result<String> {
     let mut bytes = Vec::new();
     file.take(MAX_SKILL_BYTES + 1)
         .read_to_end(&mut bytes)
-        .map_err(|_| unavailable_skill_resource())?;
+        .map_err(|error| skill_resource_error(&error))?;
     if bytes.len() as u64 > MAX_SKILL_BYTES {
         return Err(Error::Tool(format!(
             "skill resource exceeds {MAX_SKILL_BYTES} bytes"
         )));
     }
-    String::from_utf8(bytes).map_err(|_| Error::Tool("skill resource is not valid UTF-8".into()))
+    String::from_utf8(bytes)
+        .map_err(|error| Error::Tool(format!("skill resource is not valid UTF-8: {error}")))
 }
 
 fn unavailable_skill_resource() -> Error {
     Error::Tool("skill resource is unavailable".into())
+}
+
+fn skill_resource_error(error: &std::io::Error) -> Error {
+    Error::Tool(format!("skill resource is unavailable: {error}"))
 }
 
 fn skill_metadata(path: &std::path::Path, content: &str) -> (String, String) {
@@ -1241,8 +1274,9 @@ fn frontmatter_value(frontmatter: &str, key: &str) -> Option<String> {
         return Some(unquote(value));
     }
     let literal = value.starts_with('|');
-    let values = lines[index + 1..]
+    let values = lines
         .iter()
+        .skip(index + 1)
         .take_while(|line| line.is_empty() || line.starts_with(' ') || line.starts_with('\t'))
         .map(|line| line.trim())
         .filter(|line| !line.is_empty())
@@ -1258,7 +1292,7 @@ fn unquote(value: &str) -> String {
     value
         .trim()
         .trim_matches(|character| character == '"' || character == '\'')
-        .to_string()
+        .to_owned()
 }
 
 #[cfg(test)]
@@ -1266,8 +1300,8 @@ mod tests {
     use super::*;
     use crate::middleware::TurnIdentity;
 
-    fn trusted_hooks() -> Option<CommandAuthorization> {
-        Some(Arc::new(|launch| launch()))
+    fn trusted_hooks() -> CommandAuthorization {
+        Arc::new(|launch| launch())
     }
 
     #[test]
@@ -1397,7 +1431,7 @@ mod tests {
 
         Extensions::discover(Vec::<PathBuf>::new())
             .expect("extensions")
-            .load_plugins([(plugin, trusted_hooks())], &workspace)
+            .load_plugins([(plugin, Some(trusted_hooks()))], &workspace)
             .and_then(|extensions| extensions.start_hooks(backend))
             .expect("activate plugin")
     }
@@ -1413,10 +1447,9 @@ mod tests {
 
         let error = Extensions::discover(Vec::<PathBuf>::new())
             .expect("extensions")
-            .load_plugins([(plugin, trusted_hooks())], workspace.path())
+            .load_plugins([(plugin, Some(trusted_hooks()))], workspace.path())
             .and_then(|extensions| extensions.start_hooks(backend))
-            .err()
-            .expect("overlapping plugin must fail");
+            .expect_err("overlapping plugin must fail");
 
         assert!(error.to_string().contains("must not overlap"));
     }
@@ -1440,7 +1473,7 @@ mod tests {
 
         let result = Extensions::discover(Vec::<PathBuf>::new())
             .expect("extensions")
-            .load_plugins([(plugin, trusted_hooks())], &workspace)
+            .load_plugins([(plugin, Some(trusted_hooks()))], &workspace)
             .and_then(|extensions| extensions.start_hooks(backend));
 
         assert!(result.is_err());

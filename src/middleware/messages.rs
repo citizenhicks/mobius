@@ -1,5 +1,7 @@
 //! Durable conversation-message delivery.
 
+use std::sync::Arc;
+
 use super::{
     ActiveCommandContext, MessageRouteContext, MessageSubmitContext, Middleware,
     SessionStartContext, SessionStartSource, SubmissionResult,
@@ -52,16 +54,22 @@ fn rejected(message: &str) -> SubmissionResult {
 }
 
 /// Prepares every conversation message and owns its durable delivery lifecycle.
+#[derive(Debug)]
 pub struct Messages {
     max_pending: usize,
     delivery: ActiveMessageDelivery,
 }
 
 impl Default for Messages {
+    #[expect(
+        clippy::expect_used,
+        reason = "messages.toml embeds a non-negative max_pending and a valid delivery default"
+    )]
     fn default() -> Self {
         let settings = &text::DEFINITION.settings;
         Self {
-            max_pending: super::manifest::integer_default(settings, MAX_PENDING) as usize,
+            max_pending: usize::try_from(super::manifest::integer_default(settings, MAX_PENDING))
+                .expect("valid embedded max_pending"),
             delivery: super::manifest::string_default(settings, DELIVERY)
                 .parse()
                 .expect("valid embedded delivery"),
@@ -79,7 +87,7 @@ impl Messages {
             .settings
             .iter()
             .find(|setting| setting.id() == MAX_PENDING)
-            .expect("embedded max_pending setting")
+            .ok_or_else(|| crate::Error::Config(format!("missing embedded {MAX_PENDING} setting")))?
             .validate(
                 MANIFEST.id,
                 Some(&FrontendSettingValue::Integer(
@@ -115,7 +123,7 @@ impl Messages {
         });
         FrontendEvent::Widget {
             capability: self.name().into(),
-            item: FrontendWidget {
+            item: Arc::new(FrontendWidget {
                 id: id.into(),
                 slot: FrontendSlot::TranscriptTail,
                 text: text.into(),
@@ -129,7 +137,7 @@ impl Messages {
                 progress: None,
                 content: None,
                 action,
-            },
+            }),
         }
     }
 
@@ -213,7 +221,7 @@ impl Messages {
             delivery: queued.delivery(),
             text: input.into(),
             attachments: queued.attachments().to_vec(),
-            reply: queued.reply().cloned(),
+            reply: queued.reply().cloned(), // rules-allow: the queued entry is borrowed and replaced by this owned event
             message_target: None,
         };
         let input_changed = event.delivery == MessageDelivery::Steer;
@@ -273,8 +281,8 @@ impl Middleware for Messages {
                 session_id = source.id()
             )),
             title: text::DEFINITION.received_title.replace("{handle}", handle),
-            text: message.text.clone(),
-            symbol: Some(symbol.clone().unwrap_or(FrontendSymbol::Chat)),
+            text: message.text.clone(), // rules-allow: the block owns text rendered from a borrowed event
+            symbol: Some(symbol.clone().unwrap_or(FrontendSymbol::Chat)), // rules-allow: the block owns a symbol from a borrowed event
             ..Default::default()
         })
     }
@@ -490,16 +498,16 @@ mod tests {
         });
         let (_directory, checkpoints) = checkpoints();
         let mut session = crate::backend::checkpoint::Checkpoint::empty("session-1");
-        session.session_context.owner_id = "test-bot".into();
+        std::sync::Arc::make_mut(&mut session.session_context).owner_id = "test-bot".into();
         checkpoints
-            .save(&session, &[], None)
+            .save(session.clone(), Vec::new(), None)
             .await
             .expect("save session");
         checkpoints
             .append_event(
                 "session-1",
                 1,
-                &event(
+                event(
                     "earlier",
                     EventMsg::Message(MessageEvent {
                         author: MessageAuthor::User,
@@ -648,9 +656,9 @@ mod tests {
         let (_directory, store) = checkpoints();
         for session_id in ["current", "other"] {
             let mut checkpoint = Checkpoint::empty(session_id);
-            checkpoint.session_context.owner_id = "test-bot".into();
+            std::sync::Arc::make_mut(&mut checkpoint.session_context).owner_id = "test-bot".into();
             store
-                .save(&checkpoint, &[], None)
+                .save(checkpoint.clone(), Vec::new(), None)
                 .await
                 .expect("save session");
         }
@@ -662,7 +670,7 @@ mod tests {
             .append_event(
                 "current",
                 1,
-                &event(
+                event(
                     "attachment",
                     EventMsg::Message(crate::protocol::MessageEvent {
                         author: crate::protocol::MessageAuthor::User,
@@ -689,7 +697,7 @@ mod tests {
             .append_event(
                 "current",
                 2,
-                &event(
+                event(
                     "assistant",
                     EventMsg::AssistantMessage(crate::protocol::AssistantMessageEvent {
                         session_id: "current".into(),
@@ -725,7 +733,7 @@ mod tests {
             .append_event(
                 "other",
                 1,
-                &event(
+                event(
                     "other",
                     EventMsg::Message(crate::protocol::MessageEvent {
                         author: crate::protocol::MessageAuthor::User,

@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    AuthStore, CloudflareInit, ConfigStore, DEFAULT_LISTEN, Endpoint, Error, GatewayConfig,
+    InitOptions, Path, PathBuf, Result, STARTUP_FILE, STATE_MARKER_FILE, StartupGuard,
+    ensure_gateway_stopped, fs, print_line, print_listener, stop_gateway,
+};
 
 pub(super) fn initialize(options: InitOptions) -> Result<()> {
     let (store, config) = match options.cloudflare {
@@ -19,10 +23,11 @@ pub(super) fn initialize(options: InitOptions) -> Result<()> {
         None => ConfigStore::initialize(options.state_dir, options.listen, options.tls)?,
     };
     initialize_auth(&store, config.auth)?;
-    println!("initialized möbius gateway");
-    print_listener(&config, None);
-    println!("run `mobius-gateway connect` to pair a client");
-    Ok(())
+    print_line(format_args!("initialized möbius gateway"))?;
+    print_listener(&config, None)?;
+    Ok(print_line(format_args!(
+        "run `mobius-gateway connect` to pair a client"
+    ))?)
 }
 
 pub(super) fn initialize_auth(store: &ConfigStore, policy: crate::auth::AuthConfig) -> Result<()> {
@@ -46,9 +51,8 @@ pub(super) fn initialize_bootstrap(
     if let Err(error) = initialized {
         return cleanup_failed_initialization(&store, error);
     }
-    println!("initialized möbius gateway bootstrap");
-    print_listener(&config, None);
-    Ok(())
+    print_line(format_args!("initialized möbius gateway bootstrap"))?;
+    Ok(print_listener(&config, None)?)
 }
 
 pub(super) fn reset_bot_defaults(state_dir: PathBuf) -> Result<()> {
@@ -57,20 +61,21 @@ pub(super) fn reset_bot_defaults(state_dir: PathBuf) -> Result<()> {
         let (store, _) = ConfigStore::open(state_dir)?;
         let _startup = StartupGuard::create(store.state_dir())?;
         stop_gateway(store.state_dir(), None)?;
-        let (store, config) = ConfigStore::open(store.state_dir().to_path_buf())?;
-        let current = config.bot_defaults.as_ref().ok_or_else(|| {
+        let (store, mut config) = ConfigStore::open(store.state_dir().to_path_buf())?;
+        let mut composition = crate::wire::AgentComposition::defaults_with_ceilings(
+            config.execution.subagent_ceilings,
+        );
+        let current = config.bot_defaults.as_mut().ok_or_else(|| {
             Error::Config("configure a provider before resetting defaults".into())
         })?;
-        let composition = crate::wire::AgentComposition {
-            provider: current.config.provider.clone(),
-            ..crate::wire::AgentComposition::defaults_with_ceilings(
-                config.execution.subagent_ceilings,
-            )
-        };
-        let config = config.replacing_bot_defaults(current.revision, composition)?;
+        let revision = current.revision;
+        // The replaced defaults are discarded, so their provider moves into the new ones.
+        std::mem::swap(&mut composition.provider, &mut current.config.provider);
+        let config = config.replacing_bot_defaults(revision, composition)?;
         store.save(&config)?;
-        println!("reset möbius gateway Bot defaults");
-        Ok(())
+        Ok(print_line(format_args!(
+            "reset möbius gateway Bot defaults"
+        ))?)
     }
     #[cfg(not(unix))]
     {
@@ -85,8 +90,9 @@ pub(super) fn set_desktop(state_dir: PathBuf, enabled: bool) -> Result<()> {
     ensure_gateway_stopped(&store, &config)?;
     config.desktop_enabled = enabled;
     store.save(&config)?;
-    println!("gateway desktop enabled: {enabled}");
-    Ok(())
+    Ok(print_line(format_args!(
+        "gateway desktop enabled: {enabled}"
+    ))?)
 }
 
 pub(super) fn direct_loopback_endpoint(config: &GatewayConfig) -> Result<Endpoint> {
@@ -201,7 +207,7 @@ pub(super) fn validate_reset_target(path: &Path, ignore_startup_lock: bool) -> R
         return Ok(false);
     }
     let marker = fs::symlink_metadata(path.join(STATE_MARKER_FILE))
-        .map_err(|_| invalid_reset_target(path))?;
+        .map_err(|error| Error::Config(format!("{}: {error}", invalid_reset_target(path))))?;
     if !marker.is_file() || marker.file_type().is_symlink() {
         return Err(invalid_reset_target(path));
     }

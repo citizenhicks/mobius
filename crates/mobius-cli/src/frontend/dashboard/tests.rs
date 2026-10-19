@@ -3,6 +3,7 @@ use mobius::protocol::{
     FrontendWidgetContent, Op,
 };
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use mobius::backend::session_files::session_file_limits;
 use mobius_gateway::wire::{ReadyPayload, ServerMessage};
@@ -31,12 +32,12 @@ fn superseded_profile_rejection_does_not_set_dashboard_error() {
 
 #[test]
 fn capability_input_paste_stops_at_the_protocol_capability_limit() {
-    let key: (String, String) = ("capability-a".into(), "view".into());
+    let key: (Arc<str>, Arc<str>) = ("capability-a".into(), "view".into());
     let mut overlay = CapabilityOverlay {
         title: "Chat capabilities · session-1".into(),
         session_id: "session-1".into(),
         slots: vec![FrontendSlot::Navigation],
-        widgets: vec![(key.clone(), widget(blocks("Initial")))],
+        widgets: vec![(Arc::clone(&key.0), Arc::new(widget(blocks("Initial"))))],
         widget_list: ListState::default(),
         open: Some(key),
         option_list: ListState::default(),

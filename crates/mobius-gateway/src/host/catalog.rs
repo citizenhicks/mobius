@@ -26,8 +26,8 @@ pub(super) type SessionCatalogMetadata = BTreeMap<String, SessionMetadata>;
 
 #[derive(Default)]
 pub(super) struct SessionCatalog {
-    pub(super) activities: HashMap<String, SessionActivity>,
-    pub(super) approvals: BTreeMap<String, BackgroundApproval>,
+    pub(super) activities: HashMap<Arc<str>, SessionActivity>,
+    pub(super) approvals: BTreeMap<Arc<str>, Arc<BackgroundApproval>>,
     pub(super) snapshot: Option<CatalogSnapshot>,
 }
 
@@ -47,22 +47,28 @@ pub(super) async fn session_catalog(
 pub(super) async fn activity_catalog(
     checkpoints: &Arc<dyn CheckpointStore>,
     activities: &SessionActivities,
-) -> Result<(Vec<SessionRecord>, Vec<BackgroundApproval>)> {
+) -> Result<(Vec<SessionRecord>, Vec<Arc<BackgroundApproval>>)> {
     let mut catalog = activities.lock().await;
     let sessions = match &catalog.snapshot {
-        Some(snapshot) => snapshot.sessions.clone(),
+        Some(snapshot) => snapshot.sessions.clone(), // rules-allow: the catalog snapshot keeps the records it returns
         None => refresh_catalog(checkpoints, &mut catalog).await?,
     };
-    Ok((sessions, catalog.approvals.values().cloned().collect()))
+    Ok((
+        sessions,
+        catalog.approvals.values().map(Arc::clone).collect(),
+    ))
 }
 
 pub(super) async fn gateway_catalog(
     checkpoints: &Arc<dyn CheckpointStore>,
     activities: &SessionActivities,
-) -> Result<(Vec<SessionRecord>, Vec<BackgroundApproval>)> {
+) -> Result<(Vec<SessionRecord>, Vec<Arc<BackgroundApproval>>)> {
     let mut catalog = activities.lock().await;
     let sessions = refresh_catalog(checkpoints, &mut catalog).await?;
-    Ok((sessions, catalog.approvals.values().cloned().collect()))
+    Ok((
+        sessions,
+        catalog.approvals.values().map(Arc::clone).collect(),
+    ))
 }
 
 async fn refresh_catalog(
@@ -79,7 +85,7 @@ async fn refresh_catalog(
     .await?;
     catalog.snapshot = Some(CatalogSnapshot {
         metadata,
-        sessions: sessions.clone(),
+        sessions: sessions.clone(), // rules-allow: the catalog snapshot keeps the records it returns
     });
     Ok(sessions)
 }
@@ -140,6 +146,7 @@ pub(super) async fn restore_pending_approval_activities(
         };
         cursor = Some(next);
     }
+    drop(catalog);
     Ok(())
 }
 
@@ -163,32 +170,35 @@ impl SessionCatalog {
             && summary.parent_session_id.is_none()
             && activity.state == SessionActivityState::AwaitingApproval
         {
-            Some(BackgroundApproval {
-                session_id: summary.session_id.clone(),
-                bot_id: summary.session_context.owner_id.clone(),
+            Some(Arc::new(BackgroundApproval {
+                session_id: Arc::clone(&summary.session_id),
+                bot_id: Arc::clone(&summary.session_context.owner_id),
                 turn_id: activity
                     .turn_id
-                    .clone()
+                    .as_ref()
+                    .map(Arc::clone)
                     .ok_or_else(|| Error::Config("approval activity has no turn id".into()))?,
                 request_id: activity
                     .approval_request_id
-                    .clone()
+                    .as_ref()
+                    .map(Arc::clone)
                     .ok_or_else(|| Error::Config("approval activity has no request id".into()))?,
-            })
+            }))
         } else {
             None
         };
         self.approvals.remove(&summary.session_id);
         if let Some(approval) = approval {
-            self.approvals.insert(summary.session_id.clone(), approval);
+            self.approvals
+                .insert(Arc::clone(&summary.session_id), approval);
         }
         self.activities
-            .insert(summary.session_id.clone(), activity.clone());
+            .insert(Arc::clone(&summary.session_id), activity.clone()); // rules-allow: the activity map and the session record each own the activity
         if let Some(snapshot) = &mut self.snapshot {
             snapshot
                 .sessions
                 .retain(|record| record.session_id != summary.session_id);
-            let metadata = snapshot.metadata.get(&summary.session_id);
+            let metadata = snapshot.metadata.get(&*summary.session_id);
             if summary.catalog_visible {
                 snapshot
                     .sessions
@@ -216,7 +226,7 @@ enum CatalogFilter<'a> {
 
 async fn filtered_session_catalog(
     checkpoints: &Arc<dyn CheckpointStore>,
-    activities: &HashMap<String, SessionActivity>,
+    activities: &HashMap<Arc<str>, SessionActivity>,
     metadata: &SessionCatalogMetadata,
     filter: CatalogFilter<'_>,
 ) -> Result<Vec<SessionRecord>> {
@@ -236,15 +246,15 @@ async fn filtered_session_catalog(
         let ordinary_count = sessions
             .iter()
             .filter(|session: &&SessionSummary| {
-                session.session_id
-                    != crate::bots::conversation_session_id(&session.session_context.owner_id)
+                *session.session_id
+                    != *crate::bots::conversation_session_id(&session.session_context.owner_id)
             })
             .count();
         let mut available = SESSION_PAGE_SIZE.saturating_sub(ordinary_count);
         sessions.extend(page.sessions.into_iter().filter(|session| match filter {
             CatalogFilter::Visible => {
-                let persistent = session.session_id
-                    == crate::bots::conversation_session_id(&session.session_context.owner_id);
+                let persistent = *session.session_id
+                    == *crate::bots::conversation_session_id(&session.session_context.owner_id);
                 if session.catalog_visible && (persistent || available > 0) {
                     if !persistent {
                         available -= 1;
@@ -255,7 +265,7 @@ async fn filtered_session_catalog(
                 }
             }
             CatalogFilter::HiddenBot(bot_id) => {
-                session.session_context.owner_id == bot_id
+                *session.session_context.owner_id == *bot_id
                     && session.parent_session_id.is_none()
                     && !session.catalog_visible
             }
@@ -274,10 +284,10 @@ async fn filtered_session_catalog(
     let mut sessions = sessions
         .into_iter()
         .map(|summary| {
-            let metadata = metadata.get(&summary.session_id);
+            let metadata = metadata.get(&*summary.session_id);
             let activity = activities
                 .get(&summary.session_id)
-                .cloned()
+                .cloned() // rules-allow: the activity map keeps its entry
                 .unwrap_or_default();
             session_record(summary, metadata, activity)
         })
@@ -303,7 +313,7 @@ fn session_record(
         sequence: summary.sequence,
         first_user_message: preview,
         execution_stats: summary.execution_stats,
-        title: metadata.and_then(|metadata| metadata.title.clone()),
+        title: metadata.and_then(|metadata| metadata.title.clone()), // rules-allow: the catalog metadata keeps its title
         pinned: metadata.is_some_and(|metadata| metadata.pinned),
         activity,
         created_at: summary.created_at,
@@ -362,8 +372,8 @@ pub(super) fn validate_session_title(title: &str) -> std::result::Result<&str, R
 fn retain_catalog_page(sessions: &mut Vec<SessionRecord>) {
     let mut ordinary = 0;
     sessions.retain(|session| {
-        if session.session_id
-            == crate::bots::conversation_session_id(&session.session_context.owner_id)
+        if *session.session_id
+            == *crate::bots::conversation_session_id(&session.session_context.owner_id)
         {
             return true;
         }
@@ -391,8 +401,8 @@ mod tests {
         );
         for index in 0..=SESSION_PAGE_SIZE {
             let mut checkpoint = Checkpoint::empty(format!("{index:03}"));
-            checkpoint.session_context.owner_id = "bot-fixture".into();
-            checkpoint.session_context.workspace_id = Some("workspace".into());
+            Arc::make_mut(&mut checkpoint.session_context).owner_id = "bot-fixture".into();
+            Arc::make_mut(&mut checkpoint.session_context).workspace_id = Some("workspace".into());
             checkpoint.sequence = 1;
             checkpoint.first_user_message = Some(if index == SESSION_PAGE_SIZE {
                 "€".repeat(MAX_SESSION_PREVIEW_BYTES / '€'.len_utf8() + 1)
@@ -400,7 +410,7 @@ mod tests {
                 format!("chat {index}")
             });
             checkpoints
-                .save(&checkpoint, &[], None)
+                .save(checkpoint.clone(), Vec::new(), None)
                 .await
                 .expect("save chat");
         }
@@ -410,12 +420,12 @@ mod tests {
             .expect("session catalog");
         let preview = sessions
             .iter()
-            .find(|session| session.session_id == "100")
+            .find(|session| &*session.session_id == "100")
             .and_then(|session| session.first_user_message.as_deref())
             .expect("UTF-8 preview");
 
         assert_eq!(sessions.len(), SESSION_PAGE_SIZE);
-        assert!(sessions.iter().all(|session| session.session_id != "000"));
+        assert!(sessions.iter().all(|session| &*session.session_id != "000"));
         assert_eq!(
             preview,
             "€".repeat(MAX_SESSION_PREVIEW_BYTES / '€'.len_utf8())
@@ -431,21 +441,24 @@ mod tests {
         );
         let mut root = Checkpoint::empty("hidden-root");
         root.catalog_visible = false;
-        root.session_context.owner_id = "bot-a".into();
+        Arc::make_mut(&mut root.session_context).owner_id = "bot-a".into();
         root.sequence = 1;
-        checkpoints.save(&root, &[], None).await.expect("save root");
+        checkpoints
+            .save(root.clone(), Vec::new(), None)
+            .await
+            .expect("save root");
         let mut child = Checkpoint::empty("hidden-child");
         child.catalog_visible = false;
-        child.session_context.owner_id = "bot-a".into();
+        Arc::make_mut(&mut child.session_context).owner_id = "bot-a".into();
         checkpoints
-            .fork("hidden-root", 1, &child)
+            .fork("hidden-root", 1, child.clone())
             .await
             .expect("fork child");
         let mut other = Checkpoint::empty("other-root");
         other.catalog_visible = false;
-        other.session_context.owner_id = "bot-b".into();
+        Arc::make_mut(&mut other.session_context).owner_id = "bot-b".into();
         checkpoints
-            .save(&other, &[], None)
+            .save(other.clone(), Vec::new(), None)
             .await
             .expect("save other");
 
@@ -456,7 +469,7 @@ mod tests {
         assert_eq!(
             sessions
                 .iter()
-                .map(|session| session.session_id.as_str())
+                .map(|session| session.session_id.as_ref())
                 .collect::<Vec<_>>(),
             vec!["hidden-root"]
         );

@@ -32,7 +32,7 @@ pub enum ComputerView {
 }
 
 /// Gateway-wide frontend-safe state sent after authentication.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadyPayload {
     /// Release version of the connected gateway process.
     pub gateway_version: String,
@@ -45,7 +45,7 @@ pub struct ReadyPayload {
     /// The sessions.
     pub sessions: Vec<SessionRecord>,
     /// The background approvals.
-    pub background_approvals: Vec<BackgroundApproval>,
+    pub background_approvals: Vec<Arc<BackgroundApproval>>,
     /// The providers.
     pub providers: Vec<ProviderStatus>,
     /// The provider instances.
@@ -55,7 +55,7 @@ pub struct ReadyPayload {
     /// The models.
     pub models: Vec<ModelChoice>,
     /// The model providers.
-    pub model_providers: BTreeMap<String, String>,
+    pub model_providers: BTreeMap<Arc<str>, String>,
     /// Selectable image model routes, keyed into `model_providers` like `models`.
     #[serde(default)]
     pub image_models: Vec<ModelChoice>,
@@ -169,12 +169,11 @@ impl ReadyPayload {
 pub fn content_revision(value: &impl Serialize) -> String {
     use sha2::Digest as _;
     let mut hasher = sha2::Sha256::new();
-    // Serializing into a digest cannot fail for catalog records.
-    let _ = serde_json::to_writer(&mut hasher, value);
-    hasher.finalize()[..16]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    if let Err(error) = serde_json::to_writer(&mut hasher, value) {
+        tracing::warn!(%error, "catalog revision covers a partially serialized record");
+    }
+    // The first 16 digest bytes, as 32 hex digits.
+    format!("{:.32x}", hasher.finalize())
 }
 
 /// A cacheable part of the Ready catalog.
@@ -220,7 +219,7 @@ impl CatalogHint {
 #[serde(untagged)]
 pub enum SessionSlot {
     /// A session unchanged since the catalog this connection last received, by ID.
-    Unchanged(String),
+    Unchanged(Arc<str>),
     /// A new or changed session.
     Changed(Box<SessionRecord>),
 }
@@ -253,20 +252,20 @@ pub struct DiffTotals {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BackgroundApproval {
     /// The session identifier.
-    pub session_id: String,
+    pub session_id: Arc<str>,
     /// The bot identifier.
-    pub bot_id: String,
+    pub bot_id: Arc<str>,
     /// The turn identifier.
-    pub turn_id: String,
+    pub turn_id: Arc<str>,
     /// The request identifier.
-    pub request_id: String,
+    pub request_id: Arc<str>,
 }
 
 /// Frontend-safe state for one opened session.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionReadyPayload {
     /// The active turn identifiers.
-    pub active_turn_ids: Vec<String>,
+    pub active_turn_ids: Vec<Arc<str>>,
     /// The pending approvals.
     pub pending_approvals: Vec<mobius::protocol::ExecApprovalRequestEvent>,
     /// The latest sequence.
@@ -280,7 +279,7 @@ pub struct SessionReadyPayload {
     /// The git.
     pub git: Option<GitStatus>,
     /// The session.
-    pub session: SessionConfiguredEvent,
+    pub session: Arc<SessionConfiguredEvent>,
     /// The contributions.
     pub contributions: Vec<FrontendContribution>,
     /// The widgets.
@@ -299,16 +298,16 @@ pub struct SessionReadyPayload {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionWidget {
     /// The capability.
-    pub capability: String,
+    pub capability: Arc<str>,
     /// The item.
-    pub item: FrontendWidget,
+    pub item: Arc<FrontendWidget>,
 }
 
 /// One visible session with gateway-owned catalog presentation metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionRecord {
     /// The session identifier.
-    pub session_id: String,
+    pub session_id: Arc<str>,
     /// The session context.
     pub session_context: mobius::protocol::SessionContext,
     /// The parent session identifier.
@@ -342,15 +341,15 @@ pub struct SessionActivity {
     /// The state.
     pub state: SessionActivityState,
     /// The turn identifier.
-    pub turn_id: Option<String>,
+    pub turn_id: Option<Arc<str>>,
     /// The approval request identifier.
-    pub approval_request_id: Option<String>,
+    pub approval_request_id: Option<Arc<str>>,
     /// The started at.
     pub started_at: Option<i64>,
     /// The last outcome.
     pub last_outcome: Option<mobius::backend::checkpoint::ExecutionOutcome>,
     /// The message.
-    pub message: Option<String>,
+    pub message: Option<Arc<str>>,
 }
 
 impl Default for SessionActivity {
@@ -527,31 +526,31 @@ pub struct ExtensionHookRecord {
 #[serde(deny_unknown_fields)]
 pub struct ExtensionRecord {
     /// The identifier.
-    pub id: String,
+    pub id: Arc<str>,
     /// The capability.
-    pub capability: String,
+    pub capability: Cow<'static, str>,
     /// The kind.
     pub kind: ExtensionKind,
     /// The name.
-    pub name: String,
+    pub name: Arc<str>,
     /// The description.
-    pub description: String,
+    pub description: Arc<str>,
     /// The version.
-    pub version: Option<String>,
+    pub version: Option<Arc<str>>,
     /// The source.
-    pub source: String,
+    pub source: Arc<str>,
     /// The reference.
-    pub reference: Option<String>,
+    pub reference: Option<Arc<str>>,
     /// The subdirectory.
-    pub subdirectory: Option<String>,
+    pub subdirectory: Option<Arc<str>>,
     /// The resolved revision.
-    pub resolved_revision: String,
+    pub resolved_revision: Arc<str>,
     /// The digest.
-    pub digest: String,
+    pub digest: Arc<str>,
     /// The skills.
-    pub skills: Vec<String>,
+    pub skills: Arc<[String]>,
     /// The hooks.
-    pub hooks: Vec<ExtensionHookRecord>,
+    pub hooks: Arc<[ExtensionHookRecord]>,
     /// The hooks trusted.
     pub hooks_trusted: bool,
 }
@@ -793,11 +792,30 @@ pub enum ProviderAuthKind {
 
 /// Enabled optional middleware IDs and their schema-backed settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(from = "StoredMiddlewareConfig")]
 pub struct MiddlewareConfig {
     pub(crate) enabled: BTreeSet<String>,
     /// The settings.
     pub settings: BTreeMap<String, BTreeMap<String, FrontendSettingValue>>,
+}
+
+/// The stored shape; loading completes it so a newly declared setting needs no state change.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredMiddlewareConfig {
+    enabled: BTreeSet<String>,
+    settings: BTreeMap<String, BTreeMap<String, FrontendSettingValue>>,
+}
+
+impl From<StoredMiddlewareConfig> for MiddlewareConfig {
+    fn from(stored: StoredMiddlewareConfig) -> Self {
+        let mut config = Self {
+            enabled: stored.enabled,
+            settings: stored.settings,
+        };
+        crate::middleware_manifest::fill_defaults(&mut config);
+        config
+    }
 }
 
 impl MiddlewareConfig {
@@ -826,26 +844,29 @@ impl MiddlewareConfig {
                     options
                         .iter()
                         .find(|option| {
-                            option.value == *value
+                            *option.value == **value
                                 && option.disables.iter().any(|disabled| disabled == id)
                         })
-                        .map(|option| option.label.as_str())
+                        .map(|option| &*option.label)
                 })
             })
     }
 
     /// Applies exclusions advertised by the currently selected policies.
     pub fn reconcile(&mut self, features: &[mobius::protocol::MiddlewareFeature]) {
+        // Evaluate all exclusions against the unchanged enabled set before removing any selected IDs.
         let excluded = self
             .enabled
             .iter()
-            .filter(|id| self.disabled_by(features, id).is_some())
-            // Evaluate all exclusions against the unchanged enabled set before removing any selected IDs.
-            .cloned()
+            .map(|id| self.disabled_by(features, id).is_some())
             .collect::<Vec<_>>();
-        for id in excluded {
-            self.enabled.remove(&id);
-        }
+        // `retain` visits the set in the same ascending order as `iter`.
+        let mut index = 0;
+        self.enabled.retain(|_| {
+            let keep = !excluded.get(index).copied().unwrap_or_default();
+            index += 1;
+            keep
+        });
     }
 
     /// Returns whether one advertised optional middleware is enabled.
@@ -907,13 +928,13 @@ pub struct RenderedPreview {
     /// Start of the current activity, when still running.
     pub started_at_ms: Option<i64>,
     /// The identifier.
-    pub id: String,
+    pub id: Arc<str>,
     /// The title.
-    pub title: String,
+    pub title: Arc<str>,
     /// The subtitle.
-    pub subtitle: String,
+    pub subtitle: Arc<str>,
     /// The page identifier.
-    pub page_id: String,
+    pub page_id: Arc<str>,
     /// The update.
     pub update: FrontendPreviewUpdate,
     /// The events.
@@ -982,7 +1003,7 @@ pub struct ProviderUsage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionRunGroup {
     /// The session identifier.
-    pub session_id: String,
+    pub session_id: Arc<str>,
     /// The title.
     pub title: String,
     /// The runs.
@@ -1003,11 +1024,11 @@ pub struct RunStats {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunSummary {
     /// The session identifier.
-    pub session_id: String,
+    pub session_id: Arc<str>,
     /// The submission identifier.
-    pub submission_id: String,
+    pub submission_id: Arc<str>,
     /// The turn identifier.
-    pub turn_id: String,
+    pub turn_id: Arc<str>,
     /// The started at milliseconds.
     pub started_at_ms: i64,
     /// The finished at milliseconds.
@@ -1041,21 +1062,21 @@ pub struct DailyUsage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BotRecord {
     /// Canonical project-free conversation, opened through the ordinary session API.
-    pub conversation_session_id: String,
+    pub conversation_session_id: Arc<str>,
     /// The identifier.
-    pub id: String,
+    pub id: Arc<str>,
     /// The handle.
-    pub handle: String,
+    pub handle: Arc<str>,
     /// The name.
-    pub name: String,
+    pub name: Arc<str>,
     /// The description.
-    pub description: String,
+    pub description: Arc<str>,
     /// The tint.
     pub tint: ProviderTint,
     /// The face's silhouette.
     pub shape: BotShape,
     /// The config.
-    pub config: VersionedAgentConfig,
+    pub config: Arc<VersionedAgentConfig>,
     /// The accepts file attachments.
     pub accepts_file_attachments: bool,
     /// The routine interaction policy.
@@ -1076,9 +1097,9 @@ pub enum RoutineInteractionPolicy {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Routine {
     /// The identifier.
-    pub id: String,
+    pub id: Arc<str>,
     /// The bot identifier.
-    pub bot_id: String,
+    pub bot_id: Arc<str>,
     /// The workspace.
     pub workspace: PathBuf,
     /// The instructions.
@@ -1138,11 +1159,11 @@ pub struct RoutineRunPreview {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoutineRun {
     /// The identifier.
-    pub id: String,
+    pub id: Arc<str>,
     /// The routine identifier.
-    pub routine_id: String,
+    pub routine_id: Arc<str>,
     /// The bot identifier.
-    pub bot_id: String,
+    pub bot_id: Arc<str>,
     /// The started at.
     pub started_at: i64,
     /// The finished at.
@@ -1152,7 +1173,7 @@ pub struct RoutineRun {
     /// The session identifier.
     pub session_id: Option<String>,
     /// The message.
-    pub message: Option<String>,
+    pub message: Option<Arc<str>>,
 }
 
 /// Durable state of one routine invocation.
@@ -1188,7 +1209,7 @@ pub struct RoutineDefinition {
 #[serde(deny_unknown_fields)]
 pub struct HookBinding<A> {
     /// Stable binding identity within the routine.
-    pub id: String,
+    pub id: Arc<str>,
     /// Exact event or timer trigger.
     pub on: HookSelector,
     /// Action on this routine.
@@ -1199,7 +1220,7 @@ pub struct HookBinding<A> {
 pub type RoutineBinding = HookBinding<RoutineAction>;
 
 /// Typed actions shared by reporting and control subscriptions.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BotAction {
     /// Deliver the saved reporting mandate to the Bot conversation.
@@ -1230,7 +1251,7 @@ pub enum RoutineAction {
     /// Stop only the identified invocation.
     Stop {
         /// Invocation identity.
-        run_id: String,
+        run_id: Arc<str>,
     },
     /// Disable future starts without stopping an active run.
     Pause,
@@ -1250,7 +1271,7 @@ pub enum RoutineAction {
 #[serde(deny_unknown_fields)]
 pub struct RoutineCommand {
     /// Target routine identity.
-    pub routine_id: String,
+    pub routine_id: Arc<str>,
     /// Typed action.
     pub action: RoutineAction,
 }
@@ -1262,12 +1283,12 @@ pub enum HookSource {
     /// A Bot command.
     Bot {
         /// Owner identity.
-        bot_id: String,
+        bot_id: Arc<str>,
     },
     /// An owned routine.
     Routine {
         /// Routine identity.
-        routine_id: String,
+        routine_id: Arc<str>,
     },
     /// An owned session.
     Session {
@@ -1277,9 +1298,9 @@ pub enum HookSource {
     /// A timer on an owned routine.
     Schedule {
         /// Routine identity.
-        routine_id: String,
+        routine_id: Arc<str>,
         /// Binding identity.
-        binding_id: String,
+        binding_id: Arc<str>,
     },
     /// A gateway lifecycle operation.
     Gateway,
@@ -1365,15 +1386,15 @@ pub enum HookKind {
 #[serde(deny_unknown_fields)]
 pub struct HookEvent {
     /// Stable event identity.
-    pub id: String,
+    pub id: Arc<str>,
     /// Authenticated or internally established source.
     pub source: HookSource,
     /// Immediate causing event, if any.
-    pub cause_id: Option<String>,
+    pub cause_id: Option<Arc<str>>,
     /// Bounded prior event chain used to prevent feedback.
-    pub ancestry: Vec<String>,
+    pub ancestry: Vec<Arc<str>>,
     /// Owning Bot.
-    pub bot_id: String,
+    pub bot_id: Arc<str>,
     /// Unix timestamp in seconds.
     pub occurred_at: i64,
     /// Small typed lifecycle fact.
@@ -1387,63 +1408,63 @@ pub enum HookData {
     /// Routine registered.
     RoutineCreated {
         /// Routine identity.
-        routine_id: String,
+        routine_id: Arc<str>,
     },
     /// Routine definition changed.
     RoutineUpdated {
         /// Routine identity.
-        routine_id: String,
+        routine_id: Arc<str>,
     },
     /// Routine disabled.
     RoutinePaused {
         /// Routine identity.
-        routine_id: String,
+        routine_id: Arc<str>,
     },
     /// Routine enabled.
     RoutineResumed {
         /// Routine identity.
-        routine_id: String,
+        routine_id: Arc<str>,
     },
     /// Routine removed.
     RoutineDeleted {
         /// Routine identity.
-        routine_id: String,
+        routine_id: Arc<str>,
     },
     /// Invocation reserved.
     RunStarted {
         /// Routine identity.
-        routine_id: String,
+        routine_id: Arc<str>,
         /// Invocation identity.
-        run_id: String,
+        run_id: Arc<str>,
         /// Execution transcript.
         session_id: Option<String>,
     },
     /// Invocation completed, failed or was cancelled.
     RunFinished {
         /// Routine identity.
-        routine_id: String,
+        routine_id: Arc<str>,
         /// Invocation identity.
-        run_id: String,
+        run_id: Arc<str>,
         /// Terminal outcome.
         status: RoutineRunStatus,
         /// Execution transcript.
         session_id: Option<String>,
         /// Failure or cancellation reason.
-        reason: Option<String>,
+        reason: Option<Arc<str>>,
     },
     /// An overlapping or unavailable invocation was skipped.
     RunSkipped {
         /// Routine identity.
-        routine_id: String,
+        routine_id: Arc<str>,
         /// Skipped invocation identity.
-        run_id: String,
+        run_id: Arc<str>,
         /// Saved reason.
         reason: String,
     },
     /// A binding's timer became due.
     ScheduleDue {
         /// Binding identity.
-        binding_id: String,
+        binding_id: Arc<str>,
     },
     /// A session was created.
     SessionCreated {
@@ -1455,14 +1476,14 @@ pub enum HookData {
         /// Session identity.
         session_id: String,
         /// Turn identity.
-        turn_id: String,
+        turn_id: Arc<str>,
     },
     /// A session turn reached its committed outcome.
     SessionTurnFinished {
         /// Session identity.
         session_id: String,
         /// Turn identity.
-        turn_id: String,
+        turn_id: Arc<str>,
         /// Core execution outcome.
         outcome: mobius::backend::checkpoint::ExecutionOutcome,
     },
@@ -1471,18 +1492,18 @@ pub enum HookData {
         /// Session identity.
         session_id: String,
         /// Turn identity.
-        turn_id: String,
+        turn_id: Arc<str>,
         /// Approval identity.
-        request_id: String,
+        request_id: Arc<str>,
     },
     /// A capability requests a user decision.
     SessionAttention {
         /// Session identity.
         session_id: String,
         /// Owning capability.
-        capability: String,
+        capability: Arc<str>,
         /// Stable item identity.
-        item_id: String,
+        item_id: Arc<str>,
         /// Bounded user-facing question or decision.
         text: String,
     },
@@ -1496,7 +1517,7 @@ pub enum HookData {
         /// Session identity.
         session_id: String,
         /// Previous Bot identity.
-        previous_bot_id: String,
+        previous_bot_id: Arc<str>,
     },
     /// Paired client authenticated.
     ClientConnected {
@@ -1546,11 +1567,11 @@ impl HookData {
 }
 
 /// User-authored reporting consumer of the same typed hook stream.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BotSubscription {
     /// Owning Bot.
-    pub bot_id: String,
+    pub bot_id: Arc<str>,
     /// Exact trigger and its saved action.
     pub binding: HookBinding<BotAction>,
     /// Whether future matching facts should report.

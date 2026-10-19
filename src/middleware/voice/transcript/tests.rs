@@ -12,8 +12,11 @@ async fn handoff_cursor_advances_only_on_acknowledgement_and_survives_reopen() {
     let checkpoints: Arc<dyn CheckpointStore> =
         Arc::new(SqliteCheckpoint::new(directory.path().join("checkpoints.sqlite3")).unwrap());
     let mut parent = Checkpoint::empty("parent");
-    parent.session_context.owner_id = "bot".into();
-    checkpoints.save(&parent, &[], None).await.unwrap();
+    std::sync::Arc::make_mut(&mut parent.session_context).owner_id = "bot".into();
+    checkpoints
+        .save(parent.clone(), Vec::new(), None)
+        .await
+        .unwrap();
     let sink: FrontendEventSink = Arc::new(|_| Ok(()));
     let mut voice = VoiceTranscript::open(Arc::clone(&checkpoints), "parent", Arc::clone(&sink))
         .await
@@ -71,8 +74,11 @@ async fn finish_retries_failed_persistence_without_losing_or_duplicating_speech(
     let path = directory.path().join("checkpoints.sqlite3");
     let checkpoints: Arc<dyn CheckpointStore> = Arc::new(SqliteCheckpoint::new(&path).unwrap());
     let mut parent = Checkpoint::empty("parent");
-    parent.session_context.owner_id = "bot".into();
-    checkpoints.save(&parent, &[], None).await.unwrap();
+    std::sync::Arc::make_mut(&mut parent.session_context).owner_id = "bot".into();
+    checkpoints
+        .save(parent.clone(), Vec::new(), None)
+        .await
+        .unwrap();
     let mut voice = VoiceTranscript::open(checkpoints, "parent", Arc::new(|_| Ok(())))
         .await
         .unwrap();
@@ -136,7 +142,7 @@ async fn voice_transcript_is_linked_read_only_and_resumes_without_reusing_messag
     let checkpoints: Arc<dyn CheckpointStore> =
         Arc::new(SqliteCheckpoint::new(&path).expect("store"));
     let mut parent = Checkpoint::empty("parent");
-    parent.session_context.owner_id = "bot".into();
+    std::sync::Arc::make_mut(&mut parent.session_context).owner_id = "bot".into();
     parent.context = std::sync::Arc::new(
         vec![serde_json::json!({"role":"user","content":"private parent task"})]
             .into_iter()
@@ -144,7 +150,7 @@ async fn voice_transcript_is_linked_read_only_and_resumes_without_reusing_messag
             .collect(),
     );
     checkpoints
-        .save(&parent, &parent.context, None)
+        .save(parent.clone(), parent.context.to_vec(), None)
         .await
         .expect("parent");
     let before = serde_json::to_value(&parent).expect("parent snapshot");
@@ -212,7 +218,7 @@ async fn voice_transcript_is_linked_read_only_and_resumes_without_reusing_messag
     let mut voice = VoiceTranscript::open(Arc::clone(&checkpoints), "parent", sink)
         .await
         .expect("reopen call");
-    assert_eq!(voice.session_id(), child_id);
+    assert_eq!(**voice.session_id(), *child_id);
     assert!(
         restore_widget(checkpoints.as_ref(), "parent")
             .await
@@ -291,7 +297,7 @@ async fn voice_transcript_is_linked_read_only_and_resumes_without_reusing_messag
         catalog
             .sessions
             .iter()
-            .find(|session| session.session_id == child_id)
+            .find(|session| *session.session_id == *child_id)
             .expect("child")
             .parent_session_id
             .as_deref(),

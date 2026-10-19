@@ -1,7 +1,6 @@
 //! Tool registry, dispatch, and minimal filesystem tools.
 
 use std::borrow::Cow;
-use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Mutex};
@@ -45,10 +44,11 @@ mod text {
         pub(super) manifest_label: String,
         pub(super) prompt_safety: String,
         pub(super) render_load: String,
-        pub(super) search: crate::backend::model::ToolDefinition,
+        pub(super) search: std::sync::Arc<crate::backend::model::ToolDefinition>,
     }
-    crate::embedded_config! { pub(super) static DEFINITION: Definition = include_str!("tools.toml"); }
+    crate::embedded_config! { pub(super) static DEFINITION: Definition = include_str!("tools.toml") => super::limit_search; }
 }
+pub(super) mod arguments;
 mod coding;
 mod commands;
 mod patch;
@@ -103,50 +103,62 @@ pub enum ToolExposure {
 /// Dependencies available only to terminal tool handlers.
 pub struct ToolContext {
     /// Stable provider call identity used by durable command handlers.
-    pub call_id: String,
+    pub call_id: Arc<str>,
     /// Trusted provenance of the message that initiated this tool's turn.
-    pub author: crate::protocol::MessageAuthor,
+    pub author: Arc<crate::protocol::MessageAuthor>,
     /// The sandbox.
     pub sandbox: Arc<Sandbox>,
     /// The permissions.
     pub permissions: ToolPermissions,
     /// The turn identifier.
-    pub turn_id: String,
-    model_route: String,
+    pub turn_id: Arc<str>,
+    model_route: Arc<str>,
     usage: ToolUsage,
     input: ToolInput,
+}
+
+impl std::fmt::Debug for ToolContext {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ToolContext")
+            .field("call_id", &self.call_id)
+            .field("author", &self.author)
+            .field("turn_id", &self.turn_id)
+            .field("model_route", &self.model_route)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ToolContext {
     pub(crate) fn new(
         sandbox: Arc<Sandbox>,
         permissions: ToolPermissions,
-        turn_id: impl Into<String>,
+        turn_id: impl Into<Arc<str>>,
     ) -> Self {
         Self {
-            call_id: String::new(),
-            author: crate::protocol::MessageAuthor::User,
+            call_id: Arc::default(),
+            author: Arc::new(crate::protocol::MessageAuthor::User),
             sandbox,
             permissions,
             turn_id: turn_id.into(),
-            model_route: String::new(),
+            model_route: Arc::default(),
             usage: ToolUsage::default(),
             input: ToolInput::default(),
         }
     }
 
-    pub(crate) fn with_model_route(mut self, route: &str) -> Self {
+    pub(crate) fn with_model_route(mut self, route: impl Into<Arc<str>>) -> Self {
         self.model_route = route.into();
         self
     }
 
-    pub(crate) fn with_author(mut self, author: &crate::protocol::MessageAuthor) -> Self {
-        self.author = author.clone();
+    pub(crate) fn with_author(mut self, author: Arc<crate::protocol::MessageAuthor>) -> Self {
+        self.author = author;
         self
     }
 
-    pub(crate) fn with_call_id(mut self, call_id: &str) -> Self {
-        self.call_id = call_id.into();
+    pub(crate) fn with_call_id(mut self, call_id: Arc<str>) -> Self {
+        self.call_id = call_id;
         self
     }
 
@@ -181,11 +193,12 @@ impl ToolUsage {
         let mut recorded = self
             .0
             .lock()
-            .map_err(|_| Error::Tool("tool usage state is unavailable".into()))?;
+            .map_err(|error| Error::Tool(format!("tool usage state is unavailable: {error}")))?;
         if recorded.is_some() {
             return Err(Error::Tool("tool usage was already recorded".into()));
         }
         *recorded = Some(usage);
+        drop(recorded);
         Ok(())
     }
 
@@ -193,7 +206,7 @@ impl ToolUsage {
         Ok(self
             .0
             .lock()
-            .map_err(|_| Error::Tool("tool usage state is unavailable".into()))?
+            .map_err(|error| Error::Tool(format!("tool usage state is unavailable: {error}")))?
             .take())
     }
 }
@@ -205,14 +218,14 @@ impl ToolInput {
     fn push(&self, item: Value) -> Result<()> {
         self.0
             .lock()
-            .map_err(|_| Error::Tool("tool model input is unavailable".into()))?
+            .map_err(|error| Error::Tool(format!("tool model input is unavailable: {error}")))?
             .push(item);
         Ok(())
     }
 
     fn take(&self) -> Result<Vec<Value>> {
-        Ok(std::mem::take(&mut *self.0.lock().map_err(|_| {
-            Error::Tool("tool model input is unavailable".into())
+        Ok(std::mem::take(&mut *self.0.lock().map_err(|error| {
+            Error::Tool(format!("tool model input is unavailable: {error}"))
         })?))
     }
 }
@@ -229,7 +242,7 @@ pub struct HookIdentity {
 /// A named tool Adapter registered by middleware.
 pub trait Tool: Send + Sync {
     /// Returns the provider-facing tool schema.
-    fn definition(&self) -> ToolDefinition;
+    fn definition(&self) -> &Arc<ToolDefinition>;
 
     /// Supplies capability-local instructions when this tool is installed.
     fn prompt_section(&self) -> Option<&str> {
@@ -277,7 +290,7 @@ pub trait Tool: Send + Sync {
     /// Maps provider-facing arguments into the extension hook payload.
     fn hook_input(&self, arguments: &Value) -> Value {
         // Hook rewrites must not mutate the original call before validation accepts them.
-        arguments.clone()
+        arguments.clone() // rules-allow: the hook payload is an owned copy of borrowed arguments
     }
 
     /// Maps a hook rewrite back into provider-facing arguments.
@@ -289,18 +302,18 @@ pub trait Tool: Send + Sync {
     }
 
     /// Executes one validated provider call.
-    fn call<'a>(
-        &'a self,
+    fn call(
+        &self,
         context: ToolContext,
         arguments: Value,
-    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>>;
+    ) -> BoxFuture<'_, Result<crate::protocol::ToolResponse>>;
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct HookTool {
     pub(crate) name: String,
     pub(crate) input: Value,
-    pub(crate) subjects: Vec<String>,
+    pub(crate) subjects: Vec<Arc<str>>,
 }
 
 struct RegisteredTool {
@@ -313,6 +326,32 @@ struct RegisteredTool {
     handler: RegisteredHandler,
 }
 
+impl std::borrow::Borrow<str> for RegisteredTool {
+    fn borrow(&self) -> &str {
+        &self.definition.name
+    }
+}
+
+impl PartialEq for RegisteredTool {
+    fn eq(&self, other: &Self) -> bool {
+        self.definition.name == other.definition.name
+    }
+}
+
+impl Eq for RegisteredTool {}
+
+impl PartialOrd for RegisteredTool {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for RegisteredTool {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.definition.name.cmp(&other.definition.name)
+    }
+}
+
 enum RegisteredHandler {
     Tool(Arc<dyn Tool>),
     Search,
@@ -321,7 +360,7 @@ enum RegisteredHandler {
 /// The validated tool registry built during agent creation.
 #[derive(Default)]
 pub struct Catalog {
-    tools: BTreeMap<String, RegisteredTool>,
+    tools: BTreeSet<RegisteredTool>,
     registered_definitions: Arc<[Arc<ToolDefinition>]>,
     direct_definitions: Arc<[Arc<ToolDefinition>]>,
     deferred_definitions: Arc<[Arc<ToolDefinition>]>,
@@ -399,13 +438,24 @@ impl PreparedToolSet<'_> {
                 "provider materialized a tool outside the searchable catalog".into(),
             ));
         }
-        self.materialized.extend(tools.iter().cloned());
+        self.materialized.extend(tools.iter().cloned()); // rules-allow: the step keeps its own materialized names
         Ok(materialization_effects(
             &self.catalog_revision,
-            tools.iter().cloned(),
+            tools.iter().cloned(), // rules-allow: the load record owns the materialized names
             turn_id,
             load_id,
         ))
+    }
+}
+
+impl std::fmt::Debug for Catalog {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Catalog")
+            .field("tools", &self.registered_definitions)
+            .field("revision", &self.revision)
+            .field("finalized", &self.finalized)
+            .finish_non_exhaustive()
     }
 }
 
@@ -418,16 +468,15 @@ impl Catalog {
         if self.finalized {
             return Err(Error::Config("tool catalog is already finalized".into()));
         }
-        let definition = tool.definition();
+        let definition = Arc::clone(tool.definition());
         definition.validate()?;
         if definition.name == TOOLS_SEARCH_NAME {
             return Err(Error::Config(format!(
                 "tool name `{TOOLS_SEARCH_NAME}` is reserved"
             )));
         }
-        let name = definition.name.clone();
         let entry = RegisteredTool {
-            definition: Arc::new(definition),
+            definition,
             exposure: tool.exposure(),
             execution_mode: tool.execution_mode(),
             approval: tool.approval(),
@@ -435,7 +484,7 @@ impl Catalog {
             read_only: tool.read_only(),
             handler: RegisteredHandler::Tool(tool),
         };
-        self.insert(name, entry)
+        self.insert(entry)
     }
 
     fn register_search(&mut self) -> Result<()> {
@@ -444,18 +493,15 @@ impl Catalog {
         }
         let definition = tools_search_definition();
         definition.validate()?;
-        self.insert(
-            definition.name.clone(),
-            RegisteredTool {
-                definition: Arc::new(definition),
-                exposure: ToolExposure::Direct,
-                execution_mode: ExecutionMode::Exclusive,
-                approval: ApprovalRequirement::Never,
-                cancel_on_input: false,
-                read_only: true,
-                handler: RegisteredHandler::Search,
-            },
-        )
+        self.insert(RegisteredTool {
+            definition,
+            exposure: ToolExposure::Direct,
+            execution_mode: ExecutionMode::Exclusive,
+            approval: ApprovalRequirement::Never,
+            cancel_on_input: false,
+            read_only: true,
+            handler: RegisteredHandler::Search,
+        })
     }
 
     /// Freezes the registry after all tool owners have registered their handlers.
@@ -467,7 +513,7 @@ impl Catalog {
             return Err(Error::Config("tool catalog is already finalized".into()));
         }
         let has_deferred = !self.deferred_definitions.is_empty();
-        let has_search = self.tools.contains_key(TOOLS_SEARCH_NAME);
+        let has_search = self.tools.contains(TOOLS_SEARCH_NAME);
         if has_deferred && !has_search {
             return Err(Error::Config(
                 "deferred tools require an owning tools_search middleware".into(),
@@ -482,11 +528,14 @@ impl Catalog {
         Ok(())
     }
 
-    fn insert(&mut self, name: String, entry: RegisteredTool) -> Result<()> {
-        if self.tools.contains_key(&name) {
-            return Err(Error::Duplicate(format!("tool `{name}`")));
+    fn insert(&mut self, entry: RegisteredTool) -> Result<()> {
+        if let Some(existing) = self.tools.get(entry.definition.name.as_str()) {
+            return Err(Error::Duplicate(format!(
+                "tool `{}`",
+                existing.definition.name
+            )));
         }
-        self.tools.insert(name, entry);
+        self.tools.insert(entry);
         self.refresh_definitions();
         Ok(())
     }
@@ -494,20 +543,20 @@ impl Catalog {
     fn refresh_definitions(&mut self) {
         self.registered_definitions = self
             .tools
-            .values()
+            .iter()
             .map(|tool| Arc::clone(&tool.definition))
             .collect::<Vec<_>>()
             .into();
         self.direct_definitions = self
             .tools
-            .values()
+            .iter()
             .filter(|tool| tool.exposure == ToolExposure::Direct)
             .map(|tool| Arc::clone(&tool.definition))
             .collect::<Vec<_>>()
             .into();
         self.deferred_definitions = self
             .tools
-            .values()
+            .iter()
             .filter(|tool| tool.exposure == ToolExposure::Deferred)
             .map(|tool| Arc::clone(&tool.definition))
             .collect::<Vec<_>>()
@@ -550,7 +599,7 @@ impl Catalog {
         self.direct_definitions
             .iter()
             .chain(self.deferred_definitions.iter())
-            .map(|tool| tool.name.clone())
+            .map(|tool| tool.name.clone()) // rules-allow: callers receive an owned name set
             .collect()
     }
 
@@ -562,7 +611,7 @@ impl Catalog {
         let deferred = available_definitions(&self.deferred_definitions, &available);
         let searchable = deferred
             .iter()
-            .map(|tool| tool.name.clone())
+            .map(|tool| tool.name.clone()) // rules-allow: the prepared step owns its searchable names
             .collect::<BTreeSet<_>>();
         if searchable.is_empty() && available.contains(TOOLS_SEARCH_NAME) {
             // Hide search only in this prepared view; borrowed caller availability stays unchanged.
@@ -610,13 +659,14 @@ impl Catalog {
         let mut callable = Vec::with_capacity(calls.size_hint().0);
         let mut rejected = Vec::new();
         for call in calls {
-            match self.bind_prepared(call.clone(), tools) {
+            let owned = call.clone(); // rules-allow: the bound call is owned while callers keep the borrowed call
+            match self.bind_prepared(owned, tools) {
                 Ok(bound_call) => {
                     bound.push(bound_call);
                     callable.push(call);
                 }
                 Err(error) => {
-                    rejected.push(ToolResult::error(call, error.to_string(), output_limit))
+                    rejected.push(ToolResult::error(call, error.to_string(), output_limit));
                 }
             }
         }
@@ -643,7 +693,7 @@ impl Catalog {
         }
         let definitions = self
             .tools
-            .values()
+            .iter()
             .filter(|tool| {
                 tool.exposure == ToolExposure::Deferred
                     && searchable.contains(&tool.definition.name)
@@ -673,13 +723,15 @@ impl Catalog {
     /// Returns an error if validation or an operation required by this function fails.
     pub fn bind_call(
         &self,
-        call: ToolCall,
+        mut call: ToolCall,
         materialized: &BTreeSet<String>,
         searchable: &BTreeSet<String>,
     ) -> Result<BoundToolCall> {
         let (tool, materialized) = self.validate_call(&call, materialized, searchable)?;
+        arguments::normalize(&mut call.arguments, &tool.definition.parameters)
+            .map_err(|error| Error::Tool(format!("tool `{}` arguments: {error}", call.name)))?;
         let search_scope =
-            matches!(&tool.handler, RegisteredHandler::Search).then(|| searchable.clone());
+            matches!(&tool.handler, RegisteredHandler::Search).then(|| searchable.clone()); // rules-allow: the bound search call owns its scope
         Ok(BoundToolCall {
             call,
             materialized,
@@ -712,13 +764,13 @@ impl Catalog {
         };
         let materialized = match tool.exposure {
             ToolExposure::Direct => false,
-            ToolExposure::Deferred if !searchable.contains(&call.name) => {
+            ToolExposure::Deferred if !searchable.contains(&*call.name) => {
                 return Err(Error::Tool(format!(
                     "tool `{}` is not available for this model step",
                     call.name
                 )));
             }
-            ToolExposure::Deferred if materialized.contains(&call.name) => true,
+            ToolExposure::Deferred if materialized.contains(&*call.name) => true,
             ToolExposure::Deferred => {
                 return Err(Error::Tool(format!(
                     "tool `{}` was not materialized for this model step",
@@ -757,7 +809,7 @@ impl Catalog {
         calls.peek().is_some()
             && calls.all(|call| {
                 self.tools
-                    .get(&call.name)
+                    .get(call.name.as_ref())
                     .is_some_and(|tool| tool.cancel_on_input)
             })
     }
@@ -774,9 +826,9 @@ impl Catalog {
             RegisteredHandler::Search => None,
         });
         let identity = handler.and_then(|handler| handler.hook_identity());
-        let name = identity.map_or_else(|| call.name.clone(), |identity| identity.name.into());
+        let name = identity.map_or_else(|| call.name.to_string(), |identity| identity.name.into()); // rules-allow: the hook payload owns the tool name
         let subjects = identity.map_or_else(
-            || vec![call.name.clone()],
+            || vec![Arc::clone(&call.name)],
             |identity| {
                 identity
                     .subjects
@@ -786,7 +838,7 @@ impl Catalog {
             },
         );
         let mut input = handler.map_or_else(
-            || call.arguments.clone(),
+            || call.arguments.clone(), // rules-allow: the hook payload is an owned copy of borrowed arguments
             |handler| handler.hook_input(&call.arguments),
         );
         if let Some(description) = description
@@ -894,9 +946,9 @@ fn push_search_part(parts: &mut Vec<String>, part: &str) {
     }
 }
 
-fn catalog_revision(tools: &BTreeMap<String, RegisteredTool>) -> String {
+fn catalog_revision(tools: &BTreeSet<RegisteredTool>) -> String {
     let mut hasher = Sha256::new();
-    for tool in tools.values() {
+    for tool in tools {
         hasher.update([match tool.exposure {
             ToolExposure::Direct => 0,
             ToolExposure::Deferred => 1,
@@ -965,7 +1017,7 @@ fn materialization_effects(
 }
 
 /// A tool call proven callable for one model step.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoundToolCall {
     call: ToolCall,
     materialized: bool,
@@ -982,10 +1034,52 @@ impl BoundToolCall {
 
 /// Returns the core discovery tool schema.
 #[must_use]
-pub fn tools_search_definition() -> ToolDefinition {
-    let mut tool = text::DEFINITION.search.clone();
-    tool.parameters["properties"]["query"]["maxLength"] = MAX_TOOL_SEARCH_QUERY_BYTES.into();
-    tool
+pub fn tools_search_definition() -> Arc<ToolDefinition> {
+    Arc::clone(&text::DEFINITION.search)
+}
+
+fn limit_search(definition: &mut text::Definition) {
+    limit_schema(
+        &mut definition.search,
+        [(
+            "/properties/query",
+            "maxLength",
+            MAX_TOOL_SEARCH_QUERY_BYTES.into(),
+        )],
+    );
+}
+
+/// Replaces `{max_bytes}` in the schema description at `pointer` of a freshly decoded
+/// definition.
+pub(crate) fn fill_max_bytes(
+    definition: &mut Arc<ToolDefinition>,
+    pointer: &str,
+    max_bytes: usize,
+) {
+    if let Some(description) = Arc::make_mut(definition).parameters.pointer_mut(pointer)
+        && let Some(filled) = description
+            .as_str()
+            .map(|text| text.replace("{max_bytes}", &max_bytes.to_string()))
+    {
+        *description = filled.into();
+    }
+}
+
+/// Inserts `key: limit` into each schema object at `pointer` of a freshly decoded
+/// definition, so the provider-facing schema advertises the bound its tool enforces.
+pub(crate) fn limit_schema<const N: usize>(
+    definition: &mut Arc<ToolDefinition>,
+    limits: [(&str, &str, Value); N],
+) {
+    let parameters = &mut Arc::make_mut(definition).parameters;
+    for (pointer, key, limit) in limits {
+        if let Some(schema) = parameters
+            .pointer_mut(pointer)
+            .and_then(Value::as_object_mut)
+        {
+            schema.insert(key.into(), limit);
+        }
+    }
 }
 
 fn object_hook_input(input: Value) -> Result<Value> {
@@ -1002,9 +1096,9 @@ fn object_hook_input(input: Value) -> Result<Value> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolResult {
     /// The call identifier.
-    pub call_id: String,
+    pub call_id: Arc<str>,
     /// The name.
-    pub name: String,
+    pub name: Arc<str>,
     /// The output.
     pub output: crate::protocol::ToolContent,
     /// The is error.
@@ -1019,8 +1113,8 @@ pub struct ToolResult {
 impl ToolResult {
     pub(crate) fn error(call: &ToolCall, output: impl AsRef<str>, output_limit: usize) -> Self {
         Self {
-            call_id: call.call_id.clone(),
-            name: call.name.clone(),
+            call_id: Arc::clone(&call.call_id),
+            name: Arc::clone(&call.name),
             output: capped(output.as_ref(), output_limit).into(),
             is_error: true,
             usage: None,
@@ -1035,7 +1129,7 @@ impl ToolResult {
         self.output = capped(output.as_ref(), self.output_limit).into();
     }
 
-    fn with_usage(mut self, pending_usage: ToolUsage, model_route: &str) -> Self {
+    fn with_usage(mut self, pending_usage: &ToolUsage, model_route: &str) -> Self {
         match pending_usage.take() {
             Ok(usage) => self.usage = usage.map(|usage| (model_route.into(), usage)),
             Err(error) => {
@@ -1054,9 +1148,9 @@ pub(crate) async fn execute_batch(
     calls: impl IntoIterator<Item = BoundToolCall>,
     sandbox: Arc<Sandbox>,
     permissions: &SandboxPermissions,
-    turn_id: &str,
-    model_route: &str,
-    author: &crate::protocol::MessageAuthor,
+    turn_id: &Arc<str>,
+    model_route: &Arc<str>,
+    author: &Arc<crate::protocol::MessageAuthor>,
 ) -> Vec<ToolResult> {
     let mut calls = calls.into_iter().peekable();
     let mut results = Vec::with_capacity(calls.size_hint().0);
@@ -1108,9 +1202,9 @@ pub(crate) async fn execute_call(
     call: BoundToolCall,
     sandbox: &Arc<Sandbox>,
     permissions: &SandboxPermissions,
-    turn_id: &str,
-    model_route: &str,
-    author: &crate::protocol::MessageAuthor,
+    turn_id: &Arc<str>,
+    model_route: &Arc<str>,
+    author: &Arc<crate::protocol::MessageAuthor>,
 ) -> ToolResult {
     let output_limit = sandbox.output_limit();
     let BoundToolCall {
@@ -1121,13 +1215,13 @@ pub(crate) async fn execute_call(
     let context = ToolContext::new(
         Arc::clone(sandbox),
         permissions.for_call(&call.call_id),
-        turn_id,
+        Arc::clone(turn_id),
     )
-    .with_model_route(model_route)
-    .with_call_id(&call.call_id)
-    .with_author(author);
-    let pending_input = context.input.clone();
-    let pending_usage = context.usage.clone();
+    .with_model_route(Arc::clone(model_route))
+    .with_call_id(Arc::clone(&call.call_id))
+    .with_author(Arc::clone(author));
+    let pending_input = ToolInput(Arc::clone(&context.input.0));
+    let pending_usage = ToolUsage(Arc::clone(&context.usage.0));
     let Some(tool) = catalog.get(&call.name) else {
         return ToolResult::error(&call, format!("unknown tool `{}`", call.name), output_limit);
     };
@@ -1178,7 +1272,7 @@ pub(crate) async fn execute_call(
                 let Some(search_scope) = search_scope else {
                     return Err(Error::Tool("tools_search scope is unavailable".into()));
                 };
-                tools_search(catalog, arguments, &search_scope)
+                tools_search(catalog, &arguments, &search_scope)
             }
         }
     })
@@ -1200,7 +1294,7 @@ pub(crate) async fn execute_call(
                         events: Vec::new(),
                         output_limit,
                     }
-                    .with_usage(pending_usage, model_route);
+                    .with_usage(&pending_usage, model_route);
                 }
             };
             let effects =
@@ -1241,7 +1335,7 @@ pub(crate) async fn execute_call(
             output_limit,
         },
     }
-    .with_usage(pending_usage, model_route)
+    .with_usage(&pending_usage, model_route)
 }
 
 struct DispatchOutput {
@@ -1260,7 +1354,7 @@ impl DispatchOutput {
 
 fn tools_search(
     catalog: &Catalog,
-    arguments: Value,
+    arguments: &Value,
     searchable: &BTreeSet<String>,
 ) -> Result<DispatchOutput> {
     let Some(arguments) = arguments.as_object() else {
@@ -1280,7 +1374,7 @@ fn tools_search(
     let loaded_tools = catalog
         .search_deferred(query, searchable)?
         .into_iter()
-        .map(|definition| definition.name.to_owned())
+        .map(|definition| definition.name.clone()) // rules-allow: definitions are shared, so the loaded list owns copies of their names
         .collect::<Vec<_>>();
     let content = serde_json::to_string(&serde_json::json!({
         "loaded_tools": &loaded_tools
@@ -1307,7 +1401,7 @@ fn cap_content(
 
 fn capped(output: &str, limit: usize) -> String {
     if output.len() <= limit {
-        return output.to_string();
+        return output.to_owned();
     }
 
     // The widest possible count sizes the budget, so the final marker never overflows it.
@@ -1320,7 +1414,8 @@ fn capped(output: &str, limit: usize) -> String {
     let left = crate::truncate_utf8(output, left_budget);
     let right_start = output.ceil_char_boundary(output.len() - right_budget);
     let omitted = right_start - left.len();
-    format!("{left}{}{}", marker(omitted), &output[right_start..])
+    let right = output.get(right_start..).unwrap_or_default();
+    format!("{left}{}{right}", marker(omitted))
 }
 
 fn formatted_tool_text(text: &str) -> String {
@@ -1334,7 +1429,7 @@ fn formatted_tool_text(text: &str) -> String {
 fn compact_output(output: &str) -> String {
     let total_lines = output.lines().count();
     if output.len() <= MAX_TOOL_UI_BYTES && total_lines <= MAX_TOOL_UI_LINES {
-        return output.to_string();
+        return output.to_owned();
     }
 
     let kept_lines = if total_lines > MAX_TOOL_UI_LINES {
@@ -1379,6 +1474,12 @@ pub struct Tools {
     tools: Vec<Arc<dyn Tool>>,
 }
 
+impl std::fmt::Debug for Tools {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("Tools").finish_non_exhaustive()
+    }
+}
+
 impl Tools {
     /// Creates a tool middleware from explicit handlers.
     #[must_use]
@@ -1388,15 +1489,19 @@ impl Tools {
 
     /// Creates the ordinary read-only file and image tools.
     #[must_use]
-    pub fn reading(files: crate::backend::session_files::SessionFileStore) -> Self {
-        Self::new(vec![Arc::new(ReadFile { store: files })])
+    pub fn reading(files: impl Into<Arc<crate::backend::session_files::SessionFileStore>>) -> Self {
+        Self::new(vec![Arc::new(ReadFile {
+            store: files.into(),
+        })])
     }
 
     /// Creates the default file and command tools.
     #[must_use]
-    pub fn coding(files: crate::backend::session_files::SessionFileStore) -> Self {
+    pub fn coding(files: impl Into<Arc<crate::backend::session_files::SessionFileStore>>) -> Self {
         Self::new(vec![
-            Arc::new(ReadFile { store: files }),
+            Arc::new(ReadFile {
+                store: files.into(),
+            }),
             Arc::new(WriteFile),
             Arc::new(ApplyPatch),
             Arc::new(Bash),
@@ -1451,7 +1556,7 @@ impl Middleware for Tools {
             return Some(FrontendBlock {
                 id: Some(format!("{}/{}/load", load.turn_id, load.load_id)),
                 role: FrontendBlockRole::Tool,
-                title: text::DEFINITION.render_load.clone(),
+                title: text::DEFINITION.render_load.clone(), // rules-allow: the block owns its title from static text
                 text: load.tools.join("\n"),
                 tone: FrontendTone::Success,
                 ..Default::default()
@@ -1519,7 +1624,7 @@ pub(crate) fn render_tool_event(
                     output
                 },
                 content: if result.output.files().next().is_some() {
-                    result.output.clone()
+                    result.output.clone() // rules-allow: the block owns content copied from the borrowed event
                 } else {
                     Default::default()
                 },
@@ -1543,7 +1648,7 @@ pub(crate) struct ToolHeading {
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ToolSpec {
-    pub(crate) tool: ToolDefinition,
+    pub(crate) tool: Arc<ToolDefinition>,
     title: String,
     result_title: Option<String>,
     #[serde(default)]

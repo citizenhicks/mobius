@@ -13,13 +13,13 @@ async fn interrupted_stream_retries_in_a_fresh_model_step() {
         calls: AtomicUsize::new(0),
         inputs: Mutex::new(Vec::new()),
     });
-    let checkpoint_store: Arc<dyn CheckpointStore> = checkpoints.clone();
+    let checkpoint_store: Arc<dyn CheckpointStore> = Arc::<SqliteCheckpoint>::clone(&checkpoints);
     let mut agent = create_agent(config_with_model(
         workspace.path(),
         checkpoint_store,
         "stream-retry",
         "test",
-        model.clone(),
+        Arc::<RecoveringStreamModel>::clone(&model),
     ))
     .await
     .expect("create agent");
@@ -83,7 +83,7 @@ async fn interrupted_stream_retries_in_a_fresh_model_step() {
     let [search_end] = web_search_ends.as_slice() else {
         panic!("expected exactly one web search end, got {web_search_ends:?}");
     };
-    assert_eq!(search_end.call_id, "search-1");
+    assert_eq!(&*search_end.call_id, "search-1");
     assert_eq!(search_end.model_step_id, started[0].model_step_id);
     assert!(matches!(search_end.action, WebSearchAction::Interrupted));
     assert_eq!(model.calls.load(Ordering::SeqCst), 2);
@@ -112,7 +112,7 @@ async fn interrupted_stream_exhaustion_surfaces_only_the_safe_provider_error() {
         checkpoints,
         "stream-exhaustion",
         "test",
-        model.clone(),
+        Arc::<InterruptedStreamModel>::clone(&model),
     ))
     .await
     .expect("create agent");
@@ -151,7 +151,7 @@ async fn interrupted_stream_exhaustion_surfaces_only_the_safe_provider_error() {
     assert_eq!(failure.kind, ErrorKind::Provider);
     assert!(failure.retryable);
     assert_eq!(
-        failure.message,
+        &*failure.message,
         "provider error: model response stream was interrupted"
     );
 }
@@ -173,7 +173,7 @@ async fn interrupt_during_stream_retry_backoff_cancels_the_retry() {
         checkpoints,
         "stream-backoff-interrupt",
         "test",
-        model.clone(),
+        Arc::<InterruptedStreamModel>::clone(&model),
     ))
     .await
     .expect("create agent");
@@ -191,9 +191,7 @@ async fn interrupt_during_stream_retry_backoff_cancels_the_retry() {
     };
     agent
         .sender()
-        .submit(Op::Interrupt {
-            turn_id: turn_id.to_string(),
-        })
+        .submit(Op::Interrupt { turn_id })
         .expect("interrupt turn");
 
     tokio::time::timeout(std::time::Duration::from_secs(1), async {

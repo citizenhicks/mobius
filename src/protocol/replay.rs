@@ -107,19 +107,19 @@ pub(crate) fn strip_attachment_references(items: &mut Vec<Arc<Value>>) {
             parts
         } else {
             // A fork owns its rewritten item; copy only retained images, never attachment text.
-            item["content"]
-                .as_array()
+            item.get("content")
+                .and_then(Value::as_array)
                 .into_iter()
                 .flatten()
                 .filter(|part| is_image(part))
-                .cloned()
+                .cloned() // rules-allow: a shared item keeps its images, so the fork copies them
                 .collect()
         };
-        let mut inherited = serde_json::json!({
+        let inherited = serde_json::json!({
             "role": "user",
-            (INTERNAL_MESSAGE_FIELD): "inherited_media"
+            (INTERNAL_MESSAGE_FIELD): "inherited_media",
+            "content": images
         });
-        inherited["content"] = Value::Array(images);
         *item = Arc::new(inherited);
         true
     });
@@ -150,7 +150,7 @@ pub(crate) fn tool_complete_boundaries<'a>(
                     .get("call_id")
                     .and_then(Value::as_str)
                     .filter(|call_id| !call_id.is_empty())
-                    .map_or_else(|| format!("missing-{index}"), str::to_string);
+                    .map_or_else(|| format!("missing-{index}"), str::to_owned);
                 open_calls.insert(call_id);
             }
             Some("tool_search_call")
@@ -160,7 +160,7 @@ pub(crate) fn tool_complete_boundaries<'a>(
                     .get("call_id")
                     .and_then(Value::as_str)
                     .filter(|call_id| !call_id.is_empty())
-                    .map_or_else(|| format!("missing-{index}"), str::to_string);
+                    .map_or_else(|| format!("missing-{index}"), str::to_owned);
                 open_calls.insert(call_id);
             }
             Some("function_call_output" | "tool_search_output") => {
@@ -197,7 +197,7 @@ pub fn events<V: std::borrow::Borrow<Value>>(
             .binary_search(&(index + 1))
             .is_ok()
             .then_some(*target);
-        let item_id = replay_id(target);
+        let item_id: Arc<str> = replay_id(target).into();
         if let Some(mut message) = message_metadata(value) {
             message.message_target = message_target;
             events.push(EventMsg::Message(message));
@@ -208,8 +208,8 @@ pub fn events<V: std::borrow::Borrow<Value>>(
             if !content.is_empty() {
                 events.push(EventMsg::AssistantMessage(AssistantMessageEvent {
                     session_id: Arc::clone(&session_id),
-                    turn_id: item_id.as_str().into(),
-                    model_step_id: item_id.as_str().into(),
+                    turn_id: Arc::clone(&item_id),
+                    model_step_id: Arc::clone(&item_id),
                     content,
                     message_target,
                 }));
@@ -221,8 +221,8 @@ pub fn events<V: std::borrow::Borrow<Value>>(
                 if let Some(text) = reasoning_text(value) {
                     events.push(EventMsg::AssistantMessage(AssistantMessageEvent {
                         session_id: Arc::clone(&session_id),
-                        turn_id: item_id.as_str().into(),
-                        model_step_id: item_id.into(),
+                        turn_id: Arc::clone(&item_id),
+                        model_step_id: item_id,
                         content: vec![ModelStepContent {
                             output_index: 0,
                             part_index: 0,
@@ -240,7 +240,10 @@ pub fn events<V: std::borrow::Borrow<Value>>(
                 if call_id.is_empty() || name.is_empty() {
                     continue;
                 }
-                tools.insert(call_id.clone(), (name.clone(), item_id.clone()));
+                tools.insert(
+                    Arc::clone(&call_id),
+                    (Arc::clone(&name), Arc::clone(&item_id)),
+                );
                 events.push(EventMsg::ToolCallBegin(ToolCallBeginEvent {
                     turn_id: item_id,
                     call_id,
@@ -270,10 +273,10 @@ pub fn events<V: std::borrow::Borrow<Value>>(
                 }) else {
                     continue;
                 };
-                let (name, turn_id) = tools
-                    .get(&call_id)
-                    .cloned()
-                    .unwrap_or_else(|| ("tool".into(), item_id));
+                let (name, turn_id) = tools.get(&call_id).map_or_else(
+                    || ("tool".into(), item_id),
+                    |(name, turn_id)| (Arc::clone(name), Arc::clone(turn_id)),
+                );
                 events.push(EventMsg::ToolCallEnd(ToolCallEndEvent {
                     turn_id,
                     name,
@@ -290,8 +293,8 @@ pub fn events<V: std::borrow::Borrow<Value>>(
                     continue;
                 };
                 events.push(EventMsg::ToolLoad(ToolLoadEvent {
-                    turn_id: item_id.clone(),
-                    load_id: item_id,
+                    load_id: item_id.to_string(),
+                    turn_id: item_id,
                     catalog_revision: load.catalog_revision,
                     tools: load.tools,
                 }));
@@ -335,7 +338,7 @@ fn assistant_content(value: &Value) -> Vec<ModelStepContent> {
             output_index: 0,
             part_index: 0,
             phase,
-            text: text.clone(),
+            text: text.clone(), // rules-allow: replay builds owned content from a borrowed item
             annotations: Vec::new(),
         }),
         Some(Value::Array(parts)) => {
@@ -354,7 +357,7 @@ fn assistant_content(value: &Value) -> Vec<ModelStepContent> {
                         .and_then(|annotations| Vec::deserialize(annotations).ok())
                         .unwrap_or_default(),
                 })
-            }))
+            }));
         }
         Some(_) | None => {}
     }
@@ -365,23 +368,23 @@ fn reasoning_text(value: &Value) -> Option<String> {
     value
         .get(REPLAY_REASONING_FIELD)
         .and_then(Value::as_str)
-        .map(str::to_string)
+        .map(str::to_owned)
 }
 
-fn string(value: &Value, field: &str) -> String {
+fn string(value: &Value, field: &str) -> Arc<str> {
     value
         .get(field)
         .and_then(Value::as_str)
         .unwrap_or_default()
-        .to_string()
+        .into()
 }
 
 fn arguments(value: Option<&Value>) -> Value {
     match value {
         Some(Value::String(value)) => {
-            serde_json::from_str(value).unwrap_or_else(|_| Value::String(value.clone()))
+            serde_json::from_str(value).unwrap_or_else(|_| Value::String(value.clone())) // rules-allow: replay builds owned arguments from a borrowed item
         }
-        Some(value) => value.clone(),
+        Some(value) => value.clone(), // rules-allow: replay builds owned arguments from a borrowed item
         None => serde_json::json!({}),
     }
 }
@@ -542,7 +545,7 @@ mod tests {
         assert!(matches!(
             replayed.as_slice(),
             [EventMsg::ToolCallBegin(begin), EventMsg::ToolCallEnd(end)]
-                if begin.turn_id == "history-7-1" && end.turn_id == begin.turn_id
+                if &*begin.turn_id == "history-7-1" && end.turn_id == begin.turn_id
                     && end.output.0.len() == 2
                     && matches!(&end.output.0[1], crate::protocol::ContentPart::Image { image } if image.file.id == "screen")
         ));

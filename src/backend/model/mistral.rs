@@ -322,11 +322,11 @@ impl StreamState {
                                 })?,
                                 events,
                             )
-                            .await?
+                            .await?;
                         }
                         Some("thinking") => {
                             self.append_thinking(serde_json::from_value(part)?, events)
-                                .await?
+                                .await?;
                         }
                         kind => {
                             return Err(Error::Provider(
@@ -376,7 +376,7 @@ impl StreamState {
         let block = self
             .thinking
             .last_mut()
-            .expect("thinking block was just inserted");
+            .ok_or_else(|| Error::Provider("Mistral thinking block was not recorded".into()))?;
         for part in chunk.thinking {
             if part.get("type").and_then(Value::as_str) == Some("text") {
                 let text = part
@@ -424,10 +424,18 @@ impl StreamState {
                 "content": [{"type": "output_text", "text": self.text}],
             });
             if !self.reasoning.is_empty() {
-                message[REPLAY_REASONING_FIELD] = Value::String(self.reasoning);
+                super::set_field(
+                    &mut message,
+                    REPLAY_REASONING_FIELD,
+                    Value::String(self.reasoning),
+                );
             }
             if !self.thinking.is_empty() {
-                message[RAW_THINKING] = serde_json::to_value(self.thinking)?;
+                super::set_field(
+                    &mut message,
+                    RAW_THINKING,
+                    serde_json::to_value(self.thinking)?,
+                );
             }
             output.push(message);
         }

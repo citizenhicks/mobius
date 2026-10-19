@@ -43,13 +43,13 @@ async fn runtime_activity_tracks_reservations_and_pending_deliveries() {
     );
     gateway
         .set_bot_subscription(BotSubscription {
-            bot_id: bot.id.clone(),
+            bot_id: Arc::clone(&bot.id),
             enabled: true,
             binding: HookBinding {
                 id: "requested-report".into(),
                 on: crate::bots::event_selector(
                     HookSource::Routine {
-                        routine_id: routine.id.clone(),
+                        routine_id: Arc::clone(&routine.id),
                     },
                     HookKind::RunFinished,
                 ),

@@ -72,6 +72,30 @@ impl ImageAspect {
 }
 
 impl ImageGenerationRequest<'_> {
+    pub(super) fn edit_form(&self) -> Result<reqwest::multipart::Form> {
+        let mut form = reqwest::multipart::Form::new()
+            .text("model", self.model.to_owned())
+            .text("prompt", self.prompt.to_owned())
+            .text("n", "1")
+            .text("size", self.image_aspect.image_size());
+        if let Some(quality) = self.quality {
+            form = form.text("quality", quality.to_owned());
+        }
+        for (index, image) in self.references.iter().enumerate() {
+            let extension = match image.media_type {
+                "image/png" => "png",
+                "image/jpeg" => "jpg",
+                "image/webp" => "webp",
+                _ => return Err(Error::Tool("unsupported reference image type".into())),
+            };
+            let part = reqwest::multipart::Part::bytes(image.bytes.to_vec())
+                .file_name(format!("reference-{index}.{extension}"))
+                .mime_str(image.media_type)?;
+            form = form.part("image[]", part);
+        }
+        Ok(form)
+    }
+
     pub(super) fn validate(&self, limits: ImageInputLimits) -> Result<()> {
         if self.model.trim().is_empty() || self.model.len() > 256 {
             return Err(Error::Tool("image model must contain 1–256 bytes".into()));
@@ -124,6 +148,12 @@ pub struct GeneratedImage {
 
 crate::embedded_config! {
     pub(super) static IMAGE_APIS: BTreeMap<String, ImageApi> = include_str!("image_generation.toml");
+}
+
+pub(super) fn image_api(name: &str) -> Result<&'static ImageApi> {
+    IMAGE_APIS
+        .get(name)
+        .ok_or_else(|| Error::Config(format!("image API `{name}` is not configured")))
 }
 
 #[derive(Deserialize)]
@@ -182,60 +212,43 @@ impl ImageApi {
             .collect::<Result<Vec<_>>>()?;
         let mut body = json!({"model": model, "prompt": request.prompt, "n": 1});
         match self.size_format {
-            ImageSizeFormat::Pixels => body["size"] = json!(request.image_aspect.image_size()),
+            ImageSizeFormat::Pixels => {
+                super::set_field(&mut body, "size", json!(request.image_aspect.image_size()));
+            }
             ImageSizeFormat::AspectRatio => {
-                body["aspect_ratio"] = json!(request.image_aspect.aspect_ratio());
+                super::set_field(
+                    &mut body,
+                    "aspect_ratio",
+                    json!(request.image_aspect.aspect_ratio()),
+                );
             }
         }
         if let Some(quality) = request.quality {
-            body["quality"] = json!(quality);
+            super::set_field(&mut body, "quality", json!(quality));
         }
         if encoded.is_empty() {
             return Ok((&self.generation_path, body));
         }
         match self.reference_format {
-            ImageReferenceFormat::ImageUrls => {
-                body["images"] = encoded
+            ImageReferenceFormat::ImageUrls => super::set_field(
+                &mut body,
+                "images",
+                encoded
                     .into_iter()
                     .map(|image_url| json!({"image_url": image_url}))
-                    .collect();
-            }
-            ImageReferenceFormat::InputReferences => {
-                body["input_references"] = encoded
+                    .collect(),
+            ),
+            ImageReferenceFormat::InputReferences => super::set_field(
+                &mut body,
+                "input_references",
+                encoded
                     .into_iter()
                     .map(|url| json!({"type": "image_url", "image_url": {"url": url}}))
-                    .collect();
-            }
+                    .collect(),
+            ),
             ImageReferenceFormat::Multipart => unreachable!("multipart requests are handled above"),
         }
         Ok((&self.edit_path, body))
-    }
-
-    pub(super) fn edit_form(
-        &self,
-        request: &ImageGenerationRequest<'_>,
-    ) -> Result<reqwest::multipart::Form> {
-        let mut form = reqwest::multipart::Form::new()
-            .text("model", request.model.to_owned())
-            .text("prompt", request.prompt.to_owned())
-            .text("n", "1")
-            .text("size", request.image_aspect.image_size());
-        if let Some(quality) = request.quality {
-            form = form.text("quality", quality.to_owned());
-        }
-        for (index, image) in request.references.iter().enumerate() {
-            let extension = match image.media_type {
-                "image/png" => "png",
-                "image/jpeg" => "jpg",
-                "image/webp" => "webp",
-                _ => return Err(Error::Tool("unsupported reference image type".into())),
-            };
-            let part = reqwest::multipart::Part::bytes(image.bytes.to_vec())
-                .file_name(format!("reference-{index}.{extension}"))
-                .mime_str(image.media_type)?;
-            form = form.part("image[]", part);
-        }
-        Ok(form)
     }
 
     pub(super) fn decode(&self, response: &[u8]) -> Result<GeneratedImage> {
@@ -244,26 +257,29 @@ impl ImageApi {
             .get("data")
             .and_then(Value::as_array)
             .ok_or_else(|| Error::Provider("image response has no data".into()))?;
-        if data.len() != 1 {
+        let [image] = data.as_slice() else {
             return Err(Error::Provider(
                 "image response must contain one image".into(),
             ));
-        }
-        let encoded = data[0]
+        };
+        let encoded = image
             .get("b64_json")
             .and_then(Value::as_str)
             .ok_or_else(|| Error::Provider("image response has no image bytes".into()))?;
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(encoded)
-            .map_err(|_| Error::Provider("image response contains invalid base64".into()))?;
+            .map_err(|error| {
+                Error::Provider(format!("image response contains invalid base64: {error}").into())
+            })?;
         if bytes.is_empty() || bytes.len() > MAX_IMAGE_BYTES {
             return Err(Error::Provider(
                 "image response exceeded image size limit".into(),
             ));
         }
-        let media_type = media_type(&bytes)
-            .map_err(|_| Error::Provider("image response has unsupported image format".into()))?;
-        if data[0]
+        let media_type = media_type(&bytes).map_err(|error| {
+            Error::Provider(format!("image response has unsupported image format: {error}").into())
+        })?;
+        if image
             .get("media_type")
             .is_some_and(|declared| declared.as_str() != Some(media_type))
         {
@@ -383,18 +399,18 @@ mod tests {
         assert_eq!(decoded.media_type, "image/png");
         assert_eq!(decoded.usage.unwrap().total_tokens, 5);
         assert!(
-            IMAGE_APIS["openai"]
-                .edit_form(&ImageGenerationRequest {
-                    model: "gpt-image-2.5-sunburst",
-                    prompt: "edit",
-                    image_aspect: ImageAspect::Portrait,
-                    quality: None,
-                    references: &[ImageGenerationReference {
-                        media_type: "image/gif",
-                        bytes: PNG,
-                    }],
-                })
-                .is_err()
+            ImageGenerationRequest {
+                model: "gpt-image-2.5-sunburst",
+                prompt: "edit",
+                image_aspect: ImageAspect::Portrait,
+                quality: None,
+                references: &[ImageGenerationReference {
+                    media_type: "image/gif",
+                    bytes: PNG,
+                }],
+            }
+            .edit_form()
+            .is_err()
         );
     }
 }

@@ -47,6 +47,7 @@ struct BarrierStreamingModel {
 struct BarrierStreamingTool {
     barrier: Arc<BarrierState>,
     name: &'static str,
+    definition: Arc<ToolDefinition>,
 }
 
 struct BarrierState {
@@ -70,7 +71,7 @@ impl Middleware for BarrierState {
         context: &'a mut PreToolUseContext<'_>,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            if context.call().name == "parallel_c" {
+            if &*context.call().name == "parallel_c" {
                 self.c_prepared.notify_one();
             }
             Ok(())
@@ -129,12 +130,8 @@ impl Model for BarrierStreamingModel {
 }
 
 impl Tool for BarrierStreamingTool {
-    fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: self.name.into(),
-            description: "a mixed barrier streaming test tool".into(),
-            parameters: serde_json::json!({"type": "object"}),
-        }
+    fn definition(&self) -> &Arc<ToolDefinition> {
+        &self.definition
     }
 
     fn exposure(&self) -> ToolExposure {
@@ -149,11 +146,11 @@ impl Tool for BarrierStreamingTool {
         }
     }
 
-    fn call<'a>(
-        &'a self,
+    fn call(
+        &self,
         _context: ToolContext,
         _arguments: Value,
-    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
+    ) -> BoxFuture<'_, Result<crate::protocol::ToolResponse>> {
         let barrier = Arc::clone(&self.barrier);
         let name = self.name;
         Box::pin(async move {
@@ -231,23 +228,27 @@ impl Model for StreamingModel {
 }
 
 impl Tool for StreamingTool {
-    fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "streaming_tool".into(),
-            description: "a deterministic streaming test tool".into(),
-            parameters: serde_json::json!({"type": "object"}),
-        }
+    fn definition(&self) -> &std::sync::Arc<ToolDefinition> {
+        static DEFINITION: std::sync::LazyLock<std::sync::Arc<ToolDefinition>> =
+            std::sync::LazyLock::new(|| {
+                std::sync::Arc::new(ToolDefinition {
+                    name: "streaming_tool".into(),
+                    description: "a deterministic streaming test tool".into(),
+                    parameters: serde_json::json!({"type": "object"}),
+                })
+            });
+        &DEFINITION
     }
 
     fn exposure(&self) -> ToolExposure {
         ToolExposure::Direct
     }
 
-    fn call<'a>(
-        &'a self,
+    fn call(
+        &self,
         _context: ToolContext,
         _arguments: Value,
-    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
+    ) -> BoxFuture<'_, Result<crate::protocol::ToolResponse>> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let finished = Arc::clone(&self.finished);
         let release = self.release.clone();
@@ -278,7 +279,7 @@ impl Middleware for StreamingHooks {
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             self.pre_calls.fetch_add(1, Ordering::SeqCst);
-            if self.rewrite_second && context.call().call_id == "parallel-2" {
+            if self.rewrite_second && &*context.call().call_id == "parallel-2" {
                 context.replace(
                     "parallel_streaming_tool",
                     serde_json::json!({"call_id": "parallel-2", "rewritten": true}),
@@ -433,7 +434,7 @@ async fn streaming_tool_error_or_mismatch_does_not_retry_and_records_unknown_res
             workspace.path(),
             Arc::clone(&checkpoints) as Arc<dyn CheckpointStore>,
             session_id,
-            model.clone(),
+            Arc::<StreamingModel>::clone(&model),
             Arc::new(StreamingTool {
                 calls: Arc::new(AtomicUsize::new(0)),
                 finished: Arc::new(AtomicBool::new(false)),
@@ -461,8 +462,8 @@ async fn streaming_tool_error_or_mismatch_does_not_retry_and_records_unknown_res
         assert_eq!(
             canonical_tool_items(&saved.context),
             [
-                "function_call:stream-call".to_string(),
-                "function_call_output:stream-call".to_string(),
+                "function_call:stream-call".to_owned(),
+                "function_call_output:stream-call".to_owned(),
             ]
         );
         let output = saved
@@ -505,6 +506,11 @@ async fn streaming_mixed_parallel_and_exclusive_tools_respect_barriers() {
             Arc::new(BarrierStreamingTool {
                 barrier: Arc::clone(&barrier),
                 name,
+                definition: Arc::new(ToolDefinition {
+                    name: name.into(),
+                    description: "a mixed barrier streaming test tool".into(),
+                    parameters: serde_json::json!({"type": "object"}),
+                }),
             }) as Arc<dyn Tool>
         })
         .collect();
@@ -512,9 +518,9 @@ async fn streaming_mixed_parallel_and_exclusive_tools_respect_barriers() {
         workspace.path(),
         Arc::clone(&checkpoints) as Arc<dyn CheckpointStore>,
         "streaming-mixed-barriers",
-        model.clone(),
+        Arc::<BarrierStreamingModel>::clone(&model),
         tools,
-        barrier.clone(),
+        Arc::<BarrierState>::clone(&barrier),
     ))
     .await
     .expect("create agent");
@@ -588,12 +594,12 @@ async fn streaming_mixed_parallel_and_exclusive_tools_respect_barriers() {
     assert_eq!(
         canonical_tool_items(&saved.context),
         [
-            "function_call:barrier-a".to_string(),
-            "function_call:barrier-b".to_string(),
-            "function_call:barrier-c".to_string(),
-            "function_call_output:barrier-a".to_string(),
-            "function_call_output:barrier-b".to_string(),
-            "function_call_output:barrier-c".to_string(),
+            "function_call:barrier-a".to_owned(),
+            "function_call:barrier-b".to_owned(),
+            "function_call:barrier-c".to_owned(),
+            "function_call_output:barrier-a".to_owned(),
+            "function_call_output:barrier-b".to_owned(),
+            "function_call_output:barrier-c".to_owned(),
         ]
     );
 }
@@ -621,7 +627,7 @@ async fn interrupt_drops_a_running_streaming_tool() {
         workspace.path(),
         Arc::clone(&checkpoints) as Arc<dyn CheckpointStore>,
         "streaming-interrupt",
-        model.clone(),
+        Arc::<StreamingModel>::clone(&model),
         Arc::new(StreamingTool {
             calls: Arc::new(AtomicUsize::new(0)),
             finished: Arc::clone(&tool_done),
@@ -641,7 +647,7 @@ async fn interrupt_drops_a_running_streaming_tool() {
     let turn_id = loop {
         if let EventMsg::ModelStepStarted(step) = agent.next_event().await.expect("agent event").msg
         {
-            break step.turn_id;
+            break Arc::clone(&step.turn_id);
         }
     };
     tokio::time::timeout(
@@ -652,9 +658,7 @@ async fn interrupt_drops_a_running_streaming_tool() {
     .expect("tool started");
     agent
         .sender()
-        .submit(Op::Interrupt {
-            turn_id: turn_id.to_string(),
-        })
+        .submit(Op::Interrupt { turn_id })
         .expect("interrupt turn");
     while !matches!(
         agent.next_event().await.expect("agent event").msg,
@@ -673,8 +677,8 @@ async fn interrupt_drops_a_running_streaming_tool() {
     assert_eq!(
         canonical_tool_items(&saved.context),
         [
-            "function_call:stream-call".to_string(),
-            "function_call_output:stream-call".to_string(),
+            "function_call:stream-call".to_owned(),
+            "function_call_output:stream-call".to_owned(),
         ]
     );
 }

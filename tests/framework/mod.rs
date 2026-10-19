@@ -68,6 +68,7 @@ struct ScriptedModel {
     image_input: bool,
 }
 
+#[derive(Clone)]
 struct RecordedRequest {
     allow_hosted_tools: bool,
     input: Vec<Value>,
@@ -161,8 +162,8 @@ impl Model for GatedModel {
 
 #[derive(Default)]
 struct MemoryCheckpoints {
-    sessions: Mutex<BTreeMap<String, Checkpoint>>,
-    receipts: Mutex<std::collections::BTreeSet<(String, String)>>,
+    sessions: Mutex<BTreeMap<Arc<str>, Checkpoint>>,
+    receipts: Mutex<std::collections::BTreeSet<(Arc<str>, String)>>,
     state: Mutex<BTreeMap<(String, String), Value>>,
 }
 
@@ -198,54 +199,46 @@ impl CheckpointStore for MemoryCheckpoints {
             let mut sessions = self.sessions.lock().expect("checkpoint store");
             if session_ids
                 .iter()
-                .any(|session_id| !sessions.contains_key(session_id))
+                .any(|session_id| !sessions.contains_key(session_id.as_str()))
             {
                 return Ok(false);
             }
             for session_id in session_ids {
-                sessions.remove(session_id);
+                sessions.remove(session_id.as_str());
             }
+            drop(sessions);
             self.receipts
                 .lock()
                 .expect("receipts")
-                .retain(|(session_id, _)| !session_ids.contains(session_id));
+                .retain(|(session_id, _)| {
+                    !session_ids.iter().any(|deleted| **deleted == **session_id)
+                });
             Ok(true)
         })
     }
 
-    fn save<'a>(
-        &'a self,
-        checkpoint: &'a Checkpoint,
-        _transcript_delta: &'a [Arc<Value>],
-        _execution: Option<&'a ExecutionRecord>,
-    ) -> BoxFuture<'a, Result<()>> {
+    fn save_with_events(
+        &self,
+        checkpoint: Arc<Checkpoint>,
+        _transcript_delta: Vec<Arc<Value>>,
+        _execution: Option<ExecutionRecord>,
+        events: Vec<TimestampedEvent>,
+    ) -> BoxFuture<'_, Result<Vec<JournalEvent>>> {
         Box::pin(async move {
-            let mut sessions = self.sessions.lock().expect("checkpoint store");
             self.receipts.lock().expect("receipts").extend(
                 checkpoint
                     .pending_messages
                     .iter()
-                    .map(|message| (checkpoint.session_id.clone(), message.id().into())),
+                    .map(|message| (Arc::clone(&checkpoint.session_id), message.id().into())),
             );
-            sessions.insert(checkpoint.session_id.clone(), checkpoint.clone());
-            Ok(())
-        })
-    }
-
-    fn save_with_events<'a>(
-        &'a self,
-        checkpoint: Arc<Checkpoint>,
-        transcript_delta: Vec<Arc<Value>>,
-        execution: Option<ExecutionRecord>,
-        events: Vec<TimestampedEvent>,
-    ) -> BoxFuture<'a, Result<Vec<JournalEvent>>> {
-        Box::pin(async move {
-            self.save(&checkpoint, &transcript_delta, execution.as_ref())
-                .await?;
+            self.sessions.lock().expect("checkpoint store").insert(
+                Arc::clone(&checkpoint.session_id),
+                Checkpoint::clone(&checkpoint),
+            );
             let mut records = Vec::with_capacity(events.len());
             for event in events {
                 records.push(
-                    self.append_event(&checkpoint.session_id, event.recorded_at_ms, &event.event)
+                    self.append_event(&checkpoint.session_id, event.recorded_at_ms, event.event)
                         .await?,
                 );
             }
@@ -257,9 +250,8 @@ impl CheckpointStore for MemoryCheckpoints {
         &'a self,
         _session_id: &'a str,
         recorded_at_ms: i64,
-        event: &'a Event,
+        event: Event,
     ) -> BoxFuture<'a, Result<JournalEvent>> {
-        let event = event.clone();
         Box::pin(async move {
             Ok(JournalEvent {
                 sequence: 1,
@@ -288,7 +280,7 @@ impl CheckpointStore for MemoryCheckpoints {
                 .state
                 .lock()
                 .expect("checkpoint state")
-                .get(&(scope.to_string(), key.to_string()))
+                .get(&(scope.to_owned(), key.to_owned()))
                 .cloned())
         })
     }
@@ -303,7 +295,7 @@ impl CheckpointStore for MemoryCheckpoints {
             self.state
                 .lock()
                 .expect("checkpoint state")
-                .insert((scope.to_string(), key.to_string()), value.clone());
+                .insert((scope.to_owned(), key.to_owned()), value.clone());
             Ok(())
         })
     }
@@ -384,7 +376,7 @@ fn assistant_final_text(event: AssistantMessageEvent) -> String {
         .collect()
 }
 
-async fn failed_turn(agent: &mut mobius::agent::Agent) -> String {
+async fn failed_turn(agent: &mut mobius::agent::Agent) -> std::sync::Arc<str> {
     let mut message = None;
     while let Some(event) = agent.next_event().await {
         match event.msg {
@@ -432,7 +424,7 @@ fn request_image_count(input: &[Value]) -> usize {
         .count()
 }
 
-fn tool_response(call_id: &str, name: &str, arguments: Value) -> ModelOutput {
+fn tool_response(call_id: &str, name: &str, arguments: &Value) -> ModelOutput {
     ModelOutput::from_output(
         vec![serde_json::json!({
             "type": "function_call",

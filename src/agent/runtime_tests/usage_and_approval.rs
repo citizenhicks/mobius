@@ -11,12 +11,12 @@ async fn rejected_prompt_aborts_without_persisting_or_wedging_the_next_turn() {
     );
     let model = Arc::new(HandoffModel::default());
     let config = AgentConfig::new(
-        Arc::new(ModelRouter::new("main", model.clone())),
+        Arc::new(ModelRouter::new("main", Arc::<HandoffModel>::clone(&model))),
         Arc::new(Sandbox::new(
             Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
             ApprovalPolicy::Ask,
         )),
-        checkpoints.clone(),
+        Arc::<SqliteCheckpoint>::clone(&checkpoints),
         test_middleware(vec![Arc::new(RejectFirstPrompt(AtomicBool::new(false)))]),
         "test prompt",
     )
@@ -133,12 +133,12 @@ async fn compaction_notice_is_live_and_closes_on_success_failure_and_interrupt()
             );
             let mut checkpoint = Checkpoint::empty(outcome);
             checkpoint.model_route = Some("main".into());
-            checkpoint.session_context = test_session_context();
+            checkpoint.session_context = test_session_context().into();
             checkpoint.context = Arc::new(vec![Arc::new(crate::backend::model::user_message(
                 &"prior history ".repeat(1_000),
             ))]);
             checkpoints
-                .save(&checkpoint, &checkpoint.context, None)
+                .save(checkpoint.clone(), checkpoint.context.to_vec(), None)
                 .await
                 .unwrap();
             let router_model = Arc::clone(&model) as Arc<dyn Model>;
@@ -185,7 +185,7 @@ async fn compaction_notice_is_live_and_closes_on_success_failure_and_interrupt()
                         id: "steer-during-writer".into(),
                         op: active_user_op(
                             "keep this correction after compaction",
-                            turn_id.as_ref().unwrap(),
+                            turn_id.as_deref().unwrap(),
                             ActiveMessageDelivery::Steer,
                         ),
                     })
@@ -272,7 +272,7 @@ async fn compaction_marker_survives_transcript_replay() {
         SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
             .expect("checkpoint store"),
     );
-    let checkpoint_store: Arc<dyn CheckpointStore> = checkpoints.clone();
+    let checkpoint_store: Arc<dyn CheckpointStore> = Arc::<SqliteCheckpoint>::clone(&checkpoints);
     let config = AgentConfig::new(
         Arc::new(ModelRouter::new("main", Arc::new(HandoffModel::default()))),
         Arc::new(Sandbox::new(
@@ -338,7 +338,7 @@ async fn compaction_marker_survives_transcript_replay() {
             .contributions()
             .expect("contributions")
             .iter()
-            .find(|contribution| contribution.capability == "compaction")
+            .find(|contribution| &*contribution.capability == "compaction")
             .and_then(|contribution| contribution.count),
         Some(1)
     );
@@ -393,7 +393,7 @@ async fn failing_usage_observer_aborts_before_checkpoint_usage_is_committed() {
         SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
             .expect("checkpoint store"),
     );
-    let checkpoint_store: Arc<dyn CheckpointStore> = checkpoints.clone();
+    let checkpoint_store: Arc<dyn CheckpointStore> = Arc::<SqliteCheckpoint>::clone(&checkpoints);
     let model = Arc::new(ScriptedModel {
         outputs: Mutex::new(VecDeque::from([scripted_message("done")])),
         tool_counts: Mutex::new(Vec::new()),

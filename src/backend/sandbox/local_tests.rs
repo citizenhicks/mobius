@@ -146,9 +146,10 @@ sleep 30"#;
     .await
     .expect("daemon cleanup task");
     if alive {
-        let _ = std::process::Command::new("/bin/kill")
+        std::process::Command::new("/bin/kill")
             .args(["-KILL", &pid.to_string()])
-            .status();
+            .status()
+            .expect("kill surviving daemon");
     }
     assert!(!alive, "daemonized child {pid} survived command cleanup");
 }

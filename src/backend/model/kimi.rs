@@ -251,13 +251,13 @@ impl SseHandler for StreamState {
         if let Some(reasoning) = delta.get("reasoning_content").and_then(Value::as_str) {
             self.reasoning.push_str(reasoning);
             if !reasoning.is_empty() {
-                events(ModelEvent::ReasoningDelta(reasoning.to_string())).await?;
+                events(ModelEvent::ReasoningDelta(reasoning.to_owned())).await?;
             }
         }
         if let Some(text) = delta.get("content").and_then(Value::as_str) {
             self.text.push_str(text);
             if !text.is_empty() {
-                events(ModelEvent::TextDelta(text.to_string())).await?;
+                events(ModelEvent::TextDelta(text.to_owned())).await?;
             }
         }
         self.tools.append(delta, "Kimi")?;

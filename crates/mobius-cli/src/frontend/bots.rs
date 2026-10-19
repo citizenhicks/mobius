@@ -1,5 +1,7 @@
 //! Gateway-scoped Bot and routine management.
 
+use std::sync::Arc;
+
 mod form;
 mod render;
 mod runtime;
@@ -14,13 +16,11 @@ use uuid::Uuid;
 enum Action {
     None,
     Exit,
-    OpenSession(String),
-    Setup {
-        bot_id: String,
-        mode: SetupMode,
-    },
+    OpenSession(Arc<str>),
+    /// Runs setup for the Bot shown on the current `Page::Bot`.
+    Setup(SetupMode),
     Send {
-        request_id: String,
+        request_id: Uuid,
         message: Box<ClientMessage>,
         label: &'static str,
         follow_up: FollowUp,
@@ -31,16 +31,16 @@ enum Action {
 enum FollowUp {
     None,
     Routines,
-    Runs(String),
+    Runs(Arc<str>),
 }
 
 fn request_action(
     label: &'static str,
     follow_up: FollowUp,
-    make_message: impl FnOnce(String) -> ClientMessage,
+    make_message: impl FnOnce(Arc<str>) -> ClientMessage,
 ) -> Action {
-    let request_id = Uuid::new_v4().to_string();
-    let message = make_message(request_id.clone());
+    let request_id = Uuid::new_v4();
+    let message = make_message(request_id.to_string().into());
     Action::Send {
         request_id,
         message: Box::new(message),
@@ -51,9 +51,14 @@ fn request_action(
 
 fn moved(current: usize, length: usize, delta: isize) -> usize {
     if length == 0 {
-        0
+        return 0;
+    }
+    let current = current % length;
+    let step = delta.unsigned_abs() % length;
+    if delta >= 0 {
+        (current + step) % length
     } else {
-        (current as isize + delta).rem_euclid(length as isize) as usize
+        (current + length - step) % length
     }
 }
 
@@ -111,10 +116,10 @@ mod tests {
             description: "description".into(),
             tint: ProviderTint::Teal,
             shape: mobius_gateway::wire::BotShape::Circle,
-            config: VersionedAgentConfig {
+            config: Arc::new(VersionedAgentConfig {
                 revision: 7,
                 config: AgentComposition::default(),
-            },
+            }),
             accepts_file_attachments: false,
             routine_interaction_policy: RoutineInteractionPolicy::Unattended,
         }
@@ -158,7 +163,7 @@ mod tests {
         let bot = bot("bot-a");
         let mut gateway = gateway(vec![bot.clone()]);
         let mut state = BotsState::new(&gateway, None, None);
-        state.page = Page::Bot(bot.id.clone());
+        state.page = Page::Bot(Arc::clone(&bot.id));
         state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &gateway);
         let form = state
             .form
@@ -183,7 +188,7 @@ mod tests {
         form.paste("Be concise.");
         form.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT), &gateway);
         form.paste("Check correctness.\nExplain risks.");
-        gateway.bots[0].config.revision += 1;
+        Arc::make_mut(&mut gateway.bots[0].config).revision += 1;
         let FormFlow::Send(action) = form.handle_key(
             KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
             &gateway,
@@ -202,12 +207,12 @@ mod tests {
         else {
             panic!("expected update");
         };
-        assert_eq!(name, "Reviewer");
-        assert_eq!(description, "Reviews code");
+        assert_eq!(&*name, "Reviewer");
+        assert_eq!(&*description, "Reviews code");
         assert_eq!(expected_revision, 7);
         assert_eq!(tint, bot.tint);
         assert_eq!(shape, bot.shape);
-        let mut expected = bot.config.config;
+        let mut expected = bot.config.config.clone();
         expected.system_prompt = "Be concise.\nCheck correctness.\nExplain risks.".into();
         assert_eq!(config, expected);
     }
@@ -266,7 +271,8 @@ mod tests {
     fn run_requests_are_correlated_and_unrelated_history_is_deferred() {
         let mut gateway = gateway(vec![bot("bot-a")]);
         let mut state = BotsState::new(&gateway, None, None);
-        state.begin("owned".into(), "Load run history", FollowUp::None);
+        let owned = Uuid::new_v4();
+        state.begin(owned, "Load run history", FollowUp::None);
         let run = RoutineRun {
             id: "run-a".into(),
             routine_id: "routine-a".into(),
@@ -289,7 +295,7 @@ mod tests {
 
         let (_, deferred) = handle_frame(
             ServerMessage::RoutineHistory {
-                request_id: "owned".into(),
+                request_id: owned.to_string().into(),
                 runs: vec![run.clone()],
             },
             &mut gateway,
@@ -301,17 +307,17 @@ mod tests {
             message(request_action("Load run", FollowUp::None, |request_id| {
                 ClientMessage::GetRoutineRunPreview {
                     request_id,
-                    id: run.id.clone(),
+                    id: Arc::clone(&run.id),
                     before_sequence: None,
                 }
             })),
-            ClientMessage::GetRoutineRunPreview { id, .. } if id == "run-a"
+            ClientMessage::GetRoutineRunPreview { id, .. } if &*id == "run-a"
         ));
         assert!(matches!(
             message(request_action("Delete run", FollowUp::None, |request_id| {
                 ClientMessage::DeleteRoutineRun { request_id, id: run.id }
             })),
-            ClientMessage::DeleteRoutineRun { id, .. } if id == "run-a"
+            ClientMessage::DeleteRoutineRun { id, .. } if &*id == "run-a"
         ));
     }
 }

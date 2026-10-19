@@ -54,6 +54,15 @@ struct ClientToken {
     created_at: i64,
 }
 
+impl ClientToken {
+    fn identity(&self) -> ClientIdentity {
+        ClientIdentity {
+            id: self.id.clone(),       // rules-allow: the identity outlives the state lock
+            label: self.label.clone(), // rules-allow: the identity outlives the state lock
+        }
+    }
+}
+
 /// Identity returned after a successful authentication handshake.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientIdentity {
@@ -95,6 +104,16 @@ pub struct AuthStore {
     state: Mutex<AuthState>,
     channel_identity: crate::channel::Identity,
     config: AuthConfig,
+}
+
+impl std::fmt::Debug for AuthStore {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AuthStore")
+            .field("path", &self.path)
+            .field("config", &self.config)
+            .finish_non_exhaustive()
+    }
 }
 
 impl AuthStore {
@@ -192,20 +211,22 @@ impl AuthStore {
         }
 
         let token = self.channel_identity.credential(&random_secret(2));
-        let client_id = pairing_client_id(code);
-        let mut next = state.clone();
-        next.pending_pairing = None;
-        next.clients.push(ClientToken {
-            id: client_id.clone(),
+        let pending = state.pending_pairing.take();
+        state.clients.push(ClientToken {
+            id: pairing_client_id(code),
             label: client_label.into(),
             digest: digest(&token),
             created_at: now,
         });
-        let publication =
-            crate::publication::Outcome::applied(save_auth_state(&self.path, &next, false))?;
-        *state = next;
-        publication.confirm()?;
-        Ok(IssuedToken { client_id, token })
+        self.publish(&mut state, |state| {
+            state.clients.pop();
+            state.pending_pairing = pending;
+        })?;
+        drop(state);
+        Ok(IssuedToken {
+            client_id: pairing_client_id(code),
+            token,
+        })
     }
 
     /// Consumes the pending code and rotates one existing client token in place.
@@ -233,22 +254,29 @@ impl AuthStore {
                 matched = Some(index);
             }
         }
-        let Some(index) = matched else {
+        let Some(client) = matched.and_then(|index| state.clients.get_mut(index)) else {
             return Err(Error::Unauthorized);
         };
 
         let token = self.channel_identity.credential(&random_secret(2));
-        let mut next = state.clone();
-        next.pending_pairing = None;
-        let client = &mut next.clients[index];
-        client.label = client_label.into();
-        client.digest = digest(&token);
-        client.created_at = now;
-        let client_id = client.id.clone();
-        let publication =
-            crate::publication::Outcome::applied(save_auth_state(&self.path, &next, false))?;
-        *state = next;
-        publication.confirm()?;
+        let client_id = client.id.clone(); // rules-allow: the issued token outlives the state lock
+        let previous = (
+            std::mem::replace(&mut client.label, client_label.into()),
+            std::mem::replace(&mut client.digest, digest(&token)),
+            std::mem::replace(&mut client.created_at, now),
+        );
+        let pending = state.pending_pairing.take();
+        self.publish(&mut state, |state| {
+            state.pending_pairing = pending;
+            if let Some(client) = state
+                .clients
+                .iter_mut()
+                .find(|client| client.id == client_id)
+            {
+                (client.label, client.digest, client.created_at) = previous;
+            }
+        })?;
+        drop(state);
         Ok(IssuedToken { client_id, token })
     }
 
@@ -256,29 +284,39 @@ impl AuthStore {
         let token = self.channel_identity.credential(&random_secret(2));
         let now = unix_timestamp()?;
         let mut state = self.lock_state()?;
-        let mut next = state.clone();
-        if let Some(client) = next
+        if let Some(client) = state
             .clients
             .iter_mut()
             .find(|client| client.id == LOCAL_CLIENT_ID)
         {
-            client.digest = digest(&token);
-            client.created_at = now;
+            let previous = (
+                std::mem::replace(&mut client.digest, digest(&token)),
+                std::mem::replace(&mut client.created_at, now),
+            );
+            self.publish(&mut state, |state| {
+                if let Some(client) = state
+                    .clients
+                    .iter_mut()
+                    .find(|client| client.id == LOCAL_CLIENT_ID)
+                {
+                    (client.digest, client.created_at) = previous;
+                }
+            })?;
         } else {
-            if next.clients.len() >= self.config.paired_clients {
+            if state.clients.len() >= self.config.paired_clients {
                 return Err(Error::Config("paired client limit reached".into()));
             }
-            next.clients.push(ClientToken {
+            state.clients.push(ClientToken {
                 id: LOCAL_CLIENT_ID.into(),
                 label: LOCAL_CLIENT_LABEL.into(),
                 digest: digest(&token),
                 created_at: now,
             });
+            self.publish(&mut state, |state| {
+                state.clients.pop();
+            })?;
         }
-        let publication =
-            crate::publication::Outcome::applied(save_auth_state(&self.path, &next, false))?;
-        *state = next;
-        publication.confirm()?;
+        drop(state);
         Ok(IssuedToken {
             client_id: LOCAL_CLIENT_ID.into(),
             token,
@@ -293,15 +331,12 @@ impl AuthStore {
         let mut state = self.lock_state()?;
         let grant =
             new_pairing_grant(&self.channel_identity, self.config.pairing_lifetime_seconds)?;
-        let mut next = state.clone();
-        next.pending_pairing = Some(PendingPairing {
+        let pending = state.pending_pairing.replace(PendingPairing {
             digest: digest(&grant.code),
             expires_at: grant.expires_at,
         });
-        let publication =
-            crate::publication::Outcome::applied(save_auth_state(&self.path, &next, false))?;
-        *state = next;
-        publication.confirm()?;
+        self.publish(&mut state, |state| state.pending_pairing = pending)?;
+        drop(state);
         Ok(grant)
     }
 
@@ -318,13 +353,12 @@ impl AuthStore {
         let mut matched = None;
         for client in &state.clients {
             if bool::from(candidate.ct_eq(&client.digest)) {
-                matched = Some(ClientIdentity {
-                    id: client.id.clone(),
-                    label: client.label.clone(),
-                });
+                matched = Some(client);
             }
         }
-        matched.ok_or(Error::Unauthorized)
+        let identity = matched.map(ClientToken::identity);
+        drop(state);
+        identity.ok_or(Error::Unauthorized)
     }
 
     pub(crate) fn clients(&self) -> Result<Vec<ClientIdentity>> {
@@ -332,10 +366,7 @@ impl AuthStore {
             .lock_state()?
             .clients
             .iter()
-            .map(|client| ClientIdentity {
-                id: client.id.clone(),
-                label: client.label.clone(),
-            })
+            .map(ClientToken::identity)
             .collect())
     }
 
@@ -357,12 +388,9 @@ impl AuthStore {
         else {
             return Ok(false);
         };
-        let mut next = state.clone();
-        next.clients.remove(index);
-        let publication =
-            crate::publication::Outcome::applied(save_auth_state(&self.path, &next, false))?;
-        *state = next;
-        publication.confirm()?;
+        let removed = state.clients.remove(index);
+        self.publish(&mut state, |state| state.clients.insert(index, removed))?;
+        drop(state);
         Ok(true)
     }
 
@@ -378,7 +406,7 @@ impl AuthStore {
         }
         Ok(match &state.pending_pairing {
             Some(pending) if credential_matches(code, &pending.digest) => PairingStatus::Pending,
-            _ => PairingStatus::Replaced,
+            Some(_) | None => PairingStatus::Replaced,
         })
     }
 
@@ -391,22 +419,30 @@ impl AuthStore {
         if !credential_matches(code, &pending.digest) {
             return Ok(());
         }
-        let mut next = state.clone();
-        next.pending_pairing = Some(PendingPairing {
+        let pending = state.pending_pairing.replace(PendingPairing {
             digest: digest(&random_secret(1)),
             expires_at: REVOKED_PAIRING_EXPIRY,
         });
-        let publication =
-            crate::publication::Outcome::applied(save_auth_state(&self.path, &next, false))?;
-        *state = next;
-        publication.confirm()?;
+        self.publish(&mut state, |state| state.pending_pairing = pending)?;
+        drop(state);
         Ok(())
     }
 
+    /// Persists the already-updated state, undoing the update when nothing was written.
+    fn publish(&self, state: &mut AuthState, undo: impl FnOnce(&mut AuthState)) -> Result<()> {
+        match crate::publication::Outcome::applied(save_auth_state(&self.path, state, false)) {
+            Ok(publication) => publication.confirm(),
+            Err(error) => {
+                undo(state);
+                Err(error)
+            }
+        }
+    }
+
     fn lock_state(&self) -> Result<std::sync::MutexGuard<'_, AuthState>> {
-        self.state
-            .lock()
-            .map_err(|_| Error::Config("authentication state lock is poisoned".into()))
+        self.state.lock().map_err(|error| {
+            Error::Config(format!("authentication state lock is poisoned: {error}"))
+        })
     }
 
     pub(crate) fn channel_handshake(&self) -> Result<snow::HandshakeState> {
@@ -441,8 +477,9 @@ fn validate_auth_state(state: &AuthState) -> Result<()> {
     let mut client_ids = BTreeSet::new();
     let mut token_digests = BTreeSet::new();
     for client in &state.clients {
-        let id = Uuid::parse_str(&client.id)
-            .map_err(|_| Error::Config("authentication client ID is invalid".into()))?;
+        let id = Uuid::parse_str(&client.id).map_err(|error| {
+            Error::Config(format!("authentication client ID is invalid: {error}"))
+        })?;
         if id.to_string() != client.id {
             return Err(Error::Config(
                 "authentication client ID must be canonical".into(),
@@ -487,10 +524,9 @@ fn new_pairing_grant(
     Ok(PairingGrant {
         code: identity.credential(&random_secret(1)),
         expires_at: unix_timestamp()?
-            .checked_add(
-                i64::try_from(lifetime_seconds)
-                    .map_err(|_| Error::Config("pairing lifetime is too large".into()))?,
-            )
+            .checked_add(i64::try_from(lifetime_seconds).map_err(|error| {
+                Error::Config(format!("pairing lifetime is too large: {error}"))
+            })?)
             .ok_or_else(|| Error::Config("pairing expiry overflow".into()))?,
     })
 }
@@ -504,9 +540,10 @@ fn random_secret(parts: usize) -> String {
 fn unix_timestamp() -> Result<i64> {
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|_| Error::Config("system clock is before the Unix epoch".into()))?
+        .map_err(|error| Error::Config(format!("system clock is before the Unix epoch: {error}")))?
         .as_secs();
-    i64::try_from(seconds).map_err(|_| Error::Config("system clock is unsupported".into()))
+    i64::try_from(seconds)
+        .map_err(|error| Error::Config(format!("system clock is unsupported: {error}")))
 }
 
 fn save_auth_state(path: &Path, state: &AuthState, create_new: bool) -> Result<()> {

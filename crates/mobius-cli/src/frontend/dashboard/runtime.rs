@@ -1,6 +1,8 @@
 pub(super) use crate::frontend::response::wait_ready;
+use std::borrow::Borrow;
 use std::io;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use mobius::protocol::{
     EventMsg, FrontendWidgetContent, MAX_CAPABILITY_INPUT_BYTES, MAX_MESSAGE_BYTES, Op, Submission,
@@ -215,14 +217,14 @@ pub(super) async fn open_selected_session(
     sender: &GatewaySender,
     state: &mut DashboardState,
 ) -> Result<()> {
-    let Some(session_id) = state.selected_session_id.clone() else {
+    let Some(session_id) = state.selected_session_id.as_ref().map(Arc::clone) else {
         return Ok(());
     };
-    let request_id = Uuid::new_v4().to_string();
+    let request_id = Uuid::new_v4();
     sender
         .send(ClientMessage::OpenSession {
-            request_id: request_id.clone(),
-            session_id: session_id.clone(),
+            request_id: request_id.to_string().into(),
+            session_id: Arc::clone(&session_id),
             last_sequence: None,
         })
         .await
@@ -277,8 +279,8 @@ pub(super) async fn handle_overlay_key(
         KeyCode::Char('a') => {
             if let Some(op) = overlay
                 .open_widget()
-                .or_else(|| overlay.selected_key().and_then(|key| overlay.widget(key)))
-                .and_then(|widget| widget.action.clone())
+                .or_else(|| overlay.selected_key().and_then(|key| overlay.widget(&key)))
+                .and_then(|widget| widget.action.clone()) // rules-allow: the overlay keeps its widget action while the submission owns one
                 && let Some(op) = prepare_overlay_operation(overlay, op)
             {
                 submit_operation(sender, &overlay.session_id, op).await?;
@@ -336,20 +338,18 @@ pub(in crate::frontend) fn activate_overlay(overlay: &mut CapabilityOverlay) -> 
             Some(FrontendWidgetContent::ActionList { items, .. }) => items
                 .get(overlay.option_list.selected().unwrap_or_default())
                 .and_then(|item| item.actions.get(overlay.action_index))
-                .map(|action| action.clone().into_operation()),
-            _ => widget.action.clone(),
+                .map(|action| action.clone().into_operation()), // rules-allow: the overlay keeps its action list while the submission owns one
+            _ => widget.action.clone(), // rules-allow: the overlay keeps its widget action while the submission owns one
         };
     }
     let key = overlay.selected_key()?;
-    let widget = overlay.widget(key)?;
-    let action = widget.action.clone();
+    let widget = overlay.widget(&key)?;
+    let action = widget.action.clone(); // rules-allow: the overlay keeps its widget action while the submission owns one
     if widget.content.is_some() {
-        overlay.open = Some(key.clone());
+        overlay.open = Some(key);
         overlay.sync_selection();
-        action
-    } else {
-        action
     }
+    action
 }
 
 pub(in crate::frontend) fn move_overlay_action(overlay: &mut CapabilityOverlay, delta: isize) {
@@ -408,7 +408,7 @@ pub(in crate::frontend) fn handle_action_input_key(
             if input.text.trim().is_empty() {
                 return None;
             }
-            let mut input = overlay.input.take().expect("action input checked");
+            let mut input = overlay.input.take()?;
             match &mut input.op {
                 Op::CapabilityCommand { input: value, .. } => *value = Some(input.text),
                 Op::ExecApproval {
@@ -492,16 +492,16 @@ fn input_limit(op: &Op) -> usize {
 }
 
 pub(super) fn previous_boundary(value: &str, cursor: usize) -> usize {
-    value[..cursor]
-        .char_indices()
-        .next_back()
+    value
+        .get(..cursor)
+        .and_then(|before| before.char_indices().next_back())
         .map_or(0, |(index, _)| index)
 }
 
 pub(super) fn next_boundary(value: &str, cursor: usize) -> usize {
-    value[cursor..]
-        .char_indices()
-        .nth(1)
+    value
+        .get(cursor..)
+        .and_then(|after| after.char_indices().nth(1))
         .map_or(value.len(), |(index, _)| cursor + index)
 }
 
@@ -514,7 +514,7 @@ pub(super) async fn submit_operation(
         .send(ClientMessage::Submit {
             session_id: session_id.into(),
             submission: Submission {
-                id: Uuid::new_v4().to_string(),
+                id: Uuid::new_v4().to_string().into(),
                 op,
             },
         })
@@ -584,38 +584,41 @@ pub(super) fn move_selection(state: &mut DashboardState, delta: isize) {
                 .as_deref()
                 .and_then(|id| ordered.iter().position(|client| client.client_id == id));
             let selected = moved_index(current, ordered.len(), delta);
-            if state.selected_client_id.as_deref()
-                != selected.map(|index| ordered[index].client_id.as_str())
-            {
-                state.selected_client_id = selected.map(|index| ordered[index].client_id.clone());
-            }
+            select_id(
+                &mut state.selected_client_id,
+                selected
+                    .and_then(|index| ordered.get(index))
+                    .map(|client| client.client_id.as_str()),
+            );
             state.device_list.select(selected);
         }
         DashboardFocus::Chats => {
             let ordered = ordered_sessions(&state.gateway.sessions);
             let current = state
                 .selected_session_id
-                .as_deref()
-                .and_then(|id| ordered.iter().position(|session| session.session_id == id));
+                .as_ref()
+                .and_then(|id| ordered.iter().position(|session| session.session_id == *id));
             let selected = moved_index(current, ordered.len(), delta);
-            if state.selected_session_id.as_deref()
-                != selected.map(|index| ordered[index].session_id.as_str())
-            {
-                state.selected_session_id = selected.map(|index| ordered[index].session_id.clone());
-            }
+            select_id(
+                &mut state.selected_session_id,
+                selected
+                    .and_then(|index| ordered.get(index))
+                    .map(|session| &session.session_id),
+            );
             state.chat_list.select(selected);
         }
         DashboardFocus::Bots => {
             let current = state
                 .selected_bot_id
                 .as_deref()
-                .and_then(|id| state.gateway.bots.iter().position(|bot| bot.id == id));
+                .and_then(|id| state.gateway.bots.iter().position(|bot| *bot.id == *id));
             let selected = moved_index(current, state.gateway.bots.len(), delta);
-            if state.selected_bot_id.as_deref()
-                != selected.map(|index| state.gateway.bots[index].id.as_str())
-            {
-                state.selected_bot_id = selected.map(|index| state.gateway.bots[index].id.clone());
-            }
+            select_id(
+                &mut state.selected_bot_id,
+                selected
+                    .and_then(|index| state.gateway.bots.get(index))
+                    .map(|bot| &bot.id),
+            );
             state.bot_list.select(selected);
         }
     }
@@ -636,16 +639,27 @@ pub(super) fn select_edge(state: &mut DashboardState, last: bool) {
     match state.focus {
         DashboardFocus::Devices => {
             let ordered = ordered_clients(&state.clients);
-            state.selected_client_id = Some(ordered[selected].client_id.clone());
+            select_id(
+                &mut state.selected_client_id,
+                ordered
+                    .get(selected)
+                    .map(|client| client.client_id.as_str()),
+            );
             state.device_list.select(Some(selected));
         }
         DashboardFocus::Chats => {
             let ordered = ordered_sessions(&state.gateway.sessions);
-            state.selected_session_id = Some(ordered[selected].session_id.clone());
+            select_id(
+                &mut state.selected_session_id,
+                ordered.get(selected).map(|session| &session.session_id),
+            );
             state.chat_list.select(Some(selected));
         }
         DashboardFocus::Bots => {
-            state.selected_bot_id = Some(state.gateway.bots[selected].id.clone());
+            select_id(
+                &mut state.selected_bot_id,
+                state.gateway.bots.get(selected).map(|bot| &bot.id),
+            );
             state.bot_list.select(Some(selected));
         }
     }
@@ -673,7 +687,7 @@ pub(super) fn begin_unpair(state: &mut DashboardState) {
         return;
     }
     state.error = None;
-    state.pending_unpair = Some((client.client_id.clone(), client.label.clone()));
+    state.pending_unpair = Some((client.client_id.clone(), client.label.clone())); // rules-allow: the client list keeps its record while the pending unpair owns a copy
 }
 
 pub(super) async fn confirm_unpair(
@@ -686,7 +700,7 @@ pub(super) async fn confirm_unpair(
     state.error = None;
     sender
         .send(ClientMessage::UnpairClient {
-            request_id: Uuid::new_v4().to_string(),
+            request_id: Uuid::new_v4().to_string().into(),
             client_id,
         })
         .await
@@ -696,13 +710,13 @@ pub(super) async fn confirm_unpair(
 pub(super) async fn request_snapshot(sender: &GatewaySender) -> Result<()> {
     sender
         .send(ClientMessage::ListClients {
-            request_id: Uuid::new_v4().to_string(),
+            request_id: Uuid::new_v4().to_string().into(),
         })
         .await
         .map_err(gateway_error)?;
     sender
         .send(ClientMessage::GetProfile {
-            request_id: Uuid::new_v4().to_string(),
+            request_id: Uuid::new_v4().to_string().into(),
             include_provider_usage: false,
         })
         .await
@@ -745,13 +759,13 @@ pub(super) fn handle_frame(state: &mut DashboardState, message: ServerMessage) -
             let Some((pending_request, expected_session)) = state.pending_open.as_ref() else {
                 return Ok(());
             };
-            if request_id != *pending_request {
+            if Uuid::try_parse(&request_id) != Ok(*pending_request) {
                 return Ok(());
             }
-            if payload.session.session_id != *expected_session {
-                state.error = Some("gateway opened a different chat than requested".into());
-            } else {
+            if payload.session.session_id == *expected_session {
                 state.overlay = Some(CapabilityOverlay::from_session(payload));
+            } else {
+                state.error = Some("gateway opened a different chat than requested".into());
             }
             state.pending_open = None;
         }
@@ -759,7 +773,7 @@ pub(super) fn handle_frame(state: &mut DashboardState, message: ServerMessage) -
             if let Some(overlay) = state
                 .overlay
                 .as_mut()
-                .filter(|overlay| overlay.session_id == session_id.as_ref())
+                .filter(|overlay| *overlay.session_id == *session_id)
                 && let EventMsg::Frontend(event) = record.event.msg
             {
                 overlay.apply(event);
@@ -775,7 +789,7 @@ pub(super) fn handle_frame(state: &mut DashboardState, message: ServerMessage) -
             if state
                 .pending_open
                 .as_ref()
-                .is_some_and(|(pending, _)| pending == &request_id)
+                .is_some_and(|(pending, _)| Uuid::try_parse(&request_id) == Ok(*pending))
             {
                 state.pending_open = None;
             }
@@ -783,15 +797,15 @@ pub(super) fn handle_frame(state: &mut DashboardState, message: ServerMessage) -
                 return Ok(());
             }
             if fatal {
-                return Err(Error::Stopped(message));
+                return Err(Error::Stopped(message.to_string()));
             }
-            state.error = Some(message);
+            state.error = Some(message.to_string());
         }
         ServerMessage::Error { message, fatal, .. } => {
             if fatal {
-                return Err(Error::Stopped(message));
+                return Err(Error::Stopped(message.to_string()));
             }
-            state.error = Some(message);
+            state.error = Some(message.to_string());
         }
         _ => {}
     }
@@ -805,11 +819,12 @@ pub(super) fn sync_device_selection(state: &mut DashboardState) {
         .as_deref()
         .and_then(|id| ordered.iter().position(|client| client.client_id == id))
         .or_else(|| (!ordered.is_empty()).then_some(0));
-    if state.selected_client_id.as_deref()
-        != selected.map(|index| ordered[index].client_id.as_str())
-    {
-        state.selected_client_id = selected.map(|index| ordered[index].client_id.clone());
-    }
+    select_id(
+        &mut state.selected_client_id,
+        selected
+            .and_then(|index| ordered.get(index))
+            .map(|client| client.client_id.as_str()),
+    );
     state.device_list.select(selected);
 }
 
@@ -817,14 +832,15 @@ pub(super) fn sync_chat_selection(state: &mut DashboardState) {
     let ordered = ordered_sessions(&state.gateway.sessions);
     let selected = state
         .selected_session_id
-        .as_deref()
-        .and_then(|id| ordered.iter().position(|session| session.session_id == id))
+        .as_ref()
+        .and_then(|id| ordered.iter().position(|session| session.session_id == *id))
         .or_else(|| (!ordered.is_empty()).then_some(0));
-    if state.selected_session_id.as_deref()
-        != selected.map(|index| ordered[index].session_id.as_str())
-    {
-        state.selected_session_id = selected.map(|index| ordered[index].session_id.clone());
-    }
+    select_id(
+        &mut state.selected_session_id,
+        selected
+            .and_then(|index| ordered.get(index))
+            .map(|session| &session.session_id),
+    );
     state.chat_list.select(selected);
 }
 
@@ -832,14 +848,21 @@ pub(super) fn sync_bot_selection(state: &mut DashboardState) {
     let selected = state
         .selected_bot_id
         .as_deref()
-        .and_then(|id| state.gateway.bots.iter().position(|bot| bot.id == id))
+        .and_then(|id| state.gateway.bots.iter().position(|bot| *bot.id == *id))
         .or_else(|| (!state.gateway.bots.is_empty()).then_some(0));
-    if state.selected_bot_id.as_deref()
-        != selected.map(|index| state.gateway.bots[index].id.as_str())
-    {
-        state.selected_bot_id = selected.map(|index| state.gateway.bots[index].id.clone());
-    }
+    select_id(
+        &mut state.selected_bot_id,
+        selected
+            .and_then(|index| state.gateway.bots.get(index))
+            .map(|bot| &bot.id),
+    );
     state.bot_list.select(selected);
+}
+
+fn select_id<T: ?Sized + PartialEq + ToOwned>(selected: &mut Option<T::Owned>, id: Option<&T>) {
+    if selected.as_ref().map(Borrow::borrow) != id {
+        *selected = id.map(ToOwned::to_owned); // rules-allow: the selection owns its id while the list keeps the record
+    }
 }
 
 pub(super) fn ordered_clients(clients: &[ClientStatus]) -> Vec<&ClientStatus> {

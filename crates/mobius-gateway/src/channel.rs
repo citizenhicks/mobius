@@ -1,5 +1,6 @@
 //! Pinned Noise channels inside WebSockets; relay-visible records contain no gateway JSON.
 
+use std::fmt::Write as _;
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -53,24 +54,35 @@ impl Identity {
                 ));
             }
         }
-        let private: [u8; 32] = std::fs::read(&path)?
-            .try_into()
-            .map_err(|_| Error::Config("gateway channel key changed while reading".into()))?;
+        let private: [u8; 32] = std::fs::read(&path)?.try_into().map_err(|bytes: Vec<u8>| {
+            Error::Config(format!(
+                "gateway channel key changed while reading: {} bytes",
+                bytes.len()
+            ))
+        })?;
         let mut dh = DefaultResolver
             .resolve_dh(&snow::params::DHChoice::Curve25519)
             .ok_or_else(|| Error::Config("gateway channel key agreement is unavailable".into()))?;
         dh.set(&private);
-        let public = dh.pubkey().try_into().map_err(|_| Error::Unauthorized)?;
+        let public = dh
+            .pubkey()
+            .try_into()
+            .map_err(rejected("gateway channel public key is malformed"))?;
         Ok(Self { private, public })
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "fmt::Write for String never returns an error"
+    )]
     pub(crate) fn credential(&self, secret: &str) -> String {
-        let key: String = self
-            .public
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
-        format!("m1.{key}.{secret}")
+        let mut credential = String::from("m1.");
+        for byte in self.public {
+            write!(credential, "{byte:02x}").expect("writing to String cannot fail");
+        }
+        credential.push('.');
+        credential.push_str(secret);
+        credential
     }
 
     pub(crate) fn responder(&self) -> Result<snow::HandshakeState> {
@@ -88,8 +100,27 @@ fn builder() -> Result<snow::Builder<'static>> {
         .map_err(crypto_error)
 }
 
-fn crypto_error(_: snow::Error) -> Error {
-    Error::Protocol("encrypted gateway channel authentication failed".into())
+fn crypto_error(error: impl std::fmt::Display) -> Error {
+    Error::Protocol(format!(
+        "encrypted gateway channel authentication failed: {error}"
+    ))
+}
+
+/// Keeps channel failures opaque to the peer while recording why they happened.
+fn rejected<E: std::fmt::Display>(context: &'static str) -> impl FnOnce(E) -> Error {
+    move |error| {
+        tracing::debug!(%error, "{context}");
+        Error::Unauthorized
+    }
+}
+
+/// Decodes one lowercase hexadecimal digit already checked by the caller.
+const fn hex_value(digit: u8) -> u8 {
+    if digit.is_ascii_digit() {
+        digit - b'0'
+    } else {
+        digit - b'a' + 10
+    }
 }
 
 pub(crate) fn credential_key(credential: &str) -> Result<[u8; 32]> {
@@ -110,9 +141,8 @@ pub(crate) fn credential_key(credential: &str) -> Result<[u8; 32]> {
         return Err(invalid());
     }
     let mut public = [0u8; 32];
-    for (byte, hex) in public.iter_mut().zip(key.as_bytes().as_chunks::<2>().0) {
-        let text = std::str::from_utf8(hex).map_err(|_| invalid())?;
-        *byte = u8::from_str_radix(text, 16).map_err(|_| invalid())?;
+    for (byte, [high, low]) in public.iter_mut().zip(key.as_bytes().as_chunks::<2>().0) {
+        *byte = hex_value(*high) << 4 | hex_value(*low);
     }
     Ok(public)
 }
@@ -158,8 +188,11 @@ where
     let length = handshake
         .write_message(&[], &mut message)
         .map_err(crypto_error)?;
+    let message = message
+        .get(..length)
+        .ok_or_else(|| Error::Protocol("gateway channel handshake overflowed".into()))?;
     websocket
-        .send(Message::Binary(message[..length].to_vec().into()))
+        .send(Message::Binary(message.to_vec().into()))
         .await
         .map_err(websocket_error)
 }
@@ -215,10 +248,9 @@ where
 {
     let mut pending = Vec::new();
     loop {
-        if pending.len() >= 4 {
-            let length =
-                u32::from_be_bytes(pending[..4].try_into().map_err(|_| Error::Unauthorized)?)
-                    as usize;
+        if let Some(header) = pending.first_chunk::<4>() {
+            let length = usize::try_from(u32::from_be_bytes(*header))
+                .map_err(rejected("gateway channel frame length is unsupported"))?;
             if length == 0 || length > limit {
                 return Err(Error::Unauthorized);
             }
@@ -234,7 +266,7 @@ where
         let length = state
             .read_message(&message, &mut plaintext)
             .map_err(crypto_error)?;
-        pending.extend_from_slice(&plaintext[..length]);
+        pending.extend_from_slice(plaintext.get(..length).ok_or(Error::Unauthorized)?);
     }
 }
 
@@ -253,36 +285,39 @@ where
         let mut plaintext = vec![0; MAX_PLAINTEXT];
         let mut ciphertext = vec![0; MAX_RECORD];
         loop {
-            let length = match tokio::time::timeout(KEEPALIVE, reader.read(&mut plaintext)).await {
-                Ok(read) => read?,
-                Err(_) => {
-                    tokio::time::timeout(
-                        WRITE_TIMEOUT,
-                        outgoing.send(Message::Ping(Vec::new().into())),
-                    )
-                    .await
-                    .map_err(|_| Error::Unauthorized)?
-                    .map_err(websocket_error)?;
-                    continue;
-                }
+            let length = if let Ok(read) =
+                tokio::time::timeout(KEEPALIVE, reader.read(&mut plaintext)).await
+            {
+                read?
+            } else {
+                tokio::time::timeout(
+                    WRITE_TIMEOUT,
+                    outgoing.send(Message::Ping(Vec::new().into())),
+                )
+                .await
+                .map_err(rejected("gateway channel keepalive timed out"))?
+                .map_err(websocket_error)?;
+                continue;
             };
             if length == 0 {
                 return tokio::time::timeout(WRITE_TIMEOUT, outgoing.close())
                     .await
-                    .map_err(|_| Error::Unauthorized)?
+                    .map_err(rejected("gateway channel close timed out"))?
                     .map_err(websocket_error);
             }
+            let plaintext = plaintext.get(..length).ok_or(Error::Unauthorized)?;
             let length = state
                 .lock()
-                .map_err(|_| Error::Unauthorized)?
-                .write_message(&plaintext[..length], &mut ciphertext)
+                .map_err(rejected("gateway channel state lock is poisoned"))?
+                .write_message(plaintext, &mut ciphertext)
                 .map_err(crypto_error)?;
+            let ciphertext = ciphertext.get(..length).ok_or(Error::Unauthorized)?;
             tokio::time::timeout(
                 WRITE_TIMEOUT,
-                outgoing.send(Message::Binary(ciphertext[..length].to_vec().into())),
+                outgoing.send(Message::Binary(ciphertext.to_vec().into())),
             )
             .await
-            .map_err(|_| Error::Unauthorized)?
+            .map_err(rejected("gateway channel write timed out"))?
             .map_err(websocket_error)?;
         }
     };
@@ -295,10 +330,12 @@ where
                 {
                     let length = state
                         .lock()
-                        .map_err(|_| Error::Unauthorized)?
+                        .map_err(rejected("gateway channel state lock is poisoned"))?
                         .read_message(&ciphertext, &mut plaintext)
                         .map_err(crypto_error)?;
-                    writer.write_all(&plaintext[..length]).await?;
+                    writer
+                        .write_all(plaintext.get(..length).ok_or(Error::Unauthorized)?)
+                        .await?;
                 }
                 Message::Ping(_) | Message::Pong(_) => {}
                 Message::Close(_) => break,

@@ -22,7 +22,6 @@ use crate::backend::sandbox::CommandOutputSink;
 use crate::backend::sandbox::NetworkAccess;
 use crate::backend::sandbox::SandboxBackend;
 use crate::backend::sandbox::SandboxMode;
-use crate::truncate_utf8;
 
 use super::AuthorizedHooks;
 use super::canonical_directory;
@@ -141,8 +140,8 @@ impl HookDefinitions {
             .flat_map(|(event, hooks)| {
                 hooks.iter().map(move |hook| super::ExtensionHook {
                     event: event.as_str().into(),
-                    matcher: hook.matcher_text.clone(),
-                    command: hook.command.clone(),
+                    matcher: hook.matcher_text.clone(), // rules-allow: the inspection record owns copies of the loaded hook
+                    command: hook.command.clone(), // rules-allow: the inspection record owns copies of the loaded hook
                     timeout_seconds: hook.timeout.as_secs(),
                 })
             })
@@ -154,10 +153,10 @@ impl HookSet {
     pub(super) fn new(
         name: String,
         plugin_root: PathBuf,
-        data_dir: PathBuf,
+        data_dir: &Path,
         definitions: HookDefinitions,
     ) -> Result<Self> {
-        let data_dir = canonical_directory(&data_dir, "plugin data directory")?;
+        let data_dir = canonical_directory(data_dir, "plugin data directory")?;
         Ok(Self {
             name,
             plugin_root,
@@ -169,7 +168,7 @@ impl HookSet {
     #[cfg(test)]
     pub(crate) fn load(
         plugin_root: PathBuf,
-        data_dir: PathBuf,
+        data_dir: &Path,
         manifest_hooks: Option<&Value>,
     ) -> Result<Self> {
         let definitions = HookDefinitions::load(&plugin_root, manifest_hooks)?;
@@ -209,10 +208,10 @@ pub(crate) struct HookRuntime {
 }
 
 impl HookRuntime {
-    pub(crate) fn new(backend: Arc<dyn SandboxBackend>, workspace: PathBuf) -> Result<Self> {
+    pub(crate) fn new(backend: Arc<dyn SandboxBackend>, workspace: &Path) -> Result<Self> {
         Ok(Self {
             backend,
-            workspace: canonical_directory(&workspace, "hook workspace")?,
+            workspace: canonical_directory(workspace, "hook workspace")?,
         })
     }
 
@@ -409,7 +408,7 @@ impl CommandHook {
         }
 
         let matcher_text = match matcher.map(str::trim) {
-            None | Some("") | Some("*") => None,
+            None | Some("" | "*") => None,
             Some(matcher) => Some(matcher.to_owned()),
         };
         let matcher = match matcher_text.as_deref() {
@@ -453,7 +452,7 @@ fn load_manifest_sources(
 ) -> Result<()> {
     let sources = value
         .as_array()
-        .map_or(std::slice::from_ref(value), Vec::as_slice);
+        .map_or_else(|| std::slice::from_ref(value), Vec::as_slice);
     if sources.len() > MAX_HOOK_FILES {
         return Err(Error::Config(format!(
             "plugin hook source count exceeds {MAX_HOOK_FILES}"
@@ -742,9 +741,13 @@ fn normalize_output(
         continue_session = None;
         stop_reason = None;
     }
-    validate_optional_text(&stop_reason, MAX_OUTPUT_BYTES, "hook stop reason")?;
-    validate_optional_text(&system_message, MAX_OUTPUT_BYTES, "hook system message")?;
-    validate_optional_text(&reason, MAX_OUTPUT_BYTES, "hook reason")?;
+    validate_optional_text(stop_reason.as_deref(), MAX_OUTPUT_BYTES, "hook stop reason")?;
+    validate_optional_text(
+        system_message.as_deref(),
+        MAX_OUTPUT_BYTES,
+        "hook system message",
+    )?;
+    validate_optional_text(reason.as_deref(), MAX_OUTPUT_BYTES, "hook reason")?;
 
     let (
         additional_context,
@@ -764,7 +767,7 @@ fn normalize_output(
                 )));
             }
             validate_optional_text(
-                &specific.additional_context,
+                specific.additional_context.as_deref(),
                 context_bytes,
                 "hook additional context",
             )?;
@@ -773,7 +776,7 @@ fn normalize_output(
                 specific.additional_context.as_deref(),
             )?;
             validate_optional_text(
-                &specific.permission_decision_reason,
+                specific.permission_decision_reason.as_deref(),
                 MAX_OUTPUT_BYTES,
                 "hook permission reason",
             )?;
@@ -935,7 +938,7 @@ impl HookOutcome {
     }
 }
 
-fn validate_optional_text(value: &Option<String>, max: usize, label: &str) -> Result<()> {
+fn validate_optional_text(value: Option<&str>, max: usize, label: &str) -> Result<()> {
     if let Some(value) = value {
         validate_text(value, 0, max, label)?;
     }
@@ -951,8 +954,9 @@ fn validate_text(value: &str, min: usize, max: usize, label: &str) -> Result<()>
     Ok(())
 }
 
-fn bounded(value: String) -> String {
-    truncate_utf8(&value, MAX_OUTPUT_BYTES).into()
+fn bounded(mut value: String) -> String {
+    value.truncate(value.floor_char_boundary(MAX_OUTPUT_BYTES));
+    value
 }
 
 #[cfg(test)]
@@ -1137,8 +1141,7 @@ mod tests {
                 ]
             }]
         });
-        let set =
-            HookSet::load(root.path().into(), data.path().into(), Some(&hooks)).expect("hook set");
+        let set = HookSet::load(root.path().into(), data.path(), Some(&hooks)).expect("hook set");
         let permitted = Arc::new(AtomicBool::new(true));
         let gate = Arc::clone(&permitted);
         let set = AuthorizedHooks {
@@ -1152,7 +1155,8 @@ mod tests {
         };
         let sets = [set];
         let backend = Arc::new(FakeSandbox::new());
-        let runtime = HookRuntime::new(backend.clone(), workspace.path().into()).expect("runtime");
+        let runtime = HookRuntime::new(Arc::<FakeSandbox>::clone(&backend), workspace.path())
+            .expect("runtime");
         let outcomes = runtime
             .run_all(
                 &sets,

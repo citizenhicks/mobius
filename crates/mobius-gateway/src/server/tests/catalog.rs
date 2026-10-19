@@ -22,7 +22,7 @@ async fn pipelined_open_resumes_after_ready_and_selection_skips_replay() {
     let endpoint: Endpoint = format!("tcp://{}", server.listen_addr()).parse().unwrap();
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let serving = tokio::spawn(server.serve_until(async {
-        let _ = stopped.await;
+        stopped.await.ok();
     }));
     let (client, identity) = GatewayClient::pair(&endpoint, grant.code, "resume", ClientKind::Cli)
         .await
@@ -115,7 +115,7 @@ async fn pipelined_open_resumes_after_ready_and_selection_skips_replay() {
     let (mut opened, mut totals, mut diff) = (false, None, None);
     while totals.is_none() || diff.is_none() {
         match next_gateway_message(&mut selected).await {
-            ServerMessage::SessionOpened { request_id, .. } if request_id == "select" => {
+            ServerMessage::SessionOpened { request_id, .. } if &*request_id == "select" => {
                 opened = true;
             }
             ServerMessage::AgentEvent { .. } | ServerMessage::SessionReplayComplete { .. } => {

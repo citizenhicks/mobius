@@ -1,6 +1,7 @@
 //! möbius terminal frontend.
 
 use std::fmt::Write as _;
+use std::sync::Arc;
 
 use mobius::Result;
 use mobius::protocol::FrontendBlock;
@@ -43,8 +44,12 @@ pub async fn run_extensions(
     extensions::standalone(sender, events, gateway).await
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "fmt::Write for String never returns an error"
+)]
 fn block_text(block: &FrontendBlock) -> String {
-    let mut text = block.title.clone();
+    let mut text = String::from(block.title.as_str());
     if !block.text.is_empty() {
         if !text.is_empty() {
             text.push('\n');
@@ -127,11 +132,12 @@ pub async fn run(
 }
 
 /// Why a frontend returned control to its launcher.
+#[derive(Debug)]
 pub enum FrontendExit {
     /// Selects the exit case.
     Exit,
     /// Selects the resume case.
-    Resume(String),
+    Resume(Arc<str>),
     /// Selects the reload case.
     Reload,
     /// Selects the reconnect case.

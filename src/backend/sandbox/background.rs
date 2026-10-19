@@ -45,7 +45,7 @@ pub(crate) struct BackgroundCommandPoll {
 
 pub(super) struct BackgroundCommands {
     limit: usize,
-    entries: Mutex<BTreeMap<String, Entry>>,
+    entries: Mutex<BTreeMap<Arc<str>, Entry>>,
 }
 
 impl Default for BackgroundCommands {
@@ -56,6 +56,8 @@ impl Default for BackgroundCommands {
 
 struct Entry {
     owner: String,
+    started: std::time::Instant,
+    delivered: bool,
     output: Arc<Mutex<BufferedOutput>>,
     task: JoinHandle<Result<CommandOutput>>,
 }
@@ -63,7 +65,7 @@ struct Entry {
 // Until its ID reaches the caller, cancellation must not leave a command running.
 pub(super) struct StartingCommand<'a> {
     commands: &'a BackgroundCommands,
-    id: String,
+    id: Arc<str>,
     completion: oneshot::Receiver<()>,
     delivered: bool,
 }
@@ -74,7 +76,10 @@ impl StartingCommand<'_> {
         owner: &str,
         initial_wait: std::time::Duration,
     ) -> Result<BackgroundCommandPoll> {
-        let _ = tokio::time::timeout(initial_wait, &mut self.completion).await;
+        // Completion and an elapsed wait both continue to the poll, which reports the state.
+        if let Err(elapsed) = tokio::time::timeout(initial_wait, &mut self.completion).await {
+            tracing::trace!(%elapsed, "background command still running after its initial wait");
+        }
         let output = self.commands.poll(owner, &self.id).await?;
         self.delivered = true;
         Ok(output)
@@ -116,7 +121,7 @@ impl BackgroundCommands {
         Ok(self
             .entries
             .lock()
-            .map_err(|_| state_error())?
+            .map_err(state_error)?
             .values()
             .any(|entry| entry.owner == owner && !entry.task.is_finished()))
     }
@@ -129,17 +134,40 @@ impl BackgroundCommands {
         sandbox_mode: SandboxMode,
         network_access: NetworkAccess,
     ) -> Result<StartingCommand<'_>> {
-        let mut entries = self.entries.lock().map_err(|_| state_error())?;
+        let mut entries = self.entries.lock().map_err(state_error)?;
         if entries.len() >= self.limit {
-            return Err(Error::Sandbox(format!(
-                "background command limit {} reached",
-                self.limit
-            )));
+            // Never evict a result before its initial wait has returned it to the caller.
+            let oldest = entries
+                .values()
+                .filter(|entry| entry.delivered && entry.task.is_finished())
+                .map(|entry| entry.started)
+                .min();
+            let Some(oldest) = oldest else {
+                let own = entries
+                    .iter()
+                    .filter(|(_, entry)| entry.owner == owner)
+                    .map(|(id, _)| &**id)
+                    .collect::<Vec<_>>();
+                return Err(Error::Sandbox(format!(
+                    "background command limit {} reached; wait for initial results, or poll or stop your commands first: {}",
+                    self.limit,
+                    if own.is_empty() {
+                        "none of them are yours".into()
+                    } else {
+                        own.join(", ")
+                    }
+                )));
+            };
+            entries
+                .extract_if(.., |_, entry| {
+                    entry.delivered && entry.started == oldest && entry.task.is_finished()
+                })
+                .next();
         }
         let id = loop {
             let candidate = Uuid::new_v4().to_string();
-            if !entries.contains_key(&candidate) {
-                break candidate;
+            if !entries.contains_key(candidate.as_str()) {
+                break Arc::<str>::from(candidate);
             }
         };
         let output = Arc::new(Mutex::new(BufferedOutput::default()));
@@ -160,17 +188,22 @@ impl BackgroundCommands {
                     sink,
                 )
                 .await;
-            let _ = finished.send(());
+            if finished.send(()).is_err() {
+                tracing::trace!("background command finished after its initial wait ended");
+            }
             result
         });
         entries.insert(
-            id.clone(),
+            Arc::clone(&id),
             Entry {
                 owner: owner.into(),
+                started: std::time::Instant::now(),
+                delivered: false,
                 output,
                 task,
             },
         );
+        drop(entries);
         Ok(StartingCommand {
             commands: self,
             id,
@@ -181,11 +214,13 @@ impl BackgroundCommands {
 
     pub(super) async fn poll(&self, owner: &str, id: &str) -> Result<BackgroundCommandPoll> {
         let entry = {
-            let mut entries = self.entries.lock().map_err(|_| state_error())?;
-            let entry = entries.get(id).ok_or_else(|| unknown(id))?;
+            let mut entries = self.entries.lock().map_err(state_error)?;
+            let entry = entries.get_mut(id).ok_or_else(|| unknown(id))?;
             ensure_owner(entry, owner, id)?;
             if !entry.task.is_finished() {
-                return poll_running(id, &entry.output);
+                let output = poll_running(id, &entry.output)?;
+                entry.delivered = true;
+                return Ok(output);
             }
             entries.remove(id).ok_or_else(|| unknown(id))?
         };
@@ -194,7 +229,7 @@ impl BackgroundCommands {
 
     pub(super) async fn stop(&self, owner: &str, id: &str) -> Result<BackgroundCommandPoll> {
         let entry = {
-            let mut entries = self.entries.lock().map_err(|_| state_error())?;
+            let mut entries = self.entries.lock().map_err(state_error)?;
             let entry = entries.get(id).ok_or_else(|| unknown(id))?;
             ensure_owner(entry, owner, id)?;
             entries.remove(id).ok_or_else(|| unknown(id))?
@@ -212,7 +247,7 @@ impl BackgroundCommands {
 
     pub(super) async fn shutdown(&self, owner: &str) -> Result<()> {
         let entries = {
-            let mut entries = self.entries.lock().map_err(|_| state_error())?;
+            let mut entries = self.entries.lock().map_err(state_error)?;
             entries
                 .extract_if(.., |_, entry| entry.owner == owner)
                 .map(|(_, entry)| entry)
@@ -222,7 +257,14 @@ impl BackgroundCommands {
             entry.task.abort();
         }
         for entry in entries {
-            let _ = entry.task.await;
+            match entry.task.await {
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => {
+                    tracing::debug!(%error, "background command failed before shutdown");
+                }
+                Err(error) if error.is_cancelled() => {}
+                Err(error) => tracing::warn!(%error, "background command task failed on shutdown"),
+            }
         }
         Ok(())
     }
@@ -243,12 +285,12 @@ impl BufferedOutput {
         self.saw_output |= !bytes.is_empty();
         let remaining = MAX_POLL_OUTPUT_BYTES
             .saturating_sub(self.stdout.len().saturating_add(self.stderr.len()));
-        let kept = bytes.len().min(remaining);
+        let (kept, dropped) = bytes.split_at(bytes.len().min(remaining));
         match stream {
-            CommandStream::Stdout => self.stdout.extend_from_slice(&bytes[..kept]),
-            CommandStream::Stderr => self.stderr.extend_from_slice(&bytes[..kept]),
+            CommandStream::Stdout => self.stdout.extend_from_slice(kept),
+            CommandStream::Stderr => self.stderr.extend_from_slice(kept),
         }
-        self.truncated |= kept < bytes.len();
+        self.truncated |= !dropped.is_empty();
     }
 
     fn take(&mut self) -> TakenOutput {
@@ -350,7 +392,7 @@ fn finish(
 }
 
 fn take_output(output: &Arc<Mutex<BufferedOutput>>) -> Result<TakenOutput> {
-    Ok(output.lock().map_err(|_| state_error())?.take())
+    Ok(output.lock().map_err(state_error)?.take())
 }
 
 fn ensure_owner(entry: &Entry, owner: &str, id: &str) -> Result<()> {
@@ -364,8 +406,8 @@ fn unknown(id: &str) -> Error {
     Error::Unknown(format!("background command `{id}`"))
 }
 
-fn state_error() -> Error {
-    Error::Stopped("background command state lock poisoned".into())
+fn state_error(error: impl std::fmt::Display) -> Error {
+    Error::Stopped(format!("background command state lock poisoned: {error}"))
 }
 
 #[cfg(test)]
@@ -431,6 +473,44 @@ mod tests {
                 std::future::pending().await
             })
         }
+    }
+
+    #[tokio::test]
+    async fn completed_command_is_not_evicted_before_initial_delivery() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let backend: Arc<dyn SandboxBackend> = Arc::new(
+            crate::backend::sandbox::local::LocalSandbox::new(workspace.path()).expect("sandbox"),
+        );
+        let commands = BackgroundCommands::new(1);
+        let start = || {
+            commands.start(
+                "session",
+                Arc::clone(&backend),
+                "printf first".into(),
+                SandboxMode::DangerFullAccess,
+                NetworkAccess::Denied,
+            )
+        };
+        let first = start().expect("first command");
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !commands.entries.lock().expect("entries")[&first.id]
+                .task
+                .is_finished()
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("first command finished");
+
+        assert!(start().is_err());
+        let output = first
+            .wait("session", std::time::Duration::ZERO)
+            .await
+            .expect("first result");
+        assert_eq!(output.status, BackgroundCommandStatus::Exited);
+        assert_eq!(output.stdout, "first");
+        start().expect("collected result releases capacity");
     }
 
     #[tokio::test]

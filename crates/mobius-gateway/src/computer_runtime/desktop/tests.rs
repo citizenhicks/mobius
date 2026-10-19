@@ -28,7 +28,7 @@ async fn desktop_registration_rejects_remote_and_non_macos_clients() {
             .expect("registration response");
         assert!(
             matches!(frame.message, ServerMessage::Rejected { request_id, code, fatal: false, .. }
-            if request_id == "register" && code == "desktop_control")
+            if request_id.as_ref() == "register" && code == "desktop_control")
         );
         assert!(connection.is_none());
         assert!(control.connect("session").is_err());
@@ -44,7 +44,10 @@ async fn desktop_serializes_evaluations_and_rejects_stale_replies() {
     let mut worker = control.connect("session").expect("evaluation");
     assert!(control.connect("other-session").is_err());
     let request = serde_json::to_vec(&json!({"action": "apps"})).expect("request");
-    worker.write_u32(request.len() as u32).await.expect("size");
+    worker
+        .write_u32(u32::try_from(request.len()).expect("size fits"))
+        .await
+        .expect("size");
     worker.write_all(&request).await.expect("request");
     let Some(ServerMessage::DesktopControlRequested {
         request_id,
@@ -60,7 +63,7 @@ async fn desktop_serializes_evaluations_and_rejects_stale_replies() {
     assert!(app.reply("stale", json!({"result": []})).is_err());
     app.reply(&request_id, json!({"result": []}))
         .expect("reply");
-    let size = worker.read_u32().await.expect("reply size") as usize;
+    let size = usize::try_from(worker.read_u32().await.expect("reply size")).expect("size fits");
     let mut reply = vec![0; size];
     worker.read_exact(&mut reply).await.expect("reply");
     assert_eq!(

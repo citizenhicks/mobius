@@ -22,28 +22,22 @@ pub(super) struct ContextCache {
 
 impl ContextCache {
     pub(super) fn record(
-        contexts: &mut HashMap<String, Self>,
+        contexts: &mut HashMap<Arc<str>, Self>,
         checkpoint: &Checkpoint,
         data_version: i64,
     ) {
         contexts.retain(|_, cache| cache.items.iter().any(|item| item.strong_count() != 0));
         if checkpoint.context.is_empty() {
-            contexts.remove(checkpoint.session_id.as_str());
+            contexts.remove(&*checkpoint.session_id);
             return;
         }
-        // Reuse the owned key and Weak allocation on a hit; do not copy the session ID per save.
-        let (session_id, mut cache) = contexts
-            .remove_entry(checkpoint.session_id.as_str())
-            .unwrap_or_else(|| {
-                (
-                    checkpoint.session_id.to_owned(),
-                    Self {
-                        sequence: checkpoint.sequence,
-                        epoch: checkpoint.context_epoch,
-                        data_version,
-                        items: Vec::new(),
-                    },
-                )
+        let cache = contexts
+            .entry(Arc::clone(&checkpoint.session_id))
+            .or_insert_with(|| Self {
+                sequence: checkpoint.sequence,
+                epoch: checkpoint.context_epoch,
+                data_version,
+                items: Vec::new(),
             });
         cache.sequence = checkpoint.sequence;
         cache.epoch = checkpoint.context_epoch;
@@ -52,7 +46,6 @@ impl ContextCache {
         cache
             .items
             .extend(checkpoint.context.iter().map(Arc::downgrade));
-        contexts.insert(session_id, cache);
     }
 }
 
@@ -111,12 +104,14 @@ impl Serialize for Header<'_> {
 }
 
 pub(super) fn sqlite_integer(value: u64, name: &str) -> Result<i64> {
-    i64::try_from(value).map_err(|_| Error::Checkpoint(format!("{name} exceeds SQLite INTEGER")))
+    i64::try_from(value)
+        .map_err(|error| Error::Checkpoint(format!("{name} exceeds SQLite INTEGER: {error}")))
 }
 
 pub(super) fn context_count(checkpoint: &Checkpoint) -> Result<i64> {
-    i64::try_from(checkpoint.context.len())
-        .map_err(|_| Error::Checkpoint("context length exceeds SQLite INTEGER".into()))
+    i64::try_from(checkpoint.context.len()).map_err(|error| {
+        Error::Checkpoint(format!("context length exceeds SQLite INTEGER: {error}"))
+    })
 }
 
 pub(super) const CONTEXT_PREFIX_SQL: &str = "SELECT item_index, item_json FROM context_items
@@ -163,7 +158,7 @@ pub(super) fn prepare_append(
     }
     let stored_count = count;
     let count = usize::try_from(count)
-        .map_err(|_| Error::Checkpoint("stored context length is invalid".into()))?;
+        .map_err(|error| Error::Checkpoint(format!("stored context length is invalid: {error}")))?;
     if checkpoint.context.len() < count {
         return Err(Error::Checkpoint(
             "context prefix was truncated without advancing its epoch".into(),
@@ -195,13 +190,17 @@ pub(super) fn prepare_append(
         if usize::try_from(row.get::<_, i64>(0)?).ok() != Some(index) {
             return Err(Error::Checkpoint("stored context item is missing".into()));
         }
-        if cached.is_some_and(|cache| cache.items[index].as_ptr() == Arc::as_ptr(item)) {
+        if cached.is_some_and(|cache| {
+            cache
+                .items
+                .get(index)
+                .is_some_and(|cached| cached.as_ptr() == Arc::as_ptr(item))
+        }) {
             continue;
         }
-        let json = row
-            .get_ref(1)?
-            .as_str()
-            .map_err(|_| Error::Checkpoint("stored context item is not text".into()))?;
+        let json = row.get_ref(1)?.as_str().map_err(|error| {
+            Error::Checkpoint(format!("stored context item is not text: {error}"))
+        })?;
         let previous: Value = serde_json::from_str(json)?;
         if previous != **item {
             return Err(Error::Checkpoint(
@@ -222,8 +221,9 @@ pub(super) fn append_context(
         "INSERT INTO context_items (session_id, epoch, item_index, item_json) VALUES (?1, ?2, ?3, ?4)",
     )?;
     for (index, item) in checkpoint.context.iter().enumerate().skip(start) {
-        let index = i64::try_from(index)
-            .map_err(|_| Error::Checkpoint("context index exceeds SQLite INTEGER".into()))?;
+        let index = i64::try_from(index).map_err(|error| {
+            Error::Checkpoint(format!("context index exceeds SQLite INTEGER: {error}"))
+        })?;
         statement.execute(params![
             checkpoint.session_id,
             epoch,
@@ -234,6 +234,10 @@ pub(super) fn append_context(
     Ok(())
 }
 
+#[expect(
+    clippy::rc_buffer,
+    reason = "returns the shape of Checkpoint::context, which callers extend copy-on-write"
+)]
 pub(super) fn load_context(
     transaction: &Transaction<'_>,
     session_id: &str,
@@ -241,7 +245,7 @@ pub(super) fn load_context(
     count: i64,
 ) -> Result<Arc<Vec<Arc<Value>>>> {
     let count = usize::try_from(count)
-        .map_err(|_| Error::Checkpoint("stored context length is invalid".into()))?;
+        .map_err(|error| Error::Checkpoint(format!("stored context length is invalid: {error}")))?;
     let mut statement = transaction.prepare_cached(
         "SELECT epoch, item_index, item_json FROM context_items WHERE session_id = ?1 ORDER BY epoch, item_index",
     )?;

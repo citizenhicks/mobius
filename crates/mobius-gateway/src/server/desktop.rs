@@ -1,15 +1,19 @@
-use super::*;
+use super::{
+    Arc, AsyncWrite, AuthenticatedClient, ClientMessage, ConnectionSessionState, Error, Future,
+    GatewayHost, JoinSet, Rejection, Result, ServerFrame, ServerMessage, Uuid, broadcast,
+    write_frame, write_result, write_server_error,
+};
 use crate::computer_runtime::remote_desktop::DesktopStream;
 
 pub(super) struct PendingControl {
-    request_id: String,
+    request_id: Arc<str>,
     future: std::pin::Pin<Box<dyn Future<Output = std::result::Result<(), Rejection>> + Send>>,
 }
 
 pub(super) enum DesktopUpdate {
     Data(Result<Option<Vec<u8>>>),
     Changed(std::result::Result<(), broadcast::error::RecvError>),
-    Control(String, std::result::Result<(), Rejection>),
+    Control(Arc<str>, std::result::Result<(), Rejection>),
 }
 
 pub(super) async fn next_update(
@@ -52,7 +56,7 @@ pub(super) async fn write_update(
 
 pub(super) async fn next_control(
     pending: &mut Option<PendingControl>,
-) -> (String, std::result::Result<(), Rejection>) {
+) -> (Arc<str>, std::result::Result<(), Rejection>) {
     let Some(control) = pending.as_mut() else {
         return std::future::pending().await;
     };
@@ -72,7 +76,7 @@ pub(super) async fn next_data(stream: &mut Option<DesktopStream>) -> Result<Opti
 pub(super) async fn write_control_state(
     gateway: &GatewayHost,
     connection: Uuid,
-    request_id: Option<String>,
+    request_id: Option<Arc<str>>,
     writer: &mut (impl AsyncWrite + Unpin),
 ) -> Result<()> {
     let (enabled, is_owner, session_id) = gateway.remote_desktop.control_state(connection);
@@ -91,7 +95,7 @@ pub(super) async fn write_control_state(
 pub(super) async fn write_control_result(
     gateway: &GatewayHost,
     connection: Uuid,
-    request_id: String,
+    request_id: Arc<str>,
     result: std::result::Result<(), Rejection>,
     writer: &mut (impl AsyncWrite + Unpin),
 ) -> Result<()> {
@@ -138,7 +142,7 @@ pub(super) async fn write_data(
 
 pub(super) async fn handle_message(
     message: ClientMessage,
-    gateway: &GatewayHost,
+    gateway: &Arc<GatewayHost>,
     client: &AuthenticatedClient<'_>,
     connection: &mut ConnectionSessionState<'_>,
     writer: &mut (impl AsyncWrite + Unpin),
@@ -162,7 +166,7 @@ pub(super) async fn handle_message(
                 .await?;
             } else {
                 // The same connection must keep pumping the renderer's page request and reply.
-                let gateway = gateway.clone();
+                let gateway = Arc::clone(gateway);
                 connection.requests.spawn(async move {
                     match gateway.open_computer(&session_id).await {
                         Ok(()) => ServerMessage::ComputerOpened {
@@ -251,7 +255,7 @@ pub(super) async fn handle_message(
                         )
                         .await?;
                     } else {
-                        let gateway = gateway.clone();
+                        let gateway = Arc::clone(gateway);
                         let connection_id = client.connection_id;
                         *connection.pending_desktop_control = Some(PendingControl {
                             request_id,

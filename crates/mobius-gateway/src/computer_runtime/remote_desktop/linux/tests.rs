@@ -1,6 +1,7 @@
 use super::*;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use x11rb::protocol::xproto::{CreateWindowAux, PropMode};
 use x11rb::wrapper::ConnectionExt as _;
 
 fn fixture_desktop(display: &str, authority: &Path) -> Desktop {
@@ -53,8 +54,12 @@ struct Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        let _ = self.server.kill();
-        let _ = self.server.wait();
+        if let Err(error) = self.server.kill() {
+            eprintln!("Xvfb fixture was already gone: {error}");
+        }
+        if let Err(error) = self.server.wait() {
+            eprintln!("Xvfb fixture could not be reaped: {error}");
+        }
     }
 }
 
@@ -109,8 +114,8 @@ impl Fixture {
         let desktop = fixture_desktop(&display, &authority);
         let client = fixture_desktop(&display, &authority).connection;
         let root = client.setup().roots[0].root;
-        let red = fixture_window(&client, root, 30, 30, 0xff0000, "Red selected window");
-        let blue = fixture_window(&client, root, 50, 50, 0x0000ff, "Blue unrelated window");
+        let red = fixture_window(&client, root, 30, 30, 0x00ff_0000, "Red selected window");
+        let blue = fixture_window(&client, root, 50, 50, 0x0000_00ff, "Blue unrelated window");
         client
             .change_property32(
                 PropMode::REPLACE,
@@ -274,6 +279,7 @@ fn x11_captures_only_selected_window_and_targets_input() {
             .is_err()
     );
     assert!(fixture.desktop.known.is_empty() && fixture.desktop.screenshots.is_empty());
+    drop(fixture);
 }
 
 #[test]
@@ -396,4 +402,5 @@ fn x11_rejects_stale_closed_unknown_and_taken_over_windows() {
             )
             .is_err()
     );
+    drop(fixture);
 }

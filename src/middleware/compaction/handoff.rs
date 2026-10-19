@@ -16,7 +16,6 @@ use crate::protocol::{
 };
 use crate::{BoxFuture, Error, Result};
 
-const MAX_NOTE_BYTES: usize = 21_000;
 const NOTES: &str = "handoff_notes";
 const REQUEST: &str = "handoff_request";
 
@@ -42,23 +41,12 @@ struct WriteNotes<'a> {
 #[serde(deny_unknown_fields)]
 struct NewContext {}
 
-fn write_definition() -> ToolDefinition {
-    let mut tool = text::DEFINITION.write_handoff.tool.clone();
-    tool.parameters["properties"]["notes"]["description"] =
-        text::DEFINITION.write_handoff.tool.parameters["properties"]["notes"]["description"]
-            .as_str()
-            .expect("handoff description")
-            .replace("{max_bytes}", &MAX_NOTE_BYTES.to_string())
-            .into();
-    tool
-}
-
 impl Tool for HandoffTool {
-    fn definition(&self) -> ToolDefinition {
+    fn definition(&self) -> &Arc<ToolDefinition> {
         if self.write {
-            write_definition()
+            &text::DEFINITION.write_handoff.tool
         } else {
-            text::DEFINITION.new_context.tool.clone()
+            &text::DEFINITION.new_context.tool
         }
     }
 
@@ -66,11 +54,11 @@ impl Tool for HandoffTool {
         ToolExposure::Direct
     }
 
-    fn call<'a>(
-        &'a self,
+    fn call(
+        &self,
         _context: ToolContext,
         arguments: Value,
-    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
+    ) -> BoxFuture<'_, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             if !self.allow {
                 return Err(Error::Tool(
@@ -95,15 +83,6 @@ fn validate_notes(notes: &str) -> Result<()> {
             text::DEFINITION.message_empty_notes.as_str().into(),
         ));
     }
-    if notes.len() > MAX_NOTE_BYTES {
-        return Err(Error::Tool(
-            text::DEFINITION
-                .message_notes_too_long
-                .replace("{bytes}", &notes.len().to_string())
-                .replace("{max}", &MAX_NOTE_BYTES.to_string())
-                .replace("{excess}", &(notes.len() - MAX_NOTE_BYTES).to_string()),
-        ));
-    }
     Ok(())
 }
 
@@ -122,10 +101,10 @@ pub(super) fn post_tool(context: &mut PostToolUseContext<'_>) -> Result<()> {
     if context.result().is_error {
         return Ok(());
     }
-    if context.call.name == "write_handoff" {
+    if &*context.call.name == "write_handoff" {
         let notes = WriteNotes::deserialize(&context.call.arguments)?.notes;
         context.push_input(note_message(notes));
-    } else if context.call.name == "new_context" {
+    } else if &*context.call.name == "new_context" {
         context.push_input(internal_user_message(
             REQUEST,
             &text::DEFINITION.handoff_requested_context,
@@ -248,12 +227,14 @@ async fn prepare_checkpoint(
     };
     let (output, mut calls, usage) = output.into_parts();
     context.record_usage(route, usage);
-    if calls.len() != 1 || calls[0].name != "write_handoff" {
-        return Err(Error::Provider(
-            text::DEFINITION.message_one_handoff_call.as_str().into(),
-        ));
-    }
-    let call = calls.pop().expect("one validated checkpoint call");
+    let call = match calls.pop() {
+        Some(call) if calls.is_empty() && &*call.name == "write_handoff" => call,
+        Some(_) | None => {
+            return Err(Error::Provider(
+                text::DEFINITION.message_one_handoff_call.as_str().into(),
+            ));
+        }
+    };
     let notes = WriteNotes::deserialize(&call.arguments)?.notes;
     validate_notes(notes)?;
     let mut fresh = retained_input_until(context.input(), summarized)?;
@@ -272,8 +253,8 @@ async fn prepare_checkpoint(
         .events
         .push(EventMsg::ToolCallBegin(ToolCallBeginEvent {
             turn_id: context.turn_id.into(),
-            call_id: call.call_id.clone(),
-            name: call.name.clone(),
+            call_id: Arc::clone(&call.call_id),
+            name: Arc::clone(&call.name),
             arguments: call.arguments,
         }));
     context.events.push(EventMsg::ToolCallEnd(ToolCallEndEvent {
@@ -354,7 +335,14 @@ async fn prepare_response(
         .resolve_choice(route, None)?
         .context_window
         .unwrap_or(context.context_window);
-    let guidance = internal_user_message("handoff_preparation", &text::DEFINITION.prompt_prepare);
+    // A target for the model, not a cap: the fit check after compaction is the only limit.
+    let note_tokens = policy.checkpoint_tokens(source_window);
+    let guidance = internal_user_message(
+        "handoff_preparation",
+        &text::DEFINITION
+            .prompt_prepare
+            .replace("{max_tokens}", &note_tokens.to_string()),
+    );
     let overhead = context
         .token_estimate
         .tokens(
@@ -407,8 +395,11 @@ async fn prepare_response(
         allow_continuation: false,
     };
     let transport = context.model.transport_settings_for(route)?;
-    let retry_limit = usize::try_from(transport.stream_retry_limit)
-        .map_err(|_| Error::Config("stream retry limit exceeds platform range".into()))?;
+    let retry_limit = usize::try_from(transport.stream_retry_limit).map_err(|error| {
+        Error::Config(format!(
+            "stream retry limit exceeds platform range: {error}"
+        ))
+    })?;
     let mut retries = 0;
     let mut fallback_attempted = false;
     loop {
@@ -490,15 +481,14 @@ fn retained_input_until(input: ModelInput<'_>, summarized: usize) -> Result<Vec<
         .iter()
         .rposition(|item| item.get("type").and_then(Value::as_str) == Some("function_call"))
         .filter(|call| *call >= active)
-        .map(|call| {
+        .map_or(input.len(), |call| {
             boundaries
                 .iter()
                 .copied()
                 .take_while(|boundary| *boundary <= call)
                 .last()
                 .unwrap_or(0)
-        })
-        .unwrap_or(input.len());
+        });
     input
         .iter()
         .enumerate()

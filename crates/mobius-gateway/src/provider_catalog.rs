@@ -1,6 +1,7 @@
 //! Gateway provider catalog, route policy, and credential availability.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use mobius::backend::model::provider::{
     ModelPreset, ProviderAuth, ProviderDefinition, ReasoningPreset, provider, providers,
@@ -48,7 +49,7 @@ pub(crate) fn provider_instances(
             let definition = provider(&configured.selection.provider)?;
             let base_url = selected_base_url(definition, &configured.selection);
             Ok(ProviderInstance {
-                label: configured.label.clone(),
+                label: configured.label.clone(), // rules-allow: provider records are sent to clients
                 tint: configured.tint,
                 configured: credential_is_configured(&configured.selection, store, credentials)?,
                 credential_hint: credentials.hint(
@@ -56,9 +57,9 @@ pub(crate) fn provider_instances(
                     definition.id(),
                     base_url,
                 )?,
-                selection: configured.selection.clone(),
+                selection: configured.selection.clone(), // rules-allow: provider records are sent to clients
                 models: configured_models(definition, configured),
-                image_model_ids: configured.image_model_ids.clone(),
+                image_model_ids: configured.image_model_ids.clone(), // rules-allow: provider records are sent to clients
             })
         })
         .collect()
@@ -129,7 +130,7 @@ pub(crate) fn configured_model_providers(
     gateway: &GatewayConfig,
     store: &ConfigStore,
     credentials: &CredentialStore,
-) -> Result<BTreeMap<String, String>> {
+) -> Result<BTreeMap<Arc<str>, String>> {
     let mut providers: BTreeMap<_, _> = configured_model_routes(
         &gateway.configured_providers,
         gateway
@@ -158,7 +159,7 @@ pub(crate) fn configured_route_exists(gateway: &GatewayConfig, route: &str) -> R
         let definition = provider(&configured.selection.provider)?;
         if catalog_routes(definition, configured, &configured.selection)
             .iter()
-            .any(|candidate| candidate.choice.route == route)
+            .any(|candidate| *candidate.choice.route == *route)
         {
             return Ok(true);
         }
@@ -234,12 +235,12 @@ pub(crate) fn prepare_configured_models(
                 if let Some(index) = previous.iter().position(|model| model.id == input.id) {
                     previous.swap_remove(index)
                 } else if let Some(preset) = definition.model(&input.id) {
-                    preset.clone()
+                    preset.clone() // rules-allow: the configured catalog owns its copy of the built-in preset
                 } else {
                     ModelPreset {
                         context_window: model_context_window(definition, &input.id),
                         tool_discovery: definition.tool_discovery(&input.id, None),
-                        label: input.id.clone(),
+                        label: input.id.clone(), // rules-allow: the label starts as the model ID
                         id: input.id,
                         description: String::new(),
                         reasoning: Vec::new(),
@@ -256,7 +257,7 @@ pub(crate) fn prepare_configured_models(
                             .position(|effort| effort.id == id)
                             .map_or_else(
                                 || ReasoningPreset {
-                                    label: id.clone(),
+                                    label: id.clone(), // rules-allow: the label starts as the effort ID
                                     id,
                                     description: String::new(),
                                 },
@@ -317,28 +318,28 @@ pub(crate) fn catalog_routes(
             let effort = variant.map(|variant| variant.id.as_str());
             let variant_label = variant.map(|variant| variant.label.as_str());
             let provider = ProviderConfig {
-                instance: selection.instance.clone(),
-                provider: selection.provider.clone(),
-                base_url: configured.selection.base_url.clone(),
+                instance: selection.instance.clone(), // rules-allow: each catalog route owns its provider selection
+                provider: selection.provider.clone(), // rules-allow: each catalog route owns its provider selection
+                base_url: configured.selection.base_url.clone(), // rules-allow: each catalog route owns its provider selection
                 endpoint_auth: configured.selection.endpoint_auth,
                 model: id.into(),
-                reasoning_effort: effort.map(str::to_string),
+                reasoning_effort: effort.map(str::to_owned),
                 service_tier: selection
                     .service_tier
                     .as_ref()
                     .or(configured.selection.service_tier.as_ref())
-                    .cloned(),
+                    .cloned(), // rules-allow: each catalog route owns its provider selection
                 web_search: configured.selection.web_search,
                 tool_discovery: configured.selection.tool_discovery,
             };
             let route = model_route_id(&selection.instance, id, effort);
             routes.push(CatalogRoute {
                 choice: ModelChoice {
-                    route,
-                    group: format!("{} · {}", configured.label, label),
+                    route: route.into(),
+                    group: format!("{} · {}", configured.label, label).into(),
                     model: id.into(),
-                    reasoning_effort: effort.map(str::to_string),
-                    variant_label: variant_label.map(str::to_string),
+                    reasoning_effort: effort.map(Arc::from),
+                    variant_label: variant_label.map(str::to_owned),
                     context_window: Some(context_window),
                     supports_image_input: definition.supports_image_input(),
                     supports_image_generation: definition.supports_at(
@@ -391,8 +392,9 @@ pub(crate) fn media_routes(
                             variant: Option<&ReasoningPreset>,
                             voice: bool| CatalogRoute {
             choice: ModelChoice {
-                route: model_route_id(instance, model, variant.map(|variant| variant.id.as_str())),
-                group: format!("{} · {label}", configured.label),
+                route: model_route_id(instance, model, variant.map(|variant| variant.id.as_str()))
+                    .into(),
+                group: format!("{} · {label}", configured.label).into(),
                 model: model.into(),
                 reasoning_effort: variant.map(|variant| variant.id.as_str().into()),
                 variant_label: variant.map(|variant| variant.label.as_str().into()),
@@ -530,7 +532,7 @@ fn configured_models(
         .models
         .iter()
         .map(|model| {
-            let mut value = model.clone();
+            let mut value = model.clone(); // rules-allow: provider records are sent to clients
             value.tool_discovery =
                 effective_tool_discovery(definition, &configured.selection, model);
             value
@@ -546,7 +548,7 @@ fn provider_status(definition: &ProviderDefinition) -> ProviderStatus {
     let (auth, default_api_key_env) = match definition.auth() {
         ProviderAuth::ApiKey(default_env) => (
             ProviderAuthKind::ApiKey,
-            (!definition.configurable_base_url()).then(|| default_env.to_string()),
+            (!definition.configurable_base_url()).then(|| default_env.to_owned()),
         ),
         ProviderAuth::Browser(_) => (ProviderAuthKind::DeviceCode, None),
     };
@@ -561,7 +563,7 @@ fn provider_status(definition: &ProviderDefinition) -> ProviderStatus {
             && definition.supports_at(ModelCapability::ImageGeneration, None),
         voice_models: std::borrow::Cow::Borrowed(definition.voice_models()),
         auth,
-        default_base_url: definition.default_base_url().map(str::to_string),
+        default_base_url: definition.default_base_url().map(str::to_owned),
         native_custom_endpoints: definition.native_custom_endpoints(),
         default_api_key_env,
         models: provider_models(definition),
@@ -569,7 +571,7 @@ fn provider_status(definition: &ProviderDefinition) -> ProviderStatus {
             .web_search()
             .iter()
             .map(|search| FrontendSettingOption {
-                disables: Vec::new(),
+                disables: Arc::default(),
                 value: search.id().into(),
                 label: search.label().into(),
                 description: search.description().into(),
@@ -708,7 +710,7 @@ mod tests {
         assert_eq!(
             routes
                 .iter()
-                .map(|route| route.choice.route.as_str())
+                .map(|route| &*route.choice.route)
                 .collect::<Vec<_>>(),
             [
                 "custom::reasoner::low",

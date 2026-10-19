@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::sync::Arc;
 
 use super::{Basis, Entry, MANIFEST, text};
 use crate::Result;
@@ -8,8 +9,8 @@ use crate::protocol::{
     FrontendSlot, FrontendSymbol, FrontendTone, FrontendWidget, FrontendWidgetContent, Op,
 };
 
-pub(super) fn surface_widgets(entries: &[Entry]) -> Vec<FrontendWidget> {
-    vec![global_widget(entries)]
+pub(super) fn surface_widgets(entries: &[Entry]) -> Vec<Arc<FrontendWidget>> {
+    vec![Arc::new(global_widget(entries))]
 }
 
 fn global_widget(entries: &[Entry]) -> FrontendWidget {
@@ -45,7 +46,7 @@ fn action_list_content(title: &str, entries: &[Entry]) -> FrontendWidgetContent 
         title: title.into(),
         actions: vec![FrontendAction {
             id: "add".into(),
-            label: text::DEFINITION.action_add_global.clone(),
+            label: text::DEFINITION.action_add_global.clone(), // rules-allow: owned frontend record built from static text
             symbol: FrontendSymbol::Custom("plus".into()),
             tone: FrontendTone::Neutral,
             op: Op::CapabilityCommand {
@@ -57,10 +58,10 @@ fn action_list_content(title: &str, entries: &[Entry]) -> FrontendWidgetContent 
             },
             input_from_label: false,
             editor: Some(FrontendEditor {
-                title: text::DEFINITION.editor_global_title.clone(),
-                label: text::DEFINITION.editor_label.clone(),
-                description: text::DEFINITION.editor_global_description.clone(),
-                submit_label: text::DEFINITION.editor_submit.clone(),
+                title: text::DEFINITION.editor_global_title.clone(), // rules-allow: owned frontend record built from static text
+                label: text::DEFINITION.editor_label.clone(), // rules-allow: owned frontend record built from static text
+                description: text::DEFINITION.editor_global_description.clone(), // rules-allow: owned frontend record built from static text
+                submit_label: text::DEFINITION.editor_submit.clone(), // rules-allow: owned frontend record built from static text
             }),
         }],
         items: entries.iter().rev().map(action_list_item).collect(),
@@ -89,8 +90,8 @@ pub(super) fn action_list_item(entry: &Entry) -> FrontendActionListItem {
         ),
     ];
     FrontendActionListItem {
-        id: entry.id.clone(),
-        text: entry.note.clone(),
+        id: entry.id.as_str().into(),
+        text: entry.note.clone(), // rules-allow: the owned frontend record copies the borrowed entry
         state: FrontendListItemState::Plain,
         actions,
     }

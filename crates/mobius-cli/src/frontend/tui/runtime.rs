@@ -1,5 +1,6 @@
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Local, Utc};
@@ -58,7 +59,7 @@ struct ReplayHydration {
 
 #[derive(Debug, PartialEq, Eq)]
 struct PendingSessionCreation {
-    request_id: String,
+    request_id: Arc<str>,
     clear: bool,
 }
 
@@ -100,12 +101,11 @@ pub(in crate::frontend) async fn run(
     let mut guard = TerminalGuard::alternate()?;
     let mut terminal = TuiTerminal::new(CrosstermBackend::new(io::stdout()))?;
     terminal.clear()?;
-    let session_id = session.session.session_id.clone();
     let mut state = TuiState::new(
         &catalog,
         catalog.workspace().map(std::path::Path::to_path_buf),
         ModelInfo::default(),
-        String::new(),
+        Arc::default(),
         String::new(),
     );
     sync_session(&mut state, session, gateway)?;
@@ -116,7 +116,7 @@ pub(in crate::frontend) async fn run(
             session
                 .workspace
                 .as_ref()
-                .map(|workspace| workspace.path.clone()),
+                .map(|workspace| workspace.path.as_path()),
             false,
             &mut state,
         );
@@ -138,7 +138,7 @@ pub(in crate::frontend) async fn run(
     draw(&mut terminal, &mut state, &catalog)?;
     let mut next_frame = Instant::now() + FRAME_INTERVAL;
     state.git_diff_refresh = session.git.is_some();
-    request_git_summary(&sender, &session_id, &mut state).await;
+    request_git_summary(&sender, &session.session.session_id, &mut state).await;
 
     'ui: loop {
         draw_if_dirty(
@@ -150,19 +150,18 @@ pub(in crate::frontend) async fn run(
             &mut next_frame,
         )?;
         tokio::select! {
-            _ = tokio::time::sleep_until(next_frame.into()), if dirty && replay_hydration.allows_draw() => {}
+            () = tokio::time::sleep_until(next_frame.into()), if dirty && replay_hydration.allows_draw() => {}
             event = events.next(), if events_open => {
                 match event {
                     Ok(Some(frame)) => {
-                        replay_hydration.observe(&frame.message, &session_id);
-                        if refresh_workspace(
-                            &sender, &frame.message, session, &mut catalog, &mut state,
+                        replay_hydration.observe(&frame.message, &session.session.session_id);
+                        let Some(message) = refresh_workspace(
+                            &sender, frame.message, session, &mut catalog, &mut state,
                             replay_hydration.allows_draw(), workspace_reference_open,
-                        ).await {
+                        ).await else {
                             dirty = true;
                             continue 'ui;
-                        }
-                        let message = frame.message;
+                        };
                         if let Some((next_exit, should_clear)) = handle_incoming_message(
                             message,
                             &sender,
@@ -178,7 +177,7 @@ pub(in crate::frontend) async fn run(
                             exit = next_exit;
                             break 'ui;
                         }
-                        request_git_summary(&sender, &session_id, &mut state).await;
+                        request_git_summary(&sender, &session.session.session_id, &mut state).await;
                     }
                     Ok(None) => {
                         disconnect(
@@ -212,9 +211,8 @@ pub(in crate::frontend) async fn run(
                     session,
                     &catalog,
                     &gateway_endpoint,
-                    &session_id,
                     &mut state,
-                    &mut uploads,
+                    &uploads,
                     &mut pending_session_creation,
                     &mut clipboard_preparation,
                     &mut dirty,
@@ -227,16 +225,16 @@ pub(in crate::frontend) async fn run(
                 ).await;
             }
             result = async {
-                clipboard_preparation
-                    .as_mut()
-                    .expect("clipboard preparation is active")
-                    .await
+                match clipboard_preparation.as_mut() {
+                    Some(preparation) => preparation.await,
+                    None => std::future::pending().await,
+                }
             }, if clipboard_preparation.is_some() => {
                 clipboard_preparation = None;
                 handle_clipboard_preparation(
                     result,
                     &sender,
-                    &session_id,
+                    &session.session.session_id,
                     &mut state,
                     &mut uploads,
                 ).await;
@@ -256,16 +254,37 @@ pub(in crate::frontend) async fn run(
     if let Some(preparation) = clipboard_preparation.take() {
         drop(preparation);
     }
+    let mut cleanup_error = None;
     if let Some(download) = state.file_download.take() {
         drop(download.output);
-        let _ = tokio::fs::remove_file(download.destination).await;
+        if let Err(error) = tokio::fs::remove_file(&download.destination).await {
+            cleanup_error = Some(partial_download_error(&download.destination, &error));
+        }
     }
     drop(terminal);
     drop(guard);
     if clear_on_exit {
         execute!(io::stdout(), Print(CLEAR_SCREEN_AND_SCROLLBACK))?;
     }
+    if let Some(error) = cleanup_error {
+        report_exit_error(&error);
+    }
     Ok((exit, sender, events))
+}
+
+fn partial_download_error(destination: &Path, error: &io::Error) -> String {
+    format!(
+        "could not remove partial download {}: {error}",
+        destination.display()
+    )
+}
+
+#[expect(
+    clippy::print_stderr,
+    reason = "the terminal UI has closed, so stderr is the only place left to report"
+)]
+fn report_exit_error(error: &str) {
+    eprintln!("{error}");
 }
 
 async fn request_open_reference_inventory(
@@ -283,40 +302,42 @@ async fn request_open_reference_inventory(
     *was_open = reference_open;
 }
 
+/// Applies workspace inventory updates and returns every other message for normal handling.
 async fn refresh_workspace(
     sender: &GatewaySender,
-    message: &ServerMessage,
+    message: ServerMessage,
     session: &SessionReadyPayload,
     catalog: &mut UiCatalog,
     state: &mut TuiState,
     live: bool,
     reference_open: bool,
-) -> bool {
+) -> Option<ServerMessage> {
     let session_id = &session.session.session_id;
-    if let ServerMessage::WorkspaceFiles {
-        session_id: actual,
-        files,
-        ..
-    } = message
-        && actual == session_id
-    {
-        catalog.set_workspace_paths(files.iter().map(|file| file.path.clone()));
-        state.reference_cache = None;
-        return true;
-    }
+    let message = match message {
+        ServerMessage::WorkspaceFiles {
+            session_id: actual,
+            files,
+            ..
+        } if *actual == **session_id => {
+            catalog.set_workspace_paths(files.into_iter().map(|file| file.path));
+            state.reference_cache = None;
+            return None;
+        }
+        message => message,
+    };
     if session.workspace.is_some()
         && live
         && reference_open
-        && refresh_workspace_inventory(message, session_id, reference_open)
+        && refresh_workspace_inventory(&message, session_id, reference_open)
     {
         request_workspace_inventory(sender, session_id, state).await;
     }
     state.git_diff_refresh |= live
         && session.git.is_some()
-        && (refresh_workspace_inventory(message, session_id, false)
-            || matches!(message, ServerMessage::SessionChanged { payload }
+        && (refresh_workspace_inventory(&message, session_id, false)
+            || matches!(&message, ServerMessage::SessionChanged { payload }
                 if &payload.session.session_id == session_id));
-    false
+    Some(message)
 }
 
 async fn request_git_summary(sender: &GatewaySender, session_id: &str, state: &mut TuiState) {
@@ -328,10 +349,10 @@ async fn request_git_summary(sender: &GatewaySender, session_id: &str, state: &m
         .into_iter()
         .enumerate()
     {
-        let request_id = Uuid::new_v4().to_string();
+        let request_id: Arc<str> = Uuid::new_v4().to_string().into();
         if sender
             .send(ClientMessage::GetGitDiffTotals {
-                request_id: request_id.clone(),
+                request_id: Arc::clone(&request_id),
                 session_id: session_id.into(),
                 scope,
             })
@@ -339,8 +360,8 @@ async fn request_git_summary(sender: &GatewaySender, session_id: &str, state: &m
             .is_ok()
         {
             state.git_diff_requests.insert(request_id, index);
-        } else {
-            state.git_diff[index] = None;
+        } else if let Some(totals) = state.git_diff.get_mut(index) {
+            *totals = None;
         }
     }
 }
@@ -352,7 +373,7 @@ async fn request_workspace_inventory(
 ) {
     if let Err(error) = sender
         .send(ClientMessage::ListWorkspaceFiles {
-            request_id: Uuid::new_v4().to_string(),
+            request_id: Uuid::new_v4().to_string().into(),
             session_id: session_id.into(),
             scope: WorkspaceFileScope::All,
         })
@@ -381,12 +402,11 @@ async fn handle_terminal_input(
     sender: &GatewaySender,
     events: &mut GatewayEvents,
     gateway: &mut ReadyPayload,
-    session: &mut SessionReadyPayload,
+    session: &SessionReadyPayload,
     catalog: &UiCatalog,
     gateway_endpoint: &str,
-    session_id: &str,
     state: &mut TuiState,
-    uploads: &mut ClipboardUploads,
+    uploads: &ClipboardUploads,
     pending_session_creation: &mut Option<PendingSessionCreation>,
     clipboard_preparation: &mut Option<ClipboardPreparation>,
     dirty: &mut bool,
@@ -408,11 +428,11 @@ async fn handle_terminal_input(
                 paste_clipboard(gateway, state, uploads, clipboard_preparation);
             }
             UiAction::Exit => {
-                interrupt_active_turn(sender, session_id, state).await;
+                interrupt_active_turn(sender, &session.session.session_id, state).await;
                 return Ok(Some(FrontendExit::Exit));
             }
             UiAction::ChooseBot { workspace, clear } => {
-                choose_bot(gateway, session, workspace, clear, state);
+                choose_bot(gateway, session, workspace.as_deref(), clear, state);
                 *dirty = true;
             }
             UiAction::CreateSession {
@@ -423,22 +443,24 @@ async fn handle_terminal_input(
                 *pending_session_creation =
                     create_session(sender, workspace, bot_id, clear, state).await;
             }
-            UiAction::Submit(op) => send_and_report(sender, session_id, *op, state, draft).await,
+            UiAction::Submit(op) => {
+                send_and_report(sender, &session.session.session_id, *op, state, draft).await;
+            }
             UiAction::Resume(session_id) => return Ok(Some(FrontendExit::Resume(session_id))),
             UiAction::Gateway(action) => {
-                send_gateway_action(sender, session_id, action, state).await
+                send_gateway_action(sender, &session.session.session_id, action, state).await;
             }
             UiAction::Download(file) => {
-                start_file_download(sender, session_id, file, state).await;
+                start_file_download(sender, &session.session.session_id, file, state).await;
             }
             UiAction::Events => {
                 state.open_background_approvals(&gateway.background_approvals, &gateway.bots);
             }
             UiAction::Conversation => {
                 let bot = session_bot(gateway, session)?;
-                return Ok(Some(FrontendExit::Resume(
-                    bot.conversation_session_id.clone(),
-                )));
+                return Ok(Some(FrontendExit::Resume(Arc::clone(
+                    &bot.conversation_session_id,
+                ))));
             }
             UiAction::ReassignBot => {
                 state.open_reassign_bot_picker(&gateway.bots, &session.session.context.owner_id);
@@ -448,7 +470,7 @@ async fn handle_terminal_input(
             UiAction::ConfirmDeleteFile(file) => state.confirm_delete_file(file),
             UiAction::Queued => state.open_queued_messages(),
             UiAction::LoadEarlierHistory => {
-                request_earlier_history(sender, session_id, state).await;
+                request_earlier_history(sender, &session.session.session_id, state).await;
             }
             UiAction::GatewaySettings => {
                 if open_gateway_settings(terminal, gateway_endpoint, state).await {
@@ -461,17 +483,15 @@ async fn handle_terminal_input(
                 *dirty = true;
             }
             UiAction::Bots => {
-                if let Some(exit) = open_bots(
-                    terminal, sender, events, gateway, session, state, session_id,
-                )
-                .await
+                if let Some(exit) =
+                    open_bots(terminal, sender, events, gateway, session, state).await
                 {
                     return Ok(Some(exit));
                 }
                 *dirty = true;
             }
             UiAction::Setup { mode, provider } => {
-                let (result, session_changed) = run_setup(
+                let result = setup::run(
                     terminal,
                     mode,
                     provider.as_deref(),
@@ -481,11 +501,6 @@ async fn handle_terminal_input(
                     session,
                 )
                 .await;
-                if session_changed {
-                    return Ok(Some(FrontendExit::Resume(
-                        session.session.session_id.clone(),
-                    )));
-                }
                 if let Err(error) = sync_session_info(state, session, gateway) {
                     state.push(error.to_string(), TranscriptTone::Error);
                 }
@@ -513,20 +528,15 @@ async fn handle_incoming_message(
     }
     let session_opened = match &message {
         ServerMessage::SessionOpened { request_id, .. } => {
-            matches_pending_session_creation(request_id, pending_session_creation)
+            matches_pending_session_creation(request_id, pending_session_creation.as_ref())
         }
         _ => false,
     };
     let should_clear = settle_session_creation(&message, pending_session_creation);
     if !handle_file_download_message(&message, sender, state).await
-        && !handle_upload_message(
-            &message,
-            sender,
-            state,
-            uploads,
-            &session.session.session_id,
-        )
-        .await
+        && let Some(message) =
+            handle_upload_message(message, sender, state, uploads, &session.session.session_id)
+                .await
         && let Some(exit) = handle_server_message(message, gateway, session, state, session_opened)
     {
         return Some((exit, should_clear));
@@ -542,13 +552,13 @@ fn settle_session_deletion(message: &ServerMessage, state: &mut TuiState) -> boo
         return false;
     };
     match message {
-        ServerMessage::Accepted { request_id: actual } if actual == request_id => {
+        ServerMessage::Accepted { request_id: actual } if actual.as_ref() == request_id => {
             state.deletion_request_id = None;
             true
         }
         ServerMessage::Rejected {
             request_id: actual, ..
-        } if actual == request_id => {
+        } if actual.as_ref() == request_id => {
             state.deletion_request_id = None;
             false
         }
@@ -558,17 +568,15 @@ fn settle_session_deletion(message: &ServerMessage, state: &mut TuiState) -> boo
 
 fn matches_pending_session_creation(
     request_id: &str,
-    pending: &Option<PendingSessionCreation>,
+    pending: Option<&PendingSessionCreation>,
 ) -> bool {
-    pending
-        .as_ref()
-        .is_some_and(|request| request.request_id == request_id)
+    pending.is_some_and(|request| *request.request_id == *request_id)
 }
 
 fn choose_bot(
     gateway: &ReadyPayload,
     session: &SessionReadyPayload,
-    workspace: Option<std::path::PathBuf>,
+    workspace: Option<&Path>,
     clear: bool,
     state: &mut TuiState,
 ) {
@@ -590,14 +598,14 @@ fn choose_bot(
 async fn create_session(
     sender: &GatewaySender,
     workspace: std::path::PathBuf,
-    bot_id: String,
+    bot_id: Arc<str>,
     clear: bool,
     state: &mut TuiState,
 ) -> Option<PendingSessionCreation> {
-    let request_id = Uuid::new_v4().to_string();
+    let request_id: Arc<str> = Uuid::new_v4().to_string().into();
     let result = sender
         .send(ClientMessage::CreateSession {
-            request_id: request_id.clone(),
+            request_id: Arc::clone(&request_id),
             workspace,
             bot_id,
         })
@@ -620,7 +628,7 @@ fn settle_session_creation(
         ServerMessage::SessionOpened { request_id, .. } if request_id == &request.request_id => {
             request.clear
         }
-        ServerMessage::Rejected { request_id, .. } if request_id == &request.request_id => false,
+        ServerMessage::Rejected { request_id, .. } if **request_id == *request.request_id => false,
         _ => return false,
     };
     *pending = None;
@@ -658,17 +666,18 @@ fn draw(terminal: &mut TuiTerminal, state: &mut TuiState, catalog: &UiCatalog) -
     Ok(())
 }
 
+/// Applies upload responses and returns every other message for normal handling.
 async fn handle_upload_message(
-    message: &ServerMessage,
+    message: ServerMessage,
     sender: &GatewaySender,
     state: &mut TuiState,
     uploads: &mut ClipboardUploads,
     session_id: &str,
-) -> bool {
-    let Some(result) = uploads.handle(message, session_id).await else {
-        return false;
-    };
-    match result {
+) -> Option<ServerMessage> {
+    if !uploads.claims(&message) {
+        return Some(message);
+    }
+    match uploads.handle(message, session_id).await {
         Ok(advance) => {
             if let Some(attachment) = advance.attachment {
                 state.attachments.push(attachment);
@@ -683,7 +692,7 @@ async fn handle_upload_message(
         Err(error) => state.push(error, TranscriptTone::Error),
     }
     state.upload_in_progress = uploads.is_active();
-    true
+    None
 }
 
 fn handle_server_message(
@@ -693,7 +702,7 @@ fn handle_server_message(
     state: &mut TuiState,
     session_opened: bool,
 ) -> Option<FrontendExit> {
-    let session_id = session.session.session_id.as_str();
+    let session_id = session.session.session_id.as_ref();
     match message {
         ServerMessage::AgentEvent {
             session_id: actual,
@@ -718,9 +727,7 @@ fn handle_server_message(
             session_id: actual,
             mut records,
             next_before_sequence,
-        } if actual == session_id
-            && state.history_request_id.as_deref() == Some(request_id.as_str()) =>
-        {
+        } if actual == session_id && state.history_request_id.as_deref() == Some(&*request_id) => {
             state.history_request_id = None;
             state.next_before_sequence = next_before_sequence;
             session.next_before_sequence = next_before_sequence;
@@ -749,7 +756,7 @@ fn handle_server_message(
         }
         ServerMessage::Sessions { sessions, .. } => gateway.sessions = sessions,
         ServerMessage::SessionsChanged { sessions, .. } => {
-            apply_session_changes(&mut gateway.sessions, sessions)
+            apply_session_changes(&mut gateway.sessions, sessions);
         }
         ServerMessage::BackgroundApprovals { approvals } => {
             gateway.background_approvals = approvals;
@@ -761,7 +768,7 @@ fn handle_server_message(
                 state.push(error.to_string(), TranscriptTone::Error);
             }
         }
-        ServerMessage::SessionChanged { payload } if payload.session.session_id == session_id => {
+        ServerMessage::SessionChanged { payload } if *payload.session.session_id == *session_id => {
             if payload.workspace == session.workspace
                 && payload.contributions == session.contributions
             {
@@ -770,7 +777,9 @@ fn handle_server_message(
                 }
             } else {
                 *session = payload;
-                return Some(FrontendExit::Resume(session.session.session_id.clone()));
+                return Some(FrontendExit::Resume(Arc::clone(
+                    &session.session.session_id,
+                )));
             }
         }
         ServerMessage::SessionFiles {
@@ -784,9 +793,12 @@ fn handle_server_message(
             totals,
             ..
         } if actual == session_id => {
-            if let Some(index) = state.git_diff_requests.remove(&request_id) {
-                state.git_diff[index] =
-                    Some(format!("+{} -{}", totals.additions, totals.deletions));
+            if let Some(slot) = state
+                .git_diff_requests
+                .remove(&*request_id)
+                .and_then(|index| state.git_diff.get_mut(index))
+            {
+                *slot = Some(format!("+{} -{}", totals.additions, totals.deletions));
             }
         }
         ServerMessage::GitDiff {
@@ -796,20 +808,24 @@ fn handle_server_message(
             ..
         } if actual == session_id => {
             let title = format!("{scope:?} diff").to_ascii_lowercase();
-            state.open_diff_preview(title, diff);
+            state.open_diff_preview(&title, &diff);
         }
         ServerMessage::Rejected { request_id, .. }
-            if state.git_diff_requests.contains_key(&request_id) =>
+            if state.git_diff_requests.contains_key(&*request_id) =>
         {
-            if let Some(index) = state.git_diff_requests.remove(&request_id) {
-                state.git_diff[index] = None;
+            if let Some(slot) = state
+                .git_diff_requests
+                .remove(&*request_id)
+                .and_then(|index| state.git_diff.get_mut(index))
+            {
+                *slot = None;
             }
         }
         ServerMessage::Rejected {
             request_id,
             message,
             ..
-        } if state.history_request_id.as_deref() == Some(request_id.as_str()) => {
+        } if state.history_request_id.as_deref() == Some(request_id.as_ref()) => {
             state.history_request_id = None;
             state.push(message, TranscriptTone::Error);
         }
@@ -922,7 +938,7 @@ fn terminal_action(
 fn paste_clipboard(
     gateway: &ReadyPayload,
     state: &mut TuiState,
-    uploads: &mut ClipboardUploads,
+    uploads: &ClipboardUploads,
     clipboard_preparation: &mut Option<ClipboardPreparation>,
 ) {
     if state.composer_target_turn().is_some() {
@@ -994,15 +1010,24 @@ async fn handle_clipboard_preparation(
     }
 }
 
-async fn interrupt_active_turn(sender: &GatewaySender, session_id: &str, state: &TuiState) {
-    if let Some(turn_id) = state.active_turn().map(str::to_owned) {
-        let _ = send_op(sender, session_id, Op::Interrupt { turn_id }).await;
+async fn interrupt_active_turn(
+    sender: &GatewaySender,
+    session_id: &Arc<str>,
+    state: &mut TuiState,
+) {
+    if let Some(turn_id) = state.active_turn().map(Arc::clone)
+        && let Err(error) = send_op(sender, session_id, Op::Interrupt { turn_id }).await
+    {
+        state.push(
+            format!("could not interrupt the active turn: {error}"),
+            TranscriptTone::Error,
+        );
     }
 }
 
 async fn send_and_report(
     sender: &GatewaySender,
-    session_id: &str,
+    session_id: &Arc<str>,
     op: Op,
     state: &mut TuiState,
     draft: Option<InputDraft>,
@@ -1037,10 +1062,10 @@ async fn send_gateway_action(
 ) {
     match action {
         GatewayAction::DeleteCurrent => {
-            let request_id = Uuid::new_v4().to_string();
+            let request_id: Arc<str> = Uuid::new_v4().to_string().into();
             let result = sender
                 .send(ClientMessage::DeleteSessions {
-                    request_id: request_id.clone(),
+                    request_id: Arc::clone(&request_id),
                     session_ids: vec![session_id.into()],
                     selection: mobius::backend::session_files::SessionFileSelection::All,
                 })
@@ -1062,10 +1087,10 @@ async fn request_earlier_history(sender: &GatewaySender, session_id: &str, state
     let Some(before_sequence) = state.next_before_sequence else {
         return;
     };
-    let request_id = Uuid::new_v4().to_string();
+    let request_id: Arc<str> = Uuid::new_v4().to_string().into();
     match sender
         .send(ClientMessage::GetSessionHistory {
-            request_id: request_id.clone(),
+            request_id: Arc::clone(&request_id),
             session_id: session_id.into(),
             before_sequence: Some(before_sequence),
         })
@@ -1103,17 +1128,22 @@ async fn start_file_download(
             return;
         }
     };
-    let request_id = Uuid::new_v4().to_string();
+    let request_id: Arc<str> = Uuid::new_v4().to_string().into();
     let request = ClientMessage::ReadSessionFile {
-        request_id: request_id.clone(),
+        request_id: Arc::clone(&request_id),
         session_id: session_id.into(),
-        file_id: file.id.clone(),
+        file_id: file.id.clone(), // rules-allow: the wire message and the pending download each own the file id
         offset: 0,
         max_bytes: FILE_READ_CHUNK_BYTES,
     };
     if let Err(error) = sender.send(request).await {
         drop(output);
-        let _ = tokio::fs::remove_file(destination).await;
+        if let Err(cleanup) = tokio::fs::remove_file(&destination).await {
+            state.push(
+                partial_download_error(&destination, &cleanup),
+                TranscriptTone::Error,
+            );
+        }
         state.push(error.to_string(), TranscriptTone::Error);
         return;
     }
@@ -1185,7 +1215,7 @@ async fn handle_file_download_message(
                 && session_id == &download.session_id
                 && file_id == &download.file.id
         }
-        ServerMessage::Rejected { request_id, .. } => request_id == &download.request_id,
+        ServerMessage::Rejected { request_id, .. } => **request_id == *download.request_id,
         _ => false,
     };
     if !matches_request {
@@ -1206,15 +1236,15 @@ async fn handle_file_download_message(
                 return true;
             }
             if let Some(offset) = next_offset {
-                let request_id = Uuid::new_v4().to_string();
+                let request_id: Arc<str> = Uuid::new_v4().to_string().into();
                 let Some(download) = state.file_download.as_mut() else {
                     return true;
                 };
                 download.request_id.clone_from(&request_id);
                 let request = ClientMessage::ReadSessionFile {
                     request_id,
-                    session_id: download.session_id.clone(),
-                    file_id: download.file.id.clone(),
+                    session_id: download.session_id.clone(), // rules-allow: the wire message and the pending download each own the session id
+                    file_id: download.file.id.clone(), // rules-allow: the wire message and the pending download each own the file id
                     offset: *offset,
                     max_bytes: FILE_READ_CHUNK_BYTES,
                 };
@@ -1271,9 +1301,7 @@ async fn write_file_chunk(
     }
     download.output.write_all(data).await?;
     let available = super::MAX_ENTRY_BYTES.saturating_sub(download.preview.len());
-    download
-        .preview
-        .extend_from_slice(&data[..data.len().min(available)]);
+    download.preview.extend(data.iter().take(available));
     download.preview_truncated |= data.len() > available;
     download.offset = end;
     Ok(())
@@ -1285,7 +1313,12 @@ async fn finish_file_download(state: &mut TuiState) {
     };
     if let Err(error) = download.output.flush().await {
         drop(download.output);
-        let _ = tokio::fs::remove_file(&download.destination).await;
+        if let Err(cleanup) = tokio::fs::remove_file(&download.destination).await {
+            state.push(
+                partial_download_error(&download.destination, &cleanup),
+                TranscriptTone::Error,
+            );
+        }
         state.push(error.to_string(), TranscriptTone::Error);
         return;
     }
@@ -1310,7 +1343,12 @@ async fn finish_file_download(state: &mut TuiState) {
 async fn fail_file_download(state: &mut TuiState, message: &str) {
     if let Some(download) = state.file_download.take() {
         drop(download.output);
-        let _ = tokio::fs::remove_file(download.destination).await;
+        if let Err(cleanup) = tokio::fs::remove_file(&download.destination).await {
+            state.push(
+                partial_download_error(&download.destination, &cleanup),
+                TranscriptTone::Error,
+            );
+        }
     }
     state.push(message, TranscriptTone::Error);
 }
@@ -1353,8 +1391,8 @@ async fn open_bots(
     gateway: &mut ReadyPayload,
     session: &SessionReadyPayload,
     state: &mut TuiState,
-    session_id: &str,
 ) -> Option<FrontendExit> {
+    let session_id = &session.session.session_id;
     let bot_id = &session.session.context.owner_id;
     let result = bots::run(
         terminal,
@@ -1368,7 +1406,7 @@ async fn open_bots(
     if !gateway
         .sessions
         .iter()
-        .any(|candidate| candidate.session_id == session_id)
+        .any(|candidate| candidate.session_id == *session_id)
     {
         return Some(FrontendExit::Fresh);
     }
@@ -1383,39 +1421,21 @@ async fn open_bots(
     None
 }
 
-async fn run_setup(
-    terminal: &mut TuiTerminal,
-    mode: setup::SetupMode,
-    provider: Option<&str>,
-    sender: &GatewaySender,
-    events: &mut GatewayEvents,
-    gateway: &mut ReadyPayload,
-    session: &mut SessionReadyPayload,
-) -> (Result<()>, bool) {
-    let workspace = session.workspace.clone();
-    let selected = session.session.session_id.clone();
-    let contributions = session.contributions.clone();
-    let result = setup::run(terminal, mode, provider, sender, events, gateway, session).await;
-    let changed = session.workspace != workspace
-        || session.session.session_id != selected
-        || session.contributions != contributions;
-    (result, changed)
-}
-
 fn refresh_session(
     state: &mut TuiState,
     session: &mut SessionReadyPayload,
-    payload: SessionReadyPayload,
+    mut payload: SessionReadyPayload,
     gateway: &ReadyPayload,
 ) -> Result<()> {
-    sync_session(state, &payload, gateway)?;
+    sync_session(state, &mut payload, gateway)?;
     *session = payload;
     Ok(())
 }
 
+/// Moves the session's pending approvals into the TUI, which owns them from here on.
 fn sync_session(
     state: &mut TuiState,
-    session: &SessionReadyPayload,
+    session: &mut SessionReadyPayload,
     gateway: &ReadyPayload,
 ) -> Result<()> {
     sync_session_info(state, session, gateway)?;
@@ -1423,8 +1443,8 @@ fn sync_session(
     state.approvals.clear();
     state.restore_draft();
     state.turn_started_at = (!state.active_turns.is_empty()).then(Instant::now);
-    for request in &session.pending_approvals {
-        state.begin_approval(request.clone());
+    for request in std::mem::take(&mut session.pending_approvals) {
+        state.begin_approval(request);
     }
     Ok(())
 }
@@ -1435,14 +1455,14 @@ fn sync_session_info(
     gateway: &ReadyPayload,
 ) -> Result<()> {
     let bot = session_bot(gateway, session)?;
-    state.model.model = super::terminal_text(&session.session.model.model);
+    state.model.model = super::terminal_text(&session.session.model.model).into();
     state.model.reasoning_effort = session
         .session
         .model
         .reasoning_effort
         .as_deref()
-        .map(super::terminal_text);
-    state.model_route.clone_from(&session.session.model.route);
+        .map(|effort| super::terminal_text(effort).into());
+    state.model_route = Arc::clone(&session.session.model.route);
     state.agent_summary = agent_summary(gateway, session, bot);
     state.active_message_delivery = Some(session.active_message_delivery);
     state.context_limit = session.context_limit_tokens;
@@ -1516,8 +1536,8 @@ fn session_status(session: &SessionRecord) -> &'static str {
 
 fn bot_handle<'a>(bot_id: &str, bots: &'a [BotRecord]) -> Option<&'a str> {
     bots.iter()
-        .find(|bot| bot.id == bot_id)
-        .map(|bot| bot.handle.as_str())
+        .find(|bot| *bot.id == *bot_id)
+        .map(|bot| &*bot.handle)
 }
 
 fn session_bot<'a>(
@@ -1571,10 +1591,8 @@ fn agent_summary(gateway: &ReadyPayload, session: &SessionReadyPayload, bot: &Bo
                 let label = gateway
                     .middleware_features
                     .iter()
-                    .find(|feature| feature.id == contribution.capability)
-                    .map_or(contribution.capability.as_str(), |feature| {
-                        feature.label.as_str()
-                    });
+                    .find(|feature| *feature.id == *contribution.capability)
+                    .map_or(&*contribution.capability, |feature| feature.label.as_str());
                 format!("{label}: {count}")
             })
         })
@@ -1614,14 +1632,17 @@ fn agent_summary(gateway: &ReadyPayload, session: &SessionReadyPayload, bot: &Bo
 
 async fn send_op(
     sender: &mobius_gateway::client::GatewaySender,
-    session_id: &str,
+    session_id: &Arc<str>,
     op: Op,
-) -> Result<String> {
-    let id = Uuid::new_v4().to_string();
+) -> Result<Arc<str>> {
+    let id: Arc<str> = Uuid::new_v4().to_string().into();
     sender
         .send(ClientMessage::Submit {
-            session_id: session_id.into(),
-            submission: Submission { id: id.clone(), op },
+            session_id: Arc::clone(session_id),
+            submission: Submission {
+                id: Arc::clone(&id),
+                op,
+            },
         })
         .await
         .map(|()| id)
@@ -1773,7 +1794,7 @@ mod tests {
 
         let session_opened = match &stale {
             ServerMessage::SessionOpened { request_id, .. } => {
-                matches_pending_session_creation(request_id, &pending)
+                matches_pending_session_creation(request_id, pending.as_ref())
             }
             _ => false,
         };
@@ -1784,7 +1805,7 @@ mod tests {
             &catalog,
             Some("/tmp".into()),
             ModelInfo::default(),
-            String::new(),
+            Arc::default(),
             String::new(),
         );
 
@@ -1800,9 +1821,9 @@ mod tests {
             )
             .is_none()
         );
-        assert_eq!(session.session.session_id, "session-current");
+        assert_eq!(&*session.session.session_id, "session-current");
         assert_eq!(
-            pending.as_ref().map(|request| request.request_id.as_str()),
+            pending.as_ref().map(|request| &*request.request_id),
             Some("create-new")
         );
     }
@@ -1819,19 +1840,19 @@ mod tests {
                 path: "/tmp".into(),
             }),
             git: None,
-            session: SessionConfiguredEvent {
+            session: Arc::new(SessionConfiguredEvent {
                 session_id: session_id.into(),
-                context: SessionContext {
+                context: Arc::new(SessionContext {
                     owner_id: "bot-a".into(),
                     ..SessionContext::default()
-                },
+                }),
                 model: ModelChangedEvent {
-                    route: String::new(),
-                    model: String::new(),
+                    route: Arc::default(),
+                    model: Arc::default(),
                     reasoning_effort: None,
                     model_context_window: None,
                 },
-            },
+            }),
             contributions: Vec::new(),
             widgets: Vec::new(),
             context_limit_tokens: None,
@@ -1851,13 +1872,13 @@ mod tests {
                 conversation_session_id: "bot-conversation-test".into(),
                 handle: "ada".into(),
                 name: "Ada".into(),
-                description: String::new(),
+                description: "".into(),
                 tint: Default::default(),
                 shape: mobius_gateway::wire::BotShape::Circle,
-                config: VersionedAgentConfig {
+                config: Arc::new(VersionedAgentConfig {
                     revision: 1,
                     config: Default::default(),
-                },
+                }),
                 accepts_file_attachments: false,
                 routine_interaction_policy: RoutineInteractionPolicy::Unattended,
             }],

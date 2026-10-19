@@ -1,6 +1,7 @@
 //! Sandboxed execution and its approval boundary.
 
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -38,7 +39,12 @@ pub(crate) const MAX_FILE_BYTES: usize = 1024 * 1024;
 pub(crate) const MAX_BINARY_FILE_BYTES: usize = 50 * 1024 * 1024;
 
 mod text {
-    use super::{MAX_BACKGROUND_COMMANDS, MAX_TOOL_OUTPUT_BYTES};
+    use std::sync::Arc;
+
+    use super::{
+        FrontendTone, MAX_BACKGROUND_COMMANDS, MAX_TOOL_OUTPUT_BYTES, MiddlewareSettingChoice,
+        MiddlewareSettingChoices, MiddlewareSettingManifest,
+    };
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     pub(super) struct Definition {
@@ -73,10 +79,12 @@ mod text {
         pub(super) defaults_environment: Vec<String>,
         pub(super) setting_tool_output_bytes_step: i64,
         pub(super) setting_background_commands_step: i64,
+        #[serde(skip)]
+        pub(super) settings: Vec<MiddlewareSettingManifest>,
     }
     pub(super) static DEFINITION: std::sync::LazyLock<Definition> =
         std::sync::LazyLock::new(|| {
-            let definition: Definition = crate::config::embedded(include_str!("sandbox.toml"));
+            let mut definition: Definition = crate::config::embedded(include_str!("sandbox.toml"));
             assert!((1..=MAX_TOOL_OUTPUT_BYTES).contains(&definition.defaults_tool_output_bytes));
             assert!(
                 (1..=MAX_BACKGROUND_COMMANDS).contains(&definition.defaults_background_commands)
@@ -85,89 +93,91 @@ mod text {
             assert!(definition.setting_tool_output_bytes_step > 0);
             assert!(definition.setting_background_commands_step > 0);
             assert!(std::path::Path::new(&definition.defaults_shell).is_absolute());
+            definition.settings = settings(&mut definition);
             definition
         });
-}
-static SETTINGS: std::sync::LazyLock<Vec<MiddlewareSettingManifest>> =
-    std::sync::LazyLock::new(|| {
+
+    #[expect(
+        clippy::expect_used,
+        reason = "the safety bounds are small constants and the defaults are validated against them first"
+    )]
+    fn settings(definition: &mut Definition) -> Vec<MiddlewareSettingManifest> {
+        use std::mem::take;
         vec![
             MiddlewareSettingManifest::Select {
                 id: "approval_policy".into(),
-                label: text::DEFINITION.setting_approval_policy_label.clone(),
-                description: text::DEFINITION.setting_approval_policy_description.clone(),
+                label: take(&mut definition.setting_approval_policy_label),
+                description: take(&mut definition.setting_approval_policy_description),
                 choices: MiddlewareSettingChoices::Static(vec![
                     MiddlewareSettingChoice {
-                        disables: vec![],
+                        disables: Arc::default(),
                         value: "ask".into(),
-                        label: text::DEFINITION.approval_policy_ask_label.clone(),
-                        description: text::DEFINITION.approval_policy_ask_description.clone(),
+                        label: take(&mut definition.approval_policy_ask_label).into(),
+                        description: take(&mut definition.approval_policy_ask_description).into(),
                         symbol: Some("shield_check".into()),
                         tone: FrontendTone::Neutral,
                     },
                     MiddlewareSettingChoice {
-                        disables: vec![],
+                        disables: Arc::default(),
                         value: "allow".into(),
-                        label: text::DEFINITION.approval_policy_allow_label.clone(),
-                        description: text::DEFINITION.approval_policy_allow_description.clone(),
+                        label: take(&mut definition.approval_policy_allow_label).into(),
+                        description: take(&mut definition.approval_policy_allow_description).into(),
                         symbol: Some("shield".into()),
                         tone: FrontendTone::Warning,
                     },
                     MiddlewareSettingChoice {
-                        disables: vec![],
+                        disables: Arc::default(),
                         value: "allow_network".into(),
-                        label: text::DEFINITION.approval_policy_allow_network_label.clone(),
-                        description: text::DEFINITION
-                            .approval_policy_allow_network_description
-                            .clone(),
+                        label: take(&mut definition.approval_policy_allow_network_label).into(),
+                        description: take(
+                            &mut definition.approval_policy_allow_network_description,
+                        )
+                        .into(),
                         symbol: Some("shield_alert".into()),
                         tone: FrontendTone::Warning,
                     },
                     MiddlewareSettingChoice {
-                        disables: vec![],
+                        disables: Arc::default(),
                         value: "full_access".into(),
-                        label: text::DEFINITION.approval_policy_full_access_label.clone(),
-                        description: text::DEFINITION
-                            .approval_policy_full_access_description
-                            .clone(),
+                        label: take(&mut definition.approval_policy_full_access_label).into(),
+                        description: take(&mut definition.approval_policy_full_access_description)
+                            .into(),
                         symbol: Some("shield_off".into()),
                         tone: FrontendTone::Error,
                     },
                 ]),
                 unset_label: None,
-                default: Some(text::DEFINITION.defaults_approval_policy.clone()),
+                default: Some(take(&mut definition.defaults_approval_policy)),
                 max_bytes: 32,
                 composer: true,
             },
             MiddlewareSettingManifest::Integer {
                 id: "tool_output_bytes".into(),
-                label: text::DEFINITION.setting_tool_output_bytes_label.clone(),
-                description: text::DEFINITION
-                    .setting_tool_output_bytes_description
-                    .clone(),
+                label: take(&mut definition.setting_tool_output_bytes_label),
+                description: take(&mut definition.setting_tool_output_bytes_description),
                 min: 1,
                 max: Some(
                     i64::try_from(MAX_TOOL_OUTPUT_BYTES).expect("output safety bound must fit"),
                 ),
-                step: text::DEFINITION.setting_tool_output_bytes_step,
-                default: i64::try_from(default_tool_output_limit())
+                step: definition.setting_tool_output_bytes_step,
+                default: i64::try_from(definition.defaults_tool_output_bytes)
                     .expect("validated output default must fit"),
             },
             MiddlewareSettingManifest::Integer {
                 id: "background_commands".into(),
-                label: text::DEFINITION.setting_background_commands_label.clone(),
-                description: text::DEFINITION
-                    .setting_background_commands_description
-                    .clone(),
+                label: take(&mut definition.setting_background_commands_label),
+                description: take(&mut definition.setting_background_commands_description),
                 min: 1,
                 max: Some(
                     i64::try_from(MAX_BACKGROUND_COMMANDS).expect("command safety bound must fit"),
                 ),
-                step: text::DEFINITION.setting_background_commands_step,
-                default: i64::try_from(default_background_command_limit())
+                step: definition.setting_background_commands_step,
+                default: i64::try_from(definition.defaults_background_commands)
                     .expect("validated command default must fit"),
             },
         ]
-    });
+    }
+}
 
 /// Configuration and presentation metadata for sandbox approval policy.
 pub static MANIFEST: std::sync::LazyLock<MiddlewareManifest> =
@@ -177,7 +187,7 @@ pub static MANIFEST: std::sync::LazyLock<MiddlewareManifest> =
         description: text::DEFINITION.manifest_description.as_str(),
         required: true,
         default_enabled: true,
-        settings: &SETTINGS,
+        settings: &text::DEFINITION.settings,
     });
 
 pub use approval::ApprovalPolicy;
@@ -320,6 +330,15 @@ type CommandOutputCallback = dyn Fn(CommandStream, &[u8]) + Send + Sync;
 /// only while the authoritative authorization state is held.
 pub type CommandAuthorization =
     Arc<dyn Fn(&mut dyn FnMut() -> Result<()>) -> Result<()> + Send + Sync>;
+
+impl std::fmt::Debug for CommandOutputSink {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CommandOutputSink")
+            .field("observed", &self.callback.is_some())
+            .finish()
+    }
+}
 
 impl CommandOutputSink {
     pub(crate) fn new(callback: impl Fn(CommandStream, &[u8]) + Send + Sync + 'static) -> Self {
@@ -472,8 +491,18 @@ pub struct Sandbox {
     approval: Approval,
     background: BackgroundCommands,
     workers: worker::Workers,
-    workspace_prompt: Option<String>,
+    workspace_prompt: Option<Arc<str>>,
     tool_output_limit: usize,
+}
+
+impl std::fmt::Debug for Sandbox {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Sandbox")
+            .field("workspace_prompt", &self.workspace_prompt)
+            .field("tool_output_limit", &self.tool_output_limit)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Sandbox {
@@ -496,7 +525,7 @@ impl Sandbox {
     /// Returns an error if validation or an operation required by this function fails.
     pub fn isolated_execution(&self) -> Result<Self> {
         let mut scoped = Self::new(self.backend.isolated_execution()?, self.approval_policy());
-        scoped.workspace_prompt = self.workspace_prompt.clone();
+        scoped.workspace_prompt = self.workspace_prompt.as_ref().map(Arc::clone);
         scoped.tool_output_limit = self.tool_output_limit;
         scoped.background = BackgroundCommands::new(self.background.limit());
         Ok(scoped)
@@ -532,18 +561,27 @@ impl Sandbox {
 
     /// Adds the primary workspace and attached folder paths to the model prompt.
     #[must_use]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "public builder signature shared with gateway assembly"
+    )]
+    #[expect(
+        clippy::expect_used,
+        reason = "fmt::Write for String never returns an error"
+    )]
     pub fn attached_folders(mut self, primary: PathBuf, attached: Vec<PathBuf>) -> Self {
         let mut prompt = text::DEFINITION
             .prompt_workspace
-            .replace("{path}", &format!("{primary:?}"));
+            .replace("{path}", &format!("\"{}\"", primary.display()));
         if !attached.is_empty() {
             prompt.push('\n');
             prompt.push_str(&text::DEFINITION.prompt_attached_folders);
             for path in attached {
-                prompt.push_str(&format!("\n- {path:?}"));
+                write!(prompt, "\n- \"{}\"", path.display())
+                    .expect("writing to String cannot fail");
             }
         }
-        self.workspace_prompt = Some(prompt);
+        self.workspace_prompt = Some(prompt.into());
         self
     }
 
@@ -720,10 +758,6 @@ impl Sandbox {
         self.approval.frontend()
     }
 
-    pub(crate) fn render(&self, event: &EventMsg) -> Option<FrontendBlock> {
-        self.approval.render(event)
-    }
-
     pub(crate) fn session_start(&self, session_id: &str) -> Result<Vec<FrontendEvent>> {
         self.approval.session_start(session_id)
     }
@@ -742,7 +776,7 @@ impl Sandbox {
         &self,
         session_id: &str,
         calls: &[ToolCall],
-        approval_call_ids: &[String],
+        approval_call_ids: &[Arc<str>],
         decision: &ReviewDecision,
         permissions: SandboxPermissions,
     ) -> Result<SandboxPermissions> {
@@ -764,11 +798,11 @@ impl Middleware for Sandbox {
     }
 
     fn frontend(&self, _session_id: &str) -> FrontendContribution {
-        Sandbox::frontend(self)
+        Self::frontend(self)
     }
 
     fn prompt_section(&self, _runtime: &RuntimeContext) -> Result<Option<PromptSection>> {
-        let mut prompt = Sandbox::platform_prompt().to_owned();
+        let mut prompt = Self::platform_prompt().to_owned();
         if let Some(workspace) = &self.workspace_prompt {
             prompt.push_str("\n\n");
             prompt.push_str(workspace);
@@ -785,7 +819,7 @@ impl Middleware for Sandbox {
     }
 
     fn render(&self, event: &EventMsg, _session_id: &str) -> Option<FrontendBlock> {
-        Sandbox::render(self, event)
+        Approval::render(event)
     }
 
     fn session_start<'a>(
@@ -796,7 +830,7 @@ impl Middleware for Sandbox {
             if context.source() == SessionStartSource::Compact {
                 return Ok(());
             }
-            for event in Sandbox::session_start(self, &context.runtime.session_id)? {
+            for event in Self::session_start(self, &context.runtime.session_id)? {
                 (context.runtime.frontend)(event)?;
             }
             Ok(())
@@ -804,25 +838,25 @@ impl Middleware for Sandbox {
     }
 
     fn session_end<'a>(&'a self, runtime: &'a RuntimeContext) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move { Sandbox::session_end(self, &runtime.session_id).await })
+        Box::pin(async move { Self::session_end(self, &runtime.session_id).await })
     }
 }
 
 /// Batch authority issued by the sandbox approval policy.
 #[derive(Debug)]
 pub(crate) struct SandboxPermissions {
-    session_id: String,
+    session_id: Arc<str>,
     sandbox_mode: SandboxMode,
     network_access: NetworkAccess,
-    mutation_call_ids: BTreeSet<String>,
+    mutation_call_ids: BTreeSet<Arc<str>>,
 }
 
 impl SandboxPermissions {
     fn new(
-        session_id: impl Into<String>,
+        session_id: impl Into<Arc<str>>,
         sandbox_mode: SandboxMode,
         network_access: NetworkAccess,
-        mutation_call_ids: impl IntoIterator<Item = String>,
+        mutation_call_ids: impl IntoIterator<Item = Arc<str>>,
     ) -> Self {
         Self {
             session_id: session_id.into(),
@@ -833,12 +867,17 @@ impl SandboxPermissions {
     }
 
     pub(crate) fn restore(
-        session_id: impl Into<String>,
+        session_id: impl AsRef<str>,
         sandbox_mode: SandboxMode,
         network_access: NetworkAccess,
-        mutation_call_ids: impl IntoIterator<Item = String>,
+        mutation_call_ids: impl IntoIterator<Item = Arc<str>>,
     ) -> Self {
-        Self::new(session_id, sandbox_mode, network_access, mutation_call_ids)
+        Self::new(
+            session_id.as_ref(),
+            sandbox_mode,
+            network_access,
+            mutation_call_ids,
+        )
     }
 
     pub(crate) fn sandbox_mode(&self) -> SandboxMode {
@@ -849,27 +888,28 @@ impl SandboxPermissions {
         self.network_access
     }
 
-    pub(crate) fn mutation_call_ids(&self) -> Vec<String> {
-        self.mutation_call_ids.iter().cloned().collect()
+    pub(crate) fn mutation_call_ids(&self) -> Vec<Arc<str>> {
+        self.mutation_call_ids.iter().map(Arc::clone).collect()
     }
 
     pub(crate) fn for_call(&self, call_id: &str) -> ToolPermissions {
         ToolPermissions {
-            session_id: self.session_id.clone(),
+            session_id: Arc::clone(&self.session_id),
             sandbox_mode: self.sandbox_mode,
             network_access: self.network_access,
             mutation: self.mutation_call_ids.contains(call_id),
         }
     }
 
-    fn allow_mutations(&mut self, call_ids: impl IntoIterator<Item = String>) {
+    fn allow_mutations(&mut self, call_ids: impl IntoIterator<Item = Arc<str>>) {
         self.mutation_call_ids.extend(call_ids);
     }
 }
 
 /// Opaque authority attached to exactly one tool call.
+#[derive(Debug)]
 pub struct ToolPermissions {
-    session_id: String,
+    session_id: Arc<str>,
     sandbox_mode: SandboxMode,
     network_access: NetworkAccess,
     mutation: bool,
@@ -902,9 +942,9 @@ pub(crate) enum SandboxAuthorization {
 }
 
 pub(crate) struct SandboxApprovalRequest {
-    pub(crate) id: String,
+    pub(crate) id: Arc<str>,
     pub(crate) reason: String,
-    pub(crate) call_ids: Vec<String>,
+    pub(crate) call_ids: Vec<Arc<str>>,
 }
 
 #[cfg(test)]

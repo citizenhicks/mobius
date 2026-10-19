@@ -32,6 +32,7 @@ jobs:
         run: |
           rustup toolchain install --profile minimal --component clippy --component rustfmt
       - run: cargo fmt --all -- --check
+      - run: sh .github/rules.sh
       - name: Check Rust 1.99.0
         run: |
           cargo +1.99.0 check --workspace --all-targets --all-features --locked

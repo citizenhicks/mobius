@@ -80,15 +80,23 @@ impl TerminalGuard {
 }
 
 impl Drop for TerminalGuard {
+    #[expect(
+        clippy::print_stderr,
+        reason = "drop cannot return an error, and stderr is the only place left to report a failed terminal restore"
+    )]
     fn drop(&mut self) {
-        let _ = disable_raw_mode();
-        let _ = execute!(
+        if let Err(error) = disable_raw_mode() {
+            eprintln!("could not leave terminal raw mode: {error}");
+        }
+        if let Err(error) = execute!(
             io::stdout(),
             Show,
             DisableMouseCapture,
             DisableBracketedPaste,
             LeaveAlternateScreen
-        );
+        ) {
+            eprintln!("could not restore the terminal screen: {error}");
+        }
     }
 }
 

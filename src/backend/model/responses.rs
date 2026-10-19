@@ -21,7 +21,7 @@ use super::authorization::ApiKeyAuthorization;
 use super::authorization::OpenAiAuthorization;
 #[cfg(test)]
 use super::authorization::ResolvedAuthorization;
-use super::image_generation::{IMAGE_APIS, ImageApi};
+use super::image_generation::{ImageApi, image_api};
 use super::provider::validate_base_url;
 use super::realtime::RealtimeTransport;
 use super::responses_wire::{RequestMetadata, ResponsesBody, WireInput, WireTools};
@@ -75,10 +75,10 @@ pub struct OpenAi {
     client: Client,
     transport: super::ModelTransportSettings,
     auth: Option<Arc<dyn OpenAiAuthorization>>,
-    realtime: Option<RealtimeTransport>,
+    realtime: Option<Arc<RealtimeTransport>>,
     base_url: String,
-    model: String,
-    reasoning_effort: Option<String>,
+    model: Arc<str>,
+    reasoning_effort: Option<Arc<str>>,
     service_tier: Option<String>,
     reasoning_summary: bool,
     hosted_tools: Vec<Value>,
@@ -87,6 +87,18 @@ pub struct OpenAi {
     explicit_prompt_cache: bool,
     tool_discovery: ToolDiscoveryWire,
     web_search_event_type: &'static str,
+}
+
+impl std::fmt::Debug for OpenAi {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("OpenAi")
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .field("reasoning_effort", &self.reasoning_effort)
+            .field("service_tier", &self.service_tier)
+            .finish_non_exhaustive()
+    }
 }
 
 impl OpenAi {
@@ -159,20 +171,20 @@ impl OpenAi {
         settings: super::ModelTransportSettings,
     ) -> Result<Self> {
         settings.validate()?;
-        let base_url = base_url.into().trim_end_matches('/').to_string();
+        let base_url = base_url.into().trim_end_matches('/').to_owned();
         let model = model.into();
         validate_base_url(&base_url)?;
         if model.trim().is_empty() {
             return Err(Error::Config("OPENAI_MODEL is empty".into()));
         }
-        let image_api = Some(&IMAGE_APIS["openai"]);
+        let image_api = Some(image_api("openai")?);
         Ok(Self {
             client,
             transport: settings,
             auth,
             realtime: None,
             base_url,
-            model,
+            model: model.into(),
             reasoning_effort: None,
             service_tier: None,
             reasoning_summary: false,
@@ -194,7 +206,12 @@ impl OpenAi {
     ) -> Result<Self> {
         settings.validate()?;
         if let Some(realtime) = self.realtime.take() {
-            self.realtime = Some(realtime.with_settings(settings)?);
+            let Ok(realtime) = Arc::try_unwrap(realtime) else {
+                return Err(Error::Config(
+                    "voice transport settings cannot change while a call is active".into(),
+                ));
+            };
+            self.realtime = Some(Arc::new(realtime.with_settings(settings)?));
         }
         self.transport = settings;
         Ok(self)
@@ -209,12 +226,12 @@ impl OpenAi {
             .auth
             .as_ref()
             .ok_or_else(|| Error::Config("Codex voice requires authorization".into()))?;
-        self.realtime = Some(RealtimeTransport::new_codex(
+        self.realtime = Some(Arc::new(RealtimeTransport::new_codex(
             base_url,
             default_endpoint,
             Arc::clone(auth),
             self.transport,
-        )?);
+        )?));
         Ok(self)
     }
 
@@ -224,6 +241,7 @@ impl OpenAi {
             .as_ref()
             .map(|auth| {
                 RealtimeTransport::new_openai(&self.base_url, Arc::clone(auth), self.transport)
+                    .map(Arc::new)
             })
             .transpose()?;
         Ok(self)
@@ -252,7 +270,7 @@ impl OpenAi {
         if effort.trim().is_empty() {
             return Err(Error::Config("reasoning effort cannot be empty".into()));
         }
-        self.reasoning_effort = Some(effort);
+        self.reasoning_effort = Some(effort.into());
         Ok(self)
     }
 
@@ -377,7 +395,7 @@ impl OpenAi {
                 let pending = validate_stream_output(&event, &output)?;
                 emit_ready_tool_calls(
                     &output,
-                    pending.map(|index| (index, &event["item"])),
+                    pending.map(|index| (index, event.get("item").unwrap_or(&Value::Null))),
                     &mut next_output_index,
                     &events,
                 )
@@ -416,7 +434,7 @@ impl OpenAi {
                 Ok(self
                     .client
                     .post(format!("{}/{}", self.base_url, api.edit_path))
-                    .multipart(api.edit_form(&request)?))
+                    .multipart(request.edit_form()?))
             })
             .await?
         } else {
@@ -519,8 +537,8 @@ impl OpenAi {
         let loaded = output
             .tool_calls
             .iter()
-            .filter(|call| deferred.contains(call.name.as_str()))
-            .map(|call| call.name.clone())
+            .filter(|call| deferred.contains(call.name.as_ref()))
+            .map(|call| call.name.to_string()) // rules-allow: the call keeps its name; the materialized-tool set owns a copy
             .collect::<Vec<_>>();
         output.with_materialized_tools(loaded)
     }
@@ -576,8 +594,8 @@ impl Model for OpenAi {
 
     fn info(&self) -> ModelInfo {
         ModelInfo {
-            model: self.model.clone(),
-            reasoning_effort: self.reasoning_effort.clone(),
+            model: Arc::clone(&self.model),
+            reasoning_effort: self.reasoning_effort.as_ref().map(Arc::clone),
         }
     }
 
@@ -747,7 +765,11 @@ pub(super) fn attach_stream_output(mut response: Value, output: BTreeMap<u64, Va
             .get("output")
             .is_none_or(|value| matches!(value, Value::Array(items) if items.is_empty()));
     if needs_stream_output && !output.is_empty() {
-        response["output"] = Value::Array(output.into_values().collect());
+        super::set_field(
+            &mut response,
+            "output",
+            Value::Array(output.into_values().collect()),
+        );
     }
     response
 }
@@ -780,6 +802,7 @@ async fn emit_citation_web_search(
     web_searches: &BTreeSet<String>,
     events: &ModelEventSink,
 ) -> Result<()> {
+    const CALL_ID: &str = "citations";
     if !web_searches.is_empty()
         || !output.content().iter().any(|part| {
             part.annotations
@@ -789,13 +812,12 @@ async fn emit_citation_web_search(
     {
         return Ok(());
     }
-    let call_id = "citations".to_string();
     events(ModelEvent::WebSearchStarted {
-        call_id: call_id.clone(),
+        call_id: CALL_ID.into(),
     })
     .await?;
     events(ModelEvent::WebSearchCompleted {
-        call_id,
+        call_id: CALL_ID.into(),
         action: WebSearchAction::Other,
     })
     .await
@@ -812,15 +834,15 @@ pub(super) async fn emit_web_event(
     };
     let call_id = required_string(item, "id")?;
     if !seen.contains(call_id) {
-        seen.insert(call_id.to_string());
+        seen.insert(call_id.to_owned());
         events(ModelEvent::WebSearchStarted {
-            call_id: call_id.to_string(),
+            call_id: call_id.into(),
         })
         .await?;
     }
     if event.get("type").and_then(Value::as_str) == Some("response.output_item.done") {
         events(ModelEvent::WebSearchCompleted {
-            call_id: call_id.to_string(),
+            call_id: call_id.into(),
             action: decode_web_action(item),
         })
         .await?;
@@ -862,19 +884,18 @@ pub(super) async fn emit_reasoning_event(
     };
     let part = reasoning_part(event, kind, part_field);
     // The normalized delta is one text stream, so match replay's newline between parts.
-    let separator = match part {
-        Some(part) => previous_part
+    let separator = if let Some(part) = part {
+        previous_part
             .replace(part)
-            .is_some_and(|previous| previous != part),
-        None => {
-            *previous_part = None;
-            false
-        }
+            .is_some_and(|previous| previous != part)
+    } else {
+        *previous_part = None;
+        false
     };
     events(ModelEvent::ReasoningDelta(if separator {
         format!("\n{delta}")
     } else {
-        delta.to_string()
+        delta.to_owned()
     }))
     .await?;
     Ok(true)
@@ -908,7 +929,7 @@ pub(super) async fn emit_text_event(
             let Some(id) = item.get("id").and_then(Value::as_str) else {
                 return Ok(false);
             };
-            commentary.insert(id.to_string());
+            commentary.insert(id.to_owned());
             Ok(true)
         }
         Some("response.output_item.done") => Ok(event
@@ -925,9 +946,9 @@ pub(super) async fn emit_text_event(
                 .and_then(Value::as_str)
                 .is_some_and(|id| commentary.contains(id));
             if is_commentary {
-                events(ModelEvent::CommentaryDelta(delta.to_string())).await?;
+                events(ModelEvent::CommentaryDelta(delta.to_owned())).await?;
             } else {
-                events(ModelEvent::TextDelta(delta.to_string())).await?;
+                events(ModelEvent::TextDelta(delta.to_owned())).await?;
             }
             Ok(true)
         }
@@ -939,12 +960,7 @@ fn decode_web_action(item: &Value) -> WebSearchAction {
     let Some(action) = item.get("action") else {
         return WebSearchAction::Other;
     };
-    let string = |field| {
-        action
-            .get(field)
-            .and_then(Value::as_str)
-            .map(ToString::to_string)
-    };
+    let string = |field| action.get(field).and_then(Value::as_str).map(str::to_owned);
     match action.get("type").and_then(Value::as_str) {
         Some("search") => {
             let mut queries = action
@@ -954,7 +970,7 @@ fn decode_web_action(item: &Value) -> WebSearchAction {
                 .flatten()
                 .filter_map(Value::as_str)
                 .filter(|query| !query.is_empty())
-                .map(ToString::to_string)
+                .map(str::to_owned)
                 .collect::<Vec<_>>();
             if queries.is_empty()
                 && let Some(query) = string("query").filter(|query| !query.is_empty())
@@ -1060,7 +1076,7 @@ pub(super) fn response_error(event: &Value) -> String {
         .or_else(|| event.get("message"))
         .and_then(Value::as_str)
         .unwrap_or("response failed")
-        .to_string()
+        .to_owned()
 }
 
 pub(super) fn response_provider_error(event: &Value, retry_after: Option<String>) -> ProviderError {

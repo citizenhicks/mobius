@@ -65,7 +65,7 @@ fn load_openai_plugin(root: PathBuf) -> Result<LoadedPackage> {
             name: manifest.name,
             version: manifest.version,
             description: manifest.description.unwrap_or_default(),
-            skills: skills.keys().cloned().collect(),
+            skills: skills.keys().cloned().collect(), // rules-allow: the package metadata and the skill map each own the names
             hooks: inspected_hooks,
         },
         skills,
@@ -91,7 +91,7 @@ fn load_agent_plugin(root: PathBuf) -> Result<LoadedPackage> {
             name: manifest.name,
             version: manifest.version,
             description: manifest.description.unwrap_or_default(),
-            skills: skills.keys().cloned().collect(),
+            skills: skills.keys().cloned().collect(), // rules-allow: the package metadata and the skill map each own the names
             hooks: Vec::new(),
         },
         skills,
@@ -102,7 +102,9 @@ fn load_agent_plugin(root: PathBuf) -> Result<LoadedPackage> {
 fn load_skill(root: PathBuf) -> Result<LoadedPackage> {
     let path = root.join(SKILL_FILE);
     let content = String::from_utf8(read_bounded_file(&path, MAX_SKILL_BYTES, "skill manifest")?)
-        .map_err(|_| Error::Config("skill manifest is not valid UTF-8".into()))?;
+        .map_err(|error| {
+        Error::Config(format!("skill manifest is not valid UTF-8: {error}"))
+    })?;
     let (name, description) = skill_metadata(&path, &content);
     if !valid_openai_package_name(&name) {
         return Err(Error::Config(format!(
@@ -110,9 +112,9 @@ fn load_skill(root: PathBuf) -> Result<LoadedPackage> {
         )));
     }
     let skills = BTreeMap::from([(
-        name.clone(),
+        name.clone(), // rules-allow: the package metadata and the skill map each own the names
         Skill {
-            description: description.clone(),
+            description: description.clone(), // rules-allow: the package metadata and the skill map each own the names
             location: path,
         },
     )]);
@@ -120,7 +122,7 @@ fn load_skill(root: PathBuf) -> Result<LoadedPackage> {
         root,
         metadata: ExtensionPackage {
             kind: ExtensionPackageKind::Skill,
-            skills: vec![name.clone()],
+            skills: vec![name.clone()], // rules-allow: the package metadata and the skill map each own the names
             name,
             version: None,
             description,
@@ -153,6 +155,16 @@ struct OpenAiPluginManifest {
 
 impl OpenAiPluginManifest {
     fn validate(&self) -> Result<()> {
+        const METADATA: [&str; 8] = [
+            "author",
+            "homepage",
+            "repository",
+            "license",
+            "keywords",
+            "interface",
+            "bundledContentVariant",
+            "$schema",
+        ];
         if !valid_openai_package_name(&self.name) {
             return Err(Error::Config(format!(
                 "plugin name `{}` must be kebab-case",
@@ -179,16 +191,6 @@ impl OpenAiPluginManifest {
                 self.name
             )));
         }
-        const METADATA: [&str; 8] = [
-            "author",
-            "homepage",
-            "repository",
-            "license",
-            "keywords",
-            "interface",
-            "bundledContentVariant",
-            "$schema",
-        ];
         if let Some(field) = self
             .metadata
             .keys()
@@ -263,13 +265,12 @@ fn agent_plugin_schema(root: &Path) -> Result<Option<String>> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     }
-    let mut value = match serde_json::from_slice::<Value>(&read_bounded_file(
+    let Ok(mut value) = serde_json::from_slice::<Value>(&read_bounded_file(
         &path,
         MAX_PLUGIN_MANIFEST_BYTES,
         "Agent Plugin manifest",
-    )?) {
-        Ok(value) => value,
-        Err(_) => return Ok(Some(String::new())),
+    )?) else {
+        return Ok(Some(String::new()));
     };
     Ok(Some(
         match value

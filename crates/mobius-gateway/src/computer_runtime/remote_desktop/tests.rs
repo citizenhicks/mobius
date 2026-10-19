@@ -13,11 +13,10 @@ async fn sleeping_runtime(remote: &RemoteDesktop) -> u32 {
     let socket = directory.join("rfb.sock");
     let _listener = tokio::net::UnixListener::bind(&socket).unwrap();
     *remote.runtime.lock().await = Some(Runtime {
-        config: Arc::clone(remote.configuration()),
         children: vec![],
         browser: Some(child),
         chromium: PathBuf::new(),
-        profile: directory.join("profile"),
+        state_profile: directory.join("profile"),
         endpoint: String::new(),
         websocket: String::new(),
         tabs: BTreeMap::new(),
@@ -61,6 +60,7 @@ async fn last_use_waits_for_execution_and_rechecks_a_new_consumer() {
     assert!(remote.runtime.lock().await.is_some());
     drop(reopened);
     wait_stopped(&remote).await;
+    drop(remote);
 }
 
 use mobius::backend::sandbox::{NetworkAccess, SandboxBackend, SandboxMode};
@@ -88,6 +88,7 @@ async fn one_lease_blocks_all_other_evaluations_and_releases_on_disconnect() {
     .await
     .unwrap();
     assert!(remote.connect("two", native).is_ok());
+    drop(remote);
 }
 
 #[tokio::test]
@@ -147,7 +148,7 @@ async fn hold_cancels_a_running_command_before_admitting_user_input() {
     .await
     .unwrap();
     remote.held.store(true, Ordering::Release);
-    let _ = remote.changed.send(());
+    remote.notify_changed();
     assert!(
         tokio::time::timeout(Duration::from_secs(1), running)
             .await
@@ -158,6 +159,7 @@ async fn hold_cancels_a_running_command_before_admitting_user_input() {
     assert!(remote.executions.try_write().is_ok());
     assert!(!workspace.join("completed").exists());
     remote.cancel_takeover().await;
+    drop(remote);
 }
 
 #[tokio::test]
@@ -182,4 +184,5 @@ async fn dropping_a_pending_grant_never_starts_a_late_controller() {
     assert!(remote.runtime.lock().await.is_none());
     assert_eq!(remote.control_state(Uuid::new_v4()), (false, false, None));
     assert!(remote.check_execution().is_ok());
+    drop(remote);
 }

@@ -1,6 +1,7 @@
 use diffy::{DiffOptions, Patch};
 use serde::Deserialize;
 use serde_json::Value;
+use std::sync::Arc;
 
 use super::patch::{apply_patch_document, parse_patch_document};
 use super::{
@@ -33,12 +34,12 @@ struct ReadArgs {
 
 /// Reads text files and views images, by workspace path or authorized session file.
 pub(super) struct ReadFile {
-    pub(super) store: SessionFileStore,
+    pub(super) store: Arc<SessionFileStore>,
 }
 
 impl Tool for ReadFile {
-    fn definition(&self) -> ToolDefinition {
-        DEFINITION.read_file.tool.clone()
+    fn definition(&self) -> &Arc<ToolDefinition> {
+        &DEFINITION.read_file.tool
     }
 
     fn render(&self, event: &crate::protocol::EventMsg) -> Option<crate::protocol::FrontendBlock> {
@@ -64,11 +65,7 @@ impl Tool for ReadFile {
         ExecutionMode::Parallel
     }
 
-    fn call<'a>(
-        &'a self,
-        context: ToolContext,
-        arguments: Value,
-    ) -> BoxFuture<'a, Result<ToolResponse>> {
+    fn call(&self, context: ToolContext, arguments: Value) -> BoxFuture<'_, Result<ToolResponse>> {
         Box::pin(async move {
             let arguments: ReadArgs = serde_json::from_value(arguments)?;
             let session = context.permissions.session_id();
@@ -87,9 +84,9 @@ impl Tool for ReadFile {
                         if bytes.len() > crate::backend::sandbox::MAX_FILE_BYTES {
                             return Err(Error::Sandbox("file exceeds read limit".into()));
                         }
-                        return String::from_utf8(bytes)
-                            .map(Into::into)
-                            .map_err(|_| Error::Sandbox(format!("{path} is not valid UTF-8")));
+                        return String::from_utf8(bytes).map(Into::into).map_err(|error| {
+                            Error::Sandbox(format!("{path} is not valid UTF-8: {error}"))
+                        });
                     }
                     let name = std::path::Path::new(&path)
                         .file_name()
@@ -133,8 +130,8 @@ struct WriteArgs {
 pub(super) struct WriteFile;
 
 impl Tool for WriteFile {
-    fn definition(&self) -> ToolDefinition {
-        DEFINITION.write_file.tool.clone()
+    fn definition(&self) -> &Arc<ToolDefinition> {
+        &DEFINITION.write_file.tool
     }
 
     fn render(&self, event: &crate::protocol::EventMsg) -> Option<crate::protocol::FrontendBlock> {
@@ -149,11 +146,11 @@ impl Tool for WriteFile {
         ApprovalRequirement::Always
     }
 
-    fn call<'a>(
-        &'a self,
+    fn call(
+        &self,
         context: ToolContext,
         arguments: Value,
-    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
+    ) -> BoxFuture<'_, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             let arguments: WriteArgs = serde_json::from_value(arguments)?;
             if arguments.content.len() > MAX_MUTATION_BYTES {
@@ -184,8 +181,8 @@ pub(super) struct ApplyPatchArgs {
 pub(super) struct ApplyPatch;
 
 impl Tool for ApplyPatch {
-    fn definition(&self) -> ToolDefinition {
-        DEFINITION.apply_patch.tool.clone()
+    fn definition(&self) -> &Arc<ToolDefinition> {
+        &DEFINITION.apply_patch.tool
     }
 
     fn prompt_section(&self) -> Option<&str> {
@@ -208,7 +205,7 @@ impl Tool for ApplyPatch {
                     .unwrap_or_default()
                     .into();
                 super::ToolHeading {
-                    title: DEFINITION.apply_patch.title.clone(),
+                    title: DEFINITION.apply_patch.title.clone(), // rules-allow: the heading owns its title from static text
                     detail,
                 }
             },
@@ -218,7 +215,7 @@ impl Tool for ApplyPatch {
             && Patch::from_str(&result.output.text()).is_ok()
         {
             block.update = FrontendBlockUpdate::Replace;
-            block.title = DEFINITION.apply_patch.title.clone();
+            block.title.clone_from(&DEFINITION.apply_patch.title);
             block.text = result.output.text();
             block.format = FrontendBlockFormat::UnifiedDiff;
         }
@@ -254,11 +251,11 @@ impl Tool for ApplyPatch {
         Ok(serde_json::json!({"patch": command}))
     }
 
-    fn call<'a>(
-        &'a self,
+    fn call(
+        &self,
         context: ToolContext,
         arguments: Value,
-    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
+    ) -> BoxFuture<'_, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             let arguments: ApplyPatchArgs = serde_json::from_value(arguments)?;
             if arguments.patch.len() > MAX_MUTATION_BYTES {
@@ -277,19 +274,23 @@ impl Tool for ApplyPatch {
                     "patch rejected: patch applies but makes no changes".into(),
                 ));
             }
-            let mut options = DiffOptions::new();
-            options
-                .set_original_filename(document.path.clone())
-                .set_modified_filename(document.path.clone());
-            let diff = options.create_patch(&content, &updated).to_string();
             context
                 .sandbox
                 .write(&document.path, &updated, &context.permissions)
                 .await?;
+            let mut options = DiffOptions::new();
+            options
+                .set_original_filename(document.path.clone()) // rules-allow: diffy requires a second 'static filename
+                .set_modified_filename(document.path);
+            let patch = options.create_patch(&content, &updated);
+            let diff = patch.to_string();
             Ok((if diff.len() <= context.sandbox.output_limit() {
                 diff
             } else {
-                format!("patched {} (diff too large to display)", document.path)
+                format!(
+                    "patched {} (diff too large to display)",
+                    patch.modified().unwrap_or_default()
+                )
             })
             .into())
         })

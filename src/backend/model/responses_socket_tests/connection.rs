@@ -132,7 +132,7 @@ async fn active_connection_pump_forwards_bursts_without_blocking_ping() {
                 Message::Close(_) => panic!("connection closed before pong"),
             }
         }
-        let _ = socket.next().await;
+        drop(socket.next().await);
     });
     let (socket, _) = connect_async(format!("ws://{address}"))
         .await
@@ -207,9 +207,8 @@ async fn connection_limit_closes_other_idle_connections() {
             .await
             .expect("idle connection close")
         {
-            Some(Ok(Message::Close(_))) | None => {}
+            Some(Ok(Message::Close(_)) | Err(_)) | None => {}
             Some(Ok(message)) => panic!("idle socket received {message:?}"),
-            Some(Err(_)) => {}
         }
     });
     let socket_url = format!("ws://{address}/responses");

@@ -166,9 +166,9 @@ fn active_user_op(
 }
 
 fn peer_op(
-    message_id: impl Into<String>,
-    session_id: impl Into<String>,
-    handle: impl Into<String>,
+    message_id: impl Into<std::sync::Arc<str>>,
+    session_id: impl Into<std::sync::Arc<str>>,
+    handle: impl Into<std::sync::Arc<str>>,
     text: impl Into<String>,
 ) -> Op {
     Op::Message {
@@ -384,12 +384,16 @@ impl Model for BlockingModel {
 }
 
 impl Tool for ApprovalRequiredTestTool {
-    fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "approval_required".into(),
-            description: "performs one reviewed mutation".into(),
-            parameters: serde_json::json!({"type": "object"}),
-        }
+    fn definition(&self) -> &std::sync::Arc<ToolDefinition> {
+        static DEFINITION: std::sync::LazyLock<std::sync::Arc<ToolDefinition>> =
+            std::sync::LazyLock::new(|| {
+                std::sync::Arc::new(ToolDefinition {
+                    name: "approval_required".into(),
+                    description: "performs one reviewed mutation".into(),
+                    parameters: serde_json::json!({"type": "object"}),
+                })
+            });
+        &DEFINITION
     }
 
     fn exposure(&self) -> ToolExposure {
@@ -400,11 +404,11 @@ impl Tool for ApprovalRequiredTestTool {
         ApprovalRequirement::Always
     }
 
-    fn call<'a>(
-        &'a self,
+    fn call(
+        &self,
         _context: ToolContext,
         _arguments: serde_json::Value,
-    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
+    ) -> BoxFuture<'_, Result<crate::protocol::ToolResponse>> {
         Box::pin(async { Ok("executed".into()) })
     }
 }

@@ -1,4 +1,13 @@
-use super::*;
+use super::{
+    AccessLease, Arc, AsyncWrite, AuthStore, BTreeMap, BTreeSet, BotStore, ClientConnections,
+    ClientKind, ClientMessage, ClientView, Error, GatewayHost, GatewayNotification, HostHandle,
+    JoinSet, Op, PathBuf, PendingSessionFileWrite, Rejection, Result, ServerFrame, ServerMessage,
+    SessionFileStore, SharedFrame, Utc, Uuid, ValidatedSubmission, broadcast, directory_rejection,
+    internal_rejection, list_directories, open_selected, require_selected, require_uploads_enabled,
+    routine_rejection, sequence, session_file_rejection, uploads_disabled_rejection,
+    write_client_inventory, write_frame, write_gateway_result, write_rejection, write_result,
+    write_server_error, write_session_history,
+};
 use mobius::backend::session_files::session_file_limits;
 use mobius::backend::session_files::{SessionFileOrigin as StoredFileOrigin, SessionFileSelection};
 use mobius::protocol::{MessageAuthor, MessageTarget, Submission};
@@ -28,7 +37,7 @@ pub(super) struct AuthenticatedClient<'a> {
 pub(super) const MAX_PENDING_REQUESTS: usize = 4;
 
 pub(super) struct ConnectionSessionState<'a> {
-    pub(super) gateway: &'a GatewayHost,
+    pub(super) gateway: &'a Arc<GatewayHost>,
     pub(super) disabled_notifications: &'a mut BTreeSet<GatewayNotification>,
     pub(super) view: &'a mut ClientView,
     pub(super) selected: &'a mut Option<SelectedChat>,
@@ -68,7 +77,7 @@ pub(super) async fn selected_broadcast(
 pub(super) async fn handle_message(
     message: ClientMessage,
     auth: &AuthStore,
-    gateway: &GatewayHost,
+    gateway: &Arc<GatewayHost>,
     bots: &BotStore,
     client: &AuthenticatedClient<'_>,
     mut connection: ConnectionSessionState<'_>,
@@ -227,7 +236,7 @@ pub(super) async fn handle_message(
         } => {
             return attach_session_folder(
                 writer,
-                &*connection.selected,
+                connection.selected.as_ref(),
                 gateway,
                 request_id,
                 session_id,
@@ -250,7 +259,7 @@ pub(super) async fn handle_message(
         } => {
             return set_message_pinned(
                 writer,
-                &*connection.selected,
+                connection.selected.as_ref(),
                 request_id,
                 session_id,
                 target,
@@ -532,7 +541,7 @@ pub(super) async fn handle_message(
             session_id,
             path,
         } => {
-            let host = match require_selected(&*connection.selected, &session_id) {
+            let host = match require_selected(connection.selected.as_ref(), &session_id) {
                 Ok(host) => host,
                 Err(rejection) => return write_rejection(writer, request_id, rejection).await,
             };
@@ -730,14 +739,14 @@ pub(super) async fn handle_message(
 
 async fn start_provider_login(
     writer: &mut (impl AsyncWrite + Unpin),
-    request_id: String,
+    request_id: Arc<str>,
     provider: String,
     client_id: &str,
     auth: &AuthStore,
     gateway: &GatewayHost,
 ) -> Result<()> {
     let result = gateway
-        .start_provider_login(request_id.clone(), provider, client_id)
+        .start_provider_login(Arc::clone(&request_id), provider, client_id)
         .await;
     // Unpairing may have removed replay before this already-selected request
     // reserved its slot. Check after reservation to close that ordering too.
@@ -745,7 +754,7 @@ async fn start_provider_login(
         gateway
             .forget_provider_login(client_id)
             .await
-            .map_err(|rejection| Error::Protocol(rejection.message))?;
+            .map_err(|rejection| Error::Protocol(rejection.message.to_string()))?;
         return Err(Error::Unauthorized);
     }
     match result {
@@ -756,7 +765,7 @@ async fn start_provider_login(
 
 async fn unpair_client(
     writer: &mut (impl AsyncWrite + Unpin),
-    request_id: String,
+    request_id: Arc<str>,
     client_id: String,
     auth: &AuthStore,
     client: &AuthenticatedClient<'_>,
@@ -785,7 +794,10 @@ async fn unpair_client(
         result => result.map(|_| ()),
     };
     // Broadcast retains identity independently of cleanup; visible revocation must precede its await.
-    let _ = client.revocations.send(client_id.clone());
+    let revoked = client_id.clone(); // rules-allow: the broadcast owns the revoked ID while cleanup still uses it
+    if client.revocations.send(revoked).is_err() {
+        tracing::debug!("no connections were listening for the revocation");
+    }
     let follow_up = gateway.forget_provider_login(&client_id).await;
     match crate::host::finish_publication(publication, follow_up) {
         Ok(()) => {
@@ -798,7 +810,7 @@ async fn unpair_client(
 async fn list_sessions(
     writer: &mut (impl AsyncWrite + Unpin),
     view: &mut ClientView,
-    request_id: String,
+    request_id: Arc<str>,
     gateway: &GatewayHost,
 ) -> Result<()> {
     match gateway.sessions().await {
@@ -812,8 +824,8 @@ async fn list_sessions(
 
 async fn list_bot_sessions(
     writer: &mut (impl AsyncWrite + Unpin),
-    request_id: String,
-    bot_id: String,
+    request_id: Arc<str>,
+    bot_id: Arc<str>,
     gateway: &GatewayHost,
 ) -> Result<()> {
     match gateway.hidden_bot_sessions(&bot_id).await {
@@ -835,9 +847,9 @@ async fn list_bot_sessions(
 async fn create_session(
     writer: &mut (impl AsyncWrite + Unpin),
     selected: &mut Option<SelectedChat>,
-    request_id: String,
+    request_id: Arc<str>,
     workspace: PathBuf,
-    bot_id: String,
+    bot_id: Arc<str>,
     gateway: &GatewayHost,
 ) -> Result<()> {
     match gateway.create_session(&workspace, &bot_id).await {
@@ -848,7 +860,7 @@ async fn create_session(
 
 async fn create_workspace_directory(
     writer: &mut (impl AsyncWrite + Unpin),
-    request_id: String,
+    request_id: Arc<str>,
     parent: PathBuf,
     name: String,
     gateway: &GatewayHost,
@@ -862,8 +874,8 @@ async fn create_workspace_directory(
 async fn open_session(
     writer: &mut (impl AsyncWrite + Unpin),
     selected: &mut Option<SelectedChat>,
-    request_id: String,
-    session_id: String,
+    request_id: Arc<str>,
+    session_id: Arc<str>,
     last_sequence: Option<u64>,
     gateway: &GatewayHost,
 ) -> Result<()> {
@@ -877,7 +889,7 @@ async fn open_session(
 async fn select_session(
     writer: &mut (impl AsyncWrite + Unpin),
     selected: &mut Option<SelectedChat>,
-    request_id: String,
+    request_id: Arc<str>,
     session_id: String,
     gateway: &GatewayHost,
 ) -> Result<()> {
@@ -909,12 +921,12 @@ async fn select_session(
 async fn get_session_history(
     writer: &mut (impl AsyncWrite + Unpin),
     connection: &mut ConnectionSessionState<'_>,
-    request_id: String,
+    request_id: Arc<str>,
     session_id: String,
     before_sequence: Option<u64>,
 ) -> Result<()> {
     let page = match connection.selected {
-        Some(selected) if selected.host.session_id() == session_id => {
+        Some(selected) if **selected.host.session_id() == *session_id => {
             selected.host.history_page(before_sequence).await
         }
         _ => {
@@ -930,7 +942,7 @@ async fn get_session_history(
 async fn rename_session(
     writer: &mut (impl AsyncWrite + Unpin),
     gateway: &GatewayHost,
-    request_id: String,
+    request_id: Arc<str>,
     session_id: String,
     title: String,
 ) -> Result<()> {
@@ -944,9 +956,9 @@ async fn rename_session(
 
 async fn attach_session_folder(
     writer: &mut (impl AsyncWrite + Unpin),
-    selected: &Option<SelectedChat>,
+    selected: Option<&SelectedChat>,
     gateway: &GatewayHost,
-    request_id: String,
+    request_id: Arc<str>,
     session_id: String,
     folder: PathBuf,
 ) -> Result<()> {
@@ -964,7 +976,7 @@ async fn attach_session_folder(
 async fn set_session_pinned(
     writer: &mut (impl AsyncWrite + Unpin),
     gateway: &GatewayHost,
-    request_id: String,
+    request_id: Arc<str>,
     session_id: String,
     pinned: bool,
 ) -> Result<()> {
@@ -978,8 +990,8 @@ async fn set_session_pinned(
 
 async fn set_message_pinned(
     writer: &mut (impl AsyncWrite + Unpin),
-    selected: &Option<SelectedChat>,
-    request_id: String,
+    selected: Option<&SelectedChat>,
+    request_id: Arc<str>,
     session_id: String,
     target: MessageTarget,
     pinned: bool,
@@ -1000,7 +1012,7 @@ async fn set_message_pinned(
 async fn write_bot_result<T>(
     writer: &mut (impl AsyncWrite + Unpin),
     view: &mut ClientView,
-    request_id: String,
+    request_id: Arc<str>,
     result: std::result::Result<T, Rejection>,
     gateway: &GatewayHost,
 ) -> Result<()> {
@@ -1017,7 +1029,7 @@ async fn write_bot_result<T>(
 async fn write_bot_catalog_result(
     writer: &mut (impl AsyncWrite + Unpin),
     connection: &mut ConnectionSessionState<'_>,
-    request_id: String,
+    request_id: Arc<str>,
     result: std::result::Result<(Vec<crate::wire::BotRecord>, Vec<String>), Rejection>,
 ) -> Result<()> {
     match result {
@@ -1035,24 +1047,24 @@ async fn write_bot_catalog_result(
 async fn delete_sessions(
     writer: &mut (impl AsyncWrite + Unpin),
     connection: &mut ConnectionSessionState<'_>,
-    request_id: String,
+    request_id: Arc<str>,
     mut session_ids: Vec<String>,
     mut selection: SessionFileSelection,
     gateway: &GatewayHost,
 ) -> Result<()> {
     if let SessionFileSelection::Ids(ids) = &mut selection
-        && session_ids.len() == 1
+        && let [selected_id] = session_ids.as_mut_slice()
         && !ids.is_empty()
     {
         // Reuse the owned IDs as a lookup key, restoring the selection before any await.
-        let mut key = (std::mem::take(&mut session_ids[0]), String::new());
+        let mut key = (std::mem::take(selected_id), String::new());
         ids.retain_mut(|id| {
             std::mem::swap(id, &mut key.1);
             let retained = connection.uploads.remove(&key).is_none();
             std::mem::swap(id, &mut key.1);
             retained
         });
-        session_ids[0] = key.0;
+        *selected_id = key.0;
         if ids.is_empty() {
             return write_result(writer, request_id, Ok(())).await;
         }
@@ -1073,7 +1085,7 @@ fn forget_deleted_sessions(connection: &mut ConnectionSessionState<'_>, deleted:
     if connection
         .voice
         .as_ref()
-        .is_some_and(|voice| deleted.contains(&voice.session_id))
+        .is_some_and(|voice| deleted.iter().any(|id| **id == *voice.session_id))
     {
         *connection.voice = None;
     }
@@ -1083,20 +1095,24 @@ fn forget_deleted_sessions(connection: &mut ConnectionSessionState<'_>, deleted:
     if connection.selected.as_ref().is_some_and(|selected| {
         deleted
             .iter()
-            .any(|session_id| session_id == selected.host.session_id())
+            .any(|session_id| **session_id == **selected.host.session_id())
     }) {
         *connection.selected = None;
     }
 }
 
+#[expect(
+    clippy::needless_pass_by_ref_mut,
+    reason = "a shared borrow would make the future !Send: ConnectionSessionState is not Sync"
+)]
 async fn submit(
     writer: &mut (impl AsyncWrite + Unpin),
     connection: &mut ConnectionSessionState<'_>,
-    session_id: String,
+    session_id: Arc<str>,
     submission: Submission,
 ) -> Result<()> {
-    let request_id = submission.id.clone();
-    let host = match require_selected(&*connection.selected, &session_id) {
+    let request_id = Arc::clone(&submission.id);
+    let host = match require_selected(connection.selected.as_ref(), &session_id) {
         Ok(host) => host,
         Err(rejection) => return write_rejection(writer, request_id, rejection).await,
     };
@@ -1151,7 +1167,7 @@ async fn submit(
 async fn contribution_response(
     writer: &mut (impl AsyncWrite + Unpin),
     view: &mut ClientView,
-    request_id: String,
+    request_id: Arc<str>,
     result: std::result::Result<Vec<mobius::protocol::FrontendContribution>, Rejection>,
 ) -> Result<()> {
     match result {
@@ -1173,13 +1189,13 @@ async fn contribution_response(
 async fn begin_session_file_upload(
     writer: &mut (impl AsyncWrite + Unpin),
     connection: &mut ConnectionSessionState<'_>,
-    request_id: String,
+    request_id: Arc<str>,
     session_id: String,
     name: String,
     size: u64,
     media_type: String,
 ) -> Result<()> {
-    let host = match require_uploads_enabled(connection.selected, &session_id).await {
+    let host = match require_uploads_enabled(connection.selected.as_ref(), &session_id).await {
         Ok(host) => host,
         Err(rejection) => return write_rejection(writer, request_id, rejection).await,
     };
@@ -1211,10 +1227,10 @@ async fn begin_session_file_upload(
                 drop(upload);
                 return write_rejection(writer, request_id, rejection).await;
             }
-            let upload_id = upload.id().to_string();
+            let upload_id = upload.id().to_owned();
             connection
                 .uploads
-                .insert((session_id.clone(), upload_id.clone()), upload);
+                .insert((session_id.clone(), upload_id.clone()), upload); // rules-allow: the upload table and the ready frame each own the IDs
             write_frame(
                 writer,
                 &ServerFrame::new(ServerMessage::SessionFileUploadReady {
@@ -1233,14 +1249,14 @@ async fn begin_session_file_upload(
 async fn upload_session_file_chunk(
     writer: &mut (impl AsyncWrite + Unpin),
     connection: &mut ConnectionSessionState<'_>,
-    request_id: String,
+    request_id: Arc<str>,
     session_id: String,
     upload_id: String,
     offset: u64,
     data: Vec<u8>,
 ) -> Result<()> {
     let key = (session_id, upload_id);
-    let host = match require_uploads_enabled(connection.selected, &key.0).await {
+    let host = match require_uploads_enabled(connection.selected.as_ref(), &key.0).await {
         Ok(host) => host,
         Err(rejection) => {
             connection.uploads.remove(&key);
@@ -1288,12 +1304,12 @@ async fn upload_session_file_chunk(
 async fn finish_session_file_upload(
     writer: &mut (impl AsyncWrite + Unpin),
     connection: &mut ConnectionSessionState<'_>,
-    request_id: String,
+    request_id: Arc<str>,
     session_id: String,
     upload_id: String,
 ) -> Result<()> {
     let key = (session_id, upload_id);
-    let host = match require_uploads_enabled(connection.selected, &key.0).await {
+    let host = match require_uploads_enabled(connection.selected.as_ref(), &key.0).await {
         Ok(host) => host,
         Err(rejection) => {
             connection.uploads.remove(&key);
@@ -1335,19 +1351,23 @@ async fn finish_session_file_upload(
 }
 
 fn require_readable_files(
-    selected: &Option<SelectedChat>,
+    selected: Option<&SelectedChat>,
     session_id: &str,
 ) -> std::result::Result<(), Rejection> {
     require_selected(selected, session_id).map(|_| ())
 }
 
+#[expect(
+    clippy::needless_pass_by_ref_mut,
+    reason = "a shared borrow would make the future !Send: ConnectionSessionState is not Sync"
+)]
 async fn list_session_files(
     writer: &mut (impl AsyncWrite + Unpin),
     connection: &mut ConnectionSessionState<'_>,
-    request_id: String,
+    request_id: Arc<str>,
     session_id: String,
 ) -> Result<()> {
-    if let Err(rejection) = require_readable_files(&*connection.selected, &session_id) {
+    if let Err(rejection) = require_readable_files(connection.selected.as_ref(), &session_id) {
         return write_rejection(writer, request_id, rejection).await;
     }
     match connection
@@ -1386,16 +1406,20 @@ async fn list_session_files(
     }
 }
 
+#[expect(
+    clippy::needless_pass_by_ref_mut,
+    reason = "a shared borrow would make the future !Send: ConnectionSessionState is not Sync"
+)]
 async fn read_session_file(
     writer: &mut (impl AsyncWrite + Unpin),
     connection: &mut ConnectionSessionState<'_>,
-    request_id: String,
+    request_id: Arc<str>,
     session_id: String,
     file_id: String,
     offset: u64,
     max_bytes: usize,
 ) -> Result<()> {
-    if let Err(rejection) = require_readable_files(&*connection.selected, &session_id) {
+    if let Err(rejection) = require_readable_files(connection.selected.as_ref(), &session_id) {
         return write_rejection(writer, request_id, rejection).await;
     }
     match connection
@@ -1423,7 +1447,7 @@ async fn read_session_file(
 
 async fn probe_git_credential(
     writer: &mut (impl AsyncWrite + Unpin),
-    request_id: String,
+    request_id: Arc<str>,
     target: String,
     gateway: &GatewayHost,
 ) -> Result<()> {
@@ -1445,7 +1469,7 @@ async fn probe_git_credential(
 
 async fn approve_git_credential(
     writer: &mut (impl AsyncWrite + Unpin),
-    request_id: String,
+    request_id: Arc<str>,
     target: String,
     username: String,
     token: String,
@@ -1472,7 +1496,7 @@ async fn approve_git_credential(
 
 async fn list_ssh_identities(
     writer: &mut (impl AsyncWrite + Unpin),
-    request_id: String,
+    request_id: Arc<str>,
     gateway: &GatewayHost,
 ) -> Result<()> {
     match gateway.ssh_identities().await {
@@ -1492,7 +1516,7 @@ async fn list_ssh_identities(
 
 async fn generate_ssh_identity(
     writer: &mut (impl AsyncWrite + Unpin),
-    request_id: String,
+    request_id: Arc<str>,
     gateway: &GatewayHost,
 ) -> Result<()> {
     match gateway.generate_ssh_identity().await {
@@ -1512,7 +1536,7 @@ async fn generate_ssh_identity(
 }
 
 struct GitDiffRequest {
-    request_id: String,
+    request_id: Arc<str>,
     session_id: String,
     scope: GitDiffScope,
     /// Answer with line totals instead of the diff text.
@@ -1530,8 +1554,8 @@ async fn get_git_diff(
         scope,
         totals,
     } = request;
-    let host = match require_selected(&*connection.selected, &session_id) {
-        Ok(host) => host.clone(),
+    let host = match require_selected(connection.selected.as_ref(), &session_id) {
+        Ok(host) => host.clone(), // rules-allow: the background diff task owns a session handle
         Err(rejection) => return write_rejection(writer, request_id, rejection).await,
     };
     if connection.requests.len() >= MAX_PENDING_REQUESTS {
@@ -1547,7 +1571,7 @@ async fn get_git_diff(
     }
     // Owned by the connection: disconnecting aborts its outstanding Git reads.
     connection.requests.spawn(async move {
-        let rejected = |request_id, rejection: Rejection| ServerMessage::Rejected {
+        let rejected = |request_id: Arc<str>, rejection: Rejection| ServerMessage::Rejected {
             request_id,
             code: rejection.code.into(),
             message: rejection.message,
@@ -1577,28 +1601,36 @@ async fn get_git_diff(
     Ok(())
 }
 
+#[expect(
+    clippy::needless_pass_by_ref_mut,
+    reason = "a shared borrow would make the future !Send: ConnectionSessionState is not Sync"
+)]
 async fn switch_git_branch(
     writer: &mut (impl AsyncWrite + Unpin),
     connection: &mut ConnectionSessionState<'_>,
-    request_id: String,
+    request_id: Arc<str>,
     session_id: String,
     branch: String,
 ) -> Result<()> {
-    let host = match require_selected(&*connection.selected, &session_id) {
+    let host = match require_selected(connection.selected.as_ref(), &session_id) {
         Ok(host) => host,
         Err(rejection) => return write_rejection(writer, request_id, rejection).await,
     };
     write_result(writer, request_id, host.switch_git_branch(branch).await).await
 }
 
+#[expect(
+    clippy::needless_pass_by_ref_mut,
+    reason = "a shared borrow would make the future !Send: ConnectionSessionState is not Sync"
+)]
 async fn list_workspace_files(
     writer: &mut (impl AsyncWrite + Unpin),
     connection: &mut ConnectionSessionState<'_>,
-    request_id: String,
+    request_id: Arc<str>,
     session_id: String,
     scope: WorkspaceFileScope,
 ) -> Result<()> {
-    let host = match require_selected(&*connection.selected, &session_id) {
+    let host = match require_selected(connection.selected.as_ref(), &session_id) {
         Ok(host) => host,
         Err(rejection) => return write_rejection(writer, request_id, rejection).await,
     };
@@ -1619,21 +1651,25 @@ async fn list_workspace_files(
     }
 }
 
+#[expect(
+    clippy::needless_pass_by_ref_mut,
+    reason = "a shared borrow would make the future !Send: ConnectionSessionState is not Sync"
+)]
 async fn read_workspace_file(
     writer: &mut (impl AsyncWrite + Unpin),
     connection: &mut ConnectionSessionState<'_>,
-    request_id: String,
+    request_id: Arc<str>,
     session_id: String,
     path: String,
     offset: u64,
     max_bytes: usize,
 ) -> Result<()> {
-    let host = match require_selected(&*connection.selected, &session_id) {
+    let host = match require_selected(connection.selected.as_ref(), &session_id) {
         Ok(host) => host,
         Err(rejection) => return write_rejection(writer, request_id, rejection).await,
     };
     match host
-        .read_workspace_file(path.clone(), offset, max_bytes)
+        .read_workspace_file(path.clone(), offset, max_bytes) // rules-allow: the host takes the path and the chunk frame echoes it
         .await
     {
         Ok(chunk) => {
@@ -1654,15 +1690,19 @@ async fn read_workspace_file(
     }
 }
 
+#[expect(
+    clippy::needless_pass_by_ref_mut,
+    reason = "a shared borrow would make the future !Send: ConnectionSessionState is not Sync"
+)]
 async fn write_workspace_file(
     writer: &mut (impl AsyncWrite + Unpin),
     connection: &mut ConnectionSessionState<'_>,
-    request_id: String,
+    request_id: Arc<str>,
     session_id: String,
     path: String,
     content: String,
 ) -> Result<()> {
-    let host = match require_selected(&*connection.selected, &session_id) {
+    let host = match require_selected(connection.selected.as_ref(), &session_id) {
         Ok(host) => host,
         Err(rejection) => return write_rejection(writer, request_id, rejection).await,
     };
@@ -1675,7 +1715,7 @@ async fn write_workspace_file(
 
 async fn list_directories_response(
     writer: &mut (impl AsyncWrite + Unpin),
-    request_id: String,
+    request_id: Arc<str>,
     path: PathBuf,
     include_files: bool,
 ) -> Result<()> {
@@ -1684,7 +1724,7 @@ async fn list_directories_response(
         tokio::task::spawn_blocking(move || list_directories(&path, include_files)),
     )
     .await
-    .map_err(|_| directory_rejection("folder access timed out; check filesystem availability and allow any folder-access prompt on the gateway computer"))
+    .map_err(|elapsed| { tracing::debug!(%elapsed, "directory listing timed out"); directory_rejection("folder access timed out; check filesystem availability and allow any folder-access prompt on the gateway computer") })
     .and_then(|result| result.map_err(|error| internal_rejection(error.to_string())))
     .and_then(std::convert::identity);
     match result {
@@ -1704,11 +1744,12 @@ async fn list_directories_response(
 
 async fn clear_provider_credential(
     writer: &mut (impl AsyncWrite + Unpin),
-    request_id: String,
+    request_id: Arc<str>,
     instance: String,
     gateway: &GatewayHost,
 ) -> Result<()> {
-    match gateway.clear_credential(instance.clone()).await {
+    let cleared = gateway.clear_credential(instance.clone()).await; // rules-allow: the host takes the instance and the response echoes it
+    match cleared {
         Ok(()) => {
             write_frame(
                 writer,
@@ -1729,7 +1770,7 @@ async fn clear_provider_credential(
 )]
 async fn set_provider_credential(
     writer: &mut (impl AsyncWrite + Unpin),
-    request_id: String,
+    request_id: Arc<str>,
     instance: String,
     provider: String,
     api_key: String,
@@ -1739,8 +1780,8 @@ async fn set_provider_credential(
 ) -> Result<()> {
     match gateway
         .set_credential(
-            instance.clone(),
-            provider.clone(),
+            instance.clone(), // rules-allow: the host takes the instance and the response echoes it
+            provider.clone(), // rules-allow: the host takes the provider and the response echoes it
             api_key,
             base_url,
             expires_at,
@@ -1764,7 +1805,7 @@ async fn set_provider_credential(
 
 async fn create_pairing_code(
     writer: &mut (impl AsyncWrite + Unpin),
-    request_id: String,
+    request_id: Arc<str>,
     auth: &AuthStore,
 ) -> Result<()> {
     match auth.create_pairing_code() {
@@ -1787,8 +1828,8 @@ async fn create_pairing_code(
 
 async fn list_routines(
     writer: &mut (impl AsyncWrite + Unpin),
-    request_id: String,
-    bot_id: Option<String>,
+    request_id: Arc<str>,
+    bot_id: Option<Arc<str>>,
     bots: &BotStore,
 ) -> Result<()> {
     match bots.routine_records(bot_id.as_deref(), Utc::now().timestamp()) {
@@ -1802,14 +1843,14 @@ async fn list_routines(
             )
             .await
         }
-        Err(error) => write_rejection(writer, request_id, routine_rejection(error)).await,
+        Err(error) => write_rejection(writer, request_id, routine_rejection(&error)).await,
     }
 }
 
 async fn list_routine_history(
     writer: &mut (impl AsyncWrite + Unpin),
-    request_id: String,
-    id: Option<String>,
+    request_id: Arc<str>,
+    id: Option<Arc<str>>,
     bots: &BotStore,
 ) -> Result<()> {
     match bots.history(id.as_deref()) {
@@ -1820,14 +1861,14 @@ async fn list_routine_history(
             )
             .await
         }
-        Err(error) => write_rejection(writer, request_id, routine_rejection(error)).await,
+        Err(error) => write_rejection(writer, request_id, routine_rejection(&error)).await,
     }
 }
 
 async fn get_routine_run_preview(
     writer: &mut (impl AsyncWrite + Unpin),
-    request_id: String,
-    id: String,
+    request_id: Arc<str>,
+    id: Arc<str>,
     before_sequence: Option<u64>,
     gateway: &GatewayHost,
 ) -> Result<()> {

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use mobius::backend::model::provider::HostedWebSearch;
 use mobius::protocol::{
     FrontendSetting, FrontendSettingKind, FrontendSettingOption, FrontendSymbol, MiddlewareFeature,
@@ -69,7 +71,7 @@ fn status(provider: &str) -> ProviderStatus {
 
 fn search(mode: HostedWebSearch) -> FrontendSettingOption {
     FrontendSettingOption {
-        disables: Vec::new(),
+        disables: Arc::default(),
         value: mode.id().into(),
         label: mode.label().into(),
         description: mode.description().into(),
@@ -92,7 +94,7 @@ fn model(id: &str, label: &str, default_reasoning: Option<&str>) -> ProviderMode
                 description: format!("{id} reasoning"),
             })
             .collect(),
-        default_reasoning: default_reasoning.map(str::to_string),
+        default_reasoning: default_reasoning.map(str::to_owned),
         tool_discovery: ToolDiscoveryMode::Rebuild,
     }
 }
@@ -102,7 +104,7 @@ fn route(route: &str, group: &str, model: &str, reasoning_effort: Option<&str>) 
         route: route.into(),
         group: group.into(),
         model: model.into(),
-        reasoning_effort: reasoning_effort.map(str::to_string),
+        reasoning_effort: reasoning_effort.map(Arc::from),
         variant_label: None,
         context_window: Some(1_000_000),
         supports_image_input: false,
@@ -205,7 +207,7 @@ fn features() -> Vec<MiddlewareFeature> {
                     composer: false,
                     kind: FrontendSettingKind::Select {
                         options: vec![FrontendSettingOption {
-                            disables: Vec::new(),
+                            disables: Arc::default(),
                             value: "route-a".into(),
                             label: "Route A".into(),
                             description: "First route".into(),
@@ -241,7 +243,7 @@ fn feature_row(state: &SetupState, id: &str) -> usize {
 fn extension(capability: &str) -> ExtensionRecord {
     ExtensionRecord {
         id: "plugin-a".into(),
-        capability: capability.into(),
+        capability: capability.to_owned().into(),
         kind: ExtensionKind::Plugin,
         name: "Plugin A".into(),
         description: "An installed plugin".into(),
@@ -251,8 +253,8 @@ fn extension(capability: &str) -> ExtensionRecord {
         subdirectory: None,
         resolved_revision: "abc123".into(),
         digest: "sha256:plugin-a".into(),
-        skills: vec!["plugin-a".into()],
-        hooks: Vec::new(),
+        skills: Arc::from(["plugin-a".into()]),
+        hooks: Vec::new().into(),
         hooks_trusted: false,
     }
 }
@@ -276,10 +278,7 @@ fn empty_api_key_reuse_is_deferred_to_the_gateway() {
     state.provider = 1;
     state.reset_provider_fields();
 
-    assert!(matches!(
-        state.authentication().expect("deferred credential"),
-        Authentication::Reuse
-    ));
+    assert!(matches!(state.authentication(), Authentication::Reuse));
 }
 
 #[test]
@@ -311,12 +310,12 @@ fn agent_is_one_page_and_preserves_unedited_provider_settings() {
 fn agent_activates_untrusted_plugin_skills_without_authorizing_hooks() {
     let mut state = state(SetupMode::Bot, "openai_socket", true);
     let mut untrusted = extension("plain");
-    untrusted.hooks.push(ExtensionHookRecord {
+    untrusted.hooks = Arc::from([ExtensionHookRecord {
         event: "PreToolUse".into(),
         matcher: None,
         command: "review-hook".into(),
         timeout_seconds: 10,
-    });
+    }]);
     state.available_extensions.push(untrusted);
     state.row = feature_row(&state, "plain");
     state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -325,7 +324,7 @@ fn agent_activates_untrusted_plugin_skills_without_authorizing_hooks() {
             matches!(
                 state.middleware_row(*row),
                 Some(MiddlewareRow::Extension { extension, .. })
-                    if state.available_extensions[extension].id == "plugin-a"
+                    if state.available_extensions[extension].id == "plugin-a".into()
             )
         })
         .expect("extension row");
@@ -362,10 +361,7 @@ fn authentication_rejection_preserves_input_for_retry() {
     let mut state = state(SetupMode::Login, "openai_socket", false);
     state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     state.paste("new-secret");
-    assert!(matches!(
-        state.authentication().expect("authentication"),
-        Authentication::ApiKey(_)
-    ));
+    assert!(matches!(state.authentication(), Authentication::ApiKey(_)));
     state.set_progress("Saving credential", "Waiting…");
 
     assert!(
@@ -395,10 +391,7 @@ fn explicit_api_key_replaces_credentialless_auth() {
     state.original.provider.endpoint_auth = ProviderEndpointAuth::Credentialless;
     state.credential = "replacement-secret".into();
 
-    assert!(matches!(
-        state.authentication().expect("API-key authentication"),
-        Authentication::ApiKey(_)
-    ));
+    assert!(matches!(state.authentication(), Authentication::ApiKey(_)));
     let config = state
         .agent_composition(&state.original)
         .expect("agent composition");

@@ -13,13 +13,16 @@ async fn session_context_round_trips_through_save_catalog_and_fork() {
         ..crate::protocol::SessionContext::default()
     };
     let mut parent = checkpoint("parent");
-    parent.session_context.clone_from(&context);
-    store.save(&parent, &[], None).await.expect("save parent");
+    parent.session_context = Arc::new(context.clone());
+    store
+        .save(parent.clone(), Vec::new(), None)
+        .await
+        .expect("save parent");
     let mut child = checkpoint("child");
-    child.session_context.clone_from(&context);
+    child.session_context = Arc::new(context.clone());
 
     let fork = store
-        .fork(&parent.session_id, parent.sequence, &child)
+        .fork(&parent.session_id, parent.sequence, child.clone())
         .await
         .expect("fork session");
     let page = store
@@ -45,7 +48,11 @@ async fn session_context_round_trips_through_save_catalog_and_fork() {
                 .map(|session| &session.session_context)
                 .collect::<Vec<_>>(),
         ),
-        (context.clone(), context.clone(), vec![&context, &context])
+        (
+            Arc::new(context.clone()),
+            context.clone(),
+            vec![&context, &context]
+        )
     );
 }
 
@@ -58,22 +65,22 @@ async fn delete_sessions_remove_complete_trees_atomically() {
     parent.sequence = 1;
     store
         .save(
-            &parent,
-            &[json!({"role": "user", "content": "hello"}).into()],
+            parent.clone(),
+            [json!({"role": "user", "content": "hello"}).into()].to_vec(),
             None,
         )
         .await
         .expect("save parent");
     store
-        .fork("parent", 1, &checkpoint("child"))
+        .fork("parent", 1, checkpoint("child"))
         .await
         .expect("fork child");
     store
-        .fork("child", 0, &checkpoint("grandchild"))
+        .fork("child", 0, checkpoint("grandchild"))
         .await
         .expect("fork grandchild");
     store
-        .save(&checkpoint("other"), &[], None)
+        .save(checkpoint("other"), Vec::new(), None)
         .await
         .expect("save other root");
     for session_id in ["parent", "child", "grandchild"] {
@@ -81,7 +88,7 @@ async fn delete_sessions_remove_complete_trees_atomically() {
             .append_event(
                 session_id,
                 1,
-                &Event {
+                Event {
                     submission_id: None,
                     msg: EventMsg::Warning(crate::protocol::WarningEvent {
                         message: session_id.into(),
@@ -163,8 +170,11 @@ async fn session_catalog_filters_owner_membership_before_pagination() {
         ("d", "foreign"),
     ] {
         let mut session = checkpoint(session_id);
-        session.session_context.owner_id = owner_id.into();
-        store.save(&session, &[], None).await.expect("save session");
+        std::sync::Arc::make_mut(&mut session.session_context).owner_id = owner_id.into();
+        store
+            .save(session.clone(), Vec::new(), None)
+            .await
+            .expect("save session");
     }
     let first = store
         .list_sessions_page(SessionPageRequest {
@@ -174,9 +184,9 @@ async fn session_catalog_filters_owner_membership_before_pagination() {
         })
         .await
         .expect("first owned page");
-    assert_eq!(first.sessions[0].session_id, "c");
+    assert_eq!(&*first.sessions[0].session_id, "c");
     assert_eq!(
-        first.next_cursor.as_ref().expect("owned cursor").session_id,
+        &*first.next_cursor.as_ref().expect("owned cursor").session_id,
         "c"
     );
     let second = store
@@ -187,7 +197,7 @@ async fn session_catalog_filters_owner_membership_before_pagination() {
         })
         .await
         .expect("second owned page");
-    assert_eq!(second.sessions[0].session_id, "a");
+    assert_eq!(&*second.sessions[0].session_id, "a");
     assert!(second.next_cursor.is_none());
     assert!(
         store

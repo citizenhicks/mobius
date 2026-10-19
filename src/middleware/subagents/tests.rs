@@ -13,24 +13,24 @@ async fn fork_uses_durable_parent_metadata_even_when_the_parent_stopped() {
         .expect("checkpoint store"),
     );
     let mut parent = Checkpoint::empty("parent");
-    parent.session_context.owner_id = "test-bot".into();
+    std::sync::Arc::make_mut(&mut parent.session_context).owner_id = "test-bot".into();
     parent.metadata.insert(
         "gateway.chat".into(),
         serde_json::json!({"workspace": "/srv/project"}),
     );
     checkpoints
-        .save(&parent, &[], None)
+        .save(parent.clone(), Vec::new(), None)
         .await
         .expect("save parent");
     let runtime = RuntimeContext {
         children: crate::agent::ChildAgents::default(),
         sender: crate::agent::test_sender(),
         checkpoints: Arc::clone(&checkpoints),
-        session_id: parent.session_id.clone(),
+        session_id: Arc::clone(&parent.session_id),
         model_route: "test".into(),
         model: "model".into(),
         approval_policy: crate::backend::sandbox::ApprovalPolicy::Ask,
-        session_context: parent.session_context.clone(),
+        session_context: Arc::clone(&parent.session_context),
         metadata: parent.metadata.clone(),
         role: crate::agent::AgentRole::Main,
         frontend: Arc::new(|_| Ok(())),
@@ -41,15 +41,15 @@ async fn fork_uses_durable_parent_metadata_even_when_the_parent_stopped() {
         .insert("latest".into(), serde_json::json!("updated after startup"));
     parent.sequence += 1;
     checkpoints
-        .save(&parent, &[], None)
+        .save(parent.clone(), Vec::new(), None)
         .await
         .expect("update parent");
 
     let result = scope
         .fork(
-            "child".into(),
-            "/root/child".into(),
-            "test".into(),
+            "child",
+            "/root/child",
+            "test",
             None,
             ForkTurns::None,
             "turn".into(),

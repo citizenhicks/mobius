@@ -7,6 +7,13 @@ use futures_util::{SinkExt as _, StreamExt as _};
 
 #[tokio::test]
 async fn continuation_skips_old_pixels_and_preparation_failure_preserves_connection() {
+    fn request(input: &[Value]) -> ModelRequest<'_> {
+        ModelRequest {
+            input: input.into(),
+            allow_continuation: true,
+            ..model_request()
+        }
+    }
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
         .expect("listener");
@@ -88,13 +95,6 @@ async fn continuation_skips_old_pixels_and_preparation_failure_preserves_connect
         files: Some(&files),
         limits: ImageInputLimits::default(),
     };
-    fn request(input: &[Value]) -> ModelRequest<'_> {
-        ModelRequest {
-            input: input.into(),
-            allow_continuation: true,
-            ..model_request()
-        }
-    }
     let events: ModelEventSink = Arc::new(|_| Box::pin(async { Ok(()) }));
     let output = provider
         .respond_prepared(request(&input), Arc::clone(&events), media)
@@ -123,6 +123,7 @@ async fn continuation_skips_old_pixels_and_preparation_failure_preserves_connect
                 .is_some_and(OpenAiWsConnection::is_usable)
         );
         assert!(state.continuation.is_some());
+        drop(state);
     }
     input.pop();
     input.push(serde_json::json!({"role":"user","content":"continue"}));

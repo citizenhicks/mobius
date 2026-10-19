@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 use serde_json::json;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
@@ -163,11 +165,11 @@ async fn native_stream_round_trip_preserves_thinking_signatures_tools_and_usage(
         ], "tool_calls": [{"index": 0, "id": "call-a", "function": {"name": "read", "arguments": "{\"path\":"}}]}}]}),
         json!({"choices": [{"delta": {"content": " Now.", "tool_calls": [{"index": 0, "function": {"arguments": "\"a.rs\"}"}}]}}], "usage": {"prompt_tokens": 12, "completion_tokens": 8, "total_tokens": 20}}),
     ];
-    let body = frames
-        .iter()
-        .map(|frame| format!("data: {frame}\n\n"))
-        .collect::<String>()
-        + "data: [DONE]\n\n";
+    let mut body = frames.iter().fold(String::new(), |mut body, frame| {
+        write!(body, "data: {frame}\n\n").expect("write frame");
+        body
+    });
+    body.push_str("data: [DONE]\n\n");
     let (root, server) =
         mock_response("200 OK", "Content-Type: text/event-stream\r\n", &body).await;
     let model = Mistral::with_client(

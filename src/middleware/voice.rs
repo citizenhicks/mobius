@@ -6,6 +6,7 @@ pub mod transcript;
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use super::{
     ActiveCommandContext, Middleware, MiddlewareCommandContext, MiddlewareCommandOutput,
@@ -70,6 +71,7 @@ super::manifest::middleware_manifest! {
 }
 
 /// Restores the voice transcript entry point beside a chat that has one.
+#[derive(Debug)]
 pub struct Voice;
 
 impl Middleware for Voice {
@@ -145,7 +147,7 @@ impl Middleware for Voice {
 fn transcript_command() -> FrontendCommand {
     FrontendCommand {
         name: COMMAND.into(),
-        arguments: String::new(),
+        arguments: String::new().into(),
         description: text::DEFINITION.command_description.as_str().into(),
         requires_idle: false,
     }
@@ -276,7 +278,7 @@ fn parent_context(
                 checkpoint_sequence: checkpoint.sequence,
                 batch_item_count: index + 1,
             },
-            item.clone(),
+            &**item,
         )];
         let replay = crate::protocol::replay_events(&positioned, &checkpoint.session_id);
         context.extend(
@@ -336,7 +338,7 @@ fn progress_text(event: &EventMsg, voice_session_id: &str) -> Option<String> {
                 MessageAuthor::Source {
                     source: crate::protocol::MessageSource::Session { session_id },
                     ..
-                } if session_id == voice_session_id => {
+                } if **session_id == *voice_session_id => {
                     return None;
                 }
                 MessageAuthor::Source { handle, .. } => handle,
@@ -380,7 +382,7 @@ fn progress_text(event: &EventMsg, voice_session_id: &str) -> Option<String> {
 
 fn tail(text: &str, max_bytes: usize) -> &str {
     let start = text.ceil_char_boundary(text.len().saturating_sub(max_bytes));
-    &text[start..]
+    text.get(start..).unwrap_or(text)
 }
 
 /// Reports an unresolved handoff without submitting an ambiguous request to the Bot.
@@ -397,28 +399,28 @@ const MAX_HANDOFFS: usize = 4_096;
 #[derive(Default)]
 struct PendingHandoff {
     handoff_id: String,
-    turn_id: Option<String>,
+    turn_id: Option<Arc<str>>,
     answer: Option<String>,
-    error: Option<String>,
+    error: Option<Arc<str>>,
 }
 
 /// Correlates one live voice call with the agent's existing durable message lifecycle.
 #[derive(Default)]
 struct VoiceConversation {
-    pending: BTreeMap<String, PendingHandoff>,
+    pending: BTreeMap<Arc<str>, PendingHandoff>,
     seen: BTreeSet<String>,
-    active_turn_id: Option<String>,
-    session_id: String,
-    bot_name: String,
+    active_turn_id: Option<Arc<str>>,
+    session_id: Arc<str>,
+    bot_name: Arc<str>,
 }
 
 impl VoiceConversation {
     /// Attaches a linked voice session to the currently committed Bot turn.
     #[must_use]
-    pub fn new(session_id: String, active_turn_id: Option<String>, bot_name: String) -> Self {
+    fn new(session_id: Arc<str>, active_turn_id: Option<Arc<str>>, bot_name: Arc<str>) -> Self {
         Self {
-            session_id,
             active_turn_id,
+            session_id,
             bot_name,
             ..Self::default()
         }
@@ -426,7 +428,7 @@ impl VoiceConversation {
 
     /// Sends workspace progress without echoing this linked voice session's messages.
     #[must_use]
-    pub fn progress(&self, event: &Event) -> Option<RealtimeVoiceCommand> {
+    fn progress(&self, event: &Event) -> Option<RealtimeVoiceCommand> {
         progress_text(&event.msg, &self.session_id).map(|text| RealtimeVoiceCommand::Context {
             text: tail(&text, 16 * 1024).into(),
         })
@@ -436,7 +438,7 @@ impl VoiceConversation {
     /// # Errors
     ///
     /// Returns an error if validation or an operation required by this function fails.
-    pub fn handoff(&mut self, id: String, text: String) -> Result<Option<ValidatedSubmission>> {
+    fn handoff(&mut self, id: String, text: String) -> Result<Option<ValidatedSubmission>> {
         if self.seen.contains(&id) {
             return Ok(None);
         }
@@ -448,21 +450,22 @@ impl VoiceConversation {
                 "voice conversation reached its message limit".into(),
             ));
         }
-        let submission_id = uuid::Uuid::new_v4().to_string();
+        let submission_id: Arc<str> = uuid::Uuid::new_v4().to_string().into();
         let submission = Submission {
-            id: submission_id.clone(),
+            id: Arc::clone(&submission_id),
             op: Op::Message {
                 message: MessageSubmission {
                     author: MessageAuthor::Source {
-                        message_id: submission_id.clone(),
+                        message_id: Arc::clone(&submission_id),
                         source: crate::protocol::MessageSource::Session {
-                            session_id: self.session_id.clone(),
+                            session_id: Arc::clone(&self.session_id),
                         },
                         cause_id: None,
                         ancestry: Vec::new(),
                         handle: text::DEFINITION
                             .handoff_handle
-                            .replace("{bot}", &self.bot_name),
+                            .replace("{bot}", &self.bot_name)
+                            .into(),
                         symbol: Some(FrontendSymbol::Custom(SYMBOL.into())),
                     },
                     text,
@@ -474,7 +477,7 @@ impl VoiceConversation {
             },
         };
         let submission = ValidatedSubmission::new(submission)?;
-        self.seen.insert(id.clone());
+        self.seen.insert(id.clone()); // rules-allow: the seen set and the pending handoff each own the identity
         self.pending.insert(
             submission_id,
             PendingHandoff {
@@ -487,26 +490,26 @@ impl VoiceConversation {
 
     /// Reports whether this call already handled a provider handoff identity.
     #[must_use]
-    pub fn has_handoff(&self, id: &str) -> bool {
+    fn has_handoff(&self, id: &str) -> bool {
         self.seen.contains(id)
     }
 
     /// Handles an ingress rejection that did not reach the agent's event journal.
-    pub fn reject(&mut self, submission_id: &str, message: &str) -> Vec<RealtimeVoiceCommand> {
+    fn reject(&mut self, submission_id: &str, message: &str) -> Vec<RealtimeVoiceCommand> {
         self.finish(submission_id, Some(message))
     }
 
     /// Returns speech only after a matching committed terminal event.
-    pub fn observe(&mut self, event: &Event) -> Vec<RealtimeVoiceCommand> {
+    fn observe(&mut self, event: &Event) -> Vec<RealtimeVoiceCommand> {
         match &event.msg {
             EventMsg::TurnStarted(turn) => {
-                self.active_turn_id = Some(turn.turn_id.clone());
+                self.active_turn_id = Some(Arc::clone(&turn.turn_id));
                 if let Some(pending) = event
                     .submission_id
                     .as_ref()
                     .and_then(|id| self.pending.get_mut(id.as_ref()))
                 {
-                    pending.turn_id = Some(turn.turn_id.clone());
+                    pending.turn_id = Some(Arc::clone(&turn.turn_id));
                 }
             }
             EventMsg::Message(message) if message.delivery == MessageDelivery::Steer => {
@@ -534,7 +537,7 @@ impl VoiceConversation {
                         .filter(|pending| pending.turn_id.as_deref() == Some(&message.turn_id));
                     if let Some(first) = recipients.next() {
                         for pending in recipients {
-                            pending.answer = Some(text.clone());
+                            pending.answer = Some(text.clone()); // rules-allow: every handoff on the turn owns its spoken answer
                         }
                         first.answer = Some(text);
                     }
@@ -542,10 +545,10 @@ impl VoiceConversation {
             }
             EventMsg::Error(error) => {
                 for (id, pending) in &mut self.pending {
-                    if event.submission_id.as_deref() == Some(id.as_str())
+                    if event.submission_id.as_deref() == Some(&**id)
                         || pending.turn_id.is_some() && pending.turn_id == self.active_turn_id
                     {
-                        pending.error = Some(error.message.clone());
+                        pending.error = Some(Arc::clone(&error.message));
                     }
                 }
             }
@@ -595,7 +598,7 @@ impl PendingHandoff {
             handoff_id: self.handoff_id,
             text: self
                 .answer
-                .unwrap_or_else(|| text::DEFINITION.voice_request_empty.clone()),
+                .unwrap_or_else(|| text::DEFINITION.voice_request_empty.clone()), // rules-allow: the owned reply falls back to static config
         }
     }
 }
@@ -647,7 +650,7 @@ mod tests {
         );
         assert!(
             matches!(&message.author, MessageAuthor::Source { source: crate::protocol::MessageSource::Session { session_id }, handle, symbol: Some(FrontendSymbol::Custom(symbol)), .. }
-            if session_id == "voice-session" && handle == "Builder (voice)" && symbol == "voice")
+            if &**session_id == "voice-session" && &**handle == "Builder (voice)" && symbol == "voice")
         );
         let started = EventMsg::TurnStarted(TurnStartedEvent {
             turn_id: "turn".into(),

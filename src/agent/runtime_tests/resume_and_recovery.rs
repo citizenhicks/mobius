@@ -33,19 +33,19 @@ async fn failed_message_submit_leaves_the_accepted_message_for_restart() {
     let model = Arc::new(HandoffModel::default());
     let make_config = |checkpoints: Arc<dyn CheckpointStore>| {
         AgentConfig::new(
-            Arc::new(ModelRouter::new("test", model.clone())),
+            Arc::new(ModelRouter::new("test", Arc::<HandoffModel>::clone(&model))),
             Arc::new(Sandbox::new(
                 Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
                 ApprovalPolicy::Ask,
             )),
             checkpoints,
-            test_middleware(vec![Arc::new(FailFirstMessageSubmit(failed.clone()))]),
+            test_middleware(vec![Arc::new(FailFirstMessageSubmit(Arc::clone(&failed)))]),
             "test prompt",
         )
         .session_context(test_session_context())
         .session_id("message-submit-restart")
     };
-    let checkpoint_store: Arc<dyn CheckpointStore> = checkpoints.clone();
+    let checkpoint_store: Arc<dyn CheckpointStore> = Arc::<SqliteCheckpoint>::clone(&checkpoints);
     let mut first = create_agent(make_config(checkpoint_store))
         .await
         .expect("create first agent");
@@ -69,11 +69,11 @@ async fn failed_message_submit_leaves_the_accepted_message_for_restart() {
         saved
             .pending_messages
             .iter()
-            .any(|message| message.id() == submission_id)
+            .any(|message| message.id() == &*submission_id)
     );
     drop(first);
 
-    let checkpoint_store: Arc<dyn CheckpointStore> = checkpoints.clone();
+    let checkpoint_store: Arc<dyn CheckpointStore> = Arc::<SqliteCheckpoint>::clone(&checkpoints);
     let mut restarted = create_agent(make_config(checkpoint_store))
         .await
         .expect("restart agent");
@@ -161,7 +161,7 @@ async fn route_change_omits_private_reasoning_but_keeps_visible_history_and_tool
         ) {}
     }
     {
-        let inputs = source.inputs.lock().unwrap();
+        let inputs = source.inputs.lock().unwrap().clone();
         assert!(inputs[2].iter().any(|item| {
             item.get("encrypted_content").and_then(Value::as_str) == Some("provider-private")
         }));
@@ -200,7 +200,7 @@ async fn route_change_omits_private_reasoning_but_keeps_visible_history_and_tool
     ) {}
 
     {
-        let inputs = destination.inputs.lock().unwrap();
+        let inputs = destination.inputs.lock().unwrap().clone();
         assert_eq!(
             inputs.len(),
             1,
@@ -266,7 +266,7 @@ async fn stale_save_does_not_leapfrog_winning_checkpoint() {
         SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
             .expect("checkpoint store"),
     );
-    let checkpoint_store: Arc<dyn CheckpointStore> = checkpoints.clone();
+    let checkpoint_store: Arc<dyn CheckpointStore> = Arc::<SqliteCheckpoint>::clone(&checkpoints);
     let agent = create_agent(config(workspace.path(), checkpoint_store, "target"))
         .await
         .expect("create agent");
@@ -279,7 +279,7 @@ async fn stale_save_does_not_leapfrog_winning_checkpoint() {
     std::sync::Arc::make_mut(&mut winner.context)
         .push(std::sync::Arc::new(serde_json::json!({"winner": true})));
     checkpoints
-        .save(&winner, &winner.context, None)
+        .save(winner.clone(), winner.context.to_vec(), None)
         .await
         .expect("save competing checkpoint");
 
@@ -308,10 +308,10 @@ async fn restart_recovers_streamed_calls_without_reexecuting_them() {
             .expect("checkpoint store"),
     );
     let mut checkpoint = Checkpoint::empty("recover-streamed-call");
-    checkpoint.session_context = test_session_context();
+    checkpoint.session_context = test_session_context().into();
     checkpoint.model_route = Some("test".into());
     checkpoint.active_execution = Some(crate::backend::checkpoint::ActiveExecution {
-        author: crate::protocol::MessageAuthor::User,
+        author: crate::protocol::MessageAuthor::User.into(),
         submission_id: "submission-1".into(),
         turn_id: "turn-1".into(),
         started_at_ms: 10,
@@ -334,14 +334,14 @@ async fn restart_recovers_streamed_calls_without_reexecuting_them() {
         arguments: serde_json::json!({"path": "never-replay.txt", "content": "side effect"}),
     });
     checkpoints
-        .save(&checkpoint, &[], None)
+        .save(checkpoint.clone(), Vec::new(), None)
         .await
         .expect("save interrupted stream");
 
     let mut agent = create_agent(
         config(
             workspace.path(),
-            checkpoints.clone(),
+            Arc::<SqliteCheckpoint>::clone(&checkpoints),
             &checkpoint.session_id,
         )
         .initial_replay_batches(0),

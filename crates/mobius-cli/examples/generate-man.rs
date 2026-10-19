@@ -39,12 +39,11 @@ fn generate_command(
     output: &std::path::Path,
     date: NaiveDate,
 ) -> std::io::Result<()> {
-    for subcommand in command
-        .get_subcommands()
-        .filter(|subcommand| !subcommand.is_hide_set())
-        .cloned()
-    {
-        generate_command(subcommand, output, date)?;
+    let subcommands = command.get_subcommands().cloned(); // rules-allow: clap_mangen::Man::new consumes each Command, and the parent page still lists its subcommands
+    for subcommand in subcommands {
+        if !subcommand.is_hide_set() {
+            generate_command(subcommand, output, date)?;
+        }
     }
     let title = command
         .get_display_name()

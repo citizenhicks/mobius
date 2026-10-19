@@ -39,7 +39,7 @@ impl ModelCancellation {
     /// This does not stop a request; its caller must also drop the response future.
     pub fn record(&self, reason: ModelCancellationReason) {
         if reason != ModelCancellationReason::RequestDropped {
-            let _ = self.0.set(reason);
+            self.0.get_or_init(|| reason);
         }
     }
 

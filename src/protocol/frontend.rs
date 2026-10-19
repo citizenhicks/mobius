@@ -15,11 +15,11 @@ use super::WebSearchAction;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrontendCommand {
     /// The name.
-    pub name: String,
+    pub name: Arc<str>,
     /// The arguments.
-    pub arguments: String,
+    pub arguments: Arc<str>,
     /// The description.
-    pub description: String,
+    pub description: Arc<str>,
     /// Whether the frontend must wait for the current turn to finish before submitting this command.
     pub requires_idle: bool,
 }
@@ -28,13 +28,13 @@ pub struct FrontendCommand {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrontendContribution {
     /// The capability.
-    pub capability: String,
+    pub capability: Arc<str>,
     /// Optional capability-owned item count for generic summaries.
     pub count: Option<usize>,
     /// The commands.
     pub commands: Vec<FrontendCommand>,
     /// The widgets.
-    pub widgets: Vec<FrontendWidget>,
+    pub widgets: Vec<Arc<FrontendWidget>>,
     /// The references.
     pub references: Vec<FrontendReference>,
 }
@@ -98,17 +98,17 @@ pub enum FrontendSettingKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrontendSettingOption {
     /// The value.
-    pub value: String,
+    pub value: Arc<str>,
     /// The label.
-    pub label: String,
+    pub label: Arc<str>,
     /// The description.
-    pub description: String,
+    pub description: Arc<str>,
     /// The symbol.
     pub symbol: Option<FrontendSymbol>,
     /// The tone.
     pub tone: FrontendTone,
     /// Optional capabilities excluded while this choice is active.
-    pub disables: Vec<String>,
+    pub disables: Arc<[String]>,
 }
 
 /// Scalar value accepted by the generic setting controls.
@@ -127,16 +127,16 @@ pub struct FrontendReference {
     /// The trigger.
     pub trigger: char,
     /// The value.
-    pub value: String,
+    pub value: Arc<str>,
     /// The description.
-    pub description: String,
+    pub description: Arc<str>,
 }
 
 /// One capability-rendered view mounted into a standard frontend slot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrontendWidget {
     /// The identifier.
-    pub id: String,
+    pub id: Arc<str>,
     /// The slot.
     pub slot: FrontendSlot,
     /// The text.
@@ -365,7 +365,7 @@ pub struct FrontendPickerOption {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrontendActionListItem {
     /// The identifier.
-    pub id: String,
+    pub id: Arc<str>,
     /// The text.
     pub text: String,
     /// The state.
@@ -461,14 +461,14 @@ pub enum FrontendEvent {
     /// Selects the widget case.
     Widget {
         /// The capability.
-        capability: String,
+        capability: Arc<str>,
         /// The item.
-        item: FrontendWidget,
+        item: Arc<FrontendWidget>,
     },
     /// Selects the remove widget case.
     RemoveWidget {
         /// The capability.
-        capability: String,
+        capability: Arc<str>,
         /// The identifier.
         id: String,
     },
@@ -488,13 +488,13 @@ pub enum FrontendEvent {
         /// Start of the current activity, when still running.
         started_at_ms: Option<i64>,
         /// The identifier.
-        id: String,
+        id: Arc<str>,
         /// The title.
-        title: String,
+        title: Arc<str>,
         /// The subtitle.
-        subtitle: String,
+        subtitle: Arc<str>,
         /// The page identifier.
-        page_id: String,
+        page_id: Arc<str>,
         /// The update.
         update: FrontendPreviewUpdate,
         /// The events.
@@ -537,22 +537,22 @@ impl EventMsg {
             Self::Error(error) => FrontendBlock {
                 role: FrontendBlockRole::Notice,
                 title: "Error".into(),
-                text: error.message.clone(),
+                text: error.message.to_string(),
                 tone: FrontendTone::Error,
                 ..Default::default()
             },
             Self::Warning(warning) => FrontendBlock {
                 role: FrontendBlockRole::Notice,
                 title: "Warning".into(),
-                text: warning.message.clone(),
+                text: warning.message.to_string(),
                 tone: FrontendTone::Warning,
                 ..Default::default()
             },
             Self::TurnAborted(turn) => FrontendBlock {
-                group: Some(turn.turn_id.clone()),
+                group: Some(turn.turn_id.to_string()),
                 role: FrontendBlockRole::Notice,
                 title: "Turn aborted".into(),
-                text: turn.reason.clone(),
+                text: turn.reason.to_string(),
                 tone: FrontendTone::Warning,
                 ..Default::default()
             },
@@ -584,14 +584,14 @@ impl EventMsg {
                     ),
                     WebSearchAction::OpenPage { url } => (
                         "Opened a web page",
-                        url.clone().unwrap_or_default(),
+                        url.clone().unwrap_or_default(), // rules-allow: presentation returns an owned block from a borrowed event
                         FrontendTone::Success,
                     ),
                     WebSearchAction::FindInPage { url, pattern } => {
                         let text = match (url, pattern) {
                             (Some(url), Some(pattern)) => format!("{pattern}\n{url}"),
-                            (Some(url), None) => url.clone(),
-                            (None, Some(pattern)) => pattern.clone(),
+                            (Some(url), None) => url.clone(), // rules-allow: presentation returns an owned block from a borrowed event
+                            (None, Some(pattern)) => pattern.clone(), // rules-allow: presentation returns an owned block from a borrowed event
                             (None, None) => String::new(),
                         };
                         ("Searched a web page", text, FrontendTone::Success)
@@ -624,16 +624,57 @@ impl EventMsg {
             }
             Self::Frontend(FrontendEvent::Render { capability, block }) => {
                 return Some(RenderedBlock {
-                    capability: capability.clone(),
-                    block: block.clone(),
+                    capability: capability.clone(), // rules-allow: presentation returns an owned block from a borrowed event
+                    block: block.clone(), // rules-allow: presentation returns an owned block from a borrowed event
                 });
             }
-            _ => return None,
+            Self::MessageDelta(_)
+            | Self::SubmissionRejected(_)
+            | Self::SessionConfigured(_)
+            | Self::TurnStarted(_)
+            | Self::TurnComplete(_)
+            | Self::Message(_)
+            | Self::AssistantMessage(_)
+            | Self::AssistantContentDelta(_)
+            | Self::ModelStepStarted(_)
+            | Self::ModelStepCompleted(_)
+            | Self::SessionHistory(_)
+            | Self::ModelChanged(_)
+            | Self::SessionResumeRequested(_)
+            | Self::ToolCallBegin(_)
+            | Self::ToolCallEnd(_)
+            | Self::ToolLoad(_)
+            | Self::ExecApprovalRequest(_)
+            | Self::TokenCount(_)
+            | Self::ContextCompacted
+            | Self::Frontend(_) => return None,
         };
         Some(RenderedBlock {
             capability: match self {
                 Self::WebSearchBegin(_) | Self::WebSearchEnd(_) => "web_search",
-                _ => "agent",
+                Self::MessageDelta(_)
+                | Self::SubmissionRejected(_)
+                | Self::SessionConfigured(_)
+                | Self::TurnStarted(_)
+                | Self::TurnComplete(_)
+                | Self::Message(_)
+                | Self::AssistantMessage(_)
+                | Self::AssistantContentDelta(_)
+                | Self::ModelStepStarted(_)
+                | Self::ModelStepCompleted(_)
+                | Self::SessionHistory(_)
+                | Self::ModelChanged(_)
+                | Self::SessionResumeRequested(_)
+                | Self::ToolCallBegin(_)
+                | Self::ToolCallEnd(_)
+                | Self::ToolLoad(_)
+                | Self::ExecApprovalRequest(_)
+                | Self::TokenCount(_)
+                | Self::ContextCompacted
+                | Self::Frontend(_)
+                | Self::Error(_)
+                | Self::Warning(_)
+                | Self::TurnAborted(_) => "agent",
             }
             .into(),
             block,

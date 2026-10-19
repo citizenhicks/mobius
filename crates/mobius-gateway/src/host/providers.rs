@@ -37,7 +37,7 @@ pub(super) struct ProviderLogins {
 
 struct ProviderLoginAttempt {
     login_id: String,
-    request_id: String,
+    request_id: Arc<str>,
     provider: String,
     response: Option<ServerMessage>,
 }
@@ -52,12 +52,16 @@ impl GatewayHost {
             .await
             .provider_login
             .lock()
-            .map_err(|_| internal("provider login lock is poisoned"))?
+            .map_err(|error| internal(format!("provider login lock is poisoned: {error}")))?
             .attempts
             .remove(client_id);
         Ok(())
     }
 
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the state lock moves into gateway_ready_after_unlock after publication"
+    )]
     pub(crate) async fn configure_bot_defaults(
         &self,
         expected_revision: u64,
@@ -78,9 +82,9 @@ impl GatewayHost {
         };
         let follow_up = async {
             let payload = gateway_ready_after_unlock(state).await?;
-            let _ = self.events.send(ServerFrame::new(ServerMessage::Ready {
-                payload: payload.clone(),
-            }));
+            self.broadcast(ServerMessage::Ready {
+                payload: payload.clone(), // rules-allow: the broadcast and the requester each own the ready payload
+            });
             Ok(payload)
         }
         .await;
@@ -94,8 +98,8 @@ impl GatewayHost {
         let credential_mutation = self.begin_credential_mutation().await;
         let (base_url, publication) = {
             let state = self.state.lock().await;
-            let config = state.config()?;
-            let base_url = config
+            let base_url = state
+                .config()?
                 .configured_providers
                 .get(&instance)
                 .map(|configured| {
@@ -110,6 +114,7 @@ impl GatewayHost {
                 state.credentials.remove(&instance).map(|_| ()),
             )
             .map_err(invalid_config)?;
+            drop(state);
             (base_url, publication)
         };
         drop(credential_mutation);
@@ -154,7 +159,7 @@ impl GatewayHost {
                         && configured_base_url == base_url
                 })
                 .map(|configured| ProviderRegistration {
-                    selection: configured.selection.clone(),
+                    selection: configured.selection.clone(), // rules-allow: the registration is built after the configuration lock is released
                     label: None,
                     tint: None,
                     models: Vec::new(),
@@ -168,6 +173,7 @@ impl GatewayHost {
                 expires_at,
             ))
             .map_err(invalid_config)?;
+            drop(state);
             (base_url, configured, publication)
         };
         drop(credential_mutation);
@@ -193,7 +199,7 @@ impl GatewayHost {
 
     pub(crate) async fn start_provider_login(
         &self,
-        request_id: String,
+        request_id: Arc<str>,
         provider_id: String,
         client_id: &str,
     ) -> std::result::Result<Option<ServerMessage>, Rejection> {
@@ -218,7 +224,7 @@ impl GatewayHost {
         {
             let mut logins = login_guard
                 .lock()
-                .map_err(|_| internal("provider login lock is poisoned"))?;
+                .map_err(|error| internal(format!("provider login lock is poisoned: {error}")))?;
             if !reserve_provider_login(
                 &mut logins,
                 &login_id,
@@ -231,7 +237,7 @@ impl GatewayHost {
                 return Ok(logins
                     .attempts
                     .get(client_id)
-                    .and_then(|attempt| attempt.response.clone()));
+                    .and_then(|attempt| attempt.response.clone())); // rules-allow: the stored response answers every retry
             }
         }
         self.spawn_provider_login(
@@ -245,12 +251,12 @@ impl GatewayHost {
 
     fn spawn_provider_login(
         &self,
-        request_id: String,
+        request_id: Arc<str>,
         login_id: String,
         provider: String,
         start: BoxFuture<'static, mobius::Result<DeviceLogin>>,
     ) {
-        let gateway = self.clone();
+        let gateway = self.clone(); // rules-allow: the spawned login task owns a gateway handle
         // Code acquisition and polling both belong to the gateway. No connection
         // future can be cancelled after reserving the slot but before launching it.
         tokio::spawn(async move {
@@ -260,9 +266,9 @@ impl GatewayHost {
                     .publish_provider_login(
                         &login_id,
                         ServerMessage::ProviderLoginStarted {
-                            request_id: request_id.clone(),
-                            login_id: login_id.clone(),
-                            provider: provider.clone(),
+                            request_id: Arc::clone(&request_id),
+                            login_id: login_id.clone(), // rules-allow: the login finish message reuses the login id
+                            provider: provider.clone(), // rules-allow: the login finish message reuses the provider
                             verification_url: login.verification_url().into(),
                             user_code: login.user_code().into(),
                         },
@@ -278,7 +284,7 @@ impl GatewayHost {
                     return finish_publication(completion.map_err(Error::from), refresh)
                         .map_err(|rejection| rejection.message);
                 }
-                completion.map_err(|error| error.to_string())
+                completion.map_err(|error| error.to_string().into())
             }
             .await;
             gateway
@@ -289,17 +295,17 @@ impl GatewayHost {
 
     async fn finish_provider_login(
         &self,
-        request_id: String,
+        request_id: Arc<str>,
         login_id: String,
         provider: String,
-        result: std::result::Result<(), String>,
+        result: std::result::Result<(), Arc<str>>,
     ) {
         let refresh = result.is_ok();
         let message = match result {
             Ok(()) => ServerMessage::ProviderLoginFinished {
                 request_id,
-                login_id: login_id.clone(),
-                provider: provider.clone(),
+                login_id: login_id.clone(), // rules-allow: publication matches the attempt by login id
+                provider: provider.clone(), // rules-allow: the session refresh selects by provider
             },
             Err(message) => ServerMessage::Rejected {
                 request_id,
@@ -342,7 +348,7 @@ impl GatewayHost {
         let mut logins = state
             .provider_login
             .lock()
-            .map_err(|_| internal("provider login lock is poisoned"))?;
+            .map_err(|error| internal(format!("provider login lock is poisoned: {error}")))?;
         if logins.active_id.as_deref() != Some(login_id) {
             return Ok(false);
         }
@@ -354,9 +360,10 @@ impl GatewayHost {
             .values_mut()
             .find(|attempt| attempt.login_id == login_id)
         {
-            attempt.response = Some(message.clone());
+            attempt.response = Some(message.clone()); // rules-allow: the attempt keeps the response for retries while it is broadcast
         }
         self.broadcast(message);
+        drop(logins);
         Ok(true)
     }
 
@@ -380,13 +387,21 @@ impl GatewayHost {
                 }
             }
         }
+        drop(cache);
+        drop(state);
         Ok(())
     }
 
     fn broadcast(&self, message: ServerMessage) {
-        let _ = self.events.send(ServerFrame::new(message));
+        if let Err(error) = self.events.send(ServerFrame::new(message)) {
+            tracing::debug!(%error, "gateway event had no subscribers");
+        }
     }
 
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the state lock moves into gateway_ready_after_unlock after publication"
+    )]
     pub(crate) async fn register_provider(
         &self,
         operator: bool,
@@ -487,10 +502,9 @@ impl GatewayHost {
                 self.broadcast_bots(&bots);
             }
             let payload = gateway_ready_after_unlock(state).await?;
-            let frame = ServerFrame::new(ServerMessage::Ready {
-                payload: payload.clone(),
+            self.broadcast(ServerMessage::Ready {
+                payload: payload.clone(), // rules-allow: the broadcast and the requester each own the ready payload
             });
-            let _ = self.events.send(frame);
             Ok(payload)
         }
         .await;
@@ -500,6 +514,10 @@ impl GatewayHost {
         )
     }
 
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the state lock moves into gateway_ready_after_unlock after publication"
+    )]
     pub(crate) async fn remove_provider(
         &self,
         instance: String,
@@ -537,9 +555,9 @@ impl GatewayHost {
         state.provider_epoch.store(target_epoch, Ordering::Release);
         let follow_up = async {
             let payload = gateway_ready_after_unlock(state).await?;
-            let _ = self.events.send(ServerFrame::new(ServerMessage::Ready {
-                payload: payload.clone(),
-            }));
+            self.broadcast(ServerMessage::Ready {
+                payload: payload.clone(), // rules-allow: the broadcast and the requester each own the ready payload
+            });
             Ok(payload)
         }
         .await;
@@ -591,12 +609,11 @@ fn commit_provider_removal(
     instance: &str,
     next: GatewayConfig,
 ) -> crate::Result<()> {
-    let mut current = state
-        .config
-        .lock()
-        .map_err(|_| Error::Config("gateway configuration lock is poisoned".into()))?;
+    let mut current = state.config.lock().map_err(|error| {
+        Error::Config(format!("gateway configuration lock is poisoned: {error}"))
+    })?;
     let publication = crate::publication::Outcome::applied(state.store.save(&next))?;
-    match state.credentials.remove(instance) {
+    let result = match state.credentials.remove(instance) {
         Ok(_) => {
             *current = next;
             publication.confirm()
@@ -622,7 +639,9 @@ fn commit_provider_removal(
                 }
             }
         }
-    }
+    };
+    drop(current);
+    result
 }
 
 fn validate_bot_catalog(
@@ -686,7 +705,7 @@ fn reserve_provider_login(
         ));
     }
     if let Some(attempt) = logins.attempts.get(client_id)
-        && attempt.request_id == request_id
+        && *attempt.request_id == *request_id
     {
         if attempt.provider != provider_id {
             return Err(Rejection::new(

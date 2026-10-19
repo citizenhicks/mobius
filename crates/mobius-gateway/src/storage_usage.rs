@@ -1,6 +1,7 @@
 //! Bounded storage measurements shared by paired clients and telemetry collectors.
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// File counts and logical bytes; not an estimate of reclaimable disk space.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -25,7 +26,7 @@ pub struct StorageCategory {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionStorageUsage {
     /// Chat ID for navigation and later cleanup.
-    pub session_id: String,
+    pub session_id: Arc<str>,
     /// Optional owning project ID.
     pub project_id: Option<String>,
     /// User uploads, including shared content once per reference.
@@ -182,7 +183,7 @@ fn measure_paths(
                         }
                         match child {
                             Ok(child) if pending.len() < 100_000 => {
-                                pending.push((child.path(), depth + 1))
+                                pending.push((child.path(), depth + 1));
                             }
                             _ => size.complete = false,
                         }
@@ -198,17 +199,14 @@ fn measure_paths(
 fn gateway_categories(root: &Path, budget: &mut MeasurementBudget) -> (Vec<StorageCategory>, u64) {
     let mut used_bytes = 0_u64;
     let mut categories = std::collections::BTreeMap::<String, StorageSize>::new();
-    let entries = match std::fs::read_dir(root) {
-        Ok(entries) => entries,
-        Err(_) => {
-            return (
-                vec![StorageCategory {
-                    id: "other".into(),
-                    size: StorageSize::default(),
-                }],
-                0,
-            );
-        }
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return (
+            vec![StorageCategory {
+                id: "other".into(),
+                size: StorageSize::default(),
+            }],
+            0,
+        );
     };
     for entry in entries {
         if budget.exhausted() {
@@ -275,7 +273,7 @@ fn project_sizes(
 pub(crate) async fn measure_usage(
     root: PathBuf,
     checkpoints: std::sync::Arc<dyn mobius::backend::checkpoint::CheckpointStore>,
-    files: mobius::backend::session_files::SessionFileStore,
+    files: Arc<mobius::backend::session_files::SessionFileStore>,
     bots: std::sync::Arc<crate::bots::BotStore>,
     limit_bytes: Option<u64>,
     tls: Option<crate::config::TlsConfig>,
@@ -318,9 +316,10 @@ pub(crate) async fn measure_usage(
                     break 'pages;
                 };
                 if let Some(metadata) = metadata? {
+                    // The blocking task owns what it reads.
                     let bots = std::sync::Arc::clone(&bots);
-                    let root = root.clone();
-                    let tls = tls.clone();
+                    let root = root.clone(); // rules-allow: the blocking task owns its inputs
+                    let tls = tls.clone(); // rules-allow: the blocking task owns its inputs
                     let spec = tokio::task::spawn_blocking(move || {
                         crate::config::ChatSpec::from_metadata_if_present(
                             &metadata,
@@ -338,11 +337,14 @@ pub(crate) async fn measure_usage(
                     })? {
                         Ok(Some(spec)) => {
                             if let Some(path) = spec.workspace {
-                                projects.insert(id.clone(), path);
+                                projects.insert(id.clone(), path); // rules-allow: the chat record keeps its project ID
                             }
                         }
                         Ok(None) => {}
-                        Err(_) => complete = false,
+                        Err(error) => {
+                            tracing::debug!(%error, "storage measurement skipped a chat's metadata");
+                            complete = false;
+                        }
                     }
                 }
             }
@@ -357,25 +359,22 @@ pub(crate) async fn measure_usage(
                     files.list_cleanup_files(&summary.session_id, &[Upload, Artifact, Observation]),
                 )
                 .await;
-            match records {
-                Some(Ok(records)) => {
-                    budget.entries += records.len();
-                    for (origin, file) in records {
-                        let size = match origin {
-                            Upload => &mut uploads,
-                            Artifact => &mut artifacts,
-                            Observation => &mut observations,
-                        };
-                        size.bytes = size.bytes.saturating_add(file.size);
-                        size.files += 1;
-                    }
+            if let Some(Ok(records)) = records {
+                budget.entries += records.len();
+                for (origin, file) in records {
+                    let size = match origin {
+                        Upload => &mut uploads,
+                        Artifact => &mut artifacts,
+                        Observation => &mut observations,
+                    };
+                    size.bytes = size.bytes.saturating_add(file.size);
+                    size.files += 1;
                 }
-                _ => {
-                    complete = false;
-                    uploads.complete = false;
-                    artifacts.complete = false;
-                    observations.complete = false;
-                }
+            } else {
+                complete = false;
+                uploads.complete = false;
+                artifacts.complete = false;
+                observations.complete = false;
             }
             sessions.push(SessionStorageUsage {
                 session_id: summary.session_id,
@@ -402,7 +401,11 @@ pub(crate) async fn measure_usage(
     });
     let (categories, projects, used_bytes) = tokio::time::timeout_at(deadline, measurement)
         .await
-        .map_err(|_| crate::Error::Config("storage measurement exceeded its time budget".into()))?
+        .map_err(|error| {
+            crate::Error::Config(format!(
+                "storage measurement exceeded its time budget: {error}"
+            ))
+        })?
         .map_err(|error| crate::Error::Config(format!("storage measurement failed: {error}")))?;
     let mut gateway_total = StorageSize {
         complete: complete && projects.iter().all(|project| project.size.complete),

@@ -23,6 +23,7 @@ exec "$@" <"$input"
 /// Kills one command's process group when execution completes or is cancelled.
 ///
 /// The command must be configured with `process_group(0)` before it is spawned.
+#[derive(Debug)]
 pub struct ProcessGroupGuard {
     id: u32,
     armed: bool,
@@ -43,12 +44,16 @@ impl ProcessGroupGuard {
     /// Kills the process group once.
     pub fn kill(&mut self) {
         if self.armed {
-            let _ = std::process::Command::new("/bin/kill")
+            // A group that already exited makes kill fail; only a kill that cannot run is reported.
+            if let Err(error) = std::process::Command::new("/bin/kill")
                 .args(["-KILL", "--", &format!("-{}", self.id)])
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
-                .status();
+                .status()
+            {
+                tracing::warn!(%error, "process group kill could not run");
+            }
             self.armed = false;
         }
     }

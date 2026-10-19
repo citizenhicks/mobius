@@ -15,22 +15,15 @@ pub(super) fn active_reference_token(
     cursor: usize,
     trigger: char,
 ) -> Option<ReferenceToken> {
-    if cursor > input.len() || !input.is_char_boundary(cursor) {
-        return None;
-    }
-
-    let start = input[..cursor]
+    let (before, after) = input.split_at_checked(cursor)?;
+    let start = before
         .char_indices()
         .rfind(|(_, character)| character.is_whitespace())
         .map_or(0, |(index, character)| index + character.len_utf8());
-    let end = if input[cursor..]
-        .chars()
-        .next()
-        .is_some_and(char::is_whitespace)
-    {
+    let end = if after.chars().next().is_some_and(char::is_whitespace) {
         cursor
     } else {
-        input[cursor..]
+        after
             .char_indices()
             .find(|(_, character)| character.is_whitespace())
             .map_or(input.len(), |(index, _)| cursor + index)
@@ -50,16 +43,12 @@ pub(super) fn replace_reference_token(
     token: &ReferenceToken,
     replacement: &str,
 ) -> Option<usize> {
-    if input
-        .get(token.range.clone())?
-        .strip_prefix(token.trigger)?
-        != token.query
-    {
+    let Range { start, end } = token.range;
+    if input.get(start..end)?.strip_prefix(token.trigger)? != token.query {
         return None;
     }
-    let cursor = token.range.start + replacement.len();
-    input.replace_range(token.range.clone(), replacement);
-    Some(cursor)
+    input.replace_range(start..end, replacement);
+    Some(start + replacement.len())
 }
 
 #[cfg(test)]
@@ -73,7 +62,7 @@ mod tests {
         let cursor = replace_reference_token(&mut input, &token, "\"docs/my file.md\"").unwrap();
 
         assert_eq!(input, "é read \"docs/my file.md\" then @other");
-        assert_eq!(&input[..cursor], "é read \"docs/my file.md\"");
+        assert_eq!(input.get(..cursor), Some("é read \"docs/my file.md\""));
         assert!(active_reference_token("email a@b.test", 10, '@').is_none());
     }
 }

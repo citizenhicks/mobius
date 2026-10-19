@@ -1,9 +1,13 @@
-use super::*;
+use super::{
+    Arc, AsyncWrite, AuthStore, ClientConnections, ClientView, DirectoryEntry, DirectoryListing,
+    Error, HostHandle, MAX_DIRECTORY_ENTRIES, MAX_FRAME_BYTES, Path, PathBuf, Rejection, Result,
+    SelectedChat, ServerFrame, ServerMessage, SessionHistoryPage, fs, write_frame,
+};
 
 pub(super) async fn write_session_history(
     writer: &mut (impl AsyncWrite + Unpin),
     page: std::result::Result<SessionHistoryPage, Rejection>,
-    request_id: String,
+    request_id: Arc<str>,
     session_id: String,
 ) -> Result<()> {
     let page = match page {
@@ -11,7 +15,7 @@ pub(super) async fn write_session_history(
         Err(rejection) => return write_rejection(writer, request_id, rejection).await,
     };
     let frame = ServerFrame::new(ServerMessage::SessionHistory {
-        request_id: request_id.clone(),
+        request_id: Arc::clone(&request_id),
         session_id,
         records: page.records,
         next_before_sequence: page.next_before_sequence,
@@ -36,7 +40,7 @@ pub(super) fn encoded_frame_fits(frame: &ServerFrame) -> Result<bool> {
 
 pub(super) async fn write_client_inventory(
     writer: &mut (impl AsyncWrite + Unpin),
-    request_id: String,
+    request_id: Arc<str>,
     current_client_id: &str,
     auth: &AuthStore,
     client_connections: &ClientConnections,
@@ -46,7 +50,7 @@ pub(super) async fn write_client_inventory(
         &ServerFrame::new(ServerMessage::Clients {
             request_id,
             current_client_id: current_client_id.into(),
-            clients: client_connections.snapshot(&auth.clients()?)?,
+            clients: client_connections.snapshot(auth.clients()?)?,
         }),
     )
     .await
@@ -55,7 +59,7 @@ pub(super) async fn write_client_inventory(
 pub(super) async fn open_selected(
     writer: &mut (impl AsyncWrite + Unpin),
     selected: &mut Option<SelectedChat>,
-    request_id: String,
+    request_id: Arc<str>,
     host: HostHandle,
     last_sequence: Option<u64>,
 ) -> Result<()> {
@@ -68,7 +72,7 @@ pub(super) async fn open_selected(
     write_frame(
         writer,
         &ServerFrame::new(ServerMessage::SessionOpened {
-            request_id: request_id.clone(),
+            request_id: Arc::clone(&request_id),
             payload: snapshot.ready,
         }),
     )
@@ -80,7 +84,7 @@ pub(super) async fn open_selected(
         writer,
         &ServerFrame::new(ServerMessage::SessionReplayComplete {
             request_id,
-            session_id: host.session_id().into(),
+            session_id: host.session_id().to_string(),
         }),
     )
     .await?;
@@ -93,11 +97,11 @@ pub(super) async fn open_selected(
 }
 
 pub(super) fn require_selected<'a>(
-    selected: &'a Option<SelectedChat>,
+    selected: Option<&'a SelectedChat>,
     session_id: &str,
 ) -> std::result::Result<&'a HostHandle, Rejection> {
     let host = require_any_selected(selected)?;
-    if host.session_id() != session_id {
+    if **host.session_id() != *session_id {
         return Err(Rejection::new(
             "session_not_selected",
             "open this chat on the connection before controlling it",
@@ -107,7 +111,7 @@ pub(super) fn require_selected<'a>(
 }
 
 pub(super) async fn require_uploads_enabled<'a>(
-    selected: &'a Option<SelectedChat>,
+    selected: Option<&'a SelectedChat>,
     session_id: &str,
 ) -> std::result::Result<&'a HostHandle, Rejection> {
     let host = require_selected(selected, session_id)?;
@@ -125,19 +129,19 @@ pub(super) fn uploads_disabled_rejection() -> Rejection {
 }
 
 pub(super) fn require_any_selected(
-    selected: &Option<SelectedChat>,
+    selected: Option<&SelectedChat>,
 ) -> std::result::Result<&HostHandle, Rejection> {
     selected
-        .as_ref()
         .map(|selected| &selected.host)
         .ok_or_else(|| Rejection::new("session_required", "create or open a chat first"))
 }
 
 pub(super) async fn write_result(
     writer: &mut (impl AsyncWrite + Unpin),
-    request_id: String,
+    request_id: impl Into<Arc<str>>,
     result: std::result::Result<(), Rejection>,
 ) -> Result<()> {
+    let request_id = request_id.into();
     match result {
         Ok(()) => {
             write_frame(
@@ -153,7 +157,7 @@ pub(super) async fn write_result(
 pub(super) async fn write_gateway_result(
     writer: &mut (impl AsyncWrite + Unpin),
     view: &mut ClientView,
-    request_id: String,
+    request_id: Arc<str>,
     result: std::result::Result<crate::wire::ReadyPayload, Rejection>,
 ) -> Result<()> {
     match result {
@@ -173,13 +177,13 @@ pub(super) async fn write_gateway_result(
 
 pub(super) async fn write_rejection(
     writer: &mut (impl AsyncWrite + Unpin),
-    request_id: String,
+    request_id: impl Into<Arc<str>>,
     rejection: Rejection,
 ) -> Result<()> {
     write_frame(
         writer,
         &ServerFrame::new(ServerMessage::Rejected {
-            request_id,
+            request_id: request_id.into(),
             code: rejection.code.into(),
             message: rejection.message,
             fatal: rejection.fatal,
@@ -191,7 +195,7 @@ pub(super) async fn write_rejection(
 pub(super) async fn write_server_error(
     writer: &mut (impl AsyncWrite + Unpin),
     code: impl Into<String>,
-    message: impl Into<String>,
+    message: impl Into<Arc<str>>,
     fatal: bool,
 ) -> Result<()> {
     write_frame(
@@ -209,7 +213,7 @@ pub(super) fn internal_rejection(message: String) -> Rejection {
     Rejection::new("gateway_error", message)
 }
 
-pub(super) fn routine_rejection(error: Error) -> Rejection {
+pub(super) fn routine_rejection(error: &Error) -> Rejection {
     Rejection::new("invalid_routine", error.to_string())
 }
 
@@ -223,7 +227,7 @@ pub(super) fn list_directories(
     }
     let mut entries = fs::read_dir(&path)
         .map_err(directory_rejection)?
-        .filter_map(|entry| entry.ok())
+        .filter_map(std::result::Result::ok)
         .filter_map(|entry| {
             let name = entry.file_name();
             let name = name.to_str()?;

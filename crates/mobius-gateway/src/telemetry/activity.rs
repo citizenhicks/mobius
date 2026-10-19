@@ -110,7 +110,11 @@ impl ActivityHookConfig {
             self.retry_seconds,
             1..=3600,
         )?;
-        let path = Path::new(&self.command[0]);
+        let path = Path::new(
+            self.command
+                .first()
+                .ok_or_else(|| Error::Config("activity hook command is empty".into()))?,
+        );
         if !path.is_absolute() {
             return Err(Error::Config(
                 "activity hook executable must be absolute".into(),
@@ -313,7 +317,7 @@ impl<'a> ActivityHook<'a> {
             return Ok(());
         }
         let mut child = Command::new(executable)
-            .args(&config.command[1..])
+            .args(config.command.iter().skip(1))
             .env_clear()
             .env("PATH", "/usr/bin:/bin")
             .current_dir("/")
@@ -395,8 +399,10 @@ async fn stop_process(mut process: HookProcess, timeout: Duration) {
         Ok(Ok(_))
     ) {
         #[cfg(unix)]
-        if let Some(pid) = process.child.id().and_then(|pid| i32::try_from(pid).ok()) {
-            let _ = kill(Pid::from_raw(-pid), Signal::SIGTERM);
+        if let Some(pid) = process.child.id().and_then(|pid| i32::try_from(pid).ok())
+            && let Err(error) = kill(Pid::from_raw(-pid), Signal::SIGTERM)
+        {
+            tracing::debug!(%error, "activity hook process group already exited");
         }
         if !matches!(
             tokio::time::timeout(timeout, process.child.wait()).await,
@@ -430,13 +436,13 @@ mod tests {
 
     #[test]
     fn writable_roots_and_symlinks_cannot_supply_the_hook() {
+        use std::os::unix::fs::PermissionsExt as _;
         let directory = tempfile::tempdir().unwrap();
         let executable = directory.path().join("hook");
         std::fs::write(&executable, "#!/bin/sh\nexit 0\n").unwrap();
         std::fs::set_permissions(&executable, mobius::owner_only::file()).unwrap();
         let config = command(&[executable.to_str().unwrap()]);
         assert!(config.validate().is_err());
-        use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
         config.validate().unwrap();
         assert!(config.validate_roots([directory.path()]).is_err());

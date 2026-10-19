@@ -56,6 +56,14 @@ pub struct GatewaySandbox {
     desktop_use: tokio::sync::Mutex<Option<crate::computer_runtime::remote_desktop::DesktopUse>>,
 }
 
+impl std::fmt::Debug for GatewaySandbox {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GatewaySandbox")
+            .finish_non_exhaustive()
+    }
+}
+
 impl GatewaySandbox {
     /// Creates protected and full-access command delegates for a gateway host.
     /// # Errors
@@ -212,7 +220,7 @@ impl GatewaySandbox {
             delegate: std::sync::Arc::new(delegate),
             full_access_delegate: std::sync::Arc::new(full_access_delegate),
             // Isolated execution shares desktop devices while giving each backend its own execution state.
-            desktop: self.desktop.clone(),
+            desktop: self.desktop.clone(), // rules-allow: isolated execution shares desktop devices
             remote_desktop: self.remote_desktop.as_ref().map(std::sync::Arc::clone),
             desktop_use: tokio::sync::Mutex::new(None),
         })
@@ -243,8 +251,11 @@ impl GatewaySandbox {
         mut self,
         paths: impl IntoIterator<Item = PathBuf>,
     ) -> Result<Self> {
-        let mut delegate = std::sync::Arc::try_unwrap(self.delegate).map_err(|_| {
-            Error::Config("sandbox paths must be configured before execution".into())
+        let mut delegate = std::sync::Arc::try_unwrap(self.delegate).map_err(|delegate| {
+            Error::Config(format!(
+                "sandbox paths must be configured before execution: {} handles share the delegate",
+                std::sync::Arc::strong_count(&delegate)
+            ))
         })?;
         for path in paths {
             delegate = delegate.deny_read(path)?;
@@ -257,8 +268,11 @@ impl GatewaySandbox {
         mut self,
         roots: impl IntoIterator<Item = PathBuf>,
     ) -> Result<Self> {
-        let mut delegate = std::sync::Arc::try_unwrap(self.delegate).map_err(|_| {
-            Error::Config("sandbox roots must be configured before execution".into())
+        let mut delegate = std::sync::Arc::try_unwrap(self.delegate).map_err(|delegate| {
+            Error::Config(format!(
+                "sandbox roots must be configured before execution: {} handles share the delegate",
+                std::sync::Arc::strong_count(&delegate)
+            ))
         })?;
         for root in roots {
             delegate = delegate.allow_read_root(root)?;
@@ -271,8 +285,11 @@ impl GatewaySandbox {
         mut self,
         roots: impl IntoIterator<Item = PathBuf>,
     ) -> Result<Self> {
-        let mut delegate = std::sync::Arc::try_unwrap(self.delegate).map_err(|_| {
-            Error::Config("sandbox roots must be configured before execution".into())
+        let mut delegate = std::sync::Arc::try_unwrap(self.delegate).map_err(|delegate| {
+            Error::Config(format!(
+                "sandbox roots must be configured before execution: {} handles share the delegate",
+                std::sync::Arc::strong_count(&delegate)
+            ))
         })?;
         for root in roots {
             delegate = delegate.allow_workspace_root(root)?;
@@ -286,7 +303,7 @@ impl GatewaySandbox {
         let mut arguments = GIT_ARGUMENTS.to_vec();
         arguments.extend_from_slice(args);
         tokio::select! {
-            _ = self.execution_cancelled() => Err(execution_held()),
+            () = self.execution_cancelled() => Err(execution_held()),
             result = self.delegate.execute_read_only_with_environment_removals(
                 "git",
                 &arguments,
@@ -298,16 +315,15 @@ impl GatewaySandbox {
 
     pub(crate) async fn read_workspace_range(
         &self,
-        path: &str,
+        path: PathBuf,
         offset: u64,
         max_bytes: usize,
     ) -> Result<(Vec<u8>, Option<u64>)> {
         let execution = self.execution_lease().await?;
         let delegate = std::sync::Arc::clone(&self.delegate);
-        let path = path.to_owned();
         tokio::spawn(async move {
             let _execution = execution;
-            delegate.read_range(&path, offset, max_bytes).await
+            delegate.read_host_range(path, offset, max_bytes).await
         })
         .await
         .map_err(|error| Error::Sandbox(format!("file reader failed: {error}")))?
@@ -336,7 +352,7 @@ impl GatewaySandbox {
             branch,
         ]);
         tokio::select! {
-            _ = self.execution_cancelled() => Err(execution_held()),
+            () = self.execution_cancelled() => Err(execution_held()),
             result = self.delegate.execute_git_mutation_with_environment_removals(
                 &arguments,
                 &GIT_ENVIRONMENT,
@@ -521,7 +537,7 @@ impl SandboxBackend for GatewaySandbox {
         Box::pin(async move {
             let _execution = self.execution_lease().await?;
             tokio::select! {
-                _ = self.execution_cancelled() => Err(execution_held()),
+                () = self.execution_cancelled() => Err(execution_held()),
                 result = self.command_delegate(sandbox_mode).execute(script, sandbox_mode, network_access, mode, output) => result,
             }
         })
@@ -539,7 +555,7 @@ impl SandboxBackend for GatewaySandbox {
         Box::pin(async move {
             let _execution = self.execution_lease().await?;
             tokio::select! {
-                _ = self.execution_cancelled() => Err(execution_held()),
+                () = self.execution_cancelled() => Err(execution_held()),
                 result = self.command_delegate(sandbox_mode).execute_authorized(
                     script,
                     sandbox_mode,
@@ -624,6 +640,7 @@ mod tests {
                 );
             }
         }
+        drop(sandbox);
     }
 
     #[test]
@@ -635,23 +652,21 @@ mod tests {
         let workspace_inside = state_parent.path().join("workspace");
         std::fs::create_dir(&workspace_inside).expect("nested workspace");
 
-        let state_inside_error = match GatewaySandbox::new(
+        let Err(state_inside_error) = GatewaySandbox::new(
             workspace_parent.path(),
             &state_inside,
             None,
             Duration::from_secs(5),
-        ) {
-            Ok(_) => panic!("state inside workspace must fail"),
-            Err(error) => error,
+        ) else {
+            panic!("state inside workspace must fail");
         };
-        let workspace_inside_error = match GatewaySandbox::new(
+        let Err(workspace_inside_error) = GatewaySandbox::new(
             &workspace_inside,
             state_parent.path(),
             None,
             Duration::from_secs(5),
-        ) {
-            Ok(_) => panic!("workspace inside state must fail"),
-            Err(error) => error,
+        ) else {
+            panic!("workspace inside state must fail");
         };
 
         assert!(state_inside_error.to_string().contains("must not overlap"));
@@ -733,6 +748,7 @@ mod tests {
                 "tls-secret"
             );
         }
+        drop(sandbox);
     }
 
     #[tokio::test]
@@ -811,6 +827,7 @@ mod tests {
             .execute_git(&["rev-parse", "--show-toplevel"])
             .await
             .expect("resolve workspace repository");
+        drop(sandbox);
         assert_eq!(repository.exit_code, 0, "{}", repository.stderr);
         assert_eq!(
             PathBuf::from(repository.stdout.trim()),

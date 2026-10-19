@@ -39,14 +39,14 @@ async fn idle_peer_messages_start_turns_and_replay_without_becoming_user_prompts
     let prompt_submits = Arc::new(AtomicUsize::new(0));
     let mut config = config_with_model(
         workspace.path(),
-        checkpoints.clone(),
+        Arc::<SqliteCheckpoint>::clone(&checkpoints),
         "peer-message",
         "test",
-        model.clone(),
+        Arc::<ScriptedModel>::clone(&model),
     );
-    config.middleware = test_middleware(vec![Arc::new(CountUserPromptSubmits(Arc::clone(
-        &prompt_submits,
-    )))]);
+    config.middleware = Arc::new(test_middleware(vec![Arc::new(CountUserPromptSubmits(
+        Arc::clone(&prompt_submits),
+    ))]));
     let mut agent = create_agent(config).await.expect("create agent");
 
     let first = peer_op(
@@ -127,7 +127,7 @@ async fn idle_peer_messages_start_turns_and_replay_without_becoming_user_prompts
             .is_some_and(|keys| keys.contains("permissions"))
     );
     {
-        let inputs = model.inputs.lock().expect("model input lock");
+        let inputs = model.inputs.lock().expect("model input lock").clone();
         let notice = inputs[0]
             .iter()
             .position(|item| internal_message_kind(item) == Some("message_permissions"))
@@ -221,7 +221,7 @@ async fn idle_peer_messages_start_turns_and_replay_without_becoming_user_prompts
         resumed.next_event().await.expect("resumed event").msg,
         EventMsg::TurnComplete(_)
     ) {}
-    let inputs = model.inputs.lock().expect("model input lock");
+    let inputs = model.inputs.lock().expect("model input lock").clone();
     assert_eq!(inputs.len(), 3);
     assert!(
         inputs[2].starts_with(&inputs[1]),

@@ -28,7 +28,7 @@ pub(super) fn parse_patch_document(input: &str) -> Result<PatchDocument> {
         .and_then(|line| line.strip_prefix("*** Update File: "))
         .filter(|path| !path.is_empty())
         .ok_or_else(|| malformed_patch_document("expected one `*** Update File: path`"))?
-        .to_string();
+        .to_owned();
     let mut changes = Vec::new();
     let mut change = PatchChange::default();
 
@@ -56,7 +56,7 @@ pub(super) fn parse_patch_document(input: &str) -> Result<PatchDocument> {
         if line == "@@" || line.starts_with("@@ ") {
             push_patch_change(&mut changes, &mut change);
             if let Some(context) = line.strip_prefix("@@ ").filter(|value| !value.is_empty()) {
-                change.anchor = Some(context.to_string());
+                change.anchor = Some(context.to_owned());
             }
             continue;
         }
@@ -109,7 +109,7 @@ fn malformed_patch_document(reason: &str) -> Error {
 }
 
 pub(super) fn apply_patch_document(content: &str, document: &PatchDocument) -> Result<String> {
-    let mut updated = content.to_string();
+    let mut updated = content.to_owned();
     let mut cursor = 0;
     let mut match_work = 0;
     let line_ending = if content.contains("\r\n") {
@@ -119,12 +119,13 @@ pub(super) fn apply_patch_document(content: &str, document: &PatchDocument) -> R
     };
     for change in &document.changes {
         if let Some(anchor) = &change.anchor {
-            cursor += find_patch_anchor(&updated[cursor..], anchor).ok_or_else(|| {
-                Error::Tool(format!(
-                    "Patch rejected: context {:?} was not found after the previous change.",
-                    capped(anchor, MAX_TOOL_UI_BYTES)
-                ))
-            })?;
+            cursor +=
+                find_patch_anchor(patch_tail(&updated, cursor)?, anchor).ok_or_else(|| {
+                    Error::Tool(format!(
+                        "Patch rejected: context {:?} was not found after the previous change.",
+                        capped(anchor, MAX_TOOL_UI_BYTES)
+                    ))
+                })?;
         }
         let mut before = change.before.replace('\n', line_ending);
         let mut after = change.after.replace('\n', line_ending);
@@ -158,7 +159,7 @@ pub(super) fn apply_patch_document(content: &str, document: &PatchDocument) -> R
         let mut options = DiffOptions::new();
         options.set_context_len(before.lines().count().max(after.lines().count()));
         let patch = options.create_patch(&before, &after);
-        let suffix = &updated[cursor..];
+        let suffix = patch_tail(&updated, cursor)?;
         if patch.hunks().is_empty() {
             charge_patch_work(
                 &mut match_work,
@@ -181,13 +182,19 @@ pub(super) fn apply_patch_document(content: &str, document: &PatchDocument) -> R
             cursor += before.len();
             continue;
         }
-        let suffix = &updated[cursor..];
+        let suffix = patch_tail(&updated, cursor)?;
         let patched = diffy::apply(suffix, &patch)
             .map_err(|error| unmatched_patch_error(suffix, &patch, &error))?;
         updated.replace_range(cursor.., &patched);
         cursor += after.len();
     }
     Ok(updated)
+}
+
+fn patch_tail(content: &str, cursor: usize) -> Result<&str> {
+    content
+        .get(cursor..)
+        .ok_or_else(|| Error::Tool(format!("patch cursor {cursor} is outside the file")))
 }
 
 fn find_patch_anchor(content: &str, anchor: &str) -> Option<usize> {
@@ -209,10 +216,11 @@ fn find_patch_anchor(content: &str, anchor: &str) -> Option<usize> {
 fn find_patch_fragment(content: &str, fragment: &str) -> Option<usize> {
     let mut offset = 0;
     loop {
-        if content[offset..].starts_with(fragment) {
+        let rest = content.get(offset..)?;
+        if rest.starts_with(fragment) {
             return Some(offset);
         }
-        offset += content[offset..].find('\n')? + 1;
+        offset += rest.find('\n')? + 1;
     }
 }
 
@@ -248,8 +256,7 @@ fn unmatched_patch_error(
         Line::Delete(value) if !value.trim().is_empty() => {
             Some(("Failed hunk starts with deletion:", *value))
         }
-        Line::Insert(_) => None,
-        Line::Context(_) | Line::Delete(_) => None,
+        Line::Insert(_) | Line::Context(_) | Line::Delete(_) => None,
     }) else {
         return Error::Tool(format!(
             "{rejection}\nThe failed hunk has no usable context lines."

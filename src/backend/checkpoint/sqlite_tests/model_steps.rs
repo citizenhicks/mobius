@@ -14,7 +14,7 @@ async fn assistant_message_compacts_progressive_deltas_and_preserves_citations()
     let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
         .expect("open checkpoint database");
     store
-        .save(&checkpoint("session"), &[], None)
+        .save(checkpoint("session"), Vec::new(), None)
         .await
         .expect("save session");
     let event = |msg| Event {
@@ -22,13 +22,15 @@ async fn assistant_message_compacts_progressive_deltas_and_preserves_citations()
         msg,
     };
     let events = [
-        event(EventMsg::ModelStepStarted(ModelStepStartedEvent {
-            session_id: "session".into(),
-            turn_id: "turn".into(),
-            model_step_id: "step".into(),
-            step_index: 0,
-            started_at_ms: 10,
-        })),
+        event(EventMsg::ModelStepStarted(Arc::new(
+            ModelStepStartedEvent {
+                session_id: "session".into(),
+                turn_id: "turn".into(),
+                model_step_id: "step".into(),
+                step_index: 0,
+                started_at_ms: 10,
+            },
+        ))),
         event(EventMsg::AssistantContentDelta(
             AssistantContentDeltaEvent {
                 session_id: "session".into(),
@@ -90,7 +92,7 @@ async fn assistant_message_compacts_progressive_deltas_and_preserves_citations()
             message_target: None,
         })),
     ];
-    for (index, event) in events.iter().enumerate() {
+    for (index, event) in events.into_iter().enumerate() {
         store
             .append_event(
                 "session",

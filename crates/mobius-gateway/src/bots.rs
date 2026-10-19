@@ -13,6 +13,7 @@ use std::io::Read as _;
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Component, Path, PathBuf};
 use std::str::FromStr as _;
+use std::sync::Arc;
 
 use chrono::{TimeZone as _, Timelike as _, Utc};
 use chrono_tz::Tz;
@@ -74,19 +75,18 @@ pub(crate) struct BotStore {
     state_dir: PathBuf,
     routines_dir: PathBuf,
     storage: BotStorage,
-    pub(crate) prepared: tokio::sync::Mutex<
-        std::collections::BTreeMap<String, std::sync::Arc<crate::assembly::PreparedBot>>,
-    >,
+    pub(crate) prepared:
+        tokio::sync::Mutex<std::collections::BTreeMap<Arc<str>, Arc<crate::assembly::PreparedBot>>>,
     pub(crate) preparation_generation: std::sync::atomic::AtomicU64,
     /// The last parsed catalog, reused until any connection commits.
-    cache: std::sync::Mutex<Option<(CatalogStamp, std::sync::Arc<BotState>)>>,
+    cache: std::sync::Mutex<Option<(CatalogStamp, Arc<BotState>)>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct StoredRoutine {
-    pub(crate) id: String,
-    pub(crate) bot_id: String,
+    pub(crate) id: Arc<str>,
+    pub(crate) bot_id: Arc<str>,
     pub(crate) workspace: PathBuf,
     pub(crate) instructions: PathBuf,
     pub(crate) bindings: Vec<StoredRoutineBinding>,
@@ -121,7 +121,9 @@ impl StoredRoutineBinding {
                         i64::try_from(schedule.every_seconds.ok_or_else(|| {
                             Error::Config("interval schedule is missing its interval".into())
                         })?)
-                        .map_err(|_| Error::Config("interval schedule is too large".into()))?,
+                        .map_err(|error| {
+                            Error::Config(format!("interval schedule is too large: {error}"))
+                        })?,
                     )
                     .ok_or_else(|| {
                         Error::Config("interval schedule overflows its timestamp".into())
@@ -159,7 +161,7 @@ impl StoredRoutineBinding {
                         .every_seconds
                         .ok_or_else(|| Error::Config("interval is missing".into()))?,
                 )
-                .map_err(|_| Error::Config("interval is too large".into()))?;
+                .map_err(|error| Error::Config(format!("interval is too large: {error}")))?;
                 let next = self
                     .next_due_at
                     .ok_or_else(|| Error::Config("interval has no next occurrence".into()))?;
@@ -255,7 +257,7 @@ pub(crate) enum BeginRun {
 
 /// A durable running invocation whose file lock is held until completion.
 pub(crate) struct ActiveRoutineRun {
-    run_id: String,
+    run_id: Arc<str>,
     session_id: String,
     _lock: RoutineLock,
 }
@@ -266,16 +268,18 @@ struct RoutineLock(File);
 impl Drop for RoutineLock {
     fn drop(&mut self) {
         // Closing alone leaves the lock held while a fork inherits the file descriptor.
-        let _ = self.0.unlock();
+        if let Err(error) = self.0.unlock() {
+            tracing::warn!(%error, "routine lock release failed");
+        }
     }
 }
 
 /// Validated Bot deletion whose routine locks stay held through gateway cleanup.
 #[derive(Debug)]
 pub(crate) struct BotDeletion {
-    bot_id: String,
+    bot_id: Arc<str>,
     expected_revision: u64,
-    routine_ids: BTreeSet<String>,
+    routine_ids: BTreeSet<Arc<str>>,
     instructions: BTreeSet<PathBuf>,
     state_lock: Option<File>,
     _routine_locks: Vec<RoutineLock>,
@@ -290,7 +294,7 @@ impl BotDeletion {
 /// Validated routine deletion whose lock stays held through gateway cleanup.
 #[derive(Debug)]
 pub(crate) struct RoutineDeletion {
-    routine_id: String,
+    routine_id: Arc<str>,
     session_ids: BTreeSet<String>,
     instructions: PathBuf,
     _state_lock: File,
@@ -301,7 +305,7 @@ pub(crate) struct RoutineDeletion {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PendingBotDeletion {
-    pub(crate) bot_id: String,
+    pub(crate) bot_id: Arc<str>,
     pub(crate) expected_revision: u64,
     pub(crate) session_roots: Vec<String>,
     pub(crate) session_ids: Vec<String>,
@@ -335,13 +339,13 @@ struct BotState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StoredBot {
-    id: String,
-    handle: String,
-    name: String,
-    description: String,
+    id: Arc<str>,
+    handle: Arc<str>,
+    name: Arc<str>,
+    description: Arc<str>,
     tint: ProviderTint,
     shape: BotShape,
-    config: VersionedAgentConfig,
+    config: Arc<VersionedAgentConfig>,
 }
 
 impl StoredBot {
@@ -349,14 +353,14 @@ impl StoredBot {
         let (accepts_file_attachments, routine_interaction_policy) =
             crate::assembly::bot_semantics(&self.config.config)?;
         Ok(BotRecord {
-            conversation_session_id: conversation_session_id(&self.id),
-            id: self.id.clone(),
-            handle: self.handle.clone(),
-            name: self.name.clone(),
-            description: self.description.clone(),
+            conversation_session_id: conversation_session_id(&self.id).into(),
+            id: Arc::clone(&self.id),
+            handle: Arc::clone(&self.handle),
+            name: Arc::clone(&self.name),
+            description: Arc::clone(&self.description),
             tint: self.tint,
             shape: self.shape,
-            config: self.config.clone(),
+            config: Arc::clone(&self.config),
             accepts_file_attachments,
             routine_interaction_policy,
         })
@@ -367,13 +371,13 @@ impl StoredBot {
 impl From<&BotRecord> for StoredBot {
     fn from(bot: &BotRecord) -> Self {
         Self {
-            id: bot.id.clone(),
-            handle: bot.handle.clone(),
-            name: bot.name.clone(),
-            description: bot.description.clone(),
+            id: Arc::clone(&bot.id),
+            handle: Arc::clone(&bot.handle),
+            name: Arc::clone(&bot.name),
+            description: Arc::clone(&bot.description),
             tint: bot.tint,
             shape: bot.shape,
-            config: bot.config.clone(),
+            config: Arc::clone(&bot.config),
         }
     }
 }
@@ -413,7 +417,7 @@ impl BotStore {
             cache: std::sync::Mutex::default(),
         };
         let state = store.fresh_state()?;
-        if persisted && !state.bots.iter().any(|bot| bot.handle == MOBIUS_HANDLE) {
+        if persisted && !state.bots.iter().any(|bot| &*bot.handle == MOBIUS_HANDLE) {
             return Err(Error::Config(
                 "persisted Bot state has no built-in @mobius Bot".into(),
             ));
@@ -421,7 +425,7 @@ impl BotStore {
         let bot_ids = state
             .bots
             .iter()
-            .map(|bot| bot.id.as_str())
+            .map(|bot| &*bot.id)
             .collect::<BTreeSet<_>>();
         store.storage.validate_run_owners(&bot_ids)?;
         Ok(store)
@@ -432,25 +436,25 @@ impl BotStore {
         &self,
         defaults: &VersionedAgentConfig,
     ) -> Result<Option<BotRecord>> {
-        let _file_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
-        _file_lock.lock()?;
+        let file_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
+        file_lock.lock()?;
         if self.storage.load_catalog()?.is_some() {
             return Ok(None);
         }
-        let config = defaults.config.clone();
+        let config = defaults.config.clone(); // rules-allow: callers keep their borrowed defaults; the seeded Bot owns its config
         validate_agent_composition(&config)?;
         let mut state = BotState::default();
         let bot = StoredBot {
-            id: Uuid::new_v4().to_string(),
+            id: Uuid::new_v4().to_string().into(),
             handle: MOBIUS_HANDLE.into(),
             name: MOBIUS_NAME.into(),
             description: MOBIUS_DESCRIPTION.into(),
             tint: ProviderTint::default(),
             shape: BotShape::Circle,
-            config: VersionedAgentConfig {
+            config: Arc::new(VersionedAgentConfig {
                 revision: 1,
                 config,
-            },
+            }),
         };
         let record = bot.record()?;
         state.bots.push(bot);
@@ -474,16 +478,16 @@ impl BotStore {
             let tint = next_tint(state);
             let shape = next_shape(state);
             let bot = StoredBot {
-                id,
-                handle,
-                name,
-                description,
+                id: id.into(),
+                handle: handle.into(),
+                name: name.into(),
+                description: description.into(),
                 tint,
                 shape,
-                config: VersionedAgentConfig {
+                config: Arc::new(VersionedAgentConfig {
                     revision: 1,
                     config,
-                },
+                }),
             };
             let record = bot.record()?;
             state.bots.push(bot);
@@ -491,12 +495,12 @@ impl BotStore {
         })
     }
 
+    /// Saves `identity` and `config`, whose revision must directly follow the stored one.
     pub(crate) fn update_bot(
         &self,
         id: &str,
-        expected_revision: u64,
         identity: BotIdentity<'_>,
-        config: AgentComposition,
+        config: Arc<VersionedAgentConfig>,
     ) -> Result<BotRecord> {
         let BotIdentity {
             name,
@@ -506,29 +510,24 @@ impl BotStore {
         } = identity;
         let name = validate_name(name)?;
         let description = validate_description(description)?;
-        validate_agent_composition(&config)?;
+        validate_agent_composition(&config.config)?;
         self.update(|state| {
             let handle = next_handle(state, &name, id);
             let bot = find_bot_mut(state, id)?;
-            if bot.config.revision != expected_revision {
+            if bot.config.revision.checked_add(1) != Some(config.revision) {
                 return Err(Error::Config(format!(
-                    "Bot configuration revision changed from {expected_revision} to {}",
+                    "Bot configuration revision changed from {} to {}",
+                    config.revision.saturating_sub(1),
                     bot.config.revision
                 )));
             }
-            if bot.name != name && bot.handle != MOBIUS_HANDLE {
-                bot.handle = handle;
+            if *bot.name != *name && &*bot.handle != MOBIUS_HANDLE {
+                bot.handle = handle.into();
             }
-            bot.name = name;
-            bot.description = description;
+            bot.name = name.into();
+            bot.description = description.into();
             bot.tint = tint;
             bot.shape = shape;
-            let config = VersionedAgentConfig {
-                revision: expected_revision
-                    .checked_add(1)
-                    .ok_or_else(|| Error::Config("Bot revision overflow".into()))?,
-                config,
-            };
             bot.config = config;
             bot.record()
         })
@@ -545,9 +544,9 @@ impl BotStore {
         let bot = state
             .bots
             .iter()
-            .find(|bot| bot.id == id)
+            .find(|bot| *bot.id == *id)
             .ok_or_else(|| Error::Config(format!("unknown Bot `{id}`")))?;
-        if bot.handle == MOBIUS_HANDLE {
+        if &*bot.handle == MOBIUS_HANDLE {
             return Err(Error::Config(
                 "the built-in @mobius Bot cannot be deleted".into(),
             ));
@@ -561,11 +560,11 @@ impl BotStore {
         let routines = state
             .routines
             .into_iter()
-            .filter(|routine| routine.bot_id == id)
+            .filter(|routine| *routine.bot_id == *id)
             .collect::<Vec<_>>();
         let routine_ids = routines
             .iter()
-            .map(|routine| routine.id.as_str())
+            .map(|routine| &*routine.id)
             .collect::<BTreeSet<_>>();
         let mut routine_locks = Vec::with_capacity(routine_ids.len());
         for routine_id in &routine_ids {
@@ -600,32 +599,34 @@ impl BotStore {
         session_ids: &[String],
     ) -> Result<PendingBotDeletion> {
         let intent = PendingBotDeletion {
-            bot_id: deletion.bot_id.clone(),
+            bot_id: Arc::clone(&deletion.bot_id),
             expected_revision: deletion.expected_revision,
             session_roots: session_roots.to_vec(),
             session_ids: session_ids.to_vec(),
-            instruction_paths: deletion.instructions.iter().cloned().collect(),
+            instruction_paths: deletion.instructions.iter().cloned().collect(), // rules-allow: the deletion keeps its identity for delete_bot; the durable intent owns a copy
         };
-        self.update_locked(|state| {
-            let bot = find_bot_mut(state, &intent.bot_id)?;
-            if bot.config.revision != intent.expected_revision {
-                return Err(Error::Config(format!(
-                    "Bot configuration revision changed from {} to {}",
-                    intent.expected_revision, bot.config.revision
-                )));
-            }
-            if let Some(pending) = &state.pending_bot_deletion
-                && pending != &intent
-            {
-                return Err(Error::Config(
-                    "another Bot deletion is awaiting recovery".into(),
-                ));
-            }
-            state.pending_bot_deletion = Some(intent.clone());
-            Ok(())
-        })?;
+        let mut state = self.fresh_state()?;
+        let bot = find_bot_mut(&mut state, &intent.bot_id)?;
+        if bot.config.revision != intent.expected_revision {
+            return Err(Error::Config(format!(
+                "Bot configuration revision changed from {} to {}",
+                intent.expected_revision, bot.config.revision
+            )));
+        }
+        if let Some(pending) = &state.pending_bot_deletion
+            && pending != &intent
+        {
+            return Err(Error::Config(
+                "another Bot deletion is awaiting recovery".into(),
+            ));
+        }
+        state.pending_bot_deletion = Some(intent);
+        validate_state(&state, &self.routines_dir)?;
+        self.save(&state)?;
         deletion.release_state_lock();
-        Ok(intent)
+        state
+            .pending_bot_deletion
+            .ok_or_else(|| Error::Config("recorded Bot deletion is missing".into()))
     }
 
     pub(crate) fn pending_bot_deletion(&self) -> Result<Option<PendingBotDeletion>> {
@@ -644,7 +645,7 @@ impl BotStore {
                 .pending_bot_deletion
                 .as_ref()
                 .ok_or_else(|| Error::Config("Bot deletion recovery is not pending".into()))?;
-            if pending.bot_id != bot_id {
+            if *pending.bot_id != *bot_id {
                 return Err(Error::Config(
                     "a different Bot deletion is awaiting recovery".into(),
                 ));
@@ -673,15 +674,14 @@ impl BotStore {
             routine_ids,
             instructions,
             state_lock,
-            _routine_locks,
+            _routine_locks: routine_locks,
         } = deletion;
-        let state_lock = match state_lock {
-            Some(state_lock) => state_lock,
-            None => {
-                let state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
-                state_lock.lock()?;
-                state_lock
-            }
+        let state_lock = if let Some(state_lock) = state_lock {
+            state_lock
+        } else {
+            let state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
+            state_lock.lock()?;
+            state_lock
         };
         let mut state = self.fresh_state()?;
         let index = {
@@ -692,13 +692,13 @@ impl BotStore {
                     "a different Bot deletion is awaiting recovery".into(),
                 ));
             }
-            let index = state
+            let (index, bot) = state
                 .bots
                 .iter()
-                .position(|bot| bot.id == bot_id)
+                .enumerate()
+                .find(|(_, bot)| *bot.id == *bot_id)
                 .ok_or_else(|| Error::Config(format!("unknown Bot `{bot_id}`")))?;
-            let bot = &state.bots[index];
-            if bot.handle == MOBIUS_HANDLE {
+            if &*bot.handle == MOBIUS_HANDLE {
                 return Err(Error::Config(
                     "the built-in @mobius Bot cannot be deleted".into(),
                 ));
@@ -712,12 +712,12 @@ impl BotStore {
             let current_routine_ids = state
                 .routines
                 .iter()
-                .filter(|routine| routine.bot_id == bot_id)
-                .map(|routine| routine.id.as_str())
+                .filter(|routine| *routine.bot_id == *bot_id)
+                .map(|routine| &*routine.id)
                 .collect::<BTreeSet<_>>();
             if !current_routine_ids
                 .into_iter()
-                .eq(routine_ids.iter().map(String::as_str))
+                .eq(routine_ids.iter().map(|id| &**id))
             {
                 return Err(Error::Config(
                     "Bot routine state changed during deletion".into(),
@@ -726,7 +726,7 @@ impl BotStore {
             let current_instructions = state
                 .routines
                 .iter()
-                .filter(|routine| routine.bot_id == bot_id)
+                .filter(|routine| *routine.bot_id == *bot_id)
                 .map(|routine| &routine.instructions)
                 .collect::<BTreeSet<_>>();
             if !current_instructions.into_iter().eq(&instructions) {
@@ -737,15 +737,17 @@ impl BotStore {
             index
         };
         let bot = state.bots.remove(index).record()?;
-        state.routines.retain(|routine| routine.bot_id != bot_id);
+        state.routines.retain(|routine| *routine.bot_id != *bot_id);
         validate_state(&state, &self.routines_dir)?;
         let catalog = catalog_json(&state)?;
         self.storage
             .delete_runs_and_save_catalog(&catalog, None, Some(&bot_id), None, None)?;
-        drop(_routine_locks);
+        drop(routine_locks);
         drop(state_lock);
         for path in &instructions {
-            let _ = remove_if_present(path);
+            if let Err(error) = remove_if_present(path) {
+                tracing::warn!(%error, path = %path.display(), "deleted Bot routine instructions were not removed");
+            }
         }
         Ok(bot)
     }
@@ -767,7 +769,7 @@ impl BotStore {
         self.current_state()?
             .bots
             .iter()
-            .find(|bot| bot.id == id)
+            .find(|bot| *bot.id == *id)
             .map(StoredBot::record)
             .transpose()
     }
@@ -791,39 +793,38 @@ impl BotStore {
             }
             return Err(error);
         }
-        let result = (|| {
+        let prepared = (|| {
             let state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
             state_lock.lock()?;
             let mut state = self.fresh_state()?;
             reject_bot_mutation_if_deleting(&state)?;
             find_bot_mut(&mut state, bot_id)?;
             let now = Utc::now().timestamp();
-            let routine = StoredRoutine {
-                id: Uuid::new_v4().to_string(),
-                bot_id: bot_id.into(),
-                workspace,
-                instructions: path.clone(),
-                bindings: definition
-                    .bindings
-                    .iter()
-                    .cloned()
-                    .map(|binding| StoredRoutineBinding::new(binding, now, false))
-                    .collect::<Result<_>>()?,
-                enabled: true,
-            };
-            let index = state.routines.len();
-            state.routines.push(routine);
+            let bindings = definition
+                .bindings
+                .iter()
+                .map(|binding| StoredRoutineBinding::new(binding.clone(), now, false)) // rules-allow: the definition is borrowed; the catalog owns its bindings
+                .collect::<Result<_>>()?;
+            Ok((state_lock, state, now, bindings))
+        })();
+        let (state_lock, mut state, now, bindings) = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => return Err(discard_staged(&path, error)),
+        };
+        let index = state.routines.len();
+        state.routines.push(StoredRoutine {
+            id: Uuid::new_v4().to_string().into(),
+            bot_id: bot_id.into(),
+            workspace,
+            instructions: path,
+            bindings,
+            enabled: true,
+        });
+        let committed = (|| {
             validate_state(&state, &self.routines_dir)?;
-            let routine = &state.routines[index];
-            let event = events::caused_event(
-                Uuid::new_v4().to_string(),
-                bot_id.into(),
-                HookSource::Routine {
-                    routine_id: routine.id.clone(),
-                },
-                HookData::RoutineCreated {
-                    routine_id: routine.id.clone(),
-                },
+            let event = routine_event(
+                routine_at(&state.routines, index)?,
+                |routine_id| HookData::RoutineCreated { routine_id },
                 now,
                 cause,
             )?;
@@ -834,13 +835,14 @@ impl BotStore {
                 &[],
                 now,
                 None,
-            )?;
-            Ok(state.routines.swap_remove(index))
+            )
         })();
-        if result.is_err() {
-            remove_if_present(&path)?;
+        let routine = state.routines.swap_remove(index);
+        drop(state_lock);
+        match committed {
+            Ok(()) => Ok(routine),
+            Err(error) => Err(discard_staged(&routine.instructions, error)),
         }
-        result
     }
 
     pub(crate) fn routine_records(&self, bot_id: Option<&str>, now: i64) -> Result<Vec<Routine>> {
@@ -848,7 +850,7 @@ impl BotStore {
         state
             .routines
             .into_iter()
-            .filter(|stored| bot_id.is_none_or(|bot_id| stored.bot_id == bot_id))
+            .filter(|stored| bot_id.is_none_or(|bot_id| *stored.bot_id == *bot_id))
             .map(|stored| self.routine_record_from(stored, now))
             .collect()
     }
@@ -858,7 +860,7 @@ impl BotStore {
         let stored = state
             .routines
             .into_iter()
-            .find(|routine| routine.id == id)
+            .find(|routine| *routine.id == *id)
             .ok_or_else(|| Error::Config(format!("unknown routine `{id}`")))?;
         self.routine_record_from(stored, now)
     }
@@ -907,7 +909,7 @@ impl BotStore {
         let mut state = self.fresh_state()?;
         reject_bot_mutation_if_deleting(&state)?;
         let index = resolve_routine(&state.routines, id)?;
-        let existing = &state.routines[index];
+        let existing = routine_at(&state.routines, index)?;
         if existing.workspace == workspace
             && self.read_routine_instructions(existing)? == definition.instructions.trim()
             && existing
@@ -937,38 +939,38 @@ impl BotStore {
             }
             return Err(error);
         }
-        let previous_instructions = std::mem::take(&mut state.routines[index].instructions);
-        let mut previous_bindings = std::mem::take(&mut state.routines[index].bindings);
-        let result = (|| {
-            let now = Utc::now().timestamp();
-            let stored = &mut state.routines[index];
-            stored.workspace = workspace;
-            stored.instructions = path.clone();
-            stored.bindings = definition
-                .bindings
-                .iter()
-                .map(|binding| {
-                    if let Some(index) = previous_bindings
-                        .iter()
-                        .position(|prior| prior.definition == *binding)
-                    {
-                        Ok(previous_bindings.swap_remove(index))
-                    } else {
-                        StoredRoutineBinding::new(binding.clone(), now, false)
-                    }
-                })
-                .collect::<Result<_>>()?;
+        let stored = match routine_at_mut(&mut state.routines, index) {
+            Ok(stored) => stored,
+            Err(error) => return Err(discard_staged(&path, error)),
+        };
+        let previous_instructions = std::mem::take(&mut stored.instructions);
+        let mut previous_bindings = std::mem::take(&mut stored.bindings);
+        let now = Utc::now().timestamp();
+        let bindings = definition
+            .bindings
+            .iter()
+            .map(|binding| {
+                if let Some(index) = previous_bindings
+                    .iter()
+                    .position(|prior| prior.definition == *binding)
+                {
+                    Ok(previous_bindings.swap_remove(index))
+                } else {
+                    StoredRoutineBinding::new(binding.clone(), now, false) // rules-allow: the definition is borrowed; the catalog owns its bindings
+                }
+            })
+            .collect::<Result<_>>();
+        stored.bindings = match bindings {
+            Ok(bindings) => bindings,
+            Err(error) => return Err(discard_staged(&path, error)),
+        };
+        stored.workspace = workspace;
+        stored.instructions = path;
+        let committed = (|| {
             validate_state(&state, &self.routines_dir)?;
-            let updated = &state.routines[index];
-            let event = events::caused_event(
-                Uuid::new_v4().to_string(),
-                updated.bot_id.clone(),
-                HookSource::Routine {
-                    routine_id: updated.id.clone(),
-                },
-                HookData::RoutineUpdated {
-                    routine_id: updated.id.clone(),
-                },
+            let event = routine_event(
+                routine_at(&state.routines, index)?,
+                |routine_id| HookData::RoutineUpdated { routine_id },
                 now,
                 cause,
             )?;
@@ -979,15 +981,16 @@ impl BotStore {
                 &[],
                 now,
                 accepted_action_id,
-            )?;
-            Ok(state.routines.swap_remove(index))
+            )
         })();
-        if result.is_ok() {
-            let _ = remove_if_present(&previous_instructions);
-        } else {
-            remove_if_present(&path)?;
+        let routine = state.routines.swap_remove(index);
+        if let Err(error) = committed {
+            return Err(discard_staged(&routine.instructions, error));
         }
-        result
+        if let Err(error) = remove_if_present(&previous_instructions) {
+            tracing::warn!(%error, "replaced routine instructions were not removed");
+        }
+        Ok(routine)
     }
 
     /// Changes future admission without acquiring or interrupting an invocation lock.
@@ -1003,14 +1006,14 @@ impl BotStore {
         let mut state = self.fresh_state()?;
         reject_bot_mutation_if_deleting(&state)?;
         let index = resolve_routine(&state.routines, id)?;
-        if state.routines[index].enabled == enabled {
+        if routine_at(&state.routines, index)?.enabled == enabled {
             if let Some(id) = accepted_action_id {
                 self.storage.action_accepted(id)?;
             }
             return Ok(state.routines.swap_remove(index));
         }
         let now = Utc::now().timestamp();
-        let stored = &mut state.routines[index];
+        let stored = routine_at_mut(&mut state.routines, index)?;
         stored.enabled = enabled;
         if enabled {
             for binding in &mut stored.bindings {
@@ -1018,26 +1021,12 @@ impl BotStore {
             }
         }
         validate_state(&state, &self.routines_dir)?;
-        let updated = &state.routines[index];
-        let data = if enabled {
-            HookData::RoutineResumed {
-                routine_id: updated.id.clone(),
-            }
+        let data: fn(Arc<str>) -> HookData = if enabled {
+            |routine_id| HookData::RoutineResumed { routine_id }
         } else {
-            HookData::RoutinePaused {
-                routine_id: updated.id.clone(),
-            }
+            |routine_id| HookData::RoutinePaused { routine_id }
         };
-        let event = events::caused_event(
-            Uuid::new_v4().to_string(),
-            updated.bot_id.clone(),
-            HookSource::Routine {
-                routine_id: updated.id.clone(),
-            },
-            data,
-            now,
-            cause,
-        )?;
+        let event = routine_event(routine_at(&state.routines, index)?, data, now, cause)?;
         self.storage.save_catalog_with_hooks(
             &catalog_json(&state)?,
             &state.routines,
@@ -1087,13 +1076,13 @@ impl BotStore {
             routine_id,
             session_ids,
             instructions,
-            _state_lock,
-            _lock,
+            _state_lock: state_lock,
+            _lock: lock,
         } = deletion;
         let mut state = self.fresh_state()?;
         let index = {
             let index = resolve_routine(&state.routines, &routine_id)?;
-            if state.routines[index].instructions != instructions {
+            if routine_at(&state.routines, index)?.instructions != instructions {
                 return Err(Error::Config(
                     "routine instructions changed during deletion".into(),
                 ));
@@ -1113,15 +1102,9 @@ impl BotStore {
         let deleted = state.routines.remove(index);
         validate_state(&state, &self.routines_dir)?;
         let catalog = catalog_json(&state)?;
-        let event = events::caused_event(
-            Uuid::new_v4().to_string(),
-            deleted.bot_id.clone(),
-            HookSource::Routine {
-                routine_id: deleted.id.clone(),
-            },
-            HookData::RoutineDeleted {
-                routine_id: deleted.id.clone(),
-            },
+        let event = routine_event(
+            &deleted,
+            |routine_id| HookData::RoutineDeleted { routine_id },
             Utc::now().timestamp(),
             cause,
         )?;
@@ -1132,9 +1115,11 @@ impl BotStore {
             Some(&event),
             accepted_action_id,
         )?;
-        drop(_lock);
-        drop(_state_lock);
-        let _ = remove_if_present(&instructions);
+        drop(lock);
+        drop(state_lock);
+        if let Err(error) = remove_if_present(&instructions) {
+            tracing::warn!(%error, "deleted routine instructions were not removed");
+        }
         Ok(deleted)
     }
 
@@ -1149,7 +1134,7 @@ impl BotStore {
         let routine = state
             .routines
             .into_iter()
-            .find(|routine| routine.id == id)
+            .find(|routine| *routine.id == *id)
             .ok_or_else(|| Error::Config(format!("unknown routine `{id}`")))?;
         let instructions = self.read_routine_instructions(&routine)?;
         let input = format!("{ROUTINE_SUBMISSION_PREFIX}\n\n{instructions}");
@@ -1203,8 +1188,9 @@ impl BotStore {
                 "routine instructions exceed the {MAX_ROUTINE_INSTRUCTIONS_BYTES}-byte input limit"
             )));
         }
-        let input = String::from_utf8(bytes)
-            .map_err(|_| Error::Config("routine instructions are not valid UTF-8".into()))?;
+        let input = String::from_utf8(bytes).map_err(|error| {
+            Error::Config(format!("routine instructions are not valid UTF-8: {error}"))
+        })?;
         validate_instructions(&input)?;
         Ok(input)
     }
@@ -1255,14 +1241,14 @@ impl BotStore {
                     &at.to_string(),
                 );
                 events.push(events::caused_event(
-                    id,
-                    routine.bot_id.clone(),
+                    id.into(),
+                    Arc::clone(&routine.bot_id),
                     HookSource::Schedule {
-                        routine_id: routine.id.clone(),
-                        binding_id: binding.definition.id.clone(),
+                        routine_id: Arc::clone(&routine.id),
+                        binding_id: Arc::clone(&binding.definition.id),
                     },
                     HookData::ScheduleDue {
-                        binding_id: binding.definition.id.clone(),
+                        binding_id: Arc::clone(&binding.definition.id),
                     },
                     now,
                     None,
@@ -1301,17 +1287,17 @@ impl BotStore {
         cause: Option<&HookEvent>,
         after_resolve: impl FnOnce(),
     ) -> Result<BeginRun> {
-        let routine = self.stored_routine(id)?;
+        let resolved = self.stored_routine(id)?;
         after_resolve();
-        let lock = self.try_routine_lock(&routine.id)?;
+        let lock = self.try_routine_lock(&resolved.id)?;
         let state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
         state_lock.lock()?;
         let state = self.fresh_state()?;
         reject_bot_mutation_if_deleting(&state)?;
         let routine = state
             .routines
-            .iter()
-            .find(|stored| stored.id == routine.id)
+            .into_iter()
+            .find(|stored| stored.id == resolved.id)
             .ok_or_else(|| Error::Config("routine was deleted".into()))?;
         if let Some(run) = self.storage.command_run(command_id)? {
             if run.routine_id != routine.id {
@@ -1346,7 +1332,7 @@ impl BotStore {
             run_id: run.id,
             session_id: run
                 .session_id
-                .expect("a running routine reserves its session ID"),
+                .ok_or_else(|| Error::Config("running routine has no session".into()))?,
             _lock: lock,
         }))
     }
@@ -1371,7 +1357,7 @@ impl BotStore {
         &self,
         run: ActiveRoutineRun,
         status: RoutineRunStatus,
-        message: Option<String>,
+        message: Option<Arc<str>>,
     ) -> Result<RoutineRun> {
         if status == RoutineRunStatus::Running {
             return Err(Error::Config(
@@ -1380,8 +1366,12 @@ impl BotStore {
         }
         let state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
         state_lock.lock()?;
-        self.storage
-            .finish_run(&run.run_id, status, Utc::now().timestamp(), message)
+        let finished =
+            self.storage
+                .finish_run(&run.run_id, status, Utc::now().timestamp(), message);
+        drop(state_lock);
+        drop(run);
+        finished
     }
 
     /// Returns newest-first run history for one routine.
@@ -1399,7 +1389,7 @@ impl BotStore {
         let mut ids = state
             .routines
             .iter()
-            .map(|routine| routine.id.as_str())
+            .map(|routine| &*routine.id)
             .chain(history_ids.iter().map(String::as_str))
             .filter(|routine_id| routine_id.starts_with(id))
             .collect::<BTreeSet<_>>();
@@ -1423,8 +1413,8 @@ impl BotStore {
     }
 
     pub(crate) fn delete_run(&self, id: &str) -> Result<RoutineRun> {
-        let _file_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
-        _file_lock.lock()?;
+        let file_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
+        file_lock.lock()?;
         let state = self.fresh_state()?;
         if state.pending_bot_deletion.is_some() {
             return Err(Error::Config(
@@ -1483,8 +1473,8 @@ impl BotStore {
         after_sequence: u64,
         now: i64,
     ) -> Result<()> {
-        let _state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
-        _state_lock.lock()?;
+        let state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
+        state_lock.lock()?;
         self.bot(&subscription.bot_id)?;
         self.storage
             .set_subscription(subscription, after_sequence, now)
@@ -1514,7 +1504,7 @@ impl BotStore {
             _lock: lock,
         })
     }
-    pub(crate) fn source_cursor(&self, session_id: &str) -> Result<(u64, Option<String>)> {
+    pub(crate) fn source_cursor(&self, session_id: &str) -> Result<(u64, Option<Arc<str>>)> {
         self.storage.source_cursor(session_id)
     }
     pub(crate) fn project_session(&self, event: &HookEvent, sequence: u64) -> Result<bool> {
@@ -1537,7 +1527,7 @@ impl BotStore {
         id: &str,
         status: RoutineRunStatus,
         finished_at: i64,
-        message: Option<String>,
+        message: Option<Arc<str>>,
     ) -> Result<RoutineRun> {
         self.storage.finish_run(id, status, finished_at, message)
     }
@@ -1546,7 +1536,7 @@ impl BotStore {
         self.fresh_state()?
             .routines
             .into_iter()
-            .find(|routine| routine.id == id)
+            .find(|routine| *routine.id == *id)
             .ok_or_else(|| Error::Config(format!("unknown routine `{id}`")))
     }
 
@@ -1565,8 +1555,8 @@ impl BotStore {
     }
 
     fn update<T>(&self, mutate: impl FnOnce(&mut BotState) -> Result<T>) -> Result<T> {
-        let _file_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
-        _file_lock.lock()?;
+        let file_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
+        file_lock.lock()?;
         self.update_locked(|state| {
             if state.pending_bot_deletion.is_some() {
                 return Err(Error::Config(
@@ -1595,10 +1585,9 @@ impl BotStore {
 
     /// The persisted catalog for reads, parsed again only after a commit.
     fn current_state(&self) -> Result<std::sync::Arc<BotState>> {
-        let mut cache = self
-            .cache
-            .lock()
-            .map_err(|_| Error::Config("Bot catalog cache lock is poisoned".into()))?;
+        let mut cache = self.cache.lock().map_err(|error| {
+            Error::Config(format!("Bot catalog cache lock is poisoned: {error}"))
+        })?;
         let stamp = cache.as_ref().map(|(stamp, _)| *stamp);
         if let Some((stamp, contents)) = self.storage.catalog_since(stamp)? {
             *cache = Some((stamp, std::sync::Arc::new(self.parse_state(contents)?)));
@@ -1667,20 +1656,23 @@ fn next_handle(state: &BotState, name: &str, id: &str) -> String {
         && !state
             .bots
             .iter()
-            .any(|bot| bot.id != id && bot.handle == base)
+            .any(|bot| *bot.id != *id && *bot.handle == *base)
     {
         return base;
     }
     for index in 2_u64.. {
         let suffix = format!("-{index}");
         let prefix_len = MAX_HANDLE_BYTES.saturating_sub(suffix.len());
-        let prefix = base[..base.len().min(prefix_len)].trim_end_matches('-');
+        let prefix = base
+            .get(..base.len().min(prefix_len))
+            .unwrap_or(&base)
+            .trim_end_matches('-');
         let candidate = format!("{prefix}{suffix}");
         if candidate != USER_HANDLE
             && !state
                 .bots
                 .iter()
-                .any(|bot| bot.id != id && bot.handle == candidate)
+                .any(|bot| *bot.id != *id && *bot.handle == *candidate)
         {
             return candidate;
         }
@@ -1693,7 +1685,8 @@ fn next_tint(state: &BotState) -> ProviderTint {
         .iter()
         .copied()
         .find(|tint| state.bots.iter().all(|bot| bot.tint != *tint))
-        .unwrap_or(BOT_TINTS[state.bots.len() % BOT_TINTS.len()])
+        .or_else(|| BOT_TINTS.iter().copied().cycle().nth(state.bots.len()))
+        .unwrap_or_default()
 }
 
 /// The first shape no Bot wears yet, then round again, as tints are handed out.
@@ -1701,7 +1694,8 @@ fn next_shape(state: &BotState) -> BotShape {
     BotShape::ALL
         .into_iter()
         .find(|shape| state.bots.iter().all(|bot| bot.shape != *shape))
-        .unwrap_or(BotShape::ALL[state.bots.len() % BotShape::ALL.len()])
+        .or_else(|| BotShape::ALL.into_iter().cycle().nth(state.bots.len()))
+        .unwrap_or(BotShape::Circle)
 }
 
 fn validate_handle(handle: &str) -> Result<String> {
@@ -1938,16 +1932,16 @@ fn validate_state(state: &BotState, routines_dir: &Path) -> Result<()> {
     let mut handles = BTreeSet::new();
     for bot in &state.bots {
         let parsed = Uuid::parse_str(&bot.id)
-            .map_err(|_| Error::Config("invalid persisted Bot ID".into()))?;
-        if parsed.to_string() != bot.id || !bot_ids.insert(bot.id.as_str()) {
+            .map_err(|error| Error::Config(format!("invalid persisted Bot ID: {error}")))?;
+        if *parsed.to_string() != *bot.id || !bot_ids.insert(&*bot.id) {
             return Err(Error::Config("duplicate persisted Bot ID".into()));
         }
-        if !handles.insert(bot.handle.as_str()) {
+        if !handles.insert(&*bot.handle) {
             return Err(Error::Config("duplicate persisted Bot handle".into()));
         }
-        if validate_handle(&bot.handle)? != bot.handle
-            || validate_name(&bot.name)? != bot.name
-            || validate_description(&bot.description)? != bot.description
+        if *validate_handle(&bot.handle)? != *bot.handle
+            || *validate_name(&bot.name)? != *bot.name
+            || *validate_description(&bot.description)? != *bot.description
         {
             return Err(Error::Config(
                 "persisted Bot identity is not normalized".into(),
@@ -1964,11 +1958,11 @@ fn validate_state(state: &BotState, routines_dir: &Path) -> Result<()> {
     let mut paths = BTreeSet::new();
     for routine in &state.routines {
         let parsed = Uuid::parse_str(&routine.id)
-            .map_err(|_| Error::Config("invalid persisted routine ID".into()))?;
-        if parsed.to_string() != routine.id || !ids.insert(routine.id.as_str()) {
+            .map_err(|error| Error::Config(format!("invalid persisted routine ID: {error}")))?;
+        if *parsed.to_string() != *routine.id || !ids.insert(&*routine.id) {
             return Err(Error::Config("duplicate persisted routine ID".into()));
         }
-        if !bot_ids.contains(routine.bot_id.as_str()) {
+        if !bot_ids.contains(&*routine.bot_id) {
             return Err(Error::Config("persisted routine has no Bot".into()));
         }
         validate_stored_workspace(&routine.workspace)?;
@@ -1995,11 +1989,11 @@ fn validate_state(state: &BotState, routines_dir: &Path) -> Result<()> {
     }
     if let Some(pending) = &state.pending_bot_deletion {
         let parsed = Uuid::parse_str(&pending.bot_id)
-            .map_err(|_| Error::Config("invalid pending Bot deletion ID".into()))?;
-        if parsed.to_string() != pending.bot_id || pending.expected_revision == 0 {
+            .map_err(|error| Error::Config(format!("invalid pending Bot deletion ID: {error}")))?;
+        if *parsed.to_string() != *pending.bot_id || pending.expected_revision == 0 {
             return Err(Error::Config("invalid pending Bot deletion".into()));
         }
-        if let Some(bot) = state.bots.iter().find(|bot| bot.id == pending.bot_id)
+        if let Some(bot) = state.bots.iter().find(|bot| *bot.id == *pending.bot_id)
             && bot.config.revision != pending.expected_revision
         {
             return Err(Error::Config(
@@ -2034,7 +2028,7 @@ fn validate_state(state: &BotState, routines_dir: &Path) -> Result<()> {
 
 fn resolve_routine(routines: &[StoredRoutine], id: &str) -> Result<usize> {
     validate_routine_id_prefix(id)?;
-    if let Some(index) = routines.iter().position(|routine| routine.id == id) {
+    if let Some(index) = routines.iter().position(|routine| *routine.id == *id) {
         return Ok(index);
     }
     let mut matches = routines
@@ -2053,15 +2047,15 @@ fn resolve_routine(routines: &[StoredRoutine], id: &str) -> Result<usize> {
 }
 
 fn new_run(
-    routine: &StoredRoutine,
+    routine: StoredRoutine,
     status: RoutineRunStatus,
-    message: Option<String>,
+    message: Option<Arc<str>>,
 ) -> RoutineRun {
     let now = Utc::now().timestamp();
     RoutineRun {
-        id: Uuid::new_v4().to_string(),
-        routine_id: routine.id.clone(),
-        bot_id: routine.bot_id.clone(),
+        id: Uuid::new_v4().to_string().into(),
+        routine_id: routine.id,
+        bot_id: routine.bot_id,
         started_at: now,
         finished_at: (status != RoutineRunStatus::Running).then_some(now),
         status,
@@ -2070,11 +2064,51 @@ fn new_run(
     }
 }
 
+/// Removes a staged instruction file after a failed commit, keeping the commit error
+/// unless the removal itself fails.
+fn discard_staged(path: &Path, error: Error) -> Error {
+    match remove_if_present(path) {
+        Ok(()) => error,
+        Err(removal) => removal,
+    }
+}
+
+fn routine_at(routines: &[StoredRoutine], index: usize) -> Result<&StoredRoutine> {
+    routines
+        .get(index)
+        .ok_or_else(|| Error::Config("resolved routine is missing from the catalog".into()))
+}
+
+fn routine_at_mut(routines: &mut [StoredRoutine], index: usize) -> Result<&mut StoredRoutine> {
+    routines
+        .get_mut(index)
+        .ok_or_else(|| Error::Config("resolved routine is missing from the catalog".into()))
+}
+
+/// A lifecycle event for one routine, owned apart from the catalog entry.
+fn routine_event(
+    routine: &StoredRoutine,
+    data: impl FnOnce(Arc<str>) -> HookData,
+    now: i64,
+    cause: Option<&HookEvent>,
+) -> Result<HookEvent> {
+    events::caused_event(
+        Uuid::new_v4().to_string().into(),
+        Arc::clone(&routine.bot_id),
+        HookSource::Routine {
+            routine_id: Arc::clone(&routine.id),
+        },
+        data(Arc::clone(&routine.id)),
+        now,
+        cause,
+    )
+}
+
 fn find_bot_mut<'a>(state: &'a mut BotState, id: &str) -> Result<&'a mut StoredBot> {
     state
         .bots
         .iter_mut()
-        .find(|bot| bot.id == id)
+        .find(|bot| *bot.id == *id)
         .ok_or_else(|| Error::Config(format!("unknown Bot `{id}`")))
 }
 

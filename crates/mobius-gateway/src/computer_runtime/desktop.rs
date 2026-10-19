@@ -19,7 +19,7 @@ pub(crate) struct DesktopControl {
 struct Runtime {
     id: Uuid,
     outgoing: mpsc::Sender<ServerMessage>,
-    pending: Option<(String, oneshot::Sender<Value>)>,
+    pending: Option<(Uuid, oneshot::Sender<Value>)>,
 }
 
 pub(crate) struct DesktopConnection {
@@ -30,7 +30,7 @@ pub(crate) struct DesktopConnection {
 
 impl DesktopControl {
     pub(crate) fn attach(self: &Arc<Self>) -> Result<DesktopConnection> {
-        let mut runtime = self.runtime.lock().map_err(|_| unavailable())?;
+        let mut runtime = self.runtime.lock().map_err(unavailable_after)?;
         if runtime.is_some() {
             return Err(Error::Sandbox(
                 "another Mac app already hosts desktop control".into(),
@@ -43,6 +43,7 @@ impl DesktopControl {
             outgoing,
             pending: None,
         });
+        drop(runtime);
         Ok(DesktopConnection {
             control: Arc::clone(self),
             id,
@@ -51,15 +52,17 @@ impl DesktopControl {
     }
 
     pub(crate) fn connect(self: &Arc<Self>, session_id: &str) -> Result<DuplexStream> {
-        let lease = Arc::clone(&self.control).try_lock_owned().map_err(|_| {
-            Error::Sandbox(
-                "another Bot is controlling this Mac; inspect again after it finishes".into(),
-            )
+        let lease = Arc::clone(&self.control).try_lock_owned().map_err(|busy| {
+            Error::Sandbox(format!(
+                "another Bot is controlling this Mac ({busy}); inspect again after it finishes"
+            ))
         })?;
         let (runtime_id, outgoing) = {
-            let runtime = self.runtime.lock().map_err(|_| unavailable())?;
-            let runtime = runtime.as_ref().ok_or_else(unavailable)?;
-            (runtime.id, runtime.outgoing.clone())
+            let guard = self.runtime.lock().map_err(unavailable_after)?;
+            let runtime = guard.as_ref().ok_or_else(unavailable)?;
+            let attached = (runtime.id, runtime.outgoing.clone()); // rules-allow: the relay task owns a sender
+            drop(guard);
+            attached
         };
         let session_id = session_id.to_owned();
         let execution_id = Uuid::new_v4().to_string();
@@ -67,7 +70,7 @@ impl DesktopControl {
         let (worker, mut relay) = tokio::io::duplex(64 * 1024);
         tokio::spawn(async move {
             let _lease = lease;
-            let _ = control
+            if let Err(error) = control
                 .relay(
                     &mut relay,
                     runtime_id,
@@ -75,11 +78,17 @@ impl DesktopControl {
                     &session_id,
                     &execution_id,
                 )
-                .await;
+                .await
+            {
+                tracing::debug!(%error, "desktop control relay ended");
+            }
             control.clear_pending(runtime_id);
-            let _ = outgoing
+            if let Err(error) = outgoing
                 .send(ServerMessage::DesktopControlEnded { execution_id })
-                .await;
+                .await
+            {
+                tracing::debug!(%error, "desktop app left before the evaluation ended");
+            }
         });
         Ok(worker)
     }
@@ -100,27 +109,28 @@ impl DesktopControl {
             let mut request = vec![0; size];
             channel.read_exact(&mut request).await?;
             let request: Value = serde_json::from_slice(&request)?;
-            let request_id = Uuid::new_v4().to_string();
+            let request_id = Uuid::new_v4();
             let (reply, response) = oneshot::channel();
             {
-                let mut runtime = self.runtime.lock().map_err(|_| unavailable())?;
-                let runtime = runtime
+                let mut guard = self.runtime.lock().map_err(unavailable_after)?;
+                let runtime = guard
                     .as_mut()
                     .filter(|runtime| runtime.id == runtime_id)
                     .ok_or_else(unavailable)?;
-                runtime.pending = Some((request_id.clone(), reply));
+                runtime.pending = Some((request_id, reply));
+                drop(guard);
             }
             outgoing
                 .send(ServerMessage::DesktopControlRequested {
-                    request_id,
+                    request_id: request_id.to_string().into(),
                     execution_id: execution_id.into(),
                     session_id: session_id.into(),
                     request,
                 })
                 .await
-                .map_err(|_| unavailable())?;
+                .map_err(unavailable_after)?;
             let response = tokio::select! {
-                response = response => response.map_err(|_| unavailable())?,
+                response = response => response.map_err(unavailable_after)?,
                 // A worker must wait for this reply. EOF or pipelining ends this evaluation.
                 _ = channel.read_u8() => return Ok(()),
             };
@@ -129,7 +139,7 @@ impl DesktopControl {
                 return Err(unavailable());
             }
             channel
-                .write_u32(u32::try_from(response.len()).map_err(|_| unavailable())?)
+                .write_u32(u32::try_from(response.len()).map_err(unavailable_after)?)
                 .await?;
             channel.write_all(&response).await?;
         }
@@ -146,18 +156,25 @@ impl DesktopControl {
 
 impl DesktopConnection {
     pub(crate) fn reply(&self, request_id: &str, response: Value) -> Result<()> {
-        let mut state = self.control.runtime.lock().map_err(|_| unavailable())?;
+        let mut state = self.control.runtime.lock().map_err(unavailable_after)?;
         let runtime = state
             .as_mut()
             .filter(|runtime| runtime.id == self.id)
             .ok_or_else(unavailable)?;
+        let mut buffer = Uuid::encode_buffer();
         let (_, reply) = runtime
             .pending
-            .take_if(|(id, _)| id == request_id)
+            .take_if(|(id, _)| *id.hyphenated().encode_lower(&mut buffer) == *request_id)
             .ok_or_else(|| {
                 Error::Sandbox("desktop reply is stale or belongs to another evaluation".into())
             })?;
-        let _ = reply.send(response);
+        drop(state);
+        if reply.send(response).is_err() {
+            tracing::debug!(
+                request_id,
+                "desktop evaluation ended before its reply arrived"
+            );
+        }
         Ok(())
     }
 }
@@ -174,8 +191,15 @@ impl Drop for DesktopConnection {
     }
 }
 
+const UNAVAILABLE: &str =
+    "Mac desktop control is unavailable; open the möbius desktop app and enable desktop control";
+
 fn unavailable() -> Error {
-    Error::Sandbox("Mac desktop control is unavailable; open the möbius desktop app and enable desktop control".into())
+    Error::Sandbox(UNAVAILABLE.into())
+}
+
+fn unavailable_after(error: impl std::fmt::Display) -> Error {
+    Error::Sandbox(format!("{UNAVAILABLE} ({error})"))
 }
 
 #[cfg(test)]
@@ -195,14 +219,11 @@ pub(crate) async fn write_update(
     message: Option<ServerMessage>,
     writer: &mut (impl tokio::io::AsyncWrite + Unpin),
 ) -> crate::Result<()> {
-    match message {
-        Some(message) => {
-            crate::wire::write_frame(writer, &crate::wire::ServerFrame::new(message)).await
-        }
-        None => {
-            *connection = None;
-            Ok(())
-        }
+    if let Some(message) = message {
+        crate::wire::write_frame(writer, &crate::wire::ServerFrame::new(message)).await
+    } else {
+        *connection = None;
+        Ok(())
     }
 }
 
@@ -260,7 +281,7 @@ pub(crate) async fn handle_message(
         Err(error) => ServerMessage::Rejected {
             request_id,
             code: "desktop_control".into(),
-            message: error.to_string(),
+            message: error.to_string().into(),
             fatal: false,
         },
     };

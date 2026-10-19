@@ -1,5 +1,11 @@
+use std::sync::Arc;
+
 use super::args::TelemetryCommand;
-use super::*;
+use super::{
+    ClientKind, ClientMessage, ConfigStore, Endpoint, Error, GatewayClient, MAX_PENDING_FRAMES,
+    PROCESS_FILE, PathBuf, Result, ServerMessage, direct_loopback_endpoint, ensure_gateway_stopped,
+    new_request_id, print_line, running_process_record,
+};
 use crate::telemetry::{SinkMethod, TelemetrySink};
 
 pub(super) async fn run(
@@ -20,19 +26,23 @@ pub(super) async fn run(
             ClientMessage::GetTelemetry { request_id }
         })
         .await?;
-        println!("{}", serde_json::to_string_pretty(&response)?);
-        return Ok(());
+        return Ok(print_line(format_args!(
+            "{}",
+            serde_json::to_string_pretty(&response)?
+        ))?);
     }
     let expected_revision = config.telemetry.revision;
     let previous =
-        (!running && !matches!(command, TelemetryCommand::List)).then(|| config.telemetry.clone());
+        (!running && !matches!(command, TelemetryCommand::List)).then(|| config.telemetry.clone()); // rules-allow: the persisted sinks are kept to roll back a failed cursor sync
     match command {
         TelemetryCommand::List => {
             for sink in &mut config.telemetry.sinks {
                 sink.redact_report()?;
             }
-            println!("{}", serde_json::to_string_pretty(&config.telemetry)?);
-            return Ok(());
+            return Ok(print_line(format_args!(
+                "{}",
+                serde_json::to_string_pretty(&config.telemetry)?
+            ))?);
         }
         TelemetryCommand::Remove { id } => config.telemetry.sinks.retain(|sink| sink.id != id),
         TelemetryCommand::Add {
@@ -122,7 +132,7 @@ pub(super) async fn run(
 async fn request(
     endpoint: &Endpoint,
     token: &str,
-    message: impl FnOnce(String) -> ClientMessage,
+    message: impl FnOnce(Arc<str>) -> ClientMessage,
 ) -> Result<ServerMessage> {
     tokio::time::timeout(std::time::Duration::from_secs(15), async {
         let mut options = crate::client::ConnectOptions {
@@ -134,13 +144,14 @@ async fn request(
         };
         let client = GatewayClient::connect_with(endpoint, token, ClientKind::GatewayDashboard, &mut options).await?;
         let (sender, mut events) = client.into_parts();
-        let request_id = Uuid::new_v4().to_string();
-        sender.send(message(request_id.clone())).await?;
+        let mut request_id = [0; uuid::fmt::Hyphenated::LENGTH];
+        let request_id = new_request_id(&mut request_id);
+        sender.send(message(request_id.into())).await?;
         for _ in 0..MAX_PENDING_FRAMES {
             let frame = events.next().await?.ok_or_else(|| Error::Protocol("gateway disconnected".into()))?;
-            if let Some(error) = frame.message.response_error(Some(&request_id)) { return Err(Error::Protocol(error.message.into())); }
-            if matches!(&frame.message, ServerMessage::Telemetry { request_id: id, .. } if id == &request_id) { return Ok(frame.message); }
+            if let Some(error) = frame.message.response_error(Some(request_id)) { return Err(Error::Protocol(error.message.into())); }
+            if matches!(&frame.message, ServerMessage::Telemetry { request_id: id, .. } if **id == *request_id) { return Ok(frame.message); }
         }
         Err(Error::Protocol("too many unrelated responses".into()))
-    }).await.map_err(|_| Error::Protocol("telemetry configuration timed out".into()))?
+    }).await.map_err(|elapsed| Error::Protocol(format!("telemetry configuration timed out: {elapsed}")))?
 }

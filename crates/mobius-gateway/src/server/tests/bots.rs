@@ -21,17 +21,17 @@ async fn bot_catalog_broadcasts_do_not_reintroduce_a_deleted_bot() {
         },
         ClientMessage::UpdateBot {
             request_id: "rename".into(),
-            id: bot.id.clone(),
+            id: Arc::clone(&bot.id),
             expected_revision: bot.config.revision,
             name: "Renamed".into(),
             description: bot.description,
             tint: bot.tint,
             shape: bot.shape,
-            config: bot.config.config,
+            config: bot.config.config.clone(),
         },
         ClientMessage::DeleteBot {
             request_id: "delete".into(),
-            id: bot.id.clone(),
+            id: Arc::clone(&bot.id),
             expected_revision: bot.config.revision + 1,
         },
         ClientMessage::ListBots {
@@ -46,13 +46,17 @@ async fn bot_catalog_broadcasts_do_not_reintroduce_a_deleted_bot() {
     let serving = tokio::spawn(serve_connection(
         stream,
         ConnectionContext {
+            shared: Arc::new(ConnectionShared {
+                auth: server.auth,
+                host: server.host,
+                bots: server.bots,
+                client_connections: Arc::new(ClientConnections::default()),
+                client_revocations,
+                tls: None,
+                websocket_host: None,
+            }),
             desktop_transport: false,
             local: true,
-            auth: server.auth,
-            host: server.host,
-            bots: server.bots,
-            client_connections: Arc::new(ClientConnections::default()),
-            client_revocations,
             admission: ConnectionAdmission::new(1, 1).admit().await,
             access_lease: None,
         },

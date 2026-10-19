@@ -63,10 +63,9 @@ impl State {
 
     fn push(&mut self, text: &str) {
         let (target, limit) = match self.field {
-            Field::Quick => return,
+            Field::Quick | Field::Connect => return,
             Field::Hostname => (&mut self.hostname, MAX_HOSTNAME_BYTES),
             Field::Token => (&mut self.token, MAX_TOKEN_BYTES),
-            Field::Connect => return,
         };
         let rejected = super::terminal::append_text(target, text, limit);
         self.error = rejected.then(|| format!("input is limited to {limit} bytes"));
@@ -74,14 +73,13 @@ impl State {
 
     fn backspace(&mut self) {
         match self.field {
-            Field::Quick => return,
+            Field::Quick | Field::Connect => return,
             Field::Hostname => {
                 self.hostname.pop();
             }
             Field::Token => {
                 self.token.pop();
             }
-            Field::Connect => return,
         }
         self.error = None;
     }
@@ -105,6 +103,10 @@ impl State {
     }
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "used as a map_err adapter, which hands over the error by value"
+)]
 fn configuration_error(error: mobius_gateway::Error) -> Error {
     Error::Config(error.to_string())
 }
@@ -169,12 +171,8 @@ fn handle_key(state: &mut State, key: KeyEvent) -> Action {
             state.move_field(-1);
             Action::Continue
         }
-        KeyCode::Down | KeyCode::Tab => {
-            state.move_field(1);
-            Action::Continue
-        }
         KeyCode::Enter if matches!(state.field, Field::Quick | Field::Connect) => Action::Finish,
-        KeyCode::Enter => {
+        KeyCode::Down | KeyCode::Tab | KeyCode::Enter => {
             state.move_field(1);
             Action::Continue
         }

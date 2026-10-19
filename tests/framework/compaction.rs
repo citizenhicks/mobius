@@ -4,7 +4,7 @@ pub(super) fn checkpoint_response(notes: &str) -> ModelOutput {
     tool_response(
         "checkpoint",
         "write_handoff",
-        serde_json::json!({"notes": notes}),
+        &serde_json::json!({"notes": notes}),
     )
 }
 
@@ -130,7 +130,7 @@ async fn checkpoint_preparation_retries_are_bounded_and_interruptible() {
         let mut agent = create_agent(config_with_store(
             workspace.path(),
             Arc::clone(&model),
-            checkpoints.clone(),
+            Arc::<MemoryCheckpoints>::clone(&checkpoints),
             "checkpoint-retry",
         ))
         .await
@@ -228,7 +228,7 @@ async fn automatic_plaintext_checkpoint_survives_recreation_and_keeps_the_prefix
     let mut agent = create_agent(config()).await.expect("resume");
     agent.sender().submit(user_message("next")).expect("next");
     assert_eq!(final_message(&mut agent).await, "resumed");
-    let requests = model.requests.lock().expect("requests");
+    let requests = model.requests.lock().expect("requests").clone();
     assert_eq!(requests.len(), 4);
     assert_eq!(requests[1].tools.len(), 1);
     assert_eq!(requests[1].tools[0].name, "write_handoff");
@@ -264,9 +264,9 @@ async fn checkpoint_model_override_keeps_the_conversation_on_its_selected_route(
     let writer = Arc::new(ScriptedModel::new(vec![checkpoint_response(
         "Goal: finish the original task. Progress: draft prepared.",
     )]));
-    let mut router = ModelRouter::new("test", conversation.clone());
+    let mut router = ModelRouter::new("test", Arc::<ScriptedModel>::clone(&conversation));
     router
-        .register("checkpoint", writer.clone())
+        .register("checkpoint", Arc::<ScriptedModel>::clone(&writer))
         .expect("route");
     let settings = BTreeMap::from([
         (
@@ -305,14 +305,18 @@ async fn checkpoint_model_override_keeps_the_conversation_on_its_selected_route(
         .submit(user_message("continue"))
         .expect("next");
     assert_eq!(final_message(&mut agent).await, "done");
-    let requests = conversation.requests.lock().expect("conversation requests");
+    let requests = conversation
+        .requests
+        .lock()
+        .expect("conversation requests")
+        .clone();
     assert_eq!(requests.len(), 2);
     assert!(
         serde_json::to_string(&requests[1].input)
             .expect("input")
             .contains("draft prepared")
     );
-    let summaries = writer.requests.lock().expect("checkpoint requests");
+    let summaries = writer.requests.lock().expect("checkpoint requests").clone();
     assert_eq!(summaries.len(), 1);
     assert_eq!(summaries[0].tools.len(), 1);
     assert_eq!(summaries[0].tools[0].name, "write_handoff");
@@ -374,7 +378,7 @@ async fn oversized_history_summarizes_a_complete_prefix_and_preserves_parallel_r
     ]));
     let checkpoints = Arc::new(MemoryCheckpoints::default());
     let mut checkpoint = Checkpoint::empty("over-budget");
-    checkpoint.session_context = test_session_context();
+    checkpoint.session_context = test_session_context().into();
     checkpoint.model_route = Some("test".into());
     checkpoint.context_model_route = Some("test".into());
     let first_result = "parallel-a ".repeat(350);
@@ -390,7 +394,7 @@ async fn oversized_history_summarizes_a_complete_prefix_and_preserves_parallel_r
         .sessions
         .lock()
         .expect("sessions")
-        .insert(checkpoint.session_id.clone(), checkpoint);
+        .insert(Arc::clone(&checkpoint.session_id), checkpoint);
     let mut agent = create_agent(
         config_with_store(
             workspace.path(),
@@ -408,7 +412,7 @@ async fn oversized_history_summarizes_a_complete_prefix_and_preserves_parallel_r
         .submit(user_message("continue"))
         .expect("input");
     assert_eq!(final_message(&mut agent).await, "continued");
-    let requests = model.requests.lock().expect("requests");
+    let requests = model.requests.lock().expect("requests").clone();
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[0].tools.len(), 1);
     assert!(!requests[0].input.iter().any(|item| item["call_id"] == "a"));

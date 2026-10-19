@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::path::Path;
 
 use tokio::process::Command;
@@ -43,20 +44,21 @@ pub(crate) fn protected_full_access_command(
          (deny process-info* (require-not (target same-sandbox)))\n\
          (deny mach-task-name (require-not (target same-sandbox)))\n",
     );
-    for (index, denied) in sandbox.denied_reads.iter().enumerate() {
-        let parameter = format!("DENIED_READ_{index}");
-        policy.push_str(&format!(
-            "\n(deny file-read* file-write*\n  (literal (param \"{parameter}\")){}\n)",
-            if denied.directory {
-                format!("\n  (subpath (param \"{parameter}\"))")
-            } else {
-                String::new()
-            }
-        ));
+    for (index, denied) in sandbox.policy.denied_reads.iter().enumerate() {
+        write!(
+            policy,
+            "\n(deny file-read* file-write*\n  (literal (param \"DENIED_READ_{index}\"))"
+        )
+        .map_err(|error| Error::Sandbox(error.to_string()))?;
+        if denied.directory {
+            write!(policy, "\n  (subpath (param \"DENIED_READ_{index}\"))")
+                .map_err(|error| Error::Sandbox(error.to_string()))?;
+        }
+        policy.push_str("\n)");
     }
     let mut command = Command::new(executable);
     command.arg("-p").arg(policy);
-    for (index, denied) in sandbox.denied_reads.iter().enumerate() {
+    for (index, denied) in sandbox.policy.denied_reads.iter().enumerate() {
         let path = denied
             .path
             .to_str()
@@ -82,22 +84,24 @@ pub(crate) fn sandboxed_command(
     let mut command = Command::new(executable);
     let mut policy =
         format!("{MACOS_SEATBELT_BASE_POLICY}{SEATBELT_POLICY_SUFFIX}{PRIVATE_TEMP_POLICY}");
-    for index in 0..sandbox.workspace_roots.len() {
-        let parameter = format!("WORKSPACE_ROOT_{index}");
-        policy.push_str(&format!(
-            "\n(allow file-write*\n  (literal (param \"{parameter}\"))\n  (subpath (param \"{parameter}\")))"
-        ));
+    for index in 0..sandbox.policy.workspace_roots.len() {
+        write!(
+            policy,
+            "\n(allow file-write*\n  (literal (param \"WORKSPACE_ROOT_{index}\"))\n  (subpath (param \"WORKSPACE_ROOT_{index}\")))"
+        )
+        .map_err(|error| Error::Sandbox(error.to_string()))?;
     }
-    for (index, denied) in sandbox.denied_reads.iter().enumerate() {
-        let parameter = format!("DENIED_READ_{index}");
-        policy.push_str(&format!(
-            "\n(deny file-read*\n  (literal (param \"{parameter}\")){}\n)",
-            if denied.directory {
-                format!("\n  (subpath (param \"{parameter}\"))")
-            } else {
-                String::new()
-            }
-        ));
+    for (index, denied) in sandbox.policy.denied_reads.iter().enumerate() {
+        write!(
+            policy,
+            "\n(deny file-read*\n  (literal (param \"DENIED_READ_{index}\"))"
+        )
+        .map_err(|error| Error::Sandbox(error.to_string()))?;
+        if denied.directory {
+            write!(policy, "\n  (subpath (param \"DENIED_READ_{index}\"))")
+                .map_err(|error| Error::Sandbox(error.to_string()))?;
+        }
+        policy.push_str("\n)");
     }
     if network_access == NetworkAccess::Allowed {
         policy.push_str("\n(allow network-outbound)\n(allow network-inbound)\n");
@@ -110,11 +114,12 @@ pub(crate) fn sandboxed_command(
   (literal (param "WRITABLE_ROOT"))
   (subpath (param "WRITABLE_ROOT")))"#,
         );
-        for index in 0..sandbox.workspace_roots.len() {
-            let parameter = format!("WORKSPACE_ROOT_{index}");
-            policy.push_str(&format!(
-                "\n(deny file-write*\n  (literal (param \"{parameter}\"))\n  (subpath (param \"{parameter}\")))"
-            ));
+        for index in 0..sandbox.policy.workspace_roots.len() {
+            write!(
+                policy,
+                "\n(deny file-write*\n  (literal (param \"WORKSPACE_ROOT_{index}\"))\n  (subpath (param \"WORKSPACE_ROOT_{index}\")))"
+            )
+            .map_err(|error| Error::Sandbox(error.to_string()))?;
         }
     }
     command.arg("-p").arg(policy);
@@ -124,14 +129,14 @@ pub(crate) fn sandboxed_command(
         .ok_or_else(|| Error::Sandbox("sandbox path is not UTF-8".into()))?;
     command.arg(format!("-DWRITABLE_ROOT={root}"));
     append_temporary_parameters(&mut command, sandbox)?;
-    for (index, root) in sandbox.workspace_roots.iter().enumerate() {
+    for (index, root) in sandbox.policy.workspace_roots.iter().enumerate() {
         let path = root
             .path
             .to_str()
             .ok_or_else(|| Error::Sandbox("sandbox path is not UTF-8".into()))?;
         command.arg(format!("-DWORKSPACE_ROOT_{index}={path}"));
     }
-    for (index, denied) in sandbox.denied_reads.iter().enumerate() {
+    for (index, denied) in sandbox.policy.denied_reads.iter().enumerate() {
         let path = denied
             .path
             .to_str()

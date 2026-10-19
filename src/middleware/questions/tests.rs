@@ -48,7 +48,7 @@ impl Model for TestModel {
     }
 }
 
-async fn next(agent: &mut Agent, predicate: impl Fn(&EventMsg) -> bool) -> EventMsg {
+async fn next(agent: &mut Agent, predicate: impl Fn(&EventMsg) -> bool + Sync) -> EventMsg {
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
             let event = agent.next_event().await.expect("agent event");
@@ -150,7 +150,7 @@ async fn answers_are_user_messages_during_active_and_idle_turns() {
         if active {
             next(&mut agent, |event| {
                 matches!(event, EventMsg::Frontend(FrontendEvent::Widget { capability, item })
-                    if capability == "messages" && item.text == "> Choose {answer}?\n\nA")
+                    if &**capability == "messages" && item.text == "> Choose {answer}?\n\nA")
             })
             .await;
             model.release.notify_one();
@@ -292,7 +292,7 @@ async fn ask_skip_restore_and_bounds_are_durable() {
             permissions.for_call(&i.to_string()),
             "turn",
         )
-        .with_call_id(&i.to_string());
+        .with_call_id(i.to_string().into());
         let result = tool
             .call(
                 context,

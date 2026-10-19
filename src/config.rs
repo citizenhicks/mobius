@@ -11,10 +11,19 @@ static OVERRIDE_DIR: OnceLock<PathBuf> = OnceLock::new();
 ///
 /// Must run before the first catalog lookup; later calls are ignored.
 pub fn set_override_dir(dir: PathBuf) {
-    let _ = OVERRIDE_DIR.set(dir);
+    if let Err(ignored) = OVERRIDE_DIR.set(dir) {
+        tracing::debug!(dir = %ignored.display(), "catalog override directory already set; ignoring");
+    }
 }
 
 /// Decodes `name` from the override directory when present and valid, else the embedded copy.
+///
+/// # Panics
+/// Panics if the bundled document is invalid or fails `validate`.
+#[expect(
+    clippy::panic,
+    reason = "embedded catalogs are build-owned and tested; an invalid one is a build defect"
+)]
 pub fn overridable<T: DeserializeOwned>(
     name: &str,
     text: &str,
@@ -48,6 +57,10 @@ pub fn overridable<T: DeserializeOwned>(
 /// # Panics
 /// Panics if the bundled document is invalid. External configuration must use a
 /// fallible decoder; this function is only for build-owned, tested source data.
+#[expect(
+    clippy::panic,
+    reason = "embedded catalogs are build-owned and tested; an invalid one is a build defect"
+)]
 pub fn embedded<T: DeserializeOwned>(text: &str) -> T {
     toml::from_str(text).unwrap_or_else(|error| panic!("invalid embedded TOML: {error}"))
 }
@@ -58,13 +71,22 @@ pub fn embedded<T: DeserializeOwned>(text: &str) -> T {
 /// initialization when Serde fills omitted external settings. Use `copy;` for
 /// settings containing only `Copy` fields.
 /// A `static NAME: Type = text;` declaration shares the same loader for complete
-/// embedded catalogs without adding external deserialization defaults.
+/// embedded catalogs without adding external deserialization defaults; a trailing
+/// `=> prepare` runs `prepare(&mut value)` once on the decoded catalog.
 #[macro_export]
 macro_rules! embedded_config {
     ($(#[$attribute:meta])* $visibility:vis static $name:ident: $type:ty = $text:expr;) => {
         $(#[$attribute])*
         $visibility static $name: std::sync::LazyLock<$type> =
             std::sync::LazyLock::new(|| $crate::config::embedded($text));
+    };
+    ($(#[$attribute:meta])* $visibility:vis static $name:ident: $type:ty = $text:expr => $prepare:expr;) => {
+        $(#[$attribute])*
+        $visibility static $name: std::sync::LazyLock<$type> = std::sync::LazyLock::new(|| {
+            let mut value: $type = $crate::config::embedded($text);
+            $prepare(&mut value);
+            value
+        });
     };
     (copy;
         $(#[$attribute:meta])* $visibility:vis struct $name:ident {

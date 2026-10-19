@@ -1,0 +1,1 @@
+Updates the bundled framework and exact gateway dependency to 0.16.39. Includes repaired provider tool arguments, completed-command capacity reuse, protected host-wide file viewing and optional context usage telemetry. Protocol 95 is unchanged.

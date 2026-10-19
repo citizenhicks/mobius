@@ -69,7 +69,7 @@ mod text {
         pub(super) widget_fork_chat: String,
         pub(super) widget_more_chats: String,
     }
-    crate::embedded_config! { pub(super) static DEFINITION: Definition = include_str!("sessions.toml"); }
+    crate::embedded_config! { pub(super) static DEFINITION: Definition = include_str!("sessions.toml") => super::limit_schema; }
 }
 const MAX_HISTORY_QUERY_BYTES: usize = 512;
 const MAX_HISTORY_CURSOR_BYTES: usize = 8_192;
@@ -80,6 +80,32 @@ const MAX_HISTORY_SCAN_CHARS: usize = 64_000;
 const HISTORY_CHUNK_CHARS: usize = 8_000;
 const HISTORY_EXCERPT_CHARS: usize = 600;
 const MAX_HISTORY_READ_CHARS: usize = 4_000;
+
+fn limit_schema(definition: &mut text::Definition) {
+    super::tools::limit_schema(
+        &mut definition.search_history.tool,
+        [
+            (
+                "/properties/query",
+                "maxLength",
+                MAX_HISTORY_QUERY_BYTES.into(),
+            ),
+            (
+                "/properties/cursor",
+                "maxLength",
+                MAX_HISTORY_CURSOR_BYTES.into(),
+            ),
+        ],
+    );
+    super::tools::limit_schema(
+        &mut definition.read_history.tool,
+        [(
+            "/properties/max_chars",
+            "maximum",
+            MAX_HISTORY_READ_CHARS.into(),
+        )],
+    );
+}
 const MAX_HANDLE_TITLE_BYTES: usize = 64;
 
 super::manifest::middleware_manifest! {
@@ -91,7 +117,7 @@ super::manifest::middleware_manifest! {
 #[derive(Debug, PartialEq, Eq)]
 pub struct LiveChat {
     /// The durable chat identifier.
-    pub session_id: String,
+    pub session_id: Arc<str>,
     /// The user-visible chat title.
     pub title: Option<String>,
     /// The workspace label.
@@ -99,7 +125,7 @@ pub struct LiveChat {
     /// Whether the chat has an active turn; an idle chat starts one for a message.
     pub running: bool,
     /// Active turn identity, used to interrupt only that turn.
-    pub turn_id: Option<String>,
+    pub turn_id: Option<Arc<str>>,
 }
 
 impl LiveChat {
@@ -110,7 +136,9 @@ impl LiveChat {
         match &self.title {
             Some(title) => format!(
                 "{} #{id}",
-                &title[..title.floor_char_boundary(MAX_HANDLE_TITLE_BYTES)]
+                title
+                    .get(..title.floor_char_boundary(MAX_HANDLE_TITLE_BYTES))
+                    .unwrap_or(title)
             ),
             None => format!("chat #{id}"),
         }
@@ -120,11 +148,12 @@ impl LiveChat {
     #[must_use]
     pub fn is_target(&self, target: &str) -> bool {
         let target = target.strip_prefix('#').unwrap_or(target);
-        target == self.session_id || target == compact_id(&self.session_id)
+        *target == *self.session_id || target == compact_id(&self.session_id)
     }
 }
 
 /// Destination for an existing chat command or a new project's first message.
+#[derive(Debug)]
 pub enum ChatTarget<'a> {
     /// One existing chat identified by its session ID or sender handle.
     Existing(&'a str),
@@ -133,6 +162,7 @@ pub enum ChatTarget<'a> {
 }
 
 /// One `message_chat` operation, validated where the tool parses its arguments.
+#[derive(Debug)]
 pub enum PeerCommand<'a> {
     /// A text message to an existing chat or a new workspace chat.
     Message {
@@ -171,13 +201,13 @@ pub trait LiveChats: Send + Sync {
         command: PeerCommand<'a>,
         initiating_author: &'a crate::protocol::MessageAuthor,
         command_id: &'a str,
-    ) -> BoxFuture<'a, Result<String>>;
+    ) -> BoxFuture<'a, Result<Arc<str>>>;
 }
 
 /// Adds chat discovery and branching without changing the core loop.
 pub struct Sessions {
     page_size: usize,
-    files: Option<crate::backend::session_files::SessionFileStore>,
+    files: Option<Arc<crate::backend::session_files::SessionFileStore>>,
     live_chats: Option<Arc<dyn LiveChats>>,
 }
 
@@ -190,10 +220,10 @@ impl Sessions {
     /// Returns an error if the page size is outside its manifest bounds.
     pub fn new(
         page_size: usize,
-        files: Option<crate::backend::session_files::SessionFileStore>,
+        files: Option<Arc<crate::backend::session_files::SessionFileStore>>,
         live_chats: Option<Arc<dyn LiveChats>>,
     ) -> Result<Self> {
-        let (min, max) = page_size_bounds();
+        let (min, max) = page_size_bounds()?;
         if !(min..=max).contains(&page_size) {
             return Err(Error::Config(format!(
                 "chat catalog page size must be between {min} and {max}"
@@ -207,22 +237,37 @@ impl Sessions {
     }
 }
 
-fn page_size_bounds() -> (usize, usize) {
-    match text::DEFINITION
+impl std::fmt::Debug for Sessions {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Sessions")
+            .field("page_size", &self.page_size)
+            .finish_non_exhaustive()
+    }
+}
+
+fn page_size_bounds() -> Result<(usize, usize)> {
+    let Some(super::manifest::MiddlewareSettingManifest::Integer {
+        min,
+        max: Some(max),
+        ..
+    }) = text::DEFINITION
         .settings
         .iter()
         .find(|setting| setting.id() == "page_size")
-    {
-        Some(super::manifest::MiddlewareSettingManifest::Integer {
-            min,
-            max: Some(max),
-            ..
-        }) => (
-            usize::try_from(*min).expect("embedded page size minimum must fit"),
-            usize::try_from(*max).expect("embedded page size maximum must fit"),
-        ),
-        _ => panic!("missing embedded integer setting page_size"),
-    }
+    else {
+        return Err(Error::Config(
+            "missing embedded integer setting page_size".into(),
+        ));
+    };
+    let bound = |value: i64| {
+        usize::try_from(value).map_err(|error| {
+            Error::Config(format!(
+                "embedded page size bound {value} must fit: {error}"
+            ))
+        })
+    };
+    Ok((bound(*min)?, bound(*max)?))
 }
 
 enum Command {
@@ -254,8 +299,8 @@ impl Middleware for Sessions {
     fn register(&self, catalog: &mut Catalog, runtime: &RuntimeContext) -> Result<()> {
         let history = Arc::new(History {
             checkpoints: Arc::clone(&runtime.checkpoints),
-            session_id: runtime.session_id.clone(),
-            owner_id: runtime.session_context.owner_id.clone(),
+            session_id: Arc::clone(&runtime.session_id),
+            owner_id: Arc::clone(&runtime.session_context.owner_id),
         });
         catalog.register(Arc::new(SearchHistory(Arc::clone(&history))))?;
         catalog.register(Arc::new(ReadHistory(Arc::clone(&history))))?;
@@ -293,15 +338,15 @@ impl Middleware for Sessions {
             .into_iter()
             .map(|(command, description)| FrontendCommand {
                 name: command.as_str().into(),
-                arguments: String::new(),
-                description: description.to_owned(),
+                arguments: String::new().into(),
+                description: description.to_owned().into(),
                 requires_idle: true,
             })
             .collect(),
-            widgets: vec![FrontendWidget {
+            widgets: vec![Arc::new(FrontendWidget {
                 id: Command::Fork.as_str().into(),
                 slot: FrontendSlot::MessageActions,
-                text: text::DEFINITION.widget_fork_chat.clone(),
+                text: text::DEFINITION.widget_fork_chat.clone(), // rules-allow: the widget record owns a copy of the embedded text
                 tone: FrontendTone::Neutral,
                 symbol: Some(FrontendSymbol::Branch),
                 icon_only: true,
@@ -312,7 +357,7 @@ impl Middleware for Sessions {
                     Command::Fork.as_str(),
                     String::new(),
                 )),
-            }],
+            })],
             ..Default::default()
         }
     }
@@ -335,7 +380,7 @@ impl Middleware for Sessions {
         Box::pin(async move {
             match Command::parse(context.command)? {
                 Command::Resume => resume(context, self.page_size).await,
-                Command::Fork => fork(context, self.files.as_ref(), self.page_size).await,
+                Command::Fork => fork(context, self.files.as_deref(), self.page_size).await,
             }
         })
     }
@@ -379,7 +424,7 @@ struct HistoryCursor {
     scope: HistoryScope,
     query: String,
     catalog: Option<SessionCursor>,
-    session_id: Option<String>,
+    session_id: Option<Arc<str>>,
     before_sequence: Option<u64>,
     remaining_items: Option<usize>,
     offset: usize,
@@ -404,8 +449,8 @@ struct HistoryDocument {
 
 struct History {
     checkpoints: Arc<dyn crate::backend::checkpoint::CheckpointStore>,
-    session_id: String,
-    owner_id: String,
+    session_id: Arc<str>,
+    owner_id: Arc<str>,
 }
 
 struct SearchHistory(Arc<History>);
@@ -463,8 +508,8 @@ impl MessageChatArgs {
 }
 
 impl Tool for ListChats {
-    fn definition(&self) -> ToolDefinition {
-        text::DEFINITION.list_chats.tool.clone()
+    fn definition(&self) -> &Arc<ToolDefinition> {
+        &text::DEFINITION.list_chats.tool
     }
 
     fn read_only(&self) -> bool {
@@ -475,11 +520,11 @@ impl Tool for ListChats {
         ExecutionMode::Parallel
     }
 
-    fn call<'a>(
-        &'a self,
+    fn call(
+        &self,
         _context: ToolContext,
         _arguments: Value,
-    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
+    ) -> BoxFuture<'_, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             let chats = self.0.chats.list(&self.0.history.session_id).await?;
             let chats = chats
@@ -500,15 +545,15 @@ impl Tool for ListChats {
 }
 
 impl Tool for MessageChat {
-    fn definition(&self) -> ToolDefinition {
-        text::DEFINITION.message_chat.tool.clone()
+    fn definition(&self) -> &Arc<ToolDefinition> {
+        &text::DEFINITION.message_chat.tool
     }
 
-    fn call<'a>(
-        &'a self,
+    fn call(
+        &self,
         context: ToolContext,
         arguments: Value,
-    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
+    ) -> BoxFuture<'_, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             let mut args: MessageChatArgs = serde_json::from_value(arguments)?;
             let command = args.command()?;
@@ -528,11 +573,8 @@ impl Tool for MessageChat {
 }
 
 impl Tool for SearchHistory {
-    fn definition(&self) -> ToolDefinition {
-        let mut tool = text::DEFINITION.search_history.tool.clone();
-        tool.parameters["properties"]["query"]["maxLength"] = MAX_HISTORY_QUERY_BYTES.into();
-        tool.parameters["properties"]["cursor"]["maxLength"] = MAX_HISTORY_CURSOR_BYTES.into();
-        tool
+    fn definition(&self) -> &Arc<ToolDefinition> {
+        &text::DEFINITION.search_history.tool
     }
 
     fn read_only(&self) -> bool {
@@ -543,11 +585,11 @@ impl Tool for SearchHistory {
         ExecutionMode::Parallel
     }
 
-    fn call<'a>(
-        &'a self,
+    fn call(
+        &self,
         _context: ToolContext,
         arguments: Value,
-    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
+    ) -> BoxFuture<'_, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             self.0
                 .search(serde_json::from_value(arguments)?)
@@ -558,10 +600,8 @@ impl Tool for SearchHistory {
 }
 
 impl Tool for ReadHistory {
-    fn definition(&self) -> ToolDefinition {
-        let mut tool = text::DEFINITION.read_history.tool.clone();
-        tool.parameters["properties"]["max_chars"]["maximum"] = MAX_HISTORY_READ_CHARS.into();
-        tool
+    fn definition(&self) -> &Arc<ToolDefinition> {
+        &text::DEFINITION.read_history.tool
     }
 
     fn read_only(&self) -> bool {
@@ -572,11 +612,11 @@ impl Tool for ReadHistory {
         ExecutionMode::Parallel
     }
 
-    fn call<'a>(
-        &'a self,
+    fn call(
+        &self,
         _context: ToolContext,
         arguments: Value,
-    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
+    ) -> BoxFuture<'_, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             self.0
                 .read(serde_json::from_value(arguments)?)
@@ -605,8 +645,7 @@ impl History {
     async fn authorize(&self, session_id: &str) -> Result<()> {
         validate_history_session_id(session_id)?;
         let checkpoint = self.checkpoints.load(session_id).await?;
-        if !checkpoint
-            .is_some_and(|checkpoint| checkpoint.session_context.owner_id == self.owner_id)
+        if checkpoint.is_none_or(|checkpoint| checkpoint.session_context.owner_id != self.owner_id)
         {
             return Err(Error::Tool(
                 "history chat is unavailable to this owner".into(),
@@ -628,7 +667,7 @@ impl History {
                 query: query.into(),
                 catalog: None,
                 session_id: (arguments.scope == HistoryScope::Current)
-                    .then(|| self.session_id.clone()),
+                    .then(|| Arc::clone(&self.session_id)),
                 before_sequence: None,
                 remaining_items: None,
                 offset: 0,
@@ -714,8 +753,8 @@ impl History {
         let searchable = documents.iter().map(|document| document.text.as_str());
         let hits = rank_bm25(searchable, &cursor.query, MAX_HISTORY_RESULTS)
             .into_iter()
-            .map(|index| {
-                let document = &documents[index];
+            .filter_map(|index| documents.get(index))
+            .map(|document| {
                 let (offset, excerpt) = history_excerpt(&document.text, &cursor.query);
                 HistoryHit {
                     session_id: &document.session_id,
@@ -739,7 +778,7 @@ impl History {
         let page = self
             .checkpoints
             .list_sessions_page(SessionPageRequest {
-                owner_id: Some(self.owner_id.clone()),
+                owner_id: Some(Arc::clone(&self.owner_id)),
                 cursor: cursor.catalog.take(),
                 limit: 1,
             })
@@ -755,7 +794,7 @@ impl History {
         cursor.catalog = Some(SessionCursor {
             updated_at: summary.updated_at,
             sequence: summary.sequence,
-            session_id: summary.session_id.clone(),
+            session_id: Arc::clone(&summary.session_id),
         });
         if summary.session_id != self.session_id {
             cursor.session_id = Some(summary.session_id);
@@ -842,24 +881,26 @@ fn scan_history_batch(
         && MAX_HISTORY_SCAN_CHARS - *scanned_chars > MAX_HISTORY_QUERY_BYTES
     {
         *scanned_items += 1;
-        let mut next_offset = None;
-        if let Some((kind, text)) = history_text(&batch.items[remaining - 1]) {
-            let limit = HISTORY_CHUNK_CHARS.min(MAX_HISTORY_SCAN_CHARS - *scanned_chars);
-            let (chunk, next) = history_chunk(&text, cursor.offset, limit)?;
-            *scanned_chars += chunk.chars().count();
-            documents.push(HistoryDocument {
-                session_id: Arc::clone(session_id),
-                target: MessageTarget {
-                    checkpoint_sequence: batch.sequence,
-                    batch_item_count: remaining,
-                },
-                kind,
-                offset: cursor.offset,
-                text: chunk,
-            });
-            // Overlap the query length so chunk boundaries cannot hide a literal search phrase.
-            next_offset = next.map(|offset| offset - cursor.query.chars().count());
-        }
+        let next_offset =
+            if let Some((kind, text)) = batch.items.get(remaining - 1).and_then(history_text) {
+                let limit = HISTORY_CHUNK_CHARS.min(MAX_HISTORY_SCAN_CHARS - *scanned_chars);
+                let (chunk, next) = history_chunk(&text, cursor.offset, limit)?;
+                *scanned_chars += chunk.chars().count();
+                documents.push(HistoryDocument {
+                    session_id: Arc::clone(session_id),
+                    target: MessageTarget {
+                        checkpoint_sequence: batch.sequence,
+                        batch_item_count: remaining,
+                    },
+                    kind,
+                    offset: cursor.offset,
+                    text: chunk,
+                });
+                // Overlap the query length so chunk boundaries cannot hide a literal search phrase.
+                next.map(|offset| offset - cursor.query.chars().count())
+            } else {
+                None
+            };
         if let Some(offset) = next_offset {
             cursor.offset = offset;
         } else {
@@ -971,7 +1012,10 @@ fn history_chunk(text: &str, offset: usize, max_chars: usize) -> Result<(String,
         .nth(offset)
         .or_else(|| (text.chars().count() == offset).then_some(text.len()))
         .ok_or_else(|| Error::Tool("history offset exceeds the item length".into()))?;
-    let mut chars = text[start..].chars();
+    let mut chars = text
+        .get(start..)
+        .ok_or_else(|| Error::Tool("history offset exceeds the item length".into()))?
+        .chars();
     let content = chars.by_ref().take(max_chars).collect::<String>();
     let next = chars.next().is_some().then(|| offset + max_chars);
     Ok((content, next))
@@ -983,7 +1027,9 @@ fn history_excerpt(text: &str, query: &str) -> (usize, String) {
     let found = lower
         .find(&query)
         .or_else(|| query.split_whitespace().find_map(|term| lower.find(term)));
-    let offset = found.map_or(0, |index| text[..index].chars().count().saturating_sub(100));
+    let offset = found
+        .and_then(|index| text.get(..index))
+        .map_or(0, |prefix| prefix.chars().count().saturating_sub(100));
     (
         offset,
         text.chars()
@@ -1023,7 +1069,7 @@ async fn fork(
         }
         return Ok(MiddlewareCommandOutput::events(vec![
             FrontendEvent::Picker {
-                title: text::DEFINITION.picker_fork_chat_from_message.clone(),
+                title: text::DEFINITION.picker_fork_chat_from_message.clone(), // rules-allow: the picker record owns a copy of the embedded text
                 options,
             },
         ]));
@@ -1037,12 +1083,13 @@ async fn fork(
         &checkpoint.context,
     )
     .await?;
+    let session_id = Arc::clone(&checkpoint.session_id);
     context
         .checkpoints
         .fork(
             &context.checkpoint.session_id,
             target.checkpoint_sequence,
-            &checkpoint,
+            checkpoint,
         )
         .await?;
     // A picker here waits for a choice the reader has already made. The fork is listed with
@@ -1051,7 +1098,7 @@ async fn fork(
         MANIFEST.id,
         text::DEFINITION
             .message_forked
-            .replace("{id}", compact_id(&checkpoint.session_id)),
+            .replace("{id}", compact_id(&session_id)),
         FrontendTone::Success,
     ))
 }
@@ -1134,7 +1181,7 @@ fn fork_prefix(
         .iter()
         .position(|(position, _)| position == target)
         .ok_or_else(invalid_fork_target)?;
-    let prefix = &items[..=index];
+    let prefix = items.get(..=index).ok_or_else(invalid_fork_target)?;
     if !replay_events(prefix, session_id)
         .into_iter()
         .any(|event| match event {
@@ -1193,11 +1240,9 @@ fn manual_fork_checkpoint(parent: &Checkpoint, context: Vec<serde_json::Value>) 
         .first_user_message
         .clone_from(&parent.first_user_message);
     checkpoint.model_route.clone_from(&parent.model_route);
-    checkpoint
-        .session_context
-        .clone_from(&parent.session_context);
+    checkpoint.session_context = Arc::clone(&parent.session_context);
     checkpoint.metadata.clone_from(&parent.metadata);
-    checkpoint.session_context.origin_label = None;
+    Arc::make_mut(&mut checkpoint.session_context).origin_label = None;
     checkpoint
 }
 
@@ -1230,7 +1275,7 @@ async fn resume(
     }
     Ok(MiddlewareCommandOutput::events(vec![
         FrontendEvent::Picker {
-            title: text::DEFINITION.picker_resume_chat.clone(),
+            title: text::DEFINITION.picker_resume_chat.clone(), // rules-allow: the picker record owns a copy of the embedded text
             options,
         },
     ]))
@@ -1267,7 +1312,7 @@ fn resume_page_options(
         .collect::<Vec<_>>();
     if let Some(cursor) = page.next_cursor {
         options.push(FrontendPickerOption {
-            label: text::DEFINITION.widget_more_chats.clone(),
+            label: text::DEFINITION.widget_more_chats.clone(), // rules-allow: the picker record owns a copy of the embedded text
             description: String::new(),
             detail: String::new(),
             symbol: None,
@@ -1286,7 +1331,7 @@ fn resume_option(
     session: SessionSummary,
     current_session_id: &str,
 ) -> Option<FrontendPickerOption> {
-    if !session.catalog_visible || session.session_id == current_session_id {
+    if !session.catalog_visible || *session.session_id == *current_session_id {
         return None;
     }
     let description = session_description(&session);
@@ -1340,11 +1385,11 @@ mod tests {
     ) -> Checkpoint {
         let mut checkpoint = Checkpoint::empty(session_id);
         checkpoint.sequence = 1;
-        checkpoint.session_context.owner_id = owner_id.into();
+        std::sync::Arc::make_mut(&mut checkpoint.session_context).owner_id = owner_id.into();
         let items = items.into_iter().map(Arc::new).collect::<Vec<_>>();
         checkpoint.context = Arc::new(items);
         checkpoints
-            .save(&checkpoint, &checkpoint.context, None)
+            .save(checkpoint.clone(), checkpoint.context.to_vec(), None)
             .await
             .expect("save history");
         checkpoint
@@ -1386,11 +1431,12 @@ mod tests {
             history
                 .checkpoints
                 .save(
-                    &checkpoint,
-                    &[
+                    checkpoint.clone(),
+                    [
                         serde_json::json!({"role":"assistant", "content":"newer unrelated work"})
                             .into(),
-                    ],
+                    ]
+                    .to_vec(),
                     None,
                 )
                 .await
@@ -1666,7 +1712,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        assert_eq!(session_ids, ["visible"]);
+        assert_eq!(session_ids, [Arc::from("visible")]);
     }
 
     #[test]
@@ -1698,7 +1744,8 @@ mod tests {
             workspace_label: Some("Project One".into()),
             origin_label: Some("routine".into()),
             ..crate::protocol::SessionContext::default()
-        };
+        }
+        .into();
 
         let fork = manual_fork_checkpoint(
             &parent,
@@ -1713,7 +1760,7 @@ mod tests {
         assert_eq!(fork.first_user_message, parent.first_user_message);
         assert_eq!(fork.metadata, parent.metadata);
         assert_eq!(
-            fork.session_context,
+            *fork.session_context,
             crate::protocol::SessionContext {
                 owner_id: "bot-1".into(),
                 workspace_id: Some("workspace-1".into()),

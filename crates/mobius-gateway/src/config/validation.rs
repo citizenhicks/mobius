@@ -19,7 +19,7 @@ pub(crate) fn validate_bot_compatibility(
     let catalog = crate::provider_catalog::catalog_routes(definition, configured, selection);
     if !catalog
         .iter()
-        .any(|candidate| candidate.choice.route == route)
+        .any(|candidate| *candidate.choice.route == *route)
     {
         return Err(Error::Config(
             "active model route is not in the configured catalog".into(),
@@ -562,8 +562,9 @@ pub(super) fn validate_telemetry(config: &crate::telemetry::TelemetryConfig) -> 
         if !ids.insert(&sink.id) {
             return Err(invalid("id", "must be unique"));
         }
-        let url = url::Url::parse(&sink.url)
-            .map_err(|_| invalid("url", "must be an absolute HTTP(S) URL"))?;
+        let url = url::Url::parse(&sink.url).map_err(|error| {
+            invalid("url", &format!("must be an absolute HTTP(S) URL: {error}"))
+        })?;
         let loopback = match url.host() {
             Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
             Some(url::Host::Ipv6(ip)) => ip.is_loopback(),

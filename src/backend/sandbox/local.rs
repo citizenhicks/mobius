@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
+use std::fmt::Write as _;
 use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
@@ -52,7 +53,7 @@ static PINNED_DIRECTORIES: LazyLock<Mutex<BTreeMap<PathBuf, Weak<Dir>>>> =
 fn pin_directory(path: &Path) -> Result<Arc<Dir>> {
     let mut directories = PINNED_DIRECTORIES
         .lock()
-        .map_err(|_| Error::Sandbox("pinned directory lock is poisoned".into()))?;
+        .map_err(|error| Error::Sandbox(format!("pinned directory lock is poisoned: {error}")))?;
     directories.retain(|_, directory| directory.strong_count() > 0);
     if let Some(directory) = directories.get(path).and_then(Weak::upgrade)
         && validate_root(path, &directory).is_ok()
@@ -62,6 +63,7 @@ fn pin_directory(path: &Path) -> Result<Arc<Dir>> {
     let directory = Arc::new(Dir::open_ambient_dir(path, ambient_authority())?);
     validate_root(path, &directory)?;
     directories.insert(path.into(), Arc::downgrade(&directory));
+    drop(directories);
     Ok(directory)
 }
 
@@ -70,21 +72,48 @@ const MAX_READ_ONLY_OUTPUT_BYTES: usize = MAX_BINARY_FILE_BYTES;
 /// Provides capability-safe file tools and policy-selected command execution.
 pub struct LocalSandbox {
     root: PathBuf,
-    root_dir: Arc<Dir>,
-    workspace_roots: Vec<PinnedRoot>,
-    read_roots: Vec<PinnedRoot>,
-    temp: Arc<tempfile::TempDir>,
-    temp_root: Arc<Dir>,
+    // Copy-on-write: isolated children and in-flight file tasks keep the policy they started with.
+    policy: Arc<Policy>,
+    temp: Arc<Temporary>,
     command_timeout: Duration,
     command_output_limit: usize,
-    shell_executable: PathBuf,
-    bubblewrap_executable: Option<PathBuf>,
-    allowed_environment: BTreeSet<String>,
-    denied_reads: Arc<Vec<DeniedRead>>,
-    denied_environment: BTreeSet<String>,
     isolated_home: bool,
     #[cfg(target_os = "linux")]
     procfs_mode: ProcfsMode,
+}
+
+struct Temporary {
+    directory: tempfile::TempDir,
+    root: Dir,
+}
+
+impl Temporary {
+    fn path(&self) -> &Path {
+        self.directory.path()
+    }
+}
+
+#[derive(Clone)]
+struct Policy {
+    root_dir: Arc<Dir>,
+    workspace_roots: Vec<PinnedRoot>,
+    read_roots: Vec<PinnedRoot>,
+    shell_executable: PathBuf,
+    bubblewrap_executable: Option<PathBuf>,
+    allowed_environment: BTreeSet<String>,
+    denied_reads: Vec<DeniedRead>,
+    denied_environment: BTreeSet<String>,
+}
+
+impl std::fmt::Debug for LocalSandbox {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LocalSandbox")
+            .field("root", &self.root)
+            .field("command_timeout", &self.command_timeout)
+            .field("isolated_home", &self.isolated_home)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Clone)]
@@ -155,21 +184,25 @@ impl LocalSandbox {
             let temp = tempfile::Builder::new()
                 .prefix("session-")
                 .tempdir_in(parent.path())?;
-            let temp_root = Arc::new(Dir::open_ambient_dir(temp.path(), ambient_authority())?);
+            let root_handle = Dir::open_ambient_dir(temp.path(), ambient_authority())?;
             Ok(Self {
                 root,
-                root_dir,
-                workspace_roots: Vec::new(),
-                read_roots: Vec::new(),
-                temp: Arc::new(temp),
-                temp_root,
+                policy: Arc::new(Policy {
+                    root_dir,
+                    workspace_roots: Vec::new(),
+                    read_roots: Vec::new(),
+                    shell_executable: super::text::DEFINITION.defaults_shell.as_str().into(),
+                    bubblewrap_executable: None,
+                    allowed_environment: BTreeSet::new(),
+                    denied_reads: Vec::new(),
+                    denied_environment: BTreeSet::new(),
+                }),
+                temp: Arc::new(Temporary {
+                    directory: temp,
+                    root: root_handle,
+                }),
                 command_timeout: Duration::from_secs(super::default_command_timeout_seconds()),
                 command_output_limit: super::default_tool_output_limit(),
-                shell_executable: super::text::DEFINITION.defaults_shell.as_str().into(),
-                bubblewrap_executable: None,
-                allowed_environment: BTreeSet::new(),
-                denied_reads: Arc::default(),
-                denied_environment: BTreeSet::new(),
                 isolated_home: false,
                 #[cfg(target_os = "linux")]
                 procfs_mode: ProcfsMode::default(),
@@ -184,16 +217,9 @@ impl LocalSandbox {
     pub fn isolated_execution(&self) -> Result<Self> {
         self.validate_workspace_roots()?;
         let mut scoped = Self::new(&self.root)?;
-        scoped.root_dir = Arc::clone(&self.root_dir);
-        scoped.workspace_roots = self.workspace_roots.clone();
-        scoped.read_roots = self.read_roots.clone();
+        scoped.policy = Arc::clone(&self.policy);
         scoped.command_timeout = self.command_timeout;
         scoped.command_output_limit = self.command_output_limit;
-        scoped.shell_executable = self.shell_executable.clone();
-        scoped.bubblewrap_executable = self.bubblewrap_executable.clone();
-        scoped.allowed_environment = self.allowed_environment.clone();
-        scoped.denied_reads = Arc::clone(&self.denied_reads);
-        scoped.denied_environment = self.denied_environment.clone();
         scoped.isolated_home = self.isolated_home;
         #[cfg(target_os = "linux")]
         {
@@ -208,7 +234,6 @@ impl LocalSandbox {
     /// Returns an error if validation or an operation required by this function fails.
     pub fn share_temporary_directory(mut self, owner: &Self) -> Result<Self> {
         self.temp = Arc::clone(&owner.temp);
-        self.temp_root = Arc::clone(&owner.temp_root);
         Ok(self)
     }
 
@@ -227,8 +252,8 @@ impl LocalSandbox {
         {
             return Err(Error::Sandbox("temporary path escapes its owner".into()));
         }
-        validate_root(self.temp.path(), &self.temp_root)?;
-        Ok(Some((self.temp_root.try_clone()?, relative.into())))
+        validate_root(self.temp.path(), &self.temp.root)?;
+        Ok(Some((self.temp.root.try_clone()?, relative.into())))
     }
 
     /// Sets the hard timeout applied to each sandboxed command.
@@ -258,7 +283,7 @@ impl LocalSandbox {
     pub fn shell_executable(mut self, executable: impl AsRef<Path>) -> Result<Self> {
         let executable = validated_executable(executable.as_ref())?;
         self.validate_trusted_executable(&executable)?;
-        self.shell_executable = executable;
+        Arc::make_mut(&mut self.policy).shell_executable = executable;
         Ok(self)
     }
 
@@ -268,7 +293,7 @@ impl LocalSandbox {
     pub fn bubblewrap_executable(mut self, executable: impl AsRef<Path>) -> Result<Self> {
         let executable = validated_executable(executable.as_ref())?;
         self.validate_trusted_executable(&executable)?;
-        self.bubblewrap_executable = Some(executable);
+        Arc::make_mut(&mut self.policy).bubblewrap_executable = Some(executable);
         Ok(self)
     }
 
@@ -289,7 +314,9 @@ impl LocalSandbox {
                 "environment name must be an identifier".into(),
             ));
         }
-        self.allowed_environment.insert(name);
+        Arc::make_mut(&mut self.policy)
+            .allowed_environment
+            .insert(name);
         Ok(self)
     }
 
@@ -305,6 +332,7 @@ impl LocalSandbox {
             ));
         }
         if self
+            .policy
             .workspace_roots
             .iter()
             .any(|root| paths_overlap(&root.path, &path))
@@ -314,6 +342,7 @@ impl LocalSandbox {
             ));
         }
         if self
+            .policy
             .read_roots
             .iter()
             .any(|root| paths_overlap(&root.path, &path))
@@ -330,6 +359,7 @@ impl LocalSandbox {
             )));
         }
         if self
+            .policy
             .denied_reads
             .iter()
             .any(|denied| path == denied.path || path.starts_with(&denied.path))
@@ -337,7 +367,7 @@ impl LocalSandbox {
             return Ok(self);
         }
         // A policy change must not alter restrictions retained by isolated children or in-flight file access.
-        let denied_reads = Arc::make_mut(&mut self.denied_reads);
+        let denied_reads = &mut Arc::make_mut(&mut self.policy).denied_reads;
         if metadata.is_dir() {
             denied_reads.retain(|denied| !denied.path.starts_with(&path));
         }
@@ -362,6 +392,7 @@ impl LocalSandbox {
             )));
         }
         if self
+            .policy
             .denied_reads
             .iter()
             .any(|denied| paths_overlap(&path, &denied.path))
@@ -370,11 +401,19 @@ impl LocalSandbox {
                 "workspace root and denied read path must not overlap".into(),
             ));
         }
-        if path == self.root || self.workspace_roots.iter().any(|root| root.path == path) {
+        if path == self.root
+            || self
+                .policy
+                .workspace_roots
+                .iter()
+                .any(|root| root.path == path)
+        {
             return Ok(self);
         }
         let directory = pin_directory(&path)?;
-        self.workspace_roots.push(PinnedRoot { path, directory });
+        Arc::make_mut(&mut self.policy)
+            .workspace_roots
+            .push(PinnedRoot { path, directory });
         Ok(self)
     }
 
@@ -394,6 +433,7 @@ impl LocalSandbox {
             )));
         }
         if self
+            .policy
             .denied_reads
             .iter()
             .any(|denied| paths_overlap(&path, &denied.path))
@@ -402,18 +442,22 @@ impl LocalSandbox {
                 "read root and denied read path must not overlap".into(),
             ));
         }
-        if self.read_roots.iter().any(|root| root.path == path) {
+        if self.policy.read_roots.iter().any(|root| root.path == path) {
             return Ok(self);
         }
         let directory = pin_directory(&path)?;
-        self.read_roots.push(PinnedRoot { path, directory });
+        Arc::make_mut(&mut self.policy)
+            .read_roots
+            .push(PinnedRoot { path, directory });
         Ok(self)
     }
 
     /// Removes one inherited environment variable from every command.
     #[must_use]
     pub fn deny_environment(mut self, name: impl Into<String>) -> Self {
-        self.denied_environment.insert(name.into());
+        Arc::make_mut(&mut self.policy)
+            .denied_environment
+            .insert(name.into());
         self
     }
 
@@ -497,9 +541,40 @@ impl LocalSandbox {
             )));
         }
         let (root, relative) = self.read_target(path)?;
-        let requested = path.to_string();
+        let requested = path.to_owned();
         tokio::task::spawn_blocking(move || {
             read_file_range(root, &relative, &requested, offset, max_bytes)
+        })
+        .await
+        .map_err(|error| Error::Sandbox(format!("file reader failed: {error}")))?
+    }
+
+    /// Reads one bounded host file range while preserving denied read paths.
+    /// Resolves symbolic links before applying the policy and opening a regular file.
+    /// # Errors
+    /// Returns an error for denied paths, non-regular files, invalid ranges or I/O failures.
+    pub async fn read_host_range(
+        &self,
+        path: PathBuf,
+        offset: u64,
+        max_bytes: usize,
+    ) -> Result<(Vec<u8>, Option<u64>)> {
+        if max_bytes == 0 || max_bytes > MAX_FILE_BYTES {
+            return Err(Error::Sandbox(format!(
+                "file read size must be 1–{MAX_FILE_BYTES} bytes"
+            )));
+        }
+        let policy = Arc::clone(&self.policy);
+        tokio::task::spawn_blocking(move || {
+            let requested = std::fs::canonicalize(path)?;
+            let (root, relative) = full_access_target(&requested, &policy.denied_reads)?;
+            read_file_range(
+                root,
+                &relative,
+                &requested.to_string_lossy(),
+                offset,
+                max_bytes,
+            )
         })
         .await
         .map_err(|error| Error::Sandbox(format!("file reader failed: {error}")))?
@@ -561,7 +636,7 @@ impl LocalSandbox {
         .ok_or_else(|| Error::Sandbox("command launch was unexpectedly denied".into()))
     }
 
-    fn relative(&self, path: &str) -> Result<PathBuf> {
+    fn relative(path: &str) -> Result<PathBuf> {
         let path = Path::new(path);
         if path.is_absolute()
             || path
@@ -579,13 +654,14 @@ impl LocalSandbox {
             return Ok(target);
         }
         if !requested.is_absolute() {
-            validate_root(&self.root, &self.root_dir)?;
-            return Ok((self.root_dir.try_clone()?, self.relative(path)?));
+            validate_root(&self.root, &self.policy.root_dir)?;
+            return Ok((self.policy.root_dir.try_clone()?, Self::relative(path)?));
         }
-        for (path, directory) in std::iter::once((&self.root, &self.root_dir)).chain(
-            self.workspace_roots
+        for (path, directory) in std::iter::once((&self.root, &self.policy.root_dir)).chain(
+            self.policy
+                .workspace_roots
                 .iter()
-                .chain(&self.read_roots)
+                .chain(&self.policy.read_roots)
                 .map(|root| (&root.path, &root.directory)),
         ) {
             let Ok(relative) = requested.strip_prefix(path) else {
@@ -609,11 +685,12 @@ impl LocalSandbox {
             return Ok(target);
         }
         if !requested.is_absolute() {
-            validate_root(&self.root, &self.root_dir)?;
-            return Ok((self.root_dir.try_clone()?, self.relative(path)?));
+            validate_root(&self.root, &self.policy.root_dir)?;
+            return Ok((self.policy.root_dir.try_clone()?, Self::relative(path)?));
         }
-        for (path, directory) in std::iter::once((&self.root, &self.root_dir)).chain(
-            self.workspace_roots
+        for (path, directory) in std::iter::once((&self.root, &self.policy.root_dir)).chain(
+            self.policy
+                .workspace_roots
                 .iter()
                 .map(|root| (&root.path, &root.directory)),
         ) {
@@ -633,8 +710,8 @@ impl LocalSandbox {
     }
 
     fn validate_workspace_roots(&self) -> Result<()> {
-        validate_root(&self.root, &self.root_dir)?;
-        for root in &self.workspace_roots {
+        validate_root(&self.root, &self.policy.root_dir)?;
+        for root in &self.policy.workspace_roots {
             validate_root(&root.path, &root.directory)?;
         }
         Ok(())
@@ -646,7 +723,7 @@ impl LocalSandbox {
         }
         let path =
             std::env::var_os("PATH").ok_or_else(|| Error::Sandbox("PATH is unavailable".into()))?;
-        find_executable_in(name, &self.root, &self.denied_reads, &path)
+        find_executable_in(name, &self.root, &self.policy.denied_reads, &path)
             .ok_or_else(|| Error::Sandbox(format!("{name} is unavailable outside protected paths")))
     }
 
@@ -655,10 +732,12 @@ impl LocalSandbox {
         if executable.starts_with(&self.root)
             || executable.starts_with(&temporary)
             || self
+                .policy
                 .workspace_roots
                 .iter()
                 .any(|root| executable.starts_with(&root.path))
             || self
+                .policy
                 .denied_reads
                 .iter()
                 .any(|denied| executable.starts_with(&denied.path))
@@ -672,7 +751,7 @@ impl LocalSandbox {
 
     #[cfg(target_os = "linux")]
     fn trusted_bubblewrap(&self) -> Result<PathBuf> {
-        let executable = self.bubblewrap_executable.as_ref().map_or_else(
+        let executable = self.policy.bubblewrap_executable.as_ref().map_or_else(
             || self.find_executable("bwrap"),
             |path| validated_executable(path),
         )?;
@@ -697,7 +776,7 @@ impl LocalSandbox {
                 isolation.network_access,
                 isolation.workspace_access,
             )?,
-            SandboxMode::DangerFullAccess if self.denied_reads.is_empty() => {
+            SandboxMode::DangerFullAccess if self.policy.denied_reads.is_empty() => {
                 platform::host_command(invocation, self.isolated_home)
             }
             SandboxMode::DangerFullAccess => {
@@ -710,7 +789,7 @@ impl LocalSandbox {
                 .defaults_environment
                 .iter()
                 .map(String::as_str)
-                .chain(self.allowed_environment.iter().map(String::as_str))
+                .chain(self.policy.allowed_environment.iter().map(String::as_str))
                 .filter_map(|name| std::env::var_os(name).map(|value| (name, value)));
             command.env_clear().envs(inherited);
         }
@@ -720,12 +799,12 @@ impl LocalSandbox {
         if self.isolated_home {
             command
                 .env("HOME", self.temp.path())
-                .env("SHELL", &self.shell_executable);
+                .env("SHELL", &self.policy.shell_executable);
         }
         for name in environment.1 {
             command.env_remove(name);
         }
-        for name in &self.denied_environment {
+        for name in &self.policy.denied_environment {
             command.env_remove(name);
         }
         Ok(command)
@@ -754,7 +833,7 @@ impl LocalSandbox {
             #[cfg(target_os = "macos")]
             let uses_cleanup_lease = isolation.sandbox_mode == SandboxMode::WorkspaceWrite
                 || (isolation.sandbox_mode == SandboxMode::DangerFullAccess
-                    && !self.denied_reads.is_empty());
+                    && !self.policy.denied_reads.is_empty());
             #[cfg(target_os = "linux")]
             let uses_process_group = true;
             #[cfg(target_os = "macos")]
@@ -837,24 +916,25 @@ impl LocalSandbox {
             let output: Result<CommandOutput> = match mode {
                 CommandMode::Background => execution.await,
                 CommandMode::Foreground => {
-                    match tokio::time::timeout(self.command_timeout, execution).await {
-                        Ok(output) => output,
-                        Err(_) => {
-                            #[cfg(any(target_os = "linux", target_os = "macos"))]
-                            if let Some(process_group) = &mut process_group {
-                                process_group.kill();
-                            }
-                            if tokio::time::timeout(Duration::from_secs(1), child.wait())
-                                .await
-                                .is_err()
-                            {
-                                let _ = child.kill().await;
-                            }
-                            return Err(Error::Sandbox(format!(
-                                "command exceeded {} seconds",
-                                self.command_timeout.as_secs_f64()
-                            )));
+                    if let Ok(output) = tokio::time::timeout(self.command_timeout, execution).await
+                    {
+                        output
+                    } else {
+                        #[cfg(any(target_os = "linux", target_os = "macos"))]
+                        if let Some(process_group) = &mut process_group {
+                            process_group.kill();
                         }
+                        if tokio::time::timeout(Duration::from_secs(1), child.wait())
+                            .await
+                            .is_err()
+                            && let Err(error) = child.kill().await
+                        {
+                            tracing::warn!(%error, "timed-out command could not be killed");
+                        }
+                        return Err(Error::Sandbox(format!(
+                            "command exceeded {} seconds",
+                            self.command_timeout.as_secs_f64()
+                        )));
                     }
                 }
             };
@@ -865,7 +945,7 @@ impl LocalSandbox {
             let output = output?;
             #[cfg(target_os = "linux")]
             if isolation.sandbox_mode == SandboxMode::WorkspaceWrite
-                || !self.denied_reads.is_empty()
+                || !self.policy.denied_reads.is_empty()
             {
                 platform::check_procfs_output(self.procfs_mode, &output)?;
             }
@@ -889,6 +969,7 @@ impl SandboxBackend for LocalSandbox {
             || !executable.is_file()
             || executable.starts_with(&self.root)
             || self
+                .policy
                 .denied_reads
                 .iter()
                 .any(|denied| executable.starts_with(&denied.path))
@@ -921,11 +1002,11 @@ impl SandboxBackend for LocalSandbox {
     }
 
     fn isolated_execution(&self) -> Result<std::sync::Arc<dyn SandboxBackend>> {
-        Ok(std::sync::Arc::new(LocalSandbox::isolated_execution(self)?))
+        Ok(std::sync::Arc::new(Self::isolated_execution(self)?))
     }
 
     fn temporary_directory(&self) -> Option<PathBuf> {
-        Some(LocalSandbox::temporary_directory(self).into())
+        Some(Self::temporary_directory(self).into())
     }
 
     fn read<'a>(
@@ -934,12 +1015,12 @@ impl SandboxBackend for LocalSandbox {
         sandbox_mode: SandboxMode,
     ) -> BoxFuture<'a, Result<String>> {
         Box::pin(async move {
-            let requested = path.to_string();
+            let requested = path.to_owned();
             if sandbox_mode == SandboxMode::DangerFullAccess && Path::new(path).is_absolute() {
-                let denied_reads = Arc::clone(&self.denied_reads);
+                let policy = Arc::clone(&self.policy);
                 return tokio::task::spawn_blocking(move || {
                     let (root, relative) =
-                        full_access_target(Path::new(&requested), &denied_reads)?;
+                        full_access_target(Path::new(&requested), &policy.denied_reads)?;
                     read_file(root, &relative, &requested)
                 })
                 .await
@@ -964,12 +1045,12 @@ impl SandboxBackend for LocalSandbox {
                     "binary file read size must be 1–{MAX_BINARY_FILE_BYTES} bytes"
                 )));
             }
-            let requested = path.to_string();
+            let requested = path.to_owned();
             if sandbox_mode == SandboxMode::DangerFullAccess && Path::new(path).is_absolute() {
-                let denied_reads = Arc::clone(&self.denied_reads);
+                let policy = Arc::clone(&self.policy);
                 return tokio::task::spawn_blocking(move || {
                     let (root, relative) =
-                        full_access_target(Path::new(&requested), &denied_reads)?;
+                        full_access_target(Path::new(&requested), &policy.denied_reads)?;
                     read_binary_file(root, &relative, &requested, max_bytes)
                 })
                 .await
@@ -994,13 +1075,13 @@ impl SandboxBackend for LocalSandbox {
             if content.len() > MAX_FILE_BYTES {
                 return Err(Error::Sandbox("file exceeds write limit".into()));
             }
-            let requested = path.to_string();
+            let requested = path.to_owned();
             let content = content.as_bytes().to_vec();
             if sandbox_mode == SandboxMode::DangerFullAccess && Path::new(path).is_absolute() {
-                let denied_reads = Arc::clone(&self.denied_reads);
+                let policy = Arc::clone(&self.policy);
                 return tokio::task::spawn_blocking(move || {
                     let (root, relative) =
-                        full_access_target(Path::new(&requested), &denied_reads)?;
+                        full_access_target(Path::new(&requested), &policy.denied_reads)?;
                     atomic_write(root, &relative, &content, &requested)
                 })
                 .await
@@ -1025,7 +1106,7 @@ impl SandboxBackend for LocalSandbox {
             self.execute_invocation(
                 Invocation::Shell {
                     script,
-                    executable: &self.shell_executable,
+                    executable: &self.policy.shell_executable,
                 },
                 CommandIsolation {
                     sandbox_mode,
@@ -1054,7 +1135,7 @@ impl SandboxBackend for LocalSandbox {
         Box::pin(self.execute_invocation(
             Invocation::Shell {
                 script,
-                executable: &self.shell_executable,
+                executable: &self.policy.shell_executable,
             },
             CommandIsolation {
                 sandbox_mode,
@@ -1137,18 +1218,23 @@ async fn read_output(
         if read == 0 {
             break;
         }
-        sink.write(stream, &buffer[..read]);
+        let chunk = buffer
+            .get(..read)
+            .ok_or_else(|| Error::Sandbox("command output reader overran its buffer".into()))?;
+        sink.write(stream, chunk);
         total = total.saturating_add(read);
         let remaining = limit.saturating_sub(output.len());
-        output.extend_from_slice(&buffer[..read.min(remaining)]);
+        output.extend(chunk.iter().take(remaining));
     }
     let kept = output.len();
     let truncated = total > kept;
     let mut output = String::from_utf8_lossy_owned(output);
     if truncated {
-        output.push_str(&format!(
+        write!(
+            output,
             "\n[output truncated: kept the first {kept} of {total} bytes]"
-        ));
+        )
+        .map_err(|error| Error::Sandbox(error.to_string()))?;
     }
     Ok(BoundedOutput {
         text: output,

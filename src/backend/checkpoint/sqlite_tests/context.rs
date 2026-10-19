@@ -15,7 +15,7 @@ async fn context_rows_append_without_rewriting_previous_items() {
         "session",
         &[json!({"text":"first"}), json!({"text":"second"})],
     );
-    store.save(&state, &[], None).await.unwrap();
+    store.save(state.clone(), Vec::new(), None).await.unwrap();
     let connection = Connection::open(&path).unwrap();
     connection
         .execute_batch(
@@ -45,14 +45,14 @@ async fn context_rows_append_without_rewriting_previous_items() {
     assert_eq!(Arc::strong_count(&state.context[0]), 1);
     state.sequence += 1;
     state.catalog_visible = false;
-    store.save(&state, &[], None).await.unwrap();
+    store.save(state.clone(), Vec::new(), None).await.unwrap();
     let changes: i64 = connection
         .query_row("SELECT count(*) FROM context_writes", [], |r| r.get(0))
         .unwrap();
     assert_eq!(changes, 0);
     state.sequence += 1;
     Arc::make_mut(&mut state.context).push(Arc::new(json!({"text":"third"})));
-    store.save(&state, &[], None).await.unwrap();
+    store.save(state.clone(), Vec::new(), None).await.unwrap();
     let inserted: i64 = connection
         .query_row(
             "SELECT count(*) FROM context_writes WHERE operation='insert'",
@@ -65,7 +65,7 @@ async fn context_rows_append_without_rewriting_previous_items() {
     state.sequence += 1;
     state.context_epoch += 1;
     state.context = Arc::new(vec![Arc::new(json!({"summary":"all three"}))]);
-    store.save(&state, &[], None).await.unwrap();
+    store.save(state.clone(), Vec::new(), None).await.unwrap();
     let removed: i64 = connection
         .query_row(
             "SELECT count(*) FROM context_writes WHERE operation='delete'",
@@ -100,7 +100,7 @@ async fn same_epoch_accepts_equal_new_arcs_but_rejects_changed_or_truncated_pref
         "session",
         &[json!({"text":"first"}), json!({"text":"second"})],
     );
-    store.save(&state, &[], None).await.unwrap();
+    store.save(state.clone(), Vec::new(), None).await.unwrap();
     state.sequence += 1;
     state.context = Arc::new(
         state
@@ -110,7 +110,7 @@ async fn same_epoch_accepts_equal_new_arcs_but_rejects_changed_or_truncated_pref
             .collect(),
     );
     store
-        .save(&state, &[], None)
+        .save(state.clone(), Vec::new(), None)
         .await
         .expect("equal values do not require identical allocations");
     let durable = state.clone();
@@ -118,7 +118,7 @@ async fn same_epoch_accepts_equal_new_arcs_but_rejects_changed_or_truncated_pref
     Arc::make_mut(&mut Arc::make_mut(&mut state.context)[0])["text"] = json!("edited");
     assert!(
         store
-            .save(&state, &[], None)
+            .save(state.clone(), Vec::new(), None)
             .await
             .unwrap_err()
             .to_string()
@@ -127,7 +127,7 @@ async fn same_epoch_accepts_equal_new_arcs_but_rejects_changed_or_truncated_pref
     state.context = Arc::new(Vec::new());
     assert!(
         store
-            .save(&state, &[], None)
+            .save(state.clone(), Vec::new(), None)
             .await
             .unwrap_err()
             .to_string()
@@ -144,7 +144,10 @@ async fn failed_event_rolls_back_context_header_receipt_and_transcript_together(
     let path = directory.path().join("context.sqlite3");
     let store = SqliteCheckpoint::new(&path).unwrap();
     let original = with_context("session", &[json!("old context")]);
-    store.save(&original, &[], None).await.unwrap();
+    store
+        .save(original.clone(), Vec::new(), None)
+        .await
+        .unwrap();
     let connection = Connection::open(&path).unwrap();
     connection.execute_batch("CREATE TRIGGER reject_event BEFORE INSERT ON event_journal BEGIN SELECT RAISE(ABORT, 'injected event failure'); END;").unwrap();
     let mut next = original.clone();
@@ -204,7 +207,7 @@ async fn failed_event_rolls_back_context_header_receipt_and_transcript_together(
         .execute_batch("DROP TRIGGER reject_event")
         .unwrap();
     store
-        .save(&next, &[], None)
+        .save(next.clone(), Vec::new(), None)
         .await
         .expect("failed transaction did not advance hint or durable context");
     assert_eq!(store.load("session").await.unwrap(), Some(next));
@@ -216,7 +219,7 @@ async fn cancelled_save_caller_does_not_interrupt_the_started_atomic_worker() {
     let path = directory.path().join("context.sqlite3");
     let store = Arc::new(SqliteCheckpoint::new(&path).unwrap());
     let mut state = with_context("session", &[json!("original")]);
-    store.save(&state, &[], None).await.unwrap();
+    store.save(state.clone(), Vec::new(), None).await.unwrap();
     state.sequence += 1;
     Arc::make_mut(&mut state.context).push(Arc::new(json!("durable after cancellation")));
     let blocker = Connection::open(&path).unwrap();
@@ -224,7 +227,7 @@ async fn cancelled_save_caller_does_not_interrupt_the_started_atomic_worker() {
     let writing = {
         let store = Arc::clone(&store);
         let state = state.clone();
-        tokio::spawn(async move { store.save(&state, &[], None).await })
+        tokio::spawn(async move { store.save(state.clone(), Vec::new(), None).await })
     };
     timeout(Duration::from_secs(2), async {
         loop {

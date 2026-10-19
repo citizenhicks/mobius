@@ -23,6 +23,23 @@ pub struct ResolvedCredential {
     pub lifetime: ModelCredentialLifetime,
 }
 
+impl std::fmt::Debug for CredentialStore {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CredentialStore")
+            .field("path", &self.path)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for ResolvedCredential {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ResolvedCredential")
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StoredCredential {
@@ -54,12 +71,12 @@ impl ConfigStore {
     ///
     /// Returns an error if configuration is invalid or a required resource cannot be initialized.
     pub fn initialize(
-        state_dir: PathBuf,
+        state_dir: impl AsRef<Path>,
         listen: SocketAddr,
         tls: Option<TlsConfig>,
     ) -> Result<(Self, GatewayConfig)> {
         let config = GatewayConfig::new(listen, tls)?;
-        let state_dir = prepare_state_dir(state_dir)?;
+        let state_dir = prepare_state_dir(state_dir.as_ref())?;
         let store = Self::at(state_dir);
         store.save_with_mode(&config, true)?;
         Ok((store, config))
@@ -95,13 +112,13 @@ impl ConfigStore {
     }
 
     fn initialize_cloudflare(
-        state_dir: PathBuf,
+        state_dir: impl AsRef<Path>,
         listen: SocketAddr,
         cloudflare: CloudflareConfig,
         token: Option<&str>,
     ) -> Result<(Self, GatewayConfig)> {
         let config = GatewayConfig::new_cloudflare(listen, cloudflare)?;
-        let state_dir = prepare_state_dir(state_dir)?;
+        let state_dir = prepare_state_dir(state_dir.as_ref())?;
         let store = Self::at(state_dir);
         let result = token
             .map_or(Ok(()), |token| store.save_cloudflare_token(token))
@@ -334,10 +351,7 @@ impl CredentialStore {
             expires_at,
             revocation: None,
         };
-        let mut values = self
-            .values
-            .lock()
-            .map_err(|_| Error::Config("provider credential lock is poisoned".into()))?;
+        let mut values = self.values.lock().map_err(poisoned_credentials())?;
         if let Some(credential) = values.get(instance)
             && credential.provider != provider_id
         {
@@ -355,19 +369,19 @@ impl CredentialStore {
             return Ok(());
         }
         let previous = values.insert(instance.into(), credential);
-        if let Err(error) = save_private_map(&self.path, &values) {
-            if matches!(error, Error::PublicationApplied { .. }) {
-                // Dropping the replaced record revokes its lifetime after the new bytes became visible.
-                return Err(error);
-            }
+        let saved = save_private_map(&self.path, &values);
+        if let Err(error) = &saved
+            && !matches!(error, Error::PublicationApplied { .. })
+        {
             if let Some(previous) = previous {
                 values.insert(instance.into(), previous);
             } else {
                 values.remove(instance);
             }
-            return Err(error);
         }
-        Ok(())
+        // Dropping the replaced record revokes its lifetime after the new bytes became visible.
+        drop(values);
+        saved
     }
 
     /// Resolves a secret and its lifetime under the same lock.
@@ -380,10 +394,7 @@ impl CredentialStore {
         provider_id: &str,
         base_url: Option<&str>,
     ) -> Result<Option<ResolvedCredential>> {
-        let mut values = self
-            .values
-            .lock()
-            .map_err(|_| Error::Config("provider credential lock is poisoned".into()))?;
+        let mut values = self.values.lock().map_err(poisoned_credentials())?;
         let Some(credential) = values.get_mut(instance).filter(|credential| {
             credential.provider == provider_id && credential.base_url.as_deref() == base_url
         }) else {
@@ -393,15 +404,17 @@ impl CredentialStore {
             .revocation
             .get_or_insert_with(|| tokio::sync::watch::channel(()).0)
             .subscribe();
-        Ok(Some(ResolvedCredential {
-            api_key: credential.api_key.clone(),
+        let resolved = ResolvedCredential {
+            api_key: credential.api_key.clone(), // rules-allow: provider assembly owns its copy of the secret
             lifetime: ModelCredentialLifetime {
                 expires_at: credential
                     .expires_at
                     .map(|seconds| UNIX_EPOCH + std::time::Duration::from_secs(seconds)),
                 revoked: Some(revoked),
             },
-        }))
+        };
+        drop(values);
+        Ok(Some(resolved))
     }
 
     /// Returns a non-secret suffix for identifying one stored credential.
@@ -411,11 +424,8 @@ impl CredentialStore {
         provider_id: &str,
         base_url: Option<&str>,
     ) -> Result<Option<String>> {
-        let values = self
-            .values
-            .lock()
-            .map_err(|_| Error::Config("provider credential lock is poisoned".into()))?;
-        Ok(values
+        let values = self.values.lock().map_err(poisoned_credentials())?;
+        let hint = values
             .get(instance)
             .filter(|credential| {
                 credential.provider == provider_id && credential.base_url.as_deref() == base_url
@@ -423,7 +433,9 @@ impl CredentialStore {
             .and_then(|credential| {
                 let suffix = credential.api_key.chars().rev().take(4).collect::<String>();
                 (suffix.chars().count() == 4).then(|| suffix.chars().rev().collect())
-            }))
+            });
+        drop(values);
+        Ok(hint)
     }
 
     /// Atomically removes one instance-scoped API-key credential.
@@ -432,20 +444,18 @@ impl CredentialStore {
     /// Returns an error if validation or an operation required by this function fails.
     pub fn remove(&self, instance: &str) -> Result<bool> {
         super::validation::validate_instance_id(instance)?;
-        let mut values = self
-            .values
-            .lock()
-            .map_err(|_| Error::Config("provider credential lock is poisoned".into()))?;
+        let mut values = self.values.lock().map_err(poisoned_credentials())?;
         let Some((key, previous)) = values.remove_entry(instance) else {
             return Ok(false);
         };
-        if let Err(error) = save_private_map(&self.path, &values) {
-            if !matches!(error, Error::PublicationApplied { .. }) {
-                values.insert(key, previous);
-            }
-            return Err(error);
+        let saved = save_private_map(&self.path, &values);
+        if let Err(error) = &saved
+            && !matches!(error, Error::PublicationApplied { .. })
+        {
+            values.insert(key, previous);
         }
-        Ok(true)
+        drop(values);
+        saved.map(|()| true)
     }
 }
 
@@ -515,12 +525,13 @@ pub fn load_secret_file(path: &Path) -> Result<String> {
     let mut contents = String::new();
     file.take(MAX_CLOUDFLARE_TOKEN_BYTES as u64 + 1)
         .read_to_string(&mut contents)?;
-    let token = validate_cloudflare_token(&contents)
-        .map_err(|_| Error::Config("secret file contains an invalid token".into()))?;
+    let token = validate_cloudflare_token(&contents).map_err(|error| {
+        Error::Config(format!("secret file contains an invalid token: {error}"))
+    })?;
     Ok(token.to_owned())
 }
 
-fn prepare_state_dir(path: PathBuf) -> Result<PathBuf> {
+fn prepare_state_dir(path: &Path) -> Result<PathBuf> {
     let name = path
         .file_name()
         .ok_or_else(|| Error::Config("gateway state directory must have a name".into()))?
@@ -528,7 +539,7 @@ fn prepare_state_dir(path: PathBuf) -> Result<PathBuf> {
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
+        .unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent)?;
     let path = fs::canonicalize(parent)?.join(name);
     match fs::create_dir(&path) {
@@ -543,6 +554,10 @@ fn prepare_state_dir(path: PathBuf) -> Result<PathBuf> {
     #[cfg(unix)]
     fs::set_permissions(&path, mobius::owner_only::dir())?;
     Ok(path)
+}
+
+fn poisoned_credentials<T>() -> impl FnOnce(std::sync::PoisonError<T>) -> Error {
+    |error| Error::Config(format!("provider credential lock is poisoned: {error}"))
 }
 
 fn validate_private_state_dir(path: &Path) -> Result<()> {
@@ -578,8 +593,7 @@ fn validate_credential(
     let definition = provider(provider_id)?;
     if !matches!(definition.auth(), ProviderAuth::ApiKey(_)) {
         return Err(Error::Config(format!(
-            "provider `{}` does not accept an API key",
-            provider_id
+            "provider `{provider_id}` does not accept an API key"
         )));
     }
     if api_key.is_empty() || api_key.len() > MAX_PROVIDER_API_KEY_BYTES {
@@ -646,8 +660,10 @@ impl UsageHistory {
             .days
             .get(&day)
             .and_then(|providers| providers.get(provider))
-            .unwrap_or(&TokenUsage::default())
-            .checked_sum(usage)
+            .map_or_else(
+                || TokenUsage::default().checked_sum(usage),
+                |bucket| bucket.checked_sum(usage),
+            )
             .ok_or_else(|| Error::Config("daily token usage overflow".into()))?;
         let created_day = !self.days.contains_key(&day);
         let previous = self
@@ -696,7 +712,7 @@ impl UsageUpdate {
 pub(super) fn unix_day(now: SystemTime) -> Result<u64> {
     Ok(now
         .duration_since(UNIX_EPOCH)
-        .map_err(|_| Error::Config("system clock is before the Unix epoch".into()))?
+        .map_err(|error| Error::Config(format!("system clock is before the Unix epoch: {error}")))?
         .as_secs()
         / SECONDS_PER_DAY)
 }

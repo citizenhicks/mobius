@@ -54,7 +54,7 @@ async fn gateway_with_providers(
                 "Secondary".into(),
                 ProviderTint::default(),
                 vec![crate::wire::ConfiguredModel {
-                    id: secondary.model.clone(),
+                    id: secondary.model,
                     reasoning_efforts: Some(Vec::new()),
                     default_reasoning: None,
                     ..Default::default()
@@ -133,10 +133,10 @@ async fn saved_bot_routes_survive_missing_credentials_without_advertising_unavai
     .expect("saved configured route must not require a credential to boot");
     crate::assembly::prepare_bot(
         &config,
-        bots.bot(&saved.id).expect("saved Bot"),
+        Arc::new(bots.bot(&saved.id).expect("saved Bot")),
         &store,
         &credentials,
-        mobius::backend::session_files::SessionFileStore::new(store.state_dir(), None),
+        mobius::backend::session_files::SessionFileStore::new(store.state_dir(), None).into(),
         0,
         Arc::new(crate::computer_runtime::ComputerConfig::default()),
     )
@@ -164,7 +164,8 @@ async fn saved_bot_routes_survive_missing_credentials_without_advertising_unavai
         .await
         .expect("install credential");
     let ready = gateway.ready().await.expect("ready with credentials");
-    assert!(ready.models.iter().any(|model| model.route == route));
+    drop(gateway);
+    assert!(ready.models.iter().any(|model| *model.route == *route));
     assert!(ready.provider_instances[0].configured);
     assert_eq!(bots.bot(&saved.id).expect("unchanged Bot"), saved);
 
@@ -177,14 +178,16 @@ async fn saved_bot_routes_survive_missing_credentials_without_advertising_unavai
     );
     bots.update_bot(
         &saved.id,
-        saved.config.revision,
         crate::bots::BotIdentity {
             name: &saved.name,
             description: &saved.description,
             tint: saved.tint,
             shape: saved.shape,
         },
-        composition,
+        Arc::new(crate::wire::VersionedAgentConfig {
+            revision: saved.config.revision + 1,
+            config: composition,
+        }),
     )
     .expect("persist invalid route for startup validation");
     let error = GatewayHost::start(store, config, credentials, bots)

@@ -1,5 +1,7 @@
 use std::borrow::Cow;
 use std::collections::VecDeque;
+use std::fmt::Write as _;
+use std::sync::Arc;
 
 use diffy::Line as DiffLine;
 use diffy::Patch;
@@ -82,34 +84,37 @@ pub(super) fn render(frame: &mut Frame<'_>, state: &mut TuiState, catalog: &UiCa
         .unwrap_or(u16::MAX)
         .saturating_add(2)
         .clamp(3, max_composer_height);
-    let input_row = input_cursor_row(&input[..cursor_end], inner_width);
-    let areas = Layout::vertical([
+    let input_row = input_cursor_row(input.get(..cursor_end).unwrap_or(&input), inner_width);
+    let [
+        transcript_area,
+        menu_area,
+        header_area,
+        composer_area,
+        footer_area,
+    ] = Layout::vertical([
         Constraint::Min(1),
         Constraint::Length(menu_height),
         Constraint::Length(1),
         Constraint::Length(composer_height),
         Constraint::Length(1),
     ])
-    .split(frame.area());
+    .areas(frame.area());
 
-    render_transcript(frame, state, areas[0]);
+    render_transcript(frame, state, transcript_area);
     if reference_suggestions.is_some()
         && let Some((_, _, suggestions)) = &state.reference_cache
     {
         state.reference_selection = state
             .reference_selection
             .min(suggestions.len().saturating_sub(1));
-        render_menu(frame, areas[1], suggestions, state.reference_selection);
+        render_menu(frame, menu_area, suggestions, state.reference_selection);
     } else if let Some(suggestions) = slash_suggestions {
         state.slash_selection = state
             .slash_selection
             .min(suggestions.len().saturating_sub(1));
-        render_menu(frame, areas[1], &suggestions, state.slash_selection);
+        render_menu(frame, menu_area, &suggestions, state.slash_selection);
     }
-    frame.render_widget(
-        Paragraph::new(composer_header_line(state, catalog)),
-        areas[2],
-    );
+    frame.render_widget(Paragraph::new(composer_header_line(state)), header_area);
     frame.render_widget(
         Paragraph::new(input)
             .style(theme.style(Role::Text))
@@ -123,9 +128,9 @@ pub(super) fn render(frame: &mut Frame<'_>, state: &mut TuiState, catalog: &UiCa
                 0,
             ))
             .wrap(Wrap { trim: false }),
-        areas[3],
+        composer_area,
     );
-    render_footer(frame, state, areas[4]);
+    render_footer(frame, state, footer_area);
     if let Some(picker) = state.picker.as_mut() {
         picker.selected = picker.selected.min(picker.match_count().saturating_sub(1));
         render_picker_popup(frame, picker);
@@ -198,7 +203,7 @@ fn live_window(
 ) -> (Vec<Line<'_>>, u16) {
     let mut content_height = 0_usize;
     let has_transcript = visit_transcript_lines(&mut state.transcript, width, |_, line_height| {
-        content_height = content_height.saturating_add(line_height)
+        content_height = content_height.saturating_add(line_height);
     });
     let mut decorations = Vec::new();
     let has_content = has_transcript || !state.streaming.is_empty() || !state.reasoning.is_empty();
@@ -229,10 +234,9 @@ fn live_window(
         width,
     );
     tail.extend(decorations);
-    let viewport = if preview {
-        &mut state.preview.as_mut().expect("preview checked").viewport
-    } else {
-        &mut state.transcript_viewport
+    let viewport = match state.preview.as_mut() {
+        Some(open) if preview => &mut open.viewport,
+        Some(_) | None => &mut state.transcript_viewport,
     };
     render_transcript_window(
         &mut state.transcript,
@@ -275,6 +279,10 @@ fn append_cached_stream<'a>(
     }
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "fmt::Write for String never returns an error"
+)]
 fn append_live_decorations(
     lines: &mut Vec<Line<'static>>,
     state: &TuiState,
@@ -282,7 +290,7 @@ fn append_live_decorations(
     has_content: bool,
 ) {
     let mut has_content = has_content;
-    for ((capability, _), item) in state
+    for (capability, item) in state
         .widgets
         .iter()
         .filter(|(_, item)| item.slot == FrontendSlot::TranscriptTail)
@@ -330,7 +338,8 @@ fn append_live_decorations(
             request.reason
         );
         for call in &request.calls {
-            detail.push_str(&format!("\n{} {}", call.name, call.arguments));
+            write!(detail, "\n{} {}", call.name, call.arguments)
+                .expect("writing to String cannot fail");
         }
         push_lines(
             lines,
@@ -527,7 +536,9 @@ pub(super) fn render_preview(frame: &mut Frame<'_>, state: &mut TuiState) {
 }
 
 fn text_preview_window(state: &mut TuiState, width: u16, height: u16) -> (Vec<Line<'_>>, u16) {
-    let preview = state.preview.as_mut().expect("preview checked");
+    let Some(preview) = state.preview.as_mut() else {
+        return (Vec::new(), 0);
+    };
     let PreviewContent::Text { text, format, tone } = &preview.content else {
         return (Vec::new(), 0);
     };
@@ -549,14 +560,16 @@ fn live_preview_window(state: &mut TuiState, width: u16, height: u16) -> (Vec<Li
 }
 
 fn snapshot_preview_window(state: &mut TuiState, width: u16, height: u16) -> (Vec<Line<'_>>, u16) {
-    let preview = state.preview.as_mut().expect("preview checked");
+    let Some(preview) = state.preview.as_mut() else {
+        return (Vec::new(), 0);
+    };
     let PreviewContent::Snapshot(snapshot) = &mut preview.content else {
         return (Vec::new(), 0);
     };
     let mut content_height = 0_usize;
     let has_transcript =
         visit_transcript_lines(&mut snapshot.transcript, width, |_, line_height| {
-            content_height = content_height.saturating_add(line_height)
+            content_height = content_height.saturating_add(line_height);
         });
     let mut tail = Vec::new();
     if !has_transcript {
@@ -703,18 +716,18 @@ fn push_lines(
     } else {
         lines.extend(text.split('\n').map(|line| {
             line.strip_prefix(AGENT_MARKER).map_or_else(
-                || Line::styled(line.to_string(), style),
+                || Line::styled(line.to_owned(), style),
                 |content| {
                     Line::from(vec![
                         Span::styled(AGENT_MARKER, theme.style(Role::Accent)),
-                        Span::styled(content.to_string(), style),
+                        Span::styled(content.to_owned(), style),
                     ])
                 },
             )
         }));
     }
     if matches!(tone, TranscriptTone::Assistant | TranscriptTone::Reasoning) {
-        for (index, line) in lines[first..].iter_mut().enumerate() {
+        for (index, line) in lines.iter_mut().skip(first).enumerate() {
             line.spans.insert(
                 0,
                 Span::styled(
@@ -747,8 +760,8 @@ pub(super) fn diff_sections(text: &str) -> impl Iterator<Item = &str> {
     text.match_indices("\ndiff --git ")
         .map(|(index, _)| index + 1)
         .chain(std::iter::once(text.len()))
-        .map(move |end| {
-            let section = &text[start..end];
+        .filter_map(move |end| {
+            let section = text.get(start..end);
             start = end;
             section
         })
@@ -893,7 +906,7 @@ pub(super) fn push_diff_patch(lines: &mut Vec<Line<'static>>, text: &str, width:
                 spans.append(syntax);
             } else {
                 spans.push(Span::styled(
-                    content.trim_end_matches(['\n', '\r']).to_string(),
+                    content.trim_end_matches(['\n', '\r']).to_owned(),
                     theme.style(Role::Text),
                 ));
             }
@@ -1098,7 +1111,7 @@ fn footer_line(state: &TuiState, width: u16) -> Line<'_> {
     }
 }
 
-fn widget_line(widgets: &[((String, String), FrontendWidget)], slot: FrontendSlot) -> Line<'_> {
+fn widget_line(widgets: &[(Arc<str>, Arc<FrontendWidget>)], slot: FrontendSlot) -> Line<'_> {
     let theme = current();
     let mut spans = Vec::new();
     for (_, item) in widgets.iter().filter(|(_, item)| item.slot == slot) {
@@ -1113,8 +1126,8 @@ fn widget_line(widgets: &[((String, String), FrontendWidget)], slot: FrontendSlo
     Line::from(spans)
 }
 
-fn composer_header_line<'a>(state: &'a TuiState, catalog: &UiCatalog) -> Line<'a> {
-    let mut line = status_line(state, catalog);
+fn composer_header_line(state: &TuiState) -> Line<'_> {
+    let mut line = status_line(state);
     let widgets = widget_line(&state.widgets, FrontendSlot::ComposerHeader);
     if line.width() > 0 && widgets.width() > 0 {
         line.push_span(Span::styled(" · ", current().style(Role::Muted)));
@@ -1161,7 +1174,7 @@ fn composer_title(state: &TuiState) -> Line<'static> {
     }
 }
 
-fn status_line(state: &TuiState, catalog: &UiCatalog) -> Line<'static> {
+fn status_line(state: &TuiState) -> Line<'static> {
     let theme = current();
     if state.approval().is_some() {
         return Line::styled(
@@ -1199,7 +1212,7 @@ fn status_line(state: &TuiState, catalog: &UiCatalog) -> Line<'static> {
             theme.style(Role::Muted),
         );
     }
-    Line::styled(catalog.composer_hint(), theme.style(Role::Muted))
+    Line::styled(UiCatalog::COMPOSER_HINT, theme.style(Role::Muted))
 }
 
 const fn delivery_label(delivery: ActiveMessageDelivery) -> &'static str {
@@ -1220,26 +1233,30 @@ fn elapsed_label(elapsed: std::time::Duration) -> String {
     }
 }
 
-pub(super) fn initial_widgets(catalog: &UiCatalog) -> Vec<((String, String), FrontendWidget)> {
+pub(super) fn initial_widgets(catalog: &UiCatalog) -> Vec<(Arc<str>, Arc<FrontendWidget>)> {
     catalog
         .widgets()
         .map(|(middleware, item)| {
-            let mut item = item.clone();
-            item.text = bounded_terminal_text(&item.text, 32 * 1024);
-            ((middleware.to_string(), item.id.clone()), item)
+            let mut item = Arc::clone(item);
+            let text = bounded_terminal_text(&item.text, 32 * 1024);
+            if text != item.text {
+                Arc::make_mut(&mut item).text = text;
+            }
+            (Arc::clone(middleware), item)
         })
         .collect()
 }
 
-pub(super) fn widget_status(widgets: &[((String, String), FrontendWidget)]) -> String {
+pub(super) fn widget_status(widgets: &[(Arc<str>, Arc<FrontendWidget>)]) -> String {
     widgets
         .iter()
-        .map(|(_, item)| format!(" · {}", item.text))
+        .flat_map(|(_, item)| [" · ", item.text.as_str()])
         .collect()
 }
 
 fn render_picker_menu(frame: &mut Frame<'_>, area: Rect, picker: &super::PickerState) {
-    let areas = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(area);
+    let [header_area, menu_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(area);
     frame.render_widget(
         Paragraph::new(Line::styled(
             if picker.query.is_empty() {
@@ -1253,7 +1270,7 @@ fn render_picker_menu(frame: &mut Frame<'_>, area: Rect, picker: &super::PickerS
             },
             current().style(Role::Accent).add_modifier(Modifier::BOLD),
         )),
-        areas[0],
+        header_area,
     );
     let items = picker
         .matching_options()
@@ -1266,11 +1283,11 @@ fn render_picker_menu(frame: &mut Frame<'_>, area: Rect, picker: &super::PickerS
             MenuItem {
                 value: String::new(),
                 label: terminal_text(&option.label),
-                description,
+                description: description.into(),
             }
         })
         .collect::<Vec<_>>();
-    render_menu(frame, areas[1], &items, picker.selected);
+    render_menu(frame, menu_area, &items, picker.selected);
 }
 
 fn render_picker_popup(frame: &mut Frame<'_>, picker: &super::PickerState) {

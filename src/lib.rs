@@ -332,9 +332,9 @@ pub enum Error {
     /// Selects the rollback case.
     Rollback {
         /// The primary.
-        primary: Box<Error>,
+        primary: Box<Self>,
         /// The rollback.
-        rollback: Box<Error>,
+        rollback: Box<Self>,
     },
     /// The destination was replaced, but its directory could not be synchronized.
     /// Callers must retain the applied state and must not blindly retry the mutation.
@@ -382,7 +382,7 @@ pub(crate) fn preview_json(value: &serde_json::Value) -> String {
 }
 
 pub(crate) fn truncate_utf8(value: &str, max_bytes: usize) -> &str {
-    &value[..value.floor_char_boundary(max_bytes)]
+    value.split_at(value.floor_char_boundary(max_bytes)).0
 }
 
 pub(crate) fn serialized_len<T: serde::Serialize + ?Sized>(value: &T) -> Result<usize> {

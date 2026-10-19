@@ -72,9 +72,9 @@ async fn sqlite_persists_latest_checkpoint_transcript_and_fork_lineage() {
     let path = workspace.path().join("mobius.sqlite3");
     let store = SqliteCheckpoint::new(&path).expect("open checkpoint database");
     let mut empty = Checkpoint::empty("session");
-    empty.session_context.owner_id = "test-bot".into();
+    Arc::make_mut(&mut empty.session_context).owner_id = "test-bot".into();
     store
-        .save(&empty, &[], None)
+        .save(empty.clone(), Vec::new(), None)
         .await
         .expect("save empty checkpoint");
     let first_user = mobius::backend::model::user_message("parent question");
@@ -87,7 +87,7 @@ async fn sqlite_persists_latest_checkpoint_transcript_and_fork_lineage() {
     first.first_user_message = Some("parent question".into());
     std::sync::Arc::make_mut(&mut first.context).push(std::sync::Arc::new(first_user.clone()));
     store
-        .save(&first, &first.context, None)
+        .save(first.clone(), first.context.to_vec(), None)
         .await
         .expect("save first message");
     let mut state_only = first.clone();
@@ -95,14 +95,14 @@ async fn sqlite_persists_latest_checkpoint_transcript_and_fork_lineage() {
     state_only.total_usage.input_tokens = 1;
     state_only.catalog_visible = false;
     store
-        .save(&state_only, &[], None)
+        .save(state_only.clone(), Vec::new(), None)
         .await
         .expect("save state only");
     let mut grown = state_only.clone();
     grown.sequence = 3;
     std::sync::Arc::make_mut(&mut grown.context).push(std::sync::Arc::new(assistant.clone()));
     store
-        .save(&grown, &grown.context[1..], None)
+        .save(grown.clone(), grown.context[1..].to_vec(), None)
         .await
         .expect("grow context");
     let compacted_item = serde_json::json!({
@@ -120,7 +120,7 @@ async fn sqlite_persists_latest_checkpoint_transcript_and_fork_lineage() {
             .collect(),
     );
     store
-        .save(&compacted, &compacted.context[1..], None)
+        .save(compacted.clone(), compacted.context[1..].to_vec(), None)
         .await
         .expect("replace context and append transcript");
     let branch_user = mobius::backend::model::user_message("branch question");
@@ -129,7 +129,7 @@ async fn sqlite_persists_latest_checkpoint_transcript_and_fork_lineage() {
     branch.session_context.clone_from(&latest.session_context);
     branch.context.clone_from(&latest.context);
     let branch_summary = store
-        .fork("session", latest.sequence, &branch)
+        .fork("session", latest.sequence, branch.clone())
         .await
         .expect("fork session");
     let mut branch_latest = branch.clone();
@@ -138,7 +138,11 @@ async fn sqlite_persists_latest_checkpoint_transcript_and_fork_lineage() {
     std::sync::Arc::make_mut(&mut branch_latest.context)
         .push(std::sync::Arc::new(branch_user.clone()));
     store
-        .save(&branch_latest, &branch_latest.context[2..], None)
+        .save(
+            branch_latest.clone(),
+            branch_latest.context[2..].to_vec(),
+            None,
+        )
         .await
         .expect("append branch message");
     drop(store);
@@ -155,11 +159,11 @@ async fn sqlite_persists_latest_checkpoint_transcript_and_fork_lineage() {
         .sessions;
     let parent_summary = sessions
         .iter()
-        .find(|session| session.session_id == "session")
+        .find(|session| &*session.session_id == "session")
         .expect("parent summary");
     let persisted_branch = sessions
         .iter()
-        .find(|session| session.session_id == "branch")
+        .find(|session| &*session.session_id == "branch")
         .expect("branch summary");
     let parent_transcript = store
         .transcript_page(

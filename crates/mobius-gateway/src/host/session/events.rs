@@ -1,5 +1,14 @@
 use super::super::telemetry::cancellation_reason;
-use super::*;
+use super::{
+    ActiveRoutine, Arc, Error, Event, EventMsg, ExecutionOutcome, FrontendEvent, HashSet,
+    HostState, JournalDelivery, JournalEvent, JournalSequence, MessageTarget,
+    ModelStepContentPhase, Rejection, ReplayEntry, Result, RoutineRunStatus, RunStats, ServerFrame,
+    ServerMessage, SessionActivity, SessionActivityState, SessionReadyPayload, SessionWidget,
+    SharedFrame, Utc, active_run_summary, activity_catalog, classify_journal_sequence,
+    compact_replay_deltas, event_sequence, git_status, internal, project_record,
+    publish_ready_and_pending, record_and_publish, switch_workspace_branch,
+    update_session_activity, update_widgets, validate_gateway_event,
+};
 use mobius::backend::checkpoint::TranscriptPageRequest;
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -56,7 +65,7 @@ impl HostState {
             self.set_activity(activity).await?;
             self.broadcast_sessions()
                 .await
-                .map_err(|rejection| Error::Config(rejection.message))?;
+                .map_err(|rejection| Error::Config(rejection.message.to_string()))?;
         }
 
         let became_idle = self.pending_turns == 0 && was_active;
@@ -65,7 +74,9 @@ impl HostState {
         }
         if became_idle && !self.approval_active && self.active_routine.is_none() {
             for waiter in self.idle_waiters.drain(..) {
-                let _ = waiter.send(());
+                if waiter.send(()).is_err() {
+                    tracing::debug!("idle waiter stopped waiting");
+                }
             }
         }
         self.telemetry.notify.notify_one();
@@ -88,6 +99,11 @@ impl HostState {
         let frame = &entry.frame;
         if let ServerMessage::AgentEvent { record, .. } = &frame.message {
             update_widgets(&mut self.widgets, &record.event.msg);
+            if let EventMsg::TokenCount(count) = &record.event.msg
+                && let Some(usage) = &count.info
+            {
+                self.telemetry.note_context(&self.running.session_id, usage);
+            }
             if let EventMsg::AssistantMessage(message) = &record.event.msg {
                 compact_replay_deltas(
                     &mut self.replay,
@@ -104,7 +120,7 @@ impl HostState {
             &mut self.replay,
             &mut self.replay_bytes,
             &self.events,
-            entry.clone(),
+            entry.clone(), // rules-allow: the replay records the entry while the caller receives its Arc-backed frame
             delivery != JournalDelivery::Live,
         );
         if truncated {
@@ -121,34 +137,37 @@ impl HostState {
     pub(super) fn observe_routine_event(
         &mut self,
         event: &Event,
-    ) -> Option<(ActiveRoutine, RoutineRunStatus, Option<String>)> {
+    ) -> Option<(ActiveRoutine, RoutineRunStatus, Option<Arc<str>>)> {
         let active = self.active_routine.as_mut()?;
         let completion = match &event.msg {
             EventMsg::TurnStarted(turn)
-                if event.submission_id.as_deref() == Some(active.submission_id.as_str()) =>
+                if event.submission_id.as_ref() == Some(&active.submission_id) =>
             {
-                active.turn_id = Some(turn.turn_id.clone());
+                active.turn_id = Some(Arc::clone(&turn.turn_id));
                 None
             }
             EventMsg::Error(error) => {
                 // Keep the first failure until a later completion event persists the routine result.
-                active.failure.get_or_insert_with(|| error.message.clone());
+                active
+                    .failure
+                    .get_or_insert_with(|| Arc::clone(&error.message));
                 None
             }
-            EventMsg::TurnComplete(turn)
-                if active.turn_id.as_deref() == Some(turn.turn_id.as_str()) =>
-            {
+            EventMsg::TurnComplete(turn) if active.turn_id.as_deref() == Some(&*turn.turn_id) => {
                 Some(match active.failure.take() {
                     Some(message) => (RoutineRunStatus::Failed, Some(message)),
                     None => (RoutineRunStatus::Succeeded, None),
                 })
             }
-            EventMsg::TurnAborted(turn)
-                if active.turn_id.as_deref() == Some(turn.turn_id.as_str()) =>
-            {
+            EventMsg::TurnAborted(turn) if active.turn_id.as_deref() == Some(&*turn.turn_id) => {
                 Some((
                     RoutineRunStatus::Failed,
-                    Some(active.failure.take().unwrap_or_else(|| turn.reason.clone())),
+                    Some(
+                        active
+                            .failure
+                            .take()
+                            .unwrap_or_else(|| Arc::clone(&turn.reason)),
+                    ),
                 ))
             }
             _ => None,
@@ -194,20 +213,20 @@ impl HostState {
             latest_sequence: self.sequence,
             next_before_sequence: self.next_before_sequence,
             workspace: self.spec.workspace_info(),
-            attached_folders: self.spec.attached_folders.clone(),
+            attached_folders: self.spec.attached_folders.clone(), // rules-allow: the ready payload owns a snapshot while the spec stays in state
             git: if self.spec.workspace.is_some() {
                 git_status(&self.running.gateway_sandbox).await
             } else {
                 None
             },
-            session: self.running.session.clone(),
+            session: Arc::clone(&self.running.session),
             contributions: self.running.frontend.contributions()?,
             widgets: self
                 .widgets
                 .iter()
-                .map(|((capability, _), item)| SessionWidget {
-                    capability: capability.clone(),
-                    item: item.clone(),
+                .map(|(capability, item)| SessionWidget {
+                    capability: Arc::clone(capability),
+                    item: Arc::clone(item),
                 })
                 .collect(),
             context_limit_tokens,
@@ -309,17 +328,23 @@ impl HostState {
         let (sessions, approvals) = activity_catalog(&self.checkpoints, &self.activities)
             .await
             .map_err(internal)?;
-        let _ = self
+        if let Err(error) = self
             .gateway_events
             .send(ServerFrame::new(ServerMessage::Sessions {
                 request_id: None,
                 sessions,
-            }));
-        let _ = self
-            .gateway_events
-            .send(ServerFrame::new(ServerMessage::BackgroundApprovals {
-                approvals,
-            }));
+            }))
+        {
+            tracing::debug!(%error, "session list had no subscribers");
+        }
+        if let Err(error) =
+            self.gateway_events
+                .send(ServerFrame::new(ServerMessage::BackgroundApprovals {
+                    approvals,
+                }))
+        {
+            tracing::debug!(%error, "background approvals had no subscribers");
+        }
         Ok(())
     }
 
@@ -332,15 +357,15 @@ impl HostState {
                 self.turn_error = None;
                 Some(SessionActivity {
                     state: SessionActivityState::Running,
-                    turn_id: Some(turn.turn_id.clone()),
+                    turn_id: Some(Arc::clone(&turn.turn_id)),
                     started_at: Some(Utc::now().timestamp()),
                     ..SessionActivity::default()
                 })
             }
             EventMsg::ExecApprovalRequest(request) => Some(SessionActivity {
                 state: SessionActivityState::AwaitingApproval,
-                turn_id: Some(request.turn_id.clone()),
-                approval_request_id: Some(request.id.clone()),
+                turn_id: Some(Arc::clone(&request.turn_id)),
+                approval_request_id: Some(Arc::clone(&request.id)),
                 started_at: self
                     .activity()
                     .await?
@@ -354,12 +379,12 @@ impl HostState {
                 self.turn_error = None;
                 Some(SessionActivity {
                     last_outcome: Some(ExecutionOutcome::Failed),
-                    message: Some(error.message.clone()),
+                    message: Some(Arc::clone(&error.message)),
                     ..SessionActivity::default()
                 })
             }
             EventMsg::Error(error) => {
-                self.turn_error = Some(error.message.clone());
+                self.turn_error = Some(Arc::clone(&error.message));
                 None
             }
             EventMsg::TurnComplete(_) => Some(completed_activity(
@@ -374,7 +399,7 @@ impl HostState {
                     } else {
                         ExecutionOutcome::Aborted
                     }),
-                    message: Some(error.unwrap_or_else(|| turn.reason.clone())),
+                    message: Some(error.unwrap_or_else(|| Arc::clone(&turn.reason))),
                     ..SessionActivity::default()
                 })
             }
@@ -404,7 +429,7 @@ impl HostState {
         .await?;
         self.broadcast_sessions()
             .await
-            .map_err(|rejection| Error::Config(rejection.message))
+            .map_err(|rejection| Error::Config(rejection.message.to_string()))
     }
 
     pub(super) async fn fail_activity(&self, message: &str) -> Result<()> {
@@ -419,7 +444,7 @@ impl HostState {
         .await?;
         self.broadcast_sessions()
             .await
-            .map_err(|rejection| Error::Config(rejection.message))
+            .map_err(|rejection| Error::Config(rejection.message.to_string()))
     }
 
     pub(super) async fn activity(&self) -> Result<SessionActivity> {
@@ -429,7 +454,7 @@ impl HostState {
             .await
             .activities
             .get(self.running.session_id.as_ref())
-            .cloned()
+            .cloned() // rules-allow: the activity is read out before the catalog lock is released
             .unwrap_or_default())
     }
 
@@ -445,19 +470,22 @@ impl HostState {
     }
 
     pub(super) fn broadcast(&self, message: ServerMessage) {
-        let _ = self
+        if let Err(error) = self
             .events
-            .send(SharedFrame::new(ServerFrame::new(message)));
+            .send(SharedFrame::new(ServerFrame::new(message)))
+        {
+            tracing::debug!(%error, "session frame had no subscribers");
+        }
     }
 
     pub(super) fn require_idle(&self) -> std::result::Result<(), Rejection> {
-        if !self.is_idle() {
+        if self.is_idle() {
+            Ok(())
+        } else {
             Err(Rejection::new(
                 "agent_busy",
                 "finish or interrupt the active turn before changing gateway state",
             ))
-        } else {
-            Ok(())
         }
     }
 
@@ -472,7 +500,7 @@ impl HostState {
 const MAX_ACTIVITY_MESSAGE_BYTES: usize = 512;
 const MESSAGE_PINS_KEY: &str = "message_pins.v1";
 
-fn completed_activity(error: Option<String>, final_answer: Option<&str>) -> SessionActivity {
+fn completed_activity(error: Option<Arc<str>>, final_answer: Option<&str>) -> SessionActivity {
     let failed = error.is_some();
     SessionActivity {
         last_outcome: Some(if failed {
@@ -485,13 +513,16 @@ fn completed_activity(error: Option<String>, final_answer: Option<&str>) -> Sess
     }
 }
 
-fn bounded_activity_message(message: &str) -> String {
-    message[..message.floor_char_boundary(MAX_ACTIVITY_MESSAGE_BYTES)].into()
+fn bounded_activity_message(message: &str) -> Arc<str> {
+    message
+        .split_at_checked(message.floor_char_boundary(MAX_ACTIVITY_MESSAGE_BYTES))
+        .map_or(message, |(head, _)| head)
+        .into()
 }
 
 fn account_turn_event(
     pending_turns: &mut usize,
-    pending_messages: &mut HashSet<String>,
+    pending_messages: &mut HashSet<Arc<str>>,
     event: &Event,
 ) {
     match &event.msg {
@@ -536,7 +567,8 @@ fn assistant_text(message: &mobius::protocol::AssistantMessageEvent) -> Option<S
 mod accounting_tests {
     use super::*;
     use mobius::protocol::{
-        MessageDelivery, MessageEvent, SubmissionRejectedEvent, TurnCompleteEvent, TurnStartedEvent,
+        MessageAuthor, MessageDelivery, MessageEvent, SubmissionRejectedEvent, TurnCompleteEvent,
+        TurnStartedEvent,
     };
 
     fn event(submission_id: &str, msg: EventMsg) -> Event {

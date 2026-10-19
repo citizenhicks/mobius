@@ -116,7 +116,7 @@ impl Anthropic {
             config,
             max_output_tokens: MANIFEST
                 .max_output_tokens
-                .expect("Anthropic output default is required"),
+                .ok_or_else(|| Error::Config("Anthropic output default is required".into()))?,
             tool_discovery,
             web_search: false,
         })
@@ -335,7 +335,7 @@ struct StreamState {
     partial_json: BTreeMap<usize, String>,
     completed_blocks: BTreeSet<usize>,
     next_completed_block: usize,
-    web_queries: BTreeMap<String, Option<String>>,
+    web_queries: BTreeMap<Arc<str>, Option<String>>,
     usage: Usage,
     stop_reason: Option<String>,
     stopped: bool,
@@ -359,7 +359,7 @@ impl StreamState {
                 self.stop_reason = event
                     .pointer("/delta/stop_reason")
                     .and_then(Value::as_str)
-                    .map(ToString::to_string);
+                    .map(str::to_owned);
             }
             Some("message_stop") => self.stopped = true,
             Some("error") => {
@@ -367,9 +367,9 @@ impl StreamState {
                     .pointer("/error/message")
                     .and_then(Value::as_str)
                     .unwrap_or("Anthropic stream error");
-                return Err(Error::Provider(message.to_string().into()));
+                return Err(Error::Provider(message.to_owned().into()));
             }
-            Some("ping") | None | Some(_) => {}
+            Some("ping" | _) | None => {}
         }
         Ok(())
     }
@@ -393,24 +393,23 @@ impl StreamState {
         if block.get("type").and_then(Value::as_str) == Some("server_tool_use")
             && block.get("name").and_then(Value::as_str) == Some("web_search")
         {
-            let id = required_string(&block, "id")?.to_string();
+            let id: Arc<str> = required_string(&block, "id")?.into();
             let query = block
                 .pointer("/input/query")
                 .and_then(Value::as_str)
-                .map(ToString::to_string);
-            self.web_queries.insert(id.clone(), query);
+                .map(str::to_owned);
+            self.web_queries.insert(Arc::clone(&id), query);
             events(ModelEvent::WebSearchStarted { call_id: id }).await?;
         }
         if block.get("type").and_then(Value::as_str) == Some("web_search_tool_result") {
-            let call_id = required_string(&block, "tool_use_id")?.to_string();
+            let call_id: Arc<str> = required_string(&block, "tool_use_id")?.into();
             let action = self
                 .web_queries
                 .get(&call_id)
-                .cloned()
-                .flatten()
+                .and_then(Option::as_deref)
                 .filter(|query| !query.is_empty())
                 .map_or(WebSearchAction::Other, |query| WebSearchAction::Search {
-                    queries: vec![query],
+                    queries: vec![query.to_owned()], // rules-allow: the completed event owns a copy of the remembered query
                 });
             events(ModelEvent::WebSearchCompleted { call_id, action }).await?;
         }
@@ -437,20 +436,19 @@ impl StreamState {
             Some("text_delta") => {
                 let text = string_field(delta, "text")?;
                 if !text.is_empty() {
-                    append_string(block, "text", text);
-                    events(ModelEvent::TextDelta(text.to_string())).await?;
+                    append_string(block, "text", text)?;
+                    events(ModelEvent::TextDelta(text.to_owned())).await?;
                 }
             }
             Some("thinking_delta") => {
                 let thinking = string_field(delta, "thinking")?;
                 if !thinking.is_empty() {
-                    append_string(block, "thinking", thinking);
-                    events(ModelEvent::ReasoningDelta(thinking.to_string())).await?;
+                    append_string(block, "thinking", thinking)?;
+                    events(ModelEvent::ReasoningDelta(thinking.to_owned())).await?;
                 }
             }
             Some("signature_delta") => {
-                block["signature"] =
-                    Value::String(required_string(delta, "signature")?.to_string());
+                block["signature"] = Value::String(required_string(delta, "signature")?.to_owned());
             }
             Some("input_json_delta") => {
                 let partial = string_field(delta, "partial_json")?;
@@ -504,11 +502,11 @@ impl StreamState {
             if block.get("type").and_then(Value::as_str) == Some("server_tool_use")
                 && block.get("name").and_then(Value::as_str) == Some("web_search")
             {
-                let id = required_string(block, "id")?.to_string();
+                let id = required_string(block, "id")?.into();
                 let query = block
                     .pointer("/input/query")
                     .and_then(Value::as_str)
-                    .map(ToString::to_string);
+                    .map(str::to_owned);
                 self.web_queries.insert(id, query);
             }
         }
@@ -586,11 +584,11 @@ impl StreamState {
                 })
             })
             .collect::<Vec<_>>();
-        let mut message = serde_json::json!({
-            "type": "message",
-            "role": "assistant",
-            "content": visible
-        });
+        let mut message = serde_json::Map::from_iter([
+            ("type".to_owned(), Value::from("message")),
+            ("role".to_owned(), Value::from("assistant")),
+            ("content".to_owned(), Value::Array(visible)),
+        ]);
         let reasoning = content
             .iter()
             .filter(|block| block.get("type").and_then(Value::as_str) == Some("thinking"))
@@ -598,10 +596,10 @@ impl StreamState {
             .collect::<Vec<_>>()
             .join("\n");
         if !reasoning.is_empty() {
-            message[REPLAY_REASONING_FIELD] = Value::String(reasoning);
+            message.insert(REPLAY_REASONING_FIELD.to_owned(), Value::String(reasoning));
         }
-        message[RAW_CONTENT] = Value::Array(content);
-        let mut output = vec![message];
+        message.insert(RAW_CONTENT.to_owned(), Value::Array(content));
+        let mut output = vec![Value::Object(message)];
         output.extend(calls);
         ModelOutput::from_output_with_content(
             output,
@@ -864,7 +862,7 @@ fn translate_messages<'a>(
                                 block.get("type").and_then(Value::as_str) == Some("tool_use")
                             })
                             .filter_map(|block| block.get("id").and_then(Value::as_str))
-                            .map(ToString::to_string),
+                            .map(str::to_owned),
                     );
                     push_message(&mut messages, role, content.iter().map(Cow::Borrowed));
                 } else {
@@ -954,7 +952,7 @@ fn accepts_cache_control(block: &Value) -> bool {
 
 fn remember_search_call(search_calls: &mut BTreeSet<String>, call_id: &str, name: &str) {
     if name == TOOLS_SEARCH_NAME {
-        search_calls.insert(call_id.to_string());
+        search_calls.insert(call_id.to_owned());
     }
 }
 
@@ -979,7 +977,11 @@ fn content_block(part: &Value) -> Result<Option<Value>> {
         .and_then(Value::as_bool)
         == Some(true)
     {
-        block["cache_control"] = serde_json::json!({"type":"ephemeral"});
+        super::set_field(
+            &mut block,
+            "cache_control",
+            serde_json::json!({"type":"ephemeral"}),
+        );
     }
     Ok(Some(block))
 }
@@ -1218,12 +1220,16 @@ fn string_field<'a>(value: &'a Value, field: &str) -> Result<&'a str> {
         .ok_or_else(|| Error::Provider(format!("Anthropic value omitted {field}").into()))
 }
 
-fn append_string(value: &mut Value, field: &str, addition: &str) {
-    if let Some(Value::String(current)) = value.get_mut(field) {
+fn append_string(value: &mut Value, field: &str, addition: &str) -> Result<()> {
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| Error::Provider("Anthropic content block was not an object".into()))?;
+    if let Some(Value::String(current)) = object.get_mut(field) {
         current.push_str(addition);
     } else {
-        value[field] = Value::String(addition.to_string());
+        object.insert(field.to_owned(), Value::String(addition.to_owned()));
     }
+    Ok(())
 }
 
 fn update_i64(target: &mut i64, value: &Value, path: &str) -> Result<()> {

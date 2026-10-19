@@ -8,7 +8,7 @@ async fn loop_executes_tool_and_returns_result_to_model() {
         tool_response(
             "call-1",
             "read_file",
-            serde_json::json!({"path": "note.txt"}),
+            &serde_json::json!({"path": "note.txt"}),
         ),
         text_response("read hello"),
     ]));
@@ -55,7 +55,7 @@ async fn approval_denial_prevents_command_execution() {
         tool_response(
             "call-1",
             "bash",
-            serde_json::json!({"command": "printf unsafe > denied.txt"}),
+            &serde_json::json!({"command": "printf unsafe > denied.txt"}),
         ),
         text_response("denied"),
     ]));
@@ -138,8 +138,8 @@ async fn interrupt_only_aborts_its_target_turn() {
             assert_eq!(
                 (event.submission_id, warning.message),
                 (
-                    Some(stale_submission.into()),
-                    "interrupt targeted a stale turn".to_string()
+                    Some(stale_submission),
+                    "interrupt targeted a stale turn".into()
                 )
             );
             break;
@@ -148,7 +148,7 @@ async fn interrupt_only_aborts_its_target_turn() {
 
     let interrupt_submission = sender
         .submit(Op::Interrupt {
-            turn_id: turn_id.clone(),
+            turn_id: Arc::clone(&turn_id),
         })
         .expect("submit targeted interrupt");
     loop {
@@ -156,7 +156,7 @@ async fn interrupt_only_aborts_its_target_turn() {
         if let EventMsg::TurnAborted(turn) = event.msg {
             assert_eq!(
                 (event.submission_id, turn.turn_id),
-                (Some(interrupt_submission.into()), turn_id)
+                (Some(interrupt_submission), turn_id)
             );
             break;
         }

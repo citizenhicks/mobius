@@ -38,12 +38,26 @@ mod text {
         pub(super) error_count: String,
         pub(super) error_content: String,
     }
-    crate::embedded_config! { pub(super) static DEFINITION: Definition = include_str!("tasks.toml"); }
+    crate::embedded_config! { pub(super) static DEFINITION: Definition = include_str!("tasks.toml") => super::limit_schema; }
 }
 const STATE_KEY: &str = "tasks.v1";
 const PROJECTION_KIND: &str = "tasks_state";
 const MAX_TODOS: usize = 50;
 const MAX_TODO_BYTES: usize = 500;
+
+fn limit_schema(definition: &mut text::Definition) {
+    crate::middleware::tools::limit_schema(
+        &mut definition.write_todos.tool,
+        [
+            ("/properties/todos", "maxItems", MAX_TODOS.into()),
+            (
+                "/properties/todos/items/properties/content",
+                "maxLength",
+                MAX_TODO_BYTES.into(),
+            ),
+        ],
+    );
+}
 super::manifest::middleware_manifest! {
 /// Configuration and presentation metadata for durable tasks.
     "tasks", text::DEFINITION, required: false, settings: &[]
@@ -89,7 +103,7 @@ struct WriteTodosArgs {
 }
 
 /// Contributes one durable, whole-list todo tool and status view.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Tasks;
 
 impl Middleware for Tasks {
@@ -100,7 +114,7 @@ impl Middleware for Tasks {
     fn register(&self, catalog: &mut Catalog, runtime: &RuntimeContext) -> Result<()> {
         catalog.register(Arc::new(WriteTodos {
             checkpoints: Arc::clone(&runtime.checkpoints),
-            session_id: runtime.session_id.clone(),
+            session_id: Arc::clone(&runtime.session_id),
             frontend: Arc::clone(&runtime.frontend),
         }))
     }
@@ -116,8 +130,8 @@ impl Middleware for Tasks {
             capability: self.name().into(),
             commands: vec![FrontendCommand {
                 name: Command::Tasks.as_str().into(),
-                arguments: String::new(),
-                description: text::DEFINITION.command_tasks_description.clone(),
+                arguments: String::new().into(),
+                description: text::DEFINITION.command_tasks_description.clone().into(), // rules-allow: owned frontend record built from static text
                 requires_idle: true,
             }],
             ..FrontendContribution::default()
@@ -151,7 +165,7 @@ impl Middleware for Tasks {
                 .iter()
                 .rev()
                 .find(|item| internal_message_kind(item) == Some(PROJECTION_KIND))
-                .and_then(|item| item["content"][0]["text"].as_str());
+                .and_then(|item| item.pointer("/content/0/text").and_then(Value::as_str));
             if previous != Some(text.as_str()) {
                 context.push_input(internal_user_message(PROJECTION_KIND, &text));
             }
@@ -185,24 +199,20 @@ impl Middleware for Tasks {
 
 struct WriteTodos {
     checkpoints: Arc<dyn CheckpointStore>,
-    session_id: String,
+    session_id: Arc<str>,
     frontend: super::FrontendEventSink,
 }
 
 impl Tool for WriteTodos {
-    fn definition(&self) -> ToolDefinition {
-        let mut tool = text::DEFINITION.write_todos.tool.clone();
-        tool.parameters["properties"]["todos"]["maxItems"] = MAX_TODOS.into();
-        tool.parameters["properties"]["todos"]["items"]["properties"]["content"]["maxLength"] =
-            MAX_TODO_BYTES.into();
-        tool
+    fn definition(&self) -> &Arc<ToolDefinition> {
+        &text::DEFINITION.write_todos.tool
     }
 
-    fn call<'a>(
-        &'a self,
+    fn call(
+        &self,
         _context: ToolContext,
         arguments: Value,
-    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
+    ) -> BoxFuture<'_, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             let mut arguments: WriteTodosArgs = serde_json::from_value(arguments)?;
             validate_todos(&mut arguments.todos).map_err(Error::Tool)?;
@@ -266,7 +276,7 @@ fn widget_event(todos: Vec<Todo>) -> FrontendEvent {
         .count();
     FrontendEvent::Widget {
         capability: MANIFEST.id.into(),
-        item: FrontendWidget {
+        item: Arc::new(FrontendWidget {
             id: "status".into(),
             slot: FrontendSlot::ComposerFooter,
             text: format!("{completed}/{}", todos.len()),
@@ -288,7 +298,7 @@ fn widget_event(todos: Vec<Todo>) -> FrontendEvent {
                     .into_iter()
                     .enumerate()
                     .map(|(index, todo)| FrontendActionListItem {
-                        id: index.to_string(),
+                        id: index.to_string().into(),
                         text: todo.content,
                         state: match todo.status {
                             TodoStatus::Pending => FrontendListItemState::Pending,
@@ -300,13 +310,13 @@ fn widget_event(todos: Vec<Todo>) -> FrontendEvent {
                     .collect(),
             }),
             action: None,
-        },
+        }),
     }
 }
 
 fn format_todos(todos: &[Todo]) -> String {
     if todos.is_empty() {
-        return text::DEFINITION.render_empty.clone();
+        return text::DEFINITION.render_empty.clone(); // rules-allow: the rendered text is returned owned
     }
     todos
         .iter()
@@ -324,14 +334,11 @@ fn format_todos(todos: &[Todo]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
     use std::sync::Mutex;
 
-    use crate::backend::checkpoint::sqlite::SqliteCheckpoint;
     use crate::backend::sandbox::local::LocalSandbox;
     use crate::backend::sandbox::{ApprovalPolicy, NetworkAccess, Sandbox, SandboxPermissions};
     use crate::middleware::tools::{Tools, execute_batch};
-    use crate::protocol::SessionContext;
     use crate::protocol::ToolCall;
 
     use super::*;
@@ -339,28 +346,16 @@ mod tests {
     #[tokio::test]
     async fn write_todos_persists_session_state_and_updates_the_widget() {
         let temporary = tempfile::tempdir().expect("temporary directory");
-        let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
-            SqliteCheckpoint::new(temporary.path().join("checkpoints.sqlite3"))
-                .expect("checkpoints"),
-        );
         let frontend_events = Arc::new(Mutex::new(Vec::new()));
         let events = Arc::clone(&frontend_events);
-        let runtime = RuntimeContext {
-            children: crate::agent::ChildAgents::default(),
-            sender: crate::agent::test_sender(),
-            checkpoints: Arc::clone(&checkpoints),
-            session_id: "session-a".into(),
-            model_route: "default".into(),
-            model: "model".into(),
-            approval_policy: crate::backend::sandbox::ApprovalPolicy::Ask,
-            session_context: SessionContext::default(),
-            metadata: BTreeMap::new(),
-            role: crate::agent::AgentRole::Main,
-            frontend: Arc::new(move |event| {
-                events.lock().expect("frontend events").push(event);
-                Ok(())
-            }),
-        };
+        let mut runtime = crate::middleware::tests::lifecycle_runtime(temporary.path());
+        let checkpoints = Arc::clone(&runtime.checkpoints);
+        runtime.session_id = "session-a".into();
+        runtime.model_route = "default".into();
+        runtime.frontend = Arc::new(move |event| {
+            events.lock().expect("frontend events").push(event);
+            Ok(())
+        });
         let tasks = Tasks;
         let mut catalog = Catalog::default();
         tasks.register(&mut catalog, &runtime).expect("register");
@@ -399,9 +394,9 @@ mod tests {
             [bound],
             Arc::clone(&sandbox),
             &permissions,
-            "turn-a",
-            "test",
-            &crate::protocol::MessageAuthor::User,
+            &"turn-a".into(),
+            &"test".into(),
+            &crate::protocol::MessageAuthor::User.into(),
         )
         .await
         .pop()
@@ -441,7 +436,7 @@ mod tests {
         ));
 
         let user = Arc::new(crate::backend::model::user_message("continue the work"));
-        let mut input = vec![user.clone()];
+        let mut input = vec![Arc::clone(&user)];
         for source in [SessionStartSource::Startup, SessionStartSource::Resume] {
             tasks
                 .session_start(&mut SessionStartContext {
@@ -502,9 +497,9 @@ mod tests {
             [clear],
             sandbox,
             &permissions,
-            "turn-a",
-            "test",
-            &crate::protocol::MessageAuthor::User,
+            &"turn-a".into(),
+            &"test".into(),
+            &crate::protocol::MessageAuthor::User.into(),
         )
         .await
         .pop()

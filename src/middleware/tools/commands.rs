@@ -1,5 +1,6 @@
 use serde::Deserialize;
 use serde_json::Value;
+use std::sync::Arc;
 
 use super::{
     ApprovalRequirement, HookIdentity, MAX_COMMAND_BYTES, Tool, ToolContext, ToolExposure,
@@ -26,8 +27,8 @@ struct BashArgs {
 pub(super) struct Bash;
 
 impl Tool for Bash {
-    fn definition(&self) -> ToolDefinition {
-        DEFINITION.bash.tool.clone()
+    fn definition(&self) -> &Arc<ToolDefinition> {
+        &DEFINITION.bash.tool
     }
 
     fn render(&self, event: &crate::protocol::EventMsg) -> Option<crate::protocol::FrontendBlock> {
@@ -53,11 +54,11 @@ impl Tool for Bash {
         rewrite_command_input(&input)
     }
 
-    fn call<'a>(
-        &'a self,
+    fn call(
+        &self,
         context: ToolContext,
         arguments: Value,
-    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
+    ) -> BoxFuture<'_, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             let arguments: BashArgs = serde_json::from_value(arguments)?;
             validate_command(&arguments.command)?;
@@ -69,7 +70,7 @@ impl Tool for Bash {
                     std::time::Duration::from_millis(DEFINITION.initial_wait_ms),
                 )
                 .await?;
-            Ok(background_output(output, context.sandbox.output_limit()).into())
+            Ok(background_output(&output, context.sandbox.output_limit()).into())
         })
     }
 }
@@ -91,8 +92,8 @@ enum CommandAction {
 pub(super) struct ManageCommand;
 
 impl Tool for ManageCommand {
-    fn definition(&self) -> ToolDefinition {
-        DEFINITION.manage_command.tool.clone()
+    fn definition(&self) -> &Arc<ToolDefinition> {
+        &DEFINITION.manage_command.tool
     }
 
     fn render(&self, event: &crate::protocol::EventMsg) -> Option<crate::protocol::FrontendBlock> {
@@ -103,11 +104,11 @@ impl Tool for ManageCommand {
         ToolExposure::Direct
     }
 
-    fn call<'a>(
-        &'a self,
+    fn call(
+        &self,
         context: ToolContext,
         arguments: Value,
-    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
+    ) -> BoxFuture<'_, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             let arguments: ManageCommandArgs = serde_json::from_value(arguments)?;
             validate_command_id(&arguments.command_id)?;
@@ -125,7 +126,7 @@ impl Tool for ManageCommand {
                         .await?
                 }
             };
-            Ok(background_output(output, context.sandbox.output_limit()).into())
+            Ok(background_output(&output, context.sandbox.output_limit()).into())
         })
     }
 }
@@ -153,10 +154,10 @@ fn rewrite_command_input(input: &Value) -> Result<Value> {
 fn validate_command_id(id: &str) -> Result<()> {
     uuid::Uuid::parse_str(id)
         .map(|_| ())
-        .map_err(|_| Error::Tool("command_id must be a UUID".into()))
+        .map_err(|error| Error::Tool(format!("command_id must be a UUID: {error}")))
 }
 
-pub(super) fn background_output(output: BackgroundCommandPoll, output_limit: usize) -> String {
+pub(super) fn background_output(output: &BackgroundCommandPoll, output_limit: usize) -> String {
     let status = output.status.as_str();
     let exit_code = output.exit_code;
     let rendered = serde_json::json!({

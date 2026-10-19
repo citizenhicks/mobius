@@ -59,7 +59,7 @@ mod text {
         pub(super) widget_global_title: String,
         pub(super) widget_text: String,
     }
-    crate::embedded_config! { pub(super) static DEFINITION: Definition = include_str!("scratchpad.toml"); }
+    crate::embedded_config! { pub(super) static DEFINITION: Definition = include_str!("scratchpad.toml") => super::limit_schema; }
 }
 mod presentation;
 mod projection;
@@ -74,6 +74,13 @@ const GLOBAL_SCOPE: &str = "scratchpad.global";
 const GLOBAL_STATE_KEY: &str = "entries.v1";
 const MAX_NOTES: usize = 20;
 const MAX_NOTE_BYTES: usize = 500;
+
+fn limit_schema(definition: &mut text::Definition) {
+    super::tools::limit_schema(
+        &mut definition.write_scratchpad.tool,
+        [("/properties/note", "maxLength", MAX_NOTE_BYTES.into())],
+    );
+}
 const MAX_INJECTION_BYTES: usize = 4 * 1024;
 const MAX_SCOPE_BYTES: usize = 1_900;
 const PROJECTION_KIND: &str = "shared_scratchpad";
@@ -234,6 +241,12 @@ pub struct Scratchpad {
     store: Arc<ScratchpadStore>,
 }
 
+impl std::fmt::Debug for Scratchpad {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("Scratchpad").finish_non_exhaustive()
+    }
+}
+
 impl Scratchpad {
     /// Creates the gateway-wide scratchpad backed by one tenant-scoped checkpoint store.
     #[must_use]
@@ -281,7 +294,7 @@ impl Scratchpad {
         else {
             return Err(invalid());
         };
-        if capability != MANIFEST.id {
+        if &**capability != MANIFEST.id {
             return Err(invalid());
         }
         let parsed = parse_command(command, arguments, input.as_deref())?.ok_or_else(invalid)?;
@@ -401,8 +414,8 @@ impl Middleware for Scratchpad {
             count: None,
             commands: vec![FrontendCommand {
                 name: "scratchpad".into(),
-                arguments: text::DEFINITION.command_arguments.clone(),
-                description: text::DEFINITION.command_description.clone(),
+                arguments: text::DEFINITION.command_arguments.clone().into(), // rules-allow: owned frontend record built from static text
+                description: text::DEFINITION.command_description.clone().into(), // rules-allow: owned frontend record built from static text
                 requires_idle: false,
             }],
             widgets: surface_widgets(&[]),
@@ -514,7 +527,7 @@ fn validate_entries(entries: &[Entry]) -> std::result::Result<(), String> {
     }
     let mut ids = BTreeSet::new();
     let mut notes = BTreeSet::new();
-    for entry in entries.iter() {
+    for entry in entries {
         validate_id(&entry.id)?;
         let note = canonical_note(&entry.note)?;
         if note != entry.note {
@@ -529,7 +542,7 @@ fn validate_entries(entries: &[Entry]) -> std::result::Result<(), String> {
         let created_at = entry
             .created_at
             .parse::<u64>()
-            .map_err(|_| "invalid scratchpad creation time")?;
+            .map_err(|error| format!("invalid scratchpad creation time: {error}"))?;
         if created_at.to_string() != entry.created_at {
             return Err("scratchpad creation time is not canonical".into());
         }
@@ -563,7 +576,7 @@ fn missing() -> Error {
 fn validate_id(id: &str) -> std::result::Result<(), String> {
     Uuid::parse_str(id)
         .map(|_| ())
-        .map_err(|_| "invalid scratchpad note ID".into())
+        .map_err(|error| format!("invalid scratchpad note ID: {error}"))
 }
 
 fn canonical_note(note: &str) -> std::result::Result<String, String> {

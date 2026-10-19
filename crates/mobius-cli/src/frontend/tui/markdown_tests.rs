@@ -50,8 +50,7 @@ fn streaming_cache_matches_full_render_through_containers_references_and_resizin
     ] {
         let mut cache = StreamCache::default();
         for end in 1..=source.len() {
-            if source.is_char_boundary(end) {
-                let prefix = &source[..end];
+            if let Some(prefix) = source.get(..end) {
                 assert_eq!(
                     cache.render(prefix, Style::default(), 32),
                     render(prefix, Style::default(), 32),

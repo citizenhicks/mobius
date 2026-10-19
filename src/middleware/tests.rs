@@ -5,7 +5,6 @@ use crate::backend::checkpoint::QueuedMessageBoundary;
 use crate::backend::checkpoint::sqlite::SqliteCheckpoint;
 use crate::protocol::MessageAuthor;
 use crate::protocol::MessageEvent;
-use crate::protocol::SessionContext;
 
 struct LifecycleProbe {
     id: &'static str,
@@ -78,7 +77,7 @@ fn lifecycle_probe(
     })
 }
 
-fn lifecycle_runtime(path: &std::path::Path) -> RuntimeContext {
+pub(super) fn lifecycle_runtime(path: &std::path::Path) -> RuntimeContext {
     RuntimeContext {
         children: crate::agent::ChildAgents::default(),
         sender: crate::agent::test_sender(),
@@ -89,7 +88,7 @@ fn lifecycle_runtime(path: &std::path::Path) -> RuntimeContext {
         model_route: "model".into(),
         model: "model".into(),
         approval_policy: crate::backend::sandbox::ApprovalPolicy::Ask,
-        session_context: SessionContext::default(),
+        session_context: Default::default(),
         metadata: BTreeMap::new(),
         role: crate::agent::AgentRole::Main,
         frontend: Arc::new(|_| Ok(())),
@@ -297,7 +296,7 @@ fn pre_tool_rewrite_rejects_invalid_calls_without_mutation() {
         assert!(!context.changed);
         assert_eq!(context.call(), &original);
         context
-            .replace(original.name.clone(), original.arguments.clone())
+            .replace(Arc::clone(&original.name), original.arguments.clone())
             .unwrap();
         assert!(
             !context.changed,
@@ -365,7 +364,7 @@ fn queued_message_queue_cannot_observe_or_consume_another_owner() {
         prepared
     };
 
-    assert_eq!(prepared.submission_id, "one");
+    assert_eq!(&*prepared.submission_id, "one");
     assert_eq!(items, vec![queued("beta", "one", "private")]);
 }
 

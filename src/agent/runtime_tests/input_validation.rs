@@ -7,7 +7,7 @@ async fn checked_submissions_preserve_ingress_order_and_raw_input_still_fails_ea
     use crate::agent::{ValidatedSubmission, submission_channel};
     let (sender, mut inbox) = submission_channel(2);
     let invalid = Submission {
-        id: String::new(),
+        id: "".into(),
         op: Op::Interrupt {
             turn_id: "turn".into(),
         },
@@ -21,6 +21,6 @@ async fn checked_submissions_preserve_ingress_order_and_raw_input_still_fails_ea
     })
     .unwrap();
     sender.send_validated(checked).unwrap();
-    assert_eq!(inbox.recv().await.unwrap().submission.id, "checked");
+    assert_eq!(&*inbox.recv().await.unwrap().submission.id, "checked");
     assert_eq!(inbox.last_sequence, 1);
 }

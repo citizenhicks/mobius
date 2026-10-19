@@ -58,7 +58,7 @@ use crate::wire::{
     RecordedEvent, RenderedEvent, RenderedPreview, RoutineRunStatus, RunStats, RunSummary,
     ServerFrame, ServerMessage, SessionActivity, SessionActivityState, SessionReadyPayload,
     SessionRecord, SessionRunGroup, SessionWidget, SharedFrame, SshIdentityRecord,
-    WorkspaceFileScope, validate_session_id,
+    VersionedAgentConfig, WorkspaceFileScope, validate_session_id,
 };
 use crate::{Error, Result};
 
@@ -76,10 +76,17 @@ use self::git::{
     diff_totals as workspace_git_diff_totals, probe_credential as probe_git_credential_on_host,
     status as git_status, switch_branch as switch_workspace_branch,
 };
-use self::profile::*;
-use self::replay::*;
+use self::profile::{
+    active_run_summary, gateway_ready, gateway_run_stats, gateway_session_summaries,
+    local_machine_name, provider_usage, recent_run_groups, session_tree_ids,
+};
+use self::replay::{
+    FrameworkPresentation, ReplayEntry, classify_journal_sequence, compact_replay_deltas,
+    durable_history_page, event_sequence, load_replay, project_record, publish_ready_and_pending,
+    record_and_publish, replayable, update_widgets, validate_gateway_event,
+};
 pub(crate) use self::session::HostHandle;
-use self::session::*;
+use self::session::{JournalDelivery, JournalSequence, LoadedReplay, SessionWidgets};
 use self::ssh::{generate as generate_ssh_identity_on_host, identities as ssh_identities_on_host};
 
 const COMMAND_CAPACITY: usize = 128;
@@ -145,7 +152,7 @@ struct GatewayState {
     bots: Arc<BotStore>,
     checkpoints: Arc<dyn CheckpointStore>,
     scratchpad: Arc<Scratchpad>,
-    session_files: SessionFileStore,
+    session_files: Arc<SessionFileStore>,
     contributions: Vec<FrontendContribution>,
     // ponytail: one lock is enough for at most 32 tiny catalog writes.
     catalog_lock: Arc<Mutex<()>>,
@@ -209,7 +216,7 @@ enum AuthorizedChat {
     Resident(HostHandle),
     /// A Bot's persistent chat that has never started.
     Unstarted {
-        bot_id: String,
+        bot_id: Arc<str>,
     },
     Stored(ChatSpec),
 }
@@ -217,12 +224,12 @@ enum AuthorizedChat {
 #[derive(Debug, Clone)]
 pub(crate) struct Rejection {
     pub(crate) code: &'static str,
-    pub(crate) message: String,
+    pub(crate) message: Arc<str>,
     pub(crate) fatal: bool,
 }
 
 impl Rejection {
-    pub(crate) fn new(code: &'static str, message: impl Into<String>) -> Self {
+    pub(crate) fn new(code: &'static str, message: impl Into<Arc<str>>) -> Self {
         Self {
             code,
             message: message.into(),
@@ -241,10 +248,9 @@ pub(crate) type HostAccess = Arc<dyn Fn() -> Result<GatewayHost> + Send + Sync>;
 impl GatewayHost {
     pub(crate) async fn pending_upload_capacity(&self) -> Result<usize> {
         let state = self.state.lock().await;
-        let config = state
-            .config
-            .lock()
-            .map_err(|_| Error::Config("gateway configuration lock is poisoned".into()))?;
+        let config = state.config.lock().map_err(|error| {
+            Error::Config(format!("gateway configuration lock is poisoned: {error}"))
+        })?;
         Ok(config.connections.pending_uploads)
     }
 
@@ -253,7 +259,7 @@ impl GatewayHost {
         let desktop = Arc::clone(&self.desktop);
         let remote_desktop = Arc::clone(&self.remote_desktop);
         let capacity_gate = Arc::clone(&self.capacity_gate);
-        let events = self.events.clone();
+        let events = self.events.clone(); // rules-allow: the access closure owns an event sender
         let work_activity = Arc::clone(&self.work_activity);
         let telemetry = Arc::clone(&self.telemetry);
         let storage_reads = Arc::clone(&self.storage_reads);
@@ -265,7 +271,7 @@ impl GatewayHost {
                 desktop: Arc::clone(&desktop),
                 remote_desktop: Arc::clone(&remote_desktop),
                 capacity_gate: Arc::clone(&capacity_gate),
-                events: events.clone(),
+                events: events.clone(), // rules-allow: each upgraded host owns an event sender
                 work_activity: Arc::clone(&work_activity),
                 telemetry: Arc::clone(&telemetry),
                 storage_reads: Arc::clone(&storage_reads),
@@ -292,7 +298,8 @@ impl GatewayHost {
             extensions.resolve(&config, &default.config.extensions)?;
         }
         let models = configured_model_catalog(&config)?;
-        for bot in bots.bots()? {
+        let records = bots.bots()?;
+        for bot in records {
             crate::config::validate_bot_compatibility(
                 &config,
                 &bot.config.config,
@@ -310,11 +317,11 @@ impl GatewayHost {
         let checkpoints: Arc<dyn CheckpointStore> =
             Arc::new(SqliteCheckpoint::new(store.checkpoints_path())?);
         let scratchpad = Arc::new(Scratchpad::new(Arc::clone(&checkpoints)));
-        let session_files = SessionFileStore::new(store.state_dir(), None);
+        let session_files = Arc::new(SessionFileStore::new(store.state_dir(), None));
         let remote_desktop = Arc::new(RemoteDesktop::new(
             store.state_dir(),
             config.desktop_enabled,
-            config.computer.clone(),
+            config.computer.clone(), // rules-allow: the remote desktop owns its settings while the gateway config keeps them
         ));
         let telemetry = Arc::new(crate::telemetry::Telemetry::new(
             &config.telemetry,
@@ -362,17 +369,19 @@ impl GatewayHost {
         }
         host.reconcile_pending_bot_deletion()
             .await
-            .map_err(|rejection| Error::Config(rejection.message))?;
+            .map_err(|rejection| Error::Config(rejection.message.to_string()))?;
         host.recover_routine_outcomes().await?;
-        let files = host.state.lock().await.session_files.clone();
-        let events = host.events.clone();
+        let files = Arc::clone(&host.state.lock().await.session_files);
+        let events = host.events.clone(); // rules-allow: the cleanup task owns an event sender
         tokio::spawn(async move {
-            if let Err(error) = files.cleanup_deleted_sessions().await {
-                let _ = events.send(ServerFrame::new(ServerMessage::Error {
+            if let Err(error) = files.cleanup_deleted_sessions().await
+                && let Err(send_error) = events.send(ServerFrame::new(ServerMessage::Error {
                     code: "session_cleanup".into(),
-                    message: error.to_string(),
+                    message: error.to_string().into(),
                     fatal: false,
-                }));
+                }))
+            {
+                tracing::debug!(error = %send_error, "session cleanup failure had no subscribers");
             }
         });
         Ok(host)
@@ -382,7 +391,11 @@ impl GatewayHost {
         let cleanup_tasks = std::mem::take(&mut self.state.lock().await.idle_cleanup_tasks);
         for task in cleanup_tasks {
             task.abort();
-            let _ = task.await;
+            if let Err(error) = task.await
+                && !error.is_cancelled()
+            {
+                tracing::warn!(%error, "idle session cleanup task failed");
+            }
         }
 
         let residents = {
@@ -407,7 +420,7 @@ impl GatewayHost {
         let starting = !state
             .starting_sessions
             .lock()
-            .map_err(|_| internal("session startup lock is poisoned"))?
+            .map_err(|error| internal(format!("session startup lock is poisoned: {error}")))?
             .is_empty();
         let mut idle = !starting
             && !state.bots.has_running_routines().map_err(internal)?
@@ -425,8 +438,9 @@ impl GatewayHost {
         let now = Utc::now().timestamp();
         let next_routine_at = state.bots.next_routine_at(now).map_err(internal)?;
         idle &= running_routines == 0
-            && !next_routine_at.is_some_and(|at| at.timestamp() <= now)
+            && next_routine_at.is_none_or(|at| at.timestamp() > now)
             && !state.bots.has_pending_deliveries().map_err(internal)?;
+        drop(state);
         let after = *self.work_activity.revision.borrow();
         Ok(RuntimeActivity {
             active_sessions,
@@ -500,8 +514,8 @@ impl GatewayHost {
         self.events.subscribe()
     }
 
-    pub(crate) async fn session_file_store(&self) -> SessionFileStore {
-        self.state.lock().await.session_files.clone()
+    pub(crate) async fn session_file_store(&self) -> Arc<SessionFileStore> {
+        Arc::clone(&self.state.lock().await.session_files)
     }
 
     pub(crate) async fn ready(&self) -> std::result::Result<ReadyPayload, Rejection> {
@@ -541,7 +555,7 @@ impl GatewayHost {
 
     async fn contribution_state(&self) -> (Arc<Scratchpad>, Vec<FrontendContribution>) {
         let state = self.state.lock().await;
-        (Arc::clone(&state.scratchpad), state.contributions.clone())
+        (Arc::clone(&state.scratchpad), state.contributions.clone()) // rules-allow: the response extends a copy of the gateway contributions
     }
 
     pub(crate) async fn sessions(&self) -> std::result::Result<Vec<SessionRecord>, Rejection> {
@@ -587,13 +601,18 @@ impl GatewayHost {
     ) -> std::result::Result<crate::wire::BotRecord, Rejection> {
         let _mutation = self.begin_mutation().await?;
         let state = self.state.lock().await;
-        let defaults = state.config()?.bot_defaults.clone().ok_or_else(|| {
-            Rejection::new(
-                "gateway_setup_required",
-                "configure a provider before creating a Bot",
-            )
-        })?;
-        let config = defaults.config;
+        let gateway = state.config()?;
+        let config = gateway
+            .bot_defaults
+            .as_ref()
+            .map(|defaults| defaults.config.clone()) // rules-allow: the new Bot owns a copy of the configured default composition
+            .ok_or_else(|| {
+                Rejection::new(
+                    "gateway_setup_required",
+                    "configure a provider before creating a Bot",
+                )
+            })?;
+        drop(gateway);
         validate_bot_config(&state, &config)?;
         let bot = state
             .bots
@@ -611,8 +630,8 @@ impl GatewayHost {
         expected_revision: u64,
         identity: crate::bots::BotIdentity<'_>,
         config: AgentComposition,
-    ) -> std::result::Result<crate::wire::BotRecord, Rejection> {
-        let (store, computer, runtime_changed) = {
+    ) -> std::result::Result<Arc<crate::wire::BotRecord>, Rejection> {
+        let (state_dir, runtime_changed) = {
             let _access = self.begin_mutation().await?;
             let state = self.state.lock().await;
             let previous = state.bots.bot(id).map_err(invalid_bot)?;
@@ -627,33 +646,42 @@ impl GatewayHost {
                 ));
             }
             (
-                state.store.clone(),
-                Arc::clone(self.remote_desktop.configuration()),
-                previous.description != identity.description || previous.config.config != config,
+                state.store.state_dir().to_path_buf(),
+                *previous.description != *identity.description || previous.config.config != config,
             )
         };
         // Installation can take minutes. Do not hold gateway locks or save the Bot yet.
         if runtime_changed {
-            crate::computer_runtime::prepare(store.state_dir(), &config.middleware, &computer)
-                .await
-                .map_err(invalid_config)?;
+            crate::computer_runtime::prepare(
+                &state_dir,
+                &config.middleware,
+                self.remote_desktop.configuration(),
+            )
+            .await
+            .map_err(invalid_config)?;
         }
         let _mutation = self.begin_mutation().await?;
         let state = self.state.lock().await;
         let previous = state.bots.bot(id).map_err(invalid_bot)?;
         validate_bot_config(&state, &config)?;
+        let config = Arc::new(VersionedAgentConfig {
+            revision: expected_revision
+                .checked_add(1)
+                .ok_or_else(|| invalid_bot("Bot revision overflow"))?,
+            config,
+        });
         let prepared = if runtime_changed {
             let mut candidate = previous;
             candidate.description = identity.description.into();
-            candidate.config.config = config.clone();
+            candidate.config = Arc::clone(&config);
             let preparation = {
                 let gateway = state.config()?;
                 crate::assembly::prepare_bot(
                     &gateway,
-                    candidate,
+                    Arc::new(candidate),
                     &state.store,
                     &state.credentials,
-                    state.session_files.clone(),
+                    Arc::clone(&state.session_files),
                     state.provider_epoch.load(Ordering::Acquire),
                     Arc::clone(self.remote_desktop.configuration()),
                 )
@@ -662,19 +690,21 @@ impl GatewayHost {
         } else {
             None
         };
-        let bot = state
-            .bots
-            .update_bot(id, expected_revision, identity, config)
-            .map_err(invalid_bot)?;
+        let bot = Arc::new(
+            state
+                .bots
+                .update_bot(id, identity, config)
+                .map_err(invalid_bot)?,
+        );
         if let Some(mut prepared) = prepared {
-            prepared.bot = bot.clone();
-            if let Some(previous) = state
+            prepared.bot = Arc::clone(&bot);
+            let previous = state
                 .bots
                 .prepared
                 .lock()
                 .await
-                .insert(id.into(), Arc::new(prepared))
-            {
+                .insert(id.into(), Arc::new(prepared));
+            if let Some(previous) = previous {
                 previous.invalidate();
             }
         }
@@ -739,11 +769,12 @@ impl GatewayHost {
         catalog_visible: bool,
         origin_label: &str,
     ) -> std::result::Result<HostHandle, Rejection> {
-        validate_session_id(&session_id).map_err(|_| invalid_session_id())?;
+        validate_session_id(&session_id)
+            .map_err(|error| Rejection::new("invalid_session_id", error.to_string()))?;
         let mutation = self.begin_mutation().await?;
         let state = self.state.lock().await;
         // Blocking workspace validation must not retain the configuration lock.
-        let tls = state.config()?.tls.clone();
+        let tls = state.config()?.tls.clone(); // rules-allow: blocking validation owns the TLS settings after the config lock drops
         let bot = state.bots.bot(bot_id).map_err(invalid_bot)?;
         let state_dir = state.store.state_dir().to_path_buf();
         let workspace = workspace.map(Path::to_path_buf);
@@ -763,7 +794,9 @@ impl GatewayHost {
             .get(&session_id)
             .filter(|host| host.is_alive())
         {
-            return Ok(host.clone());
+            return Ok(HostHandle {
+                inner: Arc::clone(&host.inner),
+            });
         }
         let starting = state.reserve_start(&session_id, &spec.bot_id)?;
         drop(state);
@@ -788,14 +821,14 @@ impl GatewayHost {
         self.work_activity.mark();
         let state = self.state.lock().await;
         let start = HostHandle::start(
-            state.store.clone(),
+            state.store.clone(), // rules-allow: the chat actor owns its config store
             Arc::clone(&state.config),
             spec,
             Arc::clone(&state.credentials),
             Arc::clone(&state.bots),
             Arc::clone(&state.checkpoints),
             Arc::clone(&state.scratchpad),
-            state.session_files.clone(),
+            Arc::clone(&state.session_files),
             Arc::clone(&state.session_mutations),
             Arc::clone(&state.discovery_gate),
             Arc::clone(&self.desktop),
@@ -803,8 +836,8 @@ impl GatewayHost {
             Arc::clone(&state.provider_epoch),
             Arc::clone(&state.activities),
             Arc::clone(&self.work_activity),
-            self.events.clone(),
-            starting.id.clone(),
+            self.events.clone(), // rules-allow: the chat actor owns an event sender
+            starting.id.clone(), // rules-allow: the start guard keeps its id until the chat is registered
             origin_label,
             Arc::new(live_chats::GatewayLiveChats(
                 Arc::downgrade(&self.state),
@@ -820,9 +853,14 @@ impl GatewayHost {
         }
         let mut state = self.state.lock().await;
         if cache {
-            state.sessions.insert(starting.id.clone(), host.clone());
+            let resident = HostHandle {
+                inner: Arc::clone(&host.inner),
+            };
+            state.sessions.insert(starting.id.clone(), resident); // rules-allow: the start guard keeps its id until the chat is registered
         }
+        // Release the reservation under the registry lock so capacity never counts the chat twice.
         drop(starting);
+        drop(state);
         Ok(host)
     }
 
@@ -834,7 +872,7 @@ impl GatewayHost {
         let (state_dir, tls) = {
             let state = self.state.lock().await;
             let config = state.config()?;
-            (state.store.state_dir().to_path_buf(), config.tls.clone())
+            (state.store.state_dir().to_path_buf(), config.tls.clone()) // rules-allow: blocking creation owns the TLS settings after the config lock drops
         };
         let parent = parent.to_owned();
         let name = name.to_owned();
@@ -908,7 +946,8 @@ impl GatewayHost {
         admission: Admission,
     ) -> std::result::Result<(AuthorizedChat, tokio::sync::OwnedRwLockReadGuard<()>), Rejection>
     {
-        validate_session_id(session_id).map_err(|_| invalid_session_id())?;
+        validate_session_id(session_id)
+            .map_err(|error| Rejection::new("invalid_session_id", error.to_string()))?;
         let guard = match admission {
             Admission::Execute => self.begin_mutation().await?,
             Admission::Observe => self.begin_access().await?,
@@ -942,15 +981,15 @@ impl GatewayHost {
                 .bots()
                 .map_err(internal)?
                 .into_iter()
-                .find(|bot| bot.conversation_session_id == session_id)
+                .find(|bot| *bot.conversation_session_id == *session_id)
                 .ok_or_else(unknown_session)?;
             return Ok((AuthorizedChat::Unstarted { bot_id: bot.id }, guard));
         };
         let tls = config
             .lock()
-            .map_err(|_| internal("gateway configuration lock is poisoned"))?
+            .map_err(|error| internal(format!("gateway configuration lock is poisoned: {error}")))?
             .tls
-            .clone();
+            .clone(); // rules-allow: blocking resolution owns the TLS settings after the config lock drops
         let metadata = checkpoint.metadata;
         let mut spec = tokio::task::spawn_blocking(move || {
             ChatSpec::from_metadata(&metadata, &bots, &state_dir, tls.as_ref())
@@ -1003,17 +1042,17 @@ impl GatewayHost {
         session_id: &str,
         bot_id: &str,
     ) -> std::result::Result<(), Rejection> {
-        let _mutation = self.begin_mutation().await?;
-        let checkpoints = {
+        let mutation = self.begin_mutation().await?;
+        let (bot_id, checkpoints) = {
             let state = self.state.lock().await;
-            state.bots.bot(bot_id).map_err(internal)?;
-            Arc::clone(&state.checkpoints)
+            let bot = state.bots.bot(bot_id).map_err(internal)?;
+            (bot.id, Arc::clone(&state.checkpoints))
         };
         let summary = require_catalog_session(&checkpoints, session_id).await?;
         reject_persistent_session(&summary)?;
-        drop(_mutation);
+        drop(mutation);
         let (host, _) = self.open_session_with_cache(session_id, true).await?;
-        host.reassign_bot(bot_id.to_owned()).await?;
+        host.reassign_bot(bot_id).await?;
         self.broadcast_sessions().await
     }
 
@@ -1054,7 +1093,7 @@ impl GatewayHost {
             )
         };
         require_catalog_session(&checkpoints, session_id).await?;
-        let _catalog = catalog_lock.lock().await;
+        let catalog = catalog_lock.lock().await;
         if checkpoints
             .load(session_id)
             .await
@@ -1070,7 +1109,7 @@ impl GatewayHost {
         save_session_metadata(&checkpoints, &metadata)
             .await
             .map_err(internal)?;
-        drop(_catalog);
+        drop(catalog);
         self.broadcast_sessions().await
     }
 
@@ -1078,7 +1117,7 @@ impl GatewayHost {
         &self,
         include_provider_usage: bool,
     ) -> std::result::Result<ProfileSnapshot, Rejection> {
-        let _access = self.begin_mutation().await?;
+        let access = self.begin_mutation().await?;
         let (mut profile, checkpoints, usage_request) = {
             let state = self.state.lock().await;
             let config = state.config()?;
@@ -1088,7 +1127,7 @@ impl GatewayHost {
                 include_provider_usage.then(|| provider_usage(&config, &state.store)),
             )
         };
-        drop(_access);
+        drop(access);
         let sessions = gateway_session_summaries(&checkpoints)
             .await
             .map_err(internal)?;
@@ -1121,23 +1160,30 @@ impl GatewayHost {
         let (sessions, approvals) = gateway_catalog(&checkpoints, &activities)
             .await
             .map_err(internal)?;
-        let _ = self.events.send(ServerFrame::new(ServerMessage::Sessions {
+        if let Err(error) = self.events.send(ServerFrame::new(ServerMessage::Sessions {
             request_id: None,
             sessions,
-        }));
-        let _ = self
+        })) {
+            tracing::debug!(%error, "session catalog had no subscribers");
+        }
+        if let Err(error) = self
             .events
             .send(ServerFrame::new(ServerMessage::BackgroundApprovals {
                 approvals,
-            }));
+            }))
+        {
+            tracing::debug!(%error, "background approvals had no subscribers");
+        }
         Ok(())
     }
 
     fn broadcast_bots(&self, bots: &[crate::wire::BotRecord]) {
-        let _ = self.events.send(ServerFrame::new(ServerMessage::Bots {
+        if let Err(error) = self.events.send(ServerFrame::new(ServerMessage::Bots {
             request_id: None,
             bots: bots.to_vec(),
-        }));
+        })) {
+            tracing::debug!(%error, "Bot catalog had no subscribers");
+        }
     }
 }
 
@@ -1196,15 +1242,15 @@ impl GatewayState {
     fn config(&self) -> std::result::Result<std::sync::MutexGuard<'_, GatewayConfig>, Rejection> {
         self.config
             .lock()
-            .map_err(|_| internal("gateway configuration lock is poisoned"))
+            .map_err(|error| internal(format!("gateway configuration lock is poisoned: {error}")))
     }
 
     fn ready_snapshot(&self) -> std::result::Result<GatewayReadySnapshot, Rejection> {
         let config = self.config()?;
         Ok(GatewayReadySnapshot {
-            store: self.store.clone(),
-            configured_providers: config.configured_providers.clone(),
-            bot_defaults: config.bot_defaults.clone(),
+            store: self.store.clone(), // rules-allow: the ready snapshot outlives the state lock
+            configured_providers: config.configured_providers.clone(), // rules-allow: the ready snapshot outlives the config lock
+            bot_defaults: config.bot_defaults.clone(), // rules-allow: the ready snapshot outlives the config lock
             subagent_ceilings: config.execution.subagent_ceilings,
             extensions: crate::extensions::records(&config),
             computer_view: if !config.desktop_enabled {
@@ -1220,7 +1266,7 @@ impl GatewayState {
             bots: Arc::clone(&self.bots),
             checkpoints: Arc::clone(&self.checkpoints),
             scratchpad: Arc::clone(&self.scratchpad),
-            contributions: self.contributions.clone(),
+            contributions: self.contributions.clone(), // rules-allow: the ready snapshot outlives the state lock
             activities: Arc::clone(&self.activities),
         })
     }
@@ -1241,6 +1287,7 @@ impl GatewayState {
             ));
         }
         starting.insert(id.into(), bot_id.into());
+        drop(starting);
         Ok(SessionStartGuard {
             id: id.into(),
             starting: Arc::clone(&self.starting_sessions),
@@ -1259,8 +1306,8 @@ impl GatewayState {
 impl GatewayHost {
     async fn ensure_capacity(
         &self,
-    ) -> std::result::Result<tokio::sync::OwnedMutexGuard<()>, Rejection> {
-        let capacity = Arc::clone(&self.capacity_gate).lock_owned().await;
+    ) -> std::result::Result<tokio::sync::MutexGuard<'_, ()>, Rejection> {
+        let capacity = self.capacity_gate.lock().await;
         self.remote_desktop
             .check_execution()
             .map_err(invalid_config)?;
@@ -1274,7 +1321,7 @@ impl GatewayHost {
                     .sessions
                     .iter()
                     .filter(|(_, host)| host.is_unreferenced())
-                    .map(|(id, _)| id.clone())
+                    .map(|(id, _)| id.clone()) // rules-allow: stop candidates are revisited after the state lock is released
                     .collect::<Vec<_>>()
             };
             for id in candidates {
@@ -1317,7 +1364,13 @@ fn session_limit(capacity: usize) -> Rejection {
 async fn receive<T>(
     receiver: oneshot::Receiver<std::result::Result<T, Rejection>>,
 ) -> std::result::Result<T, Rejection> {
-    receiver.await.map_err(|_| stopped())?
+    receiver.await.map_err(|error| {
+        Rejection::new(
+            "gateway_stopped",
+            format!("the gateway host stopped: {error}"),
+        )
+        .fatal()
+    })?
 }
 
 fn stopped() -> Rejection {
@@ -1387,7 +1440,8 @@ async fn require_catalog_session(
     checkpoints: &Arc<dyn CheckpointStore>,
     session_id: &str,
 ) -> std::result::Result<SessionSummary, Rejection> {
-    validate_session_id(session_id).map_err(|_| invalid_session_id())?;
+    validate_session_id(session_id)
+        .map_err(|error| Rejection::new("invalid_session_id", error.to_string()))?;
     let checkpoint = checkpoints
         .session_summary(session_id)
         .await
@@ -1446,7 +1500,8 @@ impl GatewayHost {
 }
 
 fn reject_persistent_session(summary: &SessionSummary) -> std::result::Result<(), Rejection> {
-    if summary.session_id == crate::bots::conversation_session_id(&summary.session_context.owner_id)
+    if *summary.session_id
+        == *crate::bots::conversation_session_id(&summary.session_context.owner_id)
     {
         return Err(Rejection::new(
             "persistent_chat",
@@ -1465,8 +1520,8 @@ pub(crate) fn session_file_rejection(error: mobius::Error) -> Rejection {
     Rejection {
         code,
         message: match error {
-            mobius::Error::Tool(message) => message,
-            other => other.to_string(),
+            mobius::Error::Tool(message) => message.into(),
+            other => other.to_string().into(),
         },
         fatal: false,
     }

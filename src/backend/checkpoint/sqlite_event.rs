@@ -70,7 +70,7 @@ fn stored_event<'a>(
 
 fn matching_output(item: &Value, call: &ToolCallEndEvent) -> bool {
     item["type"].as_str() == Some("function_call_output")
-        && item["call_id"].as_str() == Some(call.call_id.as_str())
+        && item["call_id"].as_str() == Some(call.call_id.as_ref())
         && item[TOOL_ERROR_FIELD].as_bool() == Some(call.is_error)
         && item["output"].as_array().is_some_and(|parts| {
             parts.len() == call.output.0.len()
@@ -111,19 +111,20 @@ pub(super) fn decode_event(connection: &Connection, session_id: &str, json: &str
                 Error::Checkpoint("tool event transcript reference is missing or invalid".into())
             };
             let mut item: Value = serde_json::from_str(&item_json.ok_or_else(invalid)?)?;
-            if item["type"].as_str() != Some("function_call_output")
-                || item["call_id"].as_str() != Some(call_id.as_str())
-                || item[TOOL_ERROR_FIELD].as_bool() != Some(is_error)
+            if item.get("type").and_then(Value::as_str) != Some("function_call_output")
+                || item.get("call_id").and_then(Value::as_str) != Some(call_id.as_str())
+                || item.get(TOOL_ERROR_FIELD).and_then(Value::as_bool) != Some(is_error)
             {
                 return Err(invalid());
             }
-            let output = serde_json::from_value(item["output"].take())?;
+            let output =
+                serde_json::from_value(item.get_mut("output").map_or(Value::Null, Value::take))?;
             Ok(Event {
                 submission_id: submission_id.map(Arc::from),
                 msg: EventMsg::ToolCallEnd(ToolCallEndEvent {
-                    turn_id,
-                    call_id,
-                    name,
+                    turn_id: turn_id.into(),
+                    call_id: call_id.into(),
+                    name: name.into(),
                     is_error,
                     output,
                 }),
@@ -224,8 +225,9 @@ pub(super) fn store_event(
             .execute(params![session_id, sequence])?;
     }
     Ok(JournalEvent {
-        sequence: u64::try_from(sequence)
-            .map_err(|_| Error::Checkpoint("event journal sequence became negative".into()))?,
+        sequence: u64::try_from(sequence).map_err(|error| {
+            Error::Checkpoint(format!("event journal sequence became negative: {error}"))
+        })?,
         recorded_at_ms,
         event,
         stream_metrics,
@@ -267,8 +269,10 @@ fn event_index(event: &EventMsg) -> Result<EventIndex<'_>> {
             kind: "assistant_content_delta",
             model_step_id: Some(&delta.model_step_id),
             stream_phase: Some(delta.phase),
-            delta_bytes: Some(i64::try_from(delta.delta.len()).map_err(|_| {
-                Error::Checkpoint("stream delta length exceeds SQLite INTEGER".into())
+            delta_bytes: Some(i64::try_from(delta.delta.len()).map_err(|error| {
+                Error::Checkpoint(format!(
+                    "stream delta length exceeds SQLite INTEGER: {error}"
+                ))
             })?),
         },
         EventMsg::ModelStepStarted(model_step) => {
@@ -325,16 +329,15 @@ pub(super) struct StreamMetricAccumulator {
 
 impl StreamMetricAccumulator {
     pub(super) fn observe(&mut self, recorded_at_ms: i64, bytes: i64) -> Result<()> {
-        let bytes = u64::try_from(bytes)
-            .map_err(|_| Error::Checkpoint("stream delta has a negative length".into()))?;
+        let bytes = u64::try_from(bytes).map_err(|error| {
+            Error::Checkpoint(format!("stream delta has a negative length: {error}"))
+        })?;
         if let Some(previous) = self.last_delta_at_ms {
             let recorded_at_ms = recorded_at_ms.max(previous);
             let gap = recorded_at_ms - previous;
-            self.longest_gap_ms =
-                self.longest_gap_ms
-                    .max(u64::try_from(gap).map_err(|_| {
-                        Error::Checkpoint("stream delta gap is unsupported".into())
-                    })?);
+            self.longest_gap_ms = self.longest_gap_ms.max(u64::try_from(gap).map_err(|error| {
+                Error::Checkpoint(format!("stream delta gap is unsupported: {error}"))
+            })?);
             self.last_delta_at_ms = Some(recorded_at_ms);
         } else {
             self.first_delta_at_ms = Some(recorded_at_ms);

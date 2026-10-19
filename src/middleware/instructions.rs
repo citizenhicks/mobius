@@ -34,6 +34,7 @@ super::manifest::middleware_manifest! {
 }
 
 /// Optional root workspace instructions composed into the system prompt once.
+#[derive(Debug)]
 pub struct Instructions {
     body: Option<String>,
 }
@@ -68,7 +69,7 @@ impl Instructions {
 
     fn section(&self) -> Option<PromptSection> {
         self.body
-            .clone()
+            .clone() // rules-allow: prompt_section borrows the middleware and PromptSection owns its body
             .map(|body| PromptSection::titled(text::DEFINITION.prompt_title.as_str(), body))
     }
 }
@@ -114,9 +115,11 @@ fn read_optional(directory: &Dir, name: &str) -> Result<Option<String>> {
             "workspace instruction `{name}` exceeds {MAX_INSTRUCTIONS_BYTES} bytes"
         )));
     }
-    String::from_utf8(bytes)
-        .map(Some)
-        .map_err(|_| Error::Config(format!("workspace instruction `{name}` is not valid UTF-8")))
+    String::from_utf8(bytes).map(Some).map_err(|error| {
+        Error::Config(format!(
+            "workspace instruction `{name}` is not valid UTF-8: {error}"
+        ))
+    })
 }
 
 #[cfg(unix)]

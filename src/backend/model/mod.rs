@@ -136,7 +136,7 @@ pub(crate) fn strip_shared_provider_reasoning(input: &mut Vec<Arc<Value>>) -> bo
 }
 
 /// A function tool definition sent to a model provider.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolDefinition {
     /// Stable function name used to match model calls to a registered tool.
     /// Must satisfy the catalog's tool-name validation and be unique within that catalog.
@@ -178,7 +178,7 @@ impl ToolCall {
         })
     }
 
-    pub(crate) fn replace(&mut self, name: String, arguments: Value) -> Result<()> {
+    pub(crate) fn replace(&mut self, name: Arc<str>, arguments: Value) -> Result<()> {
         if name.trim().is_empty() {
             return Err(Error::Tool(format!(
                 "tool call `{}` name is empty",
@@ -229,7 +229,7 @@ impl ToolDefinition {
 
 #[derive(Default)]
 pub(crate) struct StreamingToolCalls {
-    call_ids: BTreeSet<String>,
+    call_ids: BTreeSet<Arc<str>>,
     bytes: usize,
 }
 
@@ -255,7 +255,7 @@ impl StreamingToolCalls {
                 Error::Provider(format!("tool call could not be serialized: {error}").into())
             }
         })?;
-        self.call_ids.insert(call.call_id.clone());
+        self.call_ids.insert(Arc::clone(&call.call_id));
         self.bytes += writer.bytes;
         Ok(())
     }
@@ -472,17 +472,19 @@ impl ModelOutput {
             .filter(|item| item.get("type").and_then(Value::as_str) == Some("function_call"))
             .zip(&self.tool_calls)
         {
-            let object = item
-                .as_object_mut()
-                .expect("validated function call must be an object");
-            object.insert("name".into(), Value::String(call.name.clone()));
+            let object = item.as_object_mut().ok_or_else(|| {
+                Error::Provider("function call output item was not an object".into())
+            })?;
+            object.insert("name".into(), Value::String(call.name.to_string())); // rules-allow: the validated call keeps its name while the output item gets its own copy
             object.insert(
                 "arguments".into(),
                 Value::String(serde_json::to_string(&call.arguments)?),
             );
         }
-        ensure_output_size(&self.output).map_err(|_| {
-            Error::Tool("rewritten tool calls exceeded model output size limit".into())
+        ensure_output_size(&self.output).map_err(|error| {
+            Error::Tool(format!(
+                "rewritten tool calls exceeded model output size limit: {error}"
+            ))
         })?;
         Ok(())
     }
@@ -515,16 +517,20 @@ fn normalized_step_content(output: &[Value]) -> Result<Vec<ModelStepContent>> {
         }
         let precedes_hosted_search = final_message_index.is_some_and(|final_index| {
             output_index < final_index
-                && output[output_index + 1..final_index].iter().any(|item| {
-                    item.get("type")
-                        .and_then(Value::as_str)
-                        .is_some_and(|kind| {
-                            kind == "web_search_call"
-                                || provider::providers()
-                                    .iter()
-                                    .any(|provider| provider.web_search_type == Some(kind))
-                        })
-                })
+                && output
+                    .get(output_index + 1..final_index)
+                    .into_iter()
+                    .flatten()
+                    .any(|item| {
+                        item.get("type")
+                            .and_then(Value::as_str)
+                            .is_some_and(|kind| {
+                                kind == "web_search_call"
+                                    || provider::providers()
+                                        .iter()
+                                        .any(|provider| provider.web_search_type == Some(kind))
+                            })
+                    })
         });
         let declared_phase = item.get("phase").and_then(Value::as_str);
         let phase = if declared_phase == Some("commentary")
@@ -545,7 +551,7 @@ fn normalized_step_content(output: &[Value]) -> Result<Vec<ModelStepContent>> {
                 continue;
             }
             let text = part.get("text").and_then(Value::as_str).ok_or_else(|| {
-                Error::Provider("output text part omitted text".to_string().into())
+                Error::Provider("output text part omitted text".to_owned().into())
             })?;
             if text.is_empty() {
                 continue;
@@ -951,8 +957,8 @@ pub(super) fn decode_tool_call(item: &Value) -> Result<ToolCall> {
         .and_then(Value::as_str)
         .ok_or_else(|| Error::Provider("function call omitted arguments".into()))?;
     let call = ToolCall {
-        call_id: call_id.to_string(),
-        name: name.to_string(),
+        call_id: call_id.into(),
+        name: name.into(),
         arguments: decode_tool_arguments(encoded)?,
     };
     call.validate()?;
@@ -1068,7 +1074,11 @@ pub fn user_message_with_attachments(
 ) -> Result<Value> {
     let mut message = user_message(text);
     if !attachments.is_empty() {
-        message[ATTACHMENTS_FIELD] = serde_json::to_value(attachments)?;
+        set_field(
+            &mut message,
+            ATTACHMENTS_FIELD,
+            serde_json::to_value(attachments)?,
+        );
     }
     Ok(message)
 }
@@ -1119,8 +1129,19 @@ pub(crate) fn message_input(event: &MessageEvent) -> Result<Value> {
             )
         }
     };
-    input[MESSAGE_METADATA_FIELD] = serde_json::to_value(event)?;
+    set_field(
+        &mut input,
+        MESSAGE_METADATA_FIELD,
+        serde_json::to_value(event)?,
+    );
     Ok(input)
+}
+
+/// Applies transport-owned metadata to the first input of a new turn.
+pub(crate) fn prepare_turn_input(context: ModelInput<'_>, input: &mut Value) {
+    if !has_prompt_cache_breakpoint(context) {
+        mark_prompt_cache_breakpoint(input);
+    }
 }
 
 pub(crate) fn has_prompt_cache_breakpoint(input: ModelInput<'_>) -> bool {
@@ -1215,8 +1236,19 @@ pub(crate) fn reset_shared_prompt_cache_breakpoint(input: &mut [Arc<Value>]) {
 
 pub(crate) fn internal_user_message(kind: &str, text: &str) -> Value {
     let mut message = user_message(text);
-    message[INTERNAL_MESSAGE_FIELD] = Value::String(kind.into());
+    set_field(
+        &mut message,
+        INTERNAL_MESSAGE_FIELD,
+        Value::String(kind.into()),
+    );
     message
+}
+
+/// Sets `field` on a JSON object this crate built; any other value is left unchanged.
+pub(crate) fn set_field(target: &mut Value, field: &str, value: Value) {
+    if let Some(object) = target.as_object_mut() {
+        object.insert(field.to_owned(), value);
+    }
 }
 
 pub(crate) fn durable_visible_message_index(
@@ -1269,7 +1301,7 @@ pub fn tool_output(call_id: &str, output: &crate::protocol::ToolContent, is_erro
         "call_id": call_id,
         "output": output
     });
-    value[TOOL_ERROR_FIELD] = Value::Bool(is_error);
+    set_field(&mut value, TOOL_ERROR_FIELD, Value::Bool(is_error));
     value
 }
 

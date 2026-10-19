@@ -52,9 +52,20 @@ use crate::wire::{
 };
 use crate::{Error, Result};
 
-use self::dispatch::*;
-use self::responses::*;
-use self::transport::*;
+use self::dispatch::{
+    AuthenticatedClient, ConnectionSessionState, SelectedChat, handle_message, selected_broadcast,
+};
+use self::responses::{
+    directory_rejection, internal_rejection, list_directories, open_selected, require_selected,
+    require_uploads_enabled, routine_rejection, sequence, uploads_disabled_rejection,
+    write_client_inventory, write_gateway_result, write_rejection, write_result,
+    write_server_error, write_session_history,
+};
+use self::transport::{
+    ClientConnections, ConnectionAdmission, ConnectionContext, ConnectionShared,
+    PlaintextHandshake, connection_diagnostic, serve_connection, serve_plaintext_connection,
+    serve_websocket, tls_acceptor,
+};
 use self::view::ClientView;
 
 const ROUTINE_TICK: Duration = Duration::from_secs(15);
@@ -70,9 +81,18 @@ pub struct GatewayServer {
     listener: TcpListener,
     access_lease: Option<AccessLease>,
     auth: Arc<AuthStore>,
-    host: GatewayHost,
+    host: Arc<GatewayHost>,
     bots: Arc<BotStore>,
     ready: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+impl std::fmt::Debug for GatewayServer {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GatewayServer")
+            .field("listener", &self.listener)
+            .finish_non_exhaustive()
+    }
 }
 
 impl GatewayServer {
@@ -128,8 +148,9 @@ impl GatewayServer {
         let credentials = Arc::new(CredentialStore::open(store.credentials_path())?);
         let bots = Arc::new(BotStore::open(store.state_dir())?);
         bots.sync_telemetry_cursors(&config.telemetry.sinks)?;
-        let host =
-            GatewayHost::start(store, config.clone(), credentials, Arc::clone(&bots)).await?;
+        let host = Arc::new(
+            GatewayHost::start(store, config.clone(), credentials, Arc::clone(&bots)).await?, // rules-allow: the host and the server each keep their own configuration
+        );
         Ok(Self {
             config,
             listener,
@@ -218,6 +239,10 @@ impl GatewayServer {
             .await
     }
 
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the shared listener state serves every connection until the loop ends; the lint misreads its use inside tokio::select!"
+    )]
     async fn serve_until_inactive_with_host(
         mut self,
         shutdown: impl Future<Output = ()>,
@@ -244,10 +269,19 @@ impl GatewayServer {
             self.config.connections.pre_authentication,
             self.config.connections.authenticated,
         );
-        let client_connections = Arc::new(ClientConnections::default());
         let mut activity_hook =
             crate::telemetry::ActivityHook::new(self.config.telemetry.activity_hook.as_ref())?;
         let (client_revocations, _) = broadcast::channel(self.config.connections.total());
+        let shared = Arc::new(ConnectionShared {
+            auth: Arc::clone(&self.auth),
+            host: Arc::clone(&self.host),
+            bots: Arc::clone(&self.bots),
+            client_connections: Arc::new(ClientConnections::default()),
+            client_revocations,
+            tls,
+            websocket_host,
+        });
+        let client_connections = &shared.client_connections;
         let mut has_active_routines = self.bots.has_active_routines(Utc::now().timestamp())?
             || self.bots.has_pending_deliveries()?
             || self.bots.has_monitored_sessions()?;
@@ -256,8 +290,10 @@ impl GatewayServer {
         let mut routine_timer = tokio::time::interval(ROUTINE_TICK);
         routine_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         tokio::pin!(shutdown);
-        if let Some(ready) = self.ready.take() {
-            let _ = ready.send(());
+        if let Some(ready) = self.ready.take()
+            && ready.send(()).is_err()
+        {
+            tracing::debug!("gateway readiness receiver was dropped before serving");
         }
         crate::telemetry::Telemetry::tick(&self.host, 0, Trigger::Start, &mut telemetry_tasks)
             .await;
@@ -266,12 +302,12 @@ impl GatewayServer {
             loop {
                 tokio::select! {
                     biased;
-                    _ = async {
+                    () = async {
                         tokio::time::sleep_until(next_nudge).await;
                         self.host.telemetry.notify.notified().await;
                     }, if routine_dispatchers.is_empty() => {
                         next_nudge = Instant::now() + Duration::from_secs(1);
-                        let host = self.host.clone();
+                        let host = Arc::clone(&self.host);
                         routine_dispatchers.spawn(async move {
                             if let Err(error) = host.dispatch_bot_events().await {
                                 tracing::warn!(code = %error.code, "Bot delivery failed");
@@ -283,7 +319,7 @@ impl GatewayServer {
                             access_expired = true;
                             break Ok(());
                         }
-                        self.tick_telemetry(&client_connections, Trigger::Interval, &mut telemetry_tasks).await;
+                        self.tick_telemetry(client_connections, Trigger::Interval, &mut telemetry_tasks).await;
                         // Keep reservation and the shutdown decision under the same
                         // admission gate; future schedules alone do not keep it open.
                         let Ok(_admission) = self.host.begin_mutation().await else { continue; };
@@ -294,7 +330,7 @@ impl GatewayServer {
                             inactivity.as_mut().reset(tokio::time::Instant::now() + inactivity_timeout);
                         }
                         has_active_routines = routines_active;
-                        let host = self.host.clone();
+                        let host = Arc::clone(&self.host);
                         // One event delivery worker at a time; all retries retain their original message ID.
                         if routine_dispatchers.is_empty() {
                             routine_dispatchers.spawn(async move {
@@ -305,7 +341,7 @@ impl GatewayServer {
                         }
                         // The clock only committed schedule.due events. The same
                         // hook action worker starts scheduled and manually requested runs.
-                        let _ = poll.events;
+                        drop(poll.events);
 
                     }
                     Some(result) = telemetry_tasks.join_next(), if !telemetry_tasks.is_empty() => {
@@ -323,7 +359,7 @@ impl GatewayServer {
                         }
                     }
                     Some(_) = routine_dispatchers.join_next(), if !routine_dispatchers.is_empty() => {
-                        self.tick_telemetry(&client_connections, Trigger::Interval, &mut telemetry_tasks).await;
+                        self.tick_telemetry(client_connections, Trigger::Interval, &mut telemetry_tasks).await;
                     }
                     accepted = async {
                         let admission = connection_admission.admit().await;
@@ -341,29 +377,19 @@ impl GatewayServer {
                             access_expired = true;
                             break Ok(());
                         }
-                        let auth = Arc::clone(&self.auth);
-                        let host = self.host.clone();
-                        let bots = Arc::clone(&self.bots);
-                        let client_connections = Arc::clone(&client_connections);
-                        let client_revocations = client_revocations.clone();
-                        let tls = tls.clone();
-                        let websocket_host = websocket_host.clone();
+                        let shared = Arc::clone(&shared);
                         connections.spawn(async move {
                             let auth_deadline = Instant::now() + Duration::from_secs(self.config.connections.authentication_timeout_seconds);
                             let connection = ConnectionContext {
                                 local: peer.ip().is_loopback(),
-                                desktop_transport: tls.is_some(),
-                                auth,
-                                host,
-                                bots,
-                                client_connections,
-                                client_revocations,
+                                desktop_transport: shared.tls.is_some(),
+                                shared,
                                 admission,
                                 access_lease: self.access_lease,
                             };
                             let result = if ingress_connection {
-                                serve_websocket(stream, connection, PlaintextHandshake { expected_websocket_host: None, auth_deadline }).await
-                            } else if let Some(tls) = tls {
+                                serve_websocket(stream, connection, PlaintextHandshake { verify_websocket_host: false, auth_deadline }).await
+                            } else if let Some(tls) = &connection.shared.tls {
                                 let stream = match tokio::time::timeout_at(
                                     auth_deadline,
                                     tls.accept(stream),
@@ -388,7 +414,7 @@ impl GatewayServer {
                                     stream,
                                     connection,
                                     PlaintextHandshake {
-                                        expected_websocket_host: websocket_host,
+                                        verify_websocket_host: true,
                                         auth_deadline,
                                     },
                                 )
@@ -463,7 +489,7 @@ impl GatewayServer {
     ) {
         match connections.native_count() {
             Ok(clients) => {
-                crate::telemetry::Telemetry::tick(&self.host, clients, trigger, tasks).await
+                crate::telemetry::Telemetry::tick(&self.host, clients, trigger, tasks).await;
             }
             Err(error) => tracing::warn!(%error, "telemetry client count unavailable"),
         }
@@ -534,14 +560,14 @@ fn access_lease(
     }
     let seconds = expires_at
         .parse::<u64>()
-        .map_err(|_| Error::Config("gateway access expiry is invalid".into()))?;
+        .map_err(|error| Error::Config(format!("gateway access expiry is invalid: {error}")))?;
     let expires_at = UNIX_EPOCH
         .checked_add(Duration::from_secs(seconds))
         .and_then(|expiry| expiry.checked_add(grace))
         .ok_or_else(|| Error::Config("gateway access expiry is invalid".into()))?;
     let remaining = expires_at
         .duration_since(now)
-        .map_err(|_| Error::Config("gateway access has expired".into()))?;
+        .map_err(|error| Error::Config(format!("gateway access has expired: {error}")))?;
     if remaining.is_zero() {
         return Err(Error::Config("gateway access has expired".into()));
     }

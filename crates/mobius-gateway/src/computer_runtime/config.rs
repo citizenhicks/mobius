@@ -13,6 +13,10 @@ pub(super) const DEFAULTS_TEXT: &str = include_str!("defaults.toml");
 
 // Required DTOs never call public Default implementations while parsing the
 // embedded source. Missing fields therefore fail instead of recursing into LazyLock.
+#[expect(
+    clippy::expect_used,
+    reason = "the embedded defaults are compiled in; invalid ones are a build defect tests catch"
+)]
 static DEFAULTS: LazyLock<ComputerDefaults> = LazyLock::new(|| {
     let defaults: ComputerDefaults = mobius::config::embedded(DEFAULTS_TEXT);
     for application in [
@@ -386,7 +390,7 @@ impl ComputerConfig {
         deadline(self.download_connect_timeout_seconds)?;
         deadline(self.download_timeout_seconds)?;
         let url = url::Url::parse(&self.node_download_base_url)
-            .map_err(|_| Error::Config("invalid Node download mirror".into()))?;
+            .map_err(|error| Error::Config(format!("invalid Node download mirror: {error}")))?;
         if url.scheme() != "https"
             || url.host_str().is_none()
             || !url.username().is_empty()
@@ -453,7 +457,7 @@ impl BrowserConfig {
             }
         }
         let url = url::Url::parse(&self.start_page)
-            .map_err(|_| Error::Config("invalid browser start page".into()))?;
+            .map_err(|error| Error::Config(format!("invalid browser start page: {error}")))?;
         if !matches!(url.scheme(), "http" | "https" | "about")
             || (url.scheme() == "about" && self.start_page != "about:blank")
             || !url.username().is_empty()
@@ -566,6 +570,7 @@ impl DesktopConfig {
 
 /// Resolve an optional desktop app; missing defaults do not disable the whole desktop.
 #[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
 pub(crate) enum ApplicationRole {
     WindowManager,
     Panel,

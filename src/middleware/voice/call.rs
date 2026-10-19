@@ -25,19 +25,31 @@ pub struct VoiceCallContext {
     /// The chat's model router, which serves the voice route.
     pub router: Arc<ModelRouter>,
     /// The selected voice route.
-    pub voice: String,
+    pub voice: Arc<str>,
     /// The Bot's display name.
-    pub bot_name: String,
+    pub bot_name: Arc<str>,
     /// The Bot's handle.
-    pub bot_handle: String,
+    pub bot_handle: Arc<str>,
     /// The Bot's prepared instructions.
     pub bot_instructions: String,
     /// The chat turn running when the call starts.
-    pub active_turn_id: Option<String>,
+    pub active_turn_id: Option<Arc<str>>,
     /// The chat's checkpoint store.
     pub checkpoints: Arc<dyn CheckpointStore>,
     /// The chat's frontend event sink.
     pub frontend: FrontendEventSink,
+}
+
+impl std::fmt::Debug for VoiceCallContext {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("VoiceCallContext")
+            .field("session_id", &self.session_id)
+            .field("voice", &self.voice)
+            .field("bot_name", &self.bot_name)
+            .field("active_turn_id", &self.active_turn_id)
+            .finish_non_exhaustive()
+    }
 }
 
 impl VoiceCallContext {
@@ -46,19 +58,21 @@ impl VoiceCallContext {
     ///
     /// Returns an error if the voice route is not configured.
     pub fn shutdown_timeout(&self) -> Result<Duration> {
-        Ok(self.finalization_timeout()? + TRANSCRIPT_FINALIZATION_TIMEOUT)
-    }
-
-    fn finalization_timeout(&self) -> Result<Duration> {
-        let settings = self.router.transport_settings_for(&self.voice)?;
-        // Provider shutdown allows one I/O window to send close and one to receive final events.
-        Ok(Duration::from_millis(settings.voice_io_timeout_ms) * 2)
+        Ok(finalization_timeout(&self.router, &self.voice)? + TRANSCRIPT_FINALIZATION_TIMEOUT)
     }
 }
 
+fn finalization_timeout(router: &ModelRouter, voice: &str) -> Result<Duration> {
+    let settings = router.transport_settings_for(voice)?;
+    // Provider shutdown allows one I/O window to send close and one to receive final events.
+    Ok(Duration::from_millis(settings.voice_io_timeout_ms) * 2)
+}
+
 /// Why [`VoiceCall::wait`] returned.
+#[derive(Debug)]
 pub struct VoiceWake(Wake);
 
+#[derive(Debug)]
 enum Wake {
     Preview,
     Provider(Option<Result<RealtimeVoiceEvent>>),
@@ -69,10 +83,21 @@ pub struct VoiceCall {
     call: RealtimeVoiceCall,
     transcript: VoiceTranscript,
     conversation: VoiceConversation,
-    handoffs: BTreeMap<String, VoiceHandoff>,
+    handoffs: BTreeMap<Arc<str>, VoiceHandoff>,
     router: Arc<ModelRouter>,
-    voice: String,
+    voice: Arc<str>,
     finalization_timeout: Duration,
+}
+
+impl std::fmt::Debug for VoiceCall {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("VoiceCall")
+            .field("transcript", &self.transcript)
+            .field("handoffs", &self.handoffs)
+            .field("voice", &self.voice)
+            .finish_non_exhaustive()
+    }
 }
 
 impl VoiceCall {
@@ -82,24 +107,30 @@ impl VoiceCall {
     ///
     /// Returns an error if the transcript, the chat, or provider negotiation fails.
     pub async fn start(context: VoiceCallContext, offer_sdp: String) -> Result<(Self, String)> {
-        let transcript = VoiceTranscript::open(
-            Arc::clone(&context.checkpoints),
-            &context.session_id,
-            Arc::clone(&context.frontend),
-        )
-        .await?;
-        let parent = context
-            .checkpoints
-            .load(&context.session_id)
+        let VoiceCallContext {
+            session_id,
+            router,
+            voice,
+            bot_name,
+            bot_handle,
+            bot_instructions,
+            active_turn_id,
+            checkpoints,
+            frontend,
+        } = context;
+        let transcript = VoiceTranscript::open(checkpoints, &session_id, frontend).await?;
+        let parent = transcript
+            .checkpoints()
+            .load(&session_id)
             .await?
             .ok_or_else(|| Error::Checkpoint("voice parent session disappeared".into()))?;
         let identity = format!(
             "{}\n\n{}",
             text::DEFINITION
                 .identity
-                .replace("{handle}", &context.bot_handle)
-                .replace("{name}", &context.bot_name),
-            context.bot_instructions
+                .replace("{handle}", &bot_handle)
+                .replace("{name}", &bot_name),
+            bot_instructions
         );
         let instructions = instructions(
             &identity,
@@ -107,17 +138,14 @@ impl VoiceCall {
             transcript.session_id(),
             &transcript.task_context().await?,
         )?;
-        let mut call = context
-            .router
-            .start_realtime_voice(
-                Some(&context.voice),
-                parent.session_id,
-                offer_sdp,
-                instructions,
-            )
+        let mut call = router
+            .start_realtime_voice(Some(&voice), parent.session_id, offer_sdp, instructions)
             .await?;
         let answer_sdp = std::mem::take(&mut call.answer_sdp);
-        Ok((Self::attach(context, transcript, call).await?, answer_sdp))
+        Ok((
+            Self::attach(router, voice, active_turn_id, bot_name, transcript, call).await?,
+            answer_sdp,
+        ))
     }
 
     /// Attaches an already negotiated provider call to the chat's transcript.
@@ -125,33 +153,41 @@ impl VoiceCall {
     ///
     /// Returns an error if the transcript cannot be opened or written.
     pub async fn with_call(context: VoiceCallContext, call: RealtimeVoiceCall) -> Result<Self> {
-        let transcript = VoiceTranscript::open(
-            Arc::clone(&context.checkpoints),
-            &context.session_id,
-            Arc::clone(&context.frontend),
-        )
-        .await?;
-        Self::attach(context, transcript, call).await
+        let VoiceCallContext {
+            session_id,
+            router,
+            voice,
+            bot_name,
+            active_turn_id,
+            checkpoints,
+            frontend,
+            ..
+        } = context;
+        let transcript = VoiceTranscript::open(checkpoints, &session_id, frontend).await?;
+        Self::attach(router, voice, active_turn_id, bot_name, transcript, call).await
     }
 
     async fn attach(
-        context: VoiceCallContext,
+        router: Arc<ModelRouter>,
+        voice: Arc<str>,
+        active_turn_id: Option<Arc<str>>,
+        bot_name: Arc<str>,
         mut transcript: VoiceTranscript,
         call: RealtimeVoiceCall,
     ) -> Result<Self> {
-        let finalization_timeout = context.finalization_timeout()?;
+        let finalization_timeout = finalization_timeout(&router, &voice)?;
         transcript.start_call(&call.voice).await?;
         Ok(Self {
             conversation: VoiceConversation::new(
-                transcript.session_id().into(),
-                context.active_turn_id,
-                context.bot_name,
+                Arc::clone(transcript.session_id()),
+                active_turn_id,
+                bot_name,
             ),
             call,
             transcript,
             handoffs: BTreeMap::new(),
-            router: context.router,
-            voice: context.voice,
+            router,
+            voice,
             finalization_timeout,
         })
     }
@@ -180,7 +216,7 @@ impl VoiceCall {
     pub async fn handle(
         &mut self,
         wake: VoiceWake,
-        submit: impl AsyncFnOnce(ValidatedSubmission) -> std::result::Result<(), String>,
+        submit: impl AsyncFnOnce(ValidatedSubmission) -> std::result::Result<(), Arc<str>>,
     ) -> Result<bool> {
         let event = match wake.0 {
             Wake::Preview => {
@@ -208,7 +244,7 @@ impl VoiceCall {
                 match delegated_task(text.as_deref(), &context.text) {
                     Ok(task) => match self.conversation.handoff(id, task)? {
                         Some(submission) => {
-                            let submission_id = submission.submission().id.to_owned();
+                            let submission_id = Arc::clone(&submission.submission().id);
                             match submit(submission).await {
                                 Ok(()) => {
                                     self.handoffs.insert(submission_id, context);
@@ -252,8 +288,12 @@ impl VoiceCall {
         for reply in replies {
             tokio::time::timeout(REPLY_TIMEOUT, self.call.commands.send(reply))
                 .await
-                .map_err(|_| Error::Stopped("voice reply timed out".into()))?
-                .map_err(|_| Error::Stopped("voice connection stopped accepting replies".into()))?;
+                .map_err(|error| Error::Stopped(format!("voice reply timed out: {error}")))?
+                .map_err(|error| {
+                    Error::Stopped(format!(
+                        "voice connection stopped accepting replies: {error}"
+                    ))
+                })?;
         }
         Ok(())
     }
@@ -290,13 +330,15 @@ impl VoiceCall {
             Ok::<_, Error>(())
         })
         .await
-        .map_err(|_| Error::Stopped("voice session finalization timed out".into()));
+        .map_err(|error| Error::Stopped(format!("voice session finalization timed out: {error}")));
         let finalized =
             tokio::time::timeout(TRANSCRIPT_FINALIZATION_TIMEOUT, self.transcript.finish())
                 .await
-                .map_err(|_| Error::Stopped("voice transcript finalization timed out".into()))?;
-        result
-            .and(closed?.map_err(E::from))
-            .and(finalized.map_err(E::from))
+                .map_err(|error| {
+                    Error::Stopped(format!("voice transcript finalization timed out: {error}"))
+                })?;
+        let closed = closed?.map_err(E::from);
+        let finalized = finalized.map_err(E::from);
+        result.and(closed).and(finalized)
     }
 }

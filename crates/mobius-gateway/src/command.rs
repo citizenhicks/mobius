@@ -52,14 +52,21 @@ use uuid::Uuid;
 use self::args::parse;
 pub use self::args::{CloudflareInit, FrontendCommand, GatewayCli};
 use self::args::{Command, ConnectOptions, InitOptions, RegisterProviderOptions, parse_cli};
-use self::connection::*;
-use self::init::*;
+use self::connection::{connect, ensure_gateway_stopped, pairing_code};
+use self::init::{
+    direct_loopback_endpoint, initialize, initialize_bootstrap, loopback_endpoint,
+    provision_cloudflare_local_client, reset_bot_defaults, set_desktop,
+};
 pub use self::init::{
     initialize_named_cloudflare, initialize_quick_cloudflare, reset_gateway_state,
 };
-use self::lifecycle::*;
+use self::lifecycle::{
+    StartupGuard, exit_gateway, print_listener, reuse_current_gateway, running_process_pid,
+    running_process_record, serve, serve_in_background, shutdown_signal, start_background_gateway,
+    stop_gateway,
+};
 pub use self::lifecycle::{ensure_background_gateway, startup_error};
-use self::provider::*;
+use self::provider::register_provider_command;
 
 #[cfg(unix)]
 /// Terminates a process group created by gateway autostart.
@@ -73,7 +80,28 @@ pub fn terminate_process_group(pid: u32) {
     let Some(group) = pid.checked_neg() else {
         return;
     };
-    let _ = kill(Pid::from_raw(group), Signal::SIGKILL);
+    match kill(Pid::from_raw(group), Signal::SIGKILL) {
+        Ok(()) | Err(nix::errno::Errno::ESRCH) => {}
+        Err(error) => tracing::warn!(%error, pid, "failed to terminate gateway process group"),
+    }
+}
+
+/// Formats a fresh request ID in `buffer`, so the wire message holds its only owned copy.
+fn new_request_id(buffer: &mut [u8; uuid::fmt::Hyphenated::LENGTH]) -> &str {
+    Uuid::new_v4().hyphenated().encode_lower(buffer)
+}
+
+/// Writes one line of command output to standard output.
+fn print_line(line: std::fmt::Arguments<'_>) -> std::io::Result<()> {
+    use std::io::Write as _;
+    writeln!(std::io::stdout().lock(), "{line}")
+}
+
+/// Writes one line of command status to standard error.
+#[cfg(unix)]
+fn eprint_line(line: std::fmt::Arguments<'_>) -> std::io::Result<()> {
+    use std::io::Write as _;
+    writeln!(std::io::stderr().lock(), "{line}")
 }
 
 #[cfg(any(unix, test))]
@@ -133,19 +161,18 @@ pub async fn run_cli(
 ) -> Result<()> {
     match cli.into_command()? {
         Command::PrintDefaultConfig => {
-            println!(
-                "{}",
+            let config =
                 toml::to_string_pretty(&GatewayConfig::new(crate::config::DEFAULT_LISTEN, None)?)
-                    .map_err(|error| Error::Config(format!(
-                    "cannot encode default gateway configuration: {error}"
-                )))?
-            );
-            Ok(())
+                    .map_err(|error| {
+                    Error::Config(format!(
+                        "cannot encode default gateway configuration: {error}"
+                    ))
+                })?;
+            Ok(print_line(format_args!("{config}"))?)
         }
         Command::CheckConfig { state_dir } => {
             ConfigStore::open(state_dir)?;
-            println!("gateway configuration is valid");
-            Ok(())
+            Ok(print_line(format_args!("gateway configuration is valid"))?)
         }
         Command::ExportComputerResources { directory } => {
             crate::computer_runtime::export_resources(&directory)

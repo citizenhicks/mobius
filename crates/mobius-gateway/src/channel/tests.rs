@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::time::Duration;
 
 use futures_util::SinkExt as _;
@@ -33,7 +34,10 @@ fn fixed_handshakes() -> (snow::HandshakeState, snow::HandshakeState, [u8; 32]) 
 }
 
 fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    bytes.iter().fold(String::new(), |mut hex, byte| {
+        write!(hex, "{byte:02x}").expect("write hex");
+        hex
+    })
 }
 
 fn transport_pair() -> (snow::TransportState, snow::TransportState) {

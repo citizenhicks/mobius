@@ -71,35 +71,37 @@ impl CloudflareTunnel {
         }))
     }
 
+    /// Hands over the public endpoint once the tunnel has one.
     pub(crate) async fn endpoint(&mut self) -> Result<Endpoint> {
         if let Some(status) = self.child.try_wait()? {
             return Err(Error::Config(format!(
                 "cloudflared stopped during startup with {status}"
             )));
         }
-        if let Some(endpoint) = &self.endpoint {
-            return Ok(endpoint.clone());
+        if let Some(endpoint) = self.endpoint.take() {
+            return Ok(endpoint);
         }
         let receiver = self.quick_endpoint.take().ok_or_else(|| {
             Error::Config("Cloudflare Quick Tunnel address is no longer available".into())
         })?;
         let endpoint = timeout(READY_TIMEOUT, receiver)
             .await
-            .map_err(|_| {
+            .map_err(|error| {
                 Error::Config(format!(
-                    "Cloudflare Quick Tunnel did not assign an address within {} seconds",
+                    "Cloudflare Quick Tunnel did not assign an address within {} seconds: {error}",
                     READY_TIMEOUT.as_secs()
                 ))
             })?
-            .map_err(|_| {
-                Error::Config("cloudflared stopped before assigning an address".into())
+            .map_err(|error| {
+                Error::Config(format!(
+                    "cloudflared stopped before assigning an address: {error}"
+                ))
             })??;
         if let Some(status) = self.child.try_wait()? {
             return Err(Error::Config(format!(
                 "cloudflared stopped during startup with {status}"
             )));
         }
-        self.endpoint = Some(endpoint.clone());
         Ok(endpoint)
     }
 
@@ -123,27 +125,38 @@ async fn drain_quick_stderr(
                 if let Some(endpoint) = line.split_ascii_whitespace().find_map(quick_endpoint)
                     && let Some(sender) = sender.take()
                 {
-                    let _ = sender.send(Ok(endpoint));
+                    report_quick_endpoint(sender, Ok(endpoint));
                 }
             }
             Ok(None) => break,
             Err(error) => {
                 if let Some(sender) = sender.take() {
-                    let _ = sender.send(Err(error.into()));
+                    report_quick_endpoint(sender, Err(error.into()));
                 }
                 return;
             }
         }
     }
     if let Some(sender) = sender {
-        let _ = sender.send(Err(Error::Config(
-            "cloudflared stopped before assigning an address".into(),
-        )));
+        report_quick_endpoint(
+            sender,
+            Err(Error::Config(
+                "cloudflared stopped before assigning an address".into(),
+            )),
+        );
+    }
+}
+
+fn report_quick_endpoint(sender: oneshot::Sender<Result<Endpoint>>, endpoint: Result<Endpoint>) {
+    if sender.send(endpoint).is_err() {
+        tracing::debug!("Cloudflare Quick Tunnel startup stopped waiting for its address");
     }
 }
 
 async fn drain_stderr(mut stderr: impl AsyncRead + Unpin) {
-    let _ = tokio::io::copy(&mut stderr, &mut tokio::io::sink()).await;
+    if let Err(error) = tokio::io::copy(&mut stderr, &mut tokio::io::sink()).await {
+        tracing::debug!(%error, "cloudflared output stopped");
+    }
 }
 
 fn quick_endpoint(candidate: &str) -> Option<Endpoint> {

@@ -14,8 +14,6 @@ use super::ModelOutput;
 use super::ModelRequest;
 use super::PromptCacheMode;
 use super::ToolDefinition;
-use super::has_prompt_cache_breakpoint;
-use super::mark_prompt_cache_breakpoint;
 use crate::Error;
 use crate::Result;
 use crate::protocol::ModelChoice;
@@ -28,12 +26,25 @@ type ToolDefinitions = Vec<Arc<ToolDefinition>>;
 
 /// Selects a model Adapter by a stable provider ID.
 pub struct ModelRouter {
-    default: String,
+    default: Arc<str>,
     routes: Vec<ModelRoute>,
     images: Vec<MediaRoute>,
     voices: Vec<MediaRoute>,
-    files: Option<crate::backend::session_files::SessionFileStore>,
+    files: Option<Arc<crate::backend::session_files::SessionFileStore>>,
     image_limits: super::ImageInputLimits,
+}
+
+impl std::fmt::Debug for ModelRouter {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ModelRouter")
+            .field("default", &self.default)
+            .field("routes", &self.routes.len())
+            .field("images", &self.images.len())
+            .field("voices", &self.voices.len())
+            .field("image_limits", &self.image_limits)
+            .finish_non_exhaustive()
+    }
 }
 
 struct ModelRoute {
@@ -69,7 +80,7 @@ fn select_media<'a>(
     match route {
         Some(route) => routes
             .iter()
-            .find(|media| media.choice.route == route)
+            .find(|media| *media.choice.route == *route)
             .ok_or_else(|| Error::Unknown(format!("{kind} model `{route}`"))),
         None => routes
             .first()
@@ -79,9 +90,9 @@ fn select_media<'a>(
 
 impl ModelRouter {
     /// Creates a router with its first provider.
-    pub fn new(id: impl Into<String>, provider: Arc<dyn Model>) -> Self {
+    pub fn new(id: impl Into<Arc<str>>, provider: Arc<dyn Model>) -> Self {
         let id = id.into();
-        let choice = inferred_choice(&id, provider.as_ref());
+        let choice = inferred_choice(Arc::clone(&id), provider.as_ref());
         Self {
             default: id,
             files: None,
@@ -99,8 +110,11 @@ impl ModelRouter {
 
     /// Injects the same durable file store used by image-producing capabilities.
     #[must_use]
-    pub fn session_files(mut self, files: crate::backend::session_files::SessionFileStore) -> Self {
-        self.files = Some(files);
+    pub fn session_files(
+        mut self,
+        files: impl Into<Arc<crate::backend::session_files::SessionFileStore>>,
+    ) -> Self {
+        self.files = Some(files.into());
         self
     }
 
@@ -128,7 +142,7 @@ impl ModelRouter {
                 .images
                 .iter()
                 .chain(&self.voices)
-                .find(|media| media.choice.route == route)
+                .find(|media| *media.choice.route == *route)
                 .map(|media| media.provider.transport_settings())
                 .ok_or(error),
         }
@@ -146,13 +160,13 @@ impl ModelRouter {
     /// # Errors
     ///
     /// Returns an error if validation or an operation required by this function fails.
-    pub fn register(&mut self, id: impl Into<String>, provider: Arc<dyn Model>) -> Result<()> {
+    pub fn register(&mut self, id: impl Into<Arc<str>>, provider: Arc<dyn Model>) -> Result<()> {
         let id = id.into();
         if self.routes.iter().any(|route| route.choice.route == id) {
             return Err(Error::Duplicate(format!("model provider `{id}`")));
         }
         self.routes.push(ModelRoute {
-            choice: inferred_choice(&id, provider.as_ref()),
+            choice: inferred_choice(id, provider.as_ref()),
             context_group: None,
             provider,
             credential: ModelCredentialLifetime::default(),
@@ -240,7 +254,7 @@ impl ModelRouter {
         let route = self
             .routes
             .iter_mut()
-            .find(|route| route.choice.route == id)
+            .find(|route| *route.choice.route == *id)
             .ok_or_else(|| Error::Unknown(format!("model provider `{id}`")))?;
         route.credential = credential;
         Ok(())
@@ -264,7 +278,7 @@ impl ModelRouter {
     ) -> Result<&ModelChoice> {
         let choice = self
             .choices()
-            .find(|choice| choice.route == route)
+            .find(|choice| *choice.route == *route)
             .ok_or_else(|| Error::Unknown(format!("model route `{route}`")))?;
         let Some(reasoning_effort) = reasoning_effort else {
             return Ok(choice);
@@ -310,7 +324,7 @@ impl ModelRouter {
         let route = self
             .routes
             .iter_mut()
-            .find(|entry| entry.choice.route == route)
+            .find(|entry| *entry.choice.route == *route)
             .ok_or_else(|| Error::Unknown(format!("model route `{route}`")))?;
         route.context_group = Some(group);
         Ok(())
@@ -362,7 +376,7 @@ impl ModelRouter {
     ) -> Result<ModelOutput> {
         let route = self.route(provider)?;
         let media = super::MediaPreparation {
-            files: self.files.as_ref(),
+            files: self.files.as_deref(),
             limits: self.image_limits,
         };
         // Credential expiry belongs to this attempt, not a subsequent fallback in its parent.
@@ -402,7 +416,7 @@ impl ModelRouter {
         input: super::ModelInput<'_>,
     ) -> Result<()> {
         super::MediaPreparation {
-            files: self.files.as_ref(),
+            files: self.files.as_deref(),
             limits: self.image_limits,
         }
         .prepare(session_id, input, self.provider(provider)?, false)
@@ -450,7 +464,7 @@ impl ModelRouter {
         request: ImageGenerationRequest<'_>,
     ) -> Result<GeneratedImage> {
         let media = select_media(&self.images, Some(image_route), "image")?;
-        if media.choice.model != request.model
+        if *media.choice.model != *request.model
             || media.choice.reasoning_effort.as_deref() != request.quality
         {
             return Err(Error::Config(format!(
@@ -474,27 +488,25 @@ impl ModelRouter {
     pub async fn start_realtime_voice(
         &self,
         voice_route: Option<&str>,
-        session_id: String,
+        session_id: Arc<str>,
         offer_sdp: String,
         instructions: String,
     ) -> Result<super::RealtimeVoiceCall> {
         let media = select_media(&self.voices, voice_route, "voice")?;
-        // ponytail: owned copies, the request outlives the router borrow inside the provider.
         let request = super::RealtimeVoiceRequest {
             session_id,
-            model: media.choice.model.as_str().into(),
+            model: Arc::clone(&media.choice.model),
             voice: media
                 .choice
                 .reasoning_effort
-                .as_deref()
-                .unwrap_or_default()
-                .into(),
+                .as_ref()
+                .map_or_else(Arc::default, Arc::clone),
             offer_sdp,
             instructions,
         };
         let settings = media.provider.transport_settings();
         // Voice cleanup uses an earlier deadline without changing the route's shared credential lifetime.
-        let mut credential = media.credential.clone();
+        let mut credential = media.credential.clone(); // rules-allow: the call gets its own watch cursor and an earlier deadline
         credential.expires_at = credential.expires_at.map(|expires_at| {
             super::RealtimeVoiceCall::cleanup_deadline(
                 expires_at,
@@ -538,17 +550,6 @@ impl ModelRouter {
         }
     }
 
-    /// Applies transport-owned metadata to the first input of a new turn.
-    pub(crate) fn prepare_turn_input(
-        &self,
-        context: super::ModelInput<'_>,
-        input: &mut serde_json::Value,
-    ) {
-        if !has_prompt_cache_breakpoint(context) {
-            let _ = mark_prompt_cache_breakpoint(input);
-        }
-    }
-
     /// Reports prompt-cache support for one route.
     /// # Errors
     ///
@@ -584,14 +585,14 @@ impl ModelRouter {
     fn route(&self, id: &str) -> Result<&ModelRoute> {
         self.routes
             .iter()
-            .find(|route| route.choice.route == id)
+            .find(|route| *route.choice.route == *id)
             .ok_or_else(|| Error::Unknown(format!("model provider `{id}`")))
     }
 }
 
 /// The absolute deadline and revocation signal for a model credential.
 /// Dropping the signal's sender revokes every route and call holding a receiver.
-#[derive(Clone, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct ModelCredentialLifetime {
     /// Last instant at which paid operations are allowed.
     pub expires_at: Option<SystemTime>,
@@ -609,7 +610,7 @@ impl ModelCredentialLifetime {
                             .duration_since(SystemTime::now())
                             .unwrap_or_default(),
                     )
-                    .await
+                    .await;
                 }
                 None => std::future::pending().await,
             }
@@ -617,12 +618,15 @@ impl ModelCredentialLifetime {
         let revoked = async {
             match self.revoked.as_mut() {
                 Some(revoked) => {
-                    let _ = revoked.changed().await;
+                    // A dropped sender is itself a revocation.
+                    if let Err(error) = revoked.changed().await {
+                        tracing::debug!(%error, "model credential revocation sender dropped");
+                    }
                 }
                 None => std::future::pending().await,
             }
         };
-        tokio::select! { _ = expiry => {}, _ = revoked => {} }
+        tokio::select! { () = expiry => {}, () = revoked => {} }
     }
 
     fn is_valid(&self) -> bool {
@@ -655,7 +659,7 @@ async fn while_valid<T, F: Future<Output = Result<T>>>(
     tokio::select! {
         biased;
         // Each operation needs its own watch cursor to observe revocation independently.
-        _ = credential.clone().ended() => expired(),
+        () = credential.clone().ended() => expired(), // rules-allow: each operation needs its own watch cursor
         result = operation.as_mut() => result,
     }
 }
@@ -668,14 +672,14 @@ fn expired_credential() -> Error {
     ))
 }
 
-fn inferred_choice(route: &str, provider: &dyn Model) -> ModelChoice {
+fn inferred_choice(route: Arc<str>, provider: &dyn Model) -> ModelChoice {
     let mut info = provider.info();
     if info.model.is_empty() {
-        info.model = route.to_string();
+        info.model = Arc::clone(&route);
     }
     ModelChoice {
-        route: route.to_string(),
-        group: route.to_string(),
+        group: Arc::clone(&route),
+        route,
         model: info.model,
         reasoning_effort: info.reasoning_effort,
         variant_label: None,

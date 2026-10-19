@@ -1,19 +1,27 @@
 use super::*;
 
 #[tokio::test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the flagged value moves into the gateway task; the lint misses that move"
+)]
 async fn queued_client_requests_do_not_starve_gateway_broadcasts() {
     let root = tempfile::tempdir().unwrap();
     let (server, grant) = configured_test_server(root.path().join("state")).await;
     let identity = server.auth.pair(&grant.code, "busy client").unwrap();
     let (revocations, _) = broadcast::channel(1);
     let connection = ConnectionContext {
+        shared: Arc::new(ConnectionShared {
+            auth: Arc::clone(&server.auth),
+            host: Arc::clone(&server.host),
+            bots: Arc::clone(&server.bots),
+            client_connections: Arc::new(ClientConnections::default()),
+            client_revocations: revocations,
+            tls: None,
+            websocket_host: None,
+        }),
         desktop_transport: false,
         local: true,
-        auth: Arc::clone(&server.auth),
-        host: server.host.clone(),
-        bots: Arc::clone(&server.bots),
-        client_connections: Arc::new(ClientConnections::default()),
-        client_revocations: revocations,
         admission: ConnectionAdmission::new(1, 1).admit().await,
         access_lease: None,
     };
@@ -49,7 +57,7 @@ async fn queued_client_requests_do_not_starve_gateway_broadcasts() {
         write_frame(
             &mut writer,
             &ClientFrame::new(ClientMessage::SetNotifications {
-                request_id: id.to_string(),
+                request_id: id.to_string().into(),
                 disabled: BTreeSet::new(),
             }),
         )
@@ -79,6 +87,10 @@ async fn queued_client_requests_do_not_starve_gateway_broadcasts() {
 }
 
 #[tokio::test(start_paused = true)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the flagged value moves into the gateway task; the lint misses that move"
+)]
 async fn non_reading_client_releases_its_authenticated_connection_slot() {
     let root = tempfile::tempdir().unwrap();
     let (server, grant) = configured_test_server(root.path().join("state")).await;
@@ -86,13 +98,17 @@ async fn non_reading_client_releases_its_authenticated_connection_slot() {
     let admission = ConnectionAdmission::new(1, 1);
     let (revocations, _) = broadcast::channel(1);
     let connection = ConnectionContext {
+        shared: Arc::new(ConnectionShared {
+            auth: Arc::clone(&server.auth),
+            host: Arc::clone(&server.host),
+            bots: Arc::clone(&server.bots),
+            client_connections: Arc::new(ClientConnections::default()),
+            client_revocations: revocations,
+            tls: None,
+            websocket_host: None,
+        }),
         desktop_transport: false,
         local: true,
-        auth: Arc::clone(&server.auth),
-        host: server.host.clone(),
-        bots: Arc::clone(&server.bots),
-        client_connections: Arc::new(ClientConnections::default()),
-        client_revocations: revocations,
         admission: admission.admit().await,
         access_lease: None,
     };
@@ -214,6 +230,7 @@ fn websocket_upgrade_rejects_browser_origins() {
 
 #[tokio::test]
 async fn websocket_preserves_a_pipelined_bulk_frame_across_authentication() {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
     let root = tempfile::tempdir().expect("temporary directory");
     let (server, grant) = GatewayServer::bootstrap(
         root.path().join("state"),
@@ -224,9 +241,8 @@ async fn websocket_preserves_a_pipelined_bulk_frame_across_authentication() {
     let listen = server.listen_addr();
     let (shutdown, signal) = tokio::sync::oneshot::channel();
     let serving = tokio::spawn(server.serve_until(async move {
-        let _ = signal.await;
+        signal.await.ok();
     }));
-    use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
     let mut request = format!("ws://{listen}").into_client_request().unwrap();
     request.headers_mut().insert(
         SEC_WEBSOCKET_PROTOCOL,
@@ -305,7 +321,7 @@ async fn websocket_preserves_a_pipelined_bulk_frame_across_authentication() {
             ServerMessage::Authenticated,
             ServerMessage::Ready { .. },
             ServerMessage::Rejected { request_id: actual, .. }
-        ) if actual == request_id
+        ) if actual.as_ref() == request_id
     ));
     bridge.abort();
     shutdown.send(()).expect("stop gateway");
@@ -341,18 +357,22 @@ async fn websocket_upgrade_and_authentication_share_one_deadline() {
         serve_plaintext_connection(
             stream,
             ConnectionContext {
+                shared: Arc::new(ConnectionShared {
+                    auth,
+                    host,
+                    bots,
+                    client_connections,
+                    client_revocations,
+                    tls: None,
+                    websocket_host: None,
+                }),
                 desktop_transport: false,
                 local: true,
-                auth,
-                host,
-                bots,
-                client_connections,
-                client_revocations,
                 admission,
                 access_lease: None,
             },
             PlaintextHandshake {
-                expected_websocket_host: None,
+                verify_websocket_host: false,
                 auth_deadline,
             },
         )
@@ -392,7 +412,7 @@ async fn websocket_upgrade_and_authentication_share_one_deadline() {
 
     assert!(matches!(
         closed,
-        None | Some(Ok(Message::Close(_))) | Some(Err(_))
+        None | Some(Ok(Message::Close(_)) | Err(_))
     ));
     assert!(matches!(
         serving.await.expect("gateway task"),

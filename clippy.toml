@@ -1,0 +1,7 @@
+# Tests may panic, index and unwrap: a failed assumption there is the failure report.
+allow-expect-in-tests = true
+allow-unwrap-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
+allow-dbg-in-tests = true
+allow-print-in-tests = true

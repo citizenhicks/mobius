@@ -57,10 +57,10 @@ mod connection;
 
 pub(super) fn responses_socket_url(base_url: &str) -> Result<reqwest::Url> {
     let mut url = reqwest::Url::parse(&format!("{}/responses", base_url.trim_end_matches('/')))
-        .map_err(|_| Error::Config("invalid Responses endpoint".into()))?;
+        .map_err(|error| Error::Config(format!("invalid Responses endpoint: {error}")))?;
     let scheme = if url.scheme() == "https" { "wss" } else { "ws" };
     url.set_scheme(scheme)
-        .map_err(|_| Error::Config("invalid Responses socket scheme".into()))?;
+        .map_err(|()| Error::Config("invalid Responses socket scheme".into()))?;
     Ok(url)
 }
 
@@ -74,6 +74,16 @@ pub struct OpenAiSocket {
     explicit_prompt_cache: bool,
     sessions: Mutex<BTreeMap<String, Arc<Mutex<SocketState>>>>,
     http: OpenAi,
+}
+
+impl std::fmt::Debug for OpenAiSocket {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("OpenAiSocket")
+            .field("socket_url", &self.socket_url)
+            .field("http", &self.http)
+            .finish_non_exhaustive()
+    }
 }
 
 struct SocketState {
@@ -245,6 +255,10 @@ impl OpenAiSocket {
         self
     }
 
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the session lock serializes the whole exchange with its continuation cursor"
+    )]
     async fn send_response(
         &self,
         request: ModelRequest<'_>,
@@ -316,12 +330,14 @@ impl OpenAiSocket {
                     Ok(serde_json::to_vec(&self.prepared_body(
                         &request,
                         input,
-                        previous_response_id.as_deref(),
+                        previous_response_id,
                     )?)?)
                 },
             )
             .await?;
-            let body = String::from_utf8(body).expect("JSON serialization produces valid UTF-8");
+            let body = String::from_utf8(body).map_err(|error| {
+                Error::Provider(format!("request body was not UTF-8: {error}").into())
+            })?;
             // Until sending begins, cancellation or preparation failure must retain the live connection.
             let mut connection = state.connection.take().ok_or_else(|| {
                 Error::Provider("model connection disappeared before send".into())
@@ -333,7 +349,7 @@ impl OpenAiSocket {
                         .and_then(Value::as_str)
                         .filter(|id| !id.is_empty())
                         .ok_or_else(|| Error::Provider("response omitted id".into()))?
-                        .to_string();
+                        .to_owned();
                     let output = decode_response(response)?;
                     let known_items = request.input.len() + output.output().len();
                     state.continuation = if request.allow_continuation {
@@ -430,16 +446,25 @@ impl OpenAiSocket {
         let mut close = Vec::new();
         while sessions.len() >= MAX_SESSION_ENTRIES {
             let idle = sessions
-                .iter()
+                .values()
+                .enumerate()
                 .filter(|(_, session)| Arc::strong_count(session) == 1)
-                .filter_map(|(id, session)| {
+                .filter_map(|(position, session)| {
                     let state = session.try_lock().ok()?;
-                    Some((id, state.last_used_at))
+                    Some((position, state.last_used_at))
                 })
                 .min_by_key(|(_, last_used_at)| *last_used_at)
-                .map(|(id, _)| id.clone());
+                .map(|(position, _)| position);
             if let Some(idle) = idle {
-                if let Some(session) = sessions.remove(&idle)
+                let mut position = 0;
+                let evicted = sessions
+                    .extract_if(.., |_, _| {
+                        let found = position == idle;
+                        position += 1;
+                        found
+                    })
+                    .next();
+                if let Some((_, session)) = evicted
                     && let Ok(mut state) = session.try_lock()
                     && let Some(connection) = state.connection.take()
                 {
@@ -457,7 +482,7 @@ impl OpenAiSocket {
             use_http: false,
             last_used_at: Instant::now(),
         }));
-        sessions.insert(session_id.to_string(), Arc::clone(&session));
+        sessions.insert(session_id.to_owned(), Arc::clone(&session));
         drop(sessions);
         close_connections(close).await;
         Ok(session)
@@ -492,12 +517,12 @@ fn websocket_failure(state: &mut SocketState, retry_after: Option<String>) -> Er
     Error::Provider(ProviderError::stream_interrupted(retry_after))
 }
 
-fn response_input<'a>(
-    state: &mut SocketState,
+fn response_input<'s, 'a>(
+    state: &'s mut SocketState,
     input: super::ModelInput<'a>,
     allow_continuation: bool,
     envelope_fingerprint: u64,
-) -> Result<(Option<String>, super::ModelInput<'a>)> {
+) -> Result<(Option<&'s str>, super::ModelInput<'a>)> {
     if allow_continuation {
         continuation_input(state, input, envelope_fingerprint)
     } else {
@@ -578,13 +603,14 @@ impl Model for OpenAiSocket {
         Box::pin(async move {
             let session = self.session(session_id).await?;
             let mut state = session.lock().await;
-            if state.use_http {
-                return Ok(false);
+            let switched = !state.use_http;
+            if switched {
+                state.use_http = true;
+                state.continuation = None;
+                state.connection = None;
             }
-            state.use_http = true;
-            state.continuation = None;
-            state.connection = None;
-            Ok(true)
+            drop(state);
+            Ok(switched)
         })
     }
 }
@@ -658,26 +684,32 @@ fn envelope_fingerprint(
     fingerprint(std::iter::once(&envelope))
 }
 
-fn continuation_input<'a>(
-    state: &mut SocketState,
+fn continuation_input<'s, 'a>(
+    state: &'s mut SocketState,
     input: super::ModelInput<'a>,
     envelope_fingerprint: u64,
-) -> Result<(Option<String>, super::ModelInput<'a>)> {
-    let Some(continuation) = &state.continuation else {
-        return Ok((None, input));
+) -> Result<(Option<&'s str>, super::ModelInput<'a>)> {
+    let reusable = match &state.continuation {
+        Some(continuation) => {
+            continuation.envelope_fingerprint == envelope_fingerprint
+                && continuation.known_items <= input.len()
+                && fingerprint(input.prefix(continuation.known_items).iter())?
+                    == continuation.fingerprint
+        }
+        None => false,
     };
-    if continuation.envelope_fingerprint == envelope_fingerprint
-        && continuation.known_items <= input.len()
-        && fingerprint(input.prefix(continuation.known_items).iter())? == continuation.fingerprint
-    {
-        return Ok((
-            // Keep the live cursor intact if preparing this continuation fails or is cancelled.
-            Some(continuation.response_id.clone()),
-            input.suffix(continuation.known_items),
-        ));
+    if !reusable {
+        state.continuation = None;
+        return Ok((None, input));
     }
-    state.continuation = None;
-    Ok((None, input))
+    // Keep the live cursor intact if preparing this continuation fails or is cancelled.
+    Ok(match &state.continuation {
+        Some(continuation) => (
+            Some(continuation.response_id.as_str()),
+            input.suffix(continuation.known_items),
+        ),
+        None => (None, input),
+    })
 }
 
 fn fingerprint<'a, T: serde::Serialize + 'a>(

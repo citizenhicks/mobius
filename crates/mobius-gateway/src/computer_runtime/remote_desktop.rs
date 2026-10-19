@@ -44,23 +44,23 @@ pub(crate) struct RemoteDesktop {
     executions: Arc<tokio::sync::RwLock<()>>,
     held: Arc<AtomicBool>,
     user: Mutex<Option<UserControl>>,
-    last_session: Mutex<Option<String>>,
+    last_session: Mutex<Option<Arc<str>>>,
     changed: broadcast::Sender<()>,
 }
 
+/// The controlled chat is `last_session`, which nothing else changes while the user holds control.
 struct UserControl {
     connection: Uuid,
-    session_id: String,
     _lease: OwnedMutexGuard<()>,
     _execution: tokio::sync::OwnedRwLockWriteGuard<()>,
 }
 
 struct Runtime {
-    config: Arc<ComputerConfig>,
     children: Vec<OwnedProcess>,
     browser: Option<OwnedProcess>,
     chromium: PathBuf,
-    profile: PathBuf,
+    /// The profile under gateway state, used when the config names none.
+    state_profile: PathBuf,
     endpoint: String,
     websocket: String,
     tabs: BTreeMap<String, String>,
@@ -184,20 +184,17 @@ impl RemoteDesktop {
         }
     }
 
-    pub(crate) fn control_state(&self, connection: Uuid) -> (bool, bool, Option<String>) {
+    pub(crate) fn control_state(&self, connection: Uuid) -> (bool, bool, Option<Arc<str>>) {
         let user = mobius::sync::recover_lock(&self.user);
-        match user.as_ref() {
-            Some(user) => (
-                true,
-                user.connection == connection,
-                Some(user.session_id.clone()),
-            ),
-            None => (
-                self.held.load(Ordering::Acquire),
-                false,
-                mobius::sync::recover_lock(&self.last_session).clone(),
-            ),
-        }
+        let (held, owner) = match user.as_ref() {
+            Some(user) => (true, user.connection == connection),
+            None => (self.held.load(Ordering::Acquire), false),
+        };
+        let session = mobius::sync::recover_lock(&self.last_session)
+            .as_ref()
+            .map(Arc::clone);
+        drop(user);
+        (held, owner, session)
     }
 
     pub(crate) async fn page(&self, session_id: &str) -> Result<Option<DesktopBrowserPage>> {
@@ -224,18 +221,19 @@ impl RemoteDesktop {
         let _lease = self
             .control
             .try_lock()
-            .map_err(|_| Error::Config("the desktop is busy".into()))?;
+            .map_err(|busy| Error::Config(format!("the desktop is busy: {busy}")))?;
         self.check_execution()?;
         if cfg!(target_os = "macos") {
             self.binding(session_id, true).await?;
         } else {
-            let mut runtime = self.runtime.lock().await;
-            if let Some(runtime) = runtime.as_mut() {
-                runtime.show(session_id).await?;
+            let mut guard = self.runtime.lock().await;
+            if let Some(runtime) = guard.as_mut() {
+                runtime.show(session_id, &self.config).await?;
             }
-            *mobius::sync::recover_lock(&self.last_session) = Some(session_id.to_owned());
+            *mobius::sync::recover_lock(&self.last_session) = Some(session_id.into());
+            drop(guard);
         }
-        let _ = self.changed.send(());
+        self.notify_changed();
         Ok(())
     }
 
@@ -251,20 +249,21 @@ impl RemoteDesktop {
                 target_id: None,
             });
         }
-        let mut runtime = self.runtime.lock().await;
-        if runtime.is_none() {
-            *runtime = Some(Runtime::start(&self.state_dir, &self.config).await?);
+        let mut guard = self.runtime.lock().await;
+        if guard.is_none() {
+            *guard = Some(Runtime::start(&self.state_dir, &self.config).await?);
         }
-        let runtime = runtime.as_mut().ok_or_else(unavailable)?;
+        let runtime = guard.as_mut().ok_or_else(unavailable)?;
         for child in &mut runtime.children {
             child.check_running()?;
         }
-        runtime.ensure_browser().await?;
-        let page = runtime.page(session_id, activate).await?;
+        runtime.ensure_browser(&self.config).await?;
+        let page = runtime.page(session_id, activate, &self.config).await?;
         if activate {
-            *mobius::sync::recover_lock(&self.last_session) = Some(session_id.to_owned());
-            let _ = self.changed.send(());
+            *mobius::sync::recover_lock(&self.last_session) = Some(session_id.into());
+            self.notify_changed();
         }
+        drop(guard);
         Ok(page)
     }
 
@@ -274,19 +273,22 @@ impl RemoteDesktop {
         native: Arc<DesktopControl>,
     ) -> mobius::Result<DuplexStream> {
         self.check_execution()?;
-        let lease = Arc::clone(&self.control).try_lock_owned().map_err(|_| {
-            mobius::Error::Sandbox(
-                "another agent or the user controls the desktop; inspect again after it finishes"
-                    .into(),
-            )
-        })?;
+        let lease = Arc::clone(&self.control)
+            .try_lock_owned()
+            .map_err(|busy| {
+                mobius::Error::Sandbox(format!(
+                    "another agent or the user controls the desktop ({busy}); inspect again after it finishes"
+                ))
+            })?;
         self.check_execution()?;
         let (worker, channel) = tokio::io::duplex(64 * 1024);
         let owner = Arc::clone(self);
         let session_id = session_id.to_owned();
         tokio::spawn(async move {
             let _lease = lease;
-            let _ = owner.relay(channel, &session_id, native).await;
+            if let Err(error) = owner.relay(channel, &session_id, native).await {
+                tracing::debug!(%error, "desktop host relay ended");
+            }
         });
         Ok(worker)
     }
@@ -296,7 +298,11 @@ impl RemoteDesktop {
         mut channel: DuplexStream,
         session_id: &str,
         // Linux gateways act on their own display; only a local Mac app hosts native control.
-        #[cfg_attr(target_os = "linux", expect(unused_variables))] native: Arc<DesktopControl>,
+        #[cfg_attr(
+            target_os = "linux",
+            expect(unused_variables, reason = "Linux drives its own display instead")
+        )]
+        native: Arc<DesktopControl>,
     ) -> Result<()> {
         #[cfg(not(target_os = "linux"))]
         let mut native_channel = None;
@@ -330,7 +336,9 @@ impl RemoteDesktop {
                         result = &mut action => result,
                         _ = channel.read_u8() => {
                             cancelled.store(true, Ordering::Release);
-                            let _ = action.await;
+                            if let Err(error) = action.await {
+                                tracing::debug!(%error, "cancelled desktop request failed");
+                            }
                             return Ok(());
                         }
                     };
@@ -359,7 +367,7 @@ impl RemoteDesktop {
                 }
             };
             channel
-                .write_u32(u32::try_from(reply.len()).map_err(|_| unavailable())?)
+                .write_u32(u32::try_from(reply.len()).map_err(unavailable_after)?)
                 .await?;
             channel.write_all(&reply).await?;
             channel.flush().await?;
@@ -376,11 +384,11 @@ impl RemoteDesktop {
     ) -> Result<Value> {
         self.check_execution()?;
         let native = {
-            let mut runtime = self.runtime.lock().await;
-            if runtime.is_none() {
-                *runtime = Some(Runtime::start(&self.state_dir, &self.config).await?);
+            let mut guard = self.runtime.lock().await;
+            if guard.is_none() {
+                *guard = Some(Runtime::start(&self.state_dir, &self.config).await?);
             }
-            let runtime = runtime.as_mut().ok_or_else(unavailable)?;
+            let runtime = guard.as_mut().ok_or_else(unavailable)?;
             if runtime.native.is_none() {
                 let display = runtime
                     .display
@@ -404,14 +412,16 @@ impl RemoteDesktop {
                 .map_err(|error| Error::Config(error.to_string()))??;
                 runtime.native = Some(Arc::new(Mutex::new(desktop)));
             }
-            Arc::clone(runtime.native.as_ref().ok_or_else(unavailable)?)
+            let native = Arc::clone(runtime.native.as_ref().ok_or_else(unavailable)?);
+            drop(guard);
+            native
         };
         let session = session.to_owned();
         let held = Arc::clone(&self.held);
         let task_native = Arc::clone(&native);
         let (result, timed_out, input_submitted) =
             tokio::task::spawn_blocking(move || -> Result<_> {
-                let mut desktop = task_native.lock().map_err(|_| unavailable())?;
+                let mut desktop = task_native.lock().map_err(unavailable_after)?;
                 let result = desktop.request(
                     &session,
                     begin,
@@ -426,8 +436,8 @@ impl RemoteDesktop {
             .await
             .map_err(|error| Error::Config(error.to_string()))??;
         if timed_out {
-            let mut runtime = self.runtime.lock().await;
-            if !runtime
+            let mut guard = self.runtime.lock().await;
+            if !guard
                 .as_ref()
                 .and_then(|runtime| runtime.native.as_ref())
                 .is_some_and(|current| Arc::ptr_eq(current, &native))
@@ -436,13 +446,14 @@ impl RemoteDesktop {
             }
             if input_submitted {
                 // Timed-out input may still be queued, so retire its private display before reuse.
-                if let Some(runtime) = runtime.take() {
+                if let Some(runtime) = guard.take() {
                     tracing::warn!("gateway desktop stopping: X11 input timed out");
                     runtime.stop().await;
                 }
-            } else if let Some(runtime) = runtime.as_mut() {
+            } else if let Some(runtime) = guard.as_mut() {
                 runtime.native = None;
             }
+            drop(guard);
         }
         result
     }
@@ -456,12 +467,14 @@ impl RemoteDesktop {
         if runtime.is_none() {
             *runtime = Some(Runtime::start(&self.state_dir, &self.config).await?);
             // Browser activation awaits without holding the synchronous last-session mutex.
-            let session_id = mobius::sync::recover_lock(&self.last_session).clone();
+            let session_id = mobius::sync::recover_lock(&self.last_session)
+                .as_ref()
+                .map(Arc::clone);
             if let Some(session_id) = session_id {
                 runtime
                     .as_mut()
                     .ok_or_else(unavailable)?
-                    .show(&session_id)
+                    .show(&session_id, &self.config)
                     .await?;
             }
         }
@@ -489,7 +502,7 @@ impl RemoteDesktop {
                 "desktop control is unavailable or already held".into(),
             ));
         }
-        let _ = self.changed.send(());
+        self.notify_changed();
         Ok(())
     }
 
@@ -501,7 +514,7 @@ impl RemoteDesktop {
                 self.shutdown().await;
             }
             self.held.store(false, Ordering::Release);
-            let _ = self.changed.send(());
+            self.notify_changed();
             self.stop_if_unused();
         }
     }
@@ -510,15 +523,16 @@ impl RemoteDesktop {
         let execution = Arc::clone(&self.executions).write_owned().await;
         let lease = Arc::clone(&self.control).lock_owned().await;
         {
-            let mut runtime = self.runtime.lock().await;
-            let runtime = runtime.as_mut().ok_or_else(unavailable)?;
+            let mut guard = self.runtime.lock().await;
+            let runtime = guard.as_mut().ok_or_else(unavailable)?;
             #[cfg(target_os = "linux")]
             if let Some(native) = &runtime.native {
-                native.lock().map_err(|_| unavailable())?.invalidate();
+                native.lock().map_err(unavailable_after)?.invalidate();
             }
-            runtime.show(&session_id).await?;
+            runtime.show(&session_id, &self.config).await?;
+            drop(guard);
         }
-        *mobius::sync::recover_lock(&self.last_session) = Some(session_id.clone());
+        *mobius::sync::recover_lock(&self.last_session) = Some(session_id.into());
         if let Err(error) = self.set_input(true).await {
             if self.set_input(false).await.is_err() {
                 self.shutdown().await;
@@ -527,11 +541,10 @@ impl RemoteDesktop {
         }
         *mobius::sync::recover_lock(&self.user) = Some(UserControl {
             connection,
-            session_id,
             _lease: lease,
             _execution: execution,
         });
-        let _ = self.changed.send(());
+        self.notify_changed();
         Ok(())
     }
 
@@ -556,20 +569,31 @@ impl RemoteDesktop {
         if let Err(error) = self.set_input(false).await {
             self.shutdown().await;
             self.held.store(false, Ordering::Release);
-            let _ = self.changed.send(());
+            self.notify_changed();
             return Err(error);
         }
         drop(user);
         self.held.store(false, Ordering::Release);
-        let _ = self.changed.send(());
+        self.notify_changed();
         self.stop_if_unused();
         Ok(())
     }
 
     async fn set_input(&self, enabled: bool) -> Result<()> {
-        let runtime = self.runtime.lock().await;
-        let runtime = runtime.as_ref().ok_or_else(unavailable)?;
-        runtime.set_input(enabled).await
+        let guard = self.runtime.lock().await;
+        let result = guard
+            .as_ref()
+            .ok_or_else(unavailable)?
+            .set_input(enabled, &self.config)
+            .await;
+        drop(guard);
+        result
+    }
+
+    fn notify_changed(&self) {
+        if self.changed.send(()).is_err() {
+            tracing::trace!("desktop control changed with no subscribers");
+        }
     }
 
     pub(crate) async fn shutdown(&self) {
@@ -609,7 +633,9 @@ impl DesktopStream {
         // ponytail: same-user viewers honor viewOnly; Xvnc globally gates input during agent control.
         tokio::time::timeout(Duration::from_secs(5), self.socket.write_all(bytes))
             .await
-            .map_err(|_| Error::Config("desktop viewer stopped accepting data".into()))??;
+            .map_err(|elapsed| {
+                Error::Config(format!("desktop viewer stopped accepting data: {elapsed}"))
+            })??;
         Ok(())
     }
 }
@@ -622,7 +648,9 @@ impl Drop for DesktopStream {
         let remote = Arc::clone(&self.remote);
         let connection = self.connection;
         tokio::spawn(async move {
-            let _ = remote.release_control(connection).await;
+            if let Err(error) = remote.release_control(connection).await {
+                tracing::warn!(%error, "desktop control release failed");
+            }
         });
     }
 }
@@ -631,12 +659,13 @@ impl Runtime {
     async fn start(state_dir: &Path, config: &Arc<ComputerConfig>) -> Result<Self> {
         let directory = state_dir.join("desktop");
         private_directory(&directory)?;
+        let state_profile = directory.join("profile");
         let profile = config
             .browser
             .profile_directory
-            .clone()
-            .unwrap_or_else(|| directory.join("profile"));
-        private_directory(&profile)?;
+            .as_deref()
+            .unwrap_or(&state_profile);
+        private_directory(profile)?;
         for name in ["panel", "status", "browser", "openbox", "xvnc"] {
             processes::clean_record(&directory.join(format!("{name}.json"))).await?;
         }
@@ -652,7 +681,7 @@ impl Runtime {
             let runtime = super::prepare_desktop(state_dir, config).await?;
             let chromium = chromium_executable(&runtime, config).await?;
             let (child, endpoint, websocket) =
-                start_browser(&chromium, &profile, display.as_deref(), &authority, config).await?;
+                start_browser(&chromium, profile, display.as_deref(), &authority, config).await?;
             browser = Some(child);
             #[cfg(target_os = "linux")]
             if let Some(display) = &display {
@@ -661,7 +690,7 @@ impl Runtime {
                     display,
                     &authority,
                     &chromium,
-                    &profile,
+                    profile,
                     &mut children,
                     config,
                 )
@@ -686,11 +715,10 @@ impl Runtime {
             }
         };
         Ok(Self {
-            config: Arc::clone(config),
             children,
             browser,
             chromium,
-            profile,
+            state_profile,
             endpoint,
             websocket,
             tabs: BTreeMap::new(),
@@ -709,7 +737,15 @@ impl Runtime {
         stop_children(self.children, &self.socket).await;
     }
 
-    async fn refresh_browser(&mut self) -> Result<bool> {
+    fn profile<'config>(&'config self, config: &'config ComputerConfig) -> &'config Path {
+        config
+            .browser
+            .profile_directory
+            .as_deref()
+            .unwrap_or(&self.state_profile)
+    }
+
+    async fn refresh_browser(&mut self, config: &ComputerConfig) -> Result<bool> {
         if let Some(browser) = self.browser.as_mut()
             && let Some(status) = browser.exit_status()?
         {
@@ -718,7 +754,8 @@ impl Runtime {
             );
             self.browser.take().ok_or_else(unavailable)?.stop().await;
         }
-        if let Some((endpoint, websocket)) = read_devtools(&self.profile.join("DevToolsActivePort"))
+        if let Some((endpoint, websocket)) =
+            read_devtools(&self.profile(config).join("DevToolsActivePort"))
             && cdp(&websocket, "Browser.getVersion", json!({}))
                 .await
                 .is_ok()
@@ -736,17 +773,17 @@ impl Runtime {
         Ok(false)
     }
 
-    async fn ensure_browser(&mut self) -> Result<()> {
-        if self.refresh_browser().await? {
+    async fn ensure_browser(&mut self, config: &ComputerConfig) -> Result<()> {
+        if self.refresh_browser(config).await? {
             return Ok(());
         }
         if self.browser.is_none() {
             let (browser, endpoint, websocket) = start_browser(
                 &self.chromium,
-                &self.profile,
+                self.profile(config),
                 self.display.as_deref(),
                 &self.authority,
-                &self.config,
+                config,
             )
             .await?;
             self.browser = Some(browser);
@@ -759,49 +796,49 @@ impl Runtime {
         ))
     }
 
-    async fn show(&mut self, session_id: &str) -> Result<()> {
+    async fn show(&mut self, session_id: &str, config: &ComputerConfig) -> Result<()> {
         for child in &mut self.children {
             child.check_running()?;
         }
-        if self.refresh_browser().await? {
-            self.page(session_id, true).await?;
+        if self.refresh_browser(config).await? {
+            self.page(session_id, true, config).await?;
         }
         Ok(())
     }
 
-    async fn page(&mut self, session_id: &str, activate: bool) -> Result<DesktopBrowserPage> {
+    async fn page(
+        &mut self,
+        session_id: &str,
+        activate: bool,
+        config: &ComputerConfig,
+    ) -> Result<DesktopBrowserPage> {
         let targets = cdp(&self.websocket, "Target.getTargets", json!({})).await?;
-        let present = self
-            .tabs
-            .get(session_id)
-            .filter(|target| {
-                targets["targetInfos"].as_array().is_some_and(|targets| {
-                    targets
-                        .iter()
-                        .any(|entry| entry["targetId"].as_str() == Some(target.as_str()))
+        let present = self.tabs.get(session_id).is_some_and(|target| {
+            targets
+                .get("targetInfos")
+                .and_then(Value::as_array)
+                .is_some_and(|targets| {
+                    targets.iter().any(|entry| {
+                        entry.get("targetId").and_then(Value::as_str) == Some(target.as_str())
+                    })
                 })
-            })
-            .cloned();
-        let target_id = match present {
-            Some(target) => target,
-            None => {
-                if self.tabs.len() >= MAX_TABS && !self.tabs.contains_key(session_id) {
-                    return Err(Error::Config("desktop tab limit reached".into()));
-                }
-                let target = cdp(
-                    &self.websocket,
-                    "Target.createTarget",
-                    json!({"url":self.config.browser.start_page,"background":true}),
-                )
-                .await?;
-                let target = target["targetId"]
-                    .as_str()
-                    .ok_or_else(unavailable)?
-                    .to_owned();
-                self.tabs.insert(session_id.to_owned(), target.clone());
-                target
+        });
+        if !present {
+            if self.tabs.len() >= MAX_TABS && !self.tabs.contains_key(session_id) {
+                return Err(Error::Config("desktop tab limit reached".into()));
             }
-        };
+            let mut target = cdp(
+                &self.websocket,
+                "Target.createTarget",
+                json!({"url":config.browser.start_page,"background":true}),
+            )
+            .await?;
+            let Some(Value::String(target)) = target.get_mut("targetId").map(Value::take) else {
+                return Err(unavailable());
+            };
+            self.tabs.insert(session_id.to_owned(), target);
+        }
+        let target_id = self.tabs.get(session_id).ok_or_else(unavailable)?;
         if activate {
             cdp(
                 &self.websocket,
@@ -811,14 +848,14 @@ impl Runtime {
             .await?;
         }
         Ok(DesktopBrowserPage {
-            endpoint: self.endpoint.clone(),
-            target_id: Some(target_id),
+            endpoint: self.endpoint.clone(), // rules-allow: the external page type owns its endpoint
+            target_id: Some(target_id.clone()), // rules-allow: the external page type owns its target
         })
     }
 
-    async fn set_input(&self, enabled: bool) -> Result<()> {
+    async fn set_input(&self, enabled: bool, config: &ComputerConfig) -> Result<()> {
         let display = self.display.as_ref().ok_or_else(unavailable)?;
-        let executable = config::resolve_candidates(&self.config.desktop.tools.vncconfig)?;
+        let executable = config::resolve_candidates(&config.desktop.tools.vncconfig)?;
         let value = if enabled { "1" } else { "0" };
         let parameters = ["AcceptKeyEvents", "AcceptPointerEvents", "AcceptCutText"];
         let mut command = Command::new(&executable);
@@ -860,7 +897,7 @@ fn input_enabled(output: &[u8]) -> Option<bool> {
 #[cfg(not(target_os = "linux"))]
 async fn forward_native(channel: &mut DuplexStream, bytes: &[u8]) -> Result<Vec<u8>> {
     channel
-        .write_u32(u32::try_from(bytes.len()).map_err(|_| unavailable())?)
+        .write_u32(u32::try_from(bytes.len()).map_err(unavailable_after)?)
         .await?;
     channel.write_all(bytes).await?;
     channel.flush().await?;
@@ -895,13 +932,13 @@ async fn chromium_executable(runtime: &Path, config: &ComputerConfig) -> Result<
         command.output(),
     )
     .await
-    .map_err(|_| Error::Config("Chromium discovery timed out".into()))??;
+    .map_err(|elapsed| Error::Config(format!("Chromium discovery timed out: {elapsed}")))??;
     if !output.status.success() || output.stdout.len() > 4096 {
         return Err(Error::Config(
             "installed headed Chromium is unavailable".into(),
         ));
     }
-    let path = PathBuf::from(String::from_utf8(output.stdout).map_err(|_| unavailable())?);
+    let path = PathBuf::from(String::from_utf8(output.stdout).map_err(unavailable_after)?);
     config::resolve_executable(&path)
 }
 
@@ -925,7 +962,7 @@ async fn start_browser(
             .browser
             .headed_arguments(profile)
             .iter()
-            .map(|argument| argument.as_ref()),
+            .map(std::convert::AsRef::as_ref),
     );
     if let Some(display) = display {
         command.env("DISPLAY", display).env("XAUTHORITY", authority);
@@ -989,7 +1026,9 @@ async fn stop_children(children: Vec<OwnedProcess>, socket: &Path) {
     for child in children.into_iter().rev() {
         child.stop().await;
     }
-    let _ = fs::remove_file(socket);
+    if let Err(error) = fs::remove_file(socket) {
+        tracing::debug!(%error, "desktop socket was not removed");
+    }
 }
 
 async fn cdp(endpoint: &str, method: &str, params: Value) -> Result<Value> {
@@ -1013,7 +1052,7 @@ async fn cdp(endpoint: &str, method: &str, params: Value) -> Result<Value> {
             let message = message.map_err(crate::wire::websocket_error)?;
             if let tokio_tungstenite::tungstenite::Message::Text(text) = message {
                 let mut reply: Value = serde_json::from_str(&text)?;
-                if reply["id"] == 1 {
+                if reply.get("id").is_some_and(|id| *id == 1) {
                     return reply
                         .get_mut("result")
                         .map(Value::take)
@@ -1024,7 +1063,7 @@ async fn cdp(endpoint: &str, method: &str, params: Value) -> Result<Value> {
         Err(unavailable())
     })
     .await
-    .map_err(|_| Error::Config("desktop browser control timed out".into()))?
+    .map_err(|elapsed| Error::Config(format!("desktop browser control timed out: {elapsed}")))?
 }
 
 #[cfg(target_os = "linux")]
@@ -1109,6 +1148,10 @@ async fn start_display(
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::unused_async,
+    reason = "mirrors the Linux start_display, which awaits the display server"
+)]
 async fn start_display(
     _: &Path,
     _: &Path,
@@ -1152,7 +1195,7 @@ async fn run_short(command: &mut Command) -> Result<()> {
         .kill_on_drop(true);
     let status = tokio::time::timeout(Duration::from_secs(5), command.status())
         .await
-        .map_err(|_| Error::Config("desktop setup timed out".into()))??;
+        .map_err(|elapsed| Error::Config(format!("desktop setup timed out: {elapsed}")))??;
     if !status.success() {
         return Err(Error::Config("desktop setup command failed".into()));
     }
@@ -1165,7 +1208,9 @@ async fn short_output(command: &mut Command) -> Result<std::process::Output> {
         .kill_on_drop(true);
     let output = tokio::time::timeout(Duration::from_secs(5), command.output())
         .await
-        .map_err(|_| Error::Config("desktop configuration timed out".into()))??;
+        .map_err(|elapsed| {
+            Error::Config(format!("desktop configuration timed out: {elapsed}"))
+        })??;
     if !output.status.success() || output.stdout.len() > 4096 || output.stderr.len() > 4096 {
         return Err(Error::Config("desktop configuration failed".into()));
     }
@@ -1174,6 +1219,10 @@ async fn short_output(command: &mut Command) -> Result<std::process::Output> {
 
 fn unavailable() -> Error {
     Error::Config("gateway desktop is unavailable".into())
+}
+
+fn unavailable_after(error: impl std::fmt::Display) -> Error {
+    Error::Config(format!("gateway desktop is unavailable: {error}"))
 }
 
 #[cfg(test)]

@@ -12,17 +12,17 @@ fn installed_plugin(digest: String, hooks: Vec<ExtensionHookRecord>) -> Installe
     InstalledExtension {
         kind: ExtensionKind::Plugin,
         name: "hooked".into(),
-        description: String::new(),
+        description: String::new().into(),
         version: None,
         source: ExtensionSource {
             url: "https://example.com/hooked.git".into(),
             reference: None,
             subdirectory: None,
         },
-        resolved_revision: "a".repeat(40),
-        digest,
-        skills: Vec::new(),
-        hooks,
+        resolved_revision: "a".repeat(40).into(),
+        digest: digest.into(),
+        skills: Vec::new().into(),
+        hooks: hooks.into(),
         trusted_hook_digest: None,
     }
 }

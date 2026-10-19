@@ -60,22 +60,32 @@ impl StreamCache {
             self.width = width;
             self.base = base;
         }
-        self.dependent_markup |= source[self.source_bytes..].contains(['[', '<']);
-        if reset || self.dependent_markup {
-            // ponytail: references and HTML can change earlier inline parsing or block spacing.
-            self.prefix_bytes = 0;
-            self.prefix_lines = 0;
-            self.lines = render(source, base, width);
-        } else {
-            self.lines.truncate(self.prefix_lines);
-            let tail = &source[self.prefix_bytes..];
-            let finished = finished_prose_prefix(tail);
-            if finished > 0 {
-                self.append(render(&tail[..finished], base, width));
-                self.prefix_bytes += finished;
-                self.prefix_lines = self.lines.len();
+        self.dependent_markup |= source
+            .get(self.source_bytes..)
+            .is_none_or(|added| added.contains(['[', '<']));
+        let dependent_markup = self.dependent_markup;
+        match source
+            .get(self.prefix_bytes..)
+            .filter(|_| !reset && !dependent_markup)
+        {
+            None => {
+                // ponytail: references and HTML can change earlier inline parsing or block spacing.
+                self.prefix_bytes = 0;
+                self.prefix_lines = 0;
+                self.lines = render(source, base, width);
             }
-            self.append(render(&source[self.prefix_bytes..], base, width));
+            Some(tail) => {
+                self.lines.truncate(self.prefix_lines);
+                let (finished, rest) = tail
+                    .split_at_checked(finished_prose_prefix(tail))
+                    .unwrap_or(("", tail));
+                if !finished.is_empty() {
+                    self.append(render(finished, base, width));
+                    self.prefix_bytes += finished.len();
+                    self.prefix_lines = self.lines.len();
+                }
+                self.append(render(rest, base, width));
+            }
         }
         self.source_bytes = source.len();
         &self.lines
@@ -121,7 +131,7 @@ fn finished_prose_prefix(source: &str) -> usize {
 
 struct Item {
     first_prefix: String,
-    continuation: String,
+    continuation_width: usize,
     first_line: bool,
 }
 
@@ -269,9 +279,11 @@ impl Writer {
                     table.in_head = true;
                 }
             }
-            Tag::TableRow => {}
-            Tag::TableCell => {}
-            Tag::FootnoteDefinition(_) | Tag::Image { .. } | Tag::MetadataBlock(_) => {}
+            Tag::TableRow
+            | Tag::TableCell
+            | Tag::FootnoteDefinition(_)
+            | Tag::Image { .. }
+            | Tag::MetadataBlock(_) => {}
         }
     }
 
@@ -359,7 +371,7 @@ impl Writer {
             Some(None) | None => "- ".into(),
         };
         self.items.push(Item {
-            continuation: " ".repeat(indent.len() + marker.len()),
+            continuation_width: indent.len() + marker.len(),
             first_prefix: indent + &marker,
             first_line: true,
         });
@@ -388,12 +400,12 @@ impl Writer {
     fn push_styled(&mut self, text: &str, style: Style) {
         let style = self.styles.last().copied().unwrap_or_default().patch(style);
         if let Some(table) = self.table.as_mut() {
-            table.cell.push(Span::styled(text.to_string(), style));
+            table.cell.push(Span::styled(text.to_owned(), style));
             return;
         }
         self.ensure_line();
         if let Some(line) = self.current.as_mut() {
-            line.push_span(Span::styled(text.to_string(), style));
+            line.push_span(Span::styled(text.to_owned(), style));
         }
     }
 
@@ -414,7 +426,7 @@ impl Writer {
             let prefix = if std::mem::take(&mut item.first_line) {
                 std::mem::take(&mut item.first_prefix)
             } else {
-                item.continuation.clone()
+                " ".repeat(item.continuation_width)
             };
             line.push_span(Span::raw(prefix));
         }
@@ -430,7 +442,7 @@ impl Writer {
         {
             let mut continuation = "> ".repeat(self.blockquote_depth);
             if let Some(item) = self.items.last() {
-                continuation.push_str(&item.continuation);
+                continuation.extend(std::iter::repeat_n(' ', item.continuation_width));
             }
             if self.in_code_block {
                 continuation.push_str("│ ");
@@ -495,7 +507,7 @@ impl Writer {
             })
             .collect();
         let prefix_width =
-            self.blockquote_depth * 2 + self.items.last().map_or(0, |item| item.continuation.len());
+            self.blockquote_depth * 2 + self.items.last().map_or(0, |item| item.continuation_width);
         let stacked =
             widths.iter().sum::<usize>() + widths.len().saturating_sub(1) * 3 + prefix_width
                 > self.width;
@@ -527,11 +539,15 @@ impl Writer {
                     if column > 0 {
                         self.push_styled(" │ ", current().style(Role::Border));
                     }
-                    let padding = widths[column].saturating_sub(cell.iter().map(Span::width).sum());
-                    let left = match table.alignments[column] {
-                        Alignment::Right => padding,
-                        Alignment::Center => padding / 2,
-                        _ => 0,
+                    let padding = widths
+                        .get(column)
+                        .copied()
+                        .unwrap_or_default()
+                        .saturating_sub(cell.iter().map(Span::width).sum());
+                    let left = match table.alignments.get(column) {
+                        Some(Alignment::Right) => padding,
+                        Some(Alignment::Center) => padding / 2,
+                        Some(Alignment::Left | Alignment::None) | None => 0,
                     };
                     self.push(&" ".repeat(left));
                     for span in cell {
@@ -581,7 +597,11 @@ fn wrap_line(
     let mut start = 0;
     while start < graphemes.len() {
         let prefix = if start == 0
-            || Span::raw(continuation).width() + Span::raw(graphemes[start].symbol).width() > width
+            || Span::raw(continuation).width()
+                + graphemes
+                    .get(start)
+                    .map_or(0, |grapheme| Span::raw(grapheme.symbol).width())
+                > width
         {
             ""
         } else {
@@ -595,8 +615,7 @@ fn wrap_line(
         let mut used = Span::raw(prefix).width();
         let mut end = start;
         let mut word_break = None;
-        while end < graphemes.len() {
-            let grapheme = &graphemes[end];
+        while let Some(grapheme) = graphemes.get(end) {
             let next = used + Span::raw(grapheme.symbol).width();
             if next > width {
                 break;
@@ -607,8 +626,9 @@ fn wrap_line(
             }
             end += 1;
         }
-        if end < graphemes.len()
-            && !graphemes[end].is_whitespace()
+        if graphemes
+            .get(end)
+            .is_some_and(|grapheme| !grapheme.is_whitespace())
             && let Some(boundary) = word_break
         {
             end = boundary;
@@ -616,7 +636,7 @@ fn wrap_line(
         // A terminal narrower than one wide grapheme must still make progress.
         end = end.max(start + 1);
         let mut wrapped = Line::styled(prefix.to_owned(), line.style);
-        for grapheme in &graphemes[start..end] {
+        for grapheme in graphemes.get(start..end).unwrap_or_default() {
             if let Some(last) = wrapped.spans.last_mut()
                 && last.style == grapheme.style
             {
@@ -628,7 +648,10 @@ fn wrap_line(
         result.push(wrapped);
         start = end;
         if !hard {
-            while start < graphemes.len() && graphemes[start].is_whitespace() {
+            while graphemes
+                .get(start)
+                .is_some_and(ratatui::text::StyledGrapheme::is_whitespace)
+            {
                 start += 1;
             }
         }

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -48,7 +49,11 @@ impl SchedulerHarness {
 
     fn tool(&self, name: &'static str, execution_mode: ExecutionMode) -> Arc<dyn Tool> {
         Arc::new(SchedulerTool {
-            name,
+            definition: Arc::new(ToolDefinition {
+                name: name.into(),
+                description: String::new(),
+                parameters: serde_json::json!({}),
+            }),
             execution_mode,
             releases: Arc::clone(&self.releases),
             completed: Arc::clone(&self.completed),
@@ -65,7 +70,7 @@ impl SchedulerHarness {
 }
 
 struct SchedulerTool {
-    name: &'static str,
+    definition: Arc<ToolDefinition>,
     execution_mode: ExecutionMode,
     releases: Arc<BTreeMap<String, Arc<Notify>>>,
     completed: Arc<Mutex<BTreeSet<String>>>,
@@ -73,23 +78,19 @@ struct SchedulerTool {
 }
 
 impl Tool for SchedulerTool {
-    fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: self.name.into(),
-            description: String::new(),
-            parameters: serde_json::json!({}),
-        }
+    fn definition(&self) -> &Arc<ToolDefinition> {
+        &self.definition
     }
 
     fn execution_mode(&self) -> ExecutionMode {
         self.execution_mode
     }
 
-    fn call<'a>(
-        &'a self,
+    fn call(
+        &self,
         _context: ToolContext,
         arguments: Value,
-    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
+    ) -> BoxFuture<'_, Result<crate::protocol::ToolResponse>> {
         let arguments: ScheduledCall =
             serde_json::from_value(arguments).expect("scheduled call arguments");
         let release = Arc::clone(
@@ -140,20 +141,20 @@ fn scheduled_call(call_id: &str, name: &str, after: &[&str]) -> ToolCall {
 
 fn spawn_test_batch(
     mut catalog: Catalog,
-    calls: Vec<ToolCall>,
+    calls: &[ToolCall],
     permissions: SandboxPermissions,
 ) -> tokio::task::JoinHandle<Vec<ToolResult>> {
     let sandbox = test_sandbox();
-    let calls = finalize_and_bind(&mut catalog, &calls);
+    let calls = finalize_and_bind(&mut catalog, calls);
     tokio::spawn(async move {
         execute_batch(
             &catalog,
             calls,
             sandbox,
             &permissions,
-            "turn",
-            "test",
-            &crate::protocol::MessageAuthor::User,
+            &"turn".into(),
+            &"test".into(),
+            &crate::protocol::MessageAuthor::User.into(),
         )
         .await
     })
@@ -171,14 +172,18 @@ async fn next_scheduler_event(
 async fn started_call(events: &mut mpsc::UnboundedReceiver<SchedulerEvent>) -> String {
     match next_scheduler_event(events).await {
         SchedulerEvent::Started(call_id) => call_id,
-        event => panic!("expected scheduled call start, got {event:?}"),
+        event @ SchedulerEvent::Finished(_) => {
+            panic!("expected scheduled call start, got {event:?}")
+        }
     }
 }
 
 async fn finished_call(events: &mut mpsc::UnboundedReceiver<SchedulerEvent>) -> String {
     match next_scheduler_event(events).await {
         SchedulerEvent::Finished(call_id) => call_id,
-        event => panic!("expected scheduled call completion, got {event:?}"),
+        event @ SchedulerEvent::Started(_) => {
+            panic!("expected scheduled call completion, got {event:?}")
+        }
     }
 }
 
@@ -201,7 +206,7 @@ async fn exclusive_calls_separate_parallel_segments() {
         .expect("register exclusive tool");
     let execution = spawn_test_batch(
         catalog,
-        vec![
+        &[
             scheduled_call("p1", "parallel", &[]),
             scheduled_call("p2", "parallel", &[]),
             scheduled_call("e", "exclusive", &["p1", "p2"]),
@@ -253,15 +258,15 @@ async fn parallel_results_remain_in_model_call_order() {
         .expect("register parallel tool");
     let execution = spawn_test_batch(
         catalog,
-        vec![
+        &[
             scheduled_call("p1", "parallel", &[]),
             scheduled_call("p2", "parallel", &[]),
         ],
         test_permissions(&[]),
     );
 
-    let _ = started_call(&mut events).await;
-    let _ = started_call(&mut events).await;
+    drop(started_call(&mut events).await);
+    drop(started_call(&mut events).await);
     harness.release("p2");
     assert_eq!(finished_call(&mut events).await, "p2");
     harness.release("p1");

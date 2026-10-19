@@ -1,6 +1,7 @@
 //! Gateway-scoped extension catalog and lifecycle controls.
 
 use std::io;
+use std::sync::Arc;
 
 use mobius::{Error, Result};
 use mobius_gateway::client::{GatewayEvents, GatewaySender};
@@ -30,20 +31,20 @@ type ExtensionsTerminal = Terminal<CrosstermBackend<io::Stdout>>;
 enum Mutation {
     Update,
     Uninstall,
-    Trust(String),
-    Untrust(String),
+    Trust(Arc<str>),
+    Untrust(Arc<str>),
 }
 
 enum Confirmation {
     Uninstall {
-        id: String,
-        name: String,
+        id: Arc<str>,
+        name: Arc<str>,
     },
     Trust {
-        id: String,
-        name: String,
-        digest: String,
-        hooks: Vec<ExtensionHookRecord>,
+        id: Arc<str>,
+        name: Arc<str>,
+        digest: Arc<str>,
+        hooks: Arc<[ExtensionHookRecord]>,
         scroll: u16,
     },
 }
@@ -55,7 +56,7 @@ enum Mode {
 }
 
 struct Pending {
-    request_id: String,
+    request_id: Arc<str>,
     label: &'static str,
 }
 
@@ -75,7 +76,7 @@ enum ScreenAction {
     None,
     Exit,
     Send {
-        request_id: String,
+        request_id: Arc<str>,
         message: Box<ClientMessage>,
         label: &'static str,
     },
@@ -108,8 +109,13 @@ impl ExtensionsState {
         if gateway.extensions.is_empty() {
             return;
         }
-        self.selected =
-            (self.selected as isize + delta).rem_euclid(gateway.extensions.len() as isize) as usize;
+        let len = gateway.extensions.len();
+        let step = delta.unsigned_abs() % len;
+        self.selected = if delta >= 0 {
+            (self.selected + step) % len
+        } else {
+            (self.selected + len - step) % len
+        };
         self.notice = None;
     }
 
@@ -213,7 +219,7 @@ impl ExtensionsState {
                     self.fail("There is no extension to update.");
                     return ScreenAction::None;
                 };
-                id_action(Mutation::Update, extension.id.clone())
+                id_action(Mutation::Update, Arc::clone(&extension.id))
             }
             KeyCode::Char('x') | KeyCode::Delete => {
                 let Some(extension) = self.selected(gateway) else {
@@ -221,8 +227,8 @@ impl ExtensionsState {
                     return ScreenAction::None;
                 };
                 self.mode = Mode::Confirm(Confirmation::Uninstall {
-                    id: extension.id.clone(),
-                    name: extension.name.clone(),
+                    id: Arc::clone(&extension.id),
+                    name: Arc::clone(&extension.name),
                 });
                 self.notice = None;
                 ScreenAction::None
@@ -236,16 +242,16 @@ impl ExtensionsState {
                     self.fail("The selected extension has no executable hooks.");
                 } else if extension.hooks_trusted {
                     return id_action(
-                        Mutation::Untrust(extension.digest.clone()),
-                        extension.id.clone(),
+                        Mutation::Untrust(Arc::clone(&extension.digest)),
+                        Arc::clone(&extension.id),
                     );
                 } else {
                     // Pin the reviewed hook snapshot and digest until the user confirms this exact version.
                     self.mode = Mode::Confirm(Confirmation::Trust {
-                        id: extension.id.clone(),
-                        name: extension.name.clone(),
-                        digest: extension.digest.clone(),
-                        hooks: extension.hooks.clone(),
+                        id: Arc::clone(&extension.id),
+                        name: Arc::clone(&extension.name),
+                        digest: Arc::clone(&extension.digest),
+                        hooks: Arc::clone(&extension.hooks),
                         scroll: 0,
                     });
                     self.notice = None;
@@ -323,7 +329,7 @@ impl ExtensionsState {
         });
     }
 
-    fn begin(&mut self, request_id: String, label: &'static str) {
+    fn begin(&mut self, request_id: Arc<str>, label: &'static str) {
         self.pending = Some(Pending { request_id, label });
         self.notice = None;
     }
@@ -374,48 +380,45 @@ pub(in crate::frontend) async fn run(
                     Ok(frame) => frame,
                     Err(error) => break 'screen Err(gateway_error(error)),
                 };
-                match frame {
-                    Some(frame) => {
-                        let ServerFrame { version, message } = frame;
-                        if let Some(error) = message.response_error(None) {
-                            break 'screen Err(Error::Stopped(error.message.into()));
-                        }
-                        match message {
-                        ServerMessage::Ready { payload } => {
-                            gateway.update(payload);
-                            state.clamp_selection(gateway);
-                        }
-                        ServerMessage::GatewayConfigured { request_id, payload }
-                            if state.pending.as_ref().is_some_and(|pending| {
-                                pending.request_id == request_id
-                            }) =>
-                        {
-                            gateway.update(payload);
-                            state.clamp_selection(gateway);
-                            state.complete();
-                        }
-                        ServerMessage::Rejected { request_id, message, .. }
-                            if state.pending.as_ref().is_some_and(|pending| {
-                                pending.request_id == request_id
-                            }) =>
-                        {
-                            state.pending = None;
-                            state.fail(message);
-                        }
-                        ServerMessage::Sessions { sessions, .. } => gateway.sessions = sessions,
-                        ServerMessage::SessionsChanged { sessions, .. } => {
-                            apply_session_changes(&mut gateway.sessions, sessions)
-                        }
-                        message => events
-                            .defer(ServerFrame { version, message })
-                            .map_err(gateway_error)?,
+                if let Some(frame) = frame {
+                    let ServerFrame { version, message } = frame;
+                    if let Some(error) = message.response_error(None) {
+                        break 'screen Err(Error::Stopped(error.message.into()));
                     }
-                    },
-                    None => {
-                        events_open = false;
+                    match message {
+                    ServerMessage::Ready { payload } => {
+                        gateway.update(payload);
+                        state.clamp_selection(gateway);
+                    }
+                    ServerMessage::GatewayConfigured { request_id, payload }
+                        if state.pending.as_ref().is_some_and(|pending| {
+                            pending.request_id == request_id
+                        }) =>
+                    {
+                        gateway.update(payload);
+                        state.clamp_selection(gateway);
+                        state.complete();
+                    }
+                    ServerMessage::Rejected { request_id, message, .. }
+                        if state.pending.as_ref().is_some_and(|pending| {
+                            *pending.request_id == *request_id
+                        }) =>
+                    {
                         state.pending = None;
-                        state.fail("Gateway disconnected. Press q to close.");
+                        state.fail(&*message);
                     }
+                    ServerMessage::Sessions { sessions, .. } => gateway.sessions = sessions,
+                    ServerMessage::SessionsChanged { sessions, .. } => {
+                        apply_session_changes(&mut gateway.sessions, sessions);
+                    }
+                    message => events
+                        .defer(ServerFrame { version, message })
+                        .map_err(gateway_error)?,
+                }
+                } else {
+                    events_open = false;
+                    state.pending = None;
+                    state.fail("Gateway disconnected. Press q to close.");
                 }
                 dirty = true;
             }
@@ -453,10 +456,10 @@ pub(in crate::frontend) async fn run(
 }
 
 fn install_action(source: String) -> ScreenAction {
-    let request_id = Uuid::new_v4().to_string();
+    let request_id: Arc<str> = Uuid::new_v4().to_string().into();
     ScreenAction::Send {
         message: Box::new(ClientMessage::InstallExtension {
-            request_id: request_id.clone(),
+            request_id: Arc::clone(&request_id),
             source,
             reference: None,
             subdirectory: None,
@@ -466,26 +469,26 @@ fn install_action(source: String) -> ScreenAction {
     }
 }
 
-fn id_action(mutation: Mutation, id: String) -> ScreenAction {
-    let request_id = Uuid::new_v4().to_string();
+fn id_action(mutation: Mutation, id: Arc<str>) -> ScreenAction {
+    let request_id: Arc<str> = Uuid::new_v4().to_string().into();
     let (message, label) = match mutation {
         Mutation::Update => (
             ClientMessage::UpdateExtension {
-                request_id: request_id.clone(),
+                request_id: Arc::clone(&request_id),
                 id,
             },
             "Update",
         ),
         Mutation::Uninstall => (
             ClientMessage::UninstallExtension {
-                request_id: request_id.clone(),
+                request_id: Arc::clone(&request_id),
                 id,
             },
             "Uninstall",
         ),
         Mutation::Trust(expected_digest) => (
             ClientMessage::TrustExtensionHooks {
-                request_id: request_id.clone(),
+                request_id: Arc::clone(&request_id),
                 id,
                 expected_digest,
             },
@@ -493,7 +496,7 @@ fn id_action(mutation: Mutation, id: String) -> ScreenAction {
         ),
         Mutation::Untrust(expected_digest) => (
             ClientMessage::RevokeExtensionHooksTrust {
-                request_id: request_id.clone(),
+                request_id: Arc::clone(&request_id),
                 id,
                 expected_digest,
             },
@@ -806,13 +809,13 @@ mod tests {
             subdirectory: None,
             resolved_revision: "abc123".into(),
             digest: "sha256:trusted-snapshot".into(),
-            skills: vec!["ponytail".into()],
-            hooks: vec![ExtensionHookRecord {
+            skills: Arc::from(["ponytail".into()]),
+            hooks: Arc::from([ExtensionHookRecord {
                 event: "pre_tool".into(),
                 matcher: Some("shell".into()),
                 command: "review-hook --safe".into(),
                 timeout_seconds: 10,
-            }],
+            }]),
             hooks_trusted: false,
         }
     }
@@ -821,10 +824,16 @@ mod tests {
     fn lifecycle_requests_bind_identity_and_hook_trust_to_the_digest() {
         let record = extension();
         let actions = [
-            id_action(Mutation::Update, record.id.clone()),
-            id_action(Mutation::Uninstall, record.id.clone()),
-            id_action(Mutation::Trust(record.digest.clone()), record.id.clone()),
-            id_action(Mutation::Untrust(record.digest.clone()), record.id.clone()),
+            id_action(Mutation::Update, Arc::clone(&record.id)),
+            id_action(Mutation::Uninstall, Arc::clone(&record.id)),
+            id_action(
+                Mutation::Trust(Arc::clone(&record.digest)),
+                Arc::clone(&record.id),
+            ),
+            id_action(
+                Mutation::Untrust(Arc::clone(&record.digest)),
+                Arc::clone(&record.id),
+            ),
         ];
 
         let messages = actions.map(|action| {
@@ -856,19 +865,21 @@ mod tests {
     #[test]
     fn trust_review_shows_every_executable_command() {
         let mut record = extension();
-        record.hooks.push(ExtensionHookRecord {
+        let mut hooks = record.hooks.to_vec();
+        hooks.push(ExtensionHookRecord {
             event: "Stop".into(),
             matcher: None,
             command: "first\nsecond\targument".into(),
             timeout_seconds: 5,
         });
+        record.hooks = hooks.into();
         let text = trust_review(&record.name, &record.digest, &record.hooks)
             .into_iter()
             .map(|line| line.to_string())
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(text.contains(&record.digest));
+        assert!(text.contains(&*record.digest));
         assert!(text.contains("pre_tool [shell] · review-hook --safe · 10s"));
         assert!(text.contains(r"first\nsecond\targument"));
     }

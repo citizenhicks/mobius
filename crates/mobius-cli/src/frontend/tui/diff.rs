@@ -21,7 +21,10 @@ struct FileDiff {
 impl FileDiff {
     fn new(text: &str) -> Self {
         let patch = Patch::from_str(text).ok();
-        let metadata = text.lines().take_while(|line| !line.starts_with("@@ "));
+        let metadata: Vec<&str> = text
+            .lines()
+            .take_while(|line| !line.starts_with("@@ "))
+            .collect();
         let path = patch
             .as_ref()
             .and_then(|patch| {
@@ -31,12 +34,12 @@ impl FileDiff {
                     .or_else(|| patch.original())
             })
             .or_else(|| {
-                metadata.clone().find_map(|line| {
+                metadata.iter().find_map(|line| {
                     line.strip_prefix("+++ ")
                         .filter(|path| *path != "/dev/null")
                 })
             })
-            .or_else(|| metadata.clone().find_map(|line| line.strip_prefix("--- ")))
+            .or_else(|| metadata.iter().find_map(|line| line.strip_prefix("--- ")))
             .map(|path| {
                 path.strip_prefix("b/")
                     .or_else(|| path.strip_prefix("a/"))
@@ -44,14 +47,15 @@ impl FileDiff {
             })
             .or_else(|| {
                 metadata
-                    .clone()
+                    .iter()
                     .find_map(|line| line.strip_prefix("rename to "))
             })
             .or_else(|| {
-                metadata.clone().find_map(|line| {
+                metadata.iter().find_map(|line| {
                     let paths = line.strip_prefix("diff --git a/")?;
                     paths.match_indices(" b/").find_map(|(index, _)| {
-                        (paths[..index] == paths[index + 3..]).then_some(&paths[index + 3..])
+                        let modified = paths.get(index + 3..)?;
+                        (paths.get(..index) == Some(modified)).then_some(modified)
                     })
                 })
             })
@@ -59,21 +63,18 @@ impl FileDiff {
         // Keep quoted paths and ambiguous Git headers intact rather than guessing at spaces.
         let path = terminal_text(path).replace(['\n', '\t'], " ");
         let status = if metadata
-            .clone()
-            .any(|line| line.starts_with("new file mode ") || line == "--- /dev/null")
+            .iter()
+            .any(|line| line.starts_with("new file mode ") || *line == "--- /dev/null")
         {
             "A"
         } else if metadata
-            .clone()
-            .any(|line| line.starts_with("deleted file mode ") || line == "+++ /dev/null")
+            .iter()
+            .any(|line| line.starts_with("deleted file mode ") || *line == "+++ /dev/null")
         {
             "D"
-        } else if metadata
-            .clone()
-            .any(|line| line.starts_with("rename from "))
-        {
+        } else if metadata.iter().any(|line| line.starts_with("rename from ")) {
             "R"
-        } else if metadata.clone().any(|line| line.starts_with("copy from ")) {
+        } else if metadata.iter().any(|line| line.starts_with("copy from ")) {
             "C"
         } else {
             "M"
@@ -114,8 +115,8 @@ pub(super) struct DiffBrowser {
 }
 
 impl DiffBrowser {
-    pub(super) fn new(text: String) -> Self {
-        let text = terminal_text(&text).replace('\t', "    ");
+    pub(super) fn new(text: &str) -> Self {
+        let text = terminal_text(text).replace('\t', "    ");
         let files: Vec<_> = view::diff_sections(&text).map(FileDiff::new).collect();
         Self {
             selected: 0,
@@ -188,7 +189,7 @@ impl DiffBrowser {
                 }
             }
             KeyCode::Enter if self.files_focused => self.files_focused = false,
-            KeyCode::Char('[') | KeyCode::Char(']') => {
+            KeyCode::Char('[' | ']') => {
                 self.ensure_lines(self.diff_area.width.max(1));
                 let scroll = self.viewport.effective_scroll();
                 let target = if key.code == KeyCode::Char(']') {
@@ -232,15 +233,17 @@ impl DiffBrowser {
             return;
         }
         self.lines.clear();
-        let text = &self.files[self.selected].text;
+        let Some(FileDiff { text, .. }) = self.files.get(self.selected) else {
+            return;
+        };
         if view::push_diff_patch(&mut self.lines, text, usize::from(width)) {
             self.lines.retain(|line| {
                 !line.spans.first().is_some_and(|span| {
                     span.content.starts_with("diff --git ") || span.content.starts_with("index ")
-                }) && !line
+                }) && line
                     .spans
                     .get(1)
-                    .is_some_and(|span| span.content == "Edited ")
+                    .is_none_or(|span| span.content != "Edited ")
             });
         } else {
             self.lines.extend(text.lines().map(|line| {
@@ -275,6 +278,12 @@ impl DiffBrowser {
         self.cache = Some((self.selected, width));
     }
 
+    fn selected_path(&self) -> &str {
+        self.files
+            .get(self.selected)
+            .map_or("", |file| file.path.as_str())
+    }
+
     pub(super) fn render(&mut self, frame: &mut Frame, area: Rect, title: &str) {
         let theme = current();
         frame.render_widget(Clear, area);
@@ -297,11 +306,10 @@ impl DiffBrowser {
                 [Rect::default(), inner]
             }
         } else {
-            let panes = Layout::default()
+            Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Percentage(32), Constraint::Percentage(68)])
-                .split(inner);
-            [panes[0], panes[1]]
+                .areas(inner)
         };
         self.files_area = Rect::default();
         self.diff_area = Rect::default();
@@ -340,9 +348,7 @@ impl DiffBrowser {
             } else {
                 Role::Accent
             }));
-            self.diff_area = Block::default()
-                .title(self.files[self.selected].path.as_str())
-                .inner(panes[1]);
+            self.diff_area = Block::default().title(self.selected_path()).inner(panes[1]);
             self.ensure_lines(self.diff_area.width);
             let scroll = self.viewport.scroll;
             let content_height = self
@@ -368,7 +374,7 @@ impl DiffBrowser {
                         .collect::<Vec<_>>(),
                 ))
                 .wrap(Wrap { trim: false })
-                .block(block.title(self.files[self.selected].path.as_str()))
+                .block(block.title(self.selected_path()))
                 .scroll((
                     u16::try_from(self.viewport.effective_scroll()).unwrap_or(u16::MAX),
                     0,

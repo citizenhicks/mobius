@@ -1,5 +1,6 @@
 //! Owner-managed extension sources and immutable package snapshots.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fs;
@@ -35,28 +36,28 @@ const GIT_TIMEOUT: Duration = Duration::from_secs(120);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ExtensionSource {
-    pub(crate) url: String,
-    pub(crate) reference: Option<String>,
-    pub(crate) subdirectory: Option<String>,
+    pub(crate) url: Arc<str>,
+    pub(crate) reference: Option<Arc<str>>,
+    pub(crate) subdirectory: Option<Arc<str>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct InstalledExtension {
     pub(crate) kind: ExtensionKind,
-    pub(crate) name: String,
-    pub(crate) description: String,
-    pub(crate) version: Option<String>,
+    pub(crate) name: Arc<str>,
+    pub(crate) description: Arc<str>,
+    pub(crate) version: Option<Arc<str>>,
     pub(crate) source: ExtensionSource,
-    pub(crate) resolved_revision: String,
-    pub(crate) digest: String,
-    pub(crate) skills: Vec<String>,
-    pub(crate) hooks: Vec<ExtensionHookRecord>,
-    pub(crate) trusted_hook_digest: Option<String>,
+    pub(crate) resolved_revision: Arc<str>,
+    pub(crate) digest: Arc<str>,
+    pub(crate) skills: Arc<[String]>,
+    pub(crate) hooks: Arc<[ExtensionHookRecord]>,
+    pub(crate) trusted_hook_digest: Option<Arc<str>>,
 }
 
 pub(crate) struct StagedExtension {
-    pub(crate) id: String,
+    pub(crate) id: Arc<str>,
     pub(crate) installed: InstalledExtension,
     pub(crate) snapshot_created: bool,
 }
@@ -68,8 +69,8 @@ pub(crate) struct ResolvedExtensions {
 }
 
 pub(crate) struct ResolvedPlugin {
-    pub(crate) id: String,
-    pub(crate) digest: String,
+    pub(crate) id: Arc<str>,
+    pub(crate) digest: Arc<str>,
     pub(crate) root: PathBuf,
     pub(crate) hooks_trusted: bool,
 }
@@ -77,11 +78,13 @@ pub(crate) struct ResolvedPlugin {
 impl ResolvedPlugin {
     pub(crate) fn activation(
         &self,
-        gateway: Arc<Mutex<GatewayConfig>>,
+        gateway: &Arc<Mutex<GatewayConfig>>,
     ) -> (PathBuf, Option<CommandAuthorization>) {
         let authorization = self.hooks_trusted.then(|| {
-            let id = self.id.clone();
-            let digest = self.digest.clone();
+            // Each chat's hook authorization owns the plugin identity it checks.
+            let gateway = Arc::clone(gateway);
+            let id = Arc::clone(&self.id);
+            let digest = Arc::clone(&self.digest);
             Arc::new(move |launch: &mut dyn FnMut() -> mobius::Result<()>| {
                 let Ok(config) = gateway.lock() else {
                     return Ok(());
@@ -91,7 +94,7 @@ impl ResolvedPlugin {
                     .get(&id)
                     .is_some_and(|installed| {
                         installed.digest == digest
-                            && installed.trusted_hook_digest.as_deref() == Some(&digest)
+                            && installed.trusted_hook_digest.as_ref() == Some(&digest)
                     })
                 {
                     launch()?;
@@ -99,7 +102,7 @@ impl ResolvedPlugin {
                 Ok(())
             }) as CommandAuthorization
         });
-        (self.root.clone(), authorization)
+        (self.root.clone(), authorization) // rules-allow: the prepared Bot keeps its plugin root for later chats
     }
 }
 
@@ -144,30 +147,34 @@ impl ExtensionStore {
             .parent()
             .ok_or_else(|| Error::Config("extension snapshot has no parent directory".into()))?;
         let created = !snapshot.exists();
-        if !created {
-            verify_snapshot(&snapshot, &digest)?;
-        } else {
+        if created {
             fs::create_dir_all(parent)?;
             fs::rename(&package, &snapshot)?;
+        } else {
+            verify_snapshot(&snapshot, &digest)?;
         }
         if let Err(error) = freeze_tree(parent) {
             if created {
-                let _ = thaw_tree(parent);
-                let _ = fs::remove_dir_all(parent);
+                if let Err(cleanup) = thaw_tree(parent) {
+                    tracing::warn!(path = %parent.display(), %cleanup, "failed to unfreeze the unfinished extension snapshot");
+                }
+                if let Err(cleanup) = fs::remove_dir_all(parent) {
+                    tracing::warn!(path = %parent.display(), %cleanup, "failed to remove the unfinished extension snapshot");
+                }
             }
             return Err(error);
         }
         Ok(StagedExtension {
-            id,
+            id: id.into(),
             installed: InstalledExtension {
                 kind,
-                name: inspected.name,
-                description: inspected.description,
-                version: inspected.version,
+                name: inspected.name.into(),
+                description: inspected.description.into(),
+                version: inspected.version.map(Into::into),
                 source,
-                resolved_revision: revision,
-                digest,
-                skills: inspected.skills,
+                resolved_revision: revision.into(),
+                digest: digest.into(),
+                skills: inspected.skills.into(),
                 hooks: inspected.hooks.into_iter().map(Into::into).collect(),
                 trusted_hook_digest: None,
             },
@@ -183,9 +190,12 @@ impl ExtensionStore {
         validate_ids(ids)?;
         let mut resolved = ResolvedExtensions::default();
         for id in ids {
-            let installed = config.installed_extensions.get(id).ok_or_else(|| {
-                Error::Config(format!("selected extension `{id}` is not installed"))
-            })?;
+            let (id, installed) = config
+                .installed_extensions
+                .get_key_value(id.as_str())
+                .ok_or_else(|| {
+                    Error::Config(format!("selected extension `{id}` is not installed"))
+                })?;
             let package = self.snapshot_root(&installed.digest);
             match installed.kind {
                 ExtensionKind::Skill => resolved.skill_roots.push(
@@ -195,11 +205,11 @@ impl ExtensionStore {
                         .to_path_buf(),
                 ),
                 ExtensionKind::Plugin => resolved.plugins.push(ResolvedPlugin {
-                    id: id.clone(),
-                    digest: installed.digest.clone(),
+                    id: Arc::clone(id),
+                    digest: Arc::clone(&installed.digest),
                     root: package,
                     hooks_trusted: installed.hooks.is_empty()
-                        || installed.trusted_hook_digest.as_deref() == Some(&installed.digest),
+                        || installed.trusted_hook_digest.as_ref() == Some(&installed.digest),
                 }),
             }
         }
@@ -254,7 +264,7 @@ impl ExtensionStore {
         let retained = config
             .installed_extensions
             .values()
-            .map(|extension| extension.digest.as_str())
+            .map(|extension| &*extension.digest)
             .collect::<BTreeSet<_>>();
         for entry in fs::read_dir(snapshots)? {
             let entry = entry?;
@@ -307,19 +317,19 @@ impl ExtensionSource {
         if url.host_str() == Some("github.com") {
             let segments = url
                 .path_segments()
-                .map(|segments| segments.collect::<Vec<_>>())
+                .map(std::iter::Iterator::collect::<Vec<_>>)
                 .unwrap_or_default();
-            if segments.len() >= 4 && segments[2] == "tree" {
+            if let [owner, repository, "tree", branch, rest @ ..] = segments.as_slice() {
                 if reference.is_some() || subdirectory.is_some() {
                     return Err(Error::Config(
                         "a GitHub tree URL cannot be combined with ref or subdirectory fields"
                             .into(),
                     ));
                 }
-                reference = Some(segments[3].into());
-                let path = format!("/{}/{}", segments[0], segments[1]);
-                if segments.len() > 4 {
-                    subdirectory = Some(segments[4..].join("/"));
+                reference = Some((*branch).into());
+                let path = format!("/{owner}/{repository}");
+                if !rest.is_empty() {
+                    subdirectory = Some(rest.join("/"));
                 }
                 url.set_path(&path);
             }
@@ -327,16 +337,16 @@ impl ExtensionSource {
         let mut url = String::from(url);
         url.truncate(url.trim_end_matches('/').len());
         let source = Self {
-            url,
-            reference,
-            subdirectory,
+            url: url.into(),
+            reference: reference.map(Into::into),
+            subdirectory: subdirectory.map(Into::into),
         };
         source.validate()?;
         Ok(source)
     }
 
     fn validate(&self) -> Result<()> {
-        if self.url.len() > MAX_EXTENSION_SOURCE_BYTES || self.url.trim() != self.url {
+        if self.url.len() > MAX_EXTENSION_SOURCE_BYTES || self.url.trim() != &*self.url {
             return Err(Error::Config("extension URL is invalid".into()));
         }
         let parsed = Url::parse(&self.url)
@@ -382,21 +392,21 @@ pub(crate) fn records(config: &GatewayConfig) -> Vec<ExtensionRecord> {
         .installed_extensions
         .iter()
         .map(|(id, installed)| ExtensionRecord {
-            id: id.clone(),
-            capability: MANIFEST.id.into(),
+            id: Arc::clone(id),
+            capability: Cow::Borrowed(MANIFEST.id),
             kind: installed.kind,
-            name: installed.name.clone(),
-            description: installed.description.clone(),
-            version: installed.version.clone(),
-            source: installed.source.url.clone(),
-            reference: installed.source.reference.clone(),
-            subdirectory: installed.source.subdirectory.clone(),
-            resolved_revision: installed.resolved_revision.clone(),
-            digest: installed.digest.clone(),
-            skills: installed.skills.clone(),
-            hooks: installed.hooks.clone(),
+            name: Arc::clone(&installed.name),
+            description: Arc::clone(&installed.description),
+            version: installed.version.as_ref().map(Arc::clone),
+            source: Arc::clone(&installed.source.url),
+            reference: installed.source.reference.as_ref().map(Arc::clone),
+            subdirectory: installed.source.subdirectory.as_ref().map(Arc::clone),
+            resolved_revision: Arc::clone(&installed.resolved_revision),
+            digest: Arc::clone(&installed.digest),
+            skills: Arc::clone(&installed.skills),
+            hooks: Arc::clone(&installed.hooks),
             hooks_trusted: installed.hooks.is_empty()
-                || installed.trusted_hook_digest.as_deref() == Some(&installed.digest),
+                || installed.trusted_hook_digest.as_ref() == Some(&installed.digest),
         })
         .collect()
 }
@@ -422,7 +432,7 @@ pub(crate) fn validate_ids(ids: &BTreeSet<String>) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn validate_installed(installed: &BTreeMap<String, InstalledExtension>) -> Result<()> {
+pub(crate) fn validate_installed(installed: &BTreeMap<Arc<str>, InstalledExtension>) -> Result<()> {
     if installed.len() > MAX_EXTENSIONS {
         return Err(Error::Config(format!(
             "installed extension count exceeds {MAX_EXTENSIONS}"
@@ -431,7 +441,7 @@ pub(crate) fn validate_installed(installed: &BTreeMap<String, InstalledExtension
     let mut digests = BTreeSet::new();
     for (id, extension) in installed {
         extension.source.validate()?;
-        if id != &extension_id(extension.kind, &extension.name)
+        if **id != *extension_id(extension.kind, &extension.name)
             || !valid_package_name(&extension.name)
         {
             return Err(Error::Config(format!(
@@ -502,13 +512,13 @@ async fn clone_source(source: &ExtensionSource, checkout: &Path) -> Result<()> {
     let mut command = git_command();
     command.args(["clone", "--quiet", "--depth", "1", "--no-tags"]);
     if let Some(reference) = &source.reference {
-        command.arg("--branch").arg(reference);
+        command.arg("--branch").arg(&**reference);
     }
-    command.arg("--").arg(&source.url).arg(checkout);
+    command.arg("--").arg(&*source.url).arg(checkout);
     command.stdout(Stdio::null()).stderr(Stdio::null());
     let status = tokio::time::timeout(GIT_TIMEOUT, command.status())
         .await
-        .map_err(|_| Error::Config("extension Git clone timed out".into()))??;
+        .map_err(|error| Error::Config(format!("extension Git clone timed out: {error}")))??;
     if !status.success() {
         return Err(Error::Config("extension Git clone failed".into()));
     }
@@ -523,9 +533,11 @@ async fn git_revision(checkout: &Path) -> Result<String> {
         .stderr(Stdio::null());
     let output = tokio::time::timeout(GIT_TIMEOUT, command.output())
         .await
-        .map_err(|_| Error::Config("extension Git revision lookup timed out".into()))??;
+        .map_err(|error| {
+            Error::Config(format!("extension Git revision lookup timed out: {error}"))
+        })??;
     let revision = String::from_utf8(output.stdout)
-        .map_err(|_| Error::Config("extension Git revision is not UTF-8".into()))?;
+        .map_err(|error| Error::Config(format!("extension Git revision is not UTF-8: {error}")))?;
     let revision = revision.trim().to_owned();
     if !output.status.success() || !valid_revision(&revision) {
         return Err(Error::Config("extension Git revision is invalid".into()));
@@ -564,7 +576,7 @@ fn confined_checkout_path(checkout: &Path, subdirectory: Option<&str>) -> Result
     };
     validate_relative_path(subdirectory)?;
     // Keep the canonical confinement root while walking and validating the candidate path.
-    let mut path = checkout.clone();
+    let mut path = checkout.clone(); // rules-allow: the canonical root stays for the final confinement check
     for component in Path::new(subdirectory).components() {
         let Component::Normal(component) = component else {
             return Err(Error::Config("extension subdirectory is invalid".into()));
@@ -671,9 +683,9 @@ fn hash_directory(
     entries.sort_by_key(fs::DirEntry::file_name);
     for entry in entries {
         let path = entry.path();
-        let relative = path
-            .strip_prefix(root)
-            .map_err(|_| Error::Config("extension path escaped its snapshot".into()))?;
+        let relative = path.strip_prefix(root).map_err(|error| {
+            Error::Config(format!("extension path escaped its snapshot: {error}"))
+        })?;
         let relative = relative
             .to_str()
             .ok_or_else(|| Error::Config("extension paths must be UTF-8".into()))?;
@@ -704,7 +716,9 @@ fn hash_directory(
                 if read == 0 {
                     break;
                 }
-                hash.update(&buffer[..read]);
+                hash.update(buffer.get(..read).ok_or_else(|| {
+                    Error::Config("extension file read overflowed its buffer".into())
+                })?);
             }
         } else {
             return Err(Error::Config(format!(
@@ -728,11 +742,11 @@ fn verify_installed_metadata(
         .map(Into::into)
         .collect::<Vec<_>>();
     if installed.kind != kind
-        || installed.name != inspected.name
-        || installed.description != inspected.description
-        || installed.version != inspected.version
-        || installed.skills != inspected.skills
-        || installed.hooks != hooks
+        || *installed.name != *inspected.name
+        || *installed.description != *inspected.description
+        || installed.version.as_deref() != inspected.version.as_deref()
+        || *installed.skills != *inspected.skills
+        || *installed.hooks != *hooks
     {
         return Err(Error::Config(format!(
             "extension `{id}` metadata does not match its snapshot"

@@ -9,10 +9,10 @@ fn test_bot() -> crate::wire::BotRecord {
         description: "Own fixture work.".into(),
         tint: ProviderTint::default(),
         shape: crate::wire::BotShape::Circle,
-        config: VersionedAgentConfig {
+        config: Arc::new(VersionedAgentConfig {
             revision: 1,
             config: AgentComposition::default(),
-        },
+        }),
         accepts_file_attachments: false,
         routine_interaction_policy: RoutineInteractionPolicy::Unattended,
     }
@@ -287,7 +287,7 @@ fn saving_defaults_is_revisioned_and_does_not_change_existing_chat_specs() {
         description: "Own fixture work.".into(),
         tint: ProviderTint::default(),
         shape: crate::wire::BotShape::Circle,
-        config: registered.bot_defaults.clone().expect("Bot defaults"),
+        config: Arc::new(registered.bot_defaults.clone().expect("Bot defaults")),
         accepts_file_attachments: false,
         routine_interaction_policy: RoutineInteractionPolicy::Unattended,
     };

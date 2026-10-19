@@ -26,7 +26,7 @@ fn continuation_ignores_searchable_inventory_and_resets_on_catalog_change() {
         .expect("envelope fingerprint");
     let (response, input) =
         continuation_input(&mut state, (&continued).into(), envelope).expect("continue");
-    assert_eq!(response.as_deref(), Some("resp-1"));
+    assert_eq!(response, Some("resp-1"));
     assert_eq!(
         serde_json::to_value(input).expect("input"),
         serde_json::json!([{ "type": "function_call_output" }])
@@ -50,7 +50,7 @@ fn continuation_ignores_searchable_inventory_and_resets_on_catalog_change() {
     assert_eq!(inventory_envelope, envelope);
     let (response, input) = continuation_input(&mut state, (&continued).into(), inventory_envelope)
         .expect("inventory continuation");
-    assert_eq!(response.as_deref(), Some("resp-1"));
+    assert_eq!(response, Some("resp-1"));
     assert_eq!(
         serde_json::to_value(input).expect("input"),
         serde_json::json!([{ "type": "function_call_output" }])

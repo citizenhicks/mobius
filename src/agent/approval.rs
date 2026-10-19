@@ -1,6 +1,7 @@
 //! Tool authorization and paused-approval lifecycle.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use super::Runner;
 use super::SubmissionInbox;
@@ -22,7 +23,7 @@ use crate::protocol::ReviewDecision;
 use crate::protocol::ToolCall;
 
 struct ApprovalResponse {
-    submission_id: String,
+    submission_id: Arc<str>,
     decision: ReviewDecision,
 }
 
@@ -30,8 +31,8 @@ impl Runner {
     pub(super) async fn resolve_tool_approval(
         &mut self,
         inbox: &mut SubmissionInbox,
-        submission_id: &str,
-        turn_id: &str,
+        submission_id: &Arc<str>,
+        turn_id: &Arc<str>,
         calls: Vec<ToolCall>,
         request: SandboxApprovalRequest,
         permissions: SandboxPermissions,
@@ -57,7 +58,7 @@ impl Runner {
         let mut events = hook_events
             .into_iter()
             .map(|msg| Event {
-                submission_id: Some(submission_id.into()),
+                submission_id: Some(Arc::clone(submission_id)),
                 msg,
             })
             .collect::<Vec<_>>();
@@ -65,9 +66,9 @@ impl Runner {
             self.persist_with_events(std::mem::take(&mut events), None)
                 .await?;
         }
-        let pending = PendingApproval {
-            submission_id: submission_id.to_string(),
-            turn_id: turn_id.to_string(),
+        let mut pending = PendingApproval {
+            submission_id: Arc::clone(submission_id),
+            turn_id: Arc::clone(turn_id),
             request_id: request.id,
             approval_call_ids: request.call_ids,
             authorized_call_ids: permissions.mutation_call_ids(),
@@ -77,39 +78,36 @@ impl Runner {
             network_access: permissions.network_access(),
             decision_received: false,
         };
-        match hook_decision {
-            Some(decision) => {
-                self.apply_approval(inbox, &pending, decision, permissions, submission_id)
-                    .await
-            }
-            None => {
-                // Persist recovery data while the approval wait mutates runner state using this snapshot.
-                self.state.make_mut().pending_approval = Some(pending.clone());
-                events.push(approval_event(&pending));
-                self.persist_with_events(events, None).await?;
-                self.resolve_pending(inbox, &pending, false).await
-            }
+        if let Some(decision) = hook_decision {
+            self.apply_approval(inbox, &pending, decision, permissions, submission_id)
+                .await
+        } else {
+            // Persist recovery data while the approval wait mutates runner state using this snapshot.
+            self.state.make_mut().pending_approval = Some(pending.clone()); // rules-allow: the checkpoint keeps the approval for recovery while it is resolved
+            events.push(approval_event(&pending));
+            self.persist_with_events(events, None).await?;
+            self.resolve_pending(inbox, &mut pending, false).await
         }
     }
 
     pub(super) async fn resume_pending(
         &mut self,
         inbox: &mut SubmissionInbox,
-        pending: PendingApproval,
+        pending: &mut PendingApproval,
     ) -> Result<()> {
-        let Some(results) = self.resolve_pending(inbox, &pending, true).await? else {
+        let Some(results) = self.resolve_pending(inbox, pending, true).await? else {
             return Ok(());
         };
         self.complete_tool_step(&pending.submission_id, &pending.turn_id, results)
             .await?;
-        self.continue_turn(inbox, pending.submission_id, pending.turn_id)
+        self.continue_turn(inbox, &pending.submission_id, &pending.turn_id)
             .await
     }
 
     async fn resolve_pending(
         &mut self,
         inbox: &mut SubmissionInbox,
-        pending: &PendingApproval,
+        pending: &mut PendingApproval,
         reassert_request: bool,
     ) -> Result<Option<ToolCompletion>> {
         if reassert_request {
@@ -126,16 +124,17 @@ impl Runner {
             current.decision_received = true;
             self.save().await?;
         }
+        let permissions = SandboxPermissions::restore(
+            &self.config.session_id,
+            pending.sandbox_mode,
+            pending.network_access,
+            std::mem::take(&mut pending.authorized_call_ids),
+        );
         self.apply_approval(
             inbox,
             pending,
             decision,
-            SandboxPermissions::restore(
-                &self.config.session_id,
-                pending.sandbox_mode,
-                pending.network_access,
-                pending.authorized_call_ids.clone(),
-            ),
+            permissions,
             &approval.submission_id,
         )
         .await
@@ -147,7 +146,7 @@ impl Runner {
         pending: &PendingApproval,
         decision: ReviewDecision,
         permissions: SandboxPermissions,
-        abort_submission_id: &str,
+        abort_submission_id: &Arc<str>,
     ) -> Result<Option<ToolCompletion>> {
         let permissions = self.config.sandbox.resolve_approval(
             &self.config.session_id,
@@ -173,17 +172,17 @@ impl Runner {
                 let approval_call_ids = pending
                     .approval_call_ids
                     .iter()
-                    .map(String::as_str)
-                    .collect::<BTreeSet<_>>();
+                    .map(AsRef::as_ref)
+                    .collect::<BTreeSet<&str>>();
                 let allowed_calls = pending
                     .calls
                     .iter()
-                    .filter(|call| !approval_call_ids.contains(call.call_id.as_str()))
+                    .filter(|call| !approval_call_ids.contains(call.call_id.as_ref()))
                     .collect::<Vec<_>>();
                 let denied_calls = pending
                     .calls
                     .iter()
-                    .filter(|call| approval_call_ids.contains(call.call_id.as_str()));
+                    .filter(|call| approval_call_ids.contains(call.call_id.as_ref()));
                 let mut completion = if allowed_calls.is_empty() {
                     ToolCompletion::default()
                 } else {
@@ -260,17 +259,20 @@ impl Runner {
 
 fn approval_event(pending: &PendingApproval) -> Event {
     Event {
-        submission_id: Some(pending.submission_id.as_str().into()),
+        submission_id: Some(Arc::clone(&pending.submission_id)),
         msg: EventMsg::ExecApprovalRequest(pending.request_event()),
     }
 }
 
-fn validate_approval_selection(calls: &[ToolCall], call_ids: &[String]) -> Result<()> {
+fn validate_approval_selection(calls: &[ToolCall], call_ids: &[Arc<str>]) -> Result<()> {
     let known_call_ids = calls
         .iter()
-        .map(|call| call.call_id.as_str())
+        .map(|call| call.call_id.as_ref())
         .collect::<BTreeSet<_>>();
-    let selected_call_ids = call_ids.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    let selected_call_ids = call_ids
+        .iter()
+        .map(AsRef::as_ref)
+        .collect::<BTreeSet<&str>>();
     if call_ids.is_empty()
         || selected_call_ids.len() != call_ids.len()
         || !selected_call_ids.is_subset(&known_call_ids)

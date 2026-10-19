@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::Duration;
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
@@ -160,12 +160,14 @@ impl BotStorage {
         ))
     }
 
-    pub(super) fn load_catalog(&self) -> Result<Option<String>> {
-        let connection = self
-            .connection
+    pub(super) fn lock(&self) -> Result<MutexGuard<'_, Connection>> {
+        self.connection
             .lock()
-            .map_err(|_| Error::Config("Bot storage lock is poisoned".into()))?;
-        read_catalog(&connection)
+            .map_err(|error| Error::Config(format!("Bot storage lock is poisoned: {error}")))
+    }
+
+    pub(super) fn load_catalog(&self) -> Result<Option<String>> {
+        read_catalog(&*self.lock()?)
     }
 
     pub(super) fn attach_telemetry_notify(
@@ -173,9 +175,13 @@ impl BotStorage {
         notify: &Arc<tokio::sync::Notify>,
         activity: &Arc<crate::host::WorkActivity>,
     ) {
-        let _ = self
+        if self
             .telemetry_notify
-            .set((Arc::downgrade(notify), Arc::downgrade(activity)));
+            .set((Arc::downgrade(notify), Arc::downgrade(activity)))
+            .is_err()
+        {
+            tracing::debug!("Bot telemetry notification is already attached");
+        }
     }
 
     /// The catalog with the stamp it was read at, unless nothing committed since `stamp`.
@@ -183,10 +189,7 @@ impl BotStorage {
         &self,
         stamp: Option<CatalogStamp>,
     ) -> Result<Option<(CatalogStamp, Option<String>)>> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| Error::Config("Bot storage lock is poisoned".into()))?;
+        let connection = self.lock()?;
         // data_version moves on commits by other connections, total_changes on our own.
         let current = CatalogStamp {
             data_version: connection
@@ -197,7 +200,9 @@ impl BotStorage {
         if stamp == Some(current) {
             return Ok(None);
         }
-        Ok(Some((current, read_catalog(&connection)?)))
+        let catalog = read_catalog(&connection)?;
+        drop(connection);
+        Ok(Some((current, catalog)))
     }
 
     pub(super) fn save_catalog(&self, state_json: &str) -> Result<()> {
@@ -268,10 +273,7 @@ impl BotStorage {
     }
 
     pub(super) fn command_run(&self, command_id: &str) -> Result<Option<RoutineRun>> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| Error::Config("Bot storage lock is poisoned".into()))?;
+        let connection = self.lock()?;
         let run_id = connection
             .query_row(
                 "SELECT run_id FROM routine_commands WHERE command_id = ?1",
@@ -279,12 +281,14 @@ impl BotStorage {
                 |row| row.get::<_, String>(0),
             )
             .optional()?;
-        run_id
+        let run = run_id
             .map(|id| {
                 query_run(&connection, &id)?
                     .ok_or_else(|| Error::Config("routine command receipt has no run".into()))
             })
-            .transpose()
+            .transpose();
+        drop(connection);
+        run
     }
 
     pub(super) fn insert_run_with_cause(
@@ -329,10 +333,7 @@ impl BotStorage {
     }
 
     pub(super) fn run_cancel_requested(&self, run_id: &str) -> Result<bool> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| Error::Config("Bot storage lock is poisoned".into()))?;
+        let connection = self.lock()?;
         Ok(connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM routine_stop_requests WHERE run_id=?1)",
             [run_id],
@@ -341,10 +342,7 @@ impl BotStorage {
     }
 
     pub(super) fn has_running(&self, routine_id: &str) -> Result<bool> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| Error::Config("Bot storage lock is poisoned".into()))?;
+        let connection = self.lock()?;
         connection
             .query_row(
                 "SELECT EXISTS (
@@ -358,10 +356,7 @@ impl BotStorage {
     }
 
     pub(super) fn running_routine_count(&self) -> Result<u64> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| Error::Config("Bot storage lock is poisoned".into()))?;
+        let connection = self.lock()?;
         connection
             .query_row(
                 "SELECT COUNT(*) FROM routine_runs WHERE status='running'",
@@ -370,15 +365,13 @@ impl BotStorage {
             )
             .map_err(Error::from)
             .and_then(|count| {
-                u64::try_from(count).map_err(|_| Error::Config("invalid routine count".into()))
+                u64::try_from(count)
+                    .map_err(|error| Error::Config(format!("invalid routine count: {error}")))
             })
     }
 
     pub(super) fn has_running_routines(&self) -> Result<bool> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| Error::Config("Bot storage lock is poisoned".into()))?;
+        let connection = self.lock()?;
         connection
             .query_row(
                 "SELECT EXISTS (SELECT 1 FROM routine_runs WHERE status = 'running')",
@@ -389,29 +382,27 @@ impl BotStorage {
     }
 
     pub(super) fn validate_run_owners(&self, bot_ids: &BTreeSet<&str>) -> Result<()> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| Error::Config("Bot storage lock is poisoned".into()))?;
+        let connection = self.lock()?;
         let mut statement = connection
             .prepare("SELECT DISTINCT bot_id FROM routine_runs")
             .map_err(Error::from)?;
         let owners = statement
             .query_map([], |row| row.get::<_, String>(0))
             .map_err(Error::from)?;
-        for bot_id in owners {
-            if !bot_ids.contains(bot_id?.as_str()) {
-                return Err(Error::Config("persisted routine run has no Bot".into()));
-            }
+        let first_failure = owners
+            .map(|bot_id| bot_id.map(|bot_id| bot_ids.contains(bot_id.as_str())))
+            .find(|owned| !matches!(owned, Ok(true)));
+        drop(statement);
+        drop(connection);
+        match first_failure {
+            None => Ok(()),
+            Some(Ok(_)) => Err(Error::Config("persisted routine run has no Bot".into())),
+            Some(Err(error)) => Err(error.into()),
         }
-        Ok(())
     }
 
     pub(super) fn history_routine_candidates(&self, prefix: &str) -> Result<Vec<String>> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| Error::Config("Bot storage lock is poisoned".into()))?;
+        let connection = self.lock()?;
         // Two distinct IDs suffice to reject an ambiguous prefix. Seek the index
         // and stop at the first nonmatch rather than scanning unrelated history.
         let mut statement = connection.prepare(
@@ -431,6 +422,9 @@ impl BotStorage {
                 break;
             }
         }
+        drop(rows);
+        drop(statement);
+        drop(connection);
         Ok(ids)
     }
 
@@ -439,7 +433,7 @@ impl BotStorage {
         id: &str,
         status: RoutineRunStatus,
         finished_at: i64,
-        message: Option<String>,
+        message: Option<Arc<str>>,
     ) -> Result<RoutineRun> {
         self.transaction(|transaction| {
             let mut run = query_run(transaction, id)?
@@ -467,10 +461,7 @@ impl BotStorage {
     }
 
     pub(super) fn history(&self, routine_id: Option<&str>) -> Result<Vec<RoutineRun>> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| Error::Config("Bot storage lock is poisoned".into()))?;
+        let connection = self.lock()?;
         let sql = match routine_id {
             Some(_) => {
                 "SELECT id, routine_id, bot_id, started_at, finished_at, status,
@@ -487,39 +478,39 @@ impl BotStorage {
             }
         };
         let mut statement = connection.prepare(sql)?;
-        statement
+        let runs = statement
             .query_map(rusqlite::params_from_iter(routine_id), run_from_row)?
             .map(|run| {
                 let run = run?;
                 validate_run(&run)?;
                 Ok(run)
             })
-            .collect()
+            .collect();
+        drop(statement);
+        drop(connection);
+        runs
     }
 
     pub(super) fn session_ids_for_routine(&self, routine_id: &str) -> Result<Vec<String>> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| Error::Config("Bot storage lock is poisoned".into()))?;
+        let connection = self.lock()?;
         let mut statement = connection
             .prepare(
                 "SELECT session_id FROM routine_runs
                  WHERE routine_id = ?1 AND session_id IS NOT NULL",
             )
             .map_err(Error::from)?;
-        statement
+        let session_ids = statement
             .query_map([routine_id], |row| row.get::<_, String>(0))
             .map_err(Error::from)?
             .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(Error::from)
+            .map_err(Error::from);
+        drop(statement);
+        drop(connection);
+        session_ids
     }
 
     pub(super) fn run(&self, id: &str) -> Result<RoutineRun> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| Error::Config("Bot storage lock is poisoned".into()))?;
+        let connection = self.lock()?;
         query_run(&connection, id)?
             .ok_or_else(|| Error::Config(format!("unknown routine run `{id}`")))
             .and_then(|run| validate_run(&run).map(|()| run))
@@ -545,16 +536,14 @@ impl BotStorage {
         &self,
         operation: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
-        let mut connection = self
-            .connection
-            .lock()
-            .map_err(|_| Error::Config("Bot storage lock is poisoned".into()))?;
+        let mut connection = self.lock()?;
         protect_database_files(&self.path)?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(Error::from)?;
         let result = operation(&transaction)?;
         transaction.commit().map_err(Error::from)?;
+        drop(connection);
         if let Some((notify, activity)) = self.telemetry_notify.get() {
             if let Some(activity) = activity.upgrade() {
                 activity.wake();
@@ -578,11 +567,13 @@ fn read_catalog(connection: &Connection) -> Result<Option<String>> {
     connection
         .query_row("SELECT state_json FROM catalog WHERE id = 1", [], |row| {
             let catalog = row.get_ref(0)?.as_str()?;
-            Ok(if catalog.len() > super::MAX_STATE_BYTES as usize {
-                Err(Error::Config("Bot state is too large".into()))
-            } else {
-                Ok(catalog.to_owned())
-            })
+            Ok(
+                if u64::try_from(catalog.len()).unwrap_or(u64::MAX) > super::MAX_STATE_BYTES {
+                    Err(Error::Config("Bot state is too large".into()))
+                } else {
+                    Ok(catalog.to_owned())
+                },
+            )
         })
         .optional()?
         .transpose()
@@ -737,9 +728,9 @@ mod tests {
 
     fn completed_run() -> RoutineRun {
         RoutineRun {
-            id: uuid::Uuid::new_v4().to_string(),
-            routine_id: uuid::Uuid::new_v4().to_string(),
-            bot_id: uuid::Uuid::new_v4().to_string(),
+            id: uuid::Uuid::new_v4().to_string().into(),
+            routine_id: uuid::Uuid::new_v4().to_string().into(),
+            bot_id: uuid::Uuid::new_v4().to_string().into(),
             started_at: 1,
             finished_at: Some(1),
             status: RoutineRunStatus::Succeeded,

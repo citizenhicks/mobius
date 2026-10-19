@@ -41,6 +41,7 @@ use crate::protocol::TokenUsage;
 use crate::protocol::WarningEvent;
 
 mod approval;
+mod context_estimate;
 mod input;
 mod recorder;
 mod startup;
@@ -78,9 +79,9 @@ pub enum AgentRole {
     /// Selects the subagent case.
     Subagent {
         /// The parent session identifier.
-        parent_session_id: String,
+        parent_session_id: Arc<str>,
         /// The parent turn identifier.
-        parent_turn_id: String,
+        parent_turn_id: Arc<str>,
     },
 }
 
@@ -88,12 +89,12 @@ pub enum AgentRole {
 #[derive(Clone)]
 pub struct AgentConfig {
     model: Arc<ModelRouter>,
-    provider: String,
+    provider: Arc<str>,
     sandbox: Arc<Sandbox>,
     checkpoints: Arc<dyn CheckpointStore>,
-    middleware: MiddlewareStack,
+    middleware: Arc<MiddlewareStack>,
     system_prompt: Arc<str>,
-    session_id: String,
+    session_id: Arc<str>,
     context_window: i64,
     default_context_window: i64,
     session_context: Arc<SessionContext>,
@@ -109,6 +110,37 @@ pub struct AgentConfig {
     children: Option<ChildAgents>,
 }
 
+impl std::fmt::Debug for AgentConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AgentConfig")
+            .field("provider", &self.provider)
+            .field("session_id", &self.session_id)
+            .field("context_window", &self.context_window)
+            .field("role", &self.role)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for Agent {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Agent")
+            .field("session", &self.session)
+            .field("model", &self.model)
+            .field("tool_count", &self.tool_count)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for AgentEvents {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AgentEvents")
+            .finish_non_exhaustive()
+    }
+}
+
 impl AgentConfig {
     /// Creates a complete agent configuration.
     pub fn new(
@@ -118,14 +150,14 @@ impl AgentConfig {
         middleware: MiddlewareStack,
         system_prompt: impl Into<String>,
     ) -> Self {
-        let provider = model.default_provider().to_string();
-        let session_id = Uuid::new_v4().to_string();
+        let provider = model.default_provider().into();
+        let session_id = Uuid::new_v4().to_string().into();
         Self {
             model,
             provider,
             sandbox,
             checkpoints,
-            middleware,
+            middleware: Arc::new(middleware),
             system_prompt: system_prompt.into().into(),
             session_id,
             context_window: 272_000,
@@ -155,7 +187,7 @@ impl AgentConfig {
 
     /// Sets a stable ID used to resume a checkpointed session.
     #[must_use]
-    pub fn session_id(mut self, session_id: impl Into<String>) -> Self {
+    pub fn session_id(mut self, session_id: impl Into<Arc<str>>) -> Self {
         self.session_id = session_id.into();
         self
     }
@@ -170,7 +202,7 @@ impl AgentConfig {
     /// Replaces the effective middleware stack for this runtime.
     #[must_use]
     pub fn middleware(mut self, middleware: MiddlewareStack) -> Self {
-        self.middleware = middleware;
+        self.middleware = Arc::new(middleware);
         self
     }
 
@@ -267,9 +299,9 @@ impl AgentConfig {
         let default_window = self.default_context_window;
         let choice = self.select_model_with_reasoning(route, None)?;
         Ok(ModelChangedEvent {
-            route: choice.route.clone(),
-            model: choice.model.clone(),
-            reasoning_effort: choice.reasoning_effort.clone(),
+            route: Arc::clone(&choice.route),
+            model: Arc::clone(&choice.model),
+            reasoning_effort: choice.reasoning_effort.as_ref().map(Arc::clone),
             model_context_window: Some(choice.context_window.unwrap_or(default_window)),
         })
     }
@@ -280,7 +312,7 @@ impl AgentConfig {
         reasoning_effort: Option<&str>,
     ) -> Result<&ModelChoice> {
         let choice = self.model.resolve_choice(route, reasoning_effort)?;
-        self.provider.clone_from(&choice.route);
+        self.provider = Arc::clone(&choice.route);
         self.context_window = choice.context_window.unwrap_or(self.default_context_window);
         Ok(choice)
     }
@@ -288,12 +320,12 @@ impl AgentConfig {
     fn child_configuration(&self) -> Self {
         Self {
             model: Arc::clone(&self.model),
-            provider: String::new(),
+            provider: Arc::default(),
             sandbox: Arc::clone(&self.sandbox),
             checkpoints: Arc::clone(&self.checkpoints),
-            middleware: self.middleware.for_child_agents(),
+            middleware: Arc::new(self.middleware.for_child_agents()),
             system_prompt: Arc::clone(&self.system_prompt),
-            session_id: String::new(),
+            session_id: Arc::default(),
             context_window: self.context_window,
             default_context_window: self.default_context_window,
             session_context: Arc::clone(&self.session_context),
@@ -325,6 +357,14 @@ pub struct AgentSender {
     ingress: Arc<SubmissionIngress>,
 }
 
+impl std::fmt::Debug for AgentSender {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AgentSender")
+            .finish_non_exhaustive()
+    }
+}
+
 /// Durable outcome of admitting a message to its session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageAcceptance {
@@ -347,9 +387,9 @@ impl MessageAdmission {
     ///
     /// Returns an error when admission fails or the runtime stops before acknowledging it.
     pub async fn wait(self) -> Result<MessageAcceptance> {
-        self.receiver
-            .await
-            .map_err(|_| Error::Stopped("agent stopped before message admission".into()))?
+        self.receiver.await.map_err(|error| {
+            Error::Stopped(format!("agent stopped before message admission: {error}"))
+        })?
     }
 }
 
@@ -359,6 +399,15 @@ type AdmissionReply = oneshot::Sender<Result<MessageAcceptance>>;
 #[derive(Clone)]
 pub struct WeakAgentSender {
     ingress: Weak<SubmissionIngress>,
+}
+
+impl std::fmt::Debug for WeakAgentSender {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("WeakAgentSender")
+            .field("live", &(self.ingress.strong_count() > 0))
+            .finish_non_exhaustive()
+    }
 }
 
 /// A submission checked at ingress and kept immutable until it reaches the agent.
@@ -444,11 +493,10 @@ impl AgentSender {
         admission: Option<AdmissionReply>,
     ) -> Result<()> {
         let submission = submission.0;
-        let mut last_sequence = self
-            .ingress
-            .last_sequence
-            .lock()
-            .map_err(|_| Error::Stopped("agent submission queue poisoned".into()))?;
+        let mut last_sequence =
+            self.ingress.last_sequence.lock().map_err(|error| {
+                Error::Stopped(format!("agent submission queue poisoned: {error}"))
+            })?;
         let sequence = last_sequence
             .checked_add(1)
             .ok_or_else(|| Error::Busy("agent submission sequence exhausted".into()))?;
@@ -468,6 +516,7 @@ impl AgentSender {
                 }
             })?;
         *last_sequence = sequence;
+        drop(last_sequence);
         Ok(())
     }
 
@@ -475,9 +524,12 @@ impl AgentSender {
     /// # Errors
     ///
     /// Returns an error if validation or an operation required by this function fails.
-    pub fn submit(&self, op: Op) -> Result<String> {
-        let id = Uuid::new_v4().to_string();
-        self.send(Submission { id: id.clone(), op })?;
+    pub fn submit(&self, op: Op) -> Result<Arc<str>> {
+        let id: Arc<str> = Uuid::new_v4().to_string().into();
+        self.send(Submission {
+            id: Arc::clone(&id),
+            op,
+        })?;
         Ok(id)
     }
 }
@@ -528,7 +580,7 @@ impl SubmissionInbox {
         self.last_sent_sequence
             .lock()
             .map(|sequence| *sequence)
-            .map_err(|_| Error::Stopped("agent submission queue poisoned".into()))
+            .map_err(|error| Error::Stopped(format!("agent submission queue poisoned: {error}")))
     }
 }
 
@@ -539,6 +591,15 @@ impl SubmissionInbox {
 #[derive(Clone, Default)]
 pub struct ChildAgents(Weak<AgentConfig>);
 
+impl std::fmt::Debug for ChildAgents {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ChildAgents")
+            .field("live", &(self.0.strong_count() > 0))
+            .finish_non_exhaustive()
+    }
+}
+
 impl ChildAgents {
     /// Creates and starts one child agent with isolated execution.
     /// # Errors
@@ -546,7 +607,7 @@ impl ChildAgents {
     /// Returns an error if the root agent stopped or the child cannot start.
     pub async fn create(
         &self,
-        session_id: String,
+        session_id: Arc<str>,
         metadata: BTreeMap<String, Value>,
         role: AgentRole,
         model: &str,
@@ -563,8 +624,8 @@ impl ChildAgents {
             .metadata(metadata)
             .role(role)
             .model_route(model, reasoning_effort)?;
+        config.children = Some(Self(Arc::downgrade(&root)));
         drop(root);
-        config.children = Some(Self(Weak::clone(&self.0)));
         create_agent(config).await
     }
 }
@@ -650,7 +711,7 @@ pub struct Agent {
     model_router: Arc<ModelRouter>,
     frontend: FrontendExtensions,
     frontend_sink: crate::middleware::FrontendEventSink,
-    session: SessionConfiguredEvent,
+    session: Arc<SessionConfiguredEvent>,
     model: ModelInfo,
     tool_count: usize,
     next_before_sequence: Option<u64>,
@@ -660,7 +721,9 @@ impl Agent {
     /// Returns a cloneable command sender.
     #[must_use]
     pub fn sender(&self) -> AgentSender {
-        self.sender.clone()
+        AgentSender {
+            ingress: Arc::clone(&self.sender.ingress),
+        }
     }
 
     /// Returns the immutable provider router owned by this runtime.
@@ -741,7 +804,7 @@ impl Agent {
     ) -> (
         AgentSender,
         mpsc::Receiver<JournalEvent>,
-        SessionConfiguredEvent,
+        Arc<SessionConfiguredEvent>,
         FrontendExtensions,
     ) {
         (self.sender, self.events, self.session, self.frontend)
@@ -772,11 +835,15 @@ struct Runner {
     config: AgentConfig,
     runtime: Arc<RuntimeContext>,
     system_prompt: Arc<str>,
+    /// The system prompt's parts, estimated once when it is assembled.
+    prompt_estimate: context_estimate::ContextEstimate,
+    /// The last model request's parts, scaled once its usage arrives.
+    context_estimate: Option<context_estimate::ContextEstimate>,
     catalog: Arc<Catalog>,
     state: LiveCheckpoint,
     transcript_delta: Vec<Arc<Value>>,
     pending_session_start_stop: Option<String>,
-    turn_end_turn_id: Option<String>,
+    turn_end_turn_id: Option<Arc<str>>,
     events: EventRecorder,
 }
 
@@ -800,16 +867,16 @@ impl LiveCheckpoint {
 impl Runner {
     async fn run(&mut self, mut inbox: SubmissionInbox) -> Result<()> {
         self.stop_resumed_turn_at_session_start().await?;
-        if let Some(pending) = self.state.pending_approval.clone() {
-            let submission_id = pending.submission_id.clone();
-            if let Err(error) = self.resume_pending(&mut inbox, pending).await {
-                self.fail_turn(&submission_id, error).await?;
+        let pending = self.state.pending_approval.clone(); // rules-allow: the checkpoint keeps the approval until it resolves
+        if let Some(mut pending) = pending {
+            if let Err(error) = self.resume_pending(&mut inbox, &mut pending).await {
+                self.fail_turn(&pending.submission_id, error).await?;
             }
         } else if let Some(active) = self.state.active_execution.as_ref() {
-            let submission_id = active.submission_id.clone();
-            let turn_id = active.turn_id.clone();
+            let submission_id = Arc::clone(&active.submission_id);
+            let turn_id = Arc::clone(&active.turn_id);
             if let Err(error) = self
-                .continue_turn(&mut inbox, submission_id.clone(), turn_id)
+                .continue_turn(&mut inbox, &submission_id, &turn_id)
                 .await
             {
                 self.fail_turn(&submission_id, error).await?;
@@ -821,7 +888,7 @@ impl Runner {
                 .middleware
                 .next_turn(&mut self.state.make_mut().pending_messages)?
             {
-                let submission_id = message.submission_id.clone();
+                let submission_id = Arc::clone(&message.submission_id);
                 if let Err(error) = self.start_message_turn(&mut inbox, message).await {
                     self.fail_turn(&submission_id, error).await?;
                 }
@@ -887,26 +954,26 @@ impl Runner {
         }
     }
 
-    async fn set_model(&mut self, submission_id: String, route: String) -> Result<()> {
+    async fn set_model(&mut self, submission_id: Arc<str>, route: String) -> Result<()> {
         let choice = match self.config.select_model(&route) {
             Ok(choice) => choice,
             Err(error) => {
                 self.emit(
                     submission_id,
                     EventMsg::Warning(WarningEvent {
-                        message: error.to_string(),
+                        message: error.to_string().into(),
                     }),
                 )
                 .await?;
                 return Ok(());
             }
         };
-        let active_route = choice.route.clone();
-        let active_model = choice.model.clone();
-        self.state.make_mut().model_route = Some(choice.route.clone());
+        let active_route = Arc::clone(&choice.route);
+        let active_model = Arc::clone(&choice.model);
+        self.state.make_mut().model_route = Some(Arc::clone(&choice.route));
         self.persist_with_events(
             vec![Event {
-                submission_id: Some(submission_id.into()),
+                submission_id: Some(submission_id),
                 msg: EventMsg::ModelChanged(choice),
             }],
             None,
@@ -918,7 +985,7 @@ impl Runner {
         Ok(())
     }
 
-    async fn request_resume(&self, submission_id: String, session_id: String) -> Result<()> {
+    async fn request_resume(&self, submission_id: Arc<str>, session_id: Arc<str>) -> Result<()> {
         let result = async {
             if session_id.trim().is_empty() {
                 return Err(Error::Config("session ID cannot be empty".into()));
@@ -929,7 +996,7 @@ impl Runner {
                 .load(&session_id)
                 .await?
                 .ok_or_else(|| Error::Unknown(format!("session `{session_id}`")))?;
-            if checkpoint.version != CHECKPOINT_VERSION || checkpoint.session_id != session_id {
+            if checkpoint.version != CHECKPOINT_VERSION || *checkpoint.session_id != *session_id {
                 return Err(Error::Checkpoint(
                     "checkpoint does not match the requested session".into(),
                 ));
@@ -948,7 +1015,7 @@ impl Runner {
             Err(error) => self.emit(
                 submission_id,
                 EventMsg::Warning(WarningEvent {
-                    message: error.to_string(),
+                    message: error.to_string().into(),
                 }),
             ),
         }
@@ -956,10 +1023,10 @@ impl Runner {
     }
 
     async fn capability_command(
-        &mut self,
-        submission_id: String,
-        capability: String,
-        command: String,
+        &self,
+        submission_id: Arc<str>,
+        capability: Arc<str>,
+        command: Arc<str>,
         arguments: String,
         input: Option<String>,
         target: Option<crate::protocol::MessageTarget>,
@@ -985,7 +1052,7 @@ impl Runner {
         match output {
             Ok(events) => {
                 for event in events {
-                    self.emit(submission_id.as_str(), EventMsg::Frontend(event))
+                    self.emit(Arc::clone(&submission_id), EventMsg::Frontend(event))
                         .await?;
                 }
             }
@@ -993,10 +1060,10 @@ impl Runner {
                 self.emit(
                     submission_id,
                     EventMsg::Warning(WarningEvent {
-                        message: error.to_string(),
+                        message: error.to_string().into(),
                     }),
                 )
-                .await?
+                .await?;
             }
         }
         Ok(())
@@ -1006,14 +1073,14 @@ impl Runner {
         self.persist(None).await
     }
 
-    async fn persist(&mut self, execution: Option<&ExecutionRecord>) -> Result<u64> {
+    async fn persist(&mut self, execution: Option<ExecutionRecord>) -> Result<u64> {
         self.persist_with_events(Vec::new(), execution).await
     }
 
     pub(super) async fn persist_with_events(
         &mut self,
         events: Vec<Event>,
-        execution: Option<&ExecutionRecord>,
+        execution: Option<ExecutionRecord>,
     ) -> Result<u64> {
         let previous_sequence = self.state.sequence;
         self.state.make_mut().sequence = self
@@ -1055,7 +1122,7 @@ impl Runner {
     async fn record_usage(&mut self, route: &str, usage: &TokenUsage) -> Result<()> {
         let state = self.state.make_mut();
         // Stage usage totals so overflow or observer failure leaves durable counters unchanged.
-        let mut total_usage = state.total_usage.clone();
+        let mut total_usage = state.total_usage;
         total_usage.checked_add(usage).ok_or_else(|| {
             Error::Provider("provider token usage exceeds the supported range".into())
         })?;
@@ -1063,7 +1130,7 @@ impl Runner {
             Error::Checkpoint("usage recorded without an active execution".into())
         })?;
         // Stage execution usage alongside totals before committing either counter.
-        let mut execution_usage = active.usage.clone();
+        let mut execution_usage = active.usage;
         execution_usage.checked_add(usage).ok_or_else(|| {
             Error::Provider("provider token usage exceeds the supported range".into())
         })?;
@@ -1109,10 +1176,10 @@ impl Runner {
         events: Vec<Event>,
     ) -> Result<u64> {
         // Restore the active execution if its completed record cannot be persisted.
-        let active_execution = self.state.active_execution.clone();
-        let execution_stats = self.state.execution_stats.clone();
+        let active_execution = self.state.active_execution.clone(); // rules-allow: restored if the completed record cannot be persisted
+        let execution_stats = self.state.execution_stats;
         let execution = self.finish_execution(outcome)?;
-        match self.persist_with_events(events, Some(&execution)).await {
+        match self.persist_with_events(events, Some(execution)).await {
             Ok(sequence) => Ok(sequence),
             Err(error) => {
                 self.state.make_mut().active_execution = active_execution;
@@ -1139,11 +1206,11 @@ impl Runner {
         }
     }
 
-    async fn emit(&self, submission_id: impl Into<Arc<str>>, msg: EventMsg) -> Result<()> {
+    async fn emit(&self, submission_id: Arc<str>, msg: EventMsg) -> Result<()> {
         send_event(
             &self.events,
             Event {
-                submission_id: Some(submission_id.into()),
+                submission_id: Some(submission_id),
                 msg,
             },
         )
@@ -1154,9 +1221,12 @@ impl Runner {
 fn unix_timestamp_ms() -> Result<i64> {
     let elapsed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|_| Error::Checkpoint("system clock predates the Unix epoch".into()))?;
-    i64::try_from(elapsed.as_millis())
-        .map_err(|_| Error::Checkpoint("system clock exceeds the supported range".into()))
+        .map_err(|error| {
+            Error::Checkpoint(format!("system clock predates the Unix epoch: {error}"))
+        })?;
+    i64::try_from(elapsed.as_millis()).map_err(|error| {
+        Error::Checkpoint(format!("system clock exceeds the supported range: {error}"))
+    })
 }
 
 async fn send_event(events: &EventRecorder, event: Event) -> Result<()> {

@@ -57,7 +57,7 @@ fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn super::Model>> 
     .with_tool_discovery(tool_discovery)
     .with_service_tier(config.service_tier)
     .with_codex_realtime_voice(base_url, provider().uses_default_endpoint(Some(base_url)))?
-    .with_image_api(Some(&super::image_generation::IMAGE_APIS["codex"]));
+    .with_image_api(Some(super::image_generation::image_api("codex")?));
     let provider = match config.reasoning_effort {
         Some(effort) => provider.with_reasoning_effort(effort)?,
         None => provider,

@@ -19,10 +19,10 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     match cli.frontend_command()? {
         Some(FrontendCommand::Init(state_dir)) => initialize_cloudflare(state_dir).await?,
         Some(FrontendCommand::Dashboard(state_dir)) => {
-            mobius_cli::frontend::run_gateway_dashboard(state_dir).await?
+            mobius_cli::frontend::run_gateway_dashboard(state_dir).await?;
         }
         Some(FrontendCommand::Provider(state_dir)) => {
-            mobius_cli::frontend::run_gateway_provider(state_dir).await?
+            mobius_cli::frontend::run_gateway_provider(state_dir).await?;
         }
         None => mobius_gateway::command::run_cli(cli, save_local_client, load_local_client).await?,
     }
@@ -37,15 +37,15 @@ async fn initialize_cloudflare(state_dir: PathBuf) -> mobius_gateway::Result<()>
         if !mobius_cli::frontend::confirm_gateway_reinitialize(&state_dir).await? {
             return Ok(());
         }
-        mobius_gateway::command::reset_gateway_state(state_dir.clone())?;
+        mobius_gateway::command::reset_gateway_state(state_dir.clone())?; // rules-allow: the gateway API takes an owned PathBuf and state_dir is still needed to connect
     }
     match setup {
         mobius_cli::frontend::CloudflareInit::Quick => {
-            mobius_gateway::command::initialize_quick_cloudflare(state_dir.clone())?;
+            mobius_gateway::command::initialize_quick_cloudflare(state_dir.clone())?; // rules-allow: the gateway API takes an owned PathBuf and state_dir is still needed to connect
         }
         mobius_cli::frontend::CloudflareInit::Named { hostname, token } => {
             mobius_gateway::command::initialize_named_cloudflare(
-                state_dir.clone(),
+                state_dir.clone(), // rules-allow: the gateway API takes an owned PathBuf and state_dir is still needed to connect
                 hostname,
                 token,
             )?;

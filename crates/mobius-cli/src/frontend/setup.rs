@@ -45,7 +45,7 @@ pub(crate) async fn run(
     sender: &GatewaySender,
     events: &mut GatewayEvents,
     gateway: &mut ReadyPayload,
-    session: &mut SessionReadyPayload,
+    session: &SessionReadyPayload,
 ) -> Result<()> {
     run_bot(
         terminal,
@@ -72,13 +72,13 @@ pub(in crate::frontend) async fn run_bot(
     let bot = gateway
         .bots
         .iter()
-        .find(|bot| bot.id == bot_id)
+        .find(|bot| *bot.id == *bot_id)
         .ok_or_else(|| Error::Config("the selected Bot is not in the gateway catalog".into()))?;
     let mut state = SetupState::new(
         mode,
         preferred_provider,
         gateway,
-        bot.config.config.clone(),
+        bot.config.config.clone(), // rules-allow: setup edits a snapshot while events update the gateway payload
         false,
     )?;
     terminal.clear()?;
@@ -104,7 +104,7 @@ pub(crate) async fn run_gateway(
     let original = gateway
         .bot_defaults
         .as_ref()
-        .map(|default| default.config.clone())
+        .map(|default| default.config.clone()) // rules-allow: setup edits a snapshot while events update the gateway payload
         .unwrap_or_default();
     if mode == SetupMode::Bot && gateway.bot_defaults.is_none() {
         return Err(Error::Config(
@@ -142,7 +142,7 @@ pub async fn run_gateway_login(
         gateway
             .bot_defaults
             .as_ref()
-            .map(|defaults| defaults.config.clone())
+            .map(|defaults| defaults.config.clone()) // rules-allow: setup edits a snapshot while events update the gateway payload
             .unwrap_or_default(),
         true,
     )?;

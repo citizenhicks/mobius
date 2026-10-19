@@ -1,46 +1,40 @@
 use super::*;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct NamedTool {
-    name: String,
-    description: String,
+    definition: Arc<ToolDefinition>,
     exposure: ToolExposure,
-    definitions: AtomicUsize,
 }
 
 impl NamedTool {
     fn new(name: &str, description: &str, exposure: ToolExposure) -> Self {
         Self {
-            name: name.into(),
-            description: description.into(),
+            definition: Arc::new(ToolDefinition {
+                name: name.into(),
+                description: description.into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "additionalProperties": false
+                }),
+            }),
             exposure,
-            definitions: AtomicUsize::new(0),
         }
     }
 }
 
 impl Tool for NamedTool {
-    fn definition(&self) -> ToolDefinition {
-        self.definitions.fetch_add(1, Ordering::Relaxed);
-        ToolDefinition {
-            name: self.name.clone(),
-            description: self.description.clone(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "additionalProperties": false
-            }),
-        }
+    fn definition(&self) -> &Arc<ToolDefinition> {
+        &self.definition
     }
 
     fn exposure(&self) -> ToolExposure {
         self.exposure
     }
 
-    fn call<'a>(
-        &'a self,
+    fn call(
+        &self,
         _context: ToolContext,
         _arguments: Value,
-    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
+    ) -> BoxFuture<'_, Result<crate::protocol::ToolResponse>> {
         Box::pin(async { Ok("executed".into()) })
     }
 }
@@ -59,7 +53,7 @@ fn finalize(catalog: &mut Catalog) {
 
 fn function_call(name: &str) -> ToolCall {
     ToolCall {
-        call_id: format!("call-{name}"),
+        call_id: format!("call-{name}").into(),
         name: name.into(),
         arguments: serde_json::json!({}),
     }
@@ -102,11 +96,11 @@ fn deferred_search_is_relevant_scoped_and_bounded() {
                 .search_deferred(
                     " NOTEBOOK ",
                     &BTreeSet::from([
-                        "notebook".to_string(),
-                        "notebook_post".to_string(),
-                        "board".to_string(),
-                        "direct_notebook".to_string(),
-                        "hidden_notebook".to_string(),
+                        "notebook".to_owned(),
+                        "notebook_post".to_owned(),
+                        "board".to_owned(),
+                        "direct_notebook".to_owned(),
+                        "hidden_notebook".to_owned(),
                     ]),
                 )
                 .expect("search"),
@@ -116,7 +110,7 @@ fn deferred_search_is_relevant_scoped_and_bounded() {
     assert_eq!(
         names(
             &catalog
-                .search_deferred("notebook", &BTreeSet::from(["board".to_string()]))
+                .search_deferred("notebook", &BTreeSet::from(["board".to_owned()]))
                 .expect("scoped search"),
         ),
         ["board"]
@@ -187,7 +181,7 @@ fn binding_enforces_current_exposure_and_step_materialization() {
             .bind_call(
                 function_call("deferred"),
                 &BTreeSet::new(),
-                &BTreeSet::from(["deferred".to_string()]),
+                &BTreeSet::from(["deferred".to_owned()]),
             )
             .expect_err("unmaterialized deferred call")
             .to_string(),
@@ -196,15 +190,15 @@ fn binding_enforces_current_exposure_and_step_materialization() {
     catalog
         .bind_call(
             function_call("deferred"),
-            &BTreeSet::from(["deferred".to_string()]),
-            &BTreeSet::from(["deferred".to_string()]),
+            &BTreeSet::from(["deferred".to_owned()]),
+            &BTreeSet::from(["deferred".to_owned()]),
         )
         .expect("materialized deferred call");
     assert_eq!(
         catalog
             .bind_call(
                 function_call("deferred"),
-                &BTreeSet::from(["deferred".to_string()]),
+                &BTreeSet::from(["deferred".to_owned()]),
                 &BTreeSet::new(),
             )
             .expect_err("inactive deferred call")
@@ -215,8 +209,8 @@ fn binding_enforces_current_exposure_and_step_materialization() {
         catalog
             .bind_call(
                 function_call("hidden"),
-                &BTreeSet::from(["hidden".to_string()]),
-                &BTreeSet::from(["hidden".to_string()]),
+                &BTreeSet::from(["hidden".to_owned()]),
+                &BTreeSet::from(["hidden".to_owned()]),
             )
             .expect_err("hidden call")
             .to_string(),
@@ -258,8 +252,8 @@ async fn dispatch_rechecks_exposure_in_the_current_catalog() {
     let bound = visible
         .bind_call(
             function_call("changing"),
-            &BTreeSet::from(["changing".to_string()]),
-            &BTreeSet::from(["changing".to_string()]),
+            &BTreeSet::from(["changing".to_owned()]),
+            &BTreeSet::from(["changing".to_owned()]),
         )
         .expect("bind visible call");
 
@@ -278,9 +272,9 @@ async fn dispatch_rechecks_exposure_in_the_current_catalog() {
         [bound],
         test_sandbox(),
         &test_permissions(&[]),
-        "turn",
-        "test",
-        &crate::protocol::MessageAuthor::User,
+        &"turn".into(),
+        &"test".into(),
+        &crate::protocol::MessageAuthor::User.into(),
     )
     .await
     .pop()

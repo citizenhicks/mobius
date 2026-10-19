@@ -211,7 +211,7 @@ fn inline_search_materializes_only_deferred_tools_it_calls() {
 
     assert_eq!(
         output.materialized_tools(),
-        &std::collections::BTreeSet::from(["notebook_post".to_string()])
+        &std::collections::BTreeSet::from(["notebook_post".to_owned()])
     );
 }
 
@@ -416,6 +416,7 @@ impl OpenAiAuthorization for HttpRefreshingAuthorization {
         let mut token = self.token.lock().expect("token lock");
         if token.as_str() == rejected_token {
             *token = "fresh-token".into();
+            drop(token);
             self.refreshes
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
@@ -485,7 +486,7 @@ async fn http_unauthorized_refreshes_and_retries_once() {
 
     let auth = Arc::new(HttpRefreshingAuthorization::new());
     let mut provider = OpenAi::with_authorization(
-        auth.clone(),
+        Arc::<HttpRefreshingAuthorization>::clone(&auth),
         format!("http://{address}"),
         "test-model",
         reqwest::Client::new(),
@@ -606,4 +607,25 @@ async fn eof_without_response_completed_is_a_retryable_interruption() {
         .expect_err("missing completion");
     assert!(matches!(error, Error::Provider(error) if error.is_stream_interrupted()));
     server.await.expect("HTTP server");
+}
+
+#[test]
+fn a_tool_loaded_twice_is_sent_once() {
+    let load = || {
+        crate::protocol::ToolLoad {
+            catalog_revision: "catalog-1".into(),
+            tools: vec!["show_ui".into()],
+        }
+        .to_input()
+    };
+    let tool = Arc::new(ToolDefinition {
+        name: "show_ui".into(),
+        description: "test tool".into(),
+        parameters: serde_json::json!({"type": "object"}),
+    });
+    let input = vec![load(), load()];
+    let wire = wire_input_with_cache((&input).into(), true, false, "catalog-1", &[tool])
+        .expect("wire input");
+    assert_eq!(wire.len(), 1, "{wire:?}");
+    assert_eq!(wire[0]["type"], "additional_tools");
 }

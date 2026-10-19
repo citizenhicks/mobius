@@ -1,4 +1,11 @@
-use super::*;
+use super::{
+    Arc, CheckpointStore, Error, Event, EventMsg, EventPageRequest, FrontendEvent,
+    FrontendExtensions, FrontendPreviewEvent, JournalDelivery, JournalEvent, JournalSequence,
+    LoadedReplay, MAX_REPLAY_BYTES, REPLAY_CAPACITY, REPLAY_LOAD_PAGE_SIZE, RecordedEvent,
+    Rejection, RenderedBlock, RenderedEvent, RenderedPreview, Result, ServerFrame, ServerMessage,
+    SessionHistoryPage, SessionWidgets, SharedFrame, VecDeque, broadcast, event_turn_page,
+    internal,
+};
 
 #[derive(Clone)]
 pub(super) struct ReplayEntry {
@@ -103,13 +110,13 @@ pub(super) async fn load_replay(
 }
 
 /// Renders journal events into the blocks a frontend shows.
-pub(super) trait RenderEvents {
+pub(super) trait RenderEvents: Sync {
     fn render(&self, event: &EventMsg) -> Vec<RenderedBlock>;
 }
 
 impl RenderEvents for FrontendExtensions {
     fn render(&self, event: &EventMsg) -> Vec<RenderedBlock> {
-        FrontendExtensions::render(self, event)
+        Self::render(self, event)
     }
 }
 
@@ -144,10 +151,8 @@ pub(super) async fn durable_history_page(
     })
 }
 
-pub(super) fn render_preview(
-    frontend: &impl RenderEvents,
-    event: &EventMsg,
-) -> Option<RenderedPreview> {
+/// Renders the preview and moves its nested events out of the journal event.
+fn take_preview(frontend: &impl RenderEvents, event: &mut EventMsg) -> Option<RenderedPreview> {
     let EventMsg::Frontend(FrontendEvent::Preview {
         symbol,
         duration_ms,
@@ -163,16 +168,25 @@ pub(super) fn render_preview(
     else {
         return None;
     };
+    let mut flattened = Vec::new();
+    for event in std::mem::take(events) {
+        flatten_preview_event(
+            event.event,
+            event.submission_id.as_ref(),
+            event.recorded_at_ms,
+            &mut flattened,
+        );
+    }
     Some(RenderedPreview {
-        symbol: symbol.clone(),
+        symbol: symbol.clone(), // rules-allow: the journal event keeps its preview fields
         duration_ms: *duration_ms,
         started_at_ms: *started_at_ms,
-        id: id.clone(),
-        title: title.clone(),
-        subtitle: subtitle.clone(),
-        page_id: page_id.clone(),
+        id: Arc::clone(id),
+        title: Arc::clone(title),
+        subtitle: Arc::clone(subtitle),
+        page_id: Arc::clone(page_id),
         update: *update,
-        events: flatten_preview(events)
+        events: flattened
             .into_iter()
             .map(|event| RenderedEvent {
                 submission_id: event.submission_id,
@@ -181,7 +195,7 @@ pub(super) fn render_preview(
                 event: event.event,
             })
             .collect(),
-        next: next.clone(),
+        next: next.clone(), // rules-allow: the journal event keeps its preview fields
     })
 }
 
@@ -189,10 +203,8 @@ pub(super) fn project_record(
     frontend: &impl RenderEvents,
     mut journal: JournalEvent,
 ) -> RecordedEvent {
-    let (blocks, preview) = project_event(frontend, &journal.event.msg);
-    if preview.is_some() {
-        clear_projected_preview_events(&mut journal.event.msg);
-    }
+    let blocks = frontend.render(&journal.event.msg);
+    let preview = take_preview(frontend, &mut journal.event.msg);
     RecordedEvent {
         sequence: journal.sequence,
         recorded_at_ms: journal.recorded_at_ms,
@@ -201,19 +213,6 @@ pub(super) fn project_record(
         blocks,
         preview,
     }
-}
-
-pub(super) fn clear_projected_preview_events(event: &mut EventMsg) {
-    if let EventMsg::Frontend(FrontendEvent::Preview { events, .. }) = event {
-        events.clear();
-    }
-}
-
-pub(super) fn project_event(
-    frontend: &impl RenderEvents,
-    event: &EventMsg,
-) -> (Vec<RenderedBlock>, Option<RenderedPreview>) {
-    (frontend.render(event), render_preview(frontend, event))
 }
 
 pub(super) fn classify_journal_sequence(
@@ -244,28 +243,15 @@ pub(super) fn validate_gateway_event(event: &EventMsg) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn flatten_preview(events: &[FrontendPreviewEvent]) -> Vec<FrontendPreviewEvent> {
-    let mut flattened = Vec::new();
-    for event in events {
-        flatten_preview_event(
-            &event.event,
-            &event.submission_id,
-            event.recorded_at_ms,
-            &mut flattened,
-        );
-    }
-    flattened
-}
-
 fn flatten_preview_event(
-    event: &EventMsg,
-    submission_id: &Option<Arc<str>>,
+    event: EventMsg,
+    submission_id: Option<&Arc<str>>,
     recorded_at_ms: i64,
     flattened: &mut Vec<FrontendPreviewEvent>,
 ) {
     match event {
         EventMsg::SessionHistory(history) => {
-            for nested in &history.events {
+            for nested in history.events {
                 flatten_preview_event(nested, submission_id, recorded_at_ms, flattened);
             }
         }
@@ -276,9 +262,9 @@ fn flatten_preview_event(
             | FrontendEvent::Preview { .. },
         ) => {}
         event => flattened.push(FrontendPreviewEvent {
-            submission_id: submission_id.clone(),
+            submission_id: submission_id.map(Arc::clone),
             recorded_at_ms,
-            event: event.clone(),
+            event,
         }),
     }
 }
@@ -303,16 +289,15 @@ pub(super) fn update_widgets(widgets: &mut SessionWidgets, event: &EventMsg) {
         EventMsg::Frontend(FrontendEvent::Widget { capability, item }) => {
             if let Some((_, current)) = widgets
                 .iter_mut()
-                .find(|((owner, id), _)| owner == capability && id == &item.id)
+                .find(|(owner, widget)| owner == capability && widget.id == item.id)
             {
-                *current = item.clone();
+                *current = Arc::clone(item);
             } else {
-                let key = (capability.clone(), item.id.clone());
-                widgets.push((key, item.clone()));
+                widgets.push((Arc::clone(capability), Arc::clone(item)));
             }
         }
         EventMsg::Frontend(FrontendEvent::RemoveWidget { capability, id }) => {
-            widgets.retain(|((owner, widget), _)| owner != capability || widget != id);
+            widgets.retain(|(owner, widget)| owner != capability || *widget.id != **id);
         }
         _ => {}
     }
@@ -343,7 +328,7 @@ pub(super) fn record_and_publish(
         if frame_bytes <= MAX_REPLAY_BYTES {
             *replay_bytes = replay_bytes.saturating_add(frame_bytes);
             replay.push_back(ReplayEntry {
-                frame: frame.clone(),
+                frame: frame.clone(), // rules-allow: the replay buffer and the broadcast share the frame handle
                 bytes: frame_bytes,
             });
         } else {
@@ -352,7 +337,7 @@ pub(super) fn record_and_publish(
         }
     }
     if !suppress_broadcast {
-        let _ = events.send(frame);
+        broadcast_frame(events, frame);
     }
     truncated
 }
@@ -410,8 +395,14 @@ pub(super) fn publish_ready_and_pending(
     ready: ServerFrame,
     pending: Vec<SharedFrame>,
 ) {
-    let _ = events.send(SharedFrame::new(ready));
+    broadcast_frame(events, SharedFrame::new(ready));
     for frame in pending {
-        let _ = events.send(frame);
+        broadcast_frame(events, frame);
+    }
+}
+
+fn broadcast_frame(events: &broadcast::Sender<SharedFrame>, frame: SharedFrame) {
+    if let Err(error) = events.send(frame) {
+        tracing::debug!(%error, "session event had no subscribers");
     }
 }

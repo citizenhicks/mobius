@@ -92,14 +92,14 @@ impl GatewayAccounts {
     /// Returns an error if validation or an operation required by this function fails.
     pub fn add(&mut self, endpoint: &Endpoint, token: String) -> Result<()> {
         validate_token(&token)?;
-        let endpoint = endpoint.to_string();
-        if !self.record.tokens.contains_key(&endpoint) && self.record.tokens.len() >= MAX_ACCOUNTS {
+        let key = endpoint.to_string();
+        if !self.record.tokens.contains_key(&key) && self.record.tokens.len() >= MAX_ACCOUNTS {
             return Err(Error::Config(
                 "gateway token file has too many endpoints".into(),
             ));
         }
-        self.record.tokens.insert(endpoint.clone(), token);
-        self.record.selected_endpoint = Some(endpoint);
+        self.record.tokens.insert(key, token);
+        self.record.selected_endpoint = Some(endpoint.to_string());
         Ok(())
     }
 
@@ -161,9 +161,9 @@ impl GatewayAccounts {
         if metadata.len() > MAX_STORE_BYTES as u64 {
             return Err(Error::Config("gateway token file is too large".into()));
         }
-        let record = serde_json::from_slice(&std::fs::read(&path)?).map_err(|_| {
+        let record = serde_json::from_slice(&std::fs::read(&path)?).map_err(|error| {
             Error::Config(format!(
-                "gateway token file has an unsupported format; delete {} and pair again",
+                "gateway token file has an unsupported format ({error}); delete {} and pair again",
                 path.display()
             ))
         })?;

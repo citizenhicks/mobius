@@ -100,7 +100,7 @@ fn normalized_output_derives_text_and_validates_tool_calls() {
     output.tool_calls[0].name = "search".into();
     output.tool_calls[0].arguments = serde_json::json!({"query": "hooks"});
     output.sync_tool_calls().expect("rewritten calls");
-    assert_eq!(output.tool_calls()[0].name, "search");
+    assert_eq!(&*output.tool_calls()[0].name, "search");
     assert_eq!(output.output()[1]["name"], "search");
     assert_eq!(output.output()[1]["arguments"], r#"{"query":"hooks"}"#);
 
@@ -190,7 +190,7 @@ async fn credential_deadline_cancels_in_flight_work_and_blocks_reuse() {
         started: AtomicUsize::new(0),
         cancelled: AtomicBool::new(false),
     });
-    let mut router = ModelRouter::new("included", model.clone());
+    let mut router = ModelRouter::new("included", Arc::<PendingModel>::clone(&model));
     let cancellation = ModelCancellation::default();
     let request = || ModelRequest {
         session_id: "same-persistent-session",
@@ -402,8 +402,10 @@ async fn fallback_cancellation_does_not_inherit_source_credential_expiry() {
         }
     }
     let model = Arc::new(Pending(std::sync::Mutex::new(Vec::new())));
-    let mut router = ModelRouter::new("source", model.clone());
-    router.register("destination", model.clone()).unwrap();
+    let mut router = ModelRouter::new("source", Arc::<Pending>::clone(&model));
+    router
+        .register("destination", Arc::<Pending>::clone(&model))
+        .unwrap();
     router
         .set_credential_lifetime(
             "source",

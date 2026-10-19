@@ -7,7 +7,7 @@ async fn execution_insert_failure_rolls_back_checkpoint_and_transcript() {
         .expect("open checkpoint database");
     let original = checkpoint("session");
     store
-        .save(&original, &[], None)
+        .save(original.clone(), Vec::new(), None)
         .await
         .expect("save session");
     store
@@ -32,7 +32,11 @@ async fn execution_insert_failure_rolls_back_checkpoint_and_transcript() {
 
     assert!(
         store
-            .save(&next, &[json!({"role": "assistant"}).into()], Some(&record))
+            .save(
+                next.clone(),
+                [json!({"role": "assistant"}).into()].to_vec(),
+                Some(record.clone())
+            )
             .await
             .is_err()
     );

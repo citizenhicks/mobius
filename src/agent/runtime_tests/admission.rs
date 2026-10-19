@@ -8,7 +8,7 @@ async fn failed_turn_start_preserves_the_complete_durable_queue() {
     let database = workspace.path().join("checkpoints.sqlite3");
     let checkpoints = Arc::new(SqliteCheckpoint::new(&database).expect("checkpoint store"));
     let mut checkpoint = Checkpoint::empty("failed-start-queue");
-    checkpoint.session_context = test_session_context();
+    checkpoint.session_context = test_session_context().into();
     checkpoint.model_route = Some("test".into());
     checkpoint.pending_messages = vec![
         queued_user_message("first", "first body", QueuedMessageBoundary::Turn),
@@ -16,7 +16,7 @@ async fn failed_turn_start_preserves_the_complete_durable_queue() {
         queued_user_message("third", "third body", QueuedMessageBoundary::Queue),
     ];
     checkpoints
-        .save(&checkpoint, &[], None)
+        .save(checkpoint.clone(), Vec::new(), None)
         .await
         .expect("seed queued input");
     rusqlite::Connection::open(&database)
@@ -34,10 +34,10 @@ async fn failed_turn_start_preserves_the_complete_durable_queue() {
     });
     let mut agent = create_agent(config_with_model(
         workspace.path(),
-        checkpoints.clone(),
+        Arc::<SqliteCheckpoint>::clone(&checkpoints),
         "failed-start-queue",
         "test",
-        model.clone(),
+        Arc::<ScriptedModel>::clone(&model),
     ))
     .await
     .expect("resume queued input");

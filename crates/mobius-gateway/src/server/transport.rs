@@ -1,4 +1,15 @@
-use super::*;
+use super::{
+    AccessLease, Arc, AsyncRead, AsyncWrite, AuthStore, AuthenticatedClient, BTreeMap, BTreeSet,
+    BotStore, Callback, CatalogHint, CertificateDer, ClientFrame, ClientIdentity, ClientKind,
+    ClientMessage, ClientStatus, ClientView, ConnectionSessionState, Error, ErrorResponse,
+    FrameReader, Future, GatewayHost, GatewayNotification, HOST, Instant, JoinSet, Mutex, ORIGIN,
+    Path, PendingSessionFileWrite, PrivateKeyDer, ProfileSnapshot, Rejection, Request, Response,
+    Result, SEC_WEBSOCKET_PROTOCOL, SelectedChat, ServerConfig, ServerFrame, ServerMessage,
+    SharedFrame, StatusCode, TcpStream, TlsAcceptor, TlsConfig, Utc, Uuid, WEBSOCKET_BRIDGE_BYTES,
+    WebSocketConfig, accept_hdr_async_with_config, broadcast, handle_message, read_frame,
+    read_frame_with_limit, selected_broadcast, validate_version, websocket_error, write_frame,
+    write_rejection, write_server_error,
+};
 
 use std::collections::VecDeque;
 use std::fs::File;
@@ -24,20 +35,27 @@ pub(super) struct PreAuthConnectionAdmission {
     authenticated: Arc<Semaphore>,
 }
 
-pub(super) struct ConnectionContext {
-    pub(super) local: bool,
-    pub(super) desktop_transport: bool,
+/// Listener state every connection on one gateway shares.
+pub(super) struct ConnectionShared {
     pub(super) auth: Arc<AuthStore>,
-    pub(super) host: GatewayHost,
+    pub(super) host: Arc<GatewayHost>,
     pub(super) bots: Arc<BotStore>,
     pub(super) client_connections: Arc<ClientConnections>,
     pub(super) client_revocations: broadcast::Sender<String>,
+    pub(super) tls: Option<TlsAcceptor>,
+    pub(super) websocket_host: Option<String>,
+}
+
+pub(super) struct ConnectionContext {
+    pub(super) local: bool,
+    pub(super) desktop_transport: bool,
+    pub(super) shared: Arc<ConnectionShared>,
     pub(super) admission: PreAuthConnectionAdmission,
     pub(super) access_lease: Option<AccessLease>,
 }
 
 struct PendingProfile {
-    request_id: String,
+    request_id: Arc<str>,
     future: Pin<Box<dyn Future<Output = std::result::Result<ProfileSnapshot, Rejection>> + Send>>,
 }
 
@@ -49,6 +67,10 @@ impl ConnectionAdmission {
         }
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "the admission owns its semaphores and never closes them"
+    )]
     pub(super) async fn admit(&self) -> PreAuthConnectionAdmission {
         PreAuthConnectionAdmission {
             _permit: Arc::clone(&self.pre_auth)
@@ -123,13 +145,13 @@ impl PreAuthWebSocket {
     fn handshake_end(&mut self, bytes: &[u8]) -> Option<usize> {
         const END: &[u8] = b"\r\n\r\n";
         for (index, byte) in bytes.iter().enumerate() {
-            if *byte == END[self.handshake_match] {
+            if END.get(self.handshake_match) == Some(byte) {
                 self.handshake_match += 1;
                 if self.handshake_match == END.len() {
                     return Some(index + 1);
                 }
             } else {
-                self.handshake_match = usize::from(*byte == END[0]);
+                self.handshake_match = usize::from(END.first() == Some(byte));
             }
         }
         None
@@ -150,7 +172,8 @@ impl AsyncRead for PreAuthWebSocket {
             if !this.pending.is_empty() {
                 let bytes = this.pending.make_contiguous();
                 let read = bytes.len().min(buffer.remaining());
-                buffer.put_slice(&bytes[..read]);
+                let (chunk, _) = bytes.split_at(read);
+                buffer.put_slice(chunk);
                 this.pending.drain(..read);
                 return Poll::Ready(Ok(()));
             }
@@ -176,14 +199,16 @@ impl AsyncRead for PreAuthWebSocket {
 
         let mut bytes = [0_u8; 1024];
         let bytes_to_read = bytes.len().min(buffer.remaining());
-        let mut staged = ReadBuf::new(&mut bytes[..bytes_to_read]);
+        let (window, _) = bytes.split_at_mut(bytes_to_read);
+        let mut staged = ReadBuf::new(window);
         match Pin::new(&mut this.stream).poll_read(context, &mut staged) {
             Poll::Ready(Ok(())) => {
                 let bytes = staged.filled();
                 if let Some(end) = this.handshake_end(bytes) {
                     this.handshake_complete = true;
-                    this.pending.extend(&bytes[end..]);
-                    buffer.put_slice(&bytes[..end]);
+                    let (handshake, rest) = bytes.split_at(end);
+                    this.pending.extend(rest);
+                    buffer.put_slice(handshake);
                 } else {
                     buffer.put_slice(bytes);
                 }
@@ -212,29 +237,35 @@ impl AsyncWrite for PreAuthWebSocket {
     }
 }
 
-pub(super) struct WebSocketUpgradePolicy {
-    pub(super) expected_host: Option<String>,
+pub(super) struct WebSocketUpgradePolicy<'a> {
+    pub(super) expected_host: Option<&'a str>,
 }
 
 pub(super) struct PlaintextHandshake {
-    pub(super) expected_websocket_host: Option<String>,
+    /// Whether the upgrade must name the configured WebSocket host.
+    pub(super) verify_websocket_host: bool,
     pub(super) auth_deadline: Instant,
 }
 
-impl Callback for WebSocketUpgradePolicy {
+impl Callback for WebSocketUpgradePolicy<'_> {
     fn on_request(
         self,
         request: &Request,
         mut response: Response,
     ) -> std::result::Result<Response, ErrorResponse> {
-        if request.uri().path_and_query().map(|value| value.as_str()) != Some("/") {
+        if request
+            .uri()
+            .path_and_query()
+            .map(tokio_tungstenite::tungstenite::http::uri::PathAndQuery::as_str)
+            != Some("/")
+        {
             return Err(websocket_rejection(StatusCode::NOT_FOUND));
         }
         if request.headers().contains_key(ORIGIN) {
             return Err(websocket_rejection(StatusCode::FORBIDDEN));
         }
         if let Some(expected) = self.expected_host
-            && !request_host_matches(request, &expected)
+            && !request_host_matches(request, expected)
         {
             return Err(websocket_rejection(StatusCode::FORBIDDEN));
         }
@@ -247,9 +278,9 @@ impl Callback for WebSocketUpgradePolicy {
         }
         response.headers_mut().insert(
             SEC_WEBSOCKET_PROTOCOL,
-            crate::channel::SUBPROTOCOL
-                .parse()
-                .expect("static subprotocol is a header value"),
+            tokio_tungstenite::tungstenite::http::HeaderValue::from_static(
+                crate::channel::SUBPROTOCOL,
+            ),
         );
         Ok(response)
     }
@@ -281,8 +312,14 @@ pub(super) struct ClientConnections {
 pub(super) struct ClientConnectionGuard {
     connections: Arc<ClientConnections>,
     key: (String, ClientKind),
-    activity: Option<GatewayHost>,
+    activity: Option<Arc<GatewayHost>>,
     bots: Arc<BotStore>,
+}
+
+impl ClientConnectionGuard {
+    fn client_id(&self) -> &str {
+        &self.key.0
+    }
 }
 
 fn native_client_present(entries: &BTreeMap<(String, ClientKind), usize>, client_id: &str) -> bool {
@@ -306,7 +343,7 @@ fn record_client_presence(bots: &BotStore, client_id: &str, connected: bool) -> 
             }
         };
         bots.record_hook(&HookEvent {
-            id: format!("client-{transition}-{}", bot.id),
+            id: format!("client-{transition}-{}", bot.id).into(),
             source: HookSource::Client {
                 client_id: client_id.into(),
             },
@@ -322,10 +359,9 @@ fn record_client_presence(bots: &BotStore, client_id: &str, connected: bool) -> 
 
 impl ClientConnections {
     pub(super) fn native_count(&self) -> Result<usize> {
-        let entries = self
-            .entries
-            .try_lock()
-            .map_err(|_| Error::Config("client-connection count is unavailable".into()))?;
+        let entries = self.entries.try_lock().map_err(|error| {
+            Error::Config(format!("client-connection count is unavailable: {error}"))
+        })?;
         Ok(entries
             .iter()
             .filter(|((_, kind), _)| *kind != ClientKind::GatewayDashboard)
@@ -340,13 +376,12 @@ impl ClientConnections {
         bots: Arc<BotStore>,
     ) -> Result<ClientConnectionGuard> {
         let key = (client_id, kind);
-        let mut entries = self
-            .entries
-            .lock()
-            .map_err(|_| Error::Config("client-connection lock is poisoned".into()))?;
+        let mut entries = self.entries.lock().map_err(|error| {
+            Error::Config(format!("client-connection lock is poisoned: {error}"))
+        })?;
         let first_native =
             kind != ClientKind::GatewayDashboard && !native_client_present(&entries, &key.0);
-        let connections = entries.entry(key.clone()).or_default();
+        let connections = entries.entry(key.clone()).or_default(); // rules-allow: the registry and the guard each keep the key
         *connections = connections
             .checked_add(1)
             .ok_or_else(|| Error::Config("client connection count overflow".into()))?;
@@ -364,13 +399,12 @@ impl ClientConnections {
         })
     }
 
-    pub(super) fn snapshot(&self, paired: &[ClientIdentity]) -> Result<Vec<ClientStatus>> {
-        let entries = self
-            .entries
-            .lock()
-            .map_err(|_| Error::Config("client-connection lock is poisoned".into()))?;
+    pub(super) fn snapshot(&self, paired: Vec<ClientIdentity>) -> Result<Vec<ClientStatus>> {
+        let entries = self.entries.lock().map_err(|error| {
+            Error::Config(format!("client-connection lock is poisoned: {error}"))
+        })?;
         Ok(paired
-            .iter()
+            .into_iter()
             .map(|identity| {
                 let mut kinds = Vec::new();
                 let mut connections = 0;
@@ -384,8 +418,8 @@ impl ClientConnections {
                     }
                 }
                 ClientStatus {
-                    client_id: identity.id.clone(),
-                    label: identity.label.clone(),
+                    client_id: identity.id,
+                    label: identity.label,
                     kinds,
                     connections,
                 }
@@ -453,29 +487,23 @@ pub(super) fn connection_diagnostic(error: &Error) -> impl std::fmt::Display + '
     })
 }
 
+fn authentication_deadline(elapsed: &tokio::time::error::Elapsed) -> Error {
+    tracing::debug!(%elapsed, "connection missed its authentication deadline");
+    Error::Unauthorized
+}
+
 pub(super) async fn serve_plaintext_connection(
     stream: TcpStream,
     connection: ConnectionContext,
     handshake: PlaintextHandshake,
 ) -> Result<()> {
-    let PlaintextHandshake {
-        expected_websocket_host,
-        auth_deadline,
-    } = handshake;
+    let auth_deadline = handshake.auth_deadline;
     let mut first = [0_u8; 1];
     let read = tokio::time::timeout_at(auth_deadline, stream.peek(&mut first))
         .await
-        .map_err(|_| Error::Unauthorized)??;
+        .map_err(|elapsed| authentication_deadline(&elapsed))??;
     if read == 1 && first[0] == b'G' {
-        serve_websocket(
-            stream,
-            connection,
-            PlaintextHandshake {
-                expected_websocket_host,
-                auth_deadline,
-            },
-        )
-        .await
+        serve_websocket(stream, connection, handshake).await
     } else {
         serve_connection(stream, connection, auth_deadline, None).await
     }
@@ -489,7 +517,7 @@ pub(super) async fn serve_websocket(
     connection.local = false;
     connection.desktop_transport = true;
     let PlaintextHandshake {
-        expected_websocket_host,
+        verify_websocket_host,
         auth_deadline,
     } = handshake;
     let config = WebSocketConfig::default()
@@ -504,26 +532,33 @@ pub(super) async fn serve_websocket(
         accept_hdr_async_with_config(
             PreAuthWebSocket::new(stream),
             WebSocketUpgradePolicy {
-                expected_host: expected_websocket_host,
+                expected_host: connection
+                    .shared
+                    .websocket_host
+                    .as_deref()
+                    .filter(|_| verify_websocket_host),
             },
             Some(config),
         ),
     )
     .await
-    .map_err(|_| Error::Unauthorized)?
+    .map_err(|elapsed| authentication_deadline(&elapsed))?
     .map_err(websocket_error)?;
     let mut state = tokio::time::timeout_at(
         auth_deadline,
-        crate::channel::server_handshake(&mut websocket, connection.auth.channel_handshake()?),
+        crate::channel::server_handshake(
+            &mut websocket,
+            connection.shared.auth.channel_handshake()?,
+        ),
     )
     .await
-    .map_err(|_| Error::Unauthorized)??;
+    .map_err(|elapsed| authentication_deadline(&elapsed))??;
     let payload = tokio::time::timeout_at(
         auth_deadline,
         crate::channel::read_authentication(&mut websocket, &mut state, MAX_PRE_AUTH_FRAME_BYTES),
     )
     .await
-    .map_err(|_| Error::Unauthorized)??;
+    .map_err(|elapsed| authentication_deadline(&elapsed))??;
 
     let (gateway_stream, mut bridge_stream) = tokio::io::duplex(WEBSOCKET_BRIDGE_BYTES);
     bridge_stream.write_all(&payload).await?;
@@ -566,7 +601,7 @@ async fn register_client_connection(
     connections: &Arc<ClientConnections>,
     id: String,
     kind: ClientKind,
-    host: &GatewayHost,
+    host: &Arc<GatewayHost>,
     bots: &Arc<BotStore>,
     writer: &mut (impl AsyncWrite + Unpin),
 ) -> Result<Option<ClientConnectionGuard>> {
@@ -589,7 +624,7 @@ async fn register_client_connection(
     if admission.is_some() {
         host.mark_runtime_activity();
         host.telemetry.notify.notify_one();
-        connection.activity = Some(host.clone());
+        connection.activity = Some(Arc::clone(host));
     }
     drop(admission);
     Ok(Some(connection))
@@ -607,14 +642,18 @@ where
     let ConnectionContext {
         local,
         desktop_transport,
+        shared,
+        admission,
+        access_lease,
+    } = connection;
+    let ConnectionShared {
         auth,
         host,
         bots,
         client_connections,
         client_revocations,
-        admission,
-        access_lease,
-    } = connection;
+        ..
+    } = &*shared;
     if access_lease.is_some_and(AccessLease::expired) {
         return Ok(());
     }
@@ -622,7 +661,7 @@ where
     let (reader, mut writer) = tokio::io::split(stream);
     let mut reader = FrameReader::new(reader);
     let Some((client_id, client_kind, _authenticated_admission, view)) =
-        authenticate_connection(&mut reader, &mut writer, &auth, admission, auth_deadline).await?
+        authenticate_connection(&mut reader, &mut writer, auth, admission, auth_deadline).await?
     else {
         return Ok(());
     };
@@ -630,36 +669,40 @@ where
         return Ok(());
     }
 
-    let Some(_client_connection) = register_client_connection(
-        &client_connections,
-        client_id.clone(),
+    let Some(client_connection) = register_client_connection(
+        client_connections,
+        client_id,
         client_kind,
-        &host,
-        &bots,
+        host,
+        bots,
         &mut writer,
     )
     .await?
     else {
         return Ok(());
     };
-    let _ = authentication_complete.map(|complete| complete.send(()));
+    if let Some(complete) = authentication_complete
+        && complete.send(()).is_err()
+    {
+        tracing::debug!("websocket bridge closed before authentication completed");
+    }
 
     write_frame(&mut writer, &ServerFrame::new(ServerMessage::Authenticated)).await?;
     serve_authenticated_connection(
         reader,
         writer,
-        &host,
+        host,
         AuthenticatedClient {
             local,
             desktop_transport,
             connection_id: Uuid::new_v4(),
             access_lease,
             kind: client_kind,
-            id: &client_id,
-            connections: &client_connections,
-            revocations: &client_revocations,
-            bots: &bots,
-            auth: &auth,
+            id: client_connection.client_id(),
+            connections: client_connections,
+            revocations: client_revocations,
+            bots,
+            auth,
         },
         view,
         revocations,
@@ -667,10 +710,14 @@ where
     .await
 }
 
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the remote desktop session serves the whole connection loop; the lint misreads its use inside tokio::select!"
+)]
 async fn serve_authenticated_connection(
     mut reader: FrameReader<impl AsyncRead + Unpin>,
     mut writer: impl AsyncWrite + Unpin,
-    host: &GatewayHost,
+    host: &Arc<GatewayHost>,
     client: AuthenticatedClient<'_>,
     mut view: ClientView,
     mut revocations: broadcast::Receiver<String>,
@@ -684,7 +731,7 @@ async fn serve_authenticated_connection(
     let ready = host
         .ready()
         .await
-        .map_err(|rejection| Error::Protocol(rejection.message))?;
+        .map_err(|rejection| Error::Protocol(rejection.message.to_string()))?;
     view.write_catalog(
         &mut writer,
         ServerFrame::new(ServerMessage::Ready { payload: ready }),
@@ -794,10 +841,10 @@ async fn serve_authenticated_connection(
 async fn dispatch_authenticated_frame(
     frame: ClientFrame,
     client: &AuthenticatedClient<'_>,
-    host: &GatewayHost,
+    host: &Arc<GatewayHost>,
     connection: ConnectionSessionState<'_>,
     pending_profile: &mut Option<PendingProfile>,
-    queued_profile_request: &mut Option<(String, bool)>,
+    queued_profile_request: &mut Option<(Arc<str>, bool)>,
     writer: &mut (impl AsyncWrite + Unpin),
 ) -> Result<bool> {
     if client.access_lease.is_some_and(AccessLease::expired) {
@@ -859,13 +906,13 @@ async fn authenticate_connection(
         read_frame_with_limit::<PreAuthClientFrame>(reader, MAX_PRE_AUTH_FRAME_BYTES),
     )
     .await
-    .map_err(|_| Error::Unauthorized)??
+    .map_err(|elapsed| authentication_deadline(&elapsed))??
     .ok_or(Error::Unauthorized)?;
     if let Err(error) = validate_version(first.version) {
         write_server_error(writer, "protocol_version", error.to_string(), true).await?;
         return Ok(None);
     }
-    let Some(_authenticated_admission) = admission.promote() else {
+    let Some(authenticated_admission) = admission.promote() else {
         write_server_error(
             writer,
             "server_busy",
@@ -887,7 +934,7 @@ async fn authenticate_connection(
     Ok(Some((
         client_id,
         client_kind,
-        _authenticated_admission,
+        authenticated_admission,
         view,
     )))
 }
@@ -915,13 +962,11 @@ async fn authenticate_client(
         PreAuthClientMessage::Authenticate {
             token, client_kind, ..
         } => {
-            return match auth.authenticate(&token) {
-                Ok(identity) => Ok(Some((identity.id, client_kind))),
-                Err(_) => {
-                    write_server_error(writer, "unauthorized", "authentication failed", true)
-                        .await?;
-                    Ok(None)
-                }
+            return if let Ok(identity) = auth.authenticate(&token) {
+                Ok(Some((identity.id, client_kind)))
+            } else {
+                write_server_error(writer, "unauthorized", "authentication failed", true).await?;
+                Ok(None)
             };
         }
         PreAuthClientMessage::Unsupported => {
@@ -937,7 +982,7 @@ async fn authenticate_client(
     };
     match issued {
         Ok(issued) => {
-            let client_id = issued.client_id.clone();
+            let client_id = issued.client_id.clone(); // rules-allow: the paired frame and the connection both need the new ID
             write_frame(
                 writer,
                 &ServerFrame::new(ServerMessage::Paired {
@@ -949,7 +994,7 @@ async fn authenticate_client(
             Ok(Some((client_id, client_kind)))
         }
         Err(error @ Error::PublicationApplied { .. }) => {
-            write_server_error(writer, "publication_uncertain", &error.to_string(), true).await?;
+            write_server_error(writer, "publication_uncertain", error.to_string(), true).await?;
             Ok(None)
         }
         Err(_) => {
@@ -961,9 +1006,9 @@ async fn authenticate_client(
 
 async fn handle_profile_message(
     message: ClientMessage,
-    host: &GatewayHost,
+    host: &Arc<GatewayHost>,
     pending: &mut Option<PendingProfile>,
-    queued_request: &mut Option<(String, bool)>,
+    queued_request: &mut Option<(Arc<str>, bool)>,
     writer: &mut (impl AsyncWrite + Unpin),
 ) -> Result<Option<ClientMessage>> {
     let ClientMessage::GetProfile {
@@ -983,7 +1028,7 @@ async fn handle_profile_message(
 
 async fn next_profile(
     pending: &mut Option<PendingProfile>,
-) -> (String, std::result::Result<ProfileSnapshot, Rejection>) {
+) -> (Arc<str>, std::result::Result<ProfileSnapshot, Rejection>) {
     let Some(pending) = pending.as_mut() else {
         return std::future::pending().await;
     };
@@ -992,10 +1037,10 @@ async fn next_profile(
 }
 
 async fn complete_profile_request(
-    profile: (String, std::result::Result<ProfileSnapshot, Rejection>),
-    host: &GatewayHost,
+    profile: (Arc<str>, std::result::Result<ProfileSnapshot, Rejection>),
+    host: &Arc<GatewayHost>,
     pending: &mut Option<PendingProfile>,
-    queued_request: &mut Option<(String, bool)>,
+    queued_request: &mut Option<(Arc<str>, bool)>,
     writer: &mut (impl AsyncWrite + Unpin),
 ) -> Result<()> {
     let (request_id, result) = profile;
@@ -1021,8 +1066,8 @@ async fn complete_profile_request(
 
 async fn queue_profile_request(
     writer: &mut (impl AsyncWrite + Unpin),
-    queued_request: &mut Option<(String, bool)>,
-    request_id: String,
+    queued_request: &mut Option<(Arc<str>, bool)>,
+    request_id: Arc<str>,
     include_provider_usage: bool,
 ) -> Result<()> {
     if let Some((displaced, _)) = queued_request.replace((request_id, include_provider_usage)) {
@@ -1040,11 +1085,11 @@ async fn queue_profile_request(
 }
 
 fn profile_request(
-    host: &GatewayHost,
-    request_id: String,
+    host: &Arc<GatewayHost>,
+    request_id: Arc<str>,
     include_provider_usage: bool,
 ) -> PendingProfile {
-    let gateway = host.clone();
+    let gateway = Arc::clone(host);
     PendingProfile {
         request_id,
         future: Box::pin(async move {
@@ -1065,7 +1110,7 @@ async fn write_gateway_broadcast(
         *bots = host
             .bots()
             .await
-            .map_err(|rejection| Error::Protocol(rejection.message))?;
+            .map_err(|rejection| Error::Protocol(rejection.message.to_string()))?;
     }
     view.write_broadcast(writer, frame).await
 }
@@ -1084,7 +1129,7 @@ async fn handle_gateway_broadcast(
             let ready = host
                 .ready()
                 .await
-                .map_err(|rejection| Error::Protocol(rejection.message))?;
+                .map_err(|rejection| Error::Protocol(rejection.message.to_string()))?;
             view.write_catalog(
                 writer,
                 ServerFrame::new(ServerMessage::Ready { payload: ready }),
@@ -1237,7 +1282,7 @@ mod tests {
                 code,
                 fatal: false,
                 ..
-            } if request_id == "profile-2" && code == "profile_superseded"
+            } if request_id.as_ref() == "profile-2" && code == "profile_superseded"
         ));
         assert_eq!(queued.as_ref(), Some(&("profile-3".into(), true)));
 
@@ -1246,11 +1291,11 @@ mod tests {
             _ = next_profile(&mut pending) => panic!("profile completed before release"),
             () = std::future::ready(()) => {}
         }
-        assert_eq!(pending.as_ref().unwrap().request_id, "profile-1");
+        assert_eq!(&*pending.as_ref().unwrap().request_id, "profile-1");
 
         release.send(()).expect("release active profile");
         let (request_id, result) = next_profile(&mut pending).await;
-        assert_eq!(request_id, "profile-1");
+        assert_eq!(&*request_id, "profile-1");
         assert!(result.is_ok());
     }
 }

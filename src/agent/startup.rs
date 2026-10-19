@@ -28,7 +28,6 @@ use crate::protocol::ModelChangedEvent;
 use crate::protocol::ModelStepCompletedEvent;
 use crate::protocol::ModelStepOutcome;
 use crate::protocol::SessionConfiguredEvent;
-use crate::protocol::SessionContext;
 use crate::protocol::SessionHistoryEvent;
 use crate::protocol::TokenCountEvent;
 use crate::protocol::TokenUsageInfo;
@@ -68,21 +67,22 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
     if config.max_model_steps == 0 {
         return Err(Error::Config("maximum model steps must be positive".into()));
     }
-    let (children, root_config) = match config.children.take() {
-        Some(children) => (children, None),
-        None => {
-            // Children start from the root's unstarted composition, which startup consumes below.
-            let root = Arc::new(config.child_configuration());
-            (ChildAgents(Arc::downgrade(&root)), Some(root))
-        }
+    let (children, root_config) = if let Some(children) = config.children.take() {
+        (children, None)
+    } else {
+        // Children start from the root's unstarted composition, which startup consumes below.
+        let root = Arc::new(config.child_configuration());
+        (ChildAgents(Arc::downgrade(&root)), Some(root))
     };
-    config.middleware = config
-        .middleware
-        .with_sandbox(Arc::clone(&config.sandbox))?;
+    config.middleware = Arc::new(
+        config
+            .middleware
+            .with_sandbox(Arc::clone(&config.sandbox))?,
+    );
     config.middleware.require_message_handler()?;
     let (mut state, is_new) = match config.checkpoints.load(&config.session_id).await? {
         Some(state) => (state, false),
-        None => (Checkpoint::empty(&config.session_id), true),
+        None => (Checkpoint::empty(Arc::clone(&config.session_id)), true),
     };
     if state.version != CHECKPOINT_VERSION || state.session_id != config.session_id {
         return Err(Error::Checkpoint(
@@ -94,11 +94,11 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
         .validate_message_queue(&state.pending_messages)?;
     let mut metadata_changed = false;
     if is_new {
-        state.session_context.clone_from(&config.session_context);
+        state.session_context = Arc::clone(&config.session_context);
         state.metadata.clone_from(&config.metadata);
         state.catalog_visible = config.catalog_visible;
     } else {
-        config.session_context = Arc::new(state.session_context.clone());
+        config.session_context = Arc::clone(&state.session_context);
         if config.metadata_configured {
             metadata_changed = config.metadata != state.metadata;
             state.metadata.clone_from(&config.metadata);
@@ -130,14 +130,14 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
     if let Some(turn_id) = state
         .active_execution
         .as_ref()
-        .map(|execution| &execution.turn_id)
+        .map(|execution| Arc::clone(&execution.turn_id))
     {
         for pending in &state.pending_tools {
             if let Some(call) = replay.iter_mut().rev().find_map(|event| match event {
                 EventMsg::ToolCallBegin(call) if call.call_id == pending.call_id => Some(call),
                 _ => None,
             }) {
-                call.turn_id.clone_from(turn_id);
+                call.turn_id = Arc::clone(&turn_id);
             }
         }
     }
@@ -145,14 +145,13 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
     let mut recovery_execution: Option<ExecutionRecord> = None;
     let mut recovery_events = Vec::new();
     let route = if config.model_route_configured || is_new {
-        std::borrow::Cow::Owned(std::mem::take(&mut config.provider))
+        std::mem::take(&mut config.provider)
     } else {
-        std::borrow::Cow::Borrowed(
-            state
-                .model_route
-                .as_deref()
-                .ok_or_else(|| Error::Checkpoint("saved session has no model route".into()))?,
-        )
+        state
+            .model_route
+            .as_ref()
+            .map(Arc::clone)
+            .ok_or_else(|| Error::Checkpoint("saved session has no model route".into()))?
     };
     let choice = config.select_model(&route)?;
     let route = choice.route;
@@ -163,40 +162,40 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
     let (sender, inbox) = submission_channel(SUBMISSION_QUEUE_CAPACITY);
     let (event_tx, event_rx) = crate::agent::recorder::RecorderIngress::spawn(
         Arc::clone(&config.checkpoints),
-        config.session_id.clone(),
+        Arc::clone(&config.session_id),
     );
-    let session = SessionConfiguredEvent {
-        session_id: config.session_id.clone(),
-        context: SessionContext::clone(&config.session_context),
+    let session = Arc::new(SessionConfiguredEvent {
+        session_id: Arc::clone(&config.session_id),
+        context: Arc::clone(&config.session_context),
         model: ModelChangedEvent {
-            route: route.clone(),
-            model: model.model.clone(),
-            reasoning_effort: model.reasoning_effort.clone(),
+            route: Arc::clone(&route),
+            model: Arc::clone(&model.model),
+            reasoning_effort: model.reasoning_effort.as_ref().map(Arc::clone),
             model_context_window: Some(config.context_window),
         },
-    };
+    });
     let session_event = Event {
         submission_id: None,
-        msg: EventMsg::SessionConfigured(session.clone()),
+        msg: EventMsg::SessionConfigured(Arc::clone(&session)),
     };
-    let middleware_events = event_tx.clone();
+    let middleware_events = Arc::clone(&event_tx);
     let pending_frontend = Arc::new(std::sync::Mutex::new(Some(Vec::new())));
     let queued_frontend = Arc::clone(&pending_frontend);
     let runtime = RuntimeContext {
         sender: sender.downgrade(),
         checkpoints: Arc::clone(&config.checkpoints),
-        session_id: config.session_id.clone(),
-        model_route: route.clone(),
-        model: model.model.clone(),
+        session_id: Arc::clone(&config.session_id),
+        model_route: Arc::clone(&route),
+        model: Arc::clone(&model.model),
         approval_policy: config.sandbox.approval_policy(),
-        session_context: SessionContext::clone(&config.session_context),
-        metadata: config.metadata.clone(),
-        role: config.role.clone(),
+        session_context: Arc::clone(&config.session_context),
+        metadata: std::mem::take(&mut config.metadata),
+        role: std::mem::take(&mut config.role),
         children,
         frontend: Arc::new(move |update| {
-            let mut queued = queued_frontend
-                .lock()
-                .map_err(|_| Error::Stopped("middleware frontend queue poisoned".into()))?;
+            let mut queued = queued_frontend.lock().map_err(|error| {
+                Error::Stopped(format!("middleware frontend queue poisoned: {error}"))
+            })?;
             if let Some(events) = queued.as_mut() {
                 if events.len() >= super::EVENT_QUEUE_CAPACITY {
                     return Err(Error::Stopped("event recorder queue is full".into()));
@@ -214,15 +213,19 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
             )
         }),
     };
-    let system_prompt: Arc<str> = config
+    let (system_prompt, prompt_sizes) = config
         .middleware
-        .system_prompt(&config.system_prompt, &runtime)?
-        .into();
+        .system_prompt(&config.system_prompt, &runtime)?;
+    let system_prompt: Arc<str> = system_prompt.into();
+    let prompt_estimate =
+        super::context_estimate::ContextEstimate::prompt(&prompt_sizes, config.token_estimate);
     let catalog = config.middleware.catalog(&runtime)?;
     let tool_count = catalog.registered_definitions().len();
-    let frontend = FrontendExtensions::new(config.middleware.clone(), config.session_id.clone())?;
-    let mut state_changed =
-        metadata_changed || state.model_route.as_deref() != Some(route.as_str());
+    let frontend = FrontendExtensions::new(
+        Arc::clone(&config.middleware),
+        Arc::clone(&config.session_id),
+    )?;
+    let mut state_changed = metadata_changed || state.model_route.as_ref() != Some(&route);
     state.model_route = Some(route);
     let uncertain_tools = !state.pending_tools.is_empty()
         && state
@@ -239,9 +242,9 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
         recovery_events.push(crate::agent::turn::turn_event(
             &active.submission_id,
             EventMsg::ModelStepCompleted(ModelStepCompletedEvent {
-                session_id: state.session_id.as_str().into(),
-                turn_id: active.turn_id.as_str().into(),
-                model_step_id: step.model_step_id.into(),
+                session_id: Arc::clone(&state.session_id),
+                turn_id: Arc::clone(&active.turn_id),
+                model_step_id: step.model_step_id,
                 step_index: step.step_index,
                 started_at_ms: step.started_at_ms,
                 completed_at_ms: unix_timestamp_ms()?.max(step.started_at_ms),
@@ -260,12 +263,13 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
             Arc::make_mut(&mut state.context).extend(calls.iter().map(Arc::clone));
             recovery_delta.extend(calls);
         }
-        recovered_tool_calls = u64::try_from(state.pending_tools.len())
-            .map_err(|_| Error::Checkpoint("recovered tool-call count is unsupported".into()))?;
+        recovered_tool_calls = u64::try_from(state.pending_tools.len()).map_err(|error| {
+            Error::Checkpoint(format!("recovered tool-call count is unsupported: {error}"))
+        })?;
         let recovered_turn = state
             .active_execution
             .as_ref()
-            .map(|execution| &execution.turn_id)
+            .map(|execution| Arc::clone(&execution.turn_id))
             .ok_or_else(|| Error::Checkpoint("pending tools have no active execution".into()))?;
         for call in std::mem::take(&mut state.pending_tools) {
             let output = "execution interrupted; result unknown after restart";
@@ -280,9 +284,9 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
                 submission_id: state
                     .active_execution
                     .as_ref()
-                    .map(|execution| execution.submission_id.as_str().into()),
+                    .map(|execution| Arc::clone(&execution.submission_id)),
                 msg: EventMsg::ToolCallEnd(ToolCallEndEvent {
-                    turn_id: recovered_turn.clone(),
+                    turn_id: Arc::clone(&recovered_turn),
                     call_id: call.call_id,
                     name: call.name,
                     output: output.into(),
@@ -360,7 +364,7 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
         recovery_events.push(crate::agent::turn::turn_event(
             &execution.submission_id,
             EventMsg::TurnAborted(TurnAbortedEvent {
-                turn_id: execution.turn_id.clone(),
+                turn_id: Arc::clone(&execution.turn_id),
                 reason: TURN_RESTARTED_REASON.into(),
             }),
         ));
@@ -380,7 +384,7 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
                 .save(
                     Arc::clone(&state.0),
                     &recovery_delta,
-                    recovery_execution.as_ref(),
+                    recovery_execution,
                     startup_events,
                 )
                 .await?;
@@ -389,7 +393,9 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
         }
         let frontend_events = pending_frontend
             .lock()
-            .map_err(|_| Error::Stopped("middleware frontend queue poisoned".into()))?
+            .map_err(|error| {
+                Error::Stopped(format!("middleware frontend queue poisoned: {error}"))
+            })?
             .take()
             .ok_or_else(|| Error::Stopped("middleware frontend queue already drained".into()))?;
         for update in frontend_events {
@@ -411,14 +417,16 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
                 },
             )?;
         }
-        if let Some(last_token_usage) = state.last_usage.clone() {
+        let last_usage = state.last_usage;
+        if let Some(last_token_usage) = last_usage {
             try_send_event(
                 &event_tx,
                 Event {
                     submission_id: None,
                     msg: EventMsg::TokenCount(TokenCountEvent {
                         info: Some(TokenUsageInfo {
-                            total_token_usage: state.total_usage.clone(),
+                            context: None,
+                            total_token_usage: state.total_usage,
                             last_token_usage,
                             model_context_window: Some(config.context_window),
                         }),
@@ -445,12 +453,14 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
         config,
         runtime: Arc::new(runtime),
         system_prompt,
+        prompt_estimate,
+        context_estimate: None,
         catalog: Arc::new(catalog),
         state,
         transcript_delta: Vec::new(),
         pending_session_start_stop,
         turn_end_turn_id: None,
-        events: event_tx.clone(),
+        events: event_tx,
     };
     tokio::spawn(async move {
         let run = runner.run(inbox).await;
@@ -464,15 +474,17 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
             (Err(error), Ok(())) | (Ok(()), Err(error)) => Some(error),
             (Ok(()), Ok(())) => None,
         };
-        if let Some(error) = error {
-            let _ = send_event(
-                &event_tx,
+        if let Some(error) = error
+            && let Err(send_error) = send_event(
+                &runner.events,
                 Event {
                     submission_id: None,
                     msg: EventMsg::Error(ErrorEvent::from_error(&error)),
                 },
             )
-            .await;
+            .await
+        {
+            tracing::warn!(%error, %send_error, "agent runtime failed and its error event could not be recorded");
         }
     });
     Ok(Agent {

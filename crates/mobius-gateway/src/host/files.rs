@@ -1,5 +1,5 @@
-use std::collections::BTreeSet;
 use std::path::{Component, Path};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use mobius::backend::sandbox::{SandboxBackend as _, SandboxMode};
@@ -33,11 +33,17 @@ pub(super) async fn list(
 ) -> std::result::Result<WorkspaceFiles, Rejection> {
     tokio::time::timeout(FILE_TIMEOUT, list_inner(sandbox, workspace, scope))
         .await
-        .map_err(|_| timeout())?
+        .map_err(|elapsed| {
+            let mut rejection = timeout();
+            rejection.message = format!("{}: {elapsed}", rejection.message).into();
+            rejection
+        })?
 }
 
+/// Reads host files outside protected gateway paths, relative to the chat's folder.
 pub(super) async fn read(
     sandbox: &GatewaySandbox,
+    workspace: Option<&Path>,
     path: &str,
     offset: u64,
     max_bytes: usize,
@@ -47,11 +53,23 @@ pub(super) async fn read(
             "workspace read size must be 1–{MAX_WORKSPACE_READ_BYTES} bytes"
         )));
     }
-    validate_relative(path)?;
+    let requested = Path::new(path);
+    let resolved = match (requested.strip_prefix("~"), workspace) {
+        (Ok(relative), _) => std::env::home_dir()
+            .ok_or_else(|| invalid("the gateway's home directory is unavailable"))?
+            .join(relative),
+        _ if requested.is_absolute() => requested.to_path_buf(),
+        (_, Some(workspace)) => workspace.join(requested),
+        (_, None) => {
+            return Err(invalid(
+                "a relative path needs a chat with a project folder",
+            ));
+        }
+    };
     let (data, next_offset) = sandbox
-        .read_workspace_range(path, offset, max_bytes)
+        .read_workspace_range(resolved, offset, max_bytes)
         .await
-        .map_err(error_rejection)?;
+        .map_err(|error| invalid(format!("couldn’t read {path}: {error}")))?;
     Ok(WorkspaceRead { data, next_offset })
 }
 
@@ -168,7 +186,7 @@ async fn list_inner(
 fn non_git_workspace_files(workspace: &Path) -> std::result::Result<WorkspaceFiles, Rejection> {
     let started = Instant::now();
     let workspace = std::fs::canonicalize(workspace).map_err(error_rejection)?;
-    let mut directories = vec![(workspace.clone(), 0)];
+    let mut directories = vec![(std::borrow::Cow::Borrowed(workspace.as_path()), 0)];
     let mut catalog = WorkspaceFiles {
         files: Vec::new(),
         truncated: false,
@@ -176,12 +194,12 @@ fn non_git_workspace_files(workspace: &Path) -> std::result::Result<WorkspaceFil
     let mut remaining_entries = MAX_WORKSPACE_FILES;
     let mut path_bytes = 0;
     'walk: while let Some((directory, depth)) = directories.pop() {
-        if std::fs::canonicalize(&directory).ok().as_ref() != Some(&directory) {
+        if std::fs::canonicalize(&directory).ok().as_deref() != Some(directory.as_ref()) {
             continue;
         }
         let entries = match std::fs::read_dir(&directory) {
             Ok(entries) => entries,
-            Err(error) if directory == workspace => return Err(error_rejection(error)),
+            Err(error) if directory == workspace.as_path() => return Err(error_rejection(error)),
             Err(_) => continue,
         };
         let mut entries = entries
@@ -207,7 +225,7 @@ fn non_git_workspace_files(workspace: &Path) -> std::result::Result<WorkspaceFil
             };
             if metadata.is_dir() {
                 if depth < MAX_WORKSPACE_DEPTH {
-                    directories.push((path, depth + 1));
+                    directories.push((std::borrow::Cow::Owned(path), depth + 1));
                 } else {
                     catalog.truncated = true;
                 }
@@ -246,7 +264,10 @@ fn git_workspace_files(
     validate_git_paths(output)?;
     let mut files = Vec::new();
     let mut path_bytes = 0_usize;
-    for path in output.split_terminator('\0').collect::<BTreeSet<_>>() {
+    let mut paths = output.split_terminator('\0').collect::<Vec<_>>();
+    paths.sort_unstable();
+    paths.dedup();
+    for path in paths {
         let relative = validate_relative(path)?;
         let metadata = match std::fs::symlink_metadata(workspace.join(relative)) {
             Ok(metadata) => metadata,
@@ -302,7 +323,7 @@ fn validate_relative(path: &str) -> std::result::Result<&Path, Rejection> {
     Ok(relative)
 }
 
-fn invalid(message: impl Into<String>) -> Rejection {
+fn invalid(message: impl Into<Arc<str>>) -> Rejection {
     Rejection::new("invalid_workspace_file", message)
 }
 
@@ -332,19 +353,130 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_rejects_parent_traversal() {
+    async fn read_opens_relative_and_absolute_paths_in_ranges() {
         let workspace = tempfile::tempdir().expect("workspace");
         let (_state, sandbox) = sandbox(workspace.path());
+        let home = std::env::home_dir().expect("gateway home");
+        let elsewhere = tempfile::tempdir_in(&home).expect("elsewhere");
+        std::fs::write(workspace.path().join("main.rs"), b"fn main() {}").expect("file");
+        std::fs::write(elsewhere.path().join("fetch_images.py"), b"print(1)").expect("file");
+        let file = elsewhere
+            .path()
+            .join("fetch_images.py")
+            .display()
+            .to_string();
+        let root = Some(workspace.path());
 
-        let result = read(&sandbox, "../outside", 0, 16).await;
+        let first = read(&sandbox, root, &file, 0, 5)
+            .await
+            .expect("first range");
+        assert_eq!(
+            (first.data.as_slice(), first.next_offset),
+            (&b"print"[..], Some(5))
+        );
+        let rest = read(&sandbox, None, &file, 5, 64).await.expect("rest");
+        assert_eq!(
+            (rest.data.as_slice(), rest.next_offset),
+            (&b"(1)"[..], None)
+        );
+        let relative = elsewhere.path().strip_prefix(&home).expect("home-relative");
+        let home_path = format!("~/{}/fetch_images.py", relative.display());
+        assert_eq!(
+            read(&sandbox, None, &home_path, 0, 64)
+                .await
+                .expect("home path")
+                .data,
+            b"print(1)"
+        );
+        assert_eq!(
+            read(&sandbox, root, "main.rs", 0, 64)
+                .await
+                .expect("relative")
+                .data,
+            b"fn main() {}"
+        );
+        assert!(read(&sandbox, None, "main.rs", 0, 64).await.is_err());
+        assert!(read(&sandbox, root, "missing.rs", 0, 64).await.is_err());
+        assert!(read(&sandbox, root, &file, 9, 64).await.is_err());
+    }
 
-        assert!(matches!(
-            result,
-            Err(Rejection {
-                code: "invalid_workspace_file",
-                ..
-            })
-        ));
+    #[cfg(unix)]
+    #[tokio::test]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the sandbox serves every read in the test"
+    )]
+    async fn host_reads_follow_safe_links_and_reject_protected_paths_and_special_files() {
+        use std::os::unix::fs::{OpenOptionsExt as _, symlink};
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        let state = tempfile::tempdir().expect("state");
+        let host = tempfile::tempdir().expect("host files");
+        let tls = host.path().join("tls.key");
+        let profile = host.path().join("profile");
+        let bearer = host.path().join("bearer");
+        std::fs::create_dir(&profile).expect("profile");
+        let protected = [
+            state.path().join("gateway.toml"),
+            tls,
+            profile.join("secret"),
+            bearer,
+        ];
+        for path in &protected {
+            std::fs::write(path, b"secret").expect("protected file");
+        }
+        let sandbox = GatewaySandbox::new(
+            workspace.path(),
+            state.path(),
+            Some(&protected[1]),
+            Duration::from_secs(5),
+        )
+        .expect("gateway sandbox")
+        .deny_read_paths([profile, protected[3].clone()])
+        .expect("protected paths");
+        let root = Some(workspace.path());
+        let public = host.path().join("public.txt");
+        std::fs::write(&public, b"visible").expect("public file");
+        symlink(&public, workspace.path().join("visible")).expect("safe link");
+        assert_eq!(
+            read(&sandbox, root, "visible", 0, 64)
+                .await
+                .expect("safe link")
+                .data,
+            b"visible"
+        );
+        for (index, path) in protected.iter().enumerate() {
+            let link = format!("private-{index}");
+            symlink(path, workspace.path().join(&link)).expect("private link");
+            for requested in [path.to_str().expect("test path"), link.as_str()] {
+                assert!(
+                    read(&sandbox, root, requested, 0, 64).await.is_err(),
+                    "{requested}"
+                );
+            }
+        }
+        let fifo = workspace.path().join("fifo");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&fifo)
+                .status()
+                .expect("FIFO")
+                .success()
+        );
+        let result =
+            tokio::time::timeout(Duration::from_secs(2), read(&sandbox, root, "fifo", 0, 64)).await;
+        if result.is_err() {
+            // Unblock a regressed reader so the test runtime can still shut down.
+            drop(
+                std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .custom_flags(nix::libc::O_NONBLOCK)
+                    .open(&fifo),
+            );
+        }
+        assert!(result.expect("FIFO must not block").is_err());
+        assert!(read(&sandbox, root, ".", 0, 64).await.is_err());
     }
 
     #[tokio::test]
@@ -431,7 +563,7 @@ mod tests {
     fn truncated_git_catalog_keeps_only_complete_records() {
         let workspace = tempfile::tempdir().expect("workspace");
         std::fs::write(workspace.path().join("first.txt"), b"file").expect("file");
-        let mut output = "first.txt\0partial".to_string();
+        let mut output = "first.txt\0partial".to_owned();
 
         let truncated = retain_complete_git_paths(&mut output, true).expect("Git paths");
         let catalog =

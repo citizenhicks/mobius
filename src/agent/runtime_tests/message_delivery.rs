@@ -103,7 +103,7 @@ fn blocking_model(started: &Arc<Notify>, release: &Arc<Notify>) -> Arc<BlockingM
     })
 }
 
-async fn active_turn(agent: &mut Agent, started: &Notify) -> String {
+async fn active_turn(agent: &mut Agent, started: &Notify) -> Arc<str> {
     let turn_id = loop {
         let event = agent.next_event().await.expect("turn event");
         if let EventMsg::TurnStarted(started) = event.msg {
@@ -148,7 +148,7 @@ async fn rejected_input_refill_cannot_starve_model_completion() {
                 SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
                     .expect("checkpoint store"),
             ),
-            test_middleware(vec![refill.clone()]),
+            test_middleware(vec![Arc::<RefillMiddleware>::clone(&refill)]),
             "test prompt",
         )
         .session_context(test_session_context())
@@ -190,7 +190,7 @@ async fn steer_is_durable_before_a_blocked_model_completes() {
                 Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
                 ApprovalPolicy::Ask,
             )),
-            checkpoints.clone(),
+            Arc::<SqliteCheckpoint>::clone(&checkpoints),
             test_middleware(Vec::new()),
             "test prompt",
         )
@@ -206,7 +206,7 @@ async fn steer_is_durable_before_a_blocked_model_completes() {
         .sender()
         .submit(active_user_op(
             "persist me",
-            &turn_id,
+            &*turn_id,
             ActiveMessageDelivery::Steer,
         ))
         .expect("submit steer");
@@ -229,12 +229,12 @@ async fn steer_is_durable_before_a_blocked_model_completes() {
 
     assert!(saved.pending_messages.iter().any(|item| {
         item.owner() == "messages"
-            && item.id() == submission_id
+            && item.id() == &*submission_id
             && matches!(
                 item.boundary(),
                 crate::backend::checkpoint::QueuedMessageBoundary::Steer {
                     turn_id: target
-                } if target == &turn_id
+                } if **target == *turn_id
             )
             && matches!(
                 item.event(),
@@ -267,7 +267,7 @@ async fn interrupt_discards_partial_pre_model_context() {
                 Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
                 ApprovalPolicy::Ask,
             )),
-            checkpoints.clone(),
+            Arc::<SqliteCheckpoint>::clone(&checkpoints),
             test_middleware(vec![Arc::new(middleware)]),
             "test prompt",
         )

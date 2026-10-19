@@ -1,4 +1,6 @@
 //! The small event protocol shared by agent frontends.
+// Protocol matches stay exhaustive: a new variant must be handled, not caught by `_`.
+#![deny(clippy::wildcard_enum_match_arm)]
 
 use std::sync::Arc;
 
@@ -95,7 +97,7 @@ pub struct SessionFileRecord {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Submission {
     /// Correlates all events produced by this command.
-    pub id: String,
+    pub id: Arc<str>,
     /// Command payload.
     pub op: Op,
 }
@@ -105,8 +107,8 @@ impl Submission {
     #[must_use]
     pub fn message(message: MessageSubmission) -> Self {
         let id = match &message.author {
-            MessageAuthor::Source { message_id, .. } => message_id.clone(),
-            MessageAuthor::User => uuid::Uuid::new_v4().to_string(),
+            MessageAuthor::Source { message_id, .. } => Arc::clone(message_id),
+            MessageAuthor::User => uuid::Uuid::new_v4().to_string().into(),
         };
         Self {
             id,
@@ -123,7 +125,7 @@ impl Submission {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionContext {
     /// Opaque identity of the framework host that owns this session.
-    pub owner_id: String,
+    pub owner_id: Arc<str>,
     /// Opaque tenant or organization identifier.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tenant_id: Option<String>,
@@ -162,9 +164,9 @@ impl SessionContext {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolCall {
     /// The call identifier.
-    pub call_id: String,
+    pub call_id: Arc<str>,
     /// The name.
-    pub name: String,
+    pub name: Arc<str>,
     /// The arguments.
     pub arguments: serde_json::Value,
 }
@@ -221,9 +223,9 @@ impl ToolLoad {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelInfo {
     /// The model.
-    pub model: String,
+    pub model: Arc<str>,
     /// The reasoning effort.
-    pub reasoning_effort: Option<String>,
+    pub reasoning_effort: Option<Arc<str>>,
 }
 
 /// How a model route makes newly discovered tool schemas available.
@@ -251,13 +253,13 @@ pub enum ModelCapability {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelChoice {
     /// The route.
-    pub route: String,
+    pub route: Arc<str>,
     /// The group.
-    pub group: String,
+    pub group: Arc<str>,
     /// The model.
-    pub model: String,
+    pub model: Arc<str>,
     /// The route variant: reasoning effort, image quality, or the voice of a voice model.
-    pub reasoning_effort: Option<String>,
+    pub reasoning_effort: Option<Arc<str>>,
     /// Display label of the route variant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variant_label: Option<String>,
@@ -291,14 +293,14 @@ pub enum MessageSource {
     /// Coordination from another conversation within the recipient's existing permissions.
     Session {
         /// The source session identifier.
-        session_id: String,
+        session_id: Arc<str>,
     },
     /// Advisory evidence from a host-owned integration or lifecycle subscription.
     External {
         /// The configured source identifier.
         source_id: String,
         /// The immutable event identifier within that source.
-        event_id: String,
+        event_id: Arc<str>,
     },
 }
 
@@ -323,15 +325,15 @@ pub enum MessageAuthor {
     /// A message from a trusted host-attributed source, without new user authority.
     Source {
         /// The message identifier.
-        message_id: String,
+        message_id: Arc<str>,
         /// The provenance of this message.
         source: MessageSource,
         /// Immediate causal parent carried through peer coordination.
-        cause_id: Option<String>,
+        cause_id: Option<Arc<str>>,
         /// Bounded causal ancestry established by the host.
-        ancestry: Vec<String>,
+        ancestry: Vec<Arc<str>>,
         /// The handle.
-        handle: String,
+        handle: Arc<str>,
         /// Optional semantic icon for the sending peer.
         #[serde(skip_serializing_if = "Option::is_none")]
         symbol: Option<FrontendSymbol>,
@@ -341,7 +343,7 @@ pub enum MessageAuthor {
 impl MessageAuthor {
     /// Retains source ancestry when a source turn coordinates with another session.
     #[must_use]
-    pub fn causal_origin(&self) -> (Option<String>, Vec<String>) {
+    pub fn causal_origin(&self) -> (Option<Arc<str>>, Vec<Arc<str>>) {
         match self {
             Self::User => (None, Vec::new()),
             Self::Source {
@@ -351,17 +353,17 @@ impl MessageAuthor {
                 source,
                 ..
             } => {
-                let mut ancestry = ancestry.clone();
+                let mut lineage = ancestry.iter().map(Arc::clone).collect::<Vec<_>>();
                 let origin = cause_id.as_ref().or(match source {
                     MessageSource::External { event_id, .. } => Some(event_id),
                     MessageSource::Session { .. } => None,
                 });
                 for id in origin.into_iter().chain(std::iter::once(message_id)) {
-                    if !ancestry.contains(id) {
-                        ancestry.push(id.clone());
+                    if !lineage.contains(id) {
+                        lineage.push(Arc::clone(id));
                     }
                 }
-                (Some(message_id.clone()), ancestry)
+                (Some(Arc::clone(message_id)), lineage)
             }
         }
     }
@@ -395,7 +397,9 @@ impl std::str::FromStr for ActiveMessageDelivery {
         serde::Deserialize::deserialize(
             serde::de::value::StrDeserializer::<serde::de::value::Error>::new(value),
         )
-        .map_err(|_| crate::Error::Config(format!("unsupported messages delivery `{value}`")))
+        .map_err(|error| {
+            crate::Error::Config(format!("unsupported messages delivery `{value}`: {error}"))
+        })
     }
 }
 
@@ -581,21 +585,21 @@ pub enum Op {
     /// Abort one active turn.
     Interrupt {
         /// The active turn identifier.
-        turn_id: String,
+        turn_id: Arc<str>,
     },
     /// Resolve a paused tool batch.
     ExecApproval {
         /// The identifier.
-        id: String,
+        id: Arc<str>,
         /// The decision.
         decision: ReviewDecision,
     },
     /// Invokes a command owned by one capability.
     CapabilityCommand {
         /// The capability.
-        capability: String,
+        capability: Arc<str>,
         /// The command.
-        command: String,
+        command: Arc<str>,
         /// The arguments.
         arguments: String,
         /// Optional caller-editable text kept separate from routing arguments.
@@ -615,7 +619,7 @@ pub enum Op {
     /// Requests that the frontend reopen an existing session.
     ResumeSession {
         /// The session identifier to reopen.
-        session_id: String,
+        session_id: Arc<str>,
     },
 }
 
@@ -623,8 +627,8 @@ impl Op {
     /// Invokes a capability command without editable input or a message target.
     #[must_use]
     pub fn command(
-        capability: impl Into<String>,
-        command: impl Into<String>,
+        capability: impl Into<Arc<str>>,
+        command: impl Into<Arc<str>>,
         arguments: impl Into<String>,
     ) -> Self {
         Self::CapabilityCommand {
@@ -679,7 +683,7 @@ pub enum EventMsg {
     /// Selects the submission rejected case.
     SubmissionRejected(SubmissionRejectedEvent),
     /// Selects the session configured case.
-    SessionConfigured(SessionConfiguredEvent),
+    SessionConfigured(Arc<SessionConfiguredEvent>),
     #[serde(rename = "turn_started")]
     /// Selects the turn started case.
     TurnStarted(TurnStartedEvent),
@@ -695,7 +699,7 @@ pub enum EventMsg {
     /// Selects the assistant content delta case.
     AssistantContentDelta(AssistantContentDeltaEvent),
     /// Selects the model step started case.
-    ModelStepStarted(ModelStepStartedEvent),
+    ModelStepStarted(Arc<ModelStepStartedEvent>),
     /// Selects the model step completed case.
     ModelStepCompleted(ModelStepCompletedEvent),
     /// Selects the session history case.
@@ -730,14 +734,59 @@ impl EventMsg {
         match self {
             Self::Message(message) => Some(&mut message.message_target),
             Self::AssistantMessage(message) => Some(&mut message.message_target),
-            _ => None,
+            Self::MessageDelta(_)
+            | Self::Error(_)
+            | Self::Warning(_)
+            | Self::SubmissionRejected(_)
+            | Self::SessionConfigured(_)
+            | Self::TurnStarted(_)
+            | Self::TurnComplete(_)
+            | Self::TurnAborted(_)
+            | Self::AssistantContentDelta(_)
+            | Self::ModelStepStarted(_)
+            | Self::ModelStepCompleted(_)
+            | Self::SessionHistory(_)
+            | Self::ModelChanged(_)
+            | Self::SessionResumeRequested(_)
+            | Self::ToolCallBegin(_)
+            | Self::ToolCallEnd(_)
+            | Self::ToolLoad(_)
+            | Self::ExecApprovalRequest(_)
+            | Self::TokenCount(_)
+            | Self::ContextCompacted
+            | Self::WebSearchBegin(_)
+            | Self::WebSearchEnd(_)
+            | Self::Frontend(_) => None,
         }
     }
 
     pub(crate) fn message(&self) -> Option<&MessageEvent> {
         match self {
             Self::Message(message) => Some(message),
-            _ => None,
+            Self::MessageDelta(_)
+            | Self::Error(_)
+            | Self::Warning(_)
+            | Self::SubmissionRejected(_)
+            | Self::SessionConfigured(_)
+            | Self::TurnStarted(_)
+            | Self::TurnComplete(_)
+            | Self::TurnAborted(_)
+            | Self::AssistantMessage(_)
+            | Self::AssistantContentDelta(_)
+            | Self::ModelStepStarted(_)
+            | Self::ModelStepCompleted(_)
+            | Self::SessionHistory(_)
+            | Self::ModelChanged(_)
+            | Self::SessionResumeRequested(_)
+            | Self::ToolCallBegin(_)
+            | Self::ToolCallEnd(_)
+            | Self::ToolLoad(_)
+            | Self::ExecApprovalRequest(_)
+            | Self::TokenCount(_)
+            | Self::ContextCompacted
+            | Self::WebSearchBegin(_)
+            | Self::WebSearchEnd(_)
+            | Self::Frontend(_) => None,
         }
     }
 }
@@ -760,46 +809,48 @@ pub enum ModelEvent {
     /// Selects the web search started case.
     WebSearchStarted {
         /// The call identifier.
-        call_id: String,
+        call_id: Arc<str>,
     },
     /// Selects the web search completed case.
     WebSearchCompleted {
         /// The call identifier.
-        call_id: String,
+        call_id: Arc<str>,
         /// The action.
         action: WebSearchAction,
     },
 }
 
 /// Tracks streamed operations whose terminal event must be synthesized on failure.
-#[derive(Clone, Default)]
+#[derive(Default)]
 pub(crate) struct ModelEventTracker {
-    pending_web_searches: std::sync::Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
+    pending_web_searches: std::sync::Mutex<std::collections::BTreeSet<Arc<str>>>,
 }
 
 impl ModelEventTracker {
     pub(crate) fn observe(&self, event: &ModelEvent) -> crate::Result<()> {
-        let mut pending = self
-            .pending_web_searches
-            .lock()
-            .map_err(|_| crate::Error::Stopped("model event tracker is unavailable".into()))?;
+        let mut pending = self.pending_web_searches.lock().map_err(|error| {
+            crate::Error::Stopped(format!("model event tracker is unavailable: {error}"))
+        })?;
         match event {
             ModelEvent::WebSearchStarted { call_id } => {
-                pending.insert(call_id.clone());
+                pending.insert(Arc::clone(call_id));
             }
             ModelEvent::WebSearchCompleted { call_id, .. } => {
                 pending.remove(call_id);
             }
-            _ => {}
+            ModelEvent::TextDelta(_)
+            | ModelEvent::CommentaryDelta(_)
+            | ModelEvent::ReasoningDelta(_)
+            | ModelEvent::ToolCallReady(_) => {}
         }
+        drop(pending);
         Ok(())
     }
 
     pub(crate) fn interrupted(&self) -> crate::Result<Vec<ModelEvent>> {
-        let mut pending = self
-            .pending_web_searches
-            .lock()
-            .map_err(|_| crate::Error::Stopped("model event tracker is unavailable".into()))?;
+        let mut pending = self.pending_web_searches.lock().map_err(|error| {
+            crate::Error::Stopped(format!("model event tracker is unavailable: {error}"))
+        })?;
         Ok(std::mem::take(&mut *pending)
             .into_iter()
             .map(|call_id| ModelEvent::WebSearchCompleted {
@@ -967,9 +1018,9 @@ mod tests {
 
     #[test]
     fn session_configured_has_a_stable_wire_shape() {
-        let event = EventMsg::SessionConfigured(SessionConfiguredEvent {
+        let event = EventMsg::SessionConfigured(Arc::new(SessionConfiguredEvent {
             session_id: "session-1".into(),
-            context: SessionContext {
+            context: Arc::new(SessionContext {
                 owner_id: "bot-1".into(),
                 tenant_id: Some("tenant-1".into()),
                 user_id: Some("user-1".into()),
@@ -977,14 +1028,14 @@ mod tests {
                 workspace_id: Some("workspace-1".into()),
                 workspace_label: Some("Project One".into()),
                 origin_label: Some("routine".into()),
-            },
+            }),
             model: ModelChangedEvent {
                 route: "default".into(),
                 model: "test-model".into(),
                 reasoning_effort: Some("high".into()),
                 model_context_window: Some(128_000),
             },
-        });
+        }));
 
         assert_eq!(
             serde_json::to_value(event).expect("serialize session event"),
@@ -1123,7 +1174,7 @@ mod tests {
             total_tokens: i64::MAX,
             ..TokenUsage::default()
         };
-        let original = total.clone();
+        let original = total;
 
         assert!(
             total

@@ -21,7 +21,8 @@ pub(super) fn read_file(root: Dir, relative: &Path, requested: &str) -> Result<S
     if bytes.len() > MAX_FILE_BYTES {
         return Err(Error::Sandbox("file exceeds read limit".into()));
     }
-    String::from_utf8(bytes).map_err(|_| Error::Sandbox(format!("{requested} is not valid UTF-8")))
+    String::from_utf8(bytes)
+        .map_err(|error| Error::Sandbox(format!("{requested} is not valid UTF-8: {error}")))
 }
 
 pub(super) fn read_binary_file(
@@ -53,7 +54,7 @@ pub(super) fn read_file_range(
     }
     file.seek(std::io::SeekFrom::Start(offset))?;
     let length = usize::try_from(size.saturating_sub(offset).min(max_bytes as u64))
-        .map_err(|_| Error::Sandbox("file range is unsupported".into()))?;
+        .map_err(|error| Error::Sandbox(format!("file range is unsupported: {error}")))?;
     let mut data = vec![0; length];
     file.read_exact(&mut data)?;
     let end = offset.saturating_add(length as u64);
@@ -63,13 +64,17 @@ pub(super) fn read_file_range(
 fn open_regular_file(root: Dir, relative: &Path, requested: &str) -> Result<cap_std::fs::File> {
     let name = relative
         .file_name()
-        .ok_or_else(|| Error::Sandbox(requested.to_string()))?;
-    let parent = open_parent(root, relative.parent().unwrap_or(Path::new("")), requested)?;
+        .ok_or_else(|| Error::Sandbox(requested.to_owned()))?;
+    let parent = open_parent(
+        root,
+        relative.parent().unwrap_or_else(|| Path::new("")),
+        requested,
+    )?;
     let before = parent
         .symlink_metadata(name)
-        .map_err(|_| Error::Sandbox(requested.to_string()))?;
+        .map_err(|error| Error::Sandbox(format!("{requested}: {error}")))?;
     if before.is_symlink() || !before.is_file() {
-        return Err(Error::Sandbox(requested.to_string()));
+        return Err(Error::Sandbox(requested.to_owned()));
     }
     open_checked_file(&parent, name, &before, requested)
 }
@@ -91,17 +96,17 @@ fn open_checked_file(
     }
     let file = parent
         .open_with(name, &options)
-        .map_err(|_| Error::Sandbox(requested.to_string()))?;
+        .map_err(|error| Error::Sandbox(format!("{requested}: {error}")))?;
     let opened = file.metadata()?;
     let current = parent
         .symlink_metadata(name)
-        .map_err(|_| Error::Sandbox(requested.to_string()))?;
+        .map_err(|error| Error::Sandbox(format!("{requested}: {error}")))?;
     if !opened.is_file()
         || current.is_symlink()
         || !same_cap_file(before, &opened)
         || !same_cap_file(&opened, &current)
     {
-        return Err(Error::Sandbox(requested.to_string()));
+        return Err(Error::Sandbox(requested.to_owned()));
     }
     Ok(file)
 }
@@ -110,7 +115,11 @@ pub(super) fn remove_file(root: Dir, relative: &Path, requested: &str) -> Result
     let name = relative
         .file_name()
         .ok_or_else(|| Error::Sandbox(requested.into()))?;
-    let parent = open_parent(root, relative.parent().unwrap_or(Path::new("")), requested)?;
+    let parent = open_parent(
+        root,
+        relative.parent().unwrap_or_else(|| Path::new("")),
+        requested,
+    )?;
     let metadata = parent.symlink_metadata(name)?;
     if metadata.is_symlink() {
         return Err(Error::Sandbox(format!(
@@ -134,11 +143,15 @@ pub(super) fn atomic_write(
 ) -> Result<()> {
     let target = relative
         .file_name()
-        .ok_or_else(|| Error::Sandbox(requested.to_string()))?;
-    let parent = open_parent(root, relative.parent().unwrap_or(Path::new("")), requested)?;
+        .ok_or_else(|| Error::Sandbox(requested.to_owned()))?;
+    let parent = open_parent(
+        root,
+        relative.parent().unwrap_or_else(|| Path::new("")),
+        requested,
+    )?;
     let permissions = match parent.symlink_metadata(target) {
         Ok(metadata) if metadata.is_symlink() || !metadata.is_file() => {
-            return Err(Error::Sandbox(requested.to_string()));
+            return Err(Error::Sandbox(requested.to_owned()));
         }
         Ok(metadata) => Some(metadata.permissions()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
@@ -159,8 +172,10 @@ pub(super) fn atomic_write(
         sync_directory(&parent)?;
         Ok(())
     })();
-    if result.is_err() {
-        let _ = parent.remove_file(&temporary);
+    if result.is_err()
+        && let Err(error) = parent.remove_file(&temporary)
+    {
+        tracing::debug!(%error, "failed write could not remove its temporary file");
     }
     result
 }
@@ -176,15 +191,15 @@ fn open_parent(mut parent: Dir, path: &Path, requested: &str) -> Result<Dir> {
         };
         let before = parent
             .symlink_metadata(name)
-            .map_err(|_| Error::Sandbox(requested.to_string()))?;
+            .map_err(|error| Error::Sandbox(format!("{requested}: {error}")))?;
         if before.is_symlink() || !before.is_dir() {
-            return Err(Error::Sandbox(requested.to_string()));
+            return Err(Error::Sandbox(requested.to_owned()));
         }
         let next = parent
             .open_dir(name)
-            .map_err(|_| Error::Sandbox(requested.to_string()))?;
+            .map_err(|error| Error::Sandbox(format!("{requested}: {error}")))?;
         if !same_cap_file(&before, &next.dir_metadata()?) {
-            return Err(Error::Sandbox(requested.to_string()));
+            return Err(Error::Sandbox(requested.to_owned()));
         }
         parent = next;
     }
@@ -229,7 +244,7 @@ mod tests {
         let _reader = std::thread::spawn(move || {
             let rejected =
                 open_checked_file(&parent, std::ffi::OsStr::new("file"), &before, "file").is_err();
-            let _ = sender.send(rejected);
+            sender.send(rejected).expect("report FIFO result");
         });
         match receiver.recv_timeout(Duration::from_secs(2)) {
             Ok(rejected) => assert!(rejected, "a replaced FIFO must be rejected"),
@@ -240,7 +255,7 @@ mod tests {
                     .write(true)
                     .custom_flags(libc::O_NONBLOCK)
                     .open(&path);
-                let _ = receiver.recv_timeout(Duration::from_secs(2));
+                let _released = receiver.recv_timeout(Duration::from_secs(2));
                 panic!("file open did not reject the FIFO promptly: {error}");
             }
         }

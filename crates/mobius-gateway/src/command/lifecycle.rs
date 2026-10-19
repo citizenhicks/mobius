@@ -21,6 +21,10 @@ pub(super) struct StartupGuard {
     pub(super) file: File,
 }
 
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the server is borrowed by the serving future, which runs until shutdown"
+)]
 pub(super) async fn serve(
     state_dir: PathBuf,
     lock_startup: bool,
@@ -28,9 +32,8 @@ pub(super) async fn serve(
     load_local_client: fn(&Endpoint) -> Result<Option<String>>,
 ) -> Result<()> {
     let (store, config) = ConfigStore::open(state_dir)?;
-    let state_dir = store.state_dir().to_path_buf();
     let startup = lock_startup
-        .then(|| StartupGuard::create(&state_dir))
+        .then(|| StartupGuard::create(store.state_dir()))
         .transpose()?;
     #[cfg(not(unix))]
     let _ = load_local_client;
@@ -39,8 +42,9 @@ pub(super) async fn serve(
         .await?
         .is_some()
     {
-        println!("gateway is already running at the same or a newer version");
-        return Ok(());
+        return Ok(print_line(format_args!(
+            "gateway is already running at the same or a newer version"
+        ))?);
     }
     #[cfg(unix)]
     ensure_gateway_stopped(&store, &config)?;
@@ -48,7 +52,7 @@ pub(super) async fn serve(
     if let Some((endpoint, token)) = provision_cloudflare_local_client(&auth, &config)? {
         save_local_client(&endpoint, token)?;
     }
-    let mut server = GatewayServer::open(state_dir.clone()).await?;
+    let mut server = GatewayServer::open(store.state_dir().to_path_buf()).await?;
     let ready = server.notify_ready();
     let mut tunnel = CloudflareTunnel::start(&store, &config)?;
     let endpoint = match &mut tunnel {
@@ -65,14 +69,14 @@ pub(super) async fn serve(
     tokio::select! {
         biased;
         result = &mut serving => return result,
-        result = ready => result.map_err(|_| Error::Config("gateway stopped before becoming ready".into()))?,
+        result = ready => result.map_err(|error| Error::Config(format!("gateway stopped before becoming ready: {error}")))?,
     }
     // The parent treats this locked record as readiness, so publish it only after
     // the serving loop has completed initialization and can accept connections.
-    let _process_record = ProcessRecordGuard::create(&state_dir, endpoint.as_ref())?;
+    let _process_record = ProcessRecordGuard::create(store.state_dir(), endpoint.as_ref())?;
     drop(startup);
-    println!("gateway serving in foreground");
-    print_listener(&config, endpoint.as_ref());
+    print_line(format_args!("gateway serving in foreground"))?;
+    print_listener(&config, endpoint.as_ref())?;
     tokio::select! {
         result = &mut serving => result,
         result = async {
@@ -101,12 +105,10 @@ pub(super) async fn serve_in_background(
     )
     .await?
     else {
-        println!("gateway start cancelled");
-        return Ok(());
+        return Ok(print_line(format_args!("gateway start cancelled"))?);
     };
-    println!("gateway running (pid {})", process.pid);
-    print_listener(&config, process.endpoint()?.as_ref());
-    Ok(())
+    print_line(format_args!("gateway running (pid {})", process.pid))?;
+    Ok(print_listener(&config, process.endpoint()?.as_ref())?)
 }
 
 /// Starts the configured detached gateway, replacing an older running release.
@@ -128,21 +130,21 @@ pub(super) async fn start_background_gateway(
     terminations: &mut TokioSignal,
     load_local_client: fn(&Endpoint) -> Result<Option<String>>,
 ) -> Result<Option<ProcessRecord>> {
-    let state_dir = fs::canonicalize(state_dir)?;
+    let (store, config) = ConfigStore::open(state_dir.to_path_buf())?;
+    let state_dir = store.state_dir();
     let process_path = state_dir.join(PROCESS_FILE);
-    let (store, config) = ConfigStore::open(state_dir.clone())?;
     if let Some(process) = reuse_current_gateway(&store, &config, None, load_local_client).await? {
         return Ok(Some(process));
     }
 
-    let log = tempfile::NamedTempFile::new_in(&state_dir)?;
+    let log = tempfile::NamedTempFile::new_in(state_dir)?;
     log.as_file().set_permissions(mobius::owner_only::file())?;
     let mut command = TokioCommand::new(std::env::current_exe()?);
     command
         .arg("__serve")
         .arg("--state-dir")
-        .arg(&state_dir)
-        .current_dir(&state_dir)
+        .arg(state_dir)
+        .current_dir(state_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::from(log.reopen()?));
@@ -217,7 +219,7 @@ pub(super) async fn start_background_gateway(
 pub(super) fn macos_gateway_path(inherited: Option<&std::ffi::OsStr>) -> OsString {
     // Finder-launched apps omit Homebrew; retain the user's existing tool priority.
     let mut path = inherited
-        .unwrap_or(std::ffi::OsStr::new("/usr/bin:/bin:/usr/sbin:/sbin"))
+        .unwrap_or_else(|| std::ffi::OsStr::new("/usr/bin:/bin:/usr/sbin:/sbin"))
         .to_os_string();
     path.push(":/opt/homebrew/bin:/usr/local/bin");
     path
@@ -279,7 +281,7 @@ pub(super) async fn reuse_current_gateway(
         endpoint.local_gateway_version(config.listen, &token),
     )
     .await
-    .map_err(|_| Error::Config("gateway version check timed out".into()))??;
+    .map_err(|elapsed| Error::Config(format!("gateway version check timed out: {elapsed}")))??;
     if !gateway_version_is_older(&version, env!("CARGO_PKG_VERSION"))? {
         return Ok(Some(process));
     }
@@ -304,7 +306,9 @@ pub(super) async fn stop_background_child(child: &mut Child, process_path: &Path
     if let Some(pid) = child.id() {
         terminate_process_group(pid);
     }
-    let _ = child.wait().await;
+    if let Err(error) = child.wait().await {
+        tracing::warn!(%error, "failed to reap background gateway child");
+    }
     remove_unlocked_process_record(process_path);
 }
 
@@ -313,8 +317,10 @@ pub(super) fn remove_unlocked_process_record(path: &Path) {
     let Ok(file) = OpenOptions::new().read(true).write(true).open(path) else {
         return;
     };
-    if file.try_lock().is_ok() {
-        let _ = fs::remove_file(path);
+    if file.try_lock().is_ok()
+        && let Err(error) = fs::remove_file(path)
+    {
+        tracing::warn!(%error, path = %path.display(), "failed to remove stale process record");
     }
 }
 
@@ -333,8 +339,10 @@ pub fn startup_error(
     max_bytes: u64,
 ) -> Error {
     let mut details = String::new();
-    if let Ok(file) = File::open(log.path()) {
-        let _ = file.take(max_bytes).read_to_string(&mut details);
+    if let Ok(file) = File::open(log.path())
+        && let Err(error) = file.take(max_bytes).read_to_string(&mut details)
+    {
+        tracing::warn!(%error, "failed to read gateway startup log");
     }
     let details = details.trim();
     Error::Config(if details.is_empty() {
@@ -344,22 +352,26 @@ pub fn startup_error(
     })
 }
 
-pub(super) fn print_listener(config: &GatewayConfig, runtime_endpoint: Option<&Endpoint>) {
+pub(super) fn print_listener(
+    config: &GatewayConfig,
+    runtime_endpoint: Option<&Endpoint>,
+) -> std::io::Result<()> {
     if let Some(cloudflare) = &config.cloudflare {
         if let Some(endpoint) = runtime_endpoint
             .map(ToString::to_string)
             .or_else(|| cloudflare.endpoint())
         {
-            println!("public endpoint: {endpoint}");
+            print_line(format_args!("public endpoint: {endpoint}"))?;
         } else {
-            println!("public endpoint: assigned when the gateway starts");
+            print_line(format_args!(
+                "public endpoint: assigned when the gateway starts"
+            ))?;
         }
-        println!("local endpoint: tcp://{}", config.listen);
-        println!("tunnel origin: http://{}", config.listen);
-        return;
+        print_line(format_args!("local endpoint: tcp://{}", config.listen))?;
+        return print_line(format_args!("tunnel origin: http://{}", config.listen));
     }
     let scheme = if config.tls.is_some() { "tls" } else { "tcp" };
-    println!("listener: {scheme}://{}", config.listen);
+    print_line(format_args!("listener: {scheme}://{}", config.listen))
 }
 
 #[cfg(unix)]
@@ -373,12 +385,10 @@ pub(super) fn exit_gateway(state_dir: PathBuf) -> Result<()> {
 pub(super) fn stop_gateway(state_dir: &Path, expected_pid: Option<u32>) -> Result<()> {
     let path = state_dir.join(PROCESS_FILE);
     let Some((record, file)) = open_process_record(&path)? else {
-        eprintln!("gateway is stopped");
-        return Ok(());
+        return Ok(eprint_line(format_args!("gateway is stopped"))?);
     };
     if !process_is_running(&file)? {
-        eprintln!("gateway is stopped");
-        return Ok(());
+        return Ok(eprint_line(format_args!("gateway is stopped"))?);
     }
     if let Some(expected_pid) = expected_pid
         && record.pid != expected_pid
@@ -390,11 +400,10 @@ pub(super) fn stop_gateway(state_dir: &Path, expected_pid: Option<u32>) -> Resul
     }
     let pid = i32::try_from(record.pid)
         .map(Pid::from_raw)
-        .map_err(|_| Error::Config("invalid gateway process record".into()))?;
+        .map_err(|error| Error::Config(format!("invalid gateway process record: {error}")))?;
     if let Err(error) = kill(pid, Signal::SIGINT) {
         if !process_is_running(&file)? {
-            eprintln!("gateway is stopped");
-            return Ok(());
+            return Ok(eprint_line(format_args!("gateway is stopped"))?);
         }
         return Err(Error::Config(format!(
             "failed to interrupt gateway: {error}"
@@ -411,8 +420,7 @@ pub(super) fn stop_gateway(state_dir: &Path, expected_pid: Option<u32>) -> Resul
         }
         std::thread::sleep(EXIT_POLL_INTERVAL);
     }
-    eprintln!("gateway stopped");
-    Ok(())
+    Ok(eprint_line(format_args!("gateway stopped"))?)
 }
 
 #[cfg(not(unix))]
@@ -479,8 +487,12 @@ impl Drop for ProcessRecordGuard {
     fn drop(&mut self) {
         #[cfg(unix)]
         {
-            let _ = fs::remove_file(&self.path);
-            let _ = self.file.unlock();
+            if let Err(error) = fs::remove_file(&self.path) {
+                tracing::warn!(%error, path = %self.path.display(), "failed to remove process record");
+            }
+            if let Err(error) = self.file.unlock() {
+                tracing::warn!(%error, "failed to unlock process record");
+            }
         }
     }
 }
@@ -514,7 +526,9 @@ impl StartupGuard {
 impl Drop for StartupGuard {
     fn drop(&mut self) {
         #[cfg(unix)]
-        let _ = self.file.unlock();
+        if let Err(error) = self.file.unlock() {
+            tracing::warn!(%error, "failed to unlock gateway startup lock");
+        }
     }
 }
 

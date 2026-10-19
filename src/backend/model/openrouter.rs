@@ -46,17 +46,16 @@ fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn Model>> {
         MANIFEST
             .web_search_type
             .as_deref()
-            .expect("web search wire type"),
+            .ok_or_else(|| Error::Config("OpenRouter web search wire type is required".into()))?,
     )
     .with_service_tier(config.service_tier)
-    .with_image_api(Some(&super::image_generation::IMAGE_APIS["openrouter"]));
+    .with_image_api(Some(super::image_generation::image_api("openrouter")?));
     let provider = match tool_discovery {
-        ToolDiscoveryMode::Native => provider.with_inline_tool_search(
-            MANIFEST
-                .tool_search_type
-                .as_deref()
-                .expect("tool search wire type"),
-        ),
+        ToolDiscoveryMode::Native => {
+            provider.with_inline_tool_search(MANIFEST.tool_search_type.as_deref().ok_or_else(
+                || Error::Config("OpenRouter tool search wire type is required".into()),
+            )?)
+        }
         ToolDiscoveryMode::Rebuild => provider.with_tool_discovery(ToolDiscoveryMode::Rebuild),
     };
     let provider = match config.reasoning_effort {

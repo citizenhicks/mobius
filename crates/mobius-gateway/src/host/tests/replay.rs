@@ -7,7 +7,7 @@ fn event_larger_than_replay_budget_is_delivered_without_retaining_its_cache() {
     let mut bytes = 0;
     let frame = ServerFrame::new(ServerMessage::Error {
         code: "large".into(),
-        message: "x".repeat(MAX_REPLAY_BYTES / 2),
+        message: "x".repeat(MAX_REPLAY_BYTES / 2).into(),
         fatal: false,
     });
     assert!(publish_frame(&mut replay, &mut bytes, &events, frame, false).unwrap());
@@ -21,10 +21,10 @@ fn replay_is_bounded_by_event_and_cached_bytes() {
     let (events, _) = broadcast::channel(1);
     let mut replay = VecDeque::new();
     let mut replay_bytes = 0;
-    let large_message = "x".repeat(MAX_REPLAY_BYTES / 4);
+    let large_message: Arc<str> = "x".repeat(MAX_REPLAY_BYTES / 4).into();
     let first = ServerFrame::new(ServerMessage::Error {
         code: "first".into(),
-        message: large_message.clone(),
+        message: Arc::clone(&large_message),
         fatal: false,
     });
     let second = ServerFrame::new(ServerMessage::Error {
@@ -51,12 +51,12 @@ fn replacement_startup_is_published_only_after_ready() {
     let (events, mut receiver) = broadcast::channel(4);
     let ready = ServerFrame::new(ServerMessage::Error {
         code: "ready".into(),
-        message: String::new(),
+        message: "".into(),
         fatal: false,
     });
     let startup = ServerFrame::new(ServerMessage::Error {
         code: "startup".into(),
-        message: String::new(),
+        message: "".into(),
         fatal: false,
     });
 

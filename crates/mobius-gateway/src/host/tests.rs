@@ -1,6 +1,7 @@
 use mobius::backend::checkpoint::Checkpoint;
 use mobius::protocol::TokenUsage;
 
+use super::session::{HostCommand, HostInner, ProviderCutoverStatus};
 use super::*;
 use mobius::backend::checkpoint::ExecutionStats;
 
@@ -47,9 +48,11 @@ impl GatewayHost {
                         Some(HostCommand::RuntimeIsIdle { reply }) => {
                             if let Some(entered) = entered.take() {
                                 held_reply = Some(reply);
-                                let _ = entered.send(());
-                            } else {
-                                let _ = reply.send(Ok(false));
+                                if entered.send(()).is_err() {
+                                    tracing::debug!("activity probe observer stopped waiting");
+                                }
+                            } else if reply.send(Ok(false)).is_err() {
+                                tracing::debug!("activity probe requester stopped waiting");
                             }
                         }
                         Some(HostCommand::Shutdown) | None => break,
@@ -119,7 +122,7 @@ pub(crate) fn timer_definition(
         workspace: workspace.into(),
         instructions: instructions.into(),
         bindings: vec![crate::wire::RoutineBinding {
-            id: Uuid::new_v4().to_string(),
+            id: Uuid::new_v4().to_string().into(),
             on: crate::wire::HookSelector::Schedule { schedule, ends_at },
             action: crate::wire::RoutineAction::Start,
         }],

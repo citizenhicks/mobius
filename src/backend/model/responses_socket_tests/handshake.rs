@@ -122,6 +122,7 @@ impl OpenAiAuthorization for RefreshingAuthorization {
             let mut token = self.token.lock().await;
             if token.as_str() == rejected_token {
                 *token = "fresh-token".into();
+                drop(token);
                 self.refreshes
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }

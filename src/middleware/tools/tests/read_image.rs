@@ -26,7 +26,7 @@ async fn extensionless_images_are_durable_and_reinspectable_after_source_deletio
     let mut catalog = Catalog::default();
     catalog
         .register(Arc::new(ReadFile {
-            store: store.clone(),
+            store: store.clone().into(),
         }))
         .expect("register");
     let calls = finalize_and_bind(
@@ -40,11 +40,11 @@ async fn extensionless_images_are_durable_and_reinspectable_after_source_deletio
     let result = execute_batch(
         &catalog,
         calls,
-        sandbox.clone(),
+        Arc::clone(&sandbox),
         &test_permissions(&[]),
-        "turn",
-        "test",
-        &crate::protocol::MessageAuthor::User,
+        &"turn".into(),
+        &"test".into(),
+        &crate::protocol::MessageAuthor::User.into(),
     )
     .await
     .remove(0);
@@ -85,11 +85,11 @@ async fn extensionless_images_are_durable_and_reinspectable_after_source_deletio
     let result = execute_batch(
         &catalog,
         [call.clone()],
-        sandbox.clone(),
+        Arc::clone(&sandbox),
         &test_permissions(&[]),
-        "turn",
-        "test",
-        &crate::protocol::MessageAuthor::User,
+        &"turn".into(),
+        &"test".into(),
+        &crate::protocol::MessageAuthor::User.into(),
     )
     .await
     .remove(0);
@@ -106,9 +106,9 @@ async fn extensionless_images_are_durable_and_reinspectable_after_source_deletio
         [call],
         sandbox,
         &other_session,
-        "turn",
-        "test",
-        &crate::protocol::MessageAuthor::User,
+        &"turn".into(),
+        &"test".into(),
+        &crate::protocol::MessageAuthor::User.into(),
     )
     .await
     .remove(0);
@@ -152,7 +152,7 @@ async fn read_file_preserves_text_limits_and_rejects_ambiguous_sources() {
     let mut catalog = Catalog::default();
     catalog
         .register(Arc::new(ReadFile {
-            store: SessionFileStore::new(state.path(), None),
+            store: SessionFileStore::new(state.path(), None).into(),
         }))
         .expect("register");
     let cases = [
@@ -182,7 +182,7 @@ async fn read_file_preserves_text_limits_and_rejects_ambiguous_sources() {
         .iter()
         .enumerate()
         .map(|(index, (arguments, _, _))| ToolCall {
-            call_id: index.to_string(),
+            call_id: index.to_string().into(),
             name: "read_file".into(),
             arguments: arguments.clone(),
         })
@@ -193,9 +193,9 @@ async fn read_file_preserves_text_limits_and_rejects_ambiguous_sources() {
         calls,
         sandbox,
         &test_permissions(&[]),
-        "turn",
-        "test",
-        &crate::protocol::MessageAuthor::User,
+        &"turn".into(),
+        &"test".into(),
+        &crate::protocol::MessageAuthor::User.into(),
     )
     .await;
     assert_eq!(results.len(), cases.len());
@@ -217,7 +217,7 @@ async fn read_file_preserves_text_limits_and_rejects_ambiguous_sources() {
 fn image_file_id_heading_does_not_invent_a_workspace_link() {
     let state = tempfile::tempdir().expect("state");
     let tool = ReadFile {
-        store: SessionFileStore::new(state.path(), None),
+        store: SessionFileStore::new(state.path(), None).into(),
     };
     let block = tool
         .render(&EventMsg::ToolCallBegin(

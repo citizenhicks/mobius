@@ -133,15 +133,24 @@ COMMIT;
 
 /// Stores latest checkpoints, transcripts, and middleware state in SQLite.
 pub struct SqliteCheckpoint {
-    path: PathBuf,
+    path: Arc<Path>,
     idle_connection: Arc<Mutex<Option<CachedConnection>>>,
+}
+
+impl std::fmt::Debug for SqliteCheckpoint {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SqliteCheckpoint")
+            .field("path", &self.path)
+            .finish_non_exhaustive()
+    }
 }
 
 struct CachedConnection {
     connection: Connection,
     // ponytail: Hints are connection-local; overlapping writers may invalidate them.
     // A serialized write owner is the next step only if connection churn measures hot.
-    context: HashMap<String, ContextCache>,
+    context: HashMap<Arc<str>, ContextCache>,
 }
 
 impl SqliteCheckpoint {
@@ -186,7 +195,7 @@ impl SqliteCheckpoint {
             )));
         }
         Ok(Self {
-            path,
+            path: path.into(),
             idle_connection: Arc::new(Mutex::new(Some(CachedConnection {
                 connection,
                 context: HashMap::new(),
@@ -196,19 +205,19 @@ impl SqliteCheckpoint {
 
     async fn run<T>(
         &self,
-        operation: impl FnOnce(&mut Connection, &mut HashMap<String, ContextCache>) -> Result<T>
+        operation: impl FnOnce(&mut Connection, &mut HashMap<Arc<str>, ContextCache>) -> Result<T>
         + Send
         + 'static,
     ) -> Result<T>
     where
         T: Send + 'static,
     {
-        let path = self.path.clone();
+        let path = Arc::clone(&self.path);
         let idle_connection = Arc::clone(&self.idle_connection);
         tokio::task::spawn_blocking(move || {
             let cached = {
-                let mut idle = idle_connection.lock().map_err(|_| {
-                    Error::Checkpoint("SQLite connection cache lock poisoned".into())
+                let mut idle = idle_connection.lock().map_err(|error| {
+                    Error::Checkpoint(format!("SQLite connection cache lock poisoned: {error}"))
                 })?;
                 idle.take()
             };
@@ -220,9 +229,9 @@ impl SqliteCheckpoint {
                 },
             };
             let result = operation(&mut cached.connection, &mut cached.context);
-            let mut idle = idle_connection
-                .lock()
-                .map_err(|_| Error::Checkpoint("SQLite connection cache lock poisoned".into()))?;
+            let mut idle = idle_connection.lock().map_err(|error| {
+                Error::Checkpoint(format!("SQLite connection cache lock poisoned: {error}"))
+            })?;
             // One idle connection stays warm by design; a pool is only justified if
             // connection-open churn is ever measured.
             if idle.is_none() {
@@ -253,7 +262,7 @@ impl CheckpointStore for SqliteCheckpoint {
     }
 
     fn load<'a>(&'a self, session_id: &'a str) -> BoxFuture<'a, Result<Option<Checkpoint>>> {
-        let session_id = session_id.to_string();
+        let session_id = session_id.to_owned();
         Box::pin(self.run(move |connection, cache| {
             let transaction = connection.transaction()?;
             let data_version =
@@ -350,44 +359,28 @@ impl CheckpointStore for SqliteCheckpoint {
             transaction.commit()?;
             // This connection's own writes do not change SQLite data_version.
             for session_id in &session_ids {
-                cache.remove(session_id);
+                cache.remove(session_id.as_str());
             }
             Ok(true)
         }))
     }
 
-    fn save<'a>(
-        &'a self,
-        checkpoint: &'a Checkpoint,
-        transcript_delta: &'a [Arc<Value>],
-        execution: Option<&'a ExecutionRecord>,
-    ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            self.save_with_events(
-                Arc::new(checkpoint.clone()),
-                transcript_delta.to_vec(),
-                execution.cloned(),
-                Vec::new(),
-            )
-            .await?;
-            Ok(())
-        })
-    }
-
-    fn save_with_events<'a>(
-        &'a self,
+    fn save_with_events(
+        &self,
         checkpoint: Arc<Checkpoint>,
         transcript_delta: Vec<Arc<Value>>,
         execution: Option<ExecutionRecord>,
         events: Vec<TimestampedEvent>,
-    ) -> BoxFuture<'a, Result<Vec<JournalEvent>>> {
+    ) -> BoxFuture<'_, Result<Vec<JournalEvent>>> {
         Box::pin(self.run(move |connection, cache| {
             validate_checkpoint(&checkpoint)?;
             if let Some(execution) = &execution {
                 validate_execution(&checkpoint, execution)?;
             }
-            let sequence = i64::try_from(checkpoint.sequence).map_err(|_| {
-                Error::Checkpoint("checkpoint sequence exceeds SQLite INTEGER".into())
+            let sequence = i64::try_from(checkpoint.sequence).map_err(|error| {
+                Error::Checkpoint(format!(
+                    "checkpoint sequence exceeds SQLite INTEGER: {error}"
+                ))
             })?;
             let checkpoint_json = serde_json::to_string(&Header(&checkpoint))?;
             let session_context_json = serde_json::to_string(&checkpoint.session_context)?;
@@ -446,12 +439,12 @@ impl CheckpointStore for SqliteCheckpoint {
         &'a self,
         session_id: &'a str,
         recorded_at_ms: i64,
-        event: &'a Event,
+        event: Event,
     ) -> BoxFuture<'a, Result<JournalEvent>> {
-        let session_id = session_id.to_string();
+        let session_id = session_id.to_owned();
         let event = TimestampedEvent {
             recorded_at_ms,
-            event: event.clone(),
+            event,
         };
         Box::pin(self.run(move |connection, _cache| {
             let transaction =
@@ -467,7 +460,7 @@ impl CheckpointStore for SqliteCheckpoint {
         session_id: &'a str,
         request: EventPageRequest,
     ) -> BoxFuture<'a, Result<EventPage>> {
-        let session_id = session_id.to_string();
+        let session_id = session_id.to_owned();
         Box::pin(async move {
             if request.limit == 0 {
                 return Err(Error::Checkpoint(
@@ -483,8 +476,10 @@ impl CheckpointStore for SqliteCheckpoint {
                 .before_sequence
                 .map(i64::try_from)
                 .transpose()
-                .map_err(|_| {
-                    Error::Checkpoint("event journal cursor exceeds SQLite INTEGER".into())
+                .map_err(|error| {
+                    Error::Checkpoint(format!(
+                        "event journal cursor exceeds SQLite INTEGER: {error}"
+                    ))
                 })?;
             self.run(move |connection, _cache| {
                 // Event references and transcript payloads must share one read snapshot.
@@ -500,8 +495,8 @@ impl CheckpointStore for SqliteCheckpoint {
                     .ok_or_else(|| {
                         Error::Checkpoint("event journal session does not exist".into())
                     })?;
-                let latest_sequence = u64::try_from(latest_sequence).map_err(|_| {
-                    Error::Checkpoint("event journal sequence became negative".into())
+                let latest_sequence = u64::try_from(latest_sequence).map_err(|error| {
+                    Error::Checkpoint(format!("event journal sequence became negative: {error}"))
                 })?;
                 let mut statement = connection.prepare_cached(
                     "SELECT sequence, recorded_at_ms, event_json, stream_metrics_json
@@ -553,10 +548,12 @@ impl CheckpointStore for SqliteCheckpoint {
                     "event catch-up limit must be positive".into(),
                 ));
             }
-            let after_sequence = i64::try_from(after_sequence)
-                .map_err(|_| Error::Checkpoint("event cursor exceeds SQLite INTEGER".into()))?;
-            let limit = i64::try_from(limit)
-                .map_err(|_| Error::Checkpoint("event limit exceeds SQLite INTEGER".into()))?;
+            let after_sequence = i64::try_from(after_sequence).map_err(|error| {
+                Error::Checkpoint(format!("event cursor exceeds SQLite INTEGER: {error}"))
+            })?;
+            let limit = i64::try_from(limit).map_err(|error| {
+                Error::Checkpoint(format!("event limit exceeds SQLite INTEGER: {error}"))
+            })?;
             self.run(move |connection, _cache| {
                 // Event references and transcript payloads must share one read snapshot.
                 let transaction = connection.transaction()?;
@@ -617,8 +614,10 @@ impl CheckpointStore for SqliteCheckpoint {
             let (cursor_updated_at, cursor_sequence, cursor_session_id) = match request.cursor {
                 Some(cursor) => (
                     Some(cursor.updated_at),
-                    Some(i64::try_from(cursor.sequence).map_err(|_| {
-                        Error::Checkpoint("session cursor sequence exceeds SQLite INTEGER".into())
+                    Some(i64::try_from(cursor.sequence).map_err(|error| {
+                        Error::Checkpoint(format!(
+                            "session cursor sequence exceeds SQLite INTEGER: {error}"
+                        ))
                     })?),
                     Some(cursor.session_id),
                 ),
@@ -677,7 +676,7 @@ impl CheckpointStore for SqliteCheckpoint {
         session_id: &'a str,
         request: TranscriptPageRequest,
     ) -> BoxFuture<'a, Result<TranscriptPage>> {
-        let session_id = session_id.to_string();
+        let session_id = session_id.to_owned();
         Box::pin(async move {
             if request.max_batches == 0 {
                 return Err(Error::Checkpoint(
@@ -693,8 +692,8 @@ impl CheckpointStore for SqliteCheckpoint {
                 .before_sequence
                 .map(i64::try_from)
                 .transpose()
-                .map_err(|_| {
-                    Error::Checkpoint("transcript cursor exceeds SQLite INTEGER".into())
+                .map_err(|error| {
+                    Error::Checkpoint(format!("transcript cursor exceeds SQLite INTEGER: {error}"))
                 })?;
             self.run(move |connection, _cache| {
                 let mut statement = connection.prepare_cached(
@@ -720,8 +719,10 @@ impl CheckpointStore for SqliteCheckpoint {
                     .into_iter()
                     .map(|(sequence, created_at, json)| {
                         Ok(TranscriptBatch {
-                            sequence: u64::try_from(sequence).map_err(|_| {
-                                Error::Checkpoint("transcript row has a negative sequence".into())
+                            sequence: u64::try_from(sequence).map_err(|error| {
+                                Error::Checkpoint(format!(
+                                    "transcript row has a negative sequence: {error}"
+                                ))
                             })?,
                             created_at,
                             items: serde_json::from_str(&json)?,
@@ -745,7 +746,7 @@ impl CheckpointStore for SqliteCheckpoint {
         session_id: &'a str,
         request: ExecutionPageRequest,
     ) -> BoxFuture<'a, Result<ExecutionPage>> {
-        let session_id = session_id.to_string();
+        let session_id = session_id.to_owned();
         Box::pin(async move {
             if request.limit == 0 {
                 return Err(Error::Checkpoint(
@@ -761,7 +762,9 @@ impl CheckpointStore for SqliteCheckpoint {
                 .before_sequence
                 .map(i64::try_from)
                 .transpose()
-                .map_err(|_| Error::Checkpoint("execution cursor exceeds SQLite INTEGER".into()))?;
+                .map_err(|error| {
+                    Error::Checkpoint(format!("execution cursor exceeds SQLite INTEGER: {error}"))
+                })?;
             self.run(move |connection, _cache| {
                 let mut statement = connection.prepare_cached(
                     "SELECT sequence, record_json
@@ -783,8 +786,8 @@ impl CheckpointStore for SqliteCheckpoint {
                     .flatten()
                     .map(u64::try_from)
                     .transpose()
-                    .map_err(|_| {
-                        Error::Checkpoint("execution row has a negative sequence".into())
+                    .map_err(|error| {
+                        Error::Checkpoint(format!("execution row has a negative sequence: {error}"))
                     })?;
                 let executions = records
                     .into_iter()
@@ -806,8 +809,9 @@ impl CheckpointStore for SqliteCheckpoint {
                     "recent execution limit must be positive".into(),
                 ));
             }
-            let query_limit = i64::try_from(limit)
-                .map_err(|_| Error::Checkpoint("recent execution limit is too large".into()))?;
+            let query_limit = i64::try_from(limit).map_err(|error| {
+                Error::Checkpoint(format!("recent execution limit is too large: {error}"))
+            })?;
             self.run(move |connection, _cache| {
                 let mut statement = connection.prepare_cached(
                     "SELECT record_json
@@ -830,20 +834,19 @@ impl CheckpointStore for SqliteCheckpoint {
         &'a self,
         parent_session_id: &'a str,
         parent_sequence: u64,
-        checkpoint: &'a Checkpoint,
+        checkpoint: Checkpoint,
     ) -> BoxFuture<'a, Result<SessionSummary>> {
-        let parent_session_id = parent_session_id.to_string();
+        let parent_session_id = parent_session_id.to_owned();
         let parent_sequence = i64::try_from(parent_sequence);
         let sequence = i64::try_from(checkpoint.sequence);
         let clean = checkpoint.sequence == 0
             && checkpoint.active_execution.is_none()
             && checkpoint.pending_approval.is_none()
             && checkpoint.pending_messages.is_empty();
-        let validation = validate_checkpoint(checkpoint);
+        let validation = validate_checkpoint(&checkpoint);
         let catalog_visible = checkpoint.catalog_visible;
-        let checkpoint = checkpoint.clone();
         Box::pin(async move {
-            if parent_session_id == checkpoint.session_id {
+            if parent_session_id == *checkpoint.session_id {
                 return Err(Error::Checkpoint("a session cannot fork itself".into()));
             }
             if !clean {
@@ -851,10 +854,13 @@ impl CheckpointStore for SqliteCheckpoint {
                     "a fork must begin at a clean sequence-zero checkpoint".into(),
                 ));
             }
-            let parent_sequence = parent_sequence
-                .map_err(|_| Error::Checkpoint("parent sequence exceeds SQLite INTEGER".into()))?;
-            let sequence = sequence.map_err(|_| {
-                Error::Checkpoint("checkpoint sequence exceeds SQLite INTEGER".into())
+            let parent_sequence = parent_sequence.map_err(|error| {
+                Error::Checkpoint(format!("parent sequence exceeds SQLite INTEGER: {error}"))
+            })?;
+            let sequence = sequence.map_err(|error| {
+                Error::Checkpoint(format!(
+                    "checkpoint sequence exceeds SQLite INTEGER: {error}"
+                ))
             })?;
             validation?;
             self.run(move |connection, cache| {
@@ -949,8 +955,8 @@ impl CheckpointStore for SqliteCheckpoint {
         scope: &'a str,
         key: &'a str,
     ) -> BoxFuture<'a, Result<Option<Value>>> {
-        let scope = scope.to_string();
-        let key = key.to_string();
+        let scope = scope.to_owned();
+        let key = key.to_owned();
         Box::pin(self.run(move |connection, _cache| {
             let json = connection
                 .query_row(
@@ -969,11 +975,11 @@ impl CheckpointStore for SqliteCheckpoint {
         key: &'a str,
         value: &'a Value,
     ) -> BoxFuture<'a, Result<()>> {
-        let scope = scope.to_string();
-        let key = key.to_string();
-        let value = value.clone();
+        let scope = scope.to_owned();
+        let key = key.to_owned();
+        let json = serde_json::to_string(value);
         Box::pin(self.run(move |connection, _cache| {
-            let json = serde_json::to_string(&value)?;
+            let json = json?;
             connection.execute(
                 "INSERT INTO middleware_state (scope, key, value_json)
                  VALUES (?1, ?2, ?3)
@@ -1007,6 +1013,7 @@ fn reclaim_pages(transaction: &Transaction<'_>) -> Result<()> {
     Ok(())
 }
 
+#[derive(Clone, Copy)]
 struct SerializedCheckpoint<'a> {
     checkpoint: &'a str,
     session_context: &'a str,
@@ -1118,16 +1125,15 @@ fn summary_from_row(row: SessionRow) -> Result<SessionSummary> {
     validate_session_context(&session_context)?;
     let execution_stats: ExecutionStats = serde_json::from_str(&row.7)?;
     Ok(SessionSummary {
-        session_id: row.0,
+        session_id: row.0.into(),
         session_context,
         parent_session_id: row.1,
-        parent_sequence: row
-            .2
-            .map(u64::try_from)
-            .transpose()
-            .map_err(|_| Error::Checkpoint("session has a negative parent sequence".into()))?,
-        sequence: u64::try_from(row.3)
-            .map_err(|_| Error::Checkpoint("session has a negative sequence".into()))?,
+        parent_sequence: row.2.map(u64::try_from).transpose().map_err(|error| {
+            Error::Checkpoint(format!("session has a negative parent sequence: {error}"))
+        })?,
+        sequence: u64::try_from(row.3).map_err(|error| {
+            Error::Checkpoint(format!("session has a negative sequence: {error}"))
+        })?,
         catalog_visible: row.4,
         first_user_message: row.5,
         execution_stats,
@@ -1140,7 +1146,7 @@ fn session_cursor(session: &SessionSummary) -> SessionCursor {
     SessionCursor {
         updated_at: session.updated_at,
         sequence: session.sequence,
-        session_id: session.session_id.clone(),
+        session_id: Arc::clone(&session.session_id),
     }
 }
 
@@ -1156,10 +1162,11 @@ fn decode_checkpoint(session_id: &str, sequence: i64, json: &str) -> Result<Chec
     }
     fields.insert("context".into(), Value::Array(Vec::new()));
     let checkpoint: Checkpoint = serde_json::from_value(header)?;
-    let sequence = u64::try_from(sequence)
-        .map_err(|_| Error::Checkpoint("checkpoint row has a negative sequence".into()))?;
+    let sequence = u64::try_from(sequence).map_err(|error| {
+        Error::Checkpoint(format!("checkpoint row has a negative sequence: {error}"))
+    })?;
     validate_checkpoint(&checkpoint)?;
-    if checkpoint.session_id != session_id || checkpoint.sequence != sequence {
+    if *checkpoint.session_id != *session_id || checkpoint.sequence != sequence {
         return Err(Error::Checkpoint(
             "checkpoint row does not match its index".into(),
         ));
@@ -1284,8 +1291,10 @@ fn validate_execution_record(execution: &ExecutionRecord) -> Result<()> {
             "execution record has invalid timestamps".into(),
         ));
     }
-    let elapsed_ms = u64::try_from(execution.finished_at_ms - execution.started_at_ms)
-        .map_err(|_| Error::Checkpoint("execution elapsed time is unsupported".into()))?;
+    let elapsed_ms =
+        u64::try_from(execution.finished_at_ms - execution.started_at_ms).map_err(|error| {
+            Error::Checkpoint(format!("execution elapsed time is unsupported: {error}"))
+        })?;
     if execution.elapsed_ms != elapsed_ms {
         return Err(Error::Checkpoint(
             "execution elapsed time does not match its timestamps".into(),
@@ -1329,8 +1338,11 @@ fn decode_journal_event(
     (sequence, recorded_at_ms, json, metrics_json): (i64, i64, String, String),
 ) -> Result<JournalEvent> {
     Ok(JournalEvent {
-        sequence: u64::try_from(sequence)
-            .map_err(|_| Error::Checkpoint("event journal row has a negative sequence".into()))?,
+        sequence: u64::try_from(sequence).map_err(|error| {
+            Error::Checkpoint(format!(
+                "event journal row has a negative sequence: {error}"
+            ))
+        })?,
         recorded_at_ms,
         event: event_journal::decode_event(connection, session_id, &json)?,
         stream_metrics: serde_json::from_str(&metrics_json)?,

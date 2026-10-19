@@ -45,7 +45,7 @@ async fn attachment_hydration_survives_plaintext_checkpoint_reset() {
         .expect("submit attachment turn");
     assert_eq!(final_message(&mut agent).await, "done");
 
-    let requests = model.requests.lock().expect("requests");
+    let requests = model.requests.lock().expect("requests").clone();
     assert_eq!(requests.len(), 3);
     assert_eq!(request_image_count(&requests[1].input), 1);
     assert_eq!(request_image_count(&requests[2].input), 1);
@@ -117,7 +117,7 @@ async fn malformed_current_image_fails_but_does_not_poison_later_turns() {
         .expect("submit current image");
     assert_eq!(final_message(&mut agent).await, "image recovered");
 
-    let requests = model.requests.lock().expect("requests");
+    let requests = model.requests.lock().expect("requests").clone();
     assert_eq!(request_image_count(&requests[0].input), 0);
     assert_eq!(request_image_count(&requests[1].input), 1);
     let recovery = serde_json::to_string(&requests[1].input).expect("serialize recovery input");
@@ -142,14 +142,18 @@ async fn request_budget_failure_records_the_action_without_replaying_on_restart(
         fn exposure(&self) -> mobius::middleware::tools::ToolExposure {
             mobius::middleware::tools::ToolExposure::Direct
         }
-        fn definition(&self) -> ToolDefinition {
-            ToolDefinition {
-                name: "capture".into(),
-                description: "Capture once".into(),
-                parameters: serde_json::json!({"type":"object","properties":{}}),
-            }
+        fn definition(&self) -> &std::sync::Arc<ToolDefinition> {
+            static DEFINITION: std::sync::LazyLock<std::sync::Arc<ToolDefinition>> =
+                std::sync::LazyLock::new(|| {
+                    std::sync::Arc::new(ToolDefinition {
+                        name: "capture".into(),
+                        description: "Capture once".into(),
+                        parameters: serde_json::json!({"type":"object","properties":{}}),
+                    })
+                });
+            &DEFINITION
         }
-        fn call<'a>(&'a self, _: ToolContext, _: Value) -> BoxFuture<'a, Result<ToolResponse>> {
+        fn call(&self, _: ToolContext, _: Value) -> BoxFuture<'_, Result<ToolResponse>> {
             Box::pin(async move {
                 self.calls.fetch_add(1, Ordering::SeqCst);
                 Ok(ToolResponse {
@@ -174,7 +178,7 @@ async fn request_budget_failure_records_the_action_without_replaying_on_restart(
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let model = Arc::new(
         ScriptedModel::new(vec![
-            tool_response("action", "capture", serde_json::json!({})),
+            tool_response("action", "capture", &serde_json::json!({})),
             text_response("done"),
         ])
         .with_image_input(),
@@ -183,7 +187,7 @@ async fn request_budget_failure_records_the_action_without_replaying_on_restart(
         SqliteCheckpoint::new(workspace.path().join("history.sqlite")).expect("checkpoints"),
     );
     let config = |max_images| {
-        let route: Arc<dyn Model> = model.clone();
+        let route: Arc<dyn Model> = Arc::<ScriptedModel>::clone(&model);
         AgentConfig::new(
             Arc::new(
                 ModelRouter::new("test", route)
@@ -198,12 +202,12 @@ async fn request_budget_failure_records_the_action_without_replaying_on_restart(
                 Arc::new(LocalSandbox::new(workspace.path()).expect("sandbox")),
                 ApprovalPolicy::Ask,
             )),
-            checkpoints.clone(),
+            Arc::<SqliteCheckpoint>::clone(&checkpoints),
             MiddlewareStack::new(vec![
                 Arc::new(Messages::default()),
                 Arc::new(Tools::new(vec![Arc::new(Capture {
                     content: content.clone(),
-                    calls: calls.clone(),
+                    calls: Arc::clone(&calls),
                 })])),
             ])
             .expect("middleware"),

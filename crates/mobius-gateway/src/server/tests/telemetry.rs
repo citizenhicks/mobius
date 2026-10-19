@@ -2,7 +2,7 @@ use super::*;
 use crate::telemetry::Trigger;
 use crate::telemetry::{Telemetry, TelemetrySink};
 
-fn sink(url: String) -> TelemetrySink {
+fn sink(url: &str) -> TelemetrySink {
     serde_json::from_value(serde_json::json!({"id":"test", "url":url, "every_seconds":15, "sections":["activity"], "events":["custom_received"]})).unwrap()
 }
 
@@ -22,7 +22,7 @@ async fn shutdown_remains_live_when_activity_and_routine_dispatch_contend_for_ho
         } else {
             server
                 .host
-                .configure_telemetry(0, vec![sink("https://127.0.0.1:1/collect".into())], &[])
+                .configure_telemetry(0, vec![sink("https://127.0.0.1:1/collect")], &[])
                 .await
                 .unwrap();
         }
@@ -30,7 +30,7 @@ async fn shutdown_remains_live_when_activity_and_routine_dispatch_contend_for_ho
         let ready = server.notify_ready();
         let (stop, stopped) = tokio::sync::oneshot::channel();
         let mut serving = tokio::spawn(server.serve_until(async move {
-            let _ = stopped.await;
+            stopped.await.ok();
         }));
         ready.await.unwrap();
         entered.await.unwrap();
@@ -41,9 +41,9 @@ async fn shutdown_remains_live_when_activity_and_routine_dispatch_contend_for_ho
         let result = tokio::time::timeout(Duration::from_secs(2), &mut serving).await;
         if result.is_err() {
             serving.abort();
-            let _ = serving.await;
+            serving.await.ok();
         }
-        let _ = release.send(());
+        release.send(()).ok();
         actor.await.unwrap();
         result
             .expect("shutdown must progress while the activity reply remains paused")
@@ -61,7 +61,7 @@ async fn committed_events_retry_and_advance_only_after_delivery() {
     let state_dir = root.path().join("state");
     let (server, _) = configured_test_server(state_dir.clone()).await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let endpoint = sink(format!("http://{}", listener.local_addr().unwrap()));
+    let endpoint = sink(&format!("http://{}", listener.local_addr().unwrap()));
     server
         .host
         .configure_telemetry(0, vec![endpoint.clone()], &[])
@@ -70,10 +70,10 @@ async fn committed_events_retry_and_advance_only_after_delivery() {
     let bot = server.bots.bots().unwrap().remove(0);
     let event = HookEvent {
         id: "telemetry-fact".into(),
-        bot_id: bot.id.clone(),
+        bot_id: Arc::clone(&bot.id),
         occurred_at: 1,
         source: HookSource::Bot {
-            bot_id: bot.id.clone(),
+            bot_id: Arc::clone(&bot.id),
         },
         cause_id: None,
         ancestry: vec![],
@@ -88,7 +88,7 @@ async fn committed_events_retry_and_advance_only_after_delivery() {
         for status in [500, 202, 400] {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut buffer = [0; 8192];
-            let _ = stream.read(&mut buffer).await.unwrap();
+            let _request_bytes: usize = stream.read(&mut buffer).await.unwrap();
             stream
                 .write_all(
                     format!(
@@ -153,7 +153,7 @@ async fn ingress_rejects_raw_frames_and_accepts_noise_websockets() {
     let ready = server.notify_ready();
     let (stop, signal) = tokio::sync::oneshot::channel();
     let serving = tokio::spawn(server.serve_until(async {
-        let _ = signal.await;
+        signal.await.ok();
     }));
     ready.await.unwrap();
     let mut raw = TcpStream::connect(ingress).await.unwrap();
@@ -181,7 +181,7 @@ async fn telemetry_oversized_event_advances_cursor_with_a_permanent_diagnostic()
     use crate::wire::{HookData, HookEvent, HookSource};
     let root = tempfile::tempdir().unwrap();
     let (server, _) = configured_test_server(root.path().join("state")).await;
-    let mut endpoint = sink("http://127.0.0.1:1".into());
+    let mut endpoint = sink("http://127.0.0.1:1");
     for index in 0..4 {
         endpoint
             .fields
@@ -197,7 +197,7 @@ async fn telemetry_oversized_event_advances_cursor_with_a_permanent_diagnostic()
         .bots
         .record_hook(&HookEvent {
             id: "oversized-fact".into(),
-            bot_id: bot.id.clone(),
+            bot_id: Arc::clone(&bot.id),
             occurred_at: 1,
             source: HookSource::Bot { bot_id: bot.id },
             cause_id: None,
@@ -229,7 +229,7 @@ async fn telemetry_oversized_event_advances_cursor_with_a_permanent_diagnostic()
 async fn paired_clients_cannot_redirect_collectors_or_select_host_credentials() {
     let root = tempfile::tempdir().unwrap();
     let (server, _) = configured_test_server(root.path().join("state")).await;
-    let mut endpoint = sink("https://client-controlled.example/collect".into());
+    let mut endpoint = sink("https://client-controlled.example/collect");
     endpoint.bearer_env = Some("OPENAI_API_KEY".into());
     let mut bytes = Vec::new();
     dispatch::handle_runtime_message(
@@ -264,7 +264,7 @@ async fn collector_failure_body_cannot_echo_credentials_into_public_status() {
     let root = tempfile::tempdir().unwrap();
     let (server, _) = configured_test_server(root.path().join("state")).await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let mut endpoint = sink(format!("http://{}", listener.local_addr().unwrap()));
+    let mut endpoint = sink(&format!("http://{}", listener.local_addr().unwrap()));
     endpoint
         .headers
         .insert("x-api-key".into(), "synthetic-secret".into());

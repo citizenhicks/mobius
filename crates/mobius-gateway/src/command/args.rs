@@ -400,7 +400,7 @@ impl GatewayCli {
     }
 
     fn resolved_state_dir(&self) -> Result<PathBuf> {
-        self.state_dir.clone().map_or_else(state_dir, Ok)
+        self.state_dir.clone().map_or_else(state_dir, Ok) // rules-allow: frontend_command borrows the parsed CLI and the frontend owns its path
     }
 
     pub(super) fn into_command(self) -> Result<Command> {

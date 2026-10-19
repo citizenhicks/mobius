@@ -36,6 +36,16 @@ pub struct MediaPreparation<'a> {
     pub(crate) limits: ImageInputLimits,
 }
 
+impl std::fmt::Debug for MediaPreparation<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MediaPreparation")
+            .field("files", &self.files.is_some())
+            .field("limits", &self.limits)
+            .finish()
+    }
+}
+
 impl MediaPreparation<'_> {
     pub(super) async fn prepare<M: super::Model + ?Sized>(
         self,
@@ -138,12 +148,19 @@ pub(super) fn bound_request(
         if images <= limits.max_images && request_bytes <= max_request_bytes {
             return Ok(());
         }
-        let original_part = &content_parts(&original[item_index])
-            .ok_or_else(|| Error::Provider("missing original observation".into()))?[part_index];
-        let file = &original_part["image"]["file"];
+        let file = original
+            .get(item_index)
+            .and_then(content_parts)
+            .and_then(|parts| parts.get(part_index))
+            .ok_or_else(|| Error::Provider("missing original observation".into()))?
+            .pointer("/image/file")
+            .unwrap_or(&Value::Null);
         // Replay demotion edits only the outgoing item; durable history keeps its original image.
-        let part = &mut content_parts_mut(Arc::make_mut(&mut prepared[item_index]))
-            .ok_or_else(|| Error::Provider("missing prepared observation".into()))?[part_index];
+        let part = prepared
+            .get_mut(item_index)
+            .and_then(|item| content_parts_mut(Arc::make_mut(item)))
+            .and_then(|parts| parts.get_mut(part_index))
+            .ok_or_else(|| Error::Provider("missing prepared observation".into()))?;
         replace_image(
             part,
             serde_json::json!({"type":"input_text", "text":format!("[Historical image omitted to fit the request. Reopen the original session file: {file}]")}),
@@ -206,7 +223,7 @@ pub(super) async fn hydrate<M: super::Model + ?Sized>(
         .map(|(index, item)| {
             input
                 .shared_item(index)
-                .map_or_else(|| Arc::new(item.clone()), Arc::clone)
+                .map_or_else(|| Arc::new(item.clone()), Arc::clone) // rules-allow: hydration rewrites items, so borrowed values become owned and durable ones share their handle
         })
         .collect::<Vec<_>>();
     for (item_index, item) in prepared.iter_mut().enumerate() {
@@ -300,8 +317,10 @@ pub(crate) fn output_text(value: &Value) -> Result<String> {
                     .and_then(Value::as_str)
                     .ok_or_else(|| Error::Provider("invalid tool text".into()))?,
             ),
-            Some("file") => write!(text, "Stored file: {}", part["file"])
-                .expect("writing to a String cannot fail"),
+            Some("file") => {
+                write!(text, "Stored file: {}", part["file"])
+                    .map_err(|error| Error::Provider(error.to_string().into()))?;
+            }
             _ => {
                 return Err(Error::Provider(
                     "selected provider cannot represent this tool observation".into(),
@@ -327,7 +346,7 @@ mod tests {
             serde_json::json!({"type":"function_call_output","call_id":"a","output":[{"type":"input_image","image":{"file":{"id":"fresh-a"}}}]}),
             serde_json::json!({"type":"function_call_output","call_id":"b","output":[{"type":"input_text","text":"result text"},{"type":"input_image","image":{"file":{"id":"fresh-b"}}}]}),
         ];
-        let mut prepared = original.to_vec();
+        let mut prepared = original.clone();
         for part in prepared.iter_mut().filter_map(content_parts_mut).flatten() {
             if part.get("image").is_some() {
                 *part = serde_json::json!({"type":"input_image", "data":"x".repeat(1000)});
@@ -338,7 +357,7 @@ mod tests {
             serialized_size(&serde_json::json!({"input":input,"tools":"schema".repeat(40)}))
         };
         let initial = measure(&prepared).expect("size");
-        let unchanged = prepared.to_vec();
+        let unchanged = prepared.clone();
         bound_request(
             &mut prepared,
             (&original).into(),
@@ -427,7 +446,7 @@ mod tests {
             .ingest_image(
                 "history",
                 "old.png".into(),
-                bytes.to_vec(),
+                bytes.clone(),
                 ImageDetail::High,
             )
             .await
@@ -511,7 +530,7 @@ mod tests {
                 .is_err()
         );
 
-        let mut invalid = input.to_vec();
+        let mut invalid = input.clone();
         invalid[0]["content"][0]["image"] = serde_json::to_value(fresh).expect("image reference");
         invalid[0]["content"][0]["image"]["file"]["size"] = serde_json::json!(1);
         assert!(matches!(
@@ -533,7 +552,7 @@ mod tests {
                 random ^= random << 13;
                 random ^= random >> 17;
                 random ^= random << 5;
-                random as u8
+                random.to_le_bytes()[0]
             })
             .collect::<Vec<_>>();
         let mut bytes = Vec::new();

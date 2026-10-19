@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 use super::super::*;
 use crate::backend::model::PromptCacheIdentity;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -75,10 +77,13 @@ pub(super) async fn write_http_stream(
     text: &str,
     response_id: &str,
 ) {
-    let body = completed_events(text, response_id)
-        .into_iter()
-        .map(|event| format!("data: {event}\n\n"))
-        .collect::<String>();
+    let body =
+        completed_events(text, response_id)
+            .into_iter()
+            .fold(String::new(), |mut body, event| {
+                write!(body, "data: {event}\n\n").expect("write event");
+                body
+            });
     let response = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()

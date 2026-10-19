@@ -41,7 +41,9 @@ impl OwnedProcess {
         let identity = identity(pid)?
             .ok_or_else(|| Error::Config("desktop child exited during startup".into()))?;
         if let Err(error) = fs::write(&record, serde_json::to_vec(&identity)?) {
-            let _ = child.start_kill();
+            if let Err(kill_error) = child.start_kill() {
+                tracing::debug!(%kill_error, "desktop child was already gone");
+            }
             return Err(error.into());
         }
         private_file(&record)?;
@@ -69,18 +71,24 @@ impl OwnedProcess {
     }
 
     pub(super) async fn stop(mut self) {
-        if let Some(pid) = self.child.id().and_then(|pid| i32::try_from(pid).ok()) {
-            let _ = kill(Pid::from_raw(-pid), Signal::SIGTERM);
+        if let Some(pid) = self.child.id().and_then(|pid| i32::try_from(pid).ok())
+            && let Err(error) = kill(Pid::from_raw(-pid), Signal::SIGTERM)
+        {
+            tracing::debug!(%error, "desktop process group was already gone");
         }
         if tokio::time::timeout(Duration::from_secs(2), self.child.wait())
             .await
             .is_err()
         {
             self.group.kill();
-            let _ = self.child.wait().await;
+            if let Err(error) = self.child.wait().await {
+                tracing::debug!(%error, "desktop child could not be reaped");
+            }
         }
         self.group.kill();
-        let _ = fs::remove_file(&self.record);
+        if let Err(error) = fs::remove_file(&self.record) {
+            tracing::debug!(%error, "desktop process record was not removed");
+        }
     }
 }
 
@@ -113,7 +121,7 @@ pub(super) async fn clean_record(path: &Path) -> Result<()> {
         }
         // Records are advisory; refuse cleanup unless the live group leader matches.
         let pid = i32::try_from(recorded.pid)
-            .map_err(|_| Error::Config("invalid desktop child PID".into()))?;
+            .map_err(|error| Error::Config(format!("invalid desktop child PID: {error}")))?;
         kill(Pid::from_raw(-pid), Signal::SIGTERM)
             .map_err(|error| Error::Config(error.to_string()))?;
         wait_gone(&recorded, Duration::from_secs(2)).await?;
@@ -195,7 +203,7 @@ fn identity(pid: u32) -> Result<Option<Identity>> {
         return Ok(None);
     }
     let text = String::from_utf8(output.stdout)
-        .map_err(|_| Error::Config("invalid desktop child identity".into()))?;
+        .map_err(|error| Error::Config(format!("invalid desktop child identity: {error}")))?;
     let text = text.trim();
     let (group, text) = text
         .split_once(char::is_whitespace)

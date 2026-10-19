@@ -1,4 +1,5 @@
 use std::io;
+use std::sync::Arc;
 
 use mobius::{Error, Result};
 use mobius_gateway::client::{GatewayEvents, GatewaySender};
@@ -27,7 +28,7 @@ pub(in crate::frontend) async fn run(
     gateway: &mut ReadyPayload,
     preferred_bot_id: Option<&str>,
     protected_bot_id: Option<&str>,
-) -> Result<Option<String>> {
+) -> Result<Option<Arc<str>>> {
     terminal.clear()?;
     let mut state = BotsState::new(gateway, preferred_bot_id, protected_bot_id);
     request_routines(sender, &mut state).await?;
@@ -48,22 +49,19 @@ pub(in crate::frontend) async fn run(
                     Ok(frame) => frame,
                     Err(error) => break 'screen Err(gateway_error(error)),
                 };
-                match frame {
-                    Some(frame) => {
-                        if let Some(error) = frame.message.response_error(None) {
-                            break 'screen Err(Error::Stopped(error.message.into()));
-                        }
-                        let (follow_up, deferred) =
-                            handle_frame(frame.message, gateway, &mut state);
-                        if let Some(frame) = deferred {
-                            events.defer(frame).map_err(gateway_error)?;
-                        }
-                        request_follow_up(sender, &mut state, follow_up).await?;
+                if let Some(frame) = frame {
+                    if let Some(error) = frame.message.response_error(None) {
+                        break 'screen Err(Error::Stopped(error.message.into()));
                     }
-                    None => {
-                        events_open = false;
-                        state.fail("Gateway disconnected. Press q to close.");
+                    let (follow_up, deferred) =
+                        handle_frame(frame.message, gateway, &mut state);
+                    if let Some(frame) = deferred {
+                        events.defer(frame).map_err(gateway_error)?;
                     }
+                    request_follow_up(sender, &mut state, follow_up).await?;
+                } else {
+                    events_open = false;
+                    state.fail("Gateway disconnected. Press q to close.");
                 }
                 state.clamp(gateway);
                 dirty = true;
@@ -89,7 +87,10 @@ pub(in crate::frontend) async fn run(
                         Action::OpenSession(session_id) => {
                             break 'screen Ok(Some(session_id));
                         }
-                        Action::Setup { bot_id, mode } => {
+                        Action::Setup(mode) => {
+                            let Page::Bot(bot_id) = &state.page else {
+                                continue;
+                            };
                             if let Err(error) = setup::run_bot(
                                 terminal,
                                 mode,
@@ -97,7 +98,7 @@ pub(in crate::frontend) async fn run(
                                 sender,
                                 events.reborrow(),
                                 gateway,
-                                &bot_id,
+                                bot_id,
                             ).await {
                                 state.fail(error.to_string());
                             }
@@ -141,8 +142,7 @@ pub(super) fn handle_frame(
             request_id,
             payload,
         } => {
-            // Deliberate copy: this screen applies it, and the flow that asked still gets the frame.
-            gateway.update(payload.clone());
+            gateway.update(payload.clone()); // rules-allow: this screen applies it and the requesting flow still gets the frame
             deferred = Some(ServerFrame::new(ServerMessage::GatewayConfigured {
                 request_id,
                 payload,
@@ -153,8 +153,7 @@ pub(super) fn handle_frame(
             sessions,
         } => {
             if request_id.is_some() {
-                // The correlated reply must still reach its waiter after this screen updates its catalog.
-                gateway.sessions = sessions.clone();
+                gateway.sessions = sessions.clone(); // rules-allow: the correlated reply must still reach its waiter
                 deferred = Some(ServerFrame::new(ServerMessage::Sessions {
                     request_id,
                     sessions,
@@ -164,7 +163,7 @@ pub(super) fn handle_frame(
             }
         }
         ServerMessage::SessionsChanged { sessions, .. } => {
-            apply_session_changes(&mut gateway.sessions, sessions)
+            apply_session_changes(&mut gateway.sessions, sessions);
         }
         ServerMessage::Bots { request_id, bots } => {
             if request_id
@@ -174,8 +173,7 @@ pub(super) fn handle_frame(
                 gateway.bots = bots;
                 follow_up = state.complete().unwrap_or(FollowUp::None);
             } else if request_id.is_some() {
-                // Apply the catalog here while preserving the correlated payload for its actual waiter.
-                gateway.bots = bots.clone();
+                gateway.bots = bots.clone(); // rules-allow: the correlated payload must still reach its actual waiter
                 deferred = Some(ServerFrame::new(ServerMessage::Bots { request_id, bots }));
             } else {
                 gateway.bots = bots;
@@ -208,14 +206,14 @@ pub(super) fn handle_frame(
             request_id,
             message,
             ..
-        } if pending_matches(state, &request_id) => state.fail(message),
+        } if pending_matches(state, &request_id) => state.fail(&*message),
         message => deferred = Some(ServerFrame::new(message)),
     }
     if state.pending.is_none() && state.lifecycle_refresh {
         state.lifecycle_refresh = false;
         follow_up = match &state.page {
             Page::Runs { routine_id, .. } | Page::Run { routine_id, .. } => {
-                FollowUp::Runs(routine_id.clone())
+                FollowUp::Runs(Arc::clone(routine_id))
             }
             _ => FollowUp::Routines,
         };
@@ -227,14 +225,14 @@ fn pending_matches(state: &BotsState, request_id: &str) -> bool {
     state
         .pending
         .as_ref()
-        .is_some_and(|pending| pending.request_id == request_id)
+        .is_some_and(|pending| Uuid::try_parse(request_id) == Ok(pending.request_id))
 }
 
 async fn request_routines(sender: &GatewaySender, state: &mut BotsState) -> Result<()> {
-    let request_id = Uuid::new_v4().to_string();
+    let request_id = Uuid::new_v4();
     sender
         .send(ClientMessage::ListRoutines {
-            request_id: request_id.clone(),
+            request_id: request_id.to_string().into(),
             bot_id: None,
         })
         .await
@@ -246,12 +244,12 @@ async fn request_routines(sender: &GatewaySender, state: &mut BotsState) -> Resu
 async fn request_runs(
     sender: &GatewaySender,
     state: &mut BotsState,
-    routine_id: String,
+    routine_id: Arc<str>,
 ) -> Result<()> {
-    let request_id = Uuid::new_v4().to_string();
+    let request_id = Uuid::new_v4();
     sender
         .send(ClientMessage::ListRoutineHistory {
-            request_id: request_id.clone(),
+            request_id: request_id.to_string().into(),
             id: Some(routine_id),
         })
         .await

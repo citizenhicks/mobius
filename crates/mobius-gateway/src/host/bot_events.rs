@@ -1,6 +1,12 @@
 //! Committed lifecycle projection and delivery through ordinary sessions.
 
-use super::*;
+use super::{
+    Arc, BotStore, CheckpointStore, Error, EventMsg, EventPageRequest, ExecutionOutcome,
+    ExecutionRecord, FrontendEvent, GatewayHost, GatewayState, JournalEvent, MessageAuthor,
+    MessageSubmission, Op, Rejection, Result, RoutineRunStatus, ServerFrame, ServerMessage,
+    Submission, Utc, gateway_session_summaries, internal, invalid_bot, invalid_config,
+    invalid_routine, unknown_session, validate_bot_workspace,
+};
 use crate::wire::{BotAction, BotSubscription, HookData, HookEvent, HookSelector, HookSource};
 use mobius::backend::checkpoint::ExecutionPageRequest;
 use mobius::protocol::{ActiveMessageDelivery, MessageSource};
@@ -28,7 +34,7 @@ impl GatewayHost {
         mut op: Op,
         bot_id: &str,
         cause: Option<&HookEvent>,
-        command_id: &str,
+        command_id: &Arc<str>,
     ) -> std::result::Result<(), Rejection> {
         match &mut op {
             Op::Message { message } => {
@@ -42,8 +48,10 @@ impl GatewayHost {
                 message.author = source_author(
                     command_id,
                     cause,
-                    MessageSource::Session { session_id: sender },
-                    handle,
+                    MessageSource::Session {
+                        session_id: sender.into(),
+                    },
+                    handle.into(),
                 );
                 message
                     .requested_delivery
@@ -65,10 +73,11 @@ impl GatewayHost {
                 return Ok(());
             }
             require_session_target(&state, bot_id, session_id).await?;
+            drop(state);
         }
         host.deliver_source(
             Submission {
-                id: command_id.into(),
+                id: Arc::clone(command_id),
                 op,
             },
             bot_id.into(),
@@ -92,7 +101,7 @@ impl GatewayHost {
         let state = self.state.lock().await;
         state.bots.bot(bot_id).map_err(invalid_bot)?;
         let event = HookEvent {
-            id: format!("custom-{command_id}"),
+            id: format!("custom-{command_id}").into(),
             bot_id: bot_id.into(),
             source: HookSource::Bot {
                 bot_id: bot_id.into(),
@@ -106,6 +115,7 @@ impl GatewayHost {
             },
         };
         state.bots.record_hook(&event).map_err(invalid_config)?;
+        drop(state);
         self.telemetry.notify.notify_one();
         Ok(event)
     }
@@ -143,7 +153,7 @@ impl GatewayHost {
             }) {
                 self.open_session(session_id)
                     .await
-                    .map_err(|error| Error::Config(error.message))?;
+                    .map_err(|error| Error::Config(error.message.to_string()))?;
                 continue;
             }
             let outcome = if checkpoint.is_some() {
@@ -179,6 +189,7 @@ impl GatewayHost {
                             "execution {}",
                             serde_json::to_string(&execution.outcome).unwrap_or_default()
                         )
+                        .into()
                     }),
                 ),
                 None => (
@@ -195,7 +206,7 @@ impl GatewayHost {
     pub(crate) async fn dispatch_bot_events(&self) -> std::result::Result<(), Rejection> {
         // BotStorage is synchronous. Keep its SQLite waits off the runtime workers,
         // and retain admission guards inside the task if its caller is cancelled.
-        let host = self.clone();
+        let host = self.clone(); // rules-allow: the blocking task owns a gateway handle
         let runtime = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || runtime.block_on(host.dispatch_stored_bot_events()))
             .await
@@ -203,7 +214,7 @@ impl GatewayHost {
     }
 
     async fn dispatch_stored_bot_events(&self) -> std::result::Result<(), Rejection> {
-        let _mutation = self.begin_mutation().await?;
+        let mutation = self.begin_mutation().await?;
         let (bots, checkpoints) = {
             let state = self.state.lock().await;
             (Arc::clone(&state.bots), Arc::clone(&state.checkpoints))
@@ -227,13 +238,16 @@ impl GatewayHost {
         }
 
         for event in bots.unpublished_events(100).map_err(internal)? {
-            let id = event.id.clone();
-            let _ = self
+            let id = Arc::clone(&event.id);
+            if let Err(error) = self
                 .events
-                .send(ServerFrame::new(ServerMessage::HookEvent { event }));
+                .send(ServerFrame::new(ServerMessage::HookEvent { event }))
+            {
+                tracing::debug!(%error, "hook event had no subscribers");
+            }
             bots.event_published(&id).map_err(internal)?;
         }
-        drop(_mutation);
+        drop(mutation);
         for pending in bots
             .pending_actions(Utc::now().timestamp(), 32)
             .map_err(internal)?
@@ -259,12 +273,15 @@ impl GatewayHost {
                         retry.then(|| Utc::now().timestamp() + 15),
                     )
                     .map_err(internal)?;
-                    if !retry {
-                        let _ = self.events.send(ServerFrame::new(ServerMessage::Error {
-                            code: "hook_action".into(),
-                            message: error.message,
-                            fatal: false,
-                        }));
+                    if !retry
+                        && let Err(error) =
+                            self.events.send(ServerFrame::new(ServerMessage::Error {
+                                code: "hook_action".into(),
+                                message: error.message,
+                                fatal: false,
+                            }))
+                    {
+                        tracing::debug!(%error, "hook action failure had no subscribers");
                     }
                 }
             }
@@ -293,7 +310,7 @@ impl GatewayHost {
                     crate::bots::report_text(&pending.event, instruction).map_err(internal)?;
                 host.deliver_source(
                     Submission {
-                        id: pending.id.clone(),
+                        id: Arc::clone(&pending.id),
                         op: Op::Message {
                             message: MessageSubmission {
                                 author: source_author(
@@ -301,7 +318,7 @@ impl GatewayHost {
                                     Some(&pending.event),
                                     MessageSource::External {
                                         source_id: "hook".into(),
-                                        event_id: pending.event.id.clone(),
+                                        event_id: Arc::clone(&pending.event.id),
                                     },
                                     "source report".into(),
                                 ),
@@ -313,7 +330,7 @@ impl GatewayHost {
                             },
                         },
                     },
-                    pending.bot_id.clone(),
+                    Arc::clone(&pending.bot_id),
                 )
                 .await
             }
@@ -329,7 +346,7 @@ impl GatewayHost {
             BotAction::Session { session_id, op } => {
                 self.execute_session_command(
                     session_id,
-                    op.as_ref().clone(),
+                    op.as_ref().clone(), // rules-allow: the pending action stays recorded until it is accepted
                     &pending.bot_id,
                     Some(&pending.event),
                     &pending.id,
@@ -365,7 +382,7 @@ pub(super) async fn validate_selector(
                 .await
                 .map_err(internal)?
                 .ok_or_else(unknown_session)?;
-            if summary.session_context.owner_id != bot_id {
+            if *summary.session_context.owner_id != *bot_id {
                 return Err(unknown_session());
             }
             state
@@ -389,7 +406,7 @@ pub(super) async fn validate_selector(
             let policy = state
                 .config
                 .lock()
-                .map_err(|_| internal("configuration lock poisoned"))?
+                .map_err(|error| internal(format!("configuration lock poisoned: {error}")))?
                 .auth;
             if !crate::auth::AuthStore::open(state.store.auth_path(), policy)
                 .map_err(internal)?
@@ -438,7 +455,7 @@ fn require_routine_owner_local(
     routine_id: &str,
     bot_id: &str,
 ) -> std::result::Result<(), Rejection> {
-    if bots.routine(routine_id).map_err(invalid_routine)?.bot_id != bot_id {
+    if *bots.routine(routine_id).map_err(invalid_routine)?.bot_id != *bot_id {
         return Err(unknown_session());
     }
     Ok(())
@@ -454,7 +471,7 @@ async fn require_session_target(
         .await
         .map_err(internal)?
         .ok_or_else(unknown_session)?;
-    if summary.session_context.owner_id != bot_id
+    if *summary.session_context.owner_id != *bot_id
         || !summary.catalog_visible
         || summary.parent_session_id.is_some()
         || session_id == crate::bots::conversation_session_id(bot_id)
@@ -464,19 +481,22 @@ async fn require_session_target(
     Ok(())
 }
 fn source_author(
-    command_id: &str,
+    command_id: &Arc<str>,
     cause: Option<&HookEvent>,
     source: MessageSource,
-    handle: String,
+    handle: Arc<str>,
 ) -> MessageAuthor {
     MessageAuthor::Source {
-        cause_id: cause.map(|event| event.id.clone()),
+        cause_id: cause.map(|event| Arc::clone(&event.id)),
         ancestry: cause.map_or_else(Vec::new, |event| {
-            let mut chain = event.ancestry.clone();
-            chain.push(event.id.clone());
-            chain
+            event
+                .ancestry
+                .iter()
+                .chain(std::iter::once(&event.id))
+                .map(Arc::clone)
+                .collect()
         }),
-        message_id: command_id.into(),
+        message_id: Arc::clone(command_id),
         source,
         handle,
         symbol: None,
@@ -500,17 +520,17 @@ async fn lifecycle_event(
         EventMsg::TurnStarted(turn) => (
             HookData::SessionTurnStarted {
                 session_id: session_id.into(),
-                turn_id: turn.turn_id.clone(),
+                turn_id: Arc::clone(&turn.turn_id),
             },
-            Some(turn.turn_id.as_str()),
+            Some(&*turn.turn_id),
         ),
         EventMsg::ExecApprovalRequest(approval) => (
             HookData::SessionApproval {
                 session_id: session_id.into(),
-                turn_id: approval.turn_id.clone(),
-                request_id: approval.id.clone(),
+                turn_id: Arc::clone(&approval.turn_id),
+                request_id: Arc::clone(&approval.id),
             },
-            Some(approval.turn_id.as_str()),
+            Some(&*approval.turn_id),
         ),
         EventMsg::TurnComplete(turn) => {
             let execution = execution_for_turn(checkpoints, session_id, &turn.turn_id)
@@ -519,10 +539,10 @@ async fn lifecycle_event(
             (
                 HookData::SessionTurnFinished {
                     session_id: session_id.into(),
-                    turn_id: turn.turn_id.clone(),
+                    turn_id: Arc::clone(&turn.turn_id),
                     outcome: execution.outcome,
                 },
-                Some(turn.turn_id.as_str()),
+                Some(&*turn.turn_id),
             )
         }
         EventMsg::TurnAborted(turn) => {
@@ -532,10 +552,10 @@ async fn lifecycle_event(
             (
                 HookData::SessionTurnFinished {
                     session_id: session_id.into(),
-                    turn_id: turn.turn_id.clone(),
+                    turn_id: Arc::clone(&turn.turn_id),
                     outcome: execution.outcome,
                 },
-                Some(turn.turn_id.as_str()),
+                Some(&*turn.turn_id),
             )
         }
         _ => return Ok(None),
@@ -560,16 +580,16 @@ async fn session_hook(
             None => checkpoints.load(session_id).await?.and_then(|checkpoint| {
                 checkpoint
                     .active_execution
-                    .filter(|execution| execution.turn_id == turn_id)
+                    .filter(|execution| *execution.turn_id == *turn_id)
                     .map(|execution| execution.author)
             }),
         }
     } else {
         None
     };
-    let (mut cause_id, mut ancestry) = author
-        .as_ref()
-        .map_or((None, Vec::new()), session_causality);
+    let (mut cause_id, mut ancestry) = author.map_or((None, Vec::new()), |author| {
+        session_causality(Arc::unwrap_or_clone(author))
+    });
     // Routine prompts are user-authored, but their invocation retains the schedule/hook cause.
     if cause_id.is_none()
         && let Some(run) = bots
@@ -578,14 +598,14 @@ async fn session_hook(
             .find(|run| run.session_id.as_deref() == Some(session_id))
         && let Some(cause) = bots.hook_event(&format!("run-{}-running", run.id))?
     {
-        cause_id = Some(cause.id.clone());
+        cause_id = Some(Arc::clone(&cause.id));
         ancestry = cause.ancestry;
         if ancestry.len() < crate::bots::MAX_HOOK_ANCESTRY {
             ancestry.push(cause.id);
         }
     }
     Ok(HookEvent {
-        id: format!("session-{session_id}-{}", record.sequence),
+        id: format!("session-{session_id}-{}", record.sequence).into(),
         bot_id: bot_id.into(),
         source: HookSource::Session {
             session_id: session_id.into(),
@@ -627,31 +647,29 @@ async fn project_attention(
             record,
             HookData::SessionAttention {
                 session_id: session_id.into(),
-                capability: capability.clone(),
-                item_id: item.id.clone(),
+                capability: Arc::clone(capability),
+                item_id: Arc::clone(&item.id),
                 text: item.text.chars().take(200).collect(),
             },
             None,
         )
         .await?;
-        event.id = id;
+        event.id = id.into();
         bots.record_hook(&event)?;
     }
     Ok(())
 }
 
-fn session_causality(author: &MessageAuthor) -> (Option<String>, Vec<String>) {
+fn session_causality(author: MessageAuthor) -> (Option<Arc<str>>, Vec<Arc<str>>) {
     // At the boundary, preserve the terminal fact without authorizing another action.
-    if let MessageAuthor::Source {
-        message_id,
-        ancestry,
-        ..
-    } = author
-        && ancestry.len() == crate::bots::MAX_HOOK_ANCESTRY
-    {
-        return (Some(message_id.clone()), ancestry.clone());
+    match author {
+        MessageAuthor::Source {
+            message_id,
+            ancestry,
+            ..
+        } if ancestry.len() == crate::bots::MAX_HOOK_ANCESTRY => (Some(message_id), ancestry),
+        author => author.causal_origin(),
     }
-    author.causal_origin()
 }
 
 async fn project_session_journal(
@@ -674,7 +692,7 @@ async fn project_session_journal(
             }
             cursor = record.sequence;
             if let EventMsg::SessionConfigured(configured) = &mut record.event.msg {
-                let next = std::mem::take(&mut configured.context.owner_id);
+                let next = Arc::clone(&configured.context.owner_id);
                 if let Some(previous) = &owner
                     && previous != &next
                 {
@@ -693,7 +711,6 @@ async fn project_session_journal(
                 {
                     bots.project_session(&event, record.sequence)?;
                     persisted_cursor = cursor;
-                    continue;
                 }
             }
         }
@@ -718,19 +735,19 @@ async fn project_session_journal(
 fn close_owner_change(
     bots: &BotStore,
     session_id: &str,
-    previous: &str,
+    previous: &Arc<str>,
     next: &str,
     record: &JournalEvent,
 ) -> Result<()> {
     bots.close_session_sources(&[HookEvent {
-        id: format!("session-{session_id}-{}", record.sequence),
-        bot_id: previous.into(),
+        id: format!("session-{session_id}-{}", record.sequence).into(),
+        bot_id: Arc::clone(previous),
         source: HookSource::Session {
             session_id: session_id.into(),
         },
         data: HookData::SessionOwnerChanged {
             session_id: session_id.into(),
-            previous_bot_id: previous.into(),
+            previous_bot_id: Arc::clone(previous),
         },
         occurred_at: record.recorded_at_ms.div_euclid(1000),
         cause_id: None,
@@ -789,7 +806,7 @@ async fn execution_for_turn(
         if let Some(execution) = page
             .executions
             .into_iter()
-            .find(|execution| execution.turn_id == turn_id)
+            .find(|execution| *execution.turn_id == *turn_id)
         {
             return Ok(Some(execution));
         }
@@ -864,26 +881,44 @@ mod tests {
             },
         };
         let mut widgets = Vec::new();
-        super::super::replay::update_widgets(&mut widgets, &record(widget.clone()).event.msg);
+        super::super::replay::update_widgets(
+            &mut widgets,
+            &record(Arc::new(widget.clone())).event.msg,
+        );
         assert_eq!(super::super::replay::attention_count(&widgets), 1);
         for _ in 0..2 {
-            project_attention(&checkpoints, &bots, "bot", "chat", &record(widget.clone()))
-                .await
-                .expect("projection");
+            project_attention(
+                &checkpoints,
+                &bots,
+                "bot",
+                "chat",
+                &record(Arc::new(widget.clone())),
+            )
+            .await
+            .expect("projection");
         }
         let events = bots.unpublished_events(10).expect("events");
         assert_eq!(events.len(), 1);
         assert!(
-            matches!(&events[0].data, HookData::SessionAttention { text, item_id, .. } if text.chars().count() == 200 && item_id == "call")
+            matches!(&events[0].data, HookData::SessionAttention { text, item_id, .. } if text.chars().count() == 200 && &**item_id == "call")
         );
         if let Some(FrontendWidgetContent::ActionList { items, .. }) = &mut widget.content {
             items[0].state = FrontendListItemState::Completed;
         }
-        super::super::replay::update_widgets(&mut widgets, &record(widget.clone()).event.msg);
+        super::super::replay::update_widgets(
+            &mut widgets,
+            &record(Arc::new(widget.clone())).event.msg,
+        );
         assert_eq!(super::super::replay::attention_count(&widgets), 0);
-        project_attention(&checkpoints, &bots, "bot", "chat", &record(widget))
-            .await
-            .expect("closed projection");
+        project_attention(
+            &checkpoints,
+            &bots,
+            "bot",
+            "chat",
+            &record(Arc::new(widget)),
+        )
+        .await
+        .expect("closed projection");
         assert_eq!(bots.unpublished_events(10).expect("events").len(), 1);
     }
 }

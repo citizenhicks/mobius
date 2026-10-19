@@ -50,7 +50,7 @@ async fn slow_git_diff_does_not_block_chat_history() {
         .expect("endpoint");
     let (shutdown, signal) = tokio::sync::oneshot::channel();
     let serving = tokio::spawn(server.serve_until(async move {
-        let _ = signal.await;
+        signal.await.ok();
     }));
     let (connection, _) = GatewayClient::pair(&endpoint, grant.code, "Git test", ClientKind::Cli)
         .await
@@ -95,13 +95,15 @@ async fn slow_git_diff_does_not_block_chat_history() {
         .expect("request history");
     loop {
         match next_gateway_message(&mut events).await {
-            ServerMessage::SessionHistory { request_id, .. } if request_id == "history" => break,
+            ServerMessage::SessionHistory { request_id, .. } if &*request_id == "history" => break,
             ServerMessage::GitDiff { .. } => panic!("Git should still be blocked"),
             ServerMessage::Rejected {
                 request_id,
                 message,
                 ..
-            } if request_id == "history" || request_id == "diff" => panic!("{message}"),
+            } if request_id.as_ref() == "history" || request_id.as_ref() == "diff" => {
+                panic!("{message}")
+            }
             _ => {}
         }
     }
@@ -118,7 +120,7 @@ async fn slow_git_diff_does_not_block_chat_history() {
             diff,
         } = next_gateway_message(&mut events).await
         {
-            assert_eq!(request_id, "diff");
+            assert_eq!(&*request_id, "diff");
             assert_eq!(actual, session_id);
             assert_eq!(scope, GitDiffScope::Unstaged);
             assert!(diff.contains("+after"));
@@ -130,6 +132,10 @@ async fn slow_git_diff_does_not_block_chat_history() {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the flagged value moves into the gateway task; the lint misses that move"
+)]
 async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
     let root = tempfile::tempdir().expect("temporary directory");
     let workspace = root.path().join("workspace");
@@ -156,7 +162,7 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
     let listen = server.config.listen;
     let (shutdown, signal) = tokio::sync::oneshot::channel();
     let serving = tokio::spawn(server.serve_until(async move {
-        let _ = signal.await;
+        signal.await.ok();
     }));
     let endpoint = format!("tcp://{listen}")
         .parse::<Endpoint>()
@@ -180,7 +186,7 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
     };
     sender
         .send(ClientMessage::Submit {
-            session_id: session_id.clone(),
+            session_id: session_id.as_str().into(),
             submission: Submission {
                 id: "invalid-duplicate-attachments".into(),
                 op: user_message("invalid", vec![missing.clone(), missing]),
@@ -195,7 +201,7 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
             message,
             ..
         } = next_gateway_message(&mut events).await
-            && request_id == "invalid-duplicate-attachments"
+            && request_id.as_ref() == "invalid-duplicate-attachments"
         {
             assert_eq!(code, "invalid_submission");
             assert!(message.contains("unique"));
@@ -209,7 +215,7 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
         let begin_id = format!("begin-unselected-{finish}");
         sender
             .send(ClientMessage::BeginSessionFileUpload {
-                request_id: begin_id.clone(),
+                request_id: begin_id.as_str().into(),
                 session_id: session_id.clone(),
                 name: format!("unselected-{finish}.bin"),
                 size: 1,
@@ -223,7 +229,7 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
                 upload_id,
                 ..
             } = next_gateway_message(&mut events).await
-                && request_id == begin_id
+                && request_id.as_ref() == begin_id
             {
                 break upload_id;
             }
@@ -233,13 +239,13 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
         let rejection_id = format!("reject-unselected-{finish}");
         let request = if finish {
             ClientMessage::FinishSessionFileUpload {
-                request_id: rejection_id.clone(),
+                request_id: rejection_id.as_str().into(),
                 session_id: session_id.clone(),
                 upload_id: upload_id.clone(),
             }
         } else {
             ClientMessage::UploadSessionFileChunk {
-                request_id: rejection_id.clone(),
+                request_id: rejection_id.as_str().into(),
                 session_id: session_id.clone(),
                 upload_id: upload_id.clone(),
                 offset: 0,
@@ -254,7 +260,7 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
             if let ServerMessage::Rejected {
                 request_id, code, ..
             } = next_gateway_message(&mut events).await
-                && request_id == rejection_id
+                && request_id.as_ref() == rejection_id
             {
                 assert_eq!(code, "session_not_selected");
                 break;
@@ -265,7 +271,7 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
         let retry_id = format!("retry-terminated-{finish}");
         sender
             .send(ClientMessage::FinishSessionFileUpload {
-                request_id: retry_id.clone(),
+                request_id: retry_id.as_str().into(),
                 session_id: session_id.clone(),
                 upload_id,
             })
@@ -277,7 +283,7 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
                 message,
                 ..
             } = next_gateway_message(&mut events).await
-                && request_id == retry_id
+                && request_id.as_ref() == retry_id
             {
                 assert!(message.contains("not active"));
                 break;
@@ -297,7 +303,7 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
         if let ServerMessage::Rejected {
             request_id, code, ..
         } = next_gateway_message(&mut events).await
-            && request_id == "reject-unselected-file-list"
+            && request_id.as_ref() == "reject-unselected-file-list"
         {
             assert_eq!(code, "session_not_selected");
             break;
@@ -321,7 +327,7 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
             upload_id,
             ..
         } = next_gateway_message(&mut events).await
-            && request_id == "begin-doomed-upload"
+            && &*request_id == "begin-doomed-upload"
         {
             break upload_id;
         }
@@ -340,7 +346,7 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
         if matches!(
             next_gateway_message(&mut events).await,
             ServerMessage::Rejected { request_id, .. }
-                if request_id == "reject-doomed-chunk"
+                if request_id.as_ref() == "reject-doomed-chunk"
         ) {
             break;
         }
@@ -359,7 +365,7 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
             message,
             ..
         } = next_gateway_message(&mut events).await
-            && request_id == "finish-doomed-upload"
+            && request_id.as_ref() == "finish-doomed-upload"
         {
             assert!(message.contains("not active"));
             break;
@@ -383,7 +389,7 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
             upload_id,
             ..
         } = next_gateway_message(&mut events).await
-            && request_id == "begin-upload"
+            && &*request_id == "begin-upload"
         {
             break upload_id;
         }
@@ -407,7 +413,7 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
             if matches!(
                 next_gateway_message(&mut events).await,
                 ServerMessage::SessionFileUploadChunkAccepted { request_id: actual, .. }
-                    if actual == request_id
+                    if *actual == *request_id
             ) {
                 break;
             }
@@ -426,7 +432,7 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
         if let ServerMessage::SessionFileUploadCompleted {
             request_id, file, ..
         } = next_gateway_message(&mut events).await
-            && request_id == "finish-upload"
+            && &*request_id == "finish-upload"
         {
             break file;
         }
@@ -443,7 +449,7 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
         if let ServerMessage::SessionFiles {
             request_id, files, ..
         } = next_gateway_message(&mut events).await
-            && request_id == "list-session-files"
+            && &*request_id == "list-session-files"
         {
             assert_eq!(files.len(), 1);
             assert_eq!(files[0].origin, mobius::protocol::SessionFileOrigin::User);
@@ -469,7 +475,7 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
             next_offset,
             ..
         } = next_gateway_message(&mut events).await
-            && request_id == "read-session-file"
+            && &*request_id == "read-session-file"
         {
             assert_eq!(data, image);
             assert_eq!(next_offset, None);
@@ -477,12 +483,12 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
         }
     }
 
-    let submission_id = "submit-attachment".to_string();
+    let submission_id = "submit-attachment".to_owned();
     sender
         .send(ClientMessage::Submit {
-            session_id: session_id.clone(),
+            session_id: session_id.as_str().into(),
             submission: Submission {
-                id: submission_id.clone(),
+                id: submission_id.as_str().into(),
                 op: user_message("describe the image", vec![file.clone()]),
             },
         })
@@ -539,7 +545,7 @@ async fn assert_unpairing_disconnects(sync_fails: bool) {
     let auth = Arc::clone(&server.auth);
     let (shutdown, signal) = tokio::sync::oneshot::channel();
     let serving = tokio::spawn(server.serve_until(async move {
-        let _ = signal.await;
+        signal.await.ok();
     }));
     let endpoint = format!("tcp://{listen}")
         .parse::<Endpoint>()
@@ -568,7 +574,7 @@ async fn assert_unpairing_disconnects(sync_fails: bool) {
     let request_id = Uuid::new_v4().to_string();
     dashboard_sender
         .send(ClientMessage::UnpairClient {
-            request_id: request_id.clone(),
+            request_id: request_id.as_str().into(),
             client_id: device_identity.client_id.clone(),
         })
         .await
@@ -585,7 +591,7 @@ async fn assert_unpairing_disconnects(sync_fails: bool) {
                 message,
                 ..
             } = &frame.message
-            && actual == &request_id
+            && **actual == *request_id
         {
             assert!(message.contains("state replacement was applied"));
             break (dashboard_identity.client_id.clone(), Vec::new());
@@ -595,7 +601,7 @@ async fn assert_unpairing_disconnects(sync_fails: bool) {
             current_client_id,
             clients,
         } = frame.message
-            && actual == request_id
+            && actual.as_ref() == request_id
         {
             break (current_client_id, clients);
         }
@@ -627,6 +633,10 @@ async fn assert_unpairing_disconnects(sync_fails: bool) {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the flagged value moves into the gateway task; the lint misses that move"
+)]
 async fn shutdown_stops_a_blocked_routine_and_fails_its_durable_run() {
     let root = tempfile::tempdir().expect("temporary directory");
     let workspace = root.path().join("workspace");
@@ -641,7 +651,7 @@ async fn shutdown_stops_a_blocked_routine_and_fails_its_durable_run() {
     let (model_seen, model_request) = tokio::sync::oneshot::channel();
     let model_server = tokio::spawn(async move {
         let (mut stream, _) = model_listener.accept().await.expect("model request");
-        let _ = model_seen.send(());
+        model_seen.send(()).ok();
         let mut buffer = [0; 8 * 1024];
         while stream.read(&mut buffer).await.expect("model connection") != 0 {}
     });
@@ -695,7 +705,7 @@ async fn shutdown_stops_a_blocked_routine_and_fails_its_durable_run() {
         .await
         .expect("gateway");
     let bots = Arc::clone(&server.bots);
-    let host = server.host.clone();
+    let host = Arc::clone(&server.host);
     let bot = bots
         .create_bot(
             "Blocked routine bot",
@@ -723,7 +733,7 @@ async fn shutdown_stops_a_blocked_routine_and_fails_its_durable_run() {
         .expect("routine");
     let (shutdown, signal) = tokio::sync::oneshot::channel();
     let serving = tokio::spawn(server.serve_until(async move {
-        let _ = signal.await;
+        signal.await.ok();
     }));
 
     tokio::time::timeout(Duration::from_secs(10), model_request)
@@ -779,7 +789,7 @@ async fn request_history(
     let request_id = Uuid::new_v4().to_string();
     sender
         .send(ClientMessage::GetSessionHistory {
-            request_id: request_id.clone(),
+            request_id: request_id.as_str().into(),
             session_id: session_id.into(),
             before_sequence: None,
         })
@@ -791,12 +801,12 @@ async fn request_history(
                 request_id: actual,
                 records,
                 ..
-            } if actual == request_id => return Ok(records),
+            } if actual.as_ref() == request_id => return Ok(records),
             ServerMessage::Rejected {
                 request_id: actual,
                 code,
                 ..
-            } if actual == request_id => return Err(code),
+            } if actual.as_ref() == request_id => return Err(code),
             _ => {}
         }
     }
@@ -808,13 +818,13 @@ async fn unselected_chat_history_is_read_without_starting_the_chat() {
     let workspace = root.path().join("workspace");
     fs::create_dir(&workspace).expect("workspace");
     let (server, grant) = configured_test_server(root.path().join("state")).await;
-    let host = server.host.clone();
+    let host = Arc::clone(&server.host);
     let endpoint = format!("tcp://{}", server.config.listen)
         .parse::<Endpoint>()
         .expect("endpoint");
     let (shutdown, signal) = tokio::sync::oneshot::channel();
     let serving = tokio::spawn(server.serve_until(async move {
-        let _ = signal.await;
+        signal.await.ok();
     }));
     let (connection, _) = GatewayClient::pair(&endpoint, grant.code, "Recap test", ClientKind::Cli)
         .await
@@ -844,7 +854,7 @@ async fn unselected_chat_history_is_read_without_starting_the_chat() {
             .append_event(
                 &away,
                 i64::try_from(recorded_at).expect("timestamp"),
-                &Event {
+                Event {
                     submission_id: None,
                     msg,
                 },
@@ -859,7 +869,7 @@ async fn unselected_chat_history_is_read_without_starting_the_chat() {
     let warning = records
         .iter()
         .find(|record| {
-            matches!(&record.event.msg, EventMsg::Warning(warning) if warning.message == "work while away")
+            matches!(&record.event.msg, EventMsg::Warning(warning) if &*warning.message == "work while away")
         })
         .expect("durable warning");
     assert!(
@@ -897,12 +907,12 @@ async fn unselected_chat_history_is_read_without_starting_the_chat() {
         .expect("delete chat");
     loop {
         match next_gateway_message(&mut events).await {
-            ServerMessage::Accepted { request_id } if request_id == "delete-away" => break,
+            ServerMessage::Accepted { request_id } if request_id.as_ref() == "delete-away" => break,
             ServerMessage::Rejected {
                 request_id,
                 message,
                 ..
-            } if request_id == "delete-away" => panic!("delete rejected: {message}"),
+            } if request_id.as_ref() == "delete-away" => panic!("delete rejected: {message}"),
             _ => {}
         }
     }
@@ -914,6 +924,7 @@ async fn unselected_chat_history_is_read_without_starting_the_chat() {
         Some("unknown_session")
     );
     assert!(!host.is_resident(&away).await);
+    drop(host);
     shutdown.send(()).expect("shutdown");
     serving.await.expect("server task").expect("server");
 }

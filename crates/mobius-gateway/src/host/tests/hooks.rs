@@ -74,10 +74,10 @@ pub(super) async fn install_model(
         .unwrap();
     let mut prepared = crate::assembly::prepare_bot(
         &config,
-        bot.clone(),
+        Arc::new(bot.clone()),
         &state.store,
         &state.credentials,
-        state.session_files.clone(),
+        Arc::clone(&state.session_files),
         0,
         Arc::clone(gateway.remote_desktop.configuration()),
     )
@@ -93,12 +93,12 @@ pub(super) async fn install_model(
     .next()
     .unwrap();
     prepared.test_models(Arc::new(ModelRouter::new(route, model)));
-    state
-        .bots
-        .prepared
+    let bots = Arc::clone(&state.bots);
+    drop(state);
+    bots.prepared
         .lock()
         .await
-        .insert(bot.id.clone(), Arc::new(prepared));
+        .insert(Arc::clone(&bot.id), Arc::new(prepared));
 }
 
 fn user_submission(id: &str, text: &str) -> Submission {
@@ -131,7 +131,8 @@ async fn project_free_chats_expose_reads_without_coding_mutations() {
         .create_session_with_id(None, &bot.id, Uuid::new_v4().to_string(), true, "test")
         .await
         .unwrap();
-    for (chat, persistent) in [(main, true), (ordinary, false)] {
+    let chats = [(main, true), (ordinary, false)];
+    for (chat, persistent) in chats {
         assert!(chat.ready().await.unwrap().workspace.is_none());
         chat.submit(user_submission("read", "Read the computer-control guide"))
             .await
@@ -208,14 +209,14 @@ async fn canonical_chat_queues_sources_and_deduplicates_delivery_after_ack_gap()
             requested_delivery: Some(ActiveMessageDelivery::Steer),
             target_turn_id: None,
         }),
-        bot.id.clone(),
+        Arc::clone(&bot.id),
     )
     .await
     .unwrap();
     let checkpoints = Arc::clone(&gateway.state.lock().await.checkpoints);
     let checkpoint = checkpoints.load(main.session_id()).await.unwrap().unwrap();
     assert_eq!(
-        checkpoint.active_execution.unwrap().author,
+        *checkpoint.active_execution.unwrap().author,
         MessageAuthor::User
     );
     assert_eq!(checkpoint.pending_messages.len(), 1);
@@ -229,13 +230,13 @@ async fn canonical_chat_queues_sources_and_deduplicates_delivery_after_ack_gap()
 
     gateway
         .set_bot_subscription(BotSubscription {
-            bot_id: bot.id.clone(),
+            bot_id: Arc::clone(&bot.id),
             enabled: true,
             binding: HookBinding {
                 id: "custom-report".into(),
                 on: crate::bots::event_selector(
                     HookSource::Bot {
-                        bot_id: bot.id.clone(),
+                        bot_id: Arc::clone(&bot.id),
                     },
                     HookKind::CustomReceived,
                 ),
@@ -279,7 +280,7 @@ async fn canonical_chat_queues_sources_and_deduplicates_delivery_after_ack_gap()
     gateway.dispatch_bot_events().await.unwrap();
     assert!(!bots.action_pending(&pending.id).unwrap());
     let history = main.history_page(None).await.unwrap();
-    let report_count = history.records.iter().filter(|record| matches!(&record.event.msg, EventMsg::Message(message) if matches!(&message.author, MessageAuthor::Source { message_id, .. } if message_id == &pending.id))).count();
+    let report_count = history.records.iter().filter(|record| matches!(&record.event.msg, EventMsg::Message(message) if matches!(&message.author, MessageAuthor::Source { message_id, .. } if **message_id == *pending.id))).count();
     assert_eq!(report_count, 1);
     let executions = checkpoints
         .execution_page(
@@ -291,7 +292,7 @@ async fn canonical_chat_queues_sources_and_deduplicates_delivery_after_ack_gap()
         )
         .await
         .unwrap();
-    assert!(executions.executions.iter().any(|execution| matches!(&execution.author, MessageAuthor::Source { cause_id: Some(cause), ancestry, .. } if cause == &event.id && ancestry.as_slice() == std::slice::from_ref(&event.id))));
+    assert!(executions.executions.iter().any(|execution| matches!(&*execution.author, MessageAuthor::Source { cause_id: Some(cause), ancestry, .. } if cause == &event.id && ancestry.as_slice() == std::slice::from_ref(&event.id))));
     for record in &history.records {
         if let EventMsg::TurnComplete(turn) = &record.event.msg {
             let hook = bots
@@ -305,10 +306,10 @@ async fn canonical_chat_queues_sources_and_deduplicates_delivery_after_ack_gap()
             if executions
                 .executions
                 .iter()
-                .any(|execution| execution.turn_id == turn.turn_id && execution.author == source)
+                .any(|execution| *execution.turn_id == *turn.turn_id && *execution.author == source)
             {
                 assert_eq!(hook.cause_id.as_deref(), Some("peer"));
-                assert_eq!(hook.ancestry, ["original-hook", "peer"]);
+                assert_eq!(hook.ancestry, ["original-hook".into(), "peer".into()]);
             }
         }
     }
@@ -338,7 +339,7 @@ async fn canonical_chat_queues_sources_and_deduplicates_delivery_after_ack_gap()
     assert_eq!(
         gateway
             .delete_sessions(
-                &[main.session_id().into()],
+                &[main.session_id().to_string()],
                 mobius::backend::session_files::SessionFileSelection::All
             )
             .await
@@ -398,7 +399,7 @@ async fn session_closure_keeps_final_fact_and_revokes_old_source_authorization()
         .unwrap();
     gateway
         .delete_sessions(
-            &[source.session_id().into()],
+            &[source.session_id().to_string()],
             mobius::backend::session_files::SessionFileSelection::All,
         )
         .await
@@ -433,12 +434,12 @@ async fn deletion_hook_recovers_after_checkpoint_commit_before_bot_commit() {
         .unwrap();
     let event = HookEvent {
         id: "committed-deletion".into(),
-        bot_id: bot.id.clone(),
+        bot_id: Arc::clone(&bot.id),
         source: HookSource::Session {
-            session_id: source.session_id().into(),
+            session_id: source.session_id().to_string(),
         },
         data: HookData::SessionDeleted {
-            session_id: source.session_id().into(),
+            session_id: source.session_id().to_string(),
         },
         occurred_at: Utc::now().timestamp(),
         cause_id: None,
@@ -457,7 +458,7 @@ async fn deletion_hook_recovers_after_checkpoint_commit_before_bot_commit() {
         .unwrap();
     state
         .checkpoints
-        .delete_sessions(&[source.session_id().into()])
+        .delete_sessions(&[source.session_id().to_string()])
         .await
         .unwrap();
     super::super::deletion::recover_session_hook_closures(&state)

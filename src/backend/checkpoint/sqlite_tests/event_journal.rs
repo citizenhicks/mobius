@@ -123,7 +123,7 @@ async fn public_migration_restores_historical_tool_events_through_rust_readers()
         let mut generator = Command::new(&python)
             .arg("-c")
             .arg(
-                r#"import json, pathlib, runpy, sqlite3, sys
+                r"import json, pathlib, runpy, sqlite3, sys
 from contextlib import closing
 m = runpy.run_path(sys.argv[1])
 payload = json.load(sys.stdin)
@@ -143,7 +143,7 @@ with closing(sqlite3.connect(sys.argv[2])) as db, db:
     db.execute('INSERT INTO event_journal(session_id,sequence,recorded_at_ms,event_kind,event_json,stream_metrics_json) VALUES (?,1,1,?,?,?)',
                ('session', 'tool_call_end', json.dumps(payload['event']), '[]'))
     db.execute('UPDATE sessions SET latest_event_sequence=1')
-"#,
+",
             )
             .arg(&script)
             .arg(&path)

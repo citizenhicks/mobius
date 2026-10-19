@@ -17,7 +17,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 /// Durable endpoint configuration.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,6 +57,8 @@ pub enum TelemetrySection {
     Storage,
     /// Host, gateway process, and container resource measurements.
     Resources,
+    /// Each recent chat's last context breakdown.
+    Context,
 }
 impl TelemetrySection {
     const fn key(self) -> &'static str {
@@ -66,6 +68,7 @@ impl TelemetrySection {
             Self::Runs => "runs",
             Self::Storage => "storage",
             Self::Resources => "resources",
+            Self::Context => "context",
         }
     }
 }
@@ -92,8 +95,10 @@ impl Snapshot {
                 self.sections.insert(*section, value);
             }
             if let Some(value) = self.sections.get(section) {
-                // Each in-flight request owns its payload after this tick's snapshot is dropped.
-                result[section.key()] = value.clone();
+                result
+                    .as_object_mut()
+                    .ok_or_else(|| Error::Config("telemetry snapshot is not an object".into()))?
+                    .insert(section.key().into(), value.clone()); // rules-allow: each in-flight request owns its payload after this tick's snapshot is dropped
             }
         }
         Ok(result)
@@ -141,7 +146,7 @@ pub struct TelemetrySink {
 impl TelemetrySink {
     pub(crate) fn redact_report(&mut self) -> Result<()> {
         let url = url::Url::parse(&self.url)
-            .map_err(|_| Error::Config("telemetry endpoint is invalid".into()))?;
+            .map_err(|error| Error::Config(format!("telemetry endpoint is invalid: {error}")))?;
         // A collector can carry credentials in its path, query or custom headers.
         self.url = url.origin().ascii_serialization();
         self.headers.clear();
@@ -230,12 +235,57 @@ pub(crate) struct Telemetry {
     started_at_ms: i64,
     started: Instant,
     resources: resources::Resources,
+    contexts: Mutex<VecDeque<(String, ChatContext)>>,
 }
+
+/// Chats noted at most; the oldest note gives way.
+const MAX_CHAT_CONTEXTS: usize = 64;
+
+#[derive(Serialize)]
+struct ChatContext {
+    window: Option<i64>,
+    input_tokens: i64,
+    compaction_buffer: i64,
+    parts: Vec<mobius::protocol::ContextPart>,
+}
+
 impl Telemetry {
+    /// Keeps `session`'s latest breakdown for the `context` section.
+    pub(crate) fn note_context(&self, session: &str, usage: &mobius::protocol::TokenUsageInfo) {
+        let Some(context) = &usage.context else {
+            return;
+        };
+        let mut contexts = mobius::sync::recover_lock(&self.contexts);
+        let session = contexts
+            .iter()
+            .position(|(id, _)| id == session)
+            .and_then(|index| contexts.remove(index))
+            .map_or_else(|| session.to_owned(), |(id, _)| id);
+        let chat = ChatContext {
+            window: usage.model_context_window,
+            input_tokens: usage.last_token_usage.input_tokens,
+            compaction_buffer: context.compaction_buffer,
+            parts: context.parts.clone(), // rules-allow: the note outlives the usage report
+        };
+        contexts.push_back((session, chat));
+        if contexts.len() > MAX_CHAT_CONTEXTS {
+            contexts.pop_front();
+        }
+    }
+
+    pub(crate) fn contexts(&self) -> Value {
+        Value::Array(
+            mobius::sync::recover_lock(&self.contexts)
+                .iter()
+                .map(|(session, chat)| json!({"session_id": session, "context": chat}))
+                .collect(),
+        )
+    }
+
     pub(crate) fn new(config: &TelemetryConfig, state_dir: &std::path::Path) -> Self {
         Self {
             notify: Arc::new(tokio::sync::Notify::new()),
-            config: RwLock::new(Arc::new(config.clone())),
+            config: RwLock::new(Arc::new(config.clone())), // rules-allow: the live copy is shared with deliveries apart from the durable configuration
             state_dir: state_dir.to_path_buf(),
             // One connection pool and root store for the gateway's lifetime.
             client: HttpClient::builder()
@@ -251,7 +301,7 @@ impl Telemetry {
                 config
                     .sinks
                     .iter()
-                    .map(|sink| (sink.id.clone(), TelemetrySinkStatus::default()))
+                    .map(|sink| (sink.id.clone(), TelemetrySinkStatus::default())) // rules-allow: the status map owns its keys
                     .collect(),
             ),
             manual: Mutex::default(),
@@ -260,6 +310,7 @@ impl Telemetry {
             started_at_ms: chrono::Utc::now().timestamp_millis(),
             started: Instant::now(),
             resources: resources::Resources::default(),
+            contexts: Mutex::default(),
         }
     }
     pub(crate) async fn resources(&self) -> Value {
@@ -270,7 +321,7 @@ impl Telemetry {
         self.config
             .read()
             .map(|config| Arc::clone(&config))
-            .map_err(|_| Error::Config("telemetry configuration lock poisoned".into()))
+            .map_err(poisoned("telemetry configuration"))
     }
 
     fn header(&self, sink: &TelemetrySink, now: i64) -> Value {
@@ -287,22 +338,21 @@ impl Telemetry {
         let mut live = self
             .config
             .write()
-            .map_err(|_| Error::Config("telemetry configuration lock poisoned".into()))?;
-        let mut statuses = self
-            .statuses
-            .lock()
-            .map_err(|_| Error::Config("telemetry status lock poisoned".into()))?;
+            .map_err(poisoned("telemetry configuration"))?;
+        let mut statuses = self.statuses.lock().map_err(poisoned("telemetry status"))?;
         let (config, publication) = operation()?;
         statuses.retain(|id, _| config.sinks.iter().any(|sink| &sink.id == id));
         for sink in &config.sinks {
             match statuses.get_mut(&sink.id) {
                 Some(status) => status.next_at = None,
                 None => {
-                    statuses.insert(sink.id.clone(), TelemetrySinkStatus::default());
+                    statuses.insert(sink.id.clone(), TelemetrySinkStatus::default()); // rules-allow: the status map owns its keys
                 }
             }
         }
         *live = Arc::new(config);
+        drop(statuses);
+        drop(live);
         publication.confirm()
     }
     pub(crate) fn request_manual(&self, id: String) -> Result<()> {
@@ -316,7 +366,7 @@ impl Telemetry {
         }
         self.manual
             .lock()
-            .map_err(|_| Error::Config("telemetry manual request lock poisoned".into()))?
+            .map_err(poisoned("telemetry manual request"))?
             .insert(id);
         Ok(())
     }
@@ -325,20 +375,24 @@ impl Telemetry {
         Ok(self
             .statuses
             .lock()
-            .map_err(|_| Error::Config("telemetry status lock poisoned".into()))?
+            .map_err(poisoned("telemetry status"))?
             .get(id)
-            .cloned()
+            .cloned() // rules-allow: the report outlives the status lock
             .unwrap_or_default())
     }
     pub(crate) fn can_drain(&self, id: &str) -> Result<bool> {
         Ok(self
             .statuses
             .lock()
-            .map_err(|_| Error::Config("telemetry status lock poisoned".into()))?
+            .map_err(poisoned("telemetry status"))?
             .get(id)
             .is_none_or(|status| status.consecutive_failures < 3))
     }
     /// Serve-loop boundary: collector failures must never stop the gateway.
+    #[expect(
+        clippy::unused_async,
+        reason = "the serve loop awaits every telemetry step through one async boundary"
+    )]
     pub(crate) async fn tick(
         host: &GatewayHost,
         clients: usize,
@@ -358,7 +412,7 @@ impl Telemetry {
         if !config.sinks.iter().any(|sink| sink.enabled) {
             return;
         }
-        let host = host.clone();
+        let host = host.clone(); // rules-allow: the telemetry worker owns its host handle
         tasks.spawn(async move {
             let mut deliveries = tokio::task::JoinSet::new();
             if let Err(error) = Self::tick_at(
@@ -383,13 +437,12 @@ impl Telemetry {
         // Cancelling the worker drops its JoinSet, cancelling its deliveries too.
         // Pending event cursors remain unacknowledged and are retried after restart.
         tasks.shutdown().await;
-        match host.telemetry.statuses.lock() {
-            Ok(mut statuses) => {
-                for status in statuses.values_mut() {
-                    status.in_flight = false;
-                }
+        if let Ok(mut statuses) = host.telemetry.statuses.lock() {
+            for status in statuses.values_mut() {
+                status.in_flight = false;
             }
-            Err(_) => tracing::warn!("telemetry stop status lock poisoned"),
+        } else {
+            tracing::warn!("telemetry stop status lock poisoned");
         }
         Self::tick(host, 0, Trigger::Stop(cause), tasks).await;
         if tokio::time::timeout(Duration::from_secs(5), async {
@@ -433,18 +486,17 @@ impl Telemetry {
             .await
             {
                 tracing::warn!(sink_id = %sink.id, %error, "telemetry scheduling failed");
-                match host.telemetry.statuses.lock() {
-                    Ok(mut statuses) => {
-                        let Some(status) = statuses.get_mut(&sink.id) else {
-                            continue;
-                        };
-                        status.in_flight = false;
-                        status.last_attempt_at = Some(now);
-                        status.last_error = Some(error.to_string());
-                        status.consecutive_failures = status.consecutive_failures.saturating_add(1);
-                        status.next_at = Some(now.saturating_add(i64::from(sink.every_seconds)));
-                    }
-                    Err(_) => tracing::warn!("telemetry status lock poisoned"),
+                if let Ok(mut statuses) = host.telemetry.statuses.lock() {
+                    let Some(status) = statuses.get_mut(&sink.id) else {
+                        continue;
+                    };
+                    status.in_flight = false;
+                    status.last_attempt_at = Some(now);
+                    status.last_error = Some(error.to_string());
+                    status.consecutive_failures = status.consecutive_failures.saturating_add(1);
+                    status.next_at = Some(now.saturating_add(i64::from(sink.every_seconds)));
+                } else {
+                    tracing::warn!("telemetry status lock poisoned");
                 }
             }
         }
@@ -459,39 +511,42 @@ impl Telemetry {
         now: i64,
         snapshot: &mut Snapshot,
     ) -> Result<()> {
-        let sink = &config.sinks[index];
+        let sink = config
+            .sinks
+            .get(index)
+            .ok_or_else(|| Error::Config("telemetry sink disappeared".into()))?;
         let manual = host
             .telemetry
             .manual
             .lock()
-            .map_err(|_| Error::Config("telemetry manual request lock poisoned".into()))?
+            .map_err(poisoned("telemetry manual request"))?
             .contains(&sink.id);
         let (snapshot_due, retry_due) = {
             let statuses = host
                 .telemetry
                 .statuses
                 .lock()
-                .map_err(|_| Error::Config("telemetry status lock poisoned".into()))?;
+                .map_err(poisoned("telemetry status"))?;
             let status = statuses.get(&sink.id);
-            if status.is_some_and(|status| status.in_flight) {
-                return Ok(());
-            }
-            let snapshot_due = match trigger {
-                Trigger::Events => false,
-                Trigger::Interval => {
-                    manual
-                        || status
-                            .and_then(|status| status.next_at)
-                            .is_none_or(|at| at <= now)
-                }
-                Trigger::Start | Trigger::Manual | Trigger::Stop(_) => true,
-            };
+            let in_flight = status.is_some_and(|status| status.in_flight);
+            let next_due = status
+                .and_then(|status| status.next_at)
+                .is_none_or(|at| at <= now);
             let retry_due = status.is_none_or(|status| {
                 status.consecutive_failures == 0
                     || status
                         .last_attempt_at
                         .is_none_or(|at| now.saturating_sub(at) >= 15)
             });
+            drop(statuses);
+            if in_flight {
+                return Ok(());
+            }
+            let snapshot_due = match trigger {
+                Trigger::Events => false,
+                Trigger::Interval => manual || next_due,
+                Trigger::Start | Trigger::Manual | Trigger::Stop(_) => true,
+            };
             (snapshot_due, retry_due)
         };
         let mut cursor = None;
@@ -514,7 +569,10 @@ impl Telemetry {
             cursor = after;
             pending = count;
             let mut header = snapshot.read(host, &[]).await?;
-            header["events"] = json!(events);
+            header
+                .as_object_mut()
+                .ok_or_else(|| Error::Config("telemetry snapshot is not an object".into()))?
+                .insert("events".into(), json!(events));
             header
         };
         let reason = if !snapshot_due {
@@ -539,7 +597,7 @@ impl Telemetry {
                 .telemetry
                 .statuses
                 .lock()
-                .map_err(|_| Error::Config("telemetry status lock poisoned".into()))?;
+                .map_err(poisoned("telemetry status"))?;
             let Some(status) = statuses.get_mut(&sink.id) else {
                 return Ok(());
             };
@@ -549,17 +607,20 @@ impl Telemetry {
             if snapshot_due {
                 status.next_at = Some(now.saturating_add(i64::from(sink.every_seconds)));
             }
+            drop(statuses);
         }
         if manual {
             host.telemetry
                 .manual
                 .lock()
-                .map_err(|_| Error::Config("telemetry manual request lock poisoned".into()))?
+                .map_err(poisoned("telemetry manual request"))?
                 .remove(&sink.id);
         }
-        let host = host.clone();
+        let host = host.clone(); // rules-allow: the delivery task owns its host handle
         tasks.spawn(async move {
-            let sink = &config.sinks[index];
+            let Some(sink) = config.sinks.get(index) else {
+                return;
+            };
             let result = deliver(&host.telemetry, sink, &envelope, 0).await;
             let http = match &result {
                 Ok((status, _)) => Some(*status),
@@ -569,31 +630,30 @@ impl Telemetry {
                 Ok(_) => true,
                 Err(error) => error.permanent,
             };
-            let mut error = result.err().map(|error| error.message);
-            if acknowledge
+            let error = if acknowledge
                 && let Some(cursor) = cursor
                 && let Err(failure) = host
                     .advance_telemetry(&sink.id, cursor, config.revision)
                     .await
             {
-                error = Some(failure.to_string());
-            }
-            match host.telemetry.statuses.lock() {
-                Ok(mut statuses) => {
-                    if let Some(status) = statuses.get_mut(&sink.id) {
-                        status.in_flight = false;
-                        status.last_status = http;
-                        if error.is_none() {
-                            status.last_success_at = Some(chrono::Utc::now().timestamp());
-                            status.consecutive_failures = 0;
-                        } else {
-                            status.consecutive_failures =
-                                status.consecutive_failures.saturating_add(1);
-                        }
-                        status.last_error = error;
+                Some(failure.to_string())
+            } else {
+                result.err().map(|error| error.message)
+            };
+            if let Ok(mut statuses) = host.telemetry.statuses.lock() {
+                if let Some(status) = statuses.get_mut(&sink.id) {
+                    status.in_flight = false;
+                    status.last_status = http;
+                    if error.is_none() {
+                        status.last_success_at = Some(chrono::Utc::now().timestamp());
+                        status.consecutive_failures = 0;
+                    } else {
+                        status.consecutive_failures = status.consecutive_failures.saturating_add(1);
                     }
+                    status.last_error = error;
                 }
-                Err(_) => tracing::warn!("telemetry delivery status lock poisoned"),
+            } else {
+                tracing::warn!("telemetry delivery status lock poisoned");
             }
             host.telemetry.notify.notify_one();
         });
@@ -610,6 +670,10 @@ impl Telemetry {
     }
 }
 
+fn poisoned<T>(lock: &'static str) -> impl FnOnce(std::sync::PoisonError<T>) -> Error {
+    move |error| Error::Config(format!("{lock} lock poisoned: {error}"))
+}
+
 #[derive(Debug, thiserror::Error)]
 #[error("{message}")]
 struct DeliveryError {
@@ -619,12 +683,11 @@ struct DeliveryError {
 }
 impl DeliveryError {
     fn caused(context: &str, cause: &dyn std::error::Error) -> Self {
-        use std::fmt::Write as _;
         let mut message = format!("{context}: {cause}");
         let mut source = cause.source();
         while let Some(cause) = source {
-            // Writing to a String is infallible.
-            let _ = write!(message, ": {cause}");
+            message.push_str(": ");
+            message.push_str(&cause.to_string());
             source = cause.source();
         }
         Self {
@@ -674,26 +737,29 @@ async fn deliver(
     for (name, value) in &sink.headers {
         request = request.header(name, value);
     }
-    let token = if let Some(name) = &sink.bearer_env {
-        Some(std::env::var(name).map_err(|_| error("bearer environment variable unavailable"))?)
-    } else if let Some(path) = &sink.bearer_file {
-        let path = telemetry.state_dir.join(path);
-        let state_dir = &telemetry.state_dir;
-        let canonical = tokio::fs::canonicalize(&path)
-            .await
-            .map_err(|cause| error(&format!("bearer file unavailable: {cause}")))?;
-        if !canonical.starts_with(state_dir) {
-            return Err(error("bearer file escapes state directory"));
-        }
-        Some(
-            tokio::task::spawn_blocking(move || crate::config::load_secret_file(&path))
+    let token =
+        if let Some(name) = &sink.bearer_env {
+            Some(std::env::var(name).map_err(|cause| {
+                error(&format!("bearer environment variable unavailable: {cause}"))
+            })?)
+        } else if let Some(path) = &sink.bearer_file {
+            let path = telemetry.state_dir.join(path);
+            let state_dir = &telemetry.state_dir;
+            let canonical = tokio::fs::canonicalize(&path)
                 .await
-                .map_err(|cause| error(&format!("bearer file task failed: {cause}")))?
-                .map_err(|cause| error(&format!("invalid bearer file: {cause}")))?,
-        )
-    } else {
-        None
-    };
+                .map_err(|cause| error(&format!("bearer file unavailable: {cause}")))?;
+            if !canonical.starts_with(state_dir) {
+                return Err(error("bearer file escapes state directory"));
+            }
+            Some(
+                tokio::task::spawn_blocking(move || crate::config::load_secret_file(&path))
+                    .await
+                    .map_err(|cause| error(&format!("bearer file task failed: {cause}")))?
+                    .map_err(|cause| error(&format!("invalid bearer file: {cause}")))?,
+            )
+        } else {
+            None
+        };
     if let Some(token) = token {
         if token.is_empty()
             || token.len() > 16 * 1024
@@ -728,4 +794,51 @@ async fn deliver(
         message: format!("telemetry collector returned HTTP {}", status.as_u16()),
         permanent: status.is_client_error() && status.as_u16() != 408 && status.as_u16() != 429,
     })
+}
+
+#[cfg(test)]
+mod context_tests {
+    use super::*;
+    use mobius::protocol::{
+        ContextBreakdown, ContextPart, ContextPartKind, TokenUsage, TokenUsageInfo,
+    };
+
+    fn usage(input_tokens: i64) -> TokenUsageInfo {
+        let last = TokenUsage {
+            input_tokens,
+            ..TokenUsage::default()
+        };
+        TokenUsageInfo {
+            total_token_usage: TokenUsage::default(),
+            last_token_usage: last,
+            model_context_window: Some(1_000),
+            context: Some(ContextBreakdown {
+                parts: vec![ContextPart {
+                    kind: ContextPartKind::Messages,
+                    tokens: input_tokens,
+                    items: 1,
+                }],
+                compaction_buffer: 100,
+            }),
+        }
+    }
+
+    #[test]
+    fn keeps_each_chats_latest_breakdown_for_the_newest_chats() {
+        let state = tempfile::tempdir().expect("state");
+        let telemetry = Telemetry::new(&TelemetryConfig::default(), state.path());
+        for chat in 0..=MAX_CHAT_CONTEXTS {
+            telemetry.note_context(&format!("chat-{chat}"), &usage(10));
+        }
+        telemetry.note_context("chat-1", &usage(20));
+        let contexts = telemetry.contexts();
+        let chats = contexts.as_array().expect("chats");
+        assert_eq!(chats.len(), MAX_CHAT_CONTEXTS);
+        assert!(!chats.iter().any(|chat| chat["session_id"] == "chat-0"));
+        assert_eq!(chats[0]["session_id"], "chat-2");
+        let latest = chats.last().expect("latest chat");
+        assert_eq!(latest["session_id"], "chat-1");
+        assert_eq!(latest["context"]["input_tokens"], 20);
+        assert_eq!(latest["context"]["parts"][0]["kind"], "messages");
+    }
 }

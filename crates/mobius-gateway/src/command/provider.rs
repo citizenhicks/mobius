@@ -94,8 +94,10 @@ pub(super) async fn register_provider_with_credential(
         options.if_configured,
     )
     .await?;
-    println!("{}", register_provider_json(definition.id())?);
-    Ok(())
+    Ok(print_line(format_args!(
+        "{}",
+        register_provider_json(definition.id())?
+    ))?)
 }
 
 pub(super) fn read_provider_credential(mut input: impl Read) -> Result<String> {
@@ -110,7 +112,7 @@ pub(super) fn read_provider_credential(mut input: impl Read) -> Result<String> {
         )));
     }
     String::from_utf8(bytes)
-        .map_err(|_| Error::Config("provider credential is not valid UTF-8".into()))
+        .map_err(|error| Error::Config(format!("provider credential is not valid UTF-8: {error}")))
 }
 
 pub(super) fn register_provider_json(provider: &str) -> Result<String> {
@@ -125,7 +127,7 @@ async fn provider_command_connection(
     let (sender, events) = client.into_parts();
     sender
         .send(ClientMessage::SetNotifications {
-            request_id: Uuid::new_v4().to_string(),
+            request_id: Uuid::new_v4().to_string().into(),
             disabled: [
                 crate::wire::GatewayNotification::Sessions,
                 crate::wire::GatewayNotification::Bots,
@@ -146,10 +148,11 @@ async fn request_provider_credential(
     expires_at: Option<u64>,
 ) -> Result<()> {
     let (sender, mut events) = provider_command_connection(endpoint, token).await?;
-    let request_id = Uuid::new_v4().to_string();
+    let mut request_id = [0; uuid::fmt::Hyphenated::LENGTH];
+    let request_id = new_request_id(&mut request_id);
     let message = match base_url {
         Some(base_url) => ClientMessage::SetProviderEndpointCredential {
-            request_id: request_id.clone(),
+            request_id: request_id.into(),
             instance: instance.into(),
             provider: provider.into(),
             base_url: base_url.into(),
@@ -157,7 +160,7 @@ async fn request_provider_credential(
             expires_at,
         },
         None => ClientMessage::SetProviderCredential {
-            request_id: request_id.clone(),
+            request_id: request_id.into(),
             instance: instance.into(),
             provider: provider.into(),
             api_key,
@@ -169,7 +172,7 @@ async fn request_provider_credential(
         let frame = events.next().await?.ok_or_else(|| {
             Error::Protocol("gateway disconnected before saving the provider credential".into())
         })?;
-        if let Some(error) = frame.message.response_error(Some(&request_id)) {
+        if let Some(error) = frame.message.response_error(Some(request_id)) {
             return Err(Error::Protocol(error.message.into()));
         }
         match frame.message {
@@ -177,7 +180,7 @@ async fn request_provider_credential(
                 request_id: actual,
                 instance: actual_instance,
                 provider: actual_provider,
-            } if actual == request_id
+            } if *actual == *request_id
                 && actual_instance == instance
                 && actual_provider == provider =>
             {
@@ -199,10 +202,11 @@ async fn request_provider_registration(
     if_configured: bool,
 ) -> Result<()> {
     let (sender, mut events) = provider_command_connection(endpoint, token).await?;
-    let request_id = Uuid::new_v4().to_string();
+    let mut request_id = [0; uuid::fmt::Hyphenated::LENGTH];
+    let request_id = new_request_id(&mut request_id);
     sender
         .send(ClientMessage::RegisterProvider {
-            request_id: request_id.clone(),
+            request_id: request_id.into(),
             config: registration.selection,
             preserve_selection,
             if_configured,
@@ -216,13 +220,13 @@ async fn request_provider_registration(
         let frame = events.next().await?.ok_or_else(|| {
             Error::Protocol("gateway disconnected before registering the provider".into())
         })?;
-        if let Some(error) = frame.message.response_error(Some(&request_id)) {
+        if let Some(error) = frame.message.response_error(Some(request_id)) {
             return Err(Error::Protocol(error.message.into()));
         }
         match frame.message {
             ServerMessage::GatewayConfigured {
                 request_id: actual, ..
-            } if actual == request_id => return Ok(()),
+            } if *actual == *request_id => return Ok(()),
             _ => {}
         }
     }
@@ -246,27 +250,30 @@ pub(super) async fn clear_provider_credential(
     let token = load_local_client(&endpoint)?
         .ok_or_else(|| Error::Config("gateway local control credential is unavailable".into()))?;
     let (sender, mut events) = provider_command_connection(&endpoint, &token).await?;
-    let request_id = Uuid::new_v4().to_string();
+    let mut request_id = [0; uuid::fmt::Hyphenated::LENGTH];
+    let request_id = new_request_id(&mut request_id);
     sender
         .send(ClientMessage::ClearProviderCredential {
-            request_id: request_id.clone(),
-            instance: instance.clone(),
+            request_id: request_id.into(),
+            instance: instance.clone(), // rules-allow: the message owns the instance the response match and output still use
         })
         .await?;
     for _ in 0..MAX_PENDING_FRAMES {
         let frame = events.next().await?.ok_or_else(|| {
             Error::Protocol("gateway disconnected before clearing the provider credential".into())
         })?;
-        if let Some(error) = frame.message.response_error(Some(&request_id)) {
+        if let Some(error) = frame.message.response_error(Some(request_id)) {
             return Err(Error::Protocol(error.message.into()));
         }
         match frame.message {
             ServerMessage::ProviderCredentialCleared {
                 request_id: actual,
                 instance: actual_instance,
-            } if actual == request_id && actual_instance == instance => {
-                println!("{}", serde_json::json!({"instance": instance}));
-                return Ok(());
+            } if *actual == *request_id && actual_instance == instance => {
+                return Ok(print_line(format_args!(
+                    "{}",
+                    serde_json::json!({"instance": instance})
+                ))?);
             }
             _ => {}
         }

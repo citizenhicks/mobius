@@ -81,14 +81,15 @@ pub(super) struct SetupState {
     pub(super) authenticated: Option<(String, Option<String>)>,
     pub(super) model: usize,
     pub(super) bot_model_routes: Vec<(ModelChoice, usize)>,
-    pub(super) original_model_choice: Option<ModelChoice>,
+    /// Index of the original model in the gateway's model choices.
+    pub(super) original_model_choice: Option<usize>,
     pub(super) custom_model: String,
     pub(super) reasoning: usize,
     pub(super) web_search: usize,
     pub(super) features: Vec<MiddlewareFeature>,
     pub(super) available_extensions: Vec<ExtensionRecord>,
     pub(super) selected_extensions: BTreeSet<String>,
-    pub(super) expanded_features: BTreeSet<String>,
+    pub(super) expanded_features: BTreeSet<usize>,
     pub(super) middleware: MiddlewareConfig,
     pub(super) target: ApplyTarget,
     pub(super) default_only: bool,
@@ -110,8 +111,8 @@ impl SetupState {
         let mut state = Self::from_parts(
             mode,
             provider_rows(&gateway.providers, &gateway.provider_instances),
-            gateway.middleware_features.clone(),
-            gateway.extensions.clone(),
+            gateway.middleware_features.clone(), // rules-allow: setup edits a snapshot while events update the gateway payload
+            gateway.extensions.clone(), // rules-allow: setup edits a snapshot while events update the gateway payload
             original,
             default_only,
         )?;
@@ -133,6 +134,9 @@ impl SetupState {
         original: AgentComposition,
         default_only: bool,
     ) -> Result<Self> {
+        if providers.is_empty() {
+            return Err(Error::Config("the gateway advertises no providers".into()));
+        }
         let provider = providers
             .iter()
             .position(|entry| {
@@ -146,8 +150,8 @@ impl SetupState {
                     .position(|entry| entry.status.provider == original.provider.provider)
             })
             .unwrap_or_default();
-        let middleware = original.middleware.clone();
-        let selected_extensions = original.extensions.clone();
+        let middleware = original.middleware.clone(); // rules-allow: the edited copy; the original stays for comparison
+        let selected_extensions = original.extensions.clone(); // rules-allow: the edited copy; the original stays for comparison
         let mut state = Self {
             mode,
             providers,
@@ -192,6 +196,10 @@ impl SetupState {
         Ok(state)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "from_parts rejects an empty provider list and every write keeps `provider` in range"
+    )]
     pub(super) fn entry(&self) -> &ProviderEntry {
         &self.providers[self.provider]
     }
@@ -203,7 +211,7 @@ impl SetupState {
     pub(super) fn set_original_model_choice(
         &mut self,
         choices: &[ModelChoice],
-        model_providers: &BTreeMap<String, String>,
+        model_providers: &BTreeMap<Arc<str>, String>,
     ) {
         let selection = &self.original.provider;
         let models = if self.definition().model_ids_configurable {
@@ -217,14 +225,11 @@ impl SetupState {
                 .find(|model| model.id == selection.model)
                 .and_then(|model| model.default_reasoning.as_deref())
         });
-        self.original_model_choice = choices
-            .iter()
-            .find(|choice| {
-                model_providers.get(&choice.route) == Some(&selection.instance)
-                    && choice.model == selection.model
-                    && choice.reasoning_effort.as_deref() == effort
-            })
-            .cloned();
+        self.original_model_choice = choices.iter().position(|choice| {
+            model_providers.get(&choice.route) == Some(&selection.instance)
+                && *choice.model == *selection.model
+                && choice.reasoning_effort.as_deref() == effort
+        });
     }
 
     pub(super) fn disabled_by(&self, id: &str) -> Option<&str> {
@@ -258,7 +263,9 @@ impl SetupState {
         } else {
             (current + fields.len() - 1) % fields.len()
         };
-        self.auth_field = fields[next];
+        if let Some(field) = fields.get(next) {
+            self.auth_field = *field;
+        }
     }
 
     /// The label the setup will be registered under, defaulting to the manifest name.
@@ -302,7 +309,7 @@ impl SetupState {
     pub(super) fn set_bot_model_routes(
         &mut self,
         choices: &[ModelChoice],
-        model_providers: &BTreeMap<String, String>,
+        model_providers: &BTreeMap<Arc<str>, String>,
     ) -> Result<()> {
         // Routes of setups without a usable credential are skipped, not treated as errors.
         let routes: Vec<_> = choices
@@ -314,7 +321,7 @@ impl SetupState {
                         configured.configured && configured.selection.instance == *instance
                     })
                 })?;
-                Some((choice.clone(), provider))
+                Some((choice.clone(), provider)) // rules-allow: setup keeps a snapshot of the gateway's model choices
             })
             .collect();
         if routes.is_empty() {
@@ -324,15 +331,16 @@ impl SetupState {
         }
         let current = &self.original.provider;
         let same_model = |(choice, provider): &(ModelChoice, usize)| {
-            choice.model == current.model
-                && self.providers[*provider]
-                    .instance
-                    .as_ref()
+            *choice.model == *current.model
+                && self
+                    .providers
+                    .get(*provider)
+                    .and_then(|entry| entry.instance.as_ref())
                     .is_some_and(|instance| instance.selection.instance == current.instance)
         };
         let selected = self
             .original_model_choice
-            .as_ref()
+            .and_then(|index| choices.get(index))
             .and_then(|choice| {
                 routes
                     .iter()
@@ -340,7 +348,9 @@ impl SetupState {
             })
             .or_else(|| {
                 routes.iter().position(|route| {
-                    same_model(route) && route.0.reasoning_effort == current.reasoning_effort
+                    same_model(route)
+                        && route.0.reasoning_effort.as_deref()
+                            == current.reasoning_effort.as_deref()
                 })
             });
         let focus = selected
@@ -357,7 +367,9 @@ impl SetupState {
     }
 
     fn select_bot_route(&mut self, index: usize) {
-        let provider = self.bot_model_routes[index].1;
+        let Some(&(_, provider)) = self.bot_model_routes.get(index) else {
+            return;
+        };
         if self.provider != provider {
             self.provider = provider;
             let search = self
@@ -367,7 +379,7 @@ impl SetupState {
                 .definition()
                 .web_search
                 .iter()
-                .position(|option| search.is_some_and(|search| option.value == search.id()))
+                .position(|option| search.is_some_and(|search| *option.value == *search.id()))
                 .unwrap_or(0);
         }
         self.model = index;
@@ -422,8 +434,9 @@ impl SetupState {
             + self
                 .features
                 .iter()
-                .filter(|feature| self.expanded_features.contains(&feature.id))
-                .map(|feature| {
+                .enumerate()
+                .filter(|(index, _)| self.expanded_features.contains(index))
+                .map(|(_, feature)| {
                     feature.settings.len()
                         + self
                             .available_extensions
@@ -441,7 +454,7 @@ impl SetupState {
                 return Some(MiddlewareRow::Feature(feature));
             }
             current += 1;
-            if !self.expanded_features.contains(&definition.id) {
+            if !self.expanded_features.contains(&feature) {
                 continue;
             }
             for setting in 0..definition.settings.len() {
@@ -466,20 +479,21 @@ impl SetupState {
     }
 
     pub(super) fn feature_has_children(&self, feature: usize) -> bool {
-        !self.features[feature].settings.is_empty()
-            || self
-                .available_extensions
-                .iter()
-                .any(|extension| extension.capability == self.features[feature].id)
+        self.features.get(feature).is_some_and(|feature| {
+            !feature.settings.is_empty()
+                || self
+                    .available_extensions
+                    .iter()
+                    .any(|extension| extension.capability == feature.id)
+        })
     }
 
     pub(super) fn toggle_feature_expansion(&mut self, feature: usize) {
         if !self.feature_has_children(feature) {
             return;
         }
-        let id = &self.features[feature].id;
-        if !self.expanded_features.remove(id) {
-            self.expanded_features.insert(id.clone());
+        if !self.expanded_features.remove(&feature) {
+            self.expanded_features.insert(feature);
         }
     }
 
@@ -513,14 +527,11 @@ impl SetupState {
     pub(super) fn move_selection(&mut self, delta: isize) {
         match self.page {
             Page::Provider => {
-                self.provider = (self.provider as isize + delta)
-                    .rem_euclid(self.providers.len() as isize)
-                    as usize;
+                self.provider = wrap_step(self.provider, delta, self.providers.len());
                 self.reset_provider_fields();
             }
             Page::Models | Page::Agent => {
-                self.row =
-                    (self.row as isize + delta).rem_euclid(self.row_count() as isize) as usize;
+                self.row = wrap_step(self.row, delta, self.row_count());
             }
             Page::Authentication => {}
         }
@@ -562,12 +573,12 @@ impl SetupState {
             KeyCode::Char('x') | KeyCode::Delete => {
                 self.remove_confirmation = self
                     .instance()
-                    .map(|instance| instance.selection.instance.clone());
+                    .map(|instance| instance.selection.instance.clone()); // rules-allow: the removal request owns the instance id
             }
             KeyCode::Enter => {
                 self.label = self
                     .instance()
-                    .map_or_else(String::new, |instance| instance.label.clone());
+                    .map_or_else(String::new, |instance| instance.label.clone()); // rules-allow: the label field is an editable buffer
                 self.auth_field = if self.definition().auth == ProviderAuthKind::ApiKey
                     && !self.has_matching_credential()
                 {
@@ -651,14 +662,7 @@ impl SetupState {
             }
             KeyCode::Up | KeyCode::BackTab => self.move_selection(-1),
             KeyCode::Down | KeyCode::Tab => self.move_selection(1),
-            KeyCode::Char(' ') => {
-                if let Some(target) = self.apply_target_for_row() {
-                    self.target = target;
-                    return self.finish();
-                }
-                self.select_model_row();
-            }
-            KeyCode::Enter => {
+            KeyCode::Char(' ') | KeyCode::Enter => {
                 if let Some(target) = self.apply_target_for_row() {
                     self.target = target;
                     return self.finish();
@@ -671,18 +675,14 @@ impl SetupState {
     }
 
     pub(super) fn handle_agent_key(&mut self, key: KeyEvent) -> Flow {
-        let middleware_row = self.middleware_row(self.row);
-        match key.code {
-            KeyCode::Esc => return Flow::Cancel,
-            KeyCode::Up | KeyCode::BackTab => self.move_selection(-1),
-            KeyCode::Down | KeyCode::Tab => self.move_selection(1),
-            KeyCode::Char(' ') if matches!(middleware_row, Some(MiddlewareRow::Feature(_))) => {
-                let MiddlewareRow::Feature(index) = middleware_row.expect("guarded feature row")
-                else {
-                    unreachable!()
-                };
-                let feature = &self.features[index];
-                if !feature.required {
+        match (key.code, self.middleware_row(self.row)) {
+            (KeyCode::Esc, _) => return Flow::Cancel,
+            (KeyCode::Up | KeyCode::BackTab, _) => self.move_selection(-1),
+            (KeyCode::Down | KeyCode::Tab, _) => self.move_selection(1),
+            (KeyCode::Char(' '), Some(MiddlewareRow::Feature(index))) => {
+                if let Some(feature) = self.features.get(index)
+                    && !feature.required
+                {
                     let enabled = !self.middleware.enabled(&feature.id);
                     self.error = self
                         .set_middleware_enabled(index, enabled)
@@ -690,70 +690,60 @@ impl SetupState {
                         .map(|error| error.to_string());
                 }
             }
-            KeyCode::Enter | KeyCode::Right
-                if matches!(middleware_row, Some(MiddlewareRow::Feature(_))) =>
-            {
-                let MiddlewareRow::Feature(feature) = middleware_row.expect("guarded feature row")
-                else {
-                    unreachable!()
-                };
-                if !self.expanded_features.contains(&self.features[feature].id) {
+            (KeyCode::Enter | KeyCode::Right, Some(MiddlewareRow::Feature(feature))) => {
+                if !self.expanded_features.contains(&feature) {
                     self.toggle_feature_expansion(feature);
                 }
             }
-            KeyCode::Left if matches!(middleware_row, Some(MiddlewareRow::Feature(_))) => {
-                let MiddlewareRow::Feature(feature) = middleware_row.expect("guarded feature row")
-                else {
-                    unreachable!()
-                };
-                if self.expanded_features.contains(&self.features[feature].id) {
+            (KeyCode::Left, Some(MiddlewareRow::Feature(feature))) => {
+                if self.expanded_features.contains(&feature) {
                     self.toggle_feature_expansion(feature);
                 }
             }
-            KeyCode::Char(' ') | KeyCode::Right
-                if matches!(middleware_row, Some(MiddlewareRow::Setting { .. })) =>
-            {
-                self.adjust_middleware_setting(middleware_row.expect("guarded setting row"), 1);
+            (KeyCode::Char(' ') | KeyCode::Right, Some(row @ MiddlewareRow::Setting { .. })) => {
+                self.adjust_middleware_setting(row, 1);
             }
-            KeyCode::Left if matches!(middleware_row, Some(MiddlewareRow::Setting { .. })) => {
-                self.adjust_middleware_setting(middleware_row.expect("guarded setting row"), -1);
+            (KeyCode::Left, Some(row @ MiddlewareRow::Setting { .. })) => {
+                self.adjust_middleware_setting(row, -1);
             }
-            KeyCode::Char(' ')
-                if matches!(middleware_row, Some(MiddlewareRow::Extension { .. })) =>
-            {
-                let MiddlewareRow::Extension { feature, extension } =
-                    middleware_row.expect("guarded extension row")
-                else {
-                    unreachable!()
-                };
-                self.error = None;
-                if !self
-                    .selected_extensions
-                    .remove(&self.available_extensions[extension].id)
-                {
-                    match self.set_middleware_enabled(feature, true) {
-                        Ok(()) => {
-                            self.selected_extensions
-                                .insert(self.available_extensions[extension].id.clone());
-                        }
-                        Err(error) => self.error = Some(error.to_string()),
-                    }
+            (KeyCode::Char(' '), Some(MiddlewareRow::Extension { feature, extension })) => {
+                self.error = self
+                    .toggle_extension(feature, extension)
+                    .err()
+                    .map(|error| error.to_string());
+            }
+            (KeyCode::Enter | KeyCode::Char(' '), _) => {
+                if let Some(target) = self.apply_target_for_row() {
+                    self.target = target;
+                    return self.finish();
                 }
-            }
-            KeyCode::Enter | KeyCode::Char(' ') if self.apply_target_for_row().is_some() => {
-                self.target = self
-                    .apply_target_for_row()
-                    .expect("guard requires an apply target");
-                return self.finish();
             }
             _ => {}
         }
         Flow::Continue
     }
 
+    fn toggle_extension(&mut self, feature: usize, extension: usize) -> Result<()> {
+        let record = self
+            .available_extensions
+            .get(extension)
+            .ok_or_else(|| Error::Config("unknown extension".into()))?;
+        if self.selected_extensions.remove(&*record.id) {
+            return Ok(());
+        }
+        let id = record.id.to_string();
+        self.set_middleware_enabled(feature, true)?;
+        self.selected_extensions.insert(id);
+        Ok(())
+    }
+
     fn set_middleware_enabled(&mut self, feature: usize, enabled: bool) -> Result<()> {
-        let id = &self.features[feature].id;
-        if enabled && let Some(label) = self.disabled_by(id) {
+        let id = &self
+            .features
+            .get(feature)
+            .ok_or_else(|| Error::Config("unknown middleware feature".into()))?
+            .id;
+        if enabled && let Some(label) = self.middleware.disabled_by(&self.features, id) {
             return Err(Error::Config(format!(
                 "Unavailable while {label} is selected."
             )));
@@ -796,8 +786,14 @@ impl SetupState {
         setting: usize,
         delta: isize,
     ) -> Result<()> {
-        let feature = &self.features[feature];
-        let setting = &feature.settings[setting];
+        let feature = self
+            .features
+            .get(feature)
+            .ok_or_else(|| Error::Config("unknown middleware feature".into()))?;
+        let setting = feature
+            .settings
+            .get(setting)
+            .ok_or_else(|| Error::Config("unknown middleware setting".into()))?;
         if !feature.required && !self.middleware.enabled(&feature.id) {
             return Ok(());
         }
@@ -829,17 +825,20 @@ impl SetupState {
                 let current = match self.middleware.setting(&feature.id, &setting.id) {
                     Some(FrontendSettingValue::String(value)) => options
                         .iter()
-                        .position(|option| option.value == *value)
+                        .position(|option| *option.value == **value)
                         .map_or(0, |index| index + offset),
                     _ => 0,
                 };
-                let next = (current as isize + delta).rem_euclid(count as isize) as usize;
-                if next < offset {
+                let next = wrap_step(current, delta, count);
+                let Some(option) = next
+                    .checked_sub(offset)
+                    .and_then(|index| options.get(index))
+                else {
                     self.middleware.set_setting(&feature.id, &setting.id, None);
                     self.reconcile_middleware();
                     return Ok(());
-                }
-                FrontendSettingValue::String(options[next - offset].value.clone())
+                };
+                FrontendSettingValue::String(option.value.to_string())
             }
         };
         self.middleware
@@ -892,6 +891,10 @@ impl SetupState {
         self.credential.clear();
         self.api_key_entered = false;
         self.authenticated = None;
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "from_parts rejects an empty provider list and every write keeps `provider` in range"
+        )]
         let definition = &self.providers[self.provider].status;
         let current = &self.original.provider;
         let same_instance = self
@@ -956,7 +959,7 @@ impl SetupState {
             definition
                 .web_search
                 .iter()
-                .position(|search| search.value == current.web_search.id())
+                .position(|search| *search.value == *current.web_search.id())
                 .unwrap_or_default()
         } else {
             0
@@ -968,27 +971,25 @@ impl SetupState {
 
     /// The typed model IDs, each keeping the reasoning it already has on this setup;
     /// a new ID starts with the provider default.
-    pub(super) fn configured_models(&self) -> Result<Vec<ConfiguredModel>> {
-        Ok(self
-            .configured_model_ids()?
+    pub(super) fn configured_models(&self) -> Vec<ConfiguredModel> {
+        self.configured_model_ids()
             .into_iter()
             .map(|id| ConfiguredModel {
                 id,
                 ..ConfiguredModel::default()
             })
-            .collect())
+            .collect()
     }
 
-    pub(super) fn configured_model_ids(&self) -> Result<Vec<String>> {
+    pub(super) fn configured_model_ids(&self) -> Vec<String> {
         if !self.definition().model_ids_configurable {
-            return Ok(Vec::new());
+            return Vec::new();
         }
-        Ok(self
-            .custom_model
+        self.custom_model
             .split(',')
             .map(str::trim)
-            .map(str::to_string)
-            .collect())
+            .map(str::to_owned)
+            .collect()
     }
 
     pub(super) fn selected_base_url(&self) -> Option<&str> {
@@ -1066,32 +1067,36 @@ impl SetupState {
         Ok(())
     }
 
-    pub(super) fn authentication(&mut self) -> Result<Authentication> {
+    pub(super) fn authentication(&mut self) -> Authentication {
         if self.mode != SetupMode::Login {
-            return Ok(Authentication::Reuse);
+            return Authentication::Reuse;
         }
         match self.definition().auth {
             ProviderAuthKind::ApiKey => {
                 let credential = self.credential.trim().to_owned();
-                if !credential.is_empty() {
-                    self.api_key_entered = true;
-                    Ok(Authentication::ApiKey(credential))
+                if credential.is_empty() {
+                    Authentication::Reuse
                 } else {
-                    Ok(Authentication::Reuse)
+                    self.api_key_entered = true;
+                    Authentication::ApiKey(credential)
                 }
             }
-            ProviderAuthKind::DeviceCode if self.has_matching_credential() => {
-                Ok(Authentication::Reuse)
-            }
-            ProviderAuthKind::DeviceCode => Ok(Authentication::DeviceCode),
+            ProviderAuthKind::DeviceCode if self.has_matching_credential() => Authentication::Reuse,
+            ProviderAuthKind::DeviceCode => Authentication::DeviceCode,
         }
     }
 
     pub(super) fn agent_composition(&self, current: &AgentComposition) -> Result<AgentComposition> {
         let (mut middleware, extensions) = if self.mode == SetupMode::Bot {
-            (self.middleware.clone(), self.selected_extensions.clone())
+            (
+                self.middleware.clone(), // rules-allow: the composition request owns a copy; the edit stays open for retries
+                self.selected_extensions.clone(), // rules-allow: the composition request owns a copy; the edit stays open for retries
+            )
         } else {
-            (current.middleware.clone(), current.extensions.clone())
+            (
+                current.middleware.clone(), // rules-allow: the composition request owns a copy of the unchanged part
+                current.extensions.clone(), // rules-allow: the composition request owns a copy of the unchanged part
+            )
         };
         let provider = self.selected_provider(&current.provider)?;
         if self.mode == SetupMode::BotModel {
@@ -1101,34 +1106,35 @@ impl SetupState {
             provider,
             middleware,
             extensions,
-            system_prompt: current.system_prompt.clone(),
+            system_prompt: current.system_prompt.clone(), // rules-allow: the composition request owns a copy of the unchanged part
             max_model_steps: current.max_model_steps,
         })
     }
 
     fn selected_provider(&self, current: &ProviderConfig) -> Result<ProviderConfig> {
         if self.mode == SetupMode::Bot {
-            return Ok(current.clone());
+            return Ok(current.clone()); // rules-allow: the composition request owns a copy of the unchanged provider
         }
         if self.mode == SetupMode::BotModel {
             let (choice, provider) = self
                 .bot_model_routes
                 .get(self.model)
                 .ok_or_else(|| Error::Config("select an available model".into()))?;
-            let instance = self.providers[*provider]
-                .instance
-                .as_ref()
+            let instance = self
+                .providers
+                .get(*provider)
+                .and_then(|entry| entry.instance.as_ref())
                 .ok_or_else(|| Error::Config("selected model setup is missing".into()))?;
             let selection = &instance.selection;
             return Ok(ProviderConfig {
-                instance: selection.instance.clone(),
-                provider: selection.provider.clone(),
-                base_url: selection.base_url.clone(),
+                instance: selection.instance.clone(), // rules-allow: the provider request owns a copy of the chosen route
+                provider: selection.provider.clone(), // rules-allow: the provider request owns a copy of the chosen route
+                base_url: selection.base_url.clone(), // rules-allow: the provider request owns a copy of the chosen route
                 endpoint_auth: selection.endpoint_auth,
-                service_tier: selection.service_tier.clone(),
+                service_tier: selection.service_tier.clone(), // rules-allow: the provider request owns a copy of the chosen route
                 tool_discovery: selection.tool_discovery,
-                model: choice.model.clone(),
-                reasoning_effort: choice.reasoning_effort.clone(),
+                model: choice.model.to_string(),
+                reasoning_effort: choice.reasoning_effort.as_deref().map(str::to_owned),
                 web_search: self
                     .definition()
                     .web_search
@@ -1139,7 +1145,7 @@ impl SetupState {
             });
         }
         let definition = self.definition();
-        let model_ids = self.configured_model_ids()?;
+        let model_ids = self.configured_model_ids();
         let model = if definition.model_ids_configurable {
             model_ids.first().map_or("", String::as_str)
         } else {
@@ -1150,9 +1156,9 @@ impl SetupState {
             self.reasoning
                 .checked_sub(1)
                 .and_then(|index| model.reasoning.get(index))
-                .map(|preset| preset.id.to_string())
+                .map(|preset| preset.id.clone()) // rules-allow: the provider request owns the reasoning id
         } else if current.instance == self.target_instance() && current.model == model {
-            current.reasoning_effort.clone()
+            current.reasoning_effort.clone() // rules-allow: the provider request owns a copy of the unchanged effort
         } else {
             None
         };
@@ -1176,13 +1182,13 @@ impl SetupState {
             current.instance == self.target_instance() && current.base_url.as_deref() == base_url;
         Ok(ProviderConfig {
             service_tier: if same_endpoint {
-                current.service_tier.clone()
+                current.service_tier.clone() // rules-allow: the provider request owns a copy of the unchanged tier
             } else {
                 None
             },
             tool_discovery: current.tool_discovery.filter(|_| same_endpoint),
             instance: self.target_instance().into(),
-            provider: definition.provider.clone(),
+            provider: definition.provider.clone(), // rules-allow: the provider request owns the provider id
             model: model.into(),
             base_url: base_url.map(str::to_owned),
             endpoint_auth,
@@ -1208,6 +1214,19 @@ impl SetupState {
     }
 }
 
+/// Moves `index` by `delta` within `0..len`, wrapping at both ends.
+fn wrap_step(index: usize, delta: isize, len: usize) -> usize {
+    let Some(shift) = delta.unsigned_abs().checked_rem(len) else {
+        return index;
+    };
+    let index = index % len;
+    if delta.is_negative() {
+        (index + len - shift) % len
+    } else {
+        (index + shift) % len
+    }
+}
+
 pub(super) enum Authentication {
     Reuse,
     ApiKey(String),
@@ -1222,7 +1241,7 @@ pub(super) fn provider_rows(
 ) -> Vec<ProviderEntry> {
     let definitions: Vec<Arc<ProviderStatus>> = statuses
         .iter()
-        .map(|status| Arc::new(status.clone()))
+        .map(|status| Arc::new(status.clone())) // rules-allow: setup keeps a snapshot of the gateway's provider definitions
         .collect();
     let configured = instances.iter().filter_map(|instance| {
         definitions
@@ -1230,7 +1249,7 @@ pub(super) fn provider_rows(
             .find(|status| status.provider == instance.selection.provider)
             .map(|status| ProviderEntry {
                 status: Arc::clone(status),
-                instance: Some(instance.clone()),
+                instance: Some(instance.clone()), // rules-allow: setup keeps a snapshot of the gateway's provider setups
             })
     });
     let mut rows: Vec<ProviderEntry> = configured.collect();

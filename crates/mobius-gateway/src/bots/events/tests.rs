@@ -66,7 +66,7 @@ fn facts_and_actions_keep_insertion_order_and_durable_receipts() {
             .unpublished_events(10)
             .expect("facts")
             .iter()
-            .map(|event| event.id.as_str())
+            .map(|event| &*event.id)
             .collect::<Vec<_>>(),
         ["z-first", "a-second"]
     );
@@ -74,13 +74,13 @@ fn facts_and_actions_keep_insertion_order_and_durable_receipts() {
     assert_eq!(
         pending
             .iter()
-            .map(|action| action.event.id.as_str())
+            .map(|action| &*action.event.id)
             .collect::<Vec<_>>(),
         ["z-first", "a-second"]
     );
     let ids = pending
         .iter()
-        .map(|action| action.id.clone())
+        .map(|action| Arc::clone(&action.id))
         .collect::<Vec<_>>();
     storage.action_accepted(&ids[0]).expect("receipt");
     storage.event_published("z-first").expect("published");
@@ -99,7 +99,7 @@ fn facts_and_actions_keep_insertion_order_and_durable_receipts() {
     );
     assert_eq!(storage.pending_actions(105, 10).expect("due")[0].id, ids[1]);
     assert_eq!(
-        storage.unpublished_events(10).expect("unpublished")[0].id,
+        &*storage.unpublished_events(10).expect("unpublished")[0].id,
         "a-second"
     );
     let mut conflict = started("a-second");
@@ -235,7 +235,7 @@ fn closing_session_retains_final_actions_and_replaying_closure_does_not_cancel_t
 
 fn running() -> RoutineRun {
     RoutineRun {
-        id: uuid::Uuid::new_v4().to_string(),
+        id: uuid::Uuid::new_v4().to_string().into(),
         routine_id: "routine-a".into(),
         bot_id: "bot-a".into(),
         started_at: 100,

@@ -26,7 +26,8 @@ impl Resources {
     pub(super) async fn sample(&self) -> Value {
         // Moving the guard into the blocking worker also bounds outstanding work
         // if an OS query outlives its caller's deadline or cancellation.
-        let Ok(mut sampler) = Arc::clone(&self.sampler).try_lock_owned() else {
+        let sampler = Arc::clone(&self.sampler);
+        let Ok(mut sampler) = sampler.try_lock_owned() else {
             return unavailable("busy");
         };
         let worker = tokio::task::spawn_blocking(move || {
@@ -41,8 +42,11 @@ impl Resources {
         };
         // The blocking worker owns any uncancellable DRM reads. A failed command
         // uses its fallback; successful NVIDIA counters take precedence.
-        if gpu["status"] != "unavailable" || measured["gpu"].is_null() {
-            measured["gpu"] = gpu;
+        if (gpu.get("status").and_then(Value::as_str) != Some("unavailable")
+            || measured.get("gpu").is_none_or(Value::is_null))
+            && let Some(measured) = measured.as_object_mut()
+        {
+            measured.insert("gpu".into(), gpu);
         }
         measured
     }

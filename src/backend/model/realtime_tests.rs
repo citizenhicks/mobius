@@ -14,8 +14,8 @@ fn request(api: VoiceApi) -> RealtimeVoiceRequest {
     };
     RealtimeVoiceRequest {
         session_id: "session-1".into(),
-        model: model.id.clone(),
-        voice: model.variants[0].id.clone(),
+        model: model.id.as_str().into(),
+        voice: model.variants[0].id.as_str().into(),
         offer_sdp: SDP.into(),
         instructions: "Delegate requested work to the workspace.".into(),
     }
@@ -57,17 +57,19 @@ impl OpenAiAuthorization for Auth {
     }
 }
 
-async fn transport(api: VoiceApi) -> (RealtimeTransport, TcpListener) {
+async fn transport(api: VoiceApi) -> (Arc<RealtimeTransport>, TcpListener) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     if api == VoiceApi::OpenAi {
         let base = format!("http://{}/api/native/v1/", listener.local_addr().unwrap());
         return (
-            RealtimeTransport::new_openai(
-                &base,
-                Arc::new(Auth::default()),
-                crate::backend::model::ModelTransportSettings::default(),
-            )
-            .unwrap(),
+            Arc::new(
+                RealtimeTransport::new_openai(
+                    &base,
+                    Arc::new(Auth::default()),
+                    crate::backend::model::ModelTransportSettings::default(),
+                )
+                .unwrap(),
+            ),
             listener,
         );
     }
@@ -75,7 +77,7 @@ async fn transport(api: VoiceApi) -> (RealtimeTransport, TcpListener) {
     let mut calls_url = Url::parse(&format!("{base}/calls")).unwrap();
     calls_url.set_query(Some("intent=quicksilver&architecture=avas"));
     (
-        RealtimeTransport {
+        Arc::new(RealtimeTransport {
             api,
             client: Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
@@ -85,7 +87,7 @@ async fn transport(api: VoiceApi) -> (RealtimeTransport, TcpListener) {
             calls_url,
             api_url: Url::parse(&base.replace("/realtime", "/live")).unwrap(),
             settings: crate::backend::model::ModelTransportSettings::default(),
-        },
+        }),
         listener,
     )
 }

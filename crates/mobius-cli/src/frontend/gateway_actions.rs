@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use mobius_gateway::wire::{ClientMessage, ProfileSnapshot, ProviderInstance, ServerMessage};
 use uuid::Uuid;
 
@@ -82,10 +84,9 @@ pub(super) fn render_response(
 ) -> Option<RenderedResponse> {
     let response = |text, severity| Some(RenderedResponse { text, severity });
     match message {
-        ServerMessage::Accepted { .. } => None,
         ServerMessage::Rejected { message, fatal, .. }
         | ServerMessage::Error { message, fatal, .. } => response(
-            message.clone(),
+            message.to_string(),
             if *fatal {
                 ResponseSeverity::Fatal
             } else {
@@ -122,11 +123,11 @@ pub(super) fn render_response(
     }
 }
 
-fn request_id() -> String {
-    Uuid::new_v4().to_string()
+fn request_id() -> Arc<str> {
+    Uuid::new_v4().to_string().into()
 }
 
-fn send(build: impl FnOnce(String) -> ClientMessage) -> PreparedAction {
+fn send(build: impl FnOnce(Arc<str>) -> ClientMessage) -> PreparedAction {
     Box::new(build(request_id()))
 }
 

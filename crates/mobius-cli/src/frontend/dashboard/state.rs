@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use mobius::protocol::{
     FrontendActionListItem, FrontendEvent, FrontendSlot, FrontendWidget, FrontendWidgetContent, Op,
 };
@@ -10,26 +12,26 @@ pub(super) struct DashboardState {
     pub(super) clients: Vec<ClientStatus>,
     pub(super) current_client_id: Option<String>,
     pub(super) selected_client_id: Option<String>,
-    pub(super) selected_session_id: Option<String>,
-    pub(super) selected_bot_id: Option<String>,
+    pub(super) selected_session_id: Option<Arc<str>>,
+    pub(super) selected_bot_id: Option<Arc<str>>,
     pub(super) device_list: ListState,
     pub(super) chat_list: ListState,
     pub(super) bot_list: ListState,
     pub(super) focus: DashboardFocus,
     pub(super) pending_unpair: Option<(String, String)>,
     pub(super) profile: Option<ProfileSnapshot>,
-    pub(super) pending_open: Option<(String, String)>,
+    pub(super) pending_open: Option<(uuid::Uuid, Arc<str>)>,
     pub(super) overlay: Option<CapabilityOverlay>,
     pub(super) error: Option<String>,
 }
 
 pub(in crate::frontend) struct CapabilityOverlay {
     pub(super) title: String,
-    pub(super) session_id: String,
+    pub(super) session_id: Arc<str>,
     pub(super) slots: Vec<FrontendSlot>,
-    pub(super) widgets: Vec<((String, String), FrontendWidget)>,
+    pub(super) widgets: Vec<(Arc<str>, Arc<FrontendWidget>)>,
     pub(super) widget_list: ListState,
-    pub(super) open: Option<(String, String)>,
+    pub(super) open: Option<(Arc<str>, Arc<str>)>,
     pub(super) option_list: ListState,
     pub(super) action_index: usize,
     pub(super) input: Option<ActionInput>,
@@ -43,14 +45,14 @@ pub(super) struct ActionInput {
 
 impl CapabilityOverlay {
     pub(super) fn from_session(payload: SessionReadyPayload) -> Self {
-        let session_id = payload.session.session_id;
+        let session_id = Arc::clone(&payload.session.session_id);
         let widgets = payload
             .contributions
             .into_iter()
             .flat_map(|contribution| {
+                let capability = contribution.capability;
                 contribution.widgets.into_iter().filter_map(move |item| {
-                    (item.slot == FrontendSlot::Navigation)
-                        .then(|| ((contribution.capability.clone(), item.id.clone()), item))
+                    (item.slot == FrontendSlot::Navigation).then(|| (Arc::clone(&capability), item))
                 })
             })
             .collect();
@@ -75,7 +77,7 @@ impl CapabilityOverlay {
         overlay
     }
 
-    pub(in crate::frontend) fn attention(widgets: Vec<((String, String), FrontendWidget)>) -> Self {
+    pub(in crate::frontend) fn attention(widgets: Vec<(Arc<str>, Arc<FrontendWidget>)>) -> Self {
         let mut overlay = Self::from_widgets("Attention".into(), widgets);
         overlay.title = "Attention".into();
         overlay.slots = vec![FrontendSlot::Attention];
@@ -85,21 +87,24 @@ impl CapabilityOverlay {
 
     pub(in crate::frontend) fn from_widgets(
         fallback_title: String,
-        widgets: Vec<((String, String), FrontendWidget)>,
+        widgets: Vec<(Arc<str>, Arc<FrontendWidget>)>,
     ) -> Self {
         let title = widgets
             .first()
-            .map_or_else(|| fallback_title, |(_, item)| item.text.clone());
+            .map_or_else(|| fallback_title, |(_, item)| item.text.clone()); // rules-allow: the widget keeps its text while the overlay owns the title
         let mut slots = widgets
             .iter()
             .map(|(_, item)| item.slot)
             .collect::<Vec<_>>();
         slots.sort_unstable();
         slots.dedup();
-        let open = (widgets.len() == 1).then(|| widgets[0].0.clone());
+        let open = match widgets.as_slice() {
+            [(capability, widget)] => Some((Arc::clone(capability), Arc::clone(&widget.id))),
+            _ => None,
+        };
         let mut overlay = Self {
             title,
-            session_id: String::new(),
+            session_id: Arc::default(),
             slots,
             widgets,
             widget_list: ListState::default(),
@@ -115,24 +120,22 @@ impl CapabilityOverlay {
     pub(in crate::frontend) fn apply(&mut self, event: FrontendEvent) {
         match event {
             FrontendEvent::Widget { capability, item } => {
-                let key = (capability, item.id.clone());
-                if self.slots.contains(&item.slot) {
-                    if let Some((_, widget)) = self
-                        .widgets
-                        .iter_mut()
-                        .find(|(candidate, _)| candidate == &key)
-                    {
-                        *widget = item;
-                    } else {
-                        self.widgets.push((key, item));
-                    }
+                if !self.slots.contains(&item.slot) {
+                    self.widgets
+                        .retain(|(owner, widget)| *owner != capability || widget.id != item.id);
+                } else if let Some((_, widget)) = self
+                    .widgets
+                    .iter_mut()
+                    .find(|(owner, widget)| *owner == capability && widget.id == item.id)
+                {
+                    *widget = item;
                 } else {
-                    self.widgets.retain(|(candidate, _)| candidate != &key);
+                    self.widgets.push((capability, item));
                 }
             }
             FrontendEvent::RemoveWidget { capability, id } => {
-                let key = (capability, id);
-                self.widgets.retain(|(candidate, _)| candidate != &key);
+                self.widgets
+                    .retain(|(owner, widget)| *owner != capability || *widget.id != *id);
             }
             _ => return,
         }
@@ -185,21 +188,24 @@ impl CapabilityOverlay {
             .map_or(0, |last| self.action_index.min(last));
     }
 
-    pub(super) fn selected_key(&self) -> Option<&(String, String)> {
+    pub(super) fn selected_key(&self) -> Option<(Arc<str>, Arc<str>)> {
         self.widgets
             .get(self.widget_list.selected()?)
-            .map(|(key, _)| key)
+            .map(|(capability, widget)| (Arc::clone(capability), Arc::clone(&widget.id)))
     }
 
     pub(in crate::frontend) fn open_widget(&self) -> Option<&FrontendWidget> {
         self.widget(self.open.as_ref()?)
     }
 
-    pub(super) fn widget(&self, key: &(String, String)) -> Option<&FrontendWidget> {
+    pub(super) fn widget(
+        &self,
+        (capability, id): &(Arc<str>, Arc<str>),
+    ) -> Option<&FrontendWidget> {
         self.widgets
             .iter()
-            .find(|(candidate, _)| candidate == key)
-            .map(|(_, widget)| widget)
+            .find(|(owner, widget)| owner == capability && widget.id == *id)
+            .map(|(_, widget)| &**widget)
     }
 
     pub(super) fn selected_action_list_item(&self) -> Option<&FrontendActionListItem> {

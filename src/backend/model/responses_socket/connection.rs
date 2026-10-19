@@ -165,7 +165,15 @@ impl OpenAiWsConnection {
             })
             .is_ok()
         {
-            let _ = timeout(self.io_timeout, closed).await;
+            match timeout(self.io_timeout, closed).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    tracing::debug!(%error, "model socket pump ended before confirming close");
+                }
+                Err(error) => {
+                    tracing::debug!(%error, "model socket close was not confirmed in time");
+                }
+            }
         }
         self.retire();
     }
@@ -217,14 +225,14 @@ async fn socket_pump(
                         active = sent;
                         stream_bytes = 0;
                         stream_events = 0;
-                        let _ = result.send(if sent { Ok(()) } else { Err(()) });
+                        deliver(result, if sent { Ok(()) } else { Err(()) });
                         if !sent {
                             close_reason = Some(ModelCancellationReason::RequestFailed);
                             break;
                         }
                     }
                     Some(SocketCommand::Send { result, .. }) => {
-                        let _ = result.send(Err(()));
+                        deliver(result, Err(()));
                     }
                     Some(SocketCommand::Finish) => {
                         active = false;
@@ -245,16 +253,15 @@ async fn socket_pump(
                         if !sent {
                             close_reason = Some(ModelCancellationReason::RequestFailed);
                             if active {
-                                let _ = messages.send(SocketEvent::Closed);
+                                notify(&messages, SocketEvent::Closed);
                             }
                             break;
                         }
                     }
-                    Some(Ok(Message::Pong(_) | Message::Frame(_))) => {}
                     Some(Ok(message @ (Message::Text(_) | Message::Binary(_)))) if active => {
                         if message.len() > MAX_SOCKET_MESSAGE_BYTES {
                             close_reason = Some(ModelCancellationReason::RequestFailed);
-                            let _ = messages.send(SocketEvent::ProtocolError(
+                            notify(&messages, SocketEvent::ProtocolError(
                                 "WebSocket message exceeded size limit",
                             ));
                             break;
@@ -269,21 +276,21 @@ async fn socket_pump(
                             .is_err()
                         {
                             close_reason = Some(ModelCancellationReason::RequestFailed);
-                            let _ = messages.send(SocketEvent::ProtocolError(
+                            notify(&messages, SocketEvent::ProtocolError(
                                 "WebSocket response exceeded size limit",
                             ));
                             break;
                         }
-                        if messages.send(SocketEvent::Message(message)).is_err() {
-                            // The owner's drop queues the close reason. Process it before more output.
-                            continue;
-                        }
+                        // A dropped owner queues the close reason, processed before more output.
+                        notify(&messages, SocketEvent::Message(message));
                     }
-                    Some(Ok(Message::Text(_) | Message::Binary(_))) => {}
+                    Some(Ok(
+                        Message::Pong(_) | Message::Frame(_) | Message::Text(_) | Message::Binary(_),
+                    )) => {}
                     Some(Err(WebSocketError::Capacity(_))) => {
                         close_reason = Some(ModelCancellationReason::RequestFailed);
                         if active {
-                            let _ = messages.send(SocketEvent::ProtocolError(
+                            notify(&messages, SocketEvent::ProtocolError(
                                 "WebSocket message exceeded size limit",
                             ));
                         }
@@ -292,21 +299,21 @@ async fn socket_pump(
                     Some(Ok(Message::Close(_))) => {
                         if active {
                             log_interruption("response", "peer sent a close frame");
-                            let _ = messages.send(SocketEvent::Closed);
+                            notify(&messages, SocketEvent::Closed);
                         }
                         break;
                     }
                     Some(Err(error)) => {
                         if active {
                             log_websocket_error("response", &error);
-                            let _ = messages.send(SocketEvent::Closed);
+                            notify(&messages, SocketEvent::Closed);
                         }
                         break;
                     }
                     None => {
                         if active {
                             log_interruption("response", "stream ended");
-                            let _ = messages.send(SocketEvent::Closed);
+                            notify(&messages, SocketEvent::Closed);
                         }
                         break;
                     }
@@ -326,7 +333,7 @@ async fn socket_pump(
         Err(_) => log_interruption("close", "close timed out"),
     }
     if let Some(result) = close_result {
-        let _ = result.send(());
+        deliver(result, ());
     }
 }
 
@@ -361,17 +368,14 @@ pub(super) async fn connect(
         let config = WebSocketConfig::default()
             .max_message_size(Some(MAX_SOCKET_MESSAGE_BYTES))
             .max_frame_size(Some(MAX_SOCKET_MESSAGE_BYTES));
-        let result = match timeout(
+        let Ok(result) = timeout(
             Duration::from_millis(settings.socket_connect_timeout_ms),
             connect_async_with_config(request, Some(config), false),
         )
         .await
-        {
-            Ok(result) => result,
-            Err(_) => {
-                log_interruption("connect", "timed out");
-                return Err(Error::Provider(ProviderError::stream_interrupted(None)));
-            }
+        else {
+            log_interruption("connect", "timed out");
+            return Err(Error::Provider(ProviderError::stream_interrupted(None)));
         };
         match result {
             Ok((socket, _)) => return Ok(OpenAiWsConnection::with_settings(socket, settings)),
@@ -402,7 +406,9 @@ fn websocket_connect_error(error: WebSocketError) -> Error {
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned);
         let body = response.body().as_deref().unwrap_or_default();
-        let body = &body[..body.len().min(super::super::transport::MAX_ERROR_BYTES)];
+        let body = body
+            .get(..super::super::transport::MAX_ERROR_BYTES)
+            .unwrap_or(body);
         return Error::Provider(super::super::transport::http_provider_error(
             "WebSocket",
             status,
@@ -417,19 +423,23 @@ fn connection_request(
     socket_url: &str,
     authorization: &ResolvedAuthorization<'_>,
 ) -> Result<tokio_tungstenite::tungstenite::http::Request<()>> {
-    let mut request = socket_url.into_client_request().map_err(socket_error)?;
+    let mut request = socket_url
+        .into_client_request()
+        .map_err(|error| socket_error(&error))?;
     request.headers_mut().insert(
         AUTHORIZATION,
-        HeaderValue::from_str(&format!("Bearer {}", authorization.token))
-            .map_err(|_| Error::Auth("access token is not a valid header value".into()))?,
+        HeaderValue::from_str(&format!("Bearer {}", authorization.token)).map_err(|error| {
+            Error::Auth(format!("access token is not a valid header value: {error}"))
+        })?,
     );
     for (name, value) in &authorization.headers {
         let name = tokio_tungstenite::tungstenite::http::HeaderName::from_bytes(name.as_bytes())
-            .map_err(|_| Error::Auth(format!("{name} is not a valid header name")))?;
+            .map_err(|error| Error::Auth(format!("{name} is not a valid header name: {error}")))?;
         request.headers_mut().insert(
             name,
-            HeaderValue::from_str(value.as_ref())
-                .map_err(|_| Error::Auth("authorization header value is invalid".into()))?,
+            HeaderValue::from_str(value.as_ref()).map_err(|error| {
+                Error::Auth(format!("authorization header value is invalid: {error}"))
+            })?,
         );
     }
     Ok(request)
@@ -561,7 +571,7 @@ async fn read_exchange_with_timeout(
         let pending = validate_stream_output(&event, &output)?;
         emit_ready_tool_calls(
             &output,
-            pending.map(|index| (index, &event["item"])),
+            pending.map(|index| (index, event.get("item").unwrap_or(&Value::Null))),
             &mut next_output_index,
             &tracked_events,
         )
@@ -588,17 +598,18 @@ async fn read_exchange_with_timeout(
                 return Ok(Exchange::Completed(attach_stream_output(response, output)));
             }
             Some("error" | "response.failed" | "response.incomplete") => {
-                return failed_exchange(&event, output_delivered.load(Ordering::Acquire));
+                return failed_exchange(&mut event, output_delivered.load(Ordering::Acquire));
             }
             _ => {}
         }
     }
 }
 
-pub(super) fn failed_exchange(event: &Value, output_delivered: bool) -> Result<Exchange> {
+pub(super) fn failed_exchange(event: &mut Value, output_delivered: bool) -> Result<Exchange> {
+    let retry_after = response_retry_after(event);
+    let event = &*event;
     let code = response_error_code(event);
     let message = response_error(event);
-    let retry_after = response_retry_after(event);
     if event.get("status").and_then(Value::as_u64) == Some(402)
         || code.is_some_and(ProviderError::is_quota_code)
     {
@@ -625,20 +636,24 @@ pub(super) fn failed_exchange(event: &Value, output_delivered: bool) -> Result<E
     }
 }
 
-fn response_retry_after(event: &Value) -> Option<String> {
-    [
+/// Moves the first non-empty retry hint out of a failed event; nothing else reads it.
+fn response_retry_after(event: &mut Value) -> Option<String> {
+    for pointer in [
         "/headers/retry-after",
         "/headers/retry_after",
         "/error/retry_after",
         "/response/error/retry_after",
-    ]
-    .into_iter()
-    .find_map(|pointer| event.pointer(pointer))
-    .and_then(|value| match value {
-        Value::String(value) if !value.trim().is_empty() => Some(value.clone()),
-        Value::Number(value) => Some(value.to_string()),
-        _ => None,
-    })
+    ] {
+        let Some(value) = event.pointer_mut(pointer) else {
+            continue;
+        };
+        return match value {
+            Value::String(value) if !value.trim().is_empty() => Some(std::mem::take(value)),
+            Value::Number(value) => Some(value.to_string()),
+            _ => None,
+        };
+    }
+    None
 }
 
 fn retryable_response_error(code: Option<&str>, message: &str) -> bool {
@@ -655,8 +670,20 @@ fn retryable_response_error(code: Option<&str>, message: &str) -> bool {
         && message.contains("retry your request"))
 }
 
-fn socket_error(error: WebSocketError) -> Error {
-    Error::Provider(format!("WebSocket {} failure", websocket_error_kind(&error)).into())
+fn deliver<T>(sender: oneshot::Sender<T>, value: T) {
+    if sender.send(value).is_err() {
+        tracing::debug!("model socket result receiver closed");
+    }
+}
+
+fn notify(messages: &mpsc::UnboundedSender<SocketEvent>, event: SocketEvent) {
+    if let Err(error) = messages.send(event) {
+        tracing::debug!(%error, "model socket consumer closed");
+    }
+}
+
+fn socket_error(error: &WebSocketError) -> Error {
+    Error::Provider(format!("WebSocket {} failure", websocket_error_kind(error)).into())
 }
 
 fn websocket_error_kind(error: &WebSocketError) -> &'static str {

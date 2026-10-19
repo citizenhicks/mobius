@@ -318,7 +318,9 @@ invalidate that result. Telemetry snapshots and upload admission measure fresh u
 Outbound telemetry is disabled until a destination is configured. Operators can use
 `mobius-gateway telemetry add --id ID --url HTTPS_URL --sections activity,storage`
 and `mobius-gateway telemetry list` or `telemetry remove --id ID`. An endpoint can
-request sections (`activity`, `usage`, `runs`, `storage`) and committed hook-event
-kinds. The gateway sends the chosen sections plus envelope metadata; a hosted gateway
+request sections (`activity`, `usage`, `runs`, `storage`, `resources`, `context`) and
+committed hook-event kinds. `context` reports the last input-token breakdown for up
+to 64 recent chats; it contains counts, not message text. The gateway sends the
+chosen sections plus envelope metadata; a hosted gateway
 may have a destination configured by its host. Bearer credentials are read from an
 environment variable or owner-only file and never returned in the endpoint report.

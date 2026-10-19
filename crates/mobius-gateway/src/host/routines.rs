@@ -1,5 +1,10 @@
 use super::deletion::{prepare_session_tree_deletion, remove_session_trees, session_trees};
-use super::*;
+use super::{
+    ActiveRoutineRun, Arc, BeginRun, BotStore, ChatSpec, GatewayHost, GatewayState, HostHandle, Op,
+    Path, PathBuf, Rejection, RoutineRunStatus, ServerFrame, ServerMessage, Submission, Utc,
+    gateway_session_summaries, internal, invalid_bot, invalid_routine, invalid_workspace,
+    session_tree_ids, unknown_session, validate_bot_workspace,
+};
 
 pub(super) async fn accept_routine_while_state_locked(
     _state: &mut tokio::sync::MutexGuard<'_, GatewayState>,
@@ -28,9 +33,10 @@ impl GatewayHost {
             .history(None)
             .map_err(internal)?
             .into_iter()
-            .filter(|run| run.bot_id == bot_id)
+            .filter(|run| *run.bot_id == *bot_id)
             .take(100)
             .collect::<Vec<_>>();
+        drop(state);
         Ok(serde_json::json!({"routines":routines,"recent_runs":runs}))
     }
 
@@ -42,23 +48,20 @@ impl GatewayHost {
         let _access = self.begin_mutation().await?;
         let state = self.state.lock().await;
         let bot = state.bots.bot(bot_id).map_err(invalid_bot)?;
-        let tls = state
+        let config = state
             .config
             .lock()
-            .map_err(|_| internal("configuration lock poisoned"))?
-            .tls
-            .clone();
-        match workspace {
-            Some(workspace) => crate::config::validate_chat_workspace(
-                workspace,
-                state.store.state_dir(),
-                tls.as_ref(),
-            )
-            .map_err(invalid_workspace),
-            None => ChatSpec::persistent(&bot)
-                .execution_root(state.store.state_dir(), tls.as_ref())
-                .map_err(invalid_workspace),
-        }
+            .map_err(|error| internal(format!("configuration lock poisoned: {error}")))?;
+        let tls = config.tls.as_ref();
+        let root = match workspace {
+            Some(workspace) => {
+                crate::config::validate_chat_workspace(workspace, state.store.state_dir(), tls)
+            }
+            None => ChatSpec::persistent(&bot).execution_root(state.store.state_dir(), tls),
+        };
+        drop(config);
+        drop(state);
+        root.map_err(invalid_workspace)
     }
 
     pub(crate) async fn create_routine(
@@ -95,7 +98,7 @@ impl GatewayHost {
                     .await
             }
             RoutineAction::Stop { run_id } => {
-                let _mutation = self.begin_mutation().await?;
+                let mutation = self.begin_mutation().await?;
                 let (run, checkpoints) = {
                     let state = self.state.lock().await;
                     if !super::bot_events::command_pending(&state.bots, cause, command_id)? {
@@ -134,7 +137,7 @@ impl GatewayHost {
                     .bots
                     .request_run_stop(run_id, command_id, cause)
                     .map_err(internal)?;
-                drop(_mutation);
+                drop(mutation);
                 self.open_session(&session_id)
                     .await?
                     .submit(Submission {
@@ -193,6 +196,10 @@ impl GatewayHost {
         }
     }
 
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "remove_session_trees updates the file deletion before cleanup_session_files consumes it"
+    )]
     pub(crate) async fn delete_routine(
         &self,
         routine_id: &str,
@@ -218,7 +225,7 @@ impl GatewayHost {
             .map_err(internal)?;
         let session_ids = session_trees(roots, &summaries).1;
         let mut file_deletion = prepare_session_tree_deletion(
-            &mut state,
+            &state,
             &session_ids,
             mobius::backend::session_files::SessionFileSelection::All,
         )
@@ -233,8 +240,12 @@ impl GatewayHost {
         let roots = deletion
             .session_ids()
             .iter()
-            .filter(|root| summaries.iter().any(|session| session.session_id == **root))
-            .cloned()
+            .filter(|root| {
+                summaries
+                    .iter()
+                    .any(|session| *session.session_id == ***root)
+            })
+            .cloned() // rules-allow: the routine deletion is consumed before its session trees are removed
             .collect();
         let (session_roots, session_ids) = session_trees(roots, &summaries);
         state
@@ -251,18 +262,23 @@ impl GatewayHost {
         .await;
         drop(state);
         self.cleanup_session_files(file_deletion);
-        if !session_ids.is_empty() {
-            let _ = self.broadcast_sessions().await;
+        if !session_ids.is_empty()
+            && let Err(rejection) = self.broadcast_sessions().await
+        {
+            tracing::warn!(code = rejection.code, message = %rejection.message, "session list broadcast failed");
         }
-        if let Some(rejection) = match cleanup {
+        let warning = match cleanup {
             Ok(warning) => warning,
             Err(rejection) => Some(rejection),
-        } {
-            let _ = self.events.send(ServerFrame::new(ServerMessage::Error {
+        };
+        if let Some(rejection) = warning
+            && let Err(error) = self.events.send(ServerFrame::new(ServerMessage::Error {
                 code: "routine_cleanup".into(),
                 message: rejection.message,
                 fatal: false,
-            }));
+            }))
+        {
+            tracing::debug!(%error, "routine cleanup warning had no subscribers");
         }
         Ok(())
     }
@@ -275,7 +291,7 @@ impl GatewayHost {
         command_id: &str,
     ) -> std::result::Result<(), Rejection> {
         self.work_activity.mark();
-        let _mutation = self.begin_mutation().await?;
+        let mutation = self.begin_mutation().await?;
         let state = self.state.lock().await;
         if !super::bot_events::command_pending(&state.bots, cause, command_id)? {
             return Ok(());
@@ -295,7 +311,7 @@ impl GatewayHost {
                 ));
             }
         };
-        drop(_mutation);
+        drop(mutation);
         self.run_routine_with_state(state, routine_id.into(), run)
             .await
     }
@@ -305,24 +321,22 @@ impl GatewayHost {
         run_id: &str,
         before_sequence: Option<u64>,
     ) -> std::result::Result<crate::wire::RoutineRunPreview, Rejection> {
-        let _mutation = self.begin_mutation().await?;
-        let (bots, run) = {
-            let state = self.state.lock().await;
-            let bots = Arc::clone(&state.bots);
-            let run = bots.run(run_id).map_err(invalid_routine)?;
-            (bots, run)
-        };
+        let mutation = self.begin_mutation().await?;
+        let state = self.state.lock().await;
+        let bots = Arc::clone(&state.bots);
+        drop(state);
+        let run = bots.run(run_id).map_err(invalid_routine)?;
         let session_id = run.session_id.as_deref().ok_or_else(|| {
             Rejection::new(
                 "routine_run_unavailable",
                 "this routine run has no execution session",
             )
         })?;
-        drop(_mutation);
+        drop(mutation);
         let (host, temporary) = self.open_session_with_cache(session_id, false).await?;
         let page = host.history_page(before_sequence).await;
         if temporary {
-            let _ = host.stop_if_idle().await;
+            host.stop_if_idle().await;
         }
         let page = page?;
         let routine = bots
@@ -336,6 +350,10 @@ impl GatewayHost {
         })
     }
 
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "remove_session_trees updates the file deletion before cleanup_session_files consumes it"
+    )]
     pub(crate) async fn delete_routine_run(
         &self,
         run_id: &str,
@@ -359,7 +377,7 @@ impl GatewayHost {
             Vec::new()
         };
         let mut file_deletion = prepare_session_tree_deletion(
-            &mut state,
+            &state,
             &session_ids,
             mobius::backend::session_files::SessionFileSelection::All,
         )
@@ -379,18 +397,23 @@ impl GatewayHost {
         };
         drop(state);
         self.cleanup_session_files(file_deletion);
-        if !session_ids.is_empty() {
-            let _ = self.broadcast_sessions().await;
+        if !session_ids.is_empty()
+            && let Err(rejection) = self.broadcast_sessions().await
+        {
+            tracing::warn!(code = rejection.code, message = %rejection.message, "session list broadcast failed");
         }
-        if let Some(rejection) = match cleanup {
+        let warning = match cleanup {
             Ok(warning) => warning,
             Err(rejection) => Some(rejection),
-        } {
-            let _ = self.events.send(ServerFrame::new(ServerMessage::Error {
+        };
+        if let Some(rejection) = warning
+            && let Err(error) = self.events.send(ServerFrame::new(ServerMessage::Error {
                 code: "routine_cleanup".into(),
                 message: rejection.message,
                 fatal: false,
-            }));
+            }))
+        {
+            tracing::debug!(%error, "routine cleanup warning had no subscribers");
         }
         Ok(())
     }
@@ -410,19 +433,18 @@ impl GatewayHost {
                 bots.finish_run(
                     run,
                     crate::wire::RoutineRunStatus::Failed,
-                    Some(rejection.message.clone()),
+                    Some(Arc::clone(&rejection.message)),
                 )
                 .map_err(internal)?;
                 return Err(rejection);
             }
         };
-        let session_id = run.session_id().to_owned();
         let label = format!("routine · {}", routine.id.get(..8).unwrap_or(&routine.id));
         let host = match self
             .create_session_with_id(
                 Some(&routine.workspace),
                 &routine.bot_id,
-                session_id.clone(),
+                run.session_id().to_owned(),
                 false,
                 &label,
             )
@@ -435,7 +457,7 @@ impl GatewayHost {
                 } else {
                     crate::wire::RoutineRunStatus::Failed
                 };
-                bots.finish_run(run, status, Some(rejection.message.clone()))
+                bots.finish_run(run, status, Some(Arc::clone(&rejection.message)))
                     .map_err(internal)?;
                 return Err(rejection);
             }
@@ -447,11 +469,18 @@ impl GatewayHost {
         match accepted {
             Ok(()) => {
                 let broadcast = self.broadcast_sessions().await;
-                let gateway = self.clone();
+                let gateway = self.clone(); // rules-allow: the spawned cleanup task owns a gateway handle
                 let cleanup = tokio::spawn(async move {
                     host.wait_idle().await;
-                    gateway.state.lock().await.sessions.remove(&session_id);
-                    let _ = gateway.broadcast_sessions().await;
+                    gateway
+                        .state
+                        .lock()
+                        .await
+                        .sessions
+                        .remove(&**host.session_id());
+                    if let Err(rejection) = gateway.broadcast_sessions().await {
+                        tracing::warn!(code = rejection.code, message = %rejection.message, "session list broadcast failed");
+                    }
                 });
                 let mut state = self.state.lock().await;
                 state.idle_cleanup_tasks.retain(|task| !task.is_finished());
@@ -459,8 +488,12 @@ impl GatewayHost {
                 broadcast
             }
             Err(rejection) => {
-                let _ = host.stop_if_idle().await;
-                self.state.lock().await.sessions.remove(&session_id);
+                host.stop_if_idle().await;
+                self.state
+                    .lock()
+                    .await
+                    .sessions
+                    .remove(&**host.session_id());
                 Err(rejection)
             }
         }
@@ -474,7 +507,7 @@ fn require_routine_owner(
 ) -> std::result::Result<(), Rejection> {
     if let Some(owner) = owner {
         let routine = bots.routine(id).map_err(invalid_routine)?;
-        if routine.bot_id != owner {
+        if *routine.bot_id != *owner {
             return Err(unknown_session());
         }
     }

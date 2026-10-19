@@ -43,7 +43,7 @@ fn entry(note: impl Into<String>) -> Entry {
     }
 }
 
-async fn store() -> (tempfile::TempDir, Scratchpad) {
+fn store() -> (tempfile::TempDir, Scratchpad) {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
         SqliteCheckpoint::new(temporary.path().join("checkpoints.sqlite3")).expect("checkpoints"),
@@ -111,7 +111,7 @@ async fn compaction_discards_projections_before_a_post_hook_stops_or_fails() {
     }
 
     for fail in [false, true] {
-        let (temporary, store) = store().await;
+        let (temporary, store) = store();
         store.add_global("remember this").await.expect("note");
         let middleware = MiddlewareStack::new(vec![
             Arc::new(Messages::default()),
@@ -185,7 +185,7 @@ async fn compaction_discards_projections_before_a_post_hook_stops_or_fails() {
 
 #[tokio::test]
 async fn shared_scope_budget_rejects_oversized_writes_and_edits_without_changing_state() {
-    let (_temporary, store) = store().await;
+    let (_temporary, store) = store();
     for i in 0..3 {
         store
             .add_global(&format!("{i}{}", "x".repeat(499)))
@@ -213,7 +213,7 @@ async fn shared_scope_budget_rejects_oversized_writes_and_edits_without_changing
 
 #[tokio::test]
 async fn concurrent_shared_writes_preserve_every_accepted_note_and_the_count_limit() {
-    let (_temporary, store) = store().await;
+    let (_temporary, store) = store();
     let store = Arc::new(store);
     let writes = (0..MAX_NOTES + 5)
         .map(|i| {

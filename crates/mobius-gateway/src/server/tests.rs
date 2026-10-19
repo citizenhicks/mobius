@@ -8,8 +8,10 @@ use tokio_tungstenite::tungstenite::protocol::Message;
 use tokio_tungstenite::tungstenite::protocol::Role;
 use uuid::Uuid;
 
+use super::responses::encoded_frame_fits;
+use super::transport::{PreAuthClientFrame, WebSocketUpgradePolicy};
 use crate::client::{Endpoint, GatewayClient, GatewayEvents, GatewaySender};
-use crate::wire::{SessionActivity, SessionActivityState};
+use crate::wire::{MAX_PRE_AUTH_FRAME_BYTES, SessionActivity, SessionActivityState};
 
 use super::*;
 
@@ -89,7 +91,7 @@ async fn create_bot_chat(
     sender: &GatewaySender,
     events: &mut GatewayEvents,
     workspace: &Path,
-) -> (String, String) {
+) -> (String, Arc<str>) {
     create_bot_chat_with_config(
         sender,
         events,
@@ -104,13 +106,13 @@ async fn create_bot_chat_with_config(
     events: &mut GatewayEvents,
     workspace: &Path,
     config: crate::wire::AgentComposition,
-) -> (String, String) {
+) -> (String, Arc<str>) {
     let token = Uuid::new_v4().simple().to_string();
     let bot_request_id = format!("bot-{token}");
-    let bot_name = format!("Test Bot {}", &token[..12]);
+    let bot_name = format!("Test Bot {}", token.get(..12).unwrap());
     sender
         .send(ClientMessage::CreateBot {
-            request_id: bot_request_id.clone(),
+            request_id: bot_request_id.as_str().into(),
             name: bot_name.clone(),
             description: "Own this gateway integration test.".into(),
         })
@@ -121,10 +123,10 @@ async fn create_bot_chat_with_config(
             ServerMessage::Bots {
                 request_id: Some(actual),
                 bots,
-            } if actual == bot_request_id => {
+            } if actual.as_ref() == bot_request_id => {
                 break bots
                     .into_iter()
-                    .find(|bot| bot.name == bot_name)
+                    .find(|bot| *bot.name == *bot_name)
                     .expect("created Bot");
             }
             ServerMessage::Rejected {
@@ -132,7 +134,7 @@ async fn create_bot_chat_with_config(
                 code,
                 message,
                 ..
-            } if request_id == bot_request_id => {
+            } if request_id.as_ref() == bot_request_id => {
                 panic!("Bot creation rejected ({code}): {message}")
             }
             _ => {}
@@ -142,11 +144,11 @@ async fn create_bot_chat_with_config(
         let update_request_id = format!("update-{token}");
         sender
             .send(ClientMessage::UpdateBot {
-                request_id: update_request_id.clone(),
-                id: bot.id.clone(),
+                request_id: update_request_id.as_str().into(),
+                id: Arc::clone(&bot.id),
                 expected_revision: bot.config.revision,
-                name: bot.name.clone(),
-                description: bot.description.clone(),
+                name: Arc::clone(&bot.name),
+                description: Arc::clone(&bot.description),
                 tint: bot.tint,
                 shape: bot.shape,
                 config,
@@ -158,7 +160,7 @@ async fn create_bot_chat_with_config(
                 ServerMessage::Bots {
                     request_id: Some(actual),
                     bots,
-                } if actual == update_request_id => {
+                } if actual.as_ref() == update_request_id => {
                     break bots
                         .into_iter()
                         .find(|candidate| candidate.id == bot.id)
@@ -169,7 +171,7 @@ async fn create_bot_chat_with_config(
                     code,
                     message,
                     ..
-                } if request_id == update_request_id => {
+                } if request_id.as_ref() == update_request_id => {
                     panic!("Bot update rejected ({code}): {message}")
                 }
                 _ => {}
@@ -180,9 +182,9 @@ async fn create_bot_chat_with_config(
     let request_id = Uuid::new_v4().to_string();
     sender
         .send(ClientMessage::CreateSession {
-            request_id: request_id.clone(),
+            request_id: request_id.as_str().into(),
             workspace: workspace.into(),
-            bot_id: bot_id.clone(),
+            bot_id: Arc::clone(&bot_id),
         })
         .await
         .expect("create chat");
@@ -191,12 +193,12 @@ async fn create_bot_chat_with_config(
             ServerMessage::SessionOpened {
                 request_id: actual,
                 payload,
-            } if actual == request_id => return (payload.session.session_id, bot_id),
+            } if *actual == *request_id => return (payload.session.session_id.to_string(), bot_id),
             ServerMessage::Rejected {
                 request_id: actual,
                 message,
                 ..
-            } if actual == request_id => panic!("chat creation rejected: {message}"),
+            } if actual.as_ref() == request_id => panic!("chat creation rejected: {message}"),
             _ => {}
         }
     }
@@ -214,7 +216,7 @@ async fn open_chat(sender: &GatewaySender, events: &mut GatewayEvents, session_i
     let request_id = Uuid::new_v4().to_string();
     sender
         .send(ClientMessage::OpenSession {
-            request_id: request_id.clone(),
+            request_id: request_id.as_str().into(),
             session_id: session_id.into(),
             last_sequence: None,
         })
@@ -228,7 +230,7 @@ async fn open_chat(sender: &GatewaySender, events: &mut GatewayEvents, session_i
             .expect("gateway open");
         if matches!(
             frame.message,
-            ServerMessage::SessionOpened { request_id: actual, .. } if actual == request_id
+            ServerMessage::SessionOpened { request_id: actual, .. } if actual.as_ref() == request_id
         ) {
             return;
         }
@@ -274,7 +276,7 @@ async fn wait_session_activity(
                     .into_iter()
                     .find_map(|slot| match slot {
                         crate::wire::SessionSlot::Changed(session)
-                            if session.session_id == session_id =>
+                            if *session.session_id == *session_id =>
                         {
                             Some(session.activity)
                         }

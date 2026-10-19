@@ -40,7 +40,7 @@ async fn session_commands_and_chat_messages_preserve_sender_and_hook_ancestry() 
             message("Direct test", None),
             &bot.id,
             None,
-            "direct",
+            &"direct".into(),
         )
         .await
         .unwrap();
@@ -74,18 +74,18 @@ async fn session_commands_and_chat_messages_preserve_sender_and_hook_ancestry() 
 
     gateway
         .set_bot_subscription(crate::wire::BotSubscription {
-            bot_id: bot.id.clone(),
+            bot_id: Arc::clone(&bot.id),
             enabled: true,
             binding: crate::wire::HookBinding {
                 id: "saved-message".into(),
                 on: crate::bots::event_selector(
                     crate::wire::HookSource::Bot {
-                        bot_id: bot.id.clone(),
+                        bot_id: Arc::clone(&bot.id),
                     },
                     crate::wire::HookKind::CustomReceived,
                 ),
                 action: crate::wire::BotAction::Session {
-                    session_id: target.session_id().into(),
+                    session_id: target.session_id().to_string(),
                     op: Box::new(message("Saved test", None)),
                 },
             },
@@ -117,11 +117,7 @@ async fn session_commands_and_chat_messages_preserve_sender_and_hook_ancestry() 
             Some("incoming"),
             vec!["original-event", "incoming"],
         ),
-        (
-            "Saved test",
-            Some(event.id.as_str()),
-            vec![event.id.as_str()],
-        ),
+        ("Saved test", Some(&*event.id), vec![&*event.id]),
     ] {
         let message = delivered
             .iter()
@@ -140,10 +136,10 @@ async fn session_commands_and_chat_messages_preserve_sender_and_hook_ancestry() 
             panic!("source attribution")
         };
         assert!(
-            matches!(source, mobius::protocol::MessageSource::Session { session_id } if session_id == sender.session_id())
+            matches!(source, mobius::protocol::MessageSource::Session { session_id } if **session_id == **sender.session_id())
         );
         assert_eq!(cause_id.as_deref(), cause);
-        assert_eq!(actual, &ancestry);
+        assert_eq!(actual.iter().map(|id| &**id).collect::<Vec<_>>(), ancestry);
     }
     gateway.shutdown().await;
 }
@@ -169,13 +165,13 @@ async fn peer_delivery_needs_the_current_bot_and_reports_the_agents_rejection() 
         .await
         .unwrap();
     let peer = |target_turn_id: Option<&str>| Submission {
-        id: Uuid::new_v4().to_string(),
+        id: Uuid::new_v4().to_string().into(),
         op: Op::Message {
             message: MessageSubmission {
                 author: MessageAuthor::Source {
                     cause_id: None,
                     ancestry: Vec::new(),
-                    message_id: Uuid::new_v4().to_string(),
+                    message_id: Uuid::new_v4().to_string().into(),
                     source: mobius::protocol::MessageSource::Session {
                         session_id: "sender".into(),
                     },
@@ -192,11 +188,11 @@ async fn peer_delivery_needs_the_current_bot_and_reports_the_agents_rejection() 
     };
 
     let reassigned = target.deliver_source(peer(None), bot.id).await.unwrap_err();
-    assert_eq!(reassigned.message, "the chat now belongs to another Bot");
+    assert_eq!(&*reassigned.message, "the chat now belongs to another Bot");
     let rejected = target
         .deliver_source(peer(Some("stale-turn")), other_bot.id)
         .await
         .unwrap_err();
-    assert_eq!(rejected.message, "message targeted a stale turn");
+    assert_eq!(&*rejected.message, "message targeted a stale turn");
     gateway.shutdown().await;
 }

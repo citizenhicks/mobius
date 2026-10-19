@@ -168,6 +168,8 @@ impl Serialize for WireInput<'_> {
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error> {
         let mut sequence = serializer.serialize_seq(None)?;
+        // A later search can load a tool again; the model gets each definition once.
+        let mut sent = std::collections::BTreeSet::new();
         for item in self.input.iter() {
             if let Some(load) = ToolLoad::from_input(item).map_err(S::Error::custom)? {
                 if load.catalog_revision == self.catalog_revision {
@@ -177,6 +179,7 @@ impl Serialize for WireInput<'_> {
                         .filter_map(|name| {
                             self.additional_tools.iter().find(|tool| tool.name == *name)
                         })
+                        .filter(|tool| sent.insert(tool.name.as_str()))
                         .map(|tool| FunctionTool::new(tool, false))
                         .collect::<Vec<_>>();
                     if !tools.is_empty() {
@@ -376,7 +379,7 @@ impl Serialize for WirePart<'_> {
             _ => {
                 for (key, value) in fields {
                     if !key.starts_with('_')
-                        && !(self.cache_endpoint && key == "prompt_cache_breakpoint")
+                        && (!self.cache_endpoint || key != "prompt_cache_breakpoint")
                     {
                         map.serialize_entry(key, value)?;
                     }

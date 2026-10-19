@@ -10,6 +10,7 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
@@ -90,7 +91,7 @@ impl Cli {
             Some(Command::Pair {
                 endpoint,
                 one_time_code,
-            }) => pair(&endpoint, &one_time_code).await?,
+            }) => pair(endpoint, &one_time_code).await?,
             Some(Command::Extensions) => run_extensions().await?,
         }
         Ok(())
@@ -110,8 +111,7 @@ async fn run_interactive() -> Result<()> {
         return Ok(());
     };
     loop {
-        let choose_initial_bot =
-            disposable_session.as_deref() == Some(session.session.session_id.as_str());
+        let choose_initial_bot = disposable_session.as_ref() == Some(&session.session.session_id);
         let (exit, next_sender, next_events) = frontend::run(
             sender,
             events,
@@ -147,7 +147,7 @@ async fn run_interactive() -> Result<()> {
                 }
             }
             FrontendExit::Reconnect => {
-                let selected = Some((endpoint, session.session.session_id));
+                let selected = Some((endpoint, Arc::clone(&session.session.session_id)));
                 let Some(connection) = connect(selected, None).await? else {
                     return Ok(());
                 };
@@ -192,8 +192,13 @@ async fn run_task(bot_handle: &str, task_file: &Path) -> Result<()> {
             "configure the selected Bot's provider before using `mobius run`".into(),
         ));
     }
-    if let Some(message) =
-        frontend::run_headless(sender, events, session.session.session_id, task).await?
+    if let Some(message) = frontend::run_headless(
+        sender,
+        events,
+        Arc::clone(&session.session.session_id),
+        task,
+    )
+    .await?
     {
         print_output(&message);
     }
@@ -209,7 +214,8 @@ async fn read_task_file(path: &Path) -> Result<String> {
     if bytes.len() > MAX_MESSAGE_BYTES {
         return Err(Error::Config("task file exceeds message size limit".into()));
     }
-    String::from_utf8(bytes).map_err(|_| Error::Config("task file must contain valid UTF-8".into()))
+    String::from_utf8(bytes)
+        .map_err(|error| Error::Config(format!("task file must contain valid UTF-8: {error}")))
 }
 
 async fn run_extensions() -> Result<()> {
@@ -217,6 +223,10 @@ async fn run_extensions() -> Result<()> {
     frontend::run_extensions(sender, events, gateway).await
 }
 
+#[expect(
+    clippy::print_stdout,
+    reason = "printing the task result is the command's output"
+)]
 fn print_output(value: &str) {
     println!("{}", output_text(value, std::io::stdout().is_terminal()));
 }
@@ -229,8 +239,12 @@ fn output_text(value: &str, terminal: bool) -> String {
     }
 }
 
-async fn pair(endpoint: &Endpoint, code: &str) -> std::result::Result<(), mobius_gateway::Error> {
-    let endpoint = crate::authenticated_endpoint(endpoint.clone())?;
+#[expect(
+    clippy::print_stdout,
+    reason = "reporting the paired client is the command's output"
+)]
+async fn pair(endpoint: Endpoint, code: &str) -> std::result::Result<(), mobius_gateway::Error> {
+    let endpoint = crate::authenticated_endpoint(endpoint)?;
     let mut accounts = GatewayAccounts::load()?;
     accounts.prepare()?;
     let (_client, paired) =
@@ -242,7 +256,7 @@ async fn pair(endpoint: &Endpoint, code: &str) -> std::result::Result<(), mobius
 }
 
 async fn connect(
-    selected: Option<(Endpoint, String)>,
+    selected: Option<(Endpoint, Arc<str>)>,
     preferred_bot: Option<&str>,
 ) -> Result<
     Option<(
@@ -250,7 +264,7 @@ async fn connect(
         GatewayEvents,
         ReadyPayload,
         SessionReadyPayload,
-        Option<String>,
+        Option<Arc<str>>,
         Endpoint,
     )>,
 > {
@@ -280,7 +294,7 @@ async fn connect(
                 bot_id,
             )
             .await?;
-            let disposable_session = Some(session.session.session_id.clone());
+            let disposable_session = Some(Arc::clone(&session.session.session_id));
             (session, disposable_session)
         }
         None if preferred_bot.is_some() => {
@@ -289,20 +303,20 @@ async fn connect(
             ));
         }
         None => {
-            if let Some(session_id) = gateway
+            let first_session_id = gateway
                 .sessions
                 .first()
-                .map(|session| session.session_id.clone())
-            {
+                .map(|session| Arc::clone(&session.session_id));
+            if let Some(session_id) = first_session_id {
                 let session = open_session(&sender, &mut events, &mut gateway, session_id).await?;
                 (session, None)
             } else {
                 let session_id = gateway
                     .bots
                     .iter()
-                    .find(|bot| bot.handle == "mobius")
+                    .find(|bot| &*bot.handle == "mobius")
                     .or_else(|| gateway.bots.first())
-                    .map(|bot| bot.conversation_session_id.clone())
+                    .map(|bot| Arc::clone(&bot.conversation_session_id))
                     .ok_or_else(|| Error::Config("create a Bot before starting a chat".into()))?;
                 let session = open_session(&sender, &mut events, &mut gateway, session_id).await?;
                 (session, None)
@@ -405,11 +419,18 @@ async fn connect_local_once(
         GatewayClient::connect(endpoint, token, ClientKind::Cli),
     )
     .await
-    .map_err(|_| {
-        std::io::Error::new(std::io::ErrorKind::TimedOut, "gateway connection timed out")
+    .map_err(|elapsed| {
+        std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!("gateway connection timed out: {elapsed}"),
+        )
     })?
 }
 
+#[expect(
+    clippy::print_stderr,
+    reason = "the startup status line is shown on stderr before any terminal UI exists"
+)]
 async fn start_local_gateway(endpoint: &Endpoint) -> mobius_gateway::Result<GatewayClient> {
     let configured_state_dir = state_dir()?;
     let _startup_lock = lock_local_gateway_startup(&configured_state_dir)?;
@@ -712,15 +733,22 @@ fn detach_child(mut child: Child) {
     });
 }
 
+#[expect(
+    clippy::print_stderr,
+    reason = "startup cleanup runs before any terminal UI exists, so stderr is the only diagnostic channel"
+)]
 async fn stop_child(child: &mut Child) {
     #[cfg(unix)]
     if let Some(pid) = child.id() {
-        let _ = ProcessCommand::new("/bin/kill")
+        if let Err(error) = ProcessCommand::new("/bin/kill")
             .args(["-TERM", &pid.to_string()])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
-            .await;
+            .await
+        {
+            eprintln!("could not signal mobius-gateway {pid}: {error}");
+        }
         if matches!(
             tokio::time::timeout(Duration::from_secs(5), child.wait()).await,
             Ok(Ok(_))
@@ -730,8 +758,12 @@ async fn stop_child(child: &mut Child) {
         mobius_gateway::command::terminate_process_group(pid);
     }
     #[cfg(not(unix))]
-    let _ = child.kill().await;
-    let _ = child.wait().await;
+    if let Err(error) = child.kill().await {
+        eprintln!("could not stop mobius-gateway: {error}");
+    }
+    if let Err(error) = child.wait().await {
+        eprintln!("could not reap mobius-gateway: {error}");
+    }
 }
 
 fn startup_error(
@@ -745,12 +777,12 @@ async fn open_session(
     sender: &GatewaySender,
     events: &mut GatewayEvents,
     gateway: &mut ReadyPayload,
-    session_id: String,
+    session_id: Arc<str>,
 ) -> Result<SessionReadyPayload> {
-    let request_id = Uuid::new_v4().to_string();
+    let request_id: Arc<str> = Uuid::new_v4().to_string().into();
     sender
         .send(ClientMessage::OpenSession {
-            request_id: request_id.clone(),
+            request_id: Arc::clone(&request_id),
             session_id,
             last_sequence: None,
         })
@@ -764,12 +796,12 @@ async fn create_session(
     events: &mut GatewayEvents,
     gateway: &mut ReadyPayload,
     workspace: PathBuf,
-    bot_id: String,
+    bot_id: Arc<str>,
 ) -> Result<SessionReadyPayload> {
-    let request_id = Uuid::new_v4().to_string();
+    let request_id: Arc<str> = Uuid::new_v4().to_string().into();
     sender
         .send(ClientMessage::CreateSession {
-            request_id: request_id.clone(),
+            request_id: Arc::clone(&request_id),
             workspace,
             bot_id,
         })
@@ -778,11 +810,11 @@ async fn create_session(
     wait_session_opened(events, gateway, &request_id).await
 }
 
-fn resolve_bot(bots: &[BotRecord], preferred: &str) -> Result<String> {
+fn resolve_bot(bots: &[BotRecord], preferred: &str) -> Result<Arc<str>> {
     let preferred = preferred.trim().trim_start_matches('@');
     bots.iter()
-        .find(|bot| bot.handle == preferred || bot.id == preferred)
-        .map(|bot| bot.id.clone())
+        .find(|bot| *bot.handle == *preferred || *bot.id == *preferred)
+        .map(|bot| Arc::clone(&bot.id))
         .ok_or_else(|| Error::Config(format!("Bot `@{preferred}` was not found")))
 }
 
@@ -792,10 +824,10 @@ async fn discard_session(
     gateway: &mut ReadyPayload,
     session_id: &str,
 ) -> Result<()> {
-    let request_id = Uuid::new_v4().to_string();
+    let request_id: Arc<str> = Uuid::new_v4().to_string().into();
     sender
         .send(ClientMessage::DeleteSessions {
-            request_id: request_id.clone(),
+            request_id: Arc::clone(&request_id),
             session_ids: vec![session_id.into()],
             selection: mobius::backend::session_files::SessionFileSelection::All,
         })
@@ -803,10 +835,10 @@ async fn discard_session(
         .map_err(gateway_error)?;
     await_response(
         events,
-        Some(&request_id),
+        Some(&*request_id),
         Some(gateway),
         |message| match message {
-            ServerMessage::Accepted { request_id: actual } if actual == request_id => {
+            ServerMessage::Accepted { request_id: actual } if *actual == *request_id => {
                 ControlFlow::Break(())
             }
             message => ControlFlow::Continue(message),
@@ -833,16 +865,16 @@ async fn refresh_sessions(
     events: &mut GatewayEvents,
     gateway: &mut ReadyPayload,
 ) -> Result<()> {
-    let request_id = Uuid::new_v4().to_string();
+    let request_id: Arc<str> = Uuid::new_v4().to_string().into();
     sender
         .send(ClientMessage::ListSessions {
-            request_id: request_id.clone(),
+            request_id: Arc::clone(&request_id),
         })
         .await
         .map_err(gateway_error)?;
     let sessions = await_response(
         events,
-        Some(&request_id),
+        Some(&*request_id),
         Some(gateway),
         |message| match message {
             ServerMessage::Sessions {
@@ -861,7 +893,7 @@ fn catalog_session_is_pristine(gateway: &ReadyPayload, session_id: &str) -> bool
     gateway
         .sessions
         .iter()
-        .find(|session| session.session_id == session_id)
+        .find(|session| *session.session_id == *session_id)
         .is_some_and(pristine_session)
 }
 
@@ -888,7 +920,7 @@ async fn wait_session_opened(
             ServerMessage::SessionOpened {
                 request_id: actual,
                 payload,
-            } if actual == request_id => ControlFlow::Break(payload),
+            } if *actual == *request_id => ControlFlow::Break(payload),
             message => ControlFlow::Continue(message),
         },
     )

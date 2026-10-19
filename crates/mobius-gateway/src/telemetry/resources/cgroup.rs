@@ -79,7 +79,7 @@ fn read_at(path: &std::path::Path) -> Value {
             .map(|line| {
                 let mut fields = line.split_whitespace();
                 let device = fields.next().unwrap_or_default();
-                let mut disk = json!({"device": device});
+                let mut disk = serde_json::Map::from_iter([("device".to_owned(), json!(device))]);
                 for (key, value) in fields.filter_map(|field| field.split_once('=')) {
                     let name = match key {
                         "rbytes" => "read_bytes_total",
@@ -88,9 +88,9 @@ fn read_at(path: &std::path::Path) -> Value {
                         "wios" => "write_operations_total",
                         _ => continue,
                     };
-                    disk[name] = json!(value.parse::<u64>().ok());
+                    disk.insert(name.to_owned(), json!(value.parse::<u64>().ok()));
                 }
-                disk
+                Value::Object(disk)
             })
             .collect::<Vec<_>>()
     });

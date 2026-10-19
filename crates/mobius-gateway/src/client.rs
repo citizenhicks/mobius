@@ -76,6 +76,7 @@ pub struct ConnectOptions {
 }
 
 /// Connected client before its command and event halves are separated.
+#[derive(Debug)]
 pub struct GatewayClient {
     sender: GatewaySender,
     events: GatewayEvents,
@@ -87,6 +88,14 @@ pub struct GatewaySender {
     writer: Arc<Mutex<Option<WriteHalf<BoxedTransport>>>>,
 }
 
+impl fmt::Debug for GatewaySender {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GatewaySender")
+            .finish_non_exhaustive()
+    }
+}
+
 /// Single-owner framed event reader.
 pub struct GatewayEvents {
     reader: FrameReader<ReadHalf<BoxedTransport>>,
@@ -94,7 +103,18 @@ pub struct GatewayEvents {
     scoped_deferred: usize,
 }
 
+impl fmt::Debug for GatewayEvents {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GatewayEvents")
+            .field("pending", &self.pending)
+            .field("scoped_deferred", &self.scoped_deferred)
+            .finish_non_exhaustive()
+    }
+}
+
 /// A focused read which restores every explicitly deferred frame when it ends.
+#[derive(Debug)]
 pub struct GatewayEventScope<'a> {
     events: &'a mut GatewayEvents,
     deferred: Vec<ServerFrame>,
@@ -138,8 +158,11 @@ impl Endpoint {
                 "invalid secure WebSocket bearer credential".into(),
             ));
         }
-        let mut value = HeaderValue::from_str(&format!("Bearer {token}"))
-            .map_err(|_| Error::Config("invalid secure WebSocket bearer credential".into()))?;
+        let mut value = HeaderValue::from_str(&format!("Bearer {token}")).map_err(|error| {
+            Error::Config(format!(
+                "invalid secure WebSocket bearer credential: {error}"
+            ))
+        })?;
         value.set_sensitive(true);
         self.websocket_authorization = Some(value);
         Ok(self)
@@ -174,12 +197,14 @@ impl Endpoint {
         }
 
         let mut roots = RootCertStore::empty();
-        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned()); // rules-allow: the root store owns its trust anchors
         let config = ClientConfig::builder()
             .with_root_certificates(roots)
             .with_no_client_auth();
-        let name = ServerName::try_from(self.host.clone())
-            .map_err(|_| Error::Config("TLS endpoint has an invalid server name".into()))?;
+        let name = ServerName::try_from(self.host.clone()) // rules-allow: the TLS session owns its server name
+            .map_err(|error| {
+                Error::Config(format!("TLS endpoint has an invalid server name: {error}"))
+            })?;
         let stream = TlsConnector::from(Arc::new(config))
             .connect(name, stream)
             .await
@@ -237,7 +262,7 @@ impl Endpoint {
                 }
                 ServerMessage::Authenticated if response.version == version => {}
                 ServerMessage::Error { code, message, .. } => {
-                    return Err(connection_error(&code, message));
+                    return Err(connection_error(&code, &message));
                 }
                 _ => {
                     return Err(Error::Protocol(
@@ -250,7 +275,10 @@ impl Endpoint {
                 .ok_or_else(|| {
                     Error::Protocol("gateway disconnected before reporting its version".into())
                 })?;
-            if frame["type"] != "ready" || frame["version"].as_u64() != Some(u64::from(version)) {
+            if frame.get("type").and_then(serde_json::Value::as_str) != Some("ready")
+                || frame.get("version").and_then(serde_json::Value::as_u64)
+                    != Some(u64::from(version))
+            {
                 return Err(Error::Protocol(
                     "gateway did not report a valid ready frame".into(),
                 ));
@@ -302,10 +330,15 @@ impl Endpoint {
             crate::channel::client_handshake(&mut websocket, credential),
         )
         .await
-        .map_err(|_| Error::Unauthorized)??;
+        .map_err(|error| {
+            tracing::debug!(%error, "gateway channel handshake timed out");
+            Error::Unauthorized
+        })??;
         let (transport, bridge) = tokio::io::duplex(WEBSOCKET_BRIDGE_BYTES);
         tokio::spawn(async move {
-            let _result = crate::channel::bridge(websocket, state, bridge).await;
+            if let Err(error) = crate::channel::bridge(websocket, state, bridge).await {
+                tracing::debug!(%error, "gateway channel closed");
+            }
         });
         Ok(Box::new(transport))
     }
@@ -322,7 +355,7 @@ impl Endpoint {
         if let Some(authorization) = &self.websocket_authorization {
             request
                 .headers_mut()
-                .insert(AUTHORIZATION, authorization.clone());
+                .insert(AUTHORIZATION, authorization.clone()); // rules-allow: every connection attempt sends the stored credential
         }
         Ok(request)
     }
@@ -348,9 +381,11 @@ impl FromStr for Endpoint {
                 "gateway endpoint must contain only a host and port".into(),
             ));
         }
-        let authority = authority
-            .parse::<Authority>()
-            .map_err(|_| Error::Config("gateway endpoint has an invalid host or port".into()))?;
+        let authority = authority.parse::<Authority>().map_err(|error| {
+            Error::Config(format!(
+                "gateway endpoint has an invalid host or port: {error}"
+            ))
+        })?;
         let host = authority
             .host()
             .strip_prefix('[')
@@ -495,7 +530,7 @@ impl GatewayClient {
         let paired = match frame.message {
             ServerMessage::Paired { client_id, token } => PairedClient { client_id, token },
             ServerMessage::Error { code, message, .. } => {
-                return Err(connection_error(&code, message));
+                return Err(connection_error(&code, &message));
             }
             _ => {
                 return Err(Error::Protocol(
@@ -534,7 +569,7 @@ impl GatewayClient {
             .ok_or_else(|| Error::Protocol("gateway closed during authentication".into()))?;
         match frame.message {
             ServerMessage::Authenticated => Ok(self),
-            ServerMessage::Error { code, message, .. } => Err(connection_error(&code, message)),
+            ServerMessage::Error { code, message, .. } => Err(connection_error(&code, &message)),
             _ => Err(Error::Protocol(
                 "gateway did not acknowledge authentication".into(),
             )),
@@ -542,11 +577,11 @@ impl GatewayClient {
     }
 }
 
-fn connection_error(code: &str, message: String) -> Error {
+fn connection_error(code: &str, message: &str) -> Error {
     if code == "unauthorized" {
         Error::Unauthorized
     } else {
-        Error::Protocol(message)
+        Error::Protocol(message.into())
     }
 }
 
@@ -584,6 +619,7 @@ impl GatewaySender {
             write_frame(&mut writer, frame).await?;
         }
         *slot = Some(writer);
+        drop(slot);
         Ok(())
     }
 }
@@ -756,14 +792,14 @@ mod tests {
             let expected = scope.next().await.expect("next").expect("expected");
             assert!(matches!(
                 expected.message,
-                ServerMessage::Accepted { request_id } if request_id == "expected"
+                ServerMessage::Accepted { request_id } if request_id.as_ref() == "expected"
             ));
         }
 
         let restored = events.next().await.expect("next").expect("restored");
         assert!(matches!(
             restored.message,
-            ServerMessage::Accepted { request_id } if request_id == "unrelated"
+            ServerMessage::Accepted { request_id } if request_id.as_ref() == "unrelated"
         ));
     }
 }

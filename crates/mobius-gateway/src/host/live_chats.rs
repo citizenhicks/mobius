@@ -22,7 +22,7 @@ struct OpenChat {
 
 struct OpenChats {
     sender: LiveChat,
-    bot_id: String,
+    bot_id: Arc<str>,
     chats: Vec<OpenChat>,
 }
 
@@ -40,9 +40,9 @@ impl GatewayLiveChats {
                 state
                     .sessions
                     .values()
-                    .filter(|host| host.is_alive() && host.session_id() != session_id)
-                    .cloned()
-                    .map(|host| (host.session_id().to_owned(), host))
+                    .filter(|host| host.is_alive() && **host.session_id() != *session_id)
+                    .cloned() // rules-allow: the chat handles are used after the state lock is released
+                    .map(|host| (Arc::clone(host.session_id()), host))
                     .collect::<std::collections::HashMap<_, _>>(),
                 Arc::clone(&state.checkpoints),
                 Arc::clone(&state.activities),
@@ -67,21 +67,19 @@ impl GatewayLiveChats {
         } else {
             let mut summaries = Vec::with_capacity(hosts.len());
             for id in hosts.keys() {
-                if let Some(summary) = checkpoints.session_summary(id).await? {
-                    summaries.push(summary);
-                }
+                summaries.extend(checkpoints.session_summary(id).await?);
             }
             summaries
         };
         let mut siblings = Vec::new();
         for summary in summaries {
-            let entry = metadata.remove(&summary.session_id);
-            if summary.session_id != session_id
+            let entry = metadata.remove(&*summary.session_id);
+            if *summary.session_id != *session_id
                 && summary.catalog_visible
                 && summary.parent_session_id.is_none()
                 && summary.session_context.owner_id == sender.session_context.owner_id
             {
-                let host = hosts.remove(&summary.session_id);
+                let host = hosts.remove(&*summary.session_id);
                 siblings.push((summary, entry.and_then(|entry| entry.title), host));
             }
         }
@@ -97,7 +95,7 @@ impl GatewayLiveChats {
                     turn_id: catalog
                         .activities
                         .get(&summary.session_id)
-                        .and_then(|activity| activity.turn_id.clone()),
+                        .and_then(|activity| activity.turn_id.as_ref().map(Arc::clone)),
                     title,
                     workspace: summary.session_context.workspace_label,
                     session_id: summary.session_id,
@@ -114,7 +112,7 @@ impl GatewayLiveChats {
                 turn_id: catalog
                     .activities
                     .get(session_id)
-                    .and_then(|activity| activity.turn_id.clone()),
+                    .and_then(|activity| activity.turn_id.as_ref().map(Arc::clone)),
             },
             bot_id: sender.session_context.owner_id,
             chats,
@@ -136,14 +134,14 @@ impl LiveChats for GatewayLiveChats {
         command: PeerCommand<'a>,
         initiating_author: &'a MessageAuthor,
         command_id: &'a str,
-    ) -> BoxFuture<'a, mobius::Result<String>> {
+    ) -> BoxFuture<'a, mobius::Result<Arc<str>>> {
         Box::pin(async move {
             let OpenChats {
                 sender,
                 bot_id,
                 chats,
             } = self.open(session_id).await?;
-            let id = format!("peer-{session_id}-{command_id}");
+            let id: Arc<str> = format!("peer-{session_id}-{command_id}").into();
             if matches!(
                 command,
                 PeerCommand::Interrupt { .. }
@@ -169,11 +167,11 @@ impl LiveChats for GatewayLiveChats {
                         author: MessageAuthor::Source {
                             cause_id,
                             ancestry,
-                            message_id: id.clone(),
+                            message_id: Arc::clone(&id),
                             source: mobius::protocol::MessageSource::Session {
                                 session_id: sender.session_id,
                             },
-                            handle,
+                            handle: handle.into(),
                             symbol: None,
                         },
                         text,
@@ -184,9 +182,12 @@ impl LiveChats for GatewayLiveChats {
                     };
                     (target, Op::Message { message })
                 }
-                PeerCommand::Interrupt { target, turn_id } => {
-                    (ChatTarget::Existing(target), Op::Interrupt { turn_id })
-                }
+                PeerCommand::Interrupt { target, turn_id } => (
+                    ChatTarget::Existing(target),
+                    Op::Interrupt {
+                        turn_id: turn_id.into(),
+                    },
+                ),
             };
             let submission = ValidatedSubmission::new(Submission { id, op })?;
             let host = match target {
@@ -194,17 +195,18 @@ impl LiveChats for GatewayLiveChats {
                     .map_err(|error| mobius::Error::Tool(error.to_string()))?
                     .create_session(workspace, &bot_id)
                     .await
-                    .map_err(|error| mobius::Error::Tool(error.message))?,
+                    .map_err(|error| mobius::Error::Tool(error.message.to_string()))?,
                 ChatTarget::Existing(target) => {
                     let mut matches = chats.into_iter().filter(|open| open.chat.is_target(target));
-                    match (matches.next(), matches.next()) {
+                    let found = (matches.next(), matches.next());
+                    match found {
                         (Some(open), None) => match open.host {
                             Some(host) => host,
                             None => (self.1)()
                                 .map_err(|error| mobius::Error::Tool(error.to_string()))?
                                 .open_session(&open.chat.session_id)
                                 .await
-                                .map_err(|error| mobius::Error::Tool(error.message))?,
+                                .map_err(|error| mobius::Error::Tool(error.message.to_string()))?,
                         },
                         (Some(_), Some(_)) => {
                             return Err(mobius::Error::Tool(
@@ -220,11 +222,11 @@ impl LiveChats for GatewayLiveChats {
                     }
                 }
             };
-            let target = host.session_id().to_owned();
+            let target = Arc::clone(host.session_id());
             // The recipient re-checks ownership in its own command order.
             host.deliver_validated_source(submission, bot_id)
                 .await
-                .map_err(|rejection| mobius::Error::Tool(rejection.message))?;
+                .map_err(|rejection| mobius::Error::Tool(rejection.message.to_string()))?;
             Ok(target)
         })
     }

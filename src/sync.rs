@@ -18,9 +18,13 @@ mod tests {
     fn recovery_retains_state_and_does_not_hide_poison_from_other_callers() {
         let state = Mutex::new(Vec::new());
         let panic = std::panic::catch_unwind(|| {
-            let mut guard = state.lock().expect("initial lock");
-            guard.push(1);
-            panic!("poison state");
+            state
+                .lock()
+                .map(|mut guard| {
+                    guard.push(1);
+                    panic!("poison state");
+                })
+                .is_ok()
         });
         assert!(panic.is_err());
         recover_lock(&state).push(2);

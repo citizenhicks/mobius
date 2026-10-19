@@ -28,4 +28,5 @@ async fn active_socket_sessions_are_never_evicted() {
             .iter()
             .all(|session| sessions.values().any(|cached| Arc::ptr_eq(cached, session)))
     );
+    drop(sessions);
 }

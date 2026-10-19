@@ -9,7 +9,7 @@ async fn completed_pre_model_usage_is_settled_when_a_later_hook_rejects_preparat
         SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
             .expect("checkpoint store"),
     );
-    let checkpoint_store: Arc<dyn CheckpointStore> = checkpoints.clone();
+    let checkpoint_store: Arc<dyn CheckpointStore> = Arc::<SqliteCheckpoint>::clone(&checkpoints);
     let observed_usage = Arc::new(Mutex::new(Vec::new()));
     let usage_observer = Arc::clone(&observed_usage);
     let config = AgentConfig::new(
@@ -120,7 +120,8 @@ async fn retained_agent_closes_its_event_stream_after_a_fatal_routing_error() {
         SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3")).expect("checkpoints"),
     );
     let mut config = config(workspace.path(), checkpoints, "retained-agent");
-    config.middleware = MiddlewareStack::new(vec![Arc::new(FailingMessages)]).expect("middleware");
+    config.middleware =
+        Arc::new(MiddlewareStack::new(vec![Arc::new(FailingMessages)]).expect("middleware"));
     let mut agent = create_agent(config).await.expect("agent");
     let frontend = agent.frontend_sink();
     agent

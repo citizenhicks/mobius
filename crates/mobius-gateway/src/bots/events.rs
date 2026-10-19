@@ -1,5 +1,7 @@
 //! Durable typed hooks and their user-authored consumers in the Bot database.
 
+use std::sync::Arc;
+
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use sha2::{Digest as _, Sha256};
 
@@ -18,8 +20,8 @@ pub(crate) const MAX_ROUTINE_BINDINGS: usize = 32;
 mod tests;
 
 pub(crate) struct PendingHookAction {
-    pub(crate) bot_id: String,
-    pub(crate) id: String,
+    pub(crate) bot_id: Arc<str>,
+    pub(crate) id: Arc<str>,
     pub(crate) event: HookEvent,
     pub(crate) action: BotAction,
 }
@@ -32,12 +34,9 @@ pub(crate) struct TelemetryEvent {
 
 impl BotStorage {
     pub(super) fn subscriptions(&self, bot_id: &str) -> Result<Vec<BotSubscription>> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| Error::Config("Bot storage lock is poisoned".into()))?;
+        let connection = self.lock()?;
         let mut query = connection.prepare("SELECT id, selector_json, action_json, enabled FROM hook_bindings WHERE bot_id = ?1 AND routine_id IS NULL ORDER BY id")?;
-        query
+        let subscriptions = query
             .query_map([bot_id], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -51,14 +50,17 @@ impl BotStorage {
                 Ok(BotSubscription {
                     bot_id: bot_id.into(),
                     binding: HookBinding {
-                        id,
+                        id: id.into(),
                         on: serde_json::from_str(&on)?,
                         action: serde_json::from_str(&action)?,
                     },
                     enabled,
                 })
             })
-            .collect()
+            .collect();
+        drop(query);
+        drop(connection);
+        subscriptions
     }
 
     pub(super) fn set_subscription(
@@ -123,10 +125,7 @@ impl BotStorage {
     }
 
     pub(super) fn hook_event(&self, id: &str) -> Result<Option<HookEvent>> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| Error::Config("Bot storage lock is poisoned".into()))?;
+        let connection = self.lock()?;
         connection
             .query_row(
                 "SELECT event_json FROM hook_events WHERE id = ?1",
@@ -139,21 +138,21 @@ impl BotStorage {
     }
 
     pub(super) fn unpublished_events(&self, limit: usize) -> Result<Vec<HookEvent>> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| Error::Config("Bot storage lock is poisoned".into()))?;
+        let connection = self.lock()?;
         let mut query = connection.prepare(
             "SELECT event_json FROM hook_events WHERE published=0 ORDER BY occurred_at,rowid LIMIT ?1",
         )?;
-        query
+        let events = query
             .query_map(
                 [i64::try_from(limit)
-                    .map_err(|_| Error::Config("hook page is too large".into()))?],
+                    .map_err(|error| Error::Config(format!("hook page is too large: {error}")))?],
                 |row| row.get::<_, String>(0),
             )?
             .map(|row| Ok(serde_json::from_str(&row?)?))
-            .collect()
+            .collect();
+        drop(query);
+        drop(connection);
+        events
     }
     pub(super) fn event_published(&self, id: &str) -> Result<()> {
         self.transaction(|tx| {
@@ -162,11 +161,8 @@ impl BotStorage {
         })
     }
 
-    pub(super) fn source_cursor(&self, session_id: &str) -> Result<(u64, Option<String>)> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| Error::Config("Bot storage lock is poisoned".into()))?;
+    pub(super) fn source_cursor(&self, session_id: &str) -> Result<(u64, Option<Arc<str>>)> {
+        let connection = self.lock()?;
         let Some((sequence, owner)) = connection
             .query_row(
                 "SELECT sequence, bot_id FROM bot_session_cursors WHERE session_id=?1",
@@ -177,9 +173,10 @@ impl BotStorage {
         else {
             return Ok((0, None));
         };
-        let sequence =
-            u64::try_from(sequence).map_err(|_| Error::Config("negative session cursor".into()))?;
-        Ok((sequence, Some(owner)))
+        drop(connection);
+        let sequence = u64::try_from(sequence)
+            .map_err(|error| Error::Config(format!("negative session cursor: {error}")))?;
+        Ok((sequence, Some(owner.into())))
     }
     pub(super) fn advance_source_cursor(
         &self,
@@ -207,14 +204,11 @@ impl BotStorage {
     }
 
     pub(super) fn pending_actions(&self, now: i64, limit: usize) -> Result<Vec<PendingHookAction>> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| Error::Config("Bot storage lock is poisoned".into()))?;
-        let limit =
-            i64::try_from(limit).map_err(|_| Error::Config("hook page is too large".into()))?;
+        let connection = self.lock()?;
+        let limit = i64::try_from(limit)
+            .map_err(|error| Error::Config(format!("hook page is too large: {error}")))?;
         let mut query=connection.prepare("SELECT outbox.id, events.event_json, outbox.action_json, outbox.bot_id FROM hook_outbox AS outbox JOIN hook_events AS events ON events.id=outbox.event_id WHERE outbox.accepted=0 AND outbox.retry_at<=?1 ORDER BY outbox.retry_at,outbox.rowid LIMIT ?2")?;
-        query
+        let actions = query
             .query_map(params![now, limit], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -226,13 +220,16 @@ impl BotStorage {
             .map(|row| {
                 let (id, event, action, bot_id) = row?;
                 Ok(PendingHookAction {
-                    id,
+                    id: id.into(),
                     event: serde_json::from_str(&event)?,
                     action: serde_json::from_str(&action)?,
-                    bot_id,
+                    bot_id: bot_id.into(),
                 })
             })
-            .collect()
+            .collect();
+        drop(query);
+        drop(connection);
+        actions
     }
 
     pub(super) fn action_accepted(&self, id: &str) -> Result<()> {
@@ -254,17 +251,11 @@ impl BotStorage {
         })
     }
     pub(super) fn action_pending(&self, id: &str) -> Result<bool> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| Error::Config("Bot storage lock is poisoned".into()))?;
+        let connection = self.lock()?;
         Ok(connection.query_row("SELECT EXISTS(SELECT 1 FROM hook_outbox WHERE id=?1 AND accepted=0 AND retry_at IS NOT NULL)",[id],|row|row.get(0))?)
     }
     pub(super) fn has_pending_deliveries(&self) -> Result<bool> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| Error::Config("Bot storage lock is poisoned".into()))?;
+        let connection = self.lock()?;
         Ok(connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM hook_outbox WHERE accepted=0 AND retry_at IS NOT NULL)",
             [],
@@ -272,10 +263,7 @@ impl BotStorage {
         )?)
     }
     pub(super) fn has_monitored_sessions(&self) -> Result<bool> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| Error::Config("Bot storage lock is poisoned".into()))?;
+        let connection = self.lock()?;
         Ok(connection.query_row("SELECT EXISTS(SELECT 1 FROM hook_bindings WHERE enabled=1 AND json_extract(selector_json,'$.source.type')='session')",[],|row|row.get(0))?)
     }
     pub(super) fn close_session_sources(
@@ -314,27 +302,32 @@ pub(crate) fn event_selector(source: HookSource, kind: HookKind) -> HookSelector
 }
 
 pub(crate) fn caused_event(
-    id: String,
-    bot_id: String,
+    id: Arc<str>,
+    bot_id: Arc<str>,
     source: HookSource,
     data: HookData,
     now: i64,
     cause: Option<&HookEvent>,
 ) -> Result<HookEvent> {
-    let mut ancestry = cause.map_or_else(Vec::new, |event| event.ancestry.clone());
     if let Some(cause) = cause {
         validate_event(cause)?;
-        if ancestry.len() < MAX_HOOK_ANCESTRY {
-            ancestry.push(cause.id.clone());
-        }
     }
+    let ancestry = cause.map_or_else(Vec::new, |cause| {
+        let parent = (cause.ancestry.len() < MAX_HOOK_ANCESTRY).then_some(&cause.id);
+        cause
+            .ancestry
+            .iter()
+            .chain(parent)
+            .map(Arc::clone)
+            .collect()
+    });
     let event = HookEvent {
         id,
         bot_id,
         source,
         data,
         occurred_at: now,
-        cause_id: cause.map(|event| event.id.clone()),
+        cause_id: cause.map(|event| Arc::clone(&event.id)),
         ancestry,
     };
     validate_event(&event)?;
@@ -350,7 +343,7 @@ fn cursor(connection: &Connection, session_id: &str) -> Result<u64> {
         )
         .optional()?
         .unwrap_or(0);
-    u64::try_from(value).map_err(|_| Error::Config("negative session cursor".into()))
+    u64::try_from(value).map_err(|error| Error::Config(format!("negative session cursor: {error}")))
 }
 fn advance_cursor(
     tx: &Transaction<'_>,
@@ -372,7 +365,7 @@ fn advance_cursor(
         ));
     }
     let sequence = i64::try_from(sequence)
-        .map_err(|_| Error::Config("session sequence is too large".into()))?;
+        .map_err(|error| Error::Config(format!("session sequence is too large: {error}")))?;
     Ok(tx.execute("INSERT INTO bot_session_cursors(session_id,bot_id,sequence) VALUES(?1,?2,?3) ON CONFLICT(session_id) DO UPDATE SET sequence=excluded.sequence WHERE excluded.sequence>bot_session_cursors.sequence",params![session_id,bot_id,sequence])?!=0)
 }
 fn cancel_source_pending(tx: &Transaction<'_>, source: &HookSource) -> Result<()> {
@@ -399,7 +392,7 @@ fn save_binding(
     now: i64,
 ) -> Result<()> {
     let sequence = i64::try_from(after_sequence)
-        .map_err(|_| Error::Config("binding sequence is too large".into()))?;
+        .map_err(|error| Error::Config(format!("binding sequence is too large: {error}")))?;
     let previous = tx
         .query_row(
             "SELECT routine_id,selector_json,action_json FROM hook_bindings WHERE bot_id=?1 AND id=?2",
@@ -444,12 +437,12 @@ fn sync_routine_bindings(tx: &Transaction<'_>, routines: &[StoredRoutine], now: 
     drop(query);
     for (bot_id, id, routine_id) in held {
         if !routines.iter().any(|routine| {
-            routine.id == routine_id
-                && routine.bot_id == bot_id
+            *routine.id == *routine_id
+                && *routine.bot_id == *bot_id
                 && routine
                     .bindings
                     .iter()
-                    .any(|binding| binding.definition.id == id)
+                    .any(|binding| *binding.definition.id == *id)
         }) {
             tx.execute(
                 "DELETE FROM hook_outbox WHERE bot_id=?1 AND binding_id=?2 AND accepted=0",
@@ -464,12 +457,12 @@ fn sync_routine_bindings(tx: &Transaction<'_>, routines: &[StoredRoutine], now: 
     for routine in routines {
         for stored in &routine.bindings {
             let binding = HookBinding {
-                id: stored.definition.id.clone(),
-                on: stored.definition.on.clone(),
+                id: Arc::clone(&stored.definition.id),
+                on: stored.definition.on.clone(), // rules-allow: the catalog keeps the routine binding; the persisted hook binding owns a copy
                 action: BotAction::Routine {
                     command: RoutineCommand {
-                        routine_id: routine.id.clone(),
-                        action: stored.definition.action.clone(),
+                        routine_id: Arc::clone(&routine.id),
+                        action: stored.definition.action.clone(), // rules-allow: the catalog keeps the routine binding; the persisted hook binding owns a copy
                     },
                 },
             };
@@ -497,33 +490,37 @@ fn sync_routine_bindings(tx: &Transaction<'_>, routines: &[StoredRoutine], now: 
 
 pub(super) fn record_run(tx: &Transaction<'_>, run: &RoutineRun) -> Result<()> {
     let cause=tx.query_row("SELECT COALESCE((SELECT cause_json FROM routine_stop_requests WHERE run_id=?1),(SELECT cause_json FROM routine_commands WHERE run_id=?1))",[&run.id],|row|row.get::<_,Option<String>>(0))?.map(|json|serde_json::from_str::<HookEvent>(&json)).transpose()?;
+    let routine_id = || Arc::clone(&run.routine_id);
+    let run_id = || Arc::clone(&run.id);
+    let session_id = || run.session_id.clone(); // rules-allow: the run stays with its caller; the run event owns a copy
     let data = match run.status {
         RoutineRunStatus::Running => HookData::RunStarted {
-            routine_id: run.routine_id.clone(),
-            run_id: run.id.clone(),
-            session_id: run.session_id.clone(),
+            routine_id: routine_id(),
+            run_id: run_id(),
+            session_id: session_id(),
         },
         RoutineRunStatus::Skipped => HookData::RunSkipped {
-            routine_id: run.routine_id.clone(),
-            run_id: run.id.clone(),
+            routine_id: routine_id(),
+            run_id: run_id(),
             reason: run
                 .message
-                .clone()
-                .unwrap_or_else(|| "invocation was skipped".into()),
+                .as_deref()
+                .unwrap_or("invocation was skipped")
+                .into(),
         },
         status => HookData::RunFinished {
-            routine_id: run.routine_id.clone(),
-            run_id: run.id.clone(),
+            routine_id: routine_id(),
+            run_id: run_id(),
             status,
-            session_id: run.session_id.clone(),
-            reason: run.message.clone(),
+            session_id: session_id(),
+            reason: run.message.as_ref().map(Arc::clone),
         },
     };
     let event = caused_event(
-        format!("run-{}-{}", run.id, super::storage::status_text(run.status)),
-        run.bot_id.clone(),
+        format!("run-{}-{}", run.id, super::storage::status_text(run.status)).into(),
+        Arc::clone(&run.bot_id),
         HookSource::Routine {
-            routine_id: run.routine_id.clone(),
+            routine_id: routine_id(),
         },
         data,
         run.finished_at.unwrap_or(run.started_at),
@@ -558,8 +555,9 @@ pub(super) fn record_event(
     // Deleting old facts must not reuse a row ID already acknowledged by a collector.
     tx.execute("INSERT INTO hook_events(rowid,id,bot_id,source_json,occurred_at,event_json) VALUES(MAX(COALESCE((SELECT MAX(rowid) FROM hook_events),0),COALESCE((SELECT MAX(after_rowid) FROM telemetry_cursors),0))+1,?1,?2,?3,?4,?5)",params![event.id,event.bot_id,serde_json::to_string(&event.source)?,event.occurred_at,json])?;
     if let Some(sequence) = sequence {
-        let sequence = i64::try_from(sequence)
-            .map_err(|_| Error::Config("hook journal sequence is too large".into()))?;
+        let sequence = i64::try_from(sequence).map_err(|error| {
+            Error::Config(format!("hook journal sequence is too large: {error}"))
+        })?;
         tx.execute(
             "INSERT INTO hook_journal_sequences(event_id,sequence) VALUES(?1,?2)",
             params![event.id, sequence],
@@ -589,7 +587,7 @@ pub(super) fn record_event(
     for (id, on, action, after_sequence, starts_at, receiver_bot_id, routine_id) in bindings {
         let selector: HookSelector = serde_json::from_str(&on)?;
         if matches!(selector, HookSelector::Schedule { .. })
-            && !matches!(&event.source,HookSource::Schedule{binding_id,routine_id:source_routine_id} if binding_id==&id && routine_id.as_deref()==Some(source_routine_id.as_str()))
+            && !matches!(&event.source,HookSource::Schedule{binding_id,routine_id:source_routine_id} if **binding_id==*id && routine_id.as_deref()==Some(&**source_routine_id))
         {
             continue;
         }
@@ -786,11 +784,7 @@ impl super::BotStore {
     }
 
     pub(crate) fn telemetry_count(&self, sink: &crate::telemetry::TelemetrySink) -> Result<u64> {
-        let connection = self
-            .storage
-            .connection
-            .lock()
-            .map_err(|_| Error::Config("Bot storage lock is poisoned".into()))?;
+        let connection = self.storage.lock()?;
         let after: i64 = connection
             .query_row(
                 "SELECT after_rowid FROM telemetry_cursors WHERE sink_id=?1",
@@ -801,18 +795,16 @@ impl super::BotStore {
             .ok_or_else(|| Error::Config(format!("telemetry cursor missing for {}", sink.id)))?;
         let kinds = serde_json::to_string(&sink.events)?;
         let count = connection.query_row("SELECT COUNT(*) FROM hook_events WHERE rowid > ?1 AND json_extract(event_json,'$.data.type') IN (SELECT value FROM json_each(?2))", params![after,kinds], |row| row.get::<_, i64>(0))?;
-        u64::try_from(count).map_err(|_| Error::Config("invalid telemetry event count".into()))
+        drop(connection);
+        u64::try_from(count)
+            .map_err(|error| Error::Config(format!("invalid telemetry event count: {error}")))
     }
 
     pub(crate) fn telemetry_batch(
         &self,
         sink: &crate::telemetry::TelemetrySink,
     ) -> Result<(Vec<TelemetryEvent>, u64)> {
-        let connection = self
-            .storage
-            .connection
-            .lock()
-            .map_err(|_| Error::Config("Bot storage lock is poisoned".into()))?;
+        let connection = self.storage.lock()?;
         let after: i64 = connection
             .query_row(
                 "SELECT after_rowid FROM telemetry_cursors WHERE sink_id=?1",
@@ -828,8 +820,8 @@ impl super::BotStore {
             params![after, kinds],
             |row| row.get::<_, i64>(0),
         )?;
-        let count =
-            u64::try_from(count).map_err(|_| Error::Config("invalid event count".into()))?;
+        let count = u64::try_from(count)
+            .map_err(|error| Error::Config(format!("invalid event count: {error}")))?;
         let mut query = connection.prepare(&format!(
             "SELECT events.rowid,event_json,journal.sequence FROM hook_events AS events LEFT JOIN hook_journal_sequences AS journal ON journal.event_id=events.id {filter} ORDER BY events.rowid LIMIT 32"
         ))?;
@@ -843,18 +835,19 @@ impl super::BotStore {
             })?
             .map(|row| {
                 let (id, json, sequence) = row?;
-                let sequence = sequence
-                    .map(u64::try_from)
-                    .transpose()
-                    .map_err(|_| Error::Config("negative hook journal sequence".into()))?;
+                let sequence = sequence.map(u64::try_from).transpose().map_err(|error| {
+                    Error::Config(format!("negative hook journal sequence: {error}"))
+                })?;
                 Ok(TelemetryEvent {
                     rowid: id,
                     event: serde_json::from_str(&json)?,
                     journal_sequence: sequence,
                 })
             })
-            .collect::<Result<Vec<_>>>()?;
-        Ok((events, count))
+            .collect::<Result<Vec<_>>>();
+        drop(query);
+        drop(connection);
+        Ok((events?, count))
     }
     pub(crate) fn advance_telemetry(&self, sink_id: &str, rowid: i64) -> Result<()> {
         self.storage.transaction(|tx| {

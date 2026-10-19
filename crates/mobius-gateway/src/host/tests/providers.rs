@@ -207,7 +207,7 @@ async fn provider_removal_save_failure_keeps_idle_resident_and_config_usable() {
     let host = create_test_session(&gateway, &workspace)
         .await
         .expect("chat");
-    let session_id = host.session_id().to_owned();
+    let session_id = host.session_id().to_string();
     let config_path = root.path().join("state").join("gateway.toml");
     std::fs::remove_file(&config_path).expect("remove gateway config");
     std::fs::create_dir(&config_path).expect("block gateway config save");

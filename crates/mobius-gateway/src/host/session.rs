@@ -1,11 +1,30 @@
 mod events;
 mod runtime;
 
-use super::*;
+use super::{
+    ActiveRoutineRun, AgentSender, Arc, AtomicBool, AtomicU64, BROADCAST_CAPACITY, BotStore,
+    BuiltAgent, COMMAND_CAPACITY, ChatSpec, CheckpointStore, ConfigStore, CredentialStore,
+    DesktopControl, Error, Event, EventMsg, EventPageRequest, ExecutionOutcome, FrontendEvent,
+    FrontendExtensions, GatewayConfig, GatewaySandbox, GitDiffScope, HashSet, HostAccess,
+    HostSnapshot, JournalEvent, LiveChats, MessageAuthor, MessageSubmission, ModelRouter,
+    ModelStepContentPhase, Mutex, Op, Ordering, Path, PathBuf, ProviderConfig, Rejection,
+    RemoteDesktop, ReplayEntry, Result, ReviewDecision, RoutineRunStatus, RunStats, RwLock,
+    Scratchpad, ServerFrame, ServerMessage, SessionActivities, SessionActivity,
+    SessionActivityState, SessionFileStore, SessionHistoryPage, SessionReadyPayload, SessionWidget,
+    SharedFrame, StdMutex, Submission, Utc, Uuid, ValidatedSubmission, VecDeque, WorkActivity,
+    WorkspaceFileScope, WorkspaceFiles, WorkspaceRead, active_run_summary, activity_catalog,
+    assemble, broadcast, classify_journal_sequence, compact_replay_deltas, delete_workspace_file,
+    durable_history_page, event_sequence, event_turn_page, git_status, internal, invalid_config,
+    invalid_workspace, list_workspace_files, load_replay, mpsc, oneshot, project_record,
+    publish_ready_and_pending, read_workspace_file, receive, record_and_publish,
+    reject_pending_bot_deletion, replayable, stopped, switch_workspace_branch,
+    update_session_activity, update_widgets, validate_gateway_event, workspace_git_diff,
+    workspace_git_diff_totals, write_workspace_file,
+};
 use mobius::backend::model::provider::provider;
 use mobius::protocol::MessageTarget;
 
-pub(super) type SessionWidgets = Vec<((String, String), mobius::protocol::FrontendWidget)>;
+pub(super) type SessionWidgets = Vec<(Arc<str>, Arc<mobius::protocol::FrontendWidget>)>;
 
 #[derive(Clone)]
 pub(crate) struct HostHandle {
@@ -33,7 +52,7 @@ struct HostState {
     bots: Arc<BotStore>,
     checkpoints: Arc<dyn CheckpointStore>,
     scratchpad: Arc<Scratchpad>,
-    session_files: SessionFileStore,
+    session_files: Arc<SessionFileStore>,
     alive: Arc<AtomicBool>,
     terminated: Arc<AtomicBool>,
     termination: Arc<tokio::sync::Notify>,
@@ -47,12 +66,12 @@ struct HostState {
     activities: SessionActivities,
     running: RunningAgent,
     pending_turns: usize,
-    pending_messages: HashSet<String>,
+    pending_messages: HashSet<Arc<str>>,
     admissions: futures_util::stream::FuturesUnordered<
         std::pin::Pin<Box<dyn std::future::Future<Output = SourceAdmission> + Send + Sync>>,
     >,
     approval_active: bool,
-    turn_error: Option<String>,
+    turn_error: Option<Arc<str>>,
     last_assistant_text: Option<String>,
     pending_startup: Vec<SharedFrame>,
     active_routine: Option<ActiveRoutine>,
@@ -76,7 +95,7 @@ pub(super) struct LoadedReplay {
 }
 
 struct SourceAdmission {
-    id: String,
+    id: Arc<str>,
     reserved: bool,
     result: mobius::Result<mobius::agent::MessageAcceptance>,
     reply: oneshot::Sender<std::result::Result<(), Rejection>>,
@@ -90,7 +109,7 @@ struct RunningAgent {
     sandbox: Arc<mobius::backend::sandbox::Sandbox>,
     frontend: FrontendExtensions,
     frontend_sink: mobius::middleware::FrontendEventSink,
-    session: mobius::protocol::SessionConfiguredEvent,
+    session: Arc<mobius::protocol::SessionConfiguredEvent>,
     gateway_sandbox: Arc<GatewaySandbox>,
     prepared: Arc<crate::assembly::PreparedBot>,
 }
@@ -107,9 +126,9 @@ pub(crate) struct RealtimeModel {
 
 pub(super) struct ActiveRoutine {
     pub(super) run: ActiveRoutineRun,
-    pub(super) submission_id: String,
-    pub(super) turn_id: Option<String>,
-    pub(super) failure: Option<String>,
+    pub(super) submission_id: Arc<str>,
+    pub(super) turn_id: Option<Arc<str>>,
+    pub(super) failure: Option<Arc<str>>,
 }
 
 pub(super) enum HostCommand {
@@ -118,7 +137,7 @@ pub(super) enum HostCommand {
     },
     #[cfg(test)]
     BotId {
-        reply: oneshot::Sender<String>,
+        reply: oneshot::Sender<Arc<str>>,
     },
     AcceptsFileAttachments {
         reply: oneshot::Sender<std::result::Result<bool, Rejection>>,
@@ -143,11 +162,11 @@ pub(super) enum HostCommand {
     },
     DeliverSource {
         submission: ValidatedSubmission,
-        bot_id: String,
+        bot_id: Arc<str>,
         reply: oneshot::Sender<std::result::Result<(), Rejection>>,
     },
     ReassignBot {
-        bot_id: String,
+        bot_id: Arc<str>,
         reply: oneshot::Sender<std::result::Result<(), Rejection>>,
     },
     AttachFolder {
@@ -217,13 +236,16 @@ pub(super) enum JournalDelivery {
 
 impl HostHandle {
     #[cfg(test)]
-    pub(crate) async fn bot_id(&self) -> std::result::Result<String, Rejection> {
+    pub(crate) async fn bot_id(&self) -> std::result::Result<Arc<str>, Rejection> {
         let (reply, receiver) = oneshot::channel();
         self.send(HostCommand::BotId { reply }).await?;
-        receiver.await.map_err(|_| stopped())
+        receiver.await.map_err(stopped_by)
     }
 
-    pub(super) async fn reassign_bot(&self, bot_id: String) -> std::result::Result<(), Rejection> {
+    pub(super) async fn reassign_bot(
+        &self,
+        bot_id: Arc<str>,
+    ) -> std::result::Result<(), Rejection> {
         let _voice = self.claim_realtime_voice()?;
         let (reply, receiver) = oneshot::channel();
         self.send(HostCommand::ReassignBot { bot_id, reply })
@@ -235,6 +257,10 @@ impl HostHandle {
         clippy::too_many_arguments,
         reason = "one chat actor receives each owned gateway dependency explicitly"
     )]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the running agent and host state move into the spawned actor"
+    )]
     pub(super) async fn start(
         store: ConfigStore,
         gateway: Arc<StdMutex<GatewayConfig>>,
@@ -243,7 +269,7 @@ impl HostHandle {
         bots: Arc<BotStore>,
         checkpoints: Arc<dyn CheckpointStore>,
         scratchpad: Arc<Scratchpad>,
-        session_files: SessionFileStore,
+        session_files: Arc<SessionFileStore>,
         session_mutations: Arc<RwLock<()>>,
         discovery_gate: Arc<Mutex<()>>,
         desktop: Arc<DesktopControl>,
@@ -265,7 +291,7 @@ impl HostHandle {
             Arc::clone(&bots),
             Arc::clone(&checkpoints),
             Arc::clone(&scratchpad),
-            session_files.clone(),
+            Arc::clone(&session_files),
             Arc::clone(&discovery_gate),
             Arc::clone(&desktop),
             Arc::clone(&remote_desktop),
@@ -283,14 +309,17 @@ impl HostHandle {
         let (commands, receiver) = mpsc::channel(COMMAND_CAPACITY);
         let (events, _) = broadcast::channel(BROADCAST_CAPACITY);
         let loaded = load_replay(checkpoints.as_ref(), &session_id, &running.frontend).await?;
-        let awaiting_approval = {
-            let mut activities = activities.lock().await;
-            let activity = activities.activities.entry(session_id.clone()).or_default();
-            activity.attention = super::replay::attention_count(&loaded.widgets);
-            activity.state == SessionActivityState::AwaitingApproval
-        };
+        let shared_session_id = Arc::<str>::from(session_id);
+        let mut guard = activities.lock().await;
+        let activity = guard
+            .activities
+            .entry(Arc::clone(&shared_session_id))
+            .or_default();
+        activity.attention = super::replay::attention_count(&loaded.widgets);
+        let awaiting_approval = activity.state == SessionActivityState::AwaitingApproval;
+        drop(guard);
         let mut state = HostState {
-            telemetry: Arc::clone(&(host_access)()?.telemetry),
+            telemetry: (host_access)()?.telemetry,
             work_activity,
             store,
             gateway,
@@ -326,16 +355,16 @@ impl HostHandle {
             next_before_sequence: loaded.next_before_sequence,
             widgets: loaded.widgets,
             commands: receiver,
-            events: events.clone(),
+            events: events.clone(), // rules-allow: the actor publishes on the broadcast sender the handle subscribes to
             gateway_events,
             idle_waiters: Vec::new(),
         };
         if !state.spec.catalog_visible {
-            let checkpoint = state.checkpoints.load(&session_id).await?;
+            let checkpoint = state.checkpoints.load(&shared_session_id).await?;
             if let Some(active) = checkpoint.and_then(|checkpoint| checkpoint.active_execution)
                 && let Some(run) = state.bots.history(None)?.into_iter().find(|run| {
                     run.status == RoutineRunStatus::Running
-                        && run.session_id.as_deref() == Some(session_id.as_str())
+                        && run.session_id.as_deref() == Some(&*shared_session_id)
                 })
             {
                 state.active_routine = Some(ActiveRoutine {
@@ -350,7 +379,7 @@ impl HostHandle {
         tokio::spawn(state.run());
         Ok(Self {
             inner: Arc::new(HostInner {
-                session_id: session_id.into(),
+                session_id: shared_session_id,
                 commands,
                 events,
                 alive,
@@ -363,7 +392,7 @@ impl HostHandle {
     }
 
     #[must_use]
-    pub(crate) fn session_id(&self) -> &str {
+    pub(crate) fn session_id(&self) -> &Arc<str> {
         &self.inner.session_id
     }
 
@@ -376,10 +405,10 @@ impl HostHandle {
     ) -> std::result::Result<tokio::sync::OwnedMutexGuard<()>, Rejection> {
         Arc::clone(&self.inner.realtime_voice)
             .try_lock_owned()
-            .map_err(|_| {
+            .map_err(|error| {
                 Rejection::new(
                     "realtime_voice",
-                    "this chat already has an active voice call",
+                    format!("this chat already has an active voice call: {error}"),
                 )
             })
     }
@@ -470,7 +499,7 @@ impl HostHandle {
     pub(super) async fn deliver_source(
         &self,
         submission: Submission,
-        bot_id: String,
+        bot_id: Arc<str>,
     ) -> std::result::Result<(), Rejection> {
         self.deliver_validated_source(
             ValidatedSubmission::new(submission)
@@ -483,7 +512,7 @@ impl HostHandle {
     pub(super) async fn deliver_validated_source(
         &self,
         submission: ValidatedSubmission,
-        bot_id: String,
+        bot_id: Arc<str>,
     ) -> std::result::Result<(), Rejection> {
         let (reply, receiver) = oneshot::channel();
         self.send(HostCommand::DeliverSource {
@@ -541,7 +570,7 @@ impl HostHandle {
     ) -> std::result::Result<(Arc<GatewaySandbox>, PathBuf), Rejection> {
         let (reply, receiver) = oneshot::channel();
         self.send(HostCommand::GitWorkspace { reply }).await?;
-        receiver.await.map_err(|_| stopped())?
+        receive(receiver).await
     }
 
     pub(crate) async fn workspace_files(
@@ -551,7 +580,7 @@ impl HostHandle {
         let (reply, receiver) = oneshot::channel();
         self.send(HostCommand::WorkspaceFiles { scope, reply })
             .await?;
-        receiver.await.map_err(|_| stopped())?
+        receive(receiver).await
     }
 
     pub(crate) async fn read_workspace_file(
@@ -568,7 +597,7 @@ impl HostHandle {
             reply,
         })
         .await?;
-        receiver.await.map_err(|_| stopped())?
+        receive(receiver).await
     }
 
     pub(crate) async fn delete_workspace_file(
@@ -618,7 +647,7 @@ impl HostHandle {
         let (reply, receiver) = oneshot::channel();
         self.send(HostCommand::ProviderCutoverStatus { reply })
             .await?;
-        receiver.await.map_err(|_| stopped())
+        receiver.await.map_err(stopped_by)
     }
 
     pub(crate) async fn run_routine(
@@ -650,8 +679,10 @@ impl HostHandle {
 
     pub(super) async fn wait_idle(&self) {
         let (reply, receiver) = oneshot::channel();
-        if self.send(HostCommand::WaitIdle { reply }).await.is_ok() {
-            let _ = receiver.await;
+        if self.send(HostCommand::WaitIdle { reply }).await.is_ok()
+            && let Err(error) = receiver.await
+        {
+            tracing::debug!(%error, "chat host stopped before reporting idle");
         }
     }
 
@@ -673,7 +704,13 @@ impl HostHandle {
     }
 
     pub(super) async fn shutdown(&self) {
-        let _ = self.send(HostCommand::Shutdown).await;
+        if let Err(rejection) = self.send(HostCommand::Shutdown).await {
+            tracing::debug!(
+                code = rejection.code,
+                message = %rejection.message,
+                "chat host stopped before shutdown"
+            );
+        }
         self.wait_terminated().await;
     }
 
@@ -695,12 +732,7 @@ impl HostHandle {
                 | HostCommand::StopIfIdle { .. }
                 | HostCommand::ProviderCutoverStatus { .. }
         ) {
-            return self
-                .inner
-                .commands
-                .send(command)
-                .await
-                .map_err(|_| stopped());
+            return self.inner.commands.send(command).await.map_err(stopped_by);
         }
         self.inner
             .commands
@@ -715,13 +747,24 @@ impl HostHandle {
     }
 }
 
+fn stopped_by(error: impl std::fmt::Display) -> Rejection {
+    Rejection::new(
+        "gateway_stopped",
+        format!("the gateway host stopped: {error}"),
+    )
+    .fatal()
+}
+
 fn try_begin_session_mutation(
     mutations: &Arc<RwLock<()>>,
     bots: &BotStore,
 ) -> std::result::Result<tokio::sync::OwnedRwLockReadGuard<()>, Rejection> {
-    let mutation = Arc::clone(mutations)
-        .try_read_owned()
-        .map_err(|_| Rejection::new("gateway_busy", "retry after the gateway update finishes"))?;
+    let mutation = Arc::clone(mutations).try_read_owned().map_err(|error| {
+        Rejection::new(
+            "gateway_busy",
+            format!("retry after the gateway update finishes: {error}"),
+        )
+    })?;
     reject_pending_bot_deletion(bots)?;
     Ok(mutation)
 }
@@ -764,12 +807,8 @@ pub(super) fn fail_active_routine(
     let Some(active) = active.take() else {
         return Ok(());
     };
-    bots.finish_run(
-        active.run,
-        RoutineRunStatus::Failed,
-        Some(message.to_string()),
-    )
-    .map(|_| ())
+    bots.finish_run(active.run, RoutineRunStatus::Failed, Some(message.into()))
+        .map(|_| ())
 }
 
 #[expect(
@@ -784,7 +823,7 @@ async fn start_agent(
     bots: Arc<BotStore>,
     checkpoints: Arc<dyn CheckpointStore>,
     scratchpad: Arc<Scratchpad>,
-    session_files: SessionFileStore,
+    session_files: Arc<SessionFileStore>,
     discovery_gate: Arc<Mutex<()>>,
     desktop: Arc<DesktopControl>,
     remote_desktop: Arc<RemoteDesktop>,
@@ -800,28 +839,28 @@ async fn start_agent(
     } else {
         loop {
             let generation = bots.preparation_generation.load(Ordering::Acquire);
-            let bot = bots.bot(&spec.bot_id)?;
+            let bot = Arc::new(bots.bot(&spec.bot_id)?);
             let epoch = provider_epoch.load(Ordering::Acquire);
             let cached = bots
                 .prepared
                 .lock()
                 .await
-                .get(&bot.id)
+                .get(&*bot.id)
                 .filter(|prepared| prepared.matches_runtime(&bot) && prepared.epoch == epoch)
-                .cloned();
+                .map(Arc::clone);
             if let Some(prepared) = cached {
                 break prepared;
             }
             let preparation = {
-                let config = gateway
-                    .lock()
-                    .map_err(|_| Error::Config("gateway configuration lock is poisoned".into()))?;
+                let config = gateway.lock().map_err(|error| {
+                    Error::Config(format!("gateway configuration lock is poisoned: {error}"))
+                })?;
                 crate::assembly::prepare_bot(
                     &config,
-                    bot.clone(),
+                    Arc::clone(&bot),
                     store,
                     &credentials,
-                    session_files.clone(),
+                    Arc::clone(&session_files),
                     epoch,
                     Arc::clone(remote_desktop.configuration()),
                 )
@@ -838,13 +877,13 @@ async fn start_agent(
                 continue;
             }
             if let Some(cached) = cache
-                .get(&bot.id)
+                .get(&*bot.id)
                 .filter(|cached| cached.matches_runtime(&bot) && cached.epoch == epoch)
             {
                 break Arc::clone(cached);
             }
             let prepared = Arc::new(prepared?);
-            if let Some(previous) = cache.insert(spec.bot_id.clone(), Arc::clone(&prepared)) {
+            if let Some(previous) = cache.insert(Arc::clone(&bot.id), Arc::clone(&prepared)) {
                 previous.invalidate();
             }
             break prepared;
@@ -857,9 +896,9 @@ async fn start_agent(
             .sequence
             .checked_add(1)
             .ok_or_else(|| Error::Config("checkpoint sequence overflow".into()))?;
-        checkpoint.session_context.owner_id.clone_from(&spec.bot_id);
+        Arc::make_mut(&mut checkpoint.session_context).owner_id = Arc::clone(&spec.bot_id);
         checkpoint.metadata.extend(spec.metadata()?);
-        checkpoints.save(&checkpoint, &[], None).await?;
+        checkpoints.save(checkpoint, Vec::new(), None).await?;
     }
     let BuiltAgent {
         agent,
@@ -885,7 +924,7 @@ async fn start_agent(
     .await?;
     let frontend_sink = agent.frontend_sink();
     let (sender, events, session, frontend) = agent.into_recorded_parts();
-    let session_id = Arc::from(session.session_id.as_str());
+    let session_id = Arc::clone(&session.session_id);
     Ok(RunningAgent {
         session_id,
         sender: Some(sender),

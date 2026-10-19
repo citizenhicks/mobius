@@ -29,7 +29,7 @@ struct Definition {
     default_timeout_ms: u64,
     computer_control: ToolSpec,
 }
-crate::embedded_config! { static DEFINITION: Definition = include_str!("computer_control.toml"); }
+crate::embedded_config! { static DEFINITION: Definition = include_str!("computer_control.toml") => limit_schema; }
 
 super::manifest::middleware_manifest! {
 /// Optional computer control; deployment supplies the runtime and its documentation.
@@ -39,6 +39,17 @@ super::manifest::middleware_manifest! {
 const MAX_CODE_BYTES: usize = 40_000;
 const MAX_TIMEOUT_MS: u64 = 120_000;
 
+fn limit_schema(definition: &mut Definition) {
+    super::tools::limit_schema(
+        &mut definition.computer_control.tool,
+        [
+            ("/properties/code", "maxLength", MAX_CODE_BYTES.into()),
+            ("/properties/timeout_ms", "minimum", 1.into()),
+            ("/properties/timeout_ms", "maximum", MAX_TIMEOUT_MS.into()),
+        ],
+    );
+}
+
 /// Reports whether a sandbox approval policy lets computer control act without per-call prompts.
 #[must_use]
 pub fn supports_approval_policy(policy: ApprovalPolicy) -> bool {
@@ -46,6 +57,7 @@ pub fn supports_approval_policy(policy: ApprovalPolicy) -> bool {
 }
 
 /// A trusted installed runtime: its worker launch command and the documentation it serves.
+#[derive(Debug)]
 pub struct ComputerRuntime {
     worker: WorkerCommand,
     documentation: PathBuf,
@@ -71,11 +83,23 @@ impl ComputerRuntime {
 /// Owns computer tools and observations; execution and approval remain in the sandbox.
 pub struct ComputerControl(Arc<Evaluate>);
 
+impl std::fmt::Debug for ComputerControl {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ComputerControl")
+            .field("runtime", &self.0.runtime)
+            .finish_non_exhaustive()
+    }
+}
+
 impl ComputerControl {
     /// Configures a trusted installed runtime. It is started lazily by an authorized tool call.
     #[must_use]
-    pub fn new(files: SessionFileStore, runtime: Arc<ComputerRuntime>) -> Self {
-        Self(Arc::new(Evaluate { files, runtime }))
+    pub fn new(files: impl Into<Arc<SessionFileStore>>, runtime: Arc<ComputerRuntime>) -> Self {
+        Self(Arc::new(Evaluate {
+            files: files.into(),
+            runtime,
+        }))
     }
 }
 
@@ -120,7 +144,7 @@ impl Middleware for ComputerControl {
 }
 
 struct Evaluate {
-    files: SessionFileStore,
+    files: Arc<SessionFileStore>,
     runtime: Arc<ComputerRuntime>,
 }
 
@@ -155,25 +179,15 @@ enum WorkerPart {
 }
 
 impl Tool for Evaluate {
-    fn definition(&self) -> ToolDefinition {
-        // Tool::definition requires an owned schema to decorate with execution bounds.
-        let mut tool = DEFINITION.computer_control.tool.clone();
-        let properties = &mut tool.parameters["properties"];
-        properties["code"]["maxLength"] = MAX_CODE_BYTES.into();
-        properties["timeout_ms"]["minimum"] = 1.into();
-        properties["timeout_ms"]["maximum"] = MAX_TIMEOUT_MS.into();
-        tool
+    fn definition(&self) -> &Arc<ToolDefinition> {
+        &DEFINITION.computer_control.tool
     }
 
     fn approval(&self) -> ApprovalRequirement {
         ApprovalRequirement::Always
     }
 
-    fn call<'a>(
-        &'a self,
-        context: ToolContext,
-        arguments: Value,
-    ) -> BoxFuture<'a, Result<ToolResponse>> {
+    fn call(&self, context: ToolContext, arguments: Value) -> BoxFuture<'_, Result<ToolResponse>> {
         Box::pin(async move {
             let args: EvaluateArgs = serde_json::from_value(arguments)?;
             if args.code.len() > MAX_CODE_BYTES || !(1..=MAX_TIMEOUT_MS).contains(&args.timeout_ms)
@@ -258,7 +272,8 @@ impl Tool for Evaluate {
     }
 }
 
-#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+#[cfg(test)]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 mod tests {
     use super::*;
     use crate::backend::sandbox::{
@@ -293,16 +308,6 @@ mod tests {
 
     #[tokio::test]
     async fn browser_selection_requires_full_access_network_and_gateway_availability() {
-        let state = tempfile::tempdir().expect("state");
-        // Echoes the evaluation request back as the observation's text.
-        let echo = "import sys,struct,json; n=struct.unpack('>I',sys.stdin.buffer.read(4))[0]; request=sys.stdin.buffer.read(n).decode(); data=json.dumps({'content':[{'type':'text','text':request}],'is_error':False,'devtools':'http://127.0.0.1:9222'}).encode(); sys.stdout.buffer.write(struct.pack('>I',len(data))+data); sys.stdout.buffer.flush()";
-        let tool = Evaluate {
-            files: SessionFileStore::new(state.path(), None),
-            runtime: runtime(WorkerCommand {
-                executable: "/usr/bin/python3".into(),
-                arguments: vec!["-c".into(), echo.into()],
-            }),
-        };
         use crate::backend::sandbox::{
             CommandMode, CommandOutput, CommandOutputSink, DesktopBrowserPage, SandboxBackend,
             WorkerProcess,
@@ -365,11 +370,21 @@ mod tests {
                 Box::pin(async { unreachable!() })
             }
         }
+        let state = tempfile::tempdir().expect("state");
+        // Echoes the evaluation request back as the observation's text.
+        let echo = "import sys,struct,json; n=struct.unpack('>I',sys.stdin.buffer.read(4))[0]; request=sys.stdin.buffer.read(n).decode(); data=json.dumps({'content':[{'type':'text','text':request}],'is_error':False,'devtools':'http://127.0.0.1:9222'}).encode(); sys.stdout.buffer.write(struct.pack('>I',len(data))+data); sys.stdout.buffer.flush()";
+        let tool = Evaluate {
+            files: SessionFileStore::new(state.path(), None).into(),
+            runtime: runtime(WorkerCommand {
+                executable: "/usr/bin/python3".into(),
+                arguments: vec!["-c".into(), echo.into()],
+            }),
+        };
         let requested = Arc::new(AtomicUsize::new(0));
         for available in [false, true] {
             let sandbox = Arc::new(Sandbox::new(
                 Arc::new(AvailableBrowser {
-                    requested: requested.clone(),
+                    requested: Arc::clone(&requested),
                     available,
                 }),
                 ApprovalPolicy::Ask,
@@ -382,7 +397,7 @@ mod tests {
                     let before = requested.load(Ordering::SeqCst);
                     let result = tool
                         .call(
-                            ToolContext::new(sandbox.clone(), permissions, "turn"),
+                            ToolContext::new(Arc::clone(&sandbox), permissions, "turn"),
                             serde_json::json!({"code":"await getPage()", "reset":true}),
                         )
                         .await

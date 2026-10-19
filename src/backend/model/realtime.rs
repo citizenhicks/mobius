@@ -74,13 +74,14 @@ type Socket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// Frontend SDP and gateway-owned instructions for one voice call.
+#[derive(Debug)]
 pub struct RealtimeVoiceRequest {
     /// The session identifier.
-    pub session_id: String,
+    pub session_id: Arc<str>,
     /// The provider voice model selected by the router.
-    pub model: String,
+    pub model: Arc<str>,
     /// The provider voice selected by the router.
-    pub voice: String,
+    pub voice: Arc<str>,
     /// The offer sdp.
     pub offer_sdp: String,
     /// The instructions.
@@ -89,6 +90,7 @@ pub struct RealtimeVoiceRequest {
 
 /// A voice call whose provider credentials and call identity remain private.
 /// Retain the whole value while using its channels; dropping it hangs up the call.
+#[derive(Debug)]
 pub struct RealtimeVoiceCall {
     /// The provider-selected voice, including default selection.
     pub voice: String,
@@ -98,7 +100,7 @@ pub struct RealtimeVoiceCall {
     pub commands: mpsc::Sender<RealtimeVoiceCommand>,
     /// The events.
     pub events: mpsc::Receiver<Result<RealtimeVoiceEvent>>,
-    _cancel: oneshot::Sender<()>,
+    cancel: oneshot::Sender<()>,
 }
 
 impl RealtimeVoiceCall {
@@ -118,10 +120,10 @@ impl RealtimeVoiceCall {
             return;
         }
         let (cancel, dropped) = oneshot::channel::<()>();
-        let provider_cancel = std::mem::replace(&mut self._cancel, cancel);
+        let provider_cancel = std::mem::replace(&mut self.cancel, cancel);
         tokio::spawn(async move {
             tokio::select! {
-                _ = credential.ended() => {},
+                () = credential.ended() => {},
                 _ = dropped => {},
             }
             drop(provider_cancel);
@@ -144,12 +146,13 @@ impl RealtimeVoiceCall {
             answer_sdp,
             commands,
             events,
-            _cancel: cancellation,
+            cancel: cancellation,
         }
     }
 }
 
 /// The coding agent's response to one normalized voice handoff.
+#[derive(Debug)]
 pub enum RealtimeVoiceCommand {
     /// Close the provider session, draining its final events before disconnecting.
     Close,
@@ -244,7 +247,7 @@ impl RealtimeTransport {
                     .codex
                     .sideband_base_url
                     .as_deref()
-                    .expect("Codex native sideband endpoint is required"),
+                    .ok_or_else(|| invalid("Codex native sideband endpoint is required"))?,
             )
         } else {
             std::borrow::Cow::Owned(format!("{}/live", base_url.trim_end_matches('/')))
@@ -264,8 +267,9 @@ impl RealtimeTransport {
             client: client(settings)?,
             auth,
             calls_url: Url::parse(calls_url)
-                .map_err(|_| invalid("invalid voice calls endpoint"))?,
-            api_url: Url::parse(api_url).map_err(|_| invalid("invalid voice sideband endpoint"))?,
+                .map_err(|error| invalid(&format!("invalid voice calls endpoint: {error}")))?,
+            api_url: Url::parse(api_url)
+                .map_err(|error| invalid(&format!("invalid voice sideband endpoint: {error}")))?,
             settings,
         })
     }
@@ -295,21 +299,31 @@ impl RealtimeTransport {
             .flatten()
     }
 
-    pub(super) async fn start(&self, request: RealtimeVoiceRequest) -> Result<RealtimeVoiceCall> {
+    pub(super) async fn start(
+        self: &Arc<Self>,
+        request: RealtimeVoiceRequest,
+    ) -> Result<RealtimeVoiceCall> {
         timeout(
             Duration::from_millis(self.settings.voice_start_timeout_ms),
             self.start_inner(request),
         )
         .await
-        .map_err(|_| invalid("voice negotiation timed out"))?
+        .map_err(|error| invalid(&format!("voice negotiation timed out: {error}")))?
     }
 
-    async fn start_inner(&self, request: RealtimeVoiceRequest) -> Result<RealtimeVoiceCall> {
+    async fn start_inner(
+        self: &Arc<Self>,
+        request: RealtimeVoiceRequest,
+    ) -> Result<RealtimeVoiceCall> {
         validate_text(&request.session_id, 256, "session identity")?;
         validate_sdp(&request.offer_sdp)?;
         validate_text(&request.instructions, MAX_TEXT_BYTES, "voice instructions")?;
         let session = Self::session(&request);
-        let voice = field(&session["audio"]["output"], "voice")?.to_owned();
+        let voice = field(
+            session.pointer("/audio/output").unwrap_or(&Value::Null),
+            "voice",
+        )?
+        .to_owned();
         let body = serde_json::to_vec(&match self.api {
             VoiceApi::Codex => json!({"sdp":request.offer_sdp,"session":session}),
             VoiceApi::OpenAi => {
@@ -321,7 +335,7 @@ impl RealtimeTransport {
         }
         let response = self
             .post(
-                self.calls_url.clone(),
+                &self.calls_url,
                 body,
                 "application/json",
                 &request.session_id,
@@ -354,13 +368,15 @@ impl RealtimeTransport {
                         result = &mut connect => break match result {
                             Ok(Ok(socket)) => socket,
                             Ok(Err(error)) => {
-                                let _ = event_tx.send(Err(error)).await;
+                                report_event(&event_tx, Err(error)).await;
                                 return;
                             }
-                            Err(_) => {
-                                let _ = event_tx
-                                    .send(Err(invalid("voice sideband negotiation timed out")))
-                                    .await;
+                            Err(error) => {
+                                report_event(
+                                    &event_tx,
+                                    Err(invalid(&format!("voice sideband negotiation timed out: {error}"))),
+                                )
+                                .await;
                                 return;
                             }
                         },
@@ -377,14 +393,26 @@ impl RealtimeTransport {
                     close_session(&mut socket, api, &mut VoiceTurns::default(), None, io_timeout).await
                 },
                 result = timeout(Duration::from_millis(transport.settings.voice_call_timeout_ms), drive(&mut socket, api, command_rx, pending, &event_tx, io_timeout)) => {
-                    result.unwrap_or_else(|_| Err(invalid("voice call reached its time limit")))
+                    result.unwrap_or_else(|error| Err(invalid(&format!("voice call reached its time limit: {error}"))))
                 }
             };
-            let _ = timeout(io_timeout, socket.close(None)).await;
+            match timeout(io_timeout, socket.close(None)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => tracing::debug!(%error, "voice sideband close failed"),
+                Err(error) => tracing::debug!(%error, "voice sideband close timed out"),
+            }
             drop(cleanup);
             if let Err(error) = result {
                 // A retained full event queue must never delay hangup or task cleanup.
-                let _ = timeout(io_timeout, event_tx.send(Err(error))).await;
+                match timeout(io_timeout, event_tx.send(Err(error))).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        tracing::debug!(%error, "voice event receiver closed before the call error");
+                    }
+                    Err(error) => {
+                        tracing::debug!(%error, "voice call error was not delivered in time");
+                    }
+                }
             }
         });
         Ok(RealtimeVoiceCall::new(
@@ -398,53 +426,58 @@ impl RealtimeTransport {
     }
 
     async fn negotiate(
-        &self,
+        self: &Arc<Self>,
         response: reqwest::Response,
-        session_id: String,
+        session_id: Arc<str>,
     ) -> Result<(CallCleanup, String)> {
-        let call_id = match self.api {
-            VoiceApi::Codex => self.call_id(&response)?,
+        enum Answer {
+            Live(Value),
+            Sdp(reqwest::Response),
+        }
+        let (call_id, answer) = match self.api {
+            VoiceApi::Codex => (self.call_id(&response)?, Answer::Sdp(response)),
             VoiceApi::OpenAi => {
                 let body: Value = serde_json::from_slice(
                     &read_limited(response, MAX_EVENT_BYTES, "Live session").await?,
                 )?;
-                let id = field(&body["session"], "id")?;
+                let id = field(body.get("session").unwrap_or(&Value::Null), "id")?;
                 validate_call_id(id)?;
-                let cleanup = CallCleanup {
-                    transport: self.clone(),
-                    call_id: id.into(),
-                    session_id,
-                };
-                if body["transport"]["type"] != "webrtc" {
-                    return Err(invalid("voice response omitted its WebRTC transport"));
-                }
-                let sdp = body["transport"]["sdp"]
-                    .as_str()
-                    .ok_or_else(|| invalid("voice response omitted its SDP"))?;
-                return Ok((cleanup, sdp.into()));
+                (id.to_owned(), Answer::Live(body))
             }
         };
         let cleanup = CallCleanup {
-            transport: self.clone(),
+            transport: Arc::clone(self),
             call_id,
             session_id,
         };
-        let answer =
-            String::from_utf8(read_limited(response, MAX_SDP_BYTES, "Realtime SDP").await?)
-                .map_err(|_| invalid("voice answer SDP is not UTF-8"))?;
+        let answer = match answer {
+            Answer::Live(body) => {
+                if body.pointer("/transport/type").and_then(Value::as_str) != Some("webrtc") {
+                    return Err(invalid("voice response omitted its WebRTC transport"));
+                }
+                body.pointer("/transport/sdp")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| invalid("voice response omitted its SDP"))?
+                    .into()
+            }
+            Answer::Sdp(response) => {
+                String::from_utf8(read_limited(response, MAX_SDP_BYTES, "Realtime SDP").await?)
+                    .map_err(|error| invalid(&format!("voice answer SDP is not UTF-8: {error}")))?
+            }
+        };
         Ok((cleanup, answer))
     }
 
     async fn post(
         &self,
-        url: Url,
+        url: &Url,
         body: Vec<u8>,
         content_type: &str,
         session_id: &str,
     ) -> Result<reqwest::Response> {
         let request = self
             .client
-            .post(url)
+            .post(url.as_str())
             .header(reqwest::header::CONTENT_TYPE, content_type)
             .body(body)
             .timeout(Duration::from_millis(self.settings.voice_start_timeout_ms));
@@ -481,7 +514,7 @@ impl RealtimeTransport {
         let location = self
             .calls_url
             .join(location)
-            .map_err(|_| invalid("invalid voice Location"))?;
+            .map_err(|error| invalid(&format!("invalid voice Location: {error}")))?;
         if ![self.calls_url.origin(), self.api_url.origin()].contains(&location.origin())
             || !location.username().is_empty()
             || location.password().is_some()
@@ -508,10 +541,10 @@ impl RealtimeTransport {
     }
 
     async fn connect(&self, call_id: &str, session_id: &str) -> Result<Socket> {
-        let mut url = self.api_url.clone();
+        let mut url = self.api_url.clone(); // rules-allow: each call derives its own socket URL from the shared base
         let scheme = if url.scheme() == "https" { "wss" } else { "ws" };
         url.set_scheme(scheme)
-            .map_err(|_| invalid("invalid voice socket scheme"))?;
+            .map_err(|()| invalid("invalid voice socket scheme"))?;
         if self.api == VoiceApi::Codex {
             url.set_path(&format!("{}/{call_id}", url.path()));
         } else {
@@ -531,10 +564,14 @@ impl RealtimeTransport {
             {
                 request.headers_mut().insert(
                     tokio_tungstenite::tungstenite::http::HeaderName::from_bytes(name.as_bytes())
-                        .map_err(|_| invalid("invalid voice authorization header"))?,
-                    value
-                        .parse()
-                        .map_err(|_| invalid("invalid voice authorization value"))?,
+                        .map_err(|error| {
+                            invalid(&format!("invalid voice authorization header: {error}"))
+                        })?,
+                    value.parse().map_err(
+                        |error: tokio_tungstenite::tungstenite::http::header::InvalidHeaderValue| {
+                            invalid(&format!("invalid voice authorization value: {error}"))
+                        },
+                    )?,
                 );
             }
             let config = WebSocketConfig::default()
@@ -550,7 +587,9 @@ impl RealtimeTransport {
                         continue;
                     }
                     let body = response.body().as_deref().unwrap_or_default();
-                    let body = &body[..body.len().min(super::transport::MAX_ERROR_BYTES)];
+                    let body = body
+                        .get(..super::transport::MAX_ERROR_BYTES)
+                        .unwrap_or(body);
                     let retry_after = response
                         .headers()
                         .get("retry-after")
@@ -571,15 +610,15 @@ impl RealtimeTransport {
 }
 
 struct CallCleanup {
-    transport: RealtimeTransport,
+    transport: Arc<RealtimeTransport>,
     call_id: String,
-    session_id: String,
+    session_id: Arc<str>,
 }
 
 impl Drop for CallCleanup {
     fn drop(&mut self) {
-        let transport = self.transport.clone();
-        let mut url = transport.api_url.clone();
+        let transport = Arc::clone(&self.transport);
+        let mut url = transport.api_url.clone(); // rules-allow: the hangup URL is derived from the shared sideband base
         if transport.api == VoiceApi::Codex {
             let prefix = url.path().rsplit_once('/').map_or("", |(prefix, _)| prefix);
             url.set_path(&format!("{prefix}/realtime/calls/{}/hangup", self.call_id));
@@ -589,11 +628,16 @@ impl Drop for CallCleanup {
         let session_id = std::mem::take(&mut self.session_id);
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(async move {
-                let _ = timeout(
+                match timeout(
                     Duration::from_millis(transport.settings.voice_io_timeout_ms),
-                    transport.post(url, Vec::new(), "application/json", &session_id),
+                    transport.post(&url, Vec::new(), "application/json", &session_id),
                 )
-                .await;
+                .await
+                {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(error)) => tracing::debug!(%error, "voice hangup failed"),
+                    Err(error) => tracing::debug!(%error, "voice hangup timed out"),
+                }
             });
         }
     }
@@ -645,7 +689,7 @@ async fn send(socket: &mut Socket, value: Value, io_timeout: Duration) -> Result
     }
     timeout(io_timeout, socket.send(Message::text(text)))
         .await
-        .map_err(|_| invalid("voice send timed out"))?
+        .map_err(|error| invalid(&format!("voice send timed out: {error}")))?
         .map_err(socket_error)
 }
 
@@ -666,7 +710,7 @@ async fn drive(
             continue;
         }
         tokio::select! {
-            _ = events.closed() => return close_session(socket, api, &mut turns, None, io_timeout).await,
+            () = events.closed() => return close_session(socket, api, &mut turns, None, io_timeout).await,
             command = commands.recv() => {
                 let Some(command) = command else {
                     return close_session(socket, api, &mut turns, Some(events), io_timeout).await;
@@ -682,14 +726,14 @@ async fn drive(
                     Message::Text(text) => serde_json::from_str(&text)?,
                     Message::Binary(bytes) => serde_json::from_slice(&bytes)?,
                     Message::Close(_) => return Ok(()),
-                    Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => { timeout(io_timeout, socket.flush()).await.map_err(|_| invalid("voice flush timed out"))?.map_err(socket_error)?; continue; }
+                    Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => { timeout(io_timeout, socket.flush()).await.map_err(|error| invalid(&format!("voice flush timed out: {error}")))?.map_err(socket_error)?; continue; }
                 };
                 for event in turns.observe(api, &value)? {
                     if events.send(Ok(event)).await.is_err() {
                         return close_session(socket, api, &mut turns, None, io_timeout).await;
                     }
                 }
-                if value["type"] == "session.closed" { return Ok(()); }
+                if value.get("type").and_then(Value::as_str) == Some("session.closed") { return Ok(()); }
             }
         }
     }
@@ -746,7 +790,9 @@ async fn close_session(
     if api == VoiceApi::OpenAi {
         timeout(io_timeout, drain_closed(socket, api, turns, events))
             .await
-            .map_err(|_| invalid("voice session finalization timed out"))??;
+            .map_err(|error| {
+                invalid(&format!("voice session finalization timed out: {error}"))
+            })??;
     }
     Ok(())
 }
@@ -767,22 +813,31 @@ async fn drain_closed(
         if let Some(events) = events.filter(|events| !events.is_closed()) {
             for event in turns.observe(api, &value)? {
                 // The sideband must receive final usage even if the UI has stopped listening.
-                let _ = events.send(Ok(event)).await;
+                report_event(events, Ok(event)).await;
             }
         }
-        if value["type"] == "session.closed" {
+        if value.get("type").and_then(Value::as_str) == Some("session.closed") {
             return Ok(());
         }
     }
     Err(invalid("voice disconnected before session finalization"))
 }
 
+async fn report_event(
+    events: &mpsc::Sender<Result<RealtimeVoiceEvent>>,
+    event: Result<RealtimeVoiceEvent>,
+) {
+    if let Err(error) = events.send(event).await {
+        tracing::debug!(%error, "voice event receiver closed");
+    }
+}
+
 fn context_chunks(mut text: &str) -> Vec<&str> {
     let mut chunks = Vec::new();
     while !text.is_empty() {
-        let end = text.floor_char_boundary(500);
-        chunks.push(&text[..end]);
-        text = &text[end..];
+        let (chunk, rest) = text.split_at(text.floor_char_boundary(500));
+        chunks.push(chunk);
+        text = rest;
     }
     chunks
 }
@@ -857,8 +912,10 @@ impl VoiceTurns {
                     .as_u64()
                     .ok_or_else(|| invalid("voice delegation omitted its timestamp"))?;
                 for speaker in 0..2 {
-                    if self.live_captions[speaker]
-                        .as_ref()
+                    if self
+                        .live_captions
+                        .get(speaker)
+                        .and_then(Option::as_ref)
                         .is_some_and(|caption| caption.end_ms <= offset)
                     {
                         self.finish_caption(speaker, events)?;
@@ -897,12 +954,21 @@ impl VoiceTurns {
         }
         // ponytail: caption groups use a one-second gap, not semantic turn detection.
         // Late fragments get a new group; add revisable timeline rows if needed.
-        if self.live_captions[speaker].as_ref().is_some_and(|caption| {
-            start_ms < caption.start_ms || start_ms > caption.end_ms.saturating_add(1_000)
-        }) {
+        if self
+            .live_captions
+            .get(speaker)
+            .and_then(Option::as_ref)
+            .is_some_and(|caption| {
+                start_ms < caption.start_ms || start_ms > caption.end_ms.saturating_add(1_000)
+            })
+        {
             self.finish_caption(speaker, events)?;
         }
-        let caption = self.live_captions[speaker].get_or_insert_with(|| {
+        let slot = self
+            .live_captions
+            .get_mut(speaker)
+            .ok_or_else(|| invalid("invalid voice transcript speaker"))?;
+        let mut caption = slot.take().unwrap_or_else(|| {
             self.live_counter += 1;
             LiveCaption {
                 id: format!("live-{speaker}-{}", self.live_counter),
@@ -911,8 +977,11 @@ impl VoiceTurns {
             }
         });
         caption.end_ms = caption.end_ms.max(end_ms);
-        let id = caption.id.clone();
-        self.transcript(&id, live_role(speaker), text.into(), false, events)
+        let result = self.transcript(&caption.id, live_role(speaker), text.into(), false, events);
+        if let Some(slot) = self.live_captions.get_mut(speaker) {
+            *slot = Some(caption);
+        }
+        result
     }
 
     fn finish_caption(
@@ -920,7 +989,7 @@ impl VoiceTurns {
         speaker: usize,
         events: &mut Vec<RealtimeVoiceEvent>,
     ) -> Result<()> {
-        if let Some(caption) = self.live_captions[speaker].take() {
+        if let Some(caption) = self.live_captions.get_mut(speaker).and_then(Option::take) {
             let text = self
                 .streams
                 .get_mut(&caption.id)

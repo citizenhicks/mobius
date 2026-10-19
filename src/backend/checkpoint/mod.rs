@@ -53,11 +53,11 @@ pub enum ExecutionPhase {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActiveExecution {
     /// The submission identifier.
-    pub submission_id: String,
+    pub submission_id: Arc<str>,
     /// Trusted provenance of the message that initiated this execution.
-    pub author: crate::protocol::MessageAuthor,
+    pub author: Arc<MessageAuthor>,
     /// The turn identifier.
-    pub turn_id: String,
+    pub turn_id: Arc<str>,
     /// The started at milliseconds.
     pub started_at_ms: i64,
     /// The model calls.
@@ -80,7 +80,7 @@ pub struct ActiveExecution {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActiveModelStep {
     /// The model step identifier.
-    pub model_step_id: String,
+    pub model_step_id: Arc<str>,
     /// The step index.
     pub step_index: usize,
     /// The started at milliseconds.
@@ -103,13 +103,13 @@ pub enum ExecutionOutcome {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionRecord {
     /// The session identifier.
-    pub session_id: String,
+    pub session_id: Arc<str>,
     /// The submission identifier.
-    pub submission_id: String,
+    pub submission_id: Arc<str>,
     /// Trusted initiating message provenance retained after the turn ends.
-    pub author: MessageAuthor,
+    pub author: Arc<MessageAuthor>,
     /// The turn identifier.
-    pub turn_id: String,
+    pub turn_id: Arc<str>,
     /// The started at milliseconds.
     pub started_at_ms: i64,
     /// The finished at milliseconds.
@@ -129,7 +129,7 @@ pub struct ExecutionRecord {
 }
 
 /// Aggregate execution metrics for one durable session.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionStats {
     /// The run count.
     pub run_count: u64,
@@ -185,7 +185,9 @@ pub struct ContextRewrite {
 
 impl ExecutionStats {
     pub(crate) fn checked_record(&mut self, record: &ExecutionRecord) -> Option<()> {
-        self.checked_add(&Self {
+        // Stage the sum so overflow leaves the existing aggregate unchanged.
+        let usage = self.usage.checked_sum(&record.usage)?;
+        let mut next = self.checked_sum(&Self {
             run_count: 1,
             failed_run_count: u64::from(record.outcome == ExecutionOutcome::Failed),
             aborted_run_count: u64::from(record.outcome == ExecutionOutcome::Aborted),
@@ -193,16 +195,21 @@ impl ExecutionStats {
             tool_calls: record.tool_calls,
             failed_tool_calls: record.failed_tool_calls,
             elapsed_ms: record.elapsed_ms,
-            usage: record.usage.clone(),
-        })
+            usage: TokenUsage::default(),
+        })?;
+        next.usage = usage;
+        *self = next;
+        Some(())
     }
 
     /// Adds completed execution totals, leaving this value unchanged on overflow.
     pub fn checked_add(&mut self, other: &Self) -> Option<()> {
-        // Stage counters so overflow leaves the existing aggregate unchanged.
-        let mut usage = self.usage.clone();
-        usage.checked_add(&other.usage)?;
-        *self = Self {
+        *self = self.checked_sum(other)?;
+        Some(())
+    }
+
+    fn checked_sum(&self, other: &Self) -> Option<Self> {
+        Some(Self {
             run_count: self.run_count.checked_add(other.run_count)?,
             failed_run_count: self.failed_run_count.checked_add(other.failed_run_count)?,
             aborted_run_count: self
@@ -214,25 +221,24 @@ impl ExecutionStats {
                 .failed_tool_calls
                 .checked_add(other.failed_tool_calls)?,
             elapsed_ms: self.elapsed_ms.checked_add(other.elapsed_ms)?,
-            usage,
-        };
-        Some(())
+            usage: self.usage.checked_sum(&other.usage)?,
+        })
     }
 }
 
 /// A tool batch waiting for a frontend decision.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingApproval {
     /// The submission identifier.
-    pub submission_id: String,
+    pub submission_id: Arc<str>,
     /// The turn identifier.
-    pub turn_id: String,
+    pub turn_id: Arc<str>,
     /// The request identifier.
-    pub request_id: String,
+    pub request_id: Arc<str>,
     /// The approval call identifiers.
-    pub approval_call_ids: Vec<String>,
+    pub approval_call_ids: Vec<Arc<str>>,
     /// The authorized call identifiers.
-    pub authorized_call_ids: Vec<String>,
+    pub authorized_call_ids: Vec<Arc<str>>,
     /// The calls.
     pub calls: Vec<ToolCall>,
     /// The reason.
@@ -250,19 +256,19 @@ impl PendingApproval {
     #[must_use]
     pub fn request_event(&self) -> crate::protocol::ExecApprovalRequestEvent {
         crate::protocol::ExecApprovalRequestEvent {
-            id: self.request_id.clone(),
-            turn_id: self.turn_id.clone(),
+            id: Arc::clone(&self.request_id),
+            turn_id: Arc::clone(&self.turn_id),
             calls: self
                 .calls
                 .iter()
                 .filter(|call| self.approval_call_ids.contains(&call.call_id))
                 .map(|call| crate::protocol::ApprovalCall {
-                    call_id: call.call_id.clone(),
-                    name: call.name.clone(),
-                    arguments: call.arguments.clone(),
+                    call_id: Arc::clone(&call.call_id),
+                    name: Arc::clone(&call.name),
+                    arguments: call.arguments.clone(), // rules-allow: the pending approval keeps its calls
                 })
                 .collect(),
-            reason: self.reason.clone(),
+            reason: self.reason.clone(), // rules-allow: the pending approval stays durable while the event is emitted
         }
     }
 }
@@ -304,7 +310,7 @@ pub struct QueuedMessage(QueuedMessageData);
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct QueuedMessageData {
     owner: String,
-    id: String,
+    id: Arc<str>,
     boundary: QueuedMessageBoundary,
     author: MessageAuthor,
     message: String,
@@ -339,8 +345,21 @@ impl QueuedMessage {
         boundary: QueuedMessageBoundary,
         event: MessageEvent,
     ) -> Result<Self> {
+        Self::build(owner, id, boundary, event).map_err(|(error, _boundary)| error)
+    }
+
+    // A failed build hands the boundary back so a replacement can restore it.
+    fn build(
+        owner: &str,
+        id: &str,
+        boundary: QueuedMessageBoundary,
+        event: MessageEvent,
+    ) -> std::result::Result<Self, (Error, QueuedMessageBoundary)> {
         if event.delivery != boundary.delivery() || event.message_target.is_some() {
-            return Err(Error::Config("queued message event is inconsistent".into()));
+            return Err((
+                Error::Config("queued message event is inconsistent".into()),
+                boundary,
+            ));
         }
         let queued = Self(QueuedMessageData {
             owner: owner.into(),
@@ -351,8 +370,10 @@ impl QueuedMessage {
             attachments: event.attachments,
             reply: event.reply,
         });
-        validate_queued_message(&queued)?;
-        Ok(queued)
+        match validate_queued_message(&queued) {
+            Ok(()) => Ok(queued),
+            Err(error) => Err((error, queued.0.boundary)),
+        }
     }
 
     pub(crate) fn owner(&self) -> &str {
@@ -398,27 +419,39 @@ impl QueuedMessage {
 
     pub(crate) fn event(&self) -> MessageEvent {
         MessageEvent {
-            author: self.0.author.clone(),
+            author: self.0.author.clone(), // rules-allow: the queued message stays queued while its event is emitted
             delivery: self.0.boundary.delivery(),
-            text: self.0.message.clone(),
-            attachments: self.0.attachments.clone(),
-            reply: self.0.reply.clone(),
+            text: self.0.message.clone(), // rules-allow: the queued message stays queued while its event is emitted
+            attachments: self.0.attachments.clone(), // rules-allow: the queued message stays queued while its event is emitted
+            reply: self.0.reply.clone(), // rules-allow: the queued message stays queued while its event is emitted
             message_target: None,
         }
     }
 
     pub(crate) fn replace(&mut self, id: &str, event: MessageEvent) -> Result<()> {
         // Validation may fail; keep the original delivery boundary intact until replacement succeeds.
-        let replacement = Self::new(&self.0.owner, id, self.0.boundary.clone(), event)?;
-        *self = replacement;
-        Ok(())
+        let boundary = std::mem::replace(&mut self.0.boundary, QueuedMessageBoundary::Queue);
+        match Self::build(&self.0.owner, id, boundary, event) {
+            Ok(replacement) => {
+                *self = replacement;
+                Ok(())
+            }
+            Err((error, boundary)) => {
+                self.0.boundary = boundary;
+                Err(error)
+            }
+        }
     }
 
     pub(crate) fn promote_to_next_turn(&mut self) {
         self.0.boundary = QueuedMessageBoundary::Queue;
     }
 
-    pub(crate) fn into_parts(self) -> (String, MessageEvent) {
+    pub(crate) fn submission_id(&self) -> &Arc<str> {
+        &self.0.id
+    }
+
+    pub(crate) fn into_parts(self) -> (Arc<str>, MessageEvent) {
         let event = MessageEvent {
             author: self.0.author,
             delivery: self.0.boundary.delivery(),
@@ -465,9 +498,9 @@ pub struct Checkpoint {
     /// The version.
     pub version: u32,
     /// The session identifier.
-    pub session_id: String,
+    pub session_id: Arc<str>,
     /// The session context.
-    pub session_context: SessionContext,
+    pub session_context: Arc<SessionContext>,
     /// The metadata.
     pub metadata: BTreeMap<String, Value>,
     /// The catalog visible.
@@ -475,9 +508,9 @@ pub struct Checkpoint {
     /// The first user message.
     pub first_user_message: Option<String>,
     /// The model route.
-    pub model_route: Option<String>,
+    pub model_route: Option<Arc<str>>,
     /// The model route whose accepted output last contributed to active context.
-    pub context_model_route: Option<String>,
+    pub context_model_route: Option<Arc<str>>,
     /// Monotonically increasing durable checkpoint revision for this session.
     pub sequence: u64,
     /// The complete active model context, reconstructed by storage when loaded.
@@ -511,11 +544,11 @@ pub struct Checkpoint {
 impl Checkpoint {
     /// Creates an empty session checkpoint.
     #[must_use]
-    pub fn empty(session_id: impl Into<String>) -> Self {
+    pub fn empty(session_id: impl Into<Arc<str>>) -> Self {
         Self {
             version: CHECKPOINT_VERSION,
             session_id: session_id.into(),
-            session_context: SessionContext::default(),
+            session_context: Arc::default(),
             metadata: BTreeMap::new(),
             catalog_visible: true,
             first_user_message: None,
@@ -554,7 +587,7 @@ impl Checkpoint {
         let finished_at_ms = finished_at_ms.max(active.started_at_ms);
         let elapsed_ms = finished_at_ms.abs_diff(active.started_at_ms);
         let record = ExecutionRecord {
-            session_id: self.session_id.clone(),
+            session_id: Arc::clone(&self.session_id),
             submission_id: active.submission_id,
             author: active.author,
             turn_id: active.turn_id,
@@ -587,7 +620,7 @@ impl Checkpoint {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionSummary {
     /// The session identifier.
-    pub session_id: String,
+    pub session_id: Arc<str>,
     /// The session context.
     pub session_context: SessionContext,
     /// The parent session identifier.
@@ -616,14 +649,14 @@ pub struct SessionCursor {
     /// The sequence.
     pub sequence: u64,
     /// The session identifier.
-    pub session_id: String,
+    pub session_id: Arc<str>,
 }
 
 /// Bounds one newest-first session catalog query.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionPageRequest {
     /// Restricts sessions and cursor keys to this owner; `None` lists every owner.
-    pub owner_id: Option<String>,
+    pub owner_id: Option<Arc<str>>,
     /// The cursor.
     pub cursor: Option<SessionCursor>,
     /// The limit.
@@ -802,27 +835,30 @@ pub async fn event_turn_page(
         cursor = Some(next);
     }
 
-    let Some((start_index, turn_id)) = events.iter().enumerate().find_map(|(index, event)| {
-        let EventMsg::TurnStarted(started) = &event.event.msg else {
-            return None;
-        };
-        Some((index, started.turn_id.as_str()))
-    }) else {
+    let Some((start_index, start_sequence, turn_id)) =
+        events.iter().enumerate().find_map(|(index, event)| {
+            let EventMsg::TurnStarted(started) = &event.event.msg else {
+                return None;
+            };
+            Some((index, event.sequence, &*started.turn_id))
+        })
+    else {
         return Ok(EventPage {
             latest_sequence,
             events: Vec::new(),
             next_before_sequence: None,
         });
     };
-    let page_start = events[..start_index]
+    let page_start = events
         .iter()
+        .take(start_index)
         .position(|event| match &event.event.msg {
-            EventMsg::TurnComplete(completed) => completed.turn_id == turn_id,
-            EventMsg::TurnAborted(aborted) => aborted.turn_id == turn_id,
+            EventMsg::TurnComplete(completed) => *completed.turn_id == *turn_id,
+            EventMsg::TurnAborted(aborted) => *aborted.turn_id == *turn_id,
             _ => false,
         })
         .unwrap_or(0);
-    let next_before_sequence = has_earlier_turn.then_some(events[start_index].sequence);
+    let next_before_sequence = has_earlier_turn.then_some(start_sequence);
     let events = events.drain(page_start..=start_index).collect();
 
     Ok(EventPage {
@@ -890,12 +926,23 @@ pub trait CheckpointStore: Send + Sync {
     /// previously stored context items remain an immutable prefix; advance the
     /// epoch when rewriting or truncating that prefix. SQLite rejects violations
     /// rather than silently discarding the changed context.
-    fn save<'a>(
-        &'a self,
-        checkpoint: &'a Checkpoint,
-        transcript_delta: &'a [std::sync::Arc<Value>],
-        execution: Option<&'a ExecutionRecord>,
-    ) -> BoxFuture<'a, Result<()>>;
+    fn save(
+        &self,
+        checkpoint: Checkpoint,
+        transcript_delta: Vec<Arc<Value>>,
+        execution: Option<ExecutionRecord>,
+    ) -> BoxFuture<'_, Result<()>> {
+        Box::pin(async move {
+            self.save_with_events(
+                Arc::new(checkpoint),
+                transcript_delta,
+                execution,
+                Vec::new(),
+            )
+            .await
+            .map(drop)
+        })
+    }
 
     /// Atomically saves one immutable checkpoint snapshot and its normalized event batch.
     ///
@@ -905,20 +952,20 @@ pub trait CheckpointStore: Send + Sync {
     /// events form one commit boundary. Return the durably assigned event
     /// sequences only after that commit succeeds. The sequence and context-prefix
     /// requirements of [`Self::save`] also apply.
-    fn save_with_events<'a>(
-        &'a self,
+    fn save_with_events(
+        &self,
         checkpoint: Arc<Checkpoint>,
         transcript_delta: Vec<std::sync::Arc<Value>>,
         execution: Option<ExecutionRecord>,
         events: Vec<TimestampedEvent>,
-    ) -> BoxFuture<'a, Result<Vec<JournalEvent>>>;
+    ) -> BoxFuture<'_, Result<Vec<JournalEvent>>>;
 
     /// Assigns a session-local sequence and appends one normalized event atomically.
     fn append_event<'a>(
         &'a self,
         session_id: &'a str,
         recorded_at_ms: i64,
-        event: &'a Event,
+        event: Event,
     ) -> BoxFuture<'a, Result<JournalEvent>>;
 
     /// Loads one newest-first page of normalized session events.
@@ -1020,7 +1067,7 @@ pub trait CheckpointStore: Send + Sync {
         &'a self,
         _parent_session_id: &'a str,
         _parent_sequence: u64,
-        _checkpoint: &'a Checkpoint,
+        _checkpoint: Checkpoint,
     ) -> BoxFuture<'a, Result<SessionSummary>> {
         Box::pin(async {
             Err(Error::Checkpoint(

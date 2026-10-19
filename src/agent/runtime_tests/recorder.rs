@@ -29,7 +29,7 @@ impl Model for BlockingRetainingModel {
 
 fn test_checkpoint(session_id: &str) -> Checkpoint {
     let mut checkpoint = Checkpoint::empty(session_id);
-    checkpoint.session_context.owner_id = "test-bot".into();
+    std::sync::Arc::make_mut(&mut checkpoint.session_context).owner_id = "test-bot".into();
     checkpoint
 }
 
@@ -41,10 +41,10 @@ async fn recorder_persists_an_event_before_delivery() {
             .expect("checkpoint store"),
     );
     checkpoints
-        .save(&test_checkpoint("session"), &[], None)
+        .save(test_checkpoint("session"), Vec::new(), None)
         .await
         .expect("initial checkpoint");
-    let store: Arc<dyn CheckpointStore> = checkpoints.clone();
+    let store: Arc<dyn CheckpointStore> = Arc::<SqliteCheckpoint>::clone(&checkpoints);
     let (events, mut receiver) =
         crate::agent::recorder::RecorderIngress::spawn(store, "session".into());
     let event = Event {
@@ -124,7 +124,7 @@ async fn interrupted_response_delivers_accepted_text_before_aborting_and_rejects
     started.notified().await;
     let turn_id = loop {
         if let EventMsg::ModelStepStarted(step) = agent.next_event().await.expect("event").msg {
-            break step.turn_id;
+            break Arc::clone(&step.turn_id);
         }
     };
     let sink = retained.lock().expect("sink lock").clone().expect("sink");
@@ -136,9 +136,7 @@ async fn interrupted_response_delivers_accepted_text_before_aborting_and_rejects
         .expect("admission");
     agent
         .sender()
-        .submit(Op::Interrupt {
-            turn_id: turn_id.to_string(),
-        })
+        .submit(Op::Interrupt { turn_id })
         .expect("interrupt");
     let text = tokio::time::timeout(std::time::Duration::from_secs(2), async {
         let mut text = String::new();

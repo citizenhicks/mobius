@@ -40,8 +40,7 @@ fn installer_forwards_proxy_and_ca_without_forwarding_provider_credentials() {
     command.env_clear();
     forward_installer_environment(&mut command, |name| match name {
         "HTTPS_PROXY" => Some("http://proxy.internal:3128".into()),
-        "ALL_PROXY" => Some("socks5://proxy.internal:1080".into()),
-        "all_proxy" => Some("socks5://proxy.internal:1080".into()),
+        "ALL_PROXY" | "all_proxy" => Some("socks5://proxy.internal:1080".into()),
         "SSL_CERT_FILE" => Some("/etc/company/ca.pem".into()),
         "NODE_USE_SYSTEM_CA" => Some("1".into()),
         "OPENAI_API_KEY" => Some("should-not-be-forwarded".into()),

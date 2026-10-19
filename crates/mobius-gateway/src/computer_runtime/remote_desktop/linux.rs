@@ -19,7 +19,12 @@ use x11rb::connection::Connection;
 use x11rb::image::{ColorComponent, Image};
 use x11rb::protocol::Event;
 use x11rb::protocol::composite::{ConnectionExt as _, Redirect};
-use x11rb::protocol::xproto::{ConnectionExt as _, *};
+use x11rb::protocol::xproto::{
+    Atom, AtomEnum, BUTTON_PRESS_EVENT, BUTTON_RELEASE_EVENT, ChangeWindowAttributesAux,
+    ConfigureWindowAux, ConnectionExt as _, EventMask, GrabMode, GrabStatus, InputFocus,
+    KEY_PRESS_EVENT, KEY_RELEASE_EVENT, MOTION_NOTIFY_EVENT, MapState, Pixmap, StackMode,
+    VisualClass, Window, WindowClass,
+};
 use x11rb::protocol::xtest::ConnectionExt as _;
 use x11rb::rust_connection::{DefaultStream, PollMode, RustConnection, Stream};
 use x11rb::utils::RawFdContainer;
@@ -63,7 +68,7 @@ impl Stream for BoundedStream {
         loop {
             let timeout = PollTimeout::try_from(self.remaining()?).map_err(io::Error::other)?;
             match poll(&mut fds, timeout) {
-                Ok(0) | Err(Errno::EINTR) => continue,
+                Ok(0) | Err(Errno::EINTR) => {}
                 Ok(_) => return Ok(()),
                 Err(error) => return Err(error.into()),
             }
@@ -217,7 +222,12 @@ impl Desktop {
             .ok_or_else(|| failure("private display authentication unavailable"))?;
         let cookie = (0..32)
             .step_by(2)
-            .map(|offset| u8::from_str_radix(&auth[offset..offset + 2], 16).map_err(xerror))
+            .map(|offset| {
+                let pair = auth
+                    .get(offset..offset + 2)
+                    .ok_or_else(|| failure("private display authentication unavailable"))?;
+                u8::from_str_radix(pair, 16).map_err(xerror)
+            })
             .collect::<Result<Vec<_>>>()?;
         let socket = std::os::unix::net::UnixStream::connect(format!("/tmp/.X11-unix/X{number}"))?;
         let (stream, _) = DefaultStream::from_unix_stream(socket).map_err(xerror)?;
@@ -243,7 +253,12 @@ impl Desktop {
             .map_err(xerror)?
             .reply()
             .map_err(xerror)?;
-        let root = connection.setup().roots[0].root;
+        let root = connection
+            .setup()
+            .roots
+            .first()
+            .ok_or_else(|| failure("private display has no screen"))?
+            .root;
         let clients = atom(&connection, b"_NET_CLIENT_LIST")?;
         let title = atom(&connection, b"_NET_WM_NAME")?;
         let utf8 = atom(&connection, b"UTF8_STRING")?;
@@ -266,7 +281,7 @@ impl Desktop {
 
     pub(super) fn begin(&mut self, session: &str) {
         if self.session != session {
-            self.session = session.to_owned();
+            session.clone_into(&mut self.session);
             self.invalidate();
         }
         self.last_action = None;
@@ -303,9 +318,11 @@ impl Desktop {
         if begin {
             self.begin(session);
         }
-        let request = serde_json::from_value(value).map_err(|_| {
+        let request = serde_json::from_value(value).map_err(|error| {
             self.last_action = None;
-            failure("unsupported or invalid Linux desktop action")
+            Error::Config(format!(
+                "unsupported or invalid Linux desktop action: {error}"
+            ))
         })?;
         self.perform(request, control)
     }
@@ -460,6 +477,10 @@ impl Desktop {
         self.geometry(window)
     }
 
+    #[expect(
+        clippy::set_contains_or_insert,
+        reason = "a window is recorded as redirected only after the redirect succeeds"
+    )]
     fn capture(&mut self, window: Window, control: &Control<'_>) -> Result<Value> {
         let geometry = self.selected(window)?;
         if !self.redirected.contains(&window) {
@@ -531,7 +552,12 @@ impl Desktop {
             .reply()
             .map_err(xerror)?
             .visual;
-        let visual = self.connection.setup().roots[0]
+        let visual = self
+            .connection
+            .setup()
+            .roots
+            .first()
+            .ok_or_else(|| failure("private display has no screen"))?
             .allowed_depths
             .iter()
             .flat_map(|depth| &depth.visuals)
@@ -560,12 +586,15 @@ impl Desktop {
             u32::from(geometry.width),
             u32::from(geometry.height),
             |x, y| {
-                let pixel = pixels.get_pixel(x as u16, y as u16);
-                image::Rgb([
-                    (red.decode(pixel) >> 8) as u8,
-                    (green.decode(pixel) >> 8) as u8,
-                    (blue.decode(pixel) >> 8) as u8,
-                ])
+                // Both coordinates lie inside the u16 geometry the image was built from.
+                let pixel = pixels.get_pixel(
+                    u16::try_from(x).unwrap_or(u16::MAX),
+                    u16::try_from(y).unwrap_or(u16::MAX),
+                );
+                let [red, _] = red.decode(pixel).to_be_bytes();
+                let [green, _] = green.decode(pixel).to_be_bytes();
+                let [blue, _] = blue.decode(pixel).to_be_bytes();
+                image::Rgb([red, green, blue])
             },
         ))
     }
@@ -644,7 +673,12 @@ impl Desktop {
     fn root_point(&self, shot: Screenshot, point: (i16, i16)) -> Result<(i16, i16)> {
         let x = i16::try_from(i32::from(shot.geometry.x) + i32::from(point.0)).map_err(xerror)?;
         let y = i16::try_from(i32::from(shot.geometry.y) + i32::from(point.1)).map_err(xerror)?;
-        let screen = &self.connection.setup().roots[0];
+        let screen = self
+            .connection
+            .setup()
+            .roots
+            .first()
+            .ok_or_else(|| failure("private display has no screen"))?;
         if !u16::try_from(x).is_ok_and(|x| x < screen.width_in_pixels)
             || !u16::try_from(y).is_ok_and(|y| y < screen.height_in_pixels)
         {
@@ -851,8 +885,14 @@ impl Desktop {
             for step in 1..=10 {
                 std::thread::sleep(Duration::from_millis(20));
                 let point = (
-                    (i32::from(from.0) + (i32::from(to.0) - i32::from(from.0)) * step / 10) as i16,
-                    (i32::from(from.1) + (i32::from(to.1) - i32::from(from.1)) * step / 10) as i16,
+                    i16::try_from(
+                        i32::from(from.0) + (i32::from(to.0) - i32::from(from.0)) * step / 10,
+                    )
+                    .map_err(xerror)?,
+                    i16::try_from(
+                        i32::from(from.1) + (i32::from(to.1) - i32::from(from.1)) * step / 10,
+                    )
+                    .map_err(xerror)?,
                 );
                 self.with_server(|| self.motion(shot, point, control))?;
             }
@@ -1051,12 +1091,20 @@ struct ReleaseServer<'a>(&'a RustConnection<BoundedStream>);
 
 impl Drop for ReleaseServer<'_> {
     fn drop(&mut self) {
-        let _ = self.0.ungrab_server();
-        let _ = self.0.flush();
+        if let Err(error) = self.0.ungrab_server() {
+            tracing::debug!(%error, "private X11 server ungrab failed");
+        }
+        if let Err(error) = self.0.flush() {
+            tracing::debug!(%error, "private X11 flush failed");
+        }
     }
 }
 
 impl Screenshot {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the coordinates are checked to lie inside the u16 window geometry"
+    )]
     fn point(self, x: f64, y: f64) -> Result<(i16, i16)> {
         if !x.is_finite()
             || !y.is_finite()
@@ -1074,6 +1122,10 @@ impl Screenshot {
     }
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the delta is bounded to 10,000, so at most 250 steps"
+)]
 fn scroll_steps(delta: f64) -> Result<i32> {
     if !delta.is_finite() || delta.abs() > 10_000.0 {
         return Err(failure("scroll delta exceeds its limit"));
@@ -1096,8 +1148,10 @@ impl Keymap {
 }
 
 fn keysym(key: &str) -> Result<u32> {
-    if key.len() == 1 && key.bytes().all(|c| c.is_ascii_graphic()) {
-        return Ok(u32::from(key.as_bytes()[0]));
+    if let [byte] = key.as_bytes()
+        && byte.is_ascii_graphic()
+    {
+        return Ok(u32::from(*byte));
     }
     if let Some(number) = key
         .strip_prefix('f')

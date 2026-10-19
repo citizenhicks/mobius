@@ -12,9 +12,8 @@ fn open_hard_rejects_previous_schema_generations() {
             .expect("set older schema version");
         drop(connection);
 
-        let error = SqliteCheckpoint::new(path)
-            .err()
-            .expect("older session-context schema must fail");
+        let error =
+            SqliteCheckpoint::new(path).expect_err("older session-context schema must fail");
 
         assert_eq!(
             error.to_string(),
@@ -35,7 +34,7 @@ async fn load_completes_while_another_connection_holds_a_write_transaction() {
     );
     let checkpoint = checkpoint("session");
     store
-        .save(&checkpoint, &[], None)
+        .save(checkpoint.clone(), Vec::new(), None)
         .await
         .expect("seed checkpoint");
     let (ready_tx, ready_rx) = oneshot::channel();

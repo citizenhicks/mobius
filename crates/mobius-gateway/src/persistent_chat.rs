@@ -26,9 +26,22 @@ struct Definition {
     schedule_interval: String,
     schedule_ends_at: String,
 }
-mobius::embedded_config! {
-    static TEXT: Definition = include_str!("persistent_chat.toml");
+struct Text {
+    label: String,
+    description: String,
+    prompt: String,
+    tools: [Arc<ToolDefinition>; 6],
 }
+static TEXT: std::sync::LazyLock<Text> = std::sync::LazyLock::new(|| {
+    let mut definition: Definition = mobius::config::embedded(include_str!("persistent_chat.toml"));
+    let tools = ACTIONS.map(|action| Arc::new(action.definition(&mut definition)));
+    Text {
+        label: definition.label,
+        description: definition.description,
+        prompt: definition.prompt,
+        tools,
+    }
+});
 pub(crate) static MANIFEST: std::sync::LazyLock<MiddlewareManifest> =
     std::sync::LazyLock::new(|| MiddlewareManifest {
         id: "persistent_chat",
@@ -40,11 +53,11 @@ pub(crate) static MANIFEST: std::sync::LazyLock<MiddlewareManifest> =
     });
 
 pub(crate) struct PersistentChat {
-    bot_id: String,
+    bot_id: Arc<str>,
     host: crate::host::HostAccess,
 }
 impl PersistentChat {
-    pub(crate) fn new(bot_id: String, host: crate::host::HostAccess) -> Self {
+    pub(crate) fn new(bot_id: Arc<str>, host: crate::host::HostAccess) -> Self {
         Self { bot_id, host }
     }
 }
@@ -56,19 +69,20 @@ impl Middleware for PersistentChat {
         true
     }
     fn register(&self, catalog: &mut Catalog, runtime: &RuntimeContext) -> Result<()> {
-        if runtime.session_id != crate::bots::conversation_session_id(&self.bot_id)
+        if *runtime.session_id != *crate::bots::conversation_session_id(&self.bot_id)
             || !matches!(runtime.role, mobius::agent::AgentRole::Main)
-            || runtime.session_context.owner_id != self.bot_id
+            || *runtime.session_context.owner_id != *self.bot_id
             || runtime.session_context.workspace_id.is_some()
         {
             return Err(mobius::Error::Config(
                 "Persistent Chat can only be installed in its Bot's main conversation".into(),
             ));
         }
-        for action in ACTIONS {
+        for (action, definition) in ACTIONS.into_iter().zip(&TEXT.tools) {
             catalog.register(Arc::new(RoutineTool {
                 action,
-                bot_id: self.bot_id.clone(),
+                definition: Arc::clone(definition),
+                bot_id: Arc::clone(&self.bot_id),
                 host: Arc::clone(&self.host),
             }))?;
         }
@@ -120,6 +134,48 @@ impl Action {
             Self::Emit => "emit_hook",
         }
     }
+
+    fn definition(self, text: &mut Definition) -> ToolDefinition {
+        let (description, properties, required) = match self {
+            Self::List => (std::mem::take(&mut text.list_routines), json!({}), vec![]),
+            Self::Create => (
+                std::mem::take(&mut text.schedule_routine),
+                json!({"workspace":{"type":"string"},"instructions":{"type":"string"},"bindings":{"type":"array","items":{"$ref":"#/$defs/routine_binding"}}}),
+                vec!["instructions", "bindings"],
+            ),
+            Self::Command => (
+                std::mem::take(&mut text.routine_command),
+                json!({"command":{"$ref":"#/$defs/routine_command"}}),
+                vec!["command"],
+            ),
+            Self::Reporting => (
+                std::mem::take(&mut text.list_subscriptions),
+                json!({}),
+                vec![],
+            ),
+            Self::Subscribe => (
+                std::mem::take(&mut text.set_subscription),
+                json!({"binding":{"$ref":"#/$defs/bot_binding"},"enabled":{"type":"boolean"}}),
+                vec!["binding", "enabled"],
+            ),
+            Self::Emit => (
+                std::mem::take(&mut text.emit_hook),
+                json!({"name":{"type":"string"},"data":{}}),
+                vec!["name", "data"],
+            ),
+        };
+        let mut parameters = json!({"type":"object","properties":properties,"required":required,"additionalProperties":false});
+        if matches!(self, Self::Create | Self::Command | Self::Subscribe)
+            && let Some(parameters) = parameters.as_object_mut()
+        {
+            parameters.insert("$defs".into(), hook_definitions(text));
+        }
+        ToolDefinition {
+            name: self.name().into(),
+            description,
+            parameters,
+        }
+    }
 }
 const ACTIONS: [Action; 6] = [
     Action::List,
@@ -131,48 +187,14 @@ const ACTIONS: [Action; 6] = [
 ];
 struct RoutineTool {
     action: Action,
-    bot_id: String,
+    definition: Arc<ToolDefinition>,
+    bot_id: Arc<str>,
     host: crate::host::HostAccess,
 }
 
 impl Tool for RoutineTool {
-    fn definition(&self) -> ToolDefinition {
-        let (description, properties, required) = match self.action {
-            Action::List => (&TEXT.list_routines, json!({}), vec![]),
-            Action::Create => (
-                &TEXT.schedule_routine,
-                json!({"workspace":{"type":"string"},"instructions":{"type":"string"},"bindings":{"type":"array","items":{"$ref":"#/$defs/routine_binding"}}}),
-                vec!["instructions", "bindings"],
-            ),
-            Action::Command => (
-                &TEXT.routine_command,
-                json!({"command":{"$ref":"#/$defs/routine_command"}}),
-                vec!["command"],
-            ),
-            Action::Reporting => (&TEXT.list_subscriptions, json!({}), vec![]),
-            Action::Subscribe => (
-                &TEXT.set_subscription,
-                json!({"binding":{"$ref":"#/$defs/bot_binding"},"enabled":{"type":"boolean"}}),
-                vec!["binding", "enabled"],
-            ),
-            Action::Emit => (
-                &TEXT.emit_hook,
-                json!({"name":{"type":"string"},"data":{}}),
-                vec!["name", "data"],
-            ),
-        };
-        let mut parameters = json!({"type":"object","properties":properties,"required":required,"additionalProperties":false});
-        if matches!(
-            self.action,
-            Action::Create | Action::Command | Action::Subscribe
-        ) {
-            parameters["$defs"] = hook_definitions();
-        }
-        ToolDefinition {
-            name: self.action.name().into(),
-            description: description.clone(),
-            parameters,
-        }
+    fn definition(&self) -> &Arc<ToolDefinition> {
+        &self.definition
     }
     fn execution_mode(&self) -> ExecutionMode {
         ExecutionMode::Exclusive
@@ -180,13 +202,13 @@ impl Tool for RoutineTool {
     fn read_only(&self) -> bool {
         matches!(self.action, Action::List | Action::Reporting)
     }
-    fn call<'a>(
-        &'a self,
+    fn call(
+        &self,
         context: ToolContext,
         arguments: Value,
-    ) -> BoxFuture<'a, Result<mobius::protocol::ToolResponse>> {
+    ) -> BoxFuture<'_, Result<mobius::protocol::ToolResponse>> {
         Box::pin(async move {
-            if !self.read_only() && !matches!(context.author, MessageAuthor::User) {
+            if !self.read_only() && !matches!(*context.author, MessageAuthor::User) {
                 return Err(mobius::Error::Tool(
                     "Bot management requires a user turn or an exact saved hook action".into(),
                 ));
@@ -236,7 +258,7 @@ impl Tool for RoutineTool {
                 Action::Subscribe => {
                     let args: SubscriptionArgs = serde_json::from_value(arguments)?;
                     host.set_bot_subscription(crate::wire::BotSubscription {
-                        bot_id: self.bot_id.clone(),
+                        bot_id: Arc::clone(&self.bot_id),
                         binding: args.binding,
                         enabled: args.enabled,
                     })
@@ -284,18 +306,18 @@ struct EmitArgs {
     name: String,
     data: Value,
 }
-fn rejected(error: crate::host::Rejection) -> mobius::Error {
-    mobius::Error::Tool(error.message)
+fn rejected(crate::host::Rejection { message, .. }: crate::host::Rejection) -> mobius::Error {
+    mobius::Error::Tool(message.to_string())
 }
-fn tool_error(error: crate::Error) -> mobius::Error {
+fn tool_error(error: impl std::fmt::Display) -> mobius::Error {
     mobius::Error::Tool(error.to_string())
 }
 
-fn hook_definitions() -> Value {
+fn hook_definitions(text: &Definition) -> Value {
     json!({
         "schedule":{"oneOf":[
-            {"type":"object","properties":{"kind":{"const":"once"},"at":{"type":"integer","minimum":1,"maximum":crate::bots::MAX_SCHEDULE_TIMESTAMP,"description":TEXT.schedule_at}},"required":["kind","at"],"additionalProperties":false},
-            {"type":"object","properties":{"kind":{"const":"interval"},"every_seconds":{"type":"integer","minimum":60,"description":TEXT.schedule_interval}},"required":["kind","every_seconds"],"additionalProperties":false},
+            {"type":"object","properties":{"kind":{"const":"once"},"at":{"type":"integer","minimum":1,"maximum":crate::bots::MAX_SCHEDULE_TIMESTAMP,"description":text.schedule_at}},"required":["kind","at"],"additionalProperties":false},
+            {"type":"object","properties":{"kind":{"const":"interval"},"every_seconds":{"type":"integer","minimum":60,"description":text.schedule_interval}},"required":["kind","every_seconds"],"additionalProperties":false},
             {"type":"object","properties":{"kind":{"const":"cron"},"expression":{"type":"string"},"time_zone":{"type":"string"}},"required":["kind","expression","time_zone"],"additionalProperties":false}
         ]},
         "source":{"oneOf":[
@@ -303,7 +325,7 @@ fn hook_definitions() -> Value {
             {"type":"object","properties":{"type":{"const":"gateway"}},"required":["type"],"additionalProperties":false}
         ]},
         "selector":{"oneOf":[
-            {"type":"object","properties":{"type":{"const":"schedule"},"schedule":{"$ref":"#/$defs/schedule"},"ends_at":{"type":["integer","null"],"minimum":1,"maximum":crate::bots::MAX_SCHEDULE_TIMESTAMP,"description":TEXT.schedule_ends_at}},"required":["type","schedule"],"additionalProperties":false},
+            {"type":"object","properties":{"type":{"const":"schedule"},"schedule":{"$ref":"#/$defs/schedule"},"ends_at":{"type":["integer","null"],"minimum":1,"maximum":crate::bots::MAX_SCHEDULE_TIMESTAMP,"description":text.schedule_ends_at}},"required":["type","schedule"],"additionalProperties":false},
             {"type":"object","properties":{"type":{"const":"event"},"source":{"$ref":"#/$defs/source"},"kind":{"enum":["routine_created","routine_updated","routine_paused","routine_resumed","routine_deleted","run_started","run_finished","run_skipped","session_created","session_turn_started","session_turn_finished","session_approval","session_attention","session_deleted","session_owner_changed","client_connected","client_disconnected","custom_received"]},"routine_outcome":{"enum":["succeeded","failed","cancelled",null]},"session_outcome":{"enum":["completed","aborted","failed",null]},"custom_name":{"type":["string","null"]}},"required":["type","source","kind"],"additionalProperties":false}
         ]},
         "definition":{"type":"object","properties":{"workspace":{"type":"string"},"instructions":{"type":"string"},"bindings":{"type":"array","items":{"$ref":"#/$defs/routine_binding"}}},"required":["workspace","instructions","bindings"],"additionalProperties":false},
@@ -313,8 +335,8 @@ fn hook_definitions() -> Value {
             {"type":"object","properties":{"type":{"const":"update"},"definition":{"$ref":"#/$defs/definition"}},"required":["type","definition"],"additionalProperties":false}
         ]},
         "routine_command":{"type":"object","properties":{"routine_id":{"type":"string"},"action":{"$ref":"#/$defs/routine_action"}},"required":["routine_id","action"],"additionalProperties":false},
-        "routine_binding":binding_schema(json!({"$ref":"#/$defs/routine_action"})),
-        "bot_binding":binding_schema(json!({"oneOf":[
+        "routine_binding":binding_schema(&json!({"$ref":"#/$defs/routine_action"})),
+        "bot_binding":binding_schema(&json!({"oneOf":[
             {"type":"object","properties":{"type":{"const":"report"},"instruction":{"type":"string"}},"required":["type","instruction"],"additionalProperties":false},
             {"type":"object","properties":{"type":{"const":"routine"},"command":{"$ref":"#/$defs/routine_command"}},"required":["type","command"],"additionalProperties":false},
             {"type":"object","properties":{"type":{"const":"session"},"session_id":{"type":"string"},"op":{"$ref":"#/$defs/session_op"}},"required":["type","session_id","op"],"additionalProperties":false}
@@ -331,7 +353,7 @@ fn source_schema(kind: &str, field: &str) -> Value {
 fn unit_action(kind: &str) -> Value {
     json!({"type":"object","properties":{"type":{"const":kind}},"required":["type"],"additionalProperties":false})
 }
-fn binding_schema(action: Value) -> Value {
+fn binding_schema(action: &Value) -> Value {
     json!({"type":"object","properties":{"id":{"type":"string"},"on":{"$ref":"#/$defs/selector"},"action":action},"required":["id","on","action"],"additionalProperties":false})
 }
 
@@ -344,15 +366,17 @@ mod tests {
         let host: crate::host::HostAccess = Arc::new(|| Err(crate::Error::Config("unused".into())));
         let read_only = ACTIONS
             .into_iter()
-            .filter(|&action| {
+            .zip(&TEXT.tools)
+            .filter(|&(action, definition)| {
                 RoutineTool {
                     action,
+                    definition: Arc::clone(definition),
                     bot_id: "bot".into(),
                     host: Arc::clone(&host),
                 }
                 .read_only()
             })
-            .map(Action::name)
+            .map(|(action, _)| action.name())
             .collect::<Vec<_>>();
         assert_eq!(read_only, ["list_routines", "list_subscriptions"]);
     }

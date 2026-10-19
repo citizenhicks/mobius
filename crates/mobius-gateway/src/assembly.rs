@@ -63,13 +63,13 @@ where
 }
 
 pub(crate) struct PreparedBot {
-    pub(crate) bot: crate::wire::BotRecord,
+    pub(crate) bot: Arc<crate::wire::BotRecord>,
     pub(crate) epoch: u64,
     stale: std::sync::atomic::AtomicBool,
     pub(crate) providers: Vec<ProviderConfig>,
     models: Arc<ModelRouter>,
     context_window: i64,
-    model_providers: BTreeMap<String, String>,
+    model_providers: BTreeMap<Arc<str>, String>,
     approval_policy: ApprovalPolicy,
     pub(crate) active_message_delivery: ActiveMessageDelivery,
     extensions: ResolvedExtensions,
@@ -104,10 +104,10 @@ impl PreparedBot {
 
 pub(crate) fn prepare_bot<'a>(
     gateway: &GatewayConfig,
-    bot: crate::wire::BotRecord,
+    bot: Arc<crate::wire::BotRecord>,
     store: &'a ConfigStore,
     credentials: &CredentialStore,
-    session_files: SessionFileStore,
+    session_files: Arc<SessionFileStore>,
     epoch: u64,
     computer_config: Arc<crate::computer_runtime::ComputerConfig>,
 ) -> impl std::future::Future<Output = Result<PreparedBot>> + Send + use<'a> {
@@ -129,13 +129,13 @@ pub(crate) fn prepare_bot<'a>(
         let approval_policy = configured_approval_policy(&config.middleware)?;
         let active_message_delivery = configured_message_delivery(&config.middleware)?;
         let extensions = ExtensionStore::new(store).resolve(gateway, &config.extensions)?;
-        let providers = std::iter::once(config.provider.clone())
+        let providers = std::iter::once(config.provider.clone()) // rules-allow: the prepared catalog owns its provider selections
             .chain(
                 gateway
                     .configured_providers
                     .values()
                     .filter(|provider| provider.selection.instance != config.provider.instance)
-                    .map(|provider| provider.selection.clone()),
+                    .map(|provider| provider.selection.clone()), // rules-allow: the prepared catalog owns its provider selections
             )
             .collect();
         let subagent_ceilings = gateway.execution.subagent_ceilings;
@@ -183,7 +183,7 @@ pub(crate) async fn assemble(
     store: &ConfigStore,
     checkpoints: Arc<dyn CheckpointStore>,
     scratchpad: Arc<Scratchpad>,
-    session_files: SessionFileStore,
+    session_files: Arc<SessionFileStore>,
     discovery_gate: Arc<tokio::sync::Mutex<()>>,
     desktop: Arc<crate::computer_runtime::desktop::DesktopControl>,
     remote_desktop: Arc<crate::computer_runtime::remote_desktop::RemoteDesktop>,
@@ -197,22 +197,23 @@ pub(crate) async fn assemble(
         validate_session_id(session_id)?;
     }
     let (workspace_path, execution, telemetry, tls, profile_directory) = {
-        let config = gateway
-            .lock()
-            .map_err(|_| Error::Config("gateway configuration lock is poisoned".into()))?;
+        let config = gateway.lock().map_err(|error| {
+            Error::Config(format!("gateway configuration lock is poisoned: {error}"))
+        })?;
+        // The snapshot outlives the configuration lock.
         (
             chat.execution_root(store.state_dir(), config.tls.as_ref())?,
-            config.execution.clone(),
-            config.telemetry.clone(),
-            config.tls.clone(),
-            config.computer.browser.profile_directory.clone(),
+            config.execution.clone(), // rules-allow: snapshot taken under the configuration lock
+            config.telemetry.clone(), // rules-allow: snapshot taken under the configuration lock
+            config.tls.clone(),       // rules-allow: snapshot taken under the configuration lock
+            config.computer.browser.profile_directory.clone(), // rules-allow: snapshot taken under the configuration lock
         )
     };
     let models = Arc::clone(&prepared.models);
     let context_window = prepared.context_window;
     let approval_policy = prepared.approval_policy;
     let project = chat.workspace.is_some();
-    let attached_folders = chat.attached_folders.clone();
+    let attached_folders = chat.attached_folders.clone(); // rules-allow: the discovery task owns the chat's folder list
     let state_dir = store.state_dir().to_path_buf();
     let token_estimate = mobius::middleware::TokenEstimate::new(execution.bytes_per_token)?;
     let resources = Arc::clone(&prepared);
@@ -236,11 +237,11 @@ pub(crate) async fn assemble(
             .then(|| {
                 Extensions::installed(
                     &workspace_path,
-                    resolved_extensions.skill_roots.iter().cloned(),
+                    resolved_extensions.skill_roots.iter().cloned(), // rules-allow: the prepared Bot keeps its roots for later chats
                     resolved_extensions
                         .plugins
                         .iter()
-                        .map(|plugin| plugin.activation(Arc::clone(&gateway_for_middleware))),
+                        .map(|plugin| plugin.activation(&gateway_for_middleware)),
                 )
             })
             .transpose()?;
@@ -289,10 +290,10 @@ pub(crate) async fn assemble(
                         .filter(|path| path.exists())
                 }),
             ))?
-            .allow_attached_folders(attached_folders.iter().cloned())?
+            .allow_attached_folders(attached_folders.iter().cloned())? // rules-allow: the backend and the sandbox each own the folder list
             .allow_read_roots(read_roots)?,
         );
-        let backend: Arc<dyn SandboxBackend> = gateway_sandbox.clone();
+        let backend: Arc<dyn SandboxBackend> = Arc::<GatewaySandbox>::clone(&gateway_sandbox); // rules-allow: the sandbox and the returned agent share the backend
         let sandbox = Sandbox::new(Arc::clone(&backend), approval_policy)
             .tool_output_limit(output_bytes)?
             .background_command_limit(crate::middleware_manifest::usize_setting(
@@ -300,20 +301,20 @@ pub(crate) async fn assemble(
                 "sandbox",
                 "background_commands",
             )?)?;
-        let sandbox = if attached_folders.is_empty() {
-            sandbox
-        } else {
-            sandbox.attached_folders(workspace_path.clone(), attached_folders)
-        };
         let middleware = build_middleware(
             &resources,
             &workspace_path,
             &scratchpad,
-            session_files,
+            &session_files,
             extensions.map(|extensions| (extensions, backend)),
             live_chats,
             project,
         )?;
+        let sandbox = if attached_folders.is_empty() {
+            sandbox
+        } else {
+            sandbox.attached_folders(workspace_path, attached_folders)
+        };
         Ok((gateway_sandbox, Arc::new(sandbox), middleware))
     })
     .await?;
@@ -331,12 +332,14 @@ pub(crate) async fn assemble(
         .as_ref()
         .map(|workspace| workspace.path.display().to_string());
     let usage_resources = Arc::clone(&prepared);
-    let usage_store = Arc::new(store.clone());
+    let usage_store = Arc::new(store.clone()); // rules-allow: the usage observer outlives this call
     let max_model_steps =
-        usize::try_from(prepared.bot.config.config.max_model_steps).map_err(|_| {
-            Error::Config("maximum model steps exceed this platform's supported range".into())
+        usize::try_from(prepared.bot.config.config.max_model_steps).map_err(|error| {
+            Error::Config(format!(
+                "maximum model steps exceed this platform's supported range: {error}"
+            ))
         })?;
-    let persistent = session_id.as_deref() == Some(prepared.bot.conversation_session_id.as_str());
+    let persistent = session_id.as_deref() == Some(&*prepared.bot.conversation_session_id);
     if persistent {
         if project || !chat.catalog_visible {
             return Err(Error::Config(
@@ -344,7 +347,7 @@ pub(crate) async fn assemble(
             ));
         }
         entries.push(Arc::new(crate::persistent_chat::PersistentChat::new(
-            prepared.bot.id.clone(),
+            Arc::clone(&prepared.bot.id),
             host_access
                 .ok_or_else(|| Error::Config("Persistent Chat requires the gateway".into()))?,
         )));
@@ -378,7 +381,7 @@ pub(crate) async fn assemble(
         })
     })
     .session_context(SessionContext {
-        owner_id: chat.bot_id.clone(),
+        owner_id: Arc::clone(&chat.bot_id),
         user_name: local_user_name(),
         workspace_id: workspace.map(|workspace| workspace.id),
         workspace_label,
@@ -408,10 +411,11 @@ async fn publish_usage(
     usage: &TokenUsage,
 ) -> mobius::Result<()> {
     let guard = USAGE_PUBLICATION.lock().await;
+    // The blocking task must own everything it publishes.
     let gateway = Arc::clone(gateway);
-    let store = store.clone();
+    let store = store.clone(); // rules-allow: the blocking task owns its handle
     let provider = provider.to_owned();
-    let usage = usage.clone();
+    let usage = *usage;
     tokio::task::spawn_blocking(move || {
         // Keep admission occupied until atomic publication finishes, even after caller cancellation.
         let _guard = guard;
@@ -427,9 +431,9 @@ fn persist_usage(
     provider: &str,
     usage: &TokenUsage,
 ) -> mobius::Result<()> {
-    let mut gateway = gateway
-        .lock()
-        .map_err(|_| MobiusError::Config("gateway configuration lock is poisoned".into()))?;
+    let mut gateway = gateway.lock().map_err(|error| {
+        MobiusError::Config(format!("gateway configuration lock is poisoned: {error}"))
+    })?;
     store
         .record_usage(&mut gateway, provider, usage)
         .map_err(|error| MobiusError::Config(error.to_string()))
@@ -440,7 +444,7 @@ fn build_models(
     selection: &ProviderConfig,
     store: &ConfigStore,
     credentials: &CredentialStore,
-    session_files: SessionFileStore,
+    session_files: Arc<SessionFileStore>,
 ) -> Result<(Arc<ModelRouter>, i64)> {
     gateway.validate_provider_selection(selection)?;
     let definition = provider(&selection.provider)?;
@@ -464,8 +468,8 @@ fn build_models(
         .into_iter()
         .filter(|route| route.provider.instance != selection.instance),
     );
-    catalog.sort_by_key(|route| route.choice.route != selected_route);
-    if catalog.first().map(|route| route.choice.route.as_str()) != Some(selected_route.as_str()) {
+    catalog.sort_by_key(|route| *route.choice.route != *selected_route);
+    if catalog.first().map(|route| &*route.choice.route) != Some(selected_route.as_str()) {
         return Err(Error::Config(
             "active model route is not in the configured gateway catalog".into(),
         ));
@@ -485,7 +489,7 @@ fn build_models(
         .context_window
         .unwrap_or(DEFAULT_CONTEXT_WINDOW);
     let mut router =
-        ModelRouter::new(&first.choice.route, first.model).session_files(session_files);
+        ModelRouter::new(Arc::clone(&first.choice.route), first.model).session_files(session_files);
     router.set_credential_lifetime(&first.choice.route, first.lifetime)?;
     router.set_context_group(&first.choice.route, first.instance)?;
     router.configure_choice(first.choice)?;
@@ -504,7 +508,7 @@ fn register_route(router: &mut ModelRouter, route: RouteValue) -> Result<()> {
             router.register_image(route.model, route.choice, route.lifetime)?;
         }
         _ => {
-            router.register(&route.choice.route, route.model)?;
+            router.register(Arc::clone(&route.choice.route), route.model)?;
             router.set_credential_lifetime(&route.choice.route, route.lifetime)?;
             router.set_context_group(&route.choice.route, route.instance)?;
             router.configure_choice(route.choice)?;
@@ -537,7 +541,7 @@ fn instantiate_routes(
                 capability: route.capability,
                 choice: route.choice,
                 model: Arc::clone(&previous.model),
-                lifetime: previous.lifetime.clone(),
+                lifetime: previous.lifetime.clone(), // rules-allow: each route keeps its own revocation cursor
             });
             continue;
         }
@@ -551,27 +555,25 @@ fn instantiate_routes(
         } else {
             None
         };
-        let (credential, lifetime) =
-            if route.provider.endpoint_auth == ProviderEndpointAuth::Credentialless {
-                (ProviderCredential::Credentialless, Default::default())
-            } else {
-                match provider_credentials.get(route.provider.instance.as_str()) {
-                    Some(credential) => credential.clone(),
-                    None => {
-                        let credential = resolve_credential(
-                            &route.provider.instance,
-                            definition,
-                            base_url.as_deref(),
-                            store,
-                            credentials,
-                            transport,
-                        )?;
-                        provider_credentials
-                            .insert(route.provider.instance.clone(), credential.clone());
-                        credential
-                    }
-                }
-            };
+        let (credential, lifetime) = if route.provider.endpoint_auth
+            == ProviderEndpointAuth::Credentialless
+        {
+            (ProviderCredential::Credentialless, Default::default())
+        } else if let Some(credential) = provider_credentials.get(route.provider.instance.as_str())
+        {
+            credential.clone() // rules-allow: routes of one instance share its credential
+        } else {
+            let credential = resolve_credential(
+                &route.provider.instance,
+                definition,
+                base_url.as_deref(),
+                store,
+                credentials,
+                transport,
+            )?;
+            provider_credentials.insert(route.provider.instance.clone(), credential.clone()); // rules-allow: the cache keeps the credential for later routes
+            credential
+        };
         routes.push(build_route(
             route, definition, credential, lifetime, base_url, &http, transport,
         )?);
@@ -598,8 +600,11 @@ fn resolve_credential(
                     definition.id()
                 )));
             }
-            let value = std::env::var(default_env).map_err(|_| {
-                Error::Config(format!("set a credential for `{}`", definition.id()))
+            let value = std::env::var(default_env).map_err(|error| {
+                Error::Config(format!(
+                    "set a credential for `{}` ({default_env}: {error})",
+                    definition.id()
+                ))
             })?;
             if value.trim().is_empty() {
                 return Err(Error::Config(format!(
@@ -633,7 +638,7 @@ fn build_route(
         service_tier: route.provider.service_tier,
         web_search: route.provider.web_search,
         tool_discovery: Some(route.choice.tool_discovery),
-        http: http.clone(),
+        http: http.clone(), // rules-allow: each provider adapter owns a handle to the shared HTTP client
         transport: *transport,
     };
     let model = definition.build(config)?;
@@ -666,7 +671,10 @@ struct UnavailableModel {
 
 impl Model for UnavailableModel {
     fn info(&self) -> ModelInfo {
-        self.info.clone()
+        ModelInfo {
+            model: Arc::clone(&self.info.model),
+            reasoning_effort: self.info.reasoning_effort.as_ref().map(Arc::clone),
+        }
     }
 
     fn supports_image_input(&self) -> bool {
@@ -691,7 +699,7 @@ fn unavailable_models(
     selection: &ProviderConfig,
     store: &ConfigStore,
     credentials: &CredentialStore,
-    session_files: SessionFileStore,
+    session_files: Arc<SessionFileStore>,
 ) -> Result<(Arc<ModelRouter>, i64)> {
     let definition = provider(&selection.provider)?;
     let configured = gateway.configured_providers.get(&selection.instance);
@@ -710,27 +718,33 @@ fn unavailable_models(
     let effort = match gateway.configured_providers.get(&selection.instance) {
         Some(configured) => {
             gateway.validate_provider_selection(selection)?;
-            effective_reasoning_effort(definition, configured, selection).map(str::to_string)
+            effective_reasoning_effort(definition, configured, selection).map(Arc::from)
         }
-        None => selection.reasoning_effort.clone().or_else(|| {
-            definition
-                .model(&selection.model)
-                .and_then(|preset| preset.default_reasoning.clone())
-        }),
+        None => selection
+            .reasoning_effort
+            .as_deref()
+            .or_else(|| {
+                definition
+                    .model(&selection.model)
+                    .and_then(|preset| preset.default_reasoning.as_deref())
+            })
+            .map(Arc::from),
     };
     let route = model_route_id(&selection.instance, &selection.model, effort.as_deref());
+    let route: Arc<str> = route.into();
+    let model_id: Arc<str> = selection.model.as_str().into();
     let model: Arc<dyn Model> = Arc::new(UnavailableModel {
         info: ModelInfo {
-            model: selection.model.clone(),
-            reasoning_effort: effort.clone(),
+            model: Arc::clone(&model_id),
+            reasoning_effort: effort.as_ref().map(Arc::clone),
         },
         supports_image_input: definition.supports_image_input(),
     });
-    let mut router = ModelRouter::new(&route, model).session_files(session_files);
+    let mut router = ModelRouter::new(Arc::clone(&route), model).session_files(session_files);
     router.configure_choice(ModelChoice {
         route,
-        group: selection.model.clone(),
-        model: selection.model.clone(),
+        group: Arc::clone(&model_id),
+        model: model_id,
         reasoning_effort: effort,
         variant_label: None,
         context_window: Some(context_window),
@@ -763,7 +777,7 @@ fn build_middleware(
     prepared: &PreparedBot,
     workspace: &std::path::Path,
     scratchpad: &Scratchpad,
-    session_files: SessionFileStore,
+    session_files: &Arc<SessionFileStore>,
     mut extensions: Option<(Extensions, Arc<dyn SandboxBackend>)>,
     mut live_chats: Option<Arc<dyn LiveChats>>,
     project: bool,
@@ -777,26 +791,26 @@ fn build_middleware(
         let middleware: Arc<dyn Middleware> = match feature.kind {
             BuiltinMiddleware::Sandbox | BuiltinMiddleware::PersistentChat => continue,
             BuiltinMiddleware::Attachments => {
-                let attachments = Attachments::new(session_files.clone());
+                let attachments = Attachments::new(Arc::clone(session_files));
                 Arc::new(if project {
                     attachments.with_workspace(workspace)?
                 } else {
                     attachments
                 })
             }
-            BuiltinMiddleware::Artifacts => Arc::new(Artifacts::new(session_files.clone())),
+            BuiltinMiddleware::Artifacts => Arc::new(Artifacts::new(Arc::clone(session_files))),
             BuiltinMiddleware::IntelligentUi => {
                 Arc::new(mobius::middleware::intelligent_ui::IntelligentUi)
             }
             BuiltinMiddleware::ImageGeneration => Arc::new(ImageGeneration::from_settings(
                 Arc::clone(&prepared.models),
-                session_files.clone(),
+                Arc::clone(session_files),
                 |id| settings.setting(mobius::middleware::image_generation::MANIFEST.id, id),
             )?),
             BuiltinMiddleware::Tools => Arc::new(if project {
-                Tools::coding(session_files.clone())
+                Tools::coding(Arc::clone(session_files))
             } else {
-                Tools::reading(session_files.clone())
+                Tools::reading(Arc::clone(session_files))
             }),
             BuiltinMiddleware::Instructions => {
                 Arc::new(Instructions::discover(project.then_some(workspace))?)
@@ -817,7 +831,7 @@ fn build_middleware(
                     settings,
                     prepared.subagent_ceilings,
                 )?)
-                .session_files(session_files.clone());
+                .session_files(Arc::clone(session_files));
                 let middleware = match crate::middleware_manifest::string_setting(
                     settings,
                     mobius::middleware::subagents::MANIFEST.id,
@@ -839,7 +853,7 @@ fn build_middleware(
                     .as_ref()
                     .ok_or_else(|| Error::Config("computer runtime was not prepared".into()))?;
                 Arc::new(mobius::middleware::computer_control::ComputerControl::new(
-                    session_files.clone(),
+                    Arc::clone(session_files),
                     Arc::clone(&prepared.runtime),
                 ))
             }
@@ -850,7 +864,7 @@ fn build_middleware(
             }
             BuiltinMiddleware::Sessions => Arc::new(Sessions::new(
                 crate::middleware_manifest::usize_setting(settings, "sessions", "page_size")?,
-                Some(session_files.clone()),
+                Some(Arc::clone(session_files)),
                 live_chats.take(),
             )?),
         };

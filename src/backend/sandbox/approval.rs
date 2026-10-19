@@ -106,12 +106,12 @@ impl Approval {
             capability: CAPABILITY.into(),
             count: None,
             commands: Vec::new(),
-            widgets: vec![widget(self.default_policy)],
+            widgets: vec![Arc::new(widget(self.default_policy))],
             references: Vec::new(),
         }
     }
 
-    pub(super) fn render(&self, event: &EventMsg) -> Option<FrontendBlock> {
+    pub(super) fn render(event: &EventMsg) -> Option<FrontendBlock> {
         match event {
             EventMsg::ExecApprovalRequest(request) => Some(FrontendBlock {
                 update: crate::protocol::FrontendBlockUpdate::Replace,
@@ -130,11 +130,11 @@ impl Approval {
     pub(super) fn session_start(&self, session_id: &str) -> Result<Vec<FrontendEvent>> {
         self.states
             .lock()
-            .map_err(|_| state_lock_error())?
+            .map_err(state_lock_error)?
             .insert(session_id.into(), ApprovalState::default());
         Ok(vec![FrontendEvent::Widget {
             capability: CAPABILITY.into(),
-            item: widget(self.default_policy),
+            item: Arc::new(widget(self.default_policy)),
         }])
     }
 
@@ -144,15 +144,17 @@ impl Approval {
         calls: &[ToolCall],
         mutation_call_ids: impl IntoIterator<Item = &'a str>,
     ) -> Result<SandboxAuthorization> {
-        let approved_for_session = {
-            let states = self.states.lock().map_err(|_| state_lock_error())?;
-            let state = states.get(session_id).ok_or_else(state_not_initialized)?;
-            Arc::clone(&state.approved_for_session)
-        };
+        let approved_for_session = self
+            .states
+            .lock()
+            .map_err(state_lock_error)?
+            .get(session_id)
+            .map(|state| Arc::clone(&state.approved_for_session))
+            .ok_or_else(state_not_initialized)?;
         let policy = self.default_policy;
         let calls_by_id = calls
             .iter()
-            .map(|call| (call.call_id.as_str(), call))
+            .map(|call| (call.call_id.as_ref(), call))
             .collect::<BTreeMap<_, _>>();
         let mut approved = Vec::new();
         let mut requested = Vec::new();
@@ -163,9 +165,9 @@ impl Approval {
             if policy != ApprovalPolicy::Ask
                 || approved_for_session.contains(&call_key(session_id, call)?)
             {
-                approved.push(call_id.to_owned());
+                approved.push(Arc::clone(&call.call_id));
             } else {
-                requested.push(call_id.to_owned());
+                requested.push(Arc::clone(&call.call_id));
             }
         }
         let permissions = SandboxPermissions::new(
@@ -178,7 +180,7 @@ impl Approval {
             return Ok(SandboxAuthorization::Execute(permissions));
         }
         let request = SandboxApprovalRequest {
-            id: Uuid::new_v4().to_string(),
+            id: Uuid::new_v4().to_string().into(),
             reason: "one or more tools require approval".into(),
             call_ids: requested,
         };
@@ -192,7 +194,7 @@ impl Approval {
         &self,
         session_id: &str,
         calls: &[ToolCall],
-        approval_call_ids: &[String],
+        approval_call_ids: &[Arc<str>],
         decision: &ReviewDecision,
         mut permissions: SandboxPermissions,
     ) -> Result<SandboxPermissions> {
@@ -204,24 +206,25 @@ impl Approval {
         }
         let calls_by_id = calls
             .iter()
-            .map(|call| (call.call_id.as_str(), call))
+            .map(|call| (call.call_id.as_ref(), call))
             .collect::<BTreeMap<_, _>>();
-        for call_id in approval_call_ids {
-            if !calls_by_id.contains_key(call_id.as_str()) {
-                return Err(Error::Tool(format!(
-                    "approval references unknown call `{call_id}`"
-                )));
-            }
-        }
-        permissions.allow_mutations(approval_call_ids.iter().cloned());
+        let approved_calls = approval_call_ids
+            .iter()
+            .map(|call_id| {
+                calls_by_id.get(&**call_id).copied().ok_or_else(|| {
+                    Error::Tool(format!("approval references unknown call `{call_id}`"))
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        permissions.allow_mutations(approval_call_ids.iter().map(Arc::clone));
         if !matches!(decision, ReviewDecision::ApprovedForSession) {
             return Ok(permissions);
         }
-        let keys = approval_call_ids
-            .iter()
-            .map(|call_id| call_key(session_id, calls_by_id[call_id.as_str()]))
+        let keys = approved_calls
+            .into_iter()
+            .map(|call| call_key(session_id, call))
             .collect::<Result<Vec<_>>>()?;
-        let mut states = self.states.lock().map_err(|_| state_lock_error())?;
+        let mut states = self.states.lock().map_err(state_lock_error)?;
         let state = states
             .get_mut(session_id)
             .ok_or_else(state_not_initialized)?;
@@ -233,13 +236,14 @@ impl Approval {
             }
             approved.insert(key);
         }
+        drop(states);
         Ok(permissions)
     }
 
     pub(super) fn session_end(&self, session_id: &str) -> Result<()> {
         self.states
             .lock()
-            .map_err(|_| state_lock_error())?
+            .map_err(state_lock_error)?
             .remove(session_id);
         Ok(())
     }
@@ -281,8 +285,8 @@ fn call_key(session_id: &str, call: &ToolCall) -> Result<[u8; 32]> {
     Ok(Sha256::digest(value).into())
 }
 
-fn state_lock_error() -> Error {
-    Error::Stopped("approval state lock poisoned".into())
+fn state_lock_error(error: impl std::fmt::Display) -> Error {
+    Error::Stopped(format!("approval state lock poisoned: {error}"))
 }
 
 fn state_not_initialized() -> Error {

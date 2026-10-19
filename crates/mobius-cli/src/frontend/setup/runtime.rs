@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use mobius::{Error, Result};
 use mobius_gateway::client::{GatewayEventScope, GatewayEvents, GatewaySender};
 use mobius_gateway::wire::{
@@ -57,10 +59,13 @@ pub(super) async fn edit(
                 Flow::Remove(instance) => {
                     state.set_progress("Removing provider", "Updating the gateway catalog…");
                     draw(terminal, state)?;
-                    let request_id = Uuid::new_v4().to_string();
+                    let mut request_id_buffer = Uuid::encode_buffer();
+                    let request_id: &str = Uuid::new_v4()
+                        .hyphenated()
+                        .encode_lower(&mut request_id_buffer);
                     sender
                         .send(ClientMessage::RemoveProvider {
-                            request_id: request_id.clone(),
+                            request_id: request_id.into(),
                             instance,
                         })
                         .await
@@ -70,7 +75,7 @@ pub(super) async fn edit(
                             terminal,
                             state,
                             events,
-                            &request_id,
+                            request_id,
                             "removing a provider",
                         )
                         .await?,
@@ -90,7 +95,7 @@ pub(super) async fn authenticate(
     sender: &GatewaySender,
     events: &mut GatewayEvents,
 ) -> Result<bool> {
-    match state.authentication()? {
+    match state.authentication() {
         Authentication::Reuse => {}
         Authentication::ApiKey(api_key) => {
             state.set_progress(
@@ -120,7 +125,7 @@ pub(super) async fn apply(
     let bot = gateway
         .bots
         .iter()
-        .find(|bot| bot.id == bot_id)
+        .find(|bot| *bot.id == *bot_id)
         .ok_or_else(|| Error::Config("this chat's Bot is not in the gateway catalog".into()))?;
     let config = state.agent_composition(&bot.config.config)?;
     let expected_revision = bot.config.revision;
@@ -130,15 +135,13 @@ pub(super) async fn apply(
             "Updating the gateway model catalog…",
         );
         draw(terminal, state)?;
-        // Deliberate copy: the registration message owns one, and `config` still needs its provider.
-        gateway.update(
-            register_provider(terminal, state, sender, events, config.provider.clone()).await?,
-        );
+        let provider = config.provider.clone(); // rules-allow: the registration message owns one, and `config` still needs its provider
+        gateway.update(register_provider(terminal, state, sender, events, provider).await?);
     }
     let bot = gateway
         .bots
         .iter()
-        .find(|bot| bot.id == bot_id)
+        .find(|bot| *bot.id == *bot_id)
         .ok_or_else(|| Error::Config("this chat's Bot is not in the gateway catalog".into()))?;
     if config == bot.config.config {
         return Ok(());
@@ -155,7 +158,11 @@ pub(super) async fn apply(
         config,
     )
     .await?;
-    if let Some(current) = gateway.bots.iter_mut().find(|current| current.id == bot_id) {
+    if let Some(current) = gateway
+        .bots
+        .iter_mut()
+        .find(|current| *current.id == *bot_id)
+    {
         *current = updated;
     }
     Ok(())
@@ -179,10 +186,8 @@ pub(super) async fn apply_gateway(
             "Updating the gateway model catalog…",
         );
         draw(terminal, state)?;
-        // Deliberate copy: the registration message owns one, and `config` still needs its provider.
-        gateway.update(
-            register_provider(terminal, state, sender, events, config.provider.clone()).await?,
-        );
+        let provider = config.provider.clone(); // rules-allow: the registration message owns one, and `config` still needs its provider
+        gateway.update(register_provider(terminal, state, sender, events, provider).await?);
     }
     let default = gateway
         .bot_defaults
@@ -212,19 +217,22 @@ pub(super) async fn apply_gateway(
 
 pub(super) async fn register_provider(
     terminal: &mut SetupTerminal,
-    state: &mut SetupState,
+    state: &SetupState,
     sender: &GatewaySender,
     events: &mut GatewayEvents,
     config: ProviderConfig,
 ) -> Result<ReadyPayload> {
-    let models = state.configured_models()?;
+    let models = state.configured_models();
     let label = state.effective_label().into();
-    let request_id = Uuid::new_v4().to_string();
+    let mut request_id_buffer = Uuid::encode_buffer();
+    let request_id: &str = Uuid::new_v4()
+        .hyphenated()
+        .encode_lower(&mut request_id_buffer);
     sender
         .send(ClientMessage::RegisterProvider {
             preserve_selection: false,
             if_configured: false,
-            request_id: request_id.clone(),
+            request_id: request_id.into(),
             config,
             label: Some(label),
             tint: None,
@@ -237,7 +245,7 @@ pub(super) async fn register_provider(
         terminal,
         state,
         events,
-        &request_id,
+        request_id,
         "registering a provider",
     )
     .await
@@ -245,41 +253,47 @@ pub(super) async fn register_provider(
 
 pub(super) async fn configure_bot_defaults(
     terminal: &mut SetupTerminal,
-    state: &mut SetupState,
+    state: &SetupState,
     sender: &GatewaySender,
     events: &mut GatewayEvents,
     expected_revision: u64,
     config: AgentComposition,
 ) -> Result<ReadyPayload> {
-    let request_id = Uuid::new_v4().to_string();
+    let mut request_id_buffer = Uuid::encode_buffer();
+    let request_id: &str = Uuid::new_v4()
+        .hyphenated()
+        .encode_lower(&mut request_id_buffer);
     sender
         .send(ClientMessage::ConfigureBotDefaults {
-            request_id: request_id.clone(),
+            request_id: request_id.into(),
             expected_revision,
             config,
         })
         .await
         .map_err(gateway_error)?;
-    wait_gateway_configured(terminal, state, events, &request_id, "saving Bot defaults").await
+    wait_gateway_configured(terminal, state, events, request_id, "saving Bot defaults").await
 }
 
 pub(super) async fn update_bot(
     terminal: &mut SetupTerminal,
-    state: &mut SetupState,
+    state: &SetupState,
     sender: &GatewaySender,
     events: &mut GatewayEvents,
     bot: &BotRecord,
     expected_revision: u64,
     config: AgentComposition,
 ) -> Result<BotRecord> {
-    let request_id = Uuid::new_v4().to_string();
+    let mut request_id_buffer = Uuid::encode_buffer();
+    let request_id: &str = Uuid::new_v4()
+        .hyphenated()
+        .encode_lower(&mut request_id_buffer);
     sender
         .send(ClientMessage::UpdateBot {
-            request_id: request_id.clone(),
-            id: bot.id.clone(),
+            request_id: request_id.into(),
+            id: Arc::clone(&bot.id),
             expected_revision,
-            name: bot.name.clone(),
-            description: bot.description.clone(),
+            name: Arc::clone(&bot.name),
+            description: Arc::clone(&bot.description),
             tint: bot.tint,
             shape: bot.shape,
             config,
@@ -292,14 +306,14 @@ pub(super) async fn update_bot(
             .await?
             .ok_or_else(|| Error::Stopped("Bot update cancelled".into()))?;
         let ServerFrame { version, message } = frame;
-        if let Some(error) = configuration_error(&message, &request_id) {
+        if let Some(error) = configuration_error(&message, request_id) {
             return Err(error);
         }
         match message {
             ServerMessage::Bots {
                 request_id: Some(actual),
                 bots,
-            } if actual == request_id => {
+            } if *actual == *request_id => {
                 let updated = bots
                     .into_iter()
                     .find(|updated| updated.id == bot.id)
@@ -315,7 +329,7 @@ pub(super) async fn update_bot(
 
 pub(super) async fn wait_gateway_configured(
     terminal: &mut SetupTerminal,
-    state: &mut SetupState,
+    state: &SetupState,
     events: &mut GatewayEvents,
     request_id: &str,
     operation: &str,
@@ -333,7 +347,7 @@ pub(super) async fn wait_gateway_configured(
             ServerMessage::GatewayConfigured {
                 request_id: actual,
                 payload,
-            } if actual == request_id => return Ok(payload),
+            } if *actual == *request_id => return Ok(payload),
             message => events
                 .defer(ServerFrame { version, message })
                 .map_err(|error| Error::Stopped(format!("{operation}: {error}")))?,
@@ -349,7 +363,7 @@ fn configuration_error(message: &ServerMessage, request_id: &str) -> Option<Erro
             request_id: actual,
             code,
             ..
-        } if actual == request_id && code == "revision_conflict"
+        } if actual.as_ref() == request_id && code == "revision_conflict"
     );
     Some(if stale {
         Error::Stopped(format!("{}; reopen setup to refresh", error.message))
@@ -362,26 +376,29 @@ fn configuration_error(message: &ServerMessage, request_id: &str) -> Option<Erro
 
 pub(super) async fn set_credential(
     terminal: &mut SetupTerminal,
-    state: &mut SetupState,
+    state: &SetupState,
     sender: &GatewaySender,
     events: &mut GatewayEvents,
     api_key: String,
 ) -> Result<()> {
     let instance = state.target_instance().to_owned();
-    let provider = state.definition().provider.clone();
-    let request_id = Uuid::new_v4().to_string();
+    let provider = state.definition().provider.clone(); // rules-allow: the request owns the provider id
+    let mut request_id_buffer = Uuid::encode_buffer();
+    let request_id: &str = Uuid::new_v4()
+        .hyphenated()
+        .encode_lower(&mut request_id_buffer);
     let message = match state.selected_base_url() {
         None => ClientMessage::SetProviderCredential {
-            request_id: request_id.clone(),
-            instance: instance.clone(),
-            provider: provider.clone(),
+            request_id: request_id.into(),
+            instance,
+            provider,
             api_key,
             expires_at: None,
         },
         Some(base_url) => ClientMessage::SetProviderEndpointCredential {
-            request_id: request_id.clone(),
-            instance: instance.clone(),
-            provider: provider.clone(),
+            request_id: request_id.into(),
+            instance,
+            provider,
             base_url: base_url.into(),
             api_key,
             expires_at: None,
@@ -393,12 +410,17 @@ pub(super) async fn set_credential(
         let frame = next_frame(terminal, state, &mut events, false)
             .await?
             .ok_or_else(|| Error::Stopped("credential update cancelled".into()))?;
-        auth_response_error(&frame.message, &request_id)?;
-        if credential_saved(&frame.message, &request_id, &instance, &provider) {
+        auth_response_error(&frame.message, request_id)?;
+        if credential_saved(
+            &frame.message,
+            request_id,
+            state.target_instance(),
+            &state.definition().provider,
+        ) {
             return Ok(());
         }
-        reject_invalid_setup_response(&frame.message, &request_id)?;
-        if !matches!(&frame.message, ServerMessage::Accepted { request_id: actual } if actual == &request_id)
+        reject_invalid_setup_response(&frame.message, request_id)?;
+        if !matches!(&frame.message, ServerMessage::Accepted { request_id: actual } if actual.as_ref() == request_id)
         {
             events.defer(frame).map_err(gateway_error)?;
         }
@@ -413,7 +435,7 @@ pub(super) fn credential_saved(
 ) -> bool {
     matches!(message, ServerMessage::ProviderCredentialSaved {
         request_id: actual, instance: actual_instance, provider: actual_provider,
-    } if actual == request_id && actual_instance == instance && actual_provider == provider)
+    } if **actual == *request_id && actual_instance == instance && actual_provider == provider)
 }
 
 pub(super) async fn device_login(
@@ -422,12 +444,14 @@ pub(super) async fn device_login(
     sender: &GatewaySender,
     events: &mut GatewayEvents,
 ) -> Result<bool> {
-    let provider = state.definition().provider.clone();
-    let request_id = Uuid::new_v4().to_string();
+    let mut request_id_buffer = Uuid::encode_buffer();
+    let request_id: &str = Uuid::new_v4()
+        .hyphenated()
+        .encode_lower(&mut request_id_buffer);
     sender
         .send(ClientMessage::StartProviderLogin {
-            request_id: request_id.clone(),
-            provider: provider.clone(),
+            request_id: request_id.into(),
+            provider: state.definition().provider.clone(), // rules-allow: the request owns the provider id
         })
         .await
         .map_err(gateway_error)?;
@@ -438,18 +462,18 @@ pub(super) async fn device_login(
         let Some(frame) = next_frame(terminal, state, &mut events, true).await? else {
             return Ok(false);
         };
-        auth_response_error(&frame.message, &request_id)?;
+        auth_response_error(&frame.message, request_id)?;
         match frame.message {
             ServerMessage::Accepted {
                 request_id: ref actual,
-            } if actual == &request_id => accepted = true,
+            } if actual.as_ref() == request_id => accepted = true,
             ServerMessage::ProviderLoginStarted {
                 request_id: actual,
                 provider: actual_provider,
                 verification_url,
                 user_code,
                 ..
-            } if actual == request_id && actual_provider == provider => {
+            } if *actual == *request_id && actual_provider == state.definition().provider => {
                 state.show_device_code(verification_url, user_code);
                 draw(terminal, state)?;
             }
@@ -457,9 +481,11 @@ pub(super) async fn device_login(
                 request_id: actual,
                 provider: actual_provider,
                 ..
-            } if actual == request_id && actual_provider == provider => completed = true,
+            } if *actual == *request_id && actual_provider == state.definition().provider => {
+                completed = true;
+            }
             message => {
-                reject_invalid_setup_response(&message, &request_id)?;
+                reject_invalid_setup_response(&message, request_id)?;
                 events
                     .defer(ServerFrame { message, ..frame })
                     .map_err(gateway_error)?;
@@ -483,13 +509,19 @@ fn auth_response_error(message: &ServerMessage, request_id: &str) -> Result<()> 
 }
 
 fn reject_invalid_setup_response(message: &ServerMessage, request_id: &str) -> Result<()> {
-    let actual = match message {
-        ServerMessage::ProviderCredentialSaved { request_id, .. }
-        | ServerMessage::ProviderLoginStarted { request_id, .. }
-        | ServerMessage::ProviderLoginFinished { request_id, .. } => request_id,
-        _ => return Ok(()),
+    let (ServerMessage::ProviderCredentialSaved {
+        request_id: actual, ..
+    }
+    | ServerMessage::ProviderLoginStarted {
+        request_id: actual, ..
+    }
+    | ServerMessage::ProviderLoginFinished {
+        request_id: actual, ..
+    }) = message
+    else {
+        return Ok(());
     };
-    if actual == request_id {
+    if **actual == *request_id {
         return Err(Error::Stopped(
             "gateway returned an invalid setup response".into(),
         ));
@@ -511,7 +543,7 @@ pub(super) async fn next_frame(
                     .map(Some)
                     .ok_or_else(|| Error::Stopped("gateway disconnected during setup".into()));
             }
-            _ = tokio::time::sleep(INPUT_POLL) => {
+            () = tokio::time::sleep(INPUT_POLL) => {
                 for _ in 0..MAX_INPUT_BATCH {
                     let Some(event) = poll_event()? else {
                         break;

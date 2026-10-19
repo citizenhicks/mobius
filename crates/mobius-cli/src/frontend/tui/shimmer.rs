@@ -26,22 +26,24 @@ fn line_at(text: &str, elapsed: Duration, base: Color, highlight: Color) -> Line
 
     let padding = 10;
     let period = characters.len() + padding * 2;
-    let sweep_seconds = 2.0;
-    let position =
-        ((elapsed.as_secs_f32() % sweep_seconds) / sweep_seconds * period as f32) as isize;
-    let band_half_width = 5.0;
+    let sweep_millis = 2000;
+    let sweep_offset = usize::try_from(elapsed.as_millis() % sweep_millis).unwrap_or_default();
+    let position = sweep_offset * period / 2000;
+    let band_half_width = 5;
 
     Line::from(
         characters
             .into_iter()
             .enumerate()
             .map(|(index, character)| {
-                let distance = ((index + padding) as isize - position).abs() as f32;
-                let intensity = if distance <= band_half_width {
-                    let angle = std::f32::consts::PI * (distance / band_half_width);
-                    0.5 * (1.0 + angle.cos())
-                } else {
-                    0.0
+                let distance = (index + padding).abs_diff(position);
+                let intensity = match u8::try_from(distance) {
+                    Ok(distance) if distance <= band_half_width => {
+                        let angle = std::f32::consts::PI
+                            * (f32::from(distance) / f32::from(band_half_width));
+                        f32::midpoint(1.0, angle.cos())
+                    }
+                    Ok(_) | Err(_) => 0.0,
                 };
                 Span::styled(
                     character.to_string(),
@@ -54,6 +56,11 @@ fn line_at(text: &str, elapsed: Duration, base: Color, highlight: Color) -> Line
     )
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "an alpha mix of two u8 channels stays within 0..=255"
+)]
 fn blend(foreground: Color, background: Color, alpha: f32) -> Color {
     let (Color::Rgb(fr, fg, fb), Color::Rgb(br, bg, bb)) = (foreground, background) else {
         return if alpha >= 0.5 { foreground } else { background };

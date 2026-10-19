@@ -65,6 +65,10 @@ pub struct TokenEstimate {
 }
 
 impl Default for TokenEstimate {
+    #[expect(
+        clippy::expect_used,
+        reason = "the bundled ratio is a positive constant covered by tests"
+    )]
     fn default() -> Self {
         #[derive(serde::Deserialize)]
         struct Defaults {
@@ -99,6 +103,13 @@ impl TokenEstimate {
 
     /// Estimates tokens from serialized UTF-8 bytes, rounding up and saturating.
     #[must_use]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "f64 has no TryFrom to or from usize; the estimate is nonnegative, range-checked \
+                  below, and needs no precision beyond 2^53 bytes"
+    )]
     pub fn tokens(self, bytes: usize) -> usize {
         let tokens = (bytes as f64 / self.bytes_per_token).ceil();
         if tokens >= usize::MAX as f64 {
@@ -116,20 +127,24 @@ impl TokenEstimate {
 }
 
 /// Result of a middleware-owned frontend command.
+#[derive(Debug)]
 pub struct MiddlewareCommandOutput {
     /// The events.
     pub events: Vec<FrontendEvent>,
 }
 
 /// Read-only middleware UI surface consumed by a frontend shell.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct FrontendExtensions {
-    stack: MiddlewareStack,
+    stack: Arc<MiddlewareStack>,
     session_id: Arc<str>,
 }
 
 impl FrontendExtensions {
-    pub(crate) fn new(stack: MiddlewareStack, session_id: impl Into<Arc<str>>) -> Result<Self> {
+    pub(crate) fn new(
+        stack: Arc<MiddlewareStack>,
+        session_id: impl Into<Arc<str>>,
+    ) -> Result<Self> {
         let session_id = session_id.into();
         stack.frontend(&session_id)?;
         Ok(Self { stack, session_id })
@@ -146,12 +161,7 @@ impl FrontendExtensions {
     /// Returns the smallest input-token limit installed middleware enforce for a context window.
     #[must_use]
     pub fn context_limit(&self, context_window: i64) -> i64 {
-        self.stack
-            .entries
-            .iter()
-            .filter_map(|entry| entry.context_limit(context_window))
-            .min()
-            .unwrap_or(context_window)
+        self.stack.context_limit(context_window)
     }
 
     /// Lets installed middleware render capability-specific events.
@@ -459,6 +469,15 @@ pub struct MiddlewareStack {
     entries: Vec<Arc<dyn Middleware>>,
 }
 
+impl std::fmt::Debug for MiddlewareStack {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_list()
+            .entries(self.entries.iter().map(|entry| entry.name()))
+            .finish()
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct SessionStartResult {
     pub(crate) stop_reason: Option<String>,
@@ -513,9 +532,13 @@ impl MiddlewareStack {
         }
     }
 
-    pub(crate) fn with_sandbox(mut self, sandbox: Arc<Sandbox>) -> Result<Self> {
-        self.entries.insert(0, sandbox);
-        Self::new(self.entries)
+    pub(crate) fn with_sandbox(&self, sandbox: Arc<Sandbox>) -> Result<Self> {
+        let sandbox: Arc<dyn Middleware> = sandbox;
+        Self::new(
+            std::iter::once(sandbox)
+                .chain(self.entries.iter().map(Arc::clone))
+                .collect(),
+        )
     }
 
     /// Builds the immutable tool catalog once.
@@ -543,8 +566,24 @@ impl MiddlewareStack {
         Ok(catalog)
     }
 
-    pub(crate) fn system_prompt(&self, base: &str, runtime: &RuntimeContext) -> Result<String> {
+    /// The smallest input-token limit installed middleware enforce for a context window.
+    pub(crate) fn context_limit(&self, context_window: i64) -> i64 {
+        self.entries
+            .iter()
+            .filter_map(|entry| entry.context_limit(context_window))
+            .min()
+            .unwrap_or(context_window)
+    }
+
+    /// The assembled prompt and the bytes each middleware contributed to it; the base prompt
+    /// counts as `instructions`.
+    pub(crate) fn system_prompt(
+        &self,
+        base: &str,
+        runtime: &RuntimeContext,
+    ) -> Result<(String, Vec<(&'static str, usize)>)> {
         let mut prompt = format!("**instructions**\n\n{}", base.trim());
+        let mut sizes = vec![("instructions", prompt.len())];
         for entry in &self.entries {
             let Some(section) = entry.prompt_section(runtime)? else {
                 continue;
@@ -563,12 +602,14 @@ impl MiddlewareStack {
                     entry.name()
                 )));
             }
+            let start = prompt.len();
             prompt.push_str("\n\n**");
             prompt.push_str(title);
             prompt.push_str("**\n\n");
             prompt.push_str(body);
+            sizes.push((entry.name(), prompt.len() - start));
         }
-        Ok(prompt)
+        Ok((prompt, sizes))
     }
 
     /// Builds and validates the frontend-neutral capability catalog.
@@ -592,7 +633,7 @@ impl MiddlewareStack {
             {
                 continue;
             }
-            if contribution.capability != entry.name() {
+            if *contribution.capability != *entry.name() {
                 return Err(Error::Config(format!(
                     "middleware `{}` exported frontend metadata for `{}`",
                     entry.name(),
@@ -782,7 +823,7 @@ impl MiddlewareStack {
                     return Err(error);
                 }
                 let mut rollback_error = None;
-                for started in self.entries[..index].iter().rev() {
+                for started in self.entries.iter().take(index).rev() {
                     if let Err(error) = started.session_end(runtime).await
                         && rollback_error.is_none()
                     {
@@ -959,7 +1000,7 @@ impl MiddlewareStack {
             .frontend(context.session_id)
             .commands
             .into_iter()
-            .any(|command| command.name == context.command);
+            .any(|command| *command.name == *context.command);
         if !declared {
             return Err(Error::Unknown(format!(
                 "middleware command `{middleware}/{}`",
@@ -1029,7 +1070,7 @@ fn validate_frontend(contributions: &[FrontendContribution]) -> Result<()> {
                     command.name
                 )));
             }
-            if !commands.insert(command.name.as_str()) {
+            if !commands.insert(&*command.name) {
                 return Err(Error::Duplicate(format!(
                     "frontend command `{}`",
                     command.name
@@ -1037,9 +1078,7 @@ fn validate_frontend(contributions: &[FrontendContribution]) -> Result<()> {
             }
         }
         for item in &contribution.widgets {
-            if item.id.is_empty()
-                || !widgets.insert((contribution.capability.as_str(), item.id.as_str()))
-            {
+            if item.id.is_empty() || !widgets.insert((&*contribution.capability, &*item.id)) {
                 return Err(Error::Duplicate(format!(
                     "frontend status `{}/{}`",
                     contribution.capability, item.id
@@ -1075,7 +1114,7 @@ fn validate_frontend(contributions: &[FrontendContribution]) -> Result<()> {
                     reference.trigger, reference.value
                 )));
             }
-            if !references.insert((reference.trigger, reference.value.as_str())) {
+            if !references.insert((reference.trigger, &*reference.value)) {
                 return Err(Error::Duplicate(format!(
                     "frontend reference `{}{}`",
                     reference.trigger, reference.value
@@ -1146,8 +1185,14 @@ fn approximate_item_tokens(item: &Value, estimate: TokenEstimate) -> usize {
         .flatten()
         .filter(|part| part.get("type").and_then(Value::as_str) == Some("input_image"))
         .fold(0usize, |total, part| {
-            let width = part["image"]["width"].as_u64().unwrap_or(2048);
-            let height = part["image"]["height"].as_u64().unwrap_or(2048);
+            let width = part
+                .pointer("/image/width")
+                .and_then(Value::as_u64)
+                .unwrap_or(2048);
+            let height = part
+                .pointer("/image/height")
+                .and_then(Value::as_u64)
+                .unwrap_or(2048);
             // Conservative tile estimate; observed provider usage also drives compaction.
             let tokens = width
                 .div_ceil(512)

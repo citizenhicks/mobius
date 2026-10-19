@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 
 use base64::Engine as _;
@@ -35,7 +36,7 @@ pub(super) async fn read_resolved_chunk(
     handle.seek(std::io::SeekFrom::Start(offset)).await?;
     let remaining = file.size.saturating_sub(offset);
     let length = usize::try_from(remaining.min(max_bytes as u64))
-        .map_err(|_| Error::Tool("session file range is unsupported".into()))?;
+        .map_err(|error| Error::Tool(format!("session file range is unsupported: {error}")))?;
     let mut data = vec![0; length];
     handle.read_exact(&mut data).await?;
     let end = offset.saturating_add(length as u64);
@@ -61,7 +62,7 @@ pub(super) async fn cleanup_stale_files(root: &Path) -> Result<()> {
         let mut entries = tokio::fs::read_dir(session.path()).await?;
         while let Some(entry) = entries.next_entry().await? {
             let file_type = entry.file_type().await?;
-            let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
                 continue;
             };
             if file_type.is_file() && name.starts_with(".tmp") {
@@ -82,7 +83,7 @@ pub(super) async fn cleanup_stale_files(root: &Path) -> Result<()> {
     let mut blobs = tokio::fs::read_dir(&blob_root).await?;
     while let Some(blob) = blobs.next_entry().await? {
         let file_type = blob.file_type().await?;
-        let Some(name) = blob.file_name().to_str().map(str::to_string) else {
+        let Some(name) = blob.file_name().to_str().map(str::to_owned) else {
             continue;
         };
         if file_type.is_file() && name.starts_with(".tmp") {
@@ -231,10 +232,9 @@ pub(super) async fn save_attachment_workspace(
 }
 
 pub(super) async fn remove_staged_attachments(
-    workspace: &StoredAttachmentWorkspace,
+    workspace: Arc<StoredAttachmentWorkspace>,
     storage_key: &str,
 ) -> Result<()> {
-    let workspace = workspace.clone();
     let staged = PathBuf::from(".mobius")
         .join("attachments")
         .join(storage_key);
@@ -336,7 +336,9 @@ tokio::task_local! {
 
 pub(super) async fn hash_file(path: &Path) -> Result<String> {
     #[cfg(test)]
-    let _ = HASH_FILE_CALLS.try_with(|calls| calls.set(calls.get() + 1));
+    // Only instrumented tests run inside the counter's scope.
+    let _counted: std::result::Result<(), _> =
+        HASH_FILE_CALLS.try_with(|calls| calls.set(calls.get() + 1));
     let mut file = tokio::fs::File::open(path).await?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0_u8; 64 * 1024];
@@ -345,9 +347,13 @@ pub(super) async fn hash_file(path: &Path) -> Result<String> {
         if read == 0 {
             break;
         }
-        hasher.update(&buffer[..read]);
+        hasher.update(
+            buffer
+                .get(..read)
+                .ok_or_else(|| Error::Tool("file reader overran its buffer".into()))?,
+        );
     }
-    Ok(hex_hash(&hasher.finalize()))
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 pub(super) async fn validate_content_blob(
@@ -403,10 +409,6 @@ async fn validate_content_blob_metadata(path: &Path, size: u64) -> Result<std::f
     Ok(metadata)
 }
 
-fn hex_hash(hash: &[u8]) -> String {
-    hash.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
 pub(super) fn validate_session_id(id: &str) -> Result<()> {
     if id.trim().is_empty() || id.len() > MAX_SESSION_ID_BYTES {
         return Err(Error::Tool(format!(
@@ -419,7 +421,7 @@ pub(super) fn validate_session_id(id: &str) -> Result<()> {
 pub(super) fn validate_file_id(id: &str) -> Result<()> {
     Uuid::parse_str(id)
         .map(|_| ())
-        .map_err(|_| Error::Tool("session file ID must be a UUID".into()))
+        .map_err(|error| Error::Tool(format!("session file ID must be a UUID: {error}")))
 }
 
 pub(super) fn validate_name(name: &str) -> Result<()> {

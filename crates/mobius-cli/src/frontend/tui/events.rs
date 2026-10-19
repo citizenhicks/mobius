@@ -74,7 +74,7 @@ impl TuiState {
                 }
             }
             EventMsg::AssistantContentDelta(delta) => {
-                self.remember_streamed_phase(&delta.model_step_id, delta.phase);
+                self.remember_streamed_phase(delta.model_step_id, delta.phase);
                 if delta.phase == ModelStepContentPhase::Reasoning {
                     self.append_reasoning(&delta.delta);
                 } else {
@@ -83,16 +83,15 @@ impl TuiState {
             }
             EventMsg::ModelStepStarted(step) => {
                 self.streamed_step_phases
-                    .entry(step.model_step_id)
+                    .entry(Arc::clone(&step.model_step_id))
                     .or_default();
             }
             EventMsg::ModelStepCompleted(step) => {
-                self.handle_model_step_completed(step);
+                self.handle_model_step_completed(&step);
             }
             EventMsg::AssistantMessage(message) => {
                 self.handle_assistant_message(message, was_rendered);
             }
-            EventMsg::ContextCompacted => {}
             EventMsg::ExecApprovalRequest(request) => {
                 if live {
                     self.begin_approval(request);
@@ -105,17 +104,15 @@ impl TuiState {
             }
             EventMsg::ModelChanged(changed) => {
                 self.model_route = changed.route;
-                self.model.model = terminal_text(&changed.model);
+                self.model.model = terminal_text(&changed.model).into();
                 self.model.reasoning_effort = changed
                     .reasoning_effort
-                    .map(|effort| terminal_text(&effort));
+                    .map(|effort| terminal_text(&effort).into());
                 self.usage.context_fill = None;
             }
             EventMsg::SessionResumeRequested(request) => {
                 self.requested_resume = Some(request);
             }
-            // Presentation for these typed actions is part of the canonical block list.
-            EventMsg::WebSearchBegin(_) | EventMsg::WebSearchEnd(_) => {}
             EventMsg::TurnComplete(turn) => {
                 self.commit_reasoning();
                 self.commit_stream();
@@ -159,6 +156,7 @@ impl TuiState {
                 }
             }
             EventMsg::Frontend(update) => self.handle_frontend_event(update),
+            // Web search actions, among others, present through the canonical block list.
             _ => {}
         }
     }
@@ -259,7 +257,7 @@ impl TuiState {
         }
     }
 
-    fn handle_model_step_completed(&mut self, step: ModelStepCompletedEvent) {
+    fn handle_model_step_completed(&mut self, step: &ModelStepCompletedEvent) {
         match step.outcome {
             ModelStepOutcome::Completed { .. } => {}
             ModelStepOutcome::Failed
@@ -332,31 +330,31 @@ impl TuiState {
             FrontendEvent::Widget { .. } | FrontendEvent::RemoveWidget { .. }
         ) && let Some(overlay) = self.capability_overlay.as_mut()
         {
-            overlay.apply(update.clone());
+            overlay.apply(update.clone()); // rules-allow: the open overlay and the widget list each keep the update
         }
         match update {
             FrontendEvent::Widget {
                 capability,
                 mut item,
             } => {
-                item.text = bounded_terminal_text(&item.text, MAX_ENTRY_BYTES);
-                let key = (capability, item.id.clone());
+                let text = bounded_terminal_text(&item.text, MAX_ENTRY_BYTES);
+                if text != item.text {
+                    Arc::make_mut(&mut item).text = text;
+                }
                 if let Some((_, current)) = self
                     .widgets
                     .iter_mut()
-                    .find(|(candidate, _)| candidate == &key)
+                    .find(|(owner, widget)| *owner == capability && widget.id == item.id)
                 {
                     *current = item;
                 } else {
-                    self.widgets.push((key, item));
+                    self.widgets.push((capability, item));
                 }
             }
             FrontendEvent::RemoveWidget { capability, id } => {
                 self.widgets
-                    .retain(|((owner, widget), _)| owner != &capability || widget != &id);
+                    .retain(|(owner, widget)| *owner != capability || *widget.id != *id);
             }
-            // The gateway has already projected this event into `blocks`.
-            FrontendEvent::Render { .. } => {}
             FrontendEvent::Picker { title, options } => {
                 self.preview = None;
                 self.capability_overlay = None;
@@ -367,13 +365,18 @@ impl TuiState {
                     query: String::new(),
                 });
             }
-            // Preview transcripts arrive as gateway-rendered records.
-            // Nested previews are control events, not transcript content.
-            FrontendEvent::Preview { .. } => {}
+            // The gateway has already projected renders into `blocks`, and preview
+            // transcripts arrive as gateway-rendered records; nested previews are control
+            // events, not transcript content.
+            FrontendEvent::Render { .. } | FrontendEvent::Preview { .. } => {}
         }
     }
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "a display percentage of token counts needs no precision beyond 2^52"
+)]
 fn percentage(part: i64, whole: i64) -> Option<f64> {
     if whole <= 0 {
         return None;
@@ -446,12 +449,12 @@ fn apply_preview(state: &mut TuiState, preview: RenderedPreview, requested: bool
         };
         Some(snapshot)
     });
-    if !requested && !current.is_some_and(|snapshot| snapshot.id == preview.id) {
+    if !requested && current.is_none_or(|snapshot| *snapshot.id != *preview.id) {
         return;
     }
     if preview.update == FrontendPreviewUpdate::Prepend
         && !current.is_some_and(|snapshot| {
-            snapshot.id == preview.id && !snapshot.page_ids.contains(&preview.page_id)
+            *snapshot.id == *preview.id && !snapshot.page_ids.contains(&preview.page_id)
         })
     {
         return;
@@ -470,12 +473,26 @@ fn apply_preview(state: &mut TuiState, preview: RenderedPreview, requested: bool
     let steps = events
         .iter()
         .filter_map(|rendered| match &rendered.event {
-            EventMsg::AssistantContentDelta(delta) => Some(Arc::clone(&delta.model_step_id)),
-            EventMsg::AssistantMessage(message) => Some(Arc::clone(&message.model_step_id)),
-            EventMsg::ModelStepCompleted(step) => Some(Arc::clone(&step.model_step_id)),
+            EventMsg::AssistantContentDelta(delta) => Some(&*delta.model_step_id),
+            EventMsg::AssistantMessage(message) => Some(&*message.model_step_id),
+            EventMsg::ModelStepCompleted(step) => Some(&*step.model_step_id),
             _ => None,
         })
         .collect::<std::collections::BTreeSet<_>>();
+    // Rows of a replayed model step are replaced from the first such row onward.
+    let first_replayed_step = current.map_or(0, |snapshot| {
+        snapshot
+            .transcript
+            .iter()
+            .position(|entry| {
+                entry.id.as_ref().is_some_and(|id| {
+                    id.value
+                        .split_once('/')
+                        .is_some_and(|(step, _)| steps.contains(step))
+                })
+            })
+            .unwrap_or(snapshot.transcript.len())
+    });
     let mut replay = TuiState::default();
     for rendered in events {
         apply_rendered_event(&mut replay, rendered);
@@ -497,21 +514,18 @@ fn apply_preview(state: &mut TuiState, preview: RenderedPreview, requested: bool
                 .transcript
                 .iter()
                 .filter_map(|entry| entry.id.as_ref())
-                .map(|id| (id.capability.as_str(), id.value.as_str()))
+                .map(|id| (&*id.capability, id.value.as_str()))
                 .collect::<std::collections::BTreeSet<_>>();
             let retained = snapshot
                 .transcript
                 .iter()
                 .take_while(|entry| {
                     entry.id.as_ref().is_none_or(|id| {
-                        !updated_ids.contains(&(id.capability.as_str(), id.value.as_str()))
-                            && !id
-                                .value
-                                .split_once('/')
-                                .is_some_and(|(step, _)| steps.contains(step))
+                        !updated_ids.contains(&(&*id.capability, id.value.as_str()))
                     })
                 })
-                .count();
+                .count()
+                .min(first_replayed_step);
             snapshot.transcript.truncate(retained);
             snapshot.transcript.append(&mut replay.transcript);
             if retained == 0 {
@@ -525,8 +539,8 @@ fn apply_preview(state: &mut TuiState, preview: RenderedPreview, requested: bool
             state.capability_overlay = None;
             state.preview = Some(PreviewState::snapshot(
                 id,
-                title,
-                subtitle,
+                &title,
+                &subtitle,
                 page_id,
                 replay.transcript,
                 next,

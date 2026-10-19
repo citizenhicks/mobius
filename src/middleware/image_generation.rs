@@ -1,6 +1,6 @@
 //! Native image generation, publication, and transcript presentation.
 
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -33,8 +33,25 @@ struct Definition {
 
 const MAX_REFERENCE_IMAGES: usize = 4;
 
-static DEFINITION: LazyLock<Definition> =
-    LazyLock::new(|| crate::config::embedded(include_str!("image_generation.toml")));
+fn limit_schema(definition: &mut Definition) {
+    super::tools::limit_schema(
+        &mut definition.generate_image.tool,
+        [
+            (
+                "/properties/prompt",
+                "maxLength",
+                crate::backend::model::MAX_IMAGE_PROMPT_CHARS.into(),
+            ),
+            (
+                "/properties/reference_file_ids",
+                "maxItems",
+                MAX_REFERENCE_IMAGES.into(),
+            ),
+        ],
+    );
+}
+
+crate::embedded_config! { static DEFINITION: Definition = include_str!("image_generation.toml") => limit_schema; }
 
 super::manifest::middleware_manifest! {
 /// Configuration metadata for native image generation.
@@ -44,18 +61,31 @@ super::manifest::middleware_manifest! {
 /// Generates a session image and publishes it as a chat artifact.
 pub struct ImageGeneration {
     models: Arc<ModelRouter>,
-    store: SessionFileStore,
+    store: Arc<SessionFileStore>,
     route: Option<Arc<str>>,
+}
+
+impl std::fmt::Debug for ImageGeneration {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ImageGeneration")
+            .field("route", &self.route)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ImageGeneration {
     /// Creates the image capability with the configured model routes and session files.
     /// `route` selects an image model route; `None` uses the first configured one.
     #[must_use]
-    pub fn new(models: Arc<ModelRouter>, store: SessionFileStore, route: Option<Arc<str>>) -> Self {
+    pub fn new(
+        models: Arc<ModelRouter>,
+        store: impl Into<Arc<SessionFileStore>>,
+        route: Option<Arc<str>>,
+    ) -> Self {
         Self {
             models,
-            store,
+            store: store.into(),
             route,
         }
     }
@@ -66,7 +96,7 @@ impl ImageGeneration {
     /// Returns an error if the `model` setting is not a string.
     pub fn from_settings<'a>(
         models: Arc<ModelRouter>,
-        store: SessionFileStore,
+        store: impl Into<Arc<SessionFileStore>>,
         setting: impl FnOnce(&str) -> Option<&'a FrontendSettingValue>,
     ) -> Result<Self> {
         let route = match setting("model") {
@@ -99,8 +129,8 @@ impl Middleware for ImageGeneration {
         }
         catalog.register(Arc::new(GenerateImage {
             models: Arc::clone(&self.models),
-            store: self.store.clone(),
-            session_id: runtime.session_id.clone(),
+            store: Arc::clone(&self.store),
+            session_id: Arc::clone(&runtime.session_id),
             route: self.route.as_ref().map(Arc::clone),
         }))
     }
@@ -120,20 +150,22 @@ impl Middleware for ImageGeneration {
         match event {
             EventMsg::ToolCallBegin(_) => block.text.clear(),
             EventMsg::ToolCallEnd(result) if !result.is_error => {
-                block.title = DEFINITION.render_ready.clone();
+                block.title.clone_from(&DEFINITION.render_ready);
                 block.text.clear();
-                block.files = result.output.files().cloned().collect();
+                block.files = result.output.files().cloned().collect(); // rules-allow: the owned block copies the borrowed event's files
                 block.content = ToolContent(
                     result
                         .output
                         .0
                         .iter()
                         .filter(|part| matches!(part, ContentPart::Image { .. }))
-                        .cloned()
+                        .cloned() // rules-allow: the owned block copies the borrowed event's images
                         .collect(),
                 );
             }
-            EventMsg::ToolCallEnd(_) => block.title = DEFINITION.render_failed.clone(),
+            EventMsg::ToolCallEnd(_) => {
+                block.title.clone_from(&DEFINITION.render_failed);
+            }
             _ => {}
         }
         Some(block)
@@ -152,29 +184,21 @@ struct GenerateImageArgs {
 
 struct GenerateImage {
     models: Arc<ModelRouter>,
-    store: SessionFileStore,
-    session_id: String,
+    store: Arc<SessionFileStore>,
+    session_id: Arc<str>,
     route: Option<Arc<str>>,
 }
 
 impl Tool for GenerateImage {
-    fn definition(&self) -> ToolDefinition {
-        let mut tool = DEFINITION.generate_image.tool.clone();
-        let properties = &mut tool.parameters["properties"];
-        properties["prompt"]["maxLength"] = crate::backend::model::MAX_IMAGE_PROMPT_CHARS.into();
-        properties["reference_file_ids"]["maxItems"] = MAX_REFERENCE_IMAGES.into();
-        tool
+    fn definition(&self) -> &Arc<ToolDefinition> {
+        &DEFINITION.generate_image.tool
     }
 
     fn approval(&self) -> ApprovalRequirement {
         ApprovalRequirement::Always
     }
 
-    fn call<'a>(
-        &'a self,
-        context: ToolContext,
-        arguments: Value,
-    ) -> BoxFuture<'a, Result<ToolResponse>> {
+    fn call(&self, context: ToolContext, arguments: Value) -> BoxFuture<'_, Result<ToolResponse>> {
         Box::pin(async move {
             let arguments: GenerateImageArgs = serde_json::from_value(arguments)?;
             if arguments.reference_file_ids.len() > MAX_REFERENCE_IMAGES {
@@ -243,17 +267,13 @@ impl Tool for GenerateImage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::AgentRole;
-    use crate::backend::checkpoint::sqlite::SqliteCheckpoint;
     use crate::backend::model::{GeneratedImage, Model, ModelEventSink, ModelOutput, ModelRequest};
     use crate::backend::sandbox::local::LocalSandbox;
     use crate::backend::sandbox::{
         ApprovalPolicy, NetworkAccess, Sandbox, SandboxMode, SandboxPermissions,
     };
     use crate::middleware::tools::ToolExposure;
-    use crate::protocol::{
-        FrontendBlockState, SessionContext, TokenUsage, ToolCallBeginEvent, ToolCallEndEvent,
-    };
+    use crate::protocol::{FrontendBlockState, TokenUsage, ToolCallBeginEvent, ToolCallEndEvent};
 
     struct ImageModel(Vec<u8>, bool);
 
@@ -354,20 +374,9 @@ mod tests {
         );
         let middleware = ImageGeneration::new(Arc::new(router), store.clone(), None);
         let runtime = RuntimeContext {
-            children: crate::agent::ChildAgents::default(),
-            sender: crate::agent::test_sender(),
-            checkpoints: Arc::new(
-                SqliteCheckpoint::new(state.path().join("checkpoints.sqlite3"))
-                    .expect("checkpoint store"),
-            ),
-            session_id: "session".into(),
             model_route: "image".into(),
             model: "image".into(),
-            approval_policy: ApprovalPolicy::Ask,
-            session_context: SessionContext::default(),
-            metadata: Default::default(),
-            role: AgentRole::Main,
-            frontend: Arc::new(|_| Ok(())),
+            ..crate::middleware::tests::lifecycle_runtime(state.path())
         };
         let mut catalog = Catalog::default();
         middleware
@@ -392,7 +401,7 @@ mod tests {
             .expect("source image");
         let tool = GenerateImage {
             models: Arc::clone(&middleware.models),
-            store: store.clone(),
+            store: Arc::new(store.clone()),
             session_id: "session".into(),
             route: None,
         };
@@ -506,11 +515,11 @@ mod tests {
 
         let unsupported_tool = GenerateImage {
             models: Arc::clone(&unsupported.models),
-            store,
+            store: Arc::new(store),
             session_id: "session".into(),
             route: None,
         };
-        let schema = unsupported_tool.definition().parameters;
+        let schema = &unsupported_tool.definition().parameters;
         assert_eq!(schema["properties"]["prompt"]["maxLength"], 32_000);
         assert_eq!(schema["properties"]["reference_file_ids"]["maxItems"], 4);
         let unsupported_context =

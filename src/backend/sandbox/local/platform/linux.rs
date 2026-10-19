@@ -21,9 +21,11 @@ pub(crate) fn sandboxed_command(
     network_access: NetworkAccess,
     workspace_access: WorkspaceAccess,
 ) -> Result<Command> {
-    let bwrap = sandbox
-        .trusted_bubblewrap()
-        .map_err(|_| Error::Sandbox("bubblewrap (`bwrap`) is required on Linux".into()))?;
+    let bwrap = sandbox.trusted_bubblewrap().map_err(|error| {
+        Error::Sandbox(format!(
+            "bubblewrap (`bwrap`) is required on Linux: {error}"
+        ))
+    })?;
     let mut command = Command::new(bwrap);
     command.args([
         "--new-session",
@@ -67,6 +69,7 @@ pub(crate) fn sandboxed_command(
     }
     // An unavailable or replaced resource revokes its supplemental mount, not execution.
     for root in sandbox
+        .policy
         .read_roots
         .iter()
         .filter(|root| super::super::validate_root(&root.path, &root.directory).is_ok())
@@ -81,7 +84,7 @@ pub(crate) fn sandboxed_command(
         })
         .arg(&sandbox.root)
         .arg(&sandbox.root);
-    for root in &sandbox.workspace_roots {
+    for root in &sandbox.policy.workspace_roots {
         command
             .arg(if workspace_access == WorkspaceAccess::ReadOnly {
                 "--ro-bind"
@@ -91,7 +94,7 @@ pub(crate) fn sandboxed_command(
             .arg(&root.path)
             .arg(&root.path);
     }
-    for denied in sandbox.denied_reads.iter() {
+    for denied in &sandbox.policy.denied_reads {
         if denied.directory {
             command.arg("--tmpfs").arg(&denied.path);
         } else {
@@ -118,9 +121,11 @@ pub(crate) fn protected_full_access_command(
     sandbox: &LocalSandbox,
     invocation: &Invocation<'_>,
 ) -> Result<Command> {
-    let bwrap = sandbox
-        .trusted_bubblewrap()
-        .map_err(|_| Error::Sandbox("bubblewrap (`bwrap`) is required on Linux".into()))?;
+    let bwrap = sandbox.trusted_bubblewrap().map_err(|error| {
+        Error::Sandbox(format!(
+            "bubblewrap (`bwrap`) is required on Linux: {error}"
+        ))
+    })?;
     let mut command = Command::new(bwrap);
     command.args([
         "--new-session",
@@ -132,7 +137,7 @@ pub(crate) fn protected_full_access_command(
         "/dev",
         "/dev",
     ]);
-    for denied in sandbox.denied_reads.iter() {
+    for denied in &sandbox.policy.denied_reads {
         if denied.directory {
             command.arg("--tmpfs").arg(&denied.path);
         } else {
@@ -169,11 +174,11 @@ pub(crate) fn check_procfs_output(mode: ProcfsMode, output: &CommandOutput) -> R
 }
 
 fn ssh_agent_socket(sandbox: &LocalSandbox) -> Option<PathBuf> {
-    if sandbox.isolated_home || sandbox.denied_environment.contains("SSH_AUTH_SOCK") {
+    if sandbox.isolated_home || sandbox.policy.denied_environment.contains("SSH_AUTH_SOCK") {
         return None;
     }
     let value = std::env::var_os("SSH_AUTH_SOCK");
-    validated_ssh_agent_socket(value.as_deref(), &sandbox.denied_reads)
+    validated_ssh_agent_socket(value.as_deref(), &sandbox.policy.denied_reads)
 }
 
 pub(crate) fn validated_ssh_agent_socket(

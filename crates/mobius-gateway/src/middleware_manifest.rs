@@ -164,6 +164,17 @@ pub(crate) fn default_config(ceilings: SubagentCeilings) -> MiddlewareConfig {
     config
 }
 
+/// Gives every declared setting the config leaves unset its declared default.
+pub(crate) fn fill_defaults(config: &mut MiddlewareConfig) {
+    for entry in MIDDLEWARE.iter() {
+        for setting in entry.settings(SubagentCeilings::default()).iter() {
+            if config.setting(entry.manifest.id, setting.id()).is_none() {
+                config.set_setting(entry.manifest.id, setting.id(), setting.default_value());
+            }
+        }
+    }
+}
+
 pub(crate) fn validate(config: &MiddlewareConfig, ceilings: SubagentCeilings) -> Result<()> {
     let features = features(ModelCatalogs::default(), ceilings);
     for id in config.entries() {
@@ -269,13 +280,21 @@ pub(crate) fn subagent_limits(
     ceilings: SubagentCeilings,
 ) -> Result<SubagentLimits> {
     let value = |id| integer_setting(config, mobius::middleware::subagents::MANIFEST.id, id);
-    let max_depth = u8::try_from(value("max_depth")?)
-        .map_err(|_| Error::Config("subagent max depth must fit an unsigned byte".into()))?;
-    let max_concurrency = usize::try_from(value("max_concurrency")?).map_err(|_| {
-        Error::Config("subagent max concurrency must fit an unsigned integer".into())
+    let max_depth = u8::try_from(value("max_depth")?).map_err(|error| {
+        Error::Config(format!(
+            "subagent max depth must fit an unsigned byte: {error}"
+        ))
     })?;
-    let max_agents = usize::try_from(value("max_agents")?)
-        .map_err(|_| Error::Config("subagent max agents must fit an unsigned integer".into()))?;
+    let max_concurrency = usize::try_from(value("max_concurrency")?).map_err(|error| {
+        Error::Config(format!(
+            "subagent max concurrency must fit an unsigned integer: {error}"
+        ))
+    })?;
+    let max_agents = usize::try_from(value("max_agents")?).map_err(|error| {
+        Error::Config(format!(
+            "subagent max agents must fit an unsigned integer: {error}"
+        ))
+    })?;
     Ok(ceilings.limits(max_depth, max_concurrency, max_agents)?)
 }
 
@@ -284,9 +303,9 @@ pub(crate) fn usize_setting(
     middleware: &str,
     setting: &str,
 ) -> Result<usize> {
-    usize::try_from(integer_setting(config, middleware, setting)?).map_err(|_| {
+    usize::try_from(integer_setting(config, middleware, setting)?).map_err(|error| {
         Error::Config(format!(
-            "middleware setting `{middleware}.{setting}` must fit an unsigned integer"
+            "middleware setting `{middleware}.{setting}` must fit an unsigned integer: {error}"
         ))
     })
 }
@@ -319,6 +338,22 @@ fn setting_type(middleware: &str, setting: &str, expected: &str) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loading_fills_a_newly_declared_setting_with_its_default() {
+        let mut stored =
+            serde_json::to_value(default_config(SubagentCeilings::default())).expect("config JSON");
+        stored["settings"]["compaction"]
+            .as_object_mut()
+            .expect("compaction settings")
+            .remove("checkpoint_percent");
+        let config: MiddlewareConfig = serde_json::from_value(stored).expect("stored config");
+        assert_eq!(
+            config.setting("compaction", "checkpoint_percent"),
+            Some(&FrontendSettingValue::Integer(20))
+        );
+        assert!(validate(&config, SubagentCeilings::default()).is_ok());
+    }
 
     #[test]
     fn config_rejects_unknown_mistyped_and_inconsistent_settings() {

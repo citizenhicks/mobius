@@ -10,6 +10,7 @@ use syntect::highlighting::FontStyle;
 use syntect::highlighting::Theme;
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
+use two_face::theme::EmbeddedLazyThemeSet;
 use two_face::theme::EmbeddedThemeName;
 
 const MAX_LINE_BYTES: usize = 4 * 1024;
@@ -20,12 +21,10 @@ fn syntaxes() -> &'static SyntaxSet {
 }
 
 fn theme() -> &'static Theme {
-    static THEME: OnceLock<Theme> = OnceLock::new();
-    THEME.get_or_init(|| {
-        two_face::theme::extra()
-            .get(EmbeddedThemeName::CatppuccinMocha)
-            .clone()
-    })
+    static THEMES: OnceLock<EmbeddedLazyThemeSet> = OnceLock::new();
+    THEMES
+        .get_or_init(two_face::theme::extra)
+        .get(EmbeddedThemeName::CatppuccinMocha)
 }
 
 pub(super) fn lines(code: &str, path: &str) -> Option<Vec<Vec<Span<'static>>>> {
@@ -55,7 +54,7 @@ pub(super) fn lines(code: &str, path: &str) -> Option<Vec<Vec<Span<'static>>>> {
                                 if style.font_style.contains(FontStyle::BOLD) {
                                     rendered = rendered.add_modifier(Modifier::BOLD);
                                 }
-                                Span::styled(text.to_string(), rendered)
+                                Span::styled(text.to_owned(), rendered)
                             })
                         })
                         .collect::<Vec<_>>();

@@ -67,21 +67,21 @@ pub(in crate::frontend) fn selection_scroll(lines: &[Line<'_>], area: Rect) -> u
     let Some(start) = lines.iter().position(|line| line.style == selection) else {
         return 0;
     };
-    let end = lines[start..]
+    let end = lines
         .iter()
+        .skip(start)
         .position(|line| line.style != selection)
         .map_or(lines.len(), |length| start + length);
     let selected_end = Paragraph::new(
-        lines[..end]
+        lines
             .iter()
+            .take(end)
             .map(crate::frontend::terminal::borrow_line)
             .collect::<Vec<_>>(),
     )
     .wrap(Wrap { trim: false })
     .line_count(area.width);
-    selected_end
-        .saturating_sub(usize::from(area.height))
-        .min(usize::from(u16::MAX)) as u16
+    u16::try_from(selected_end.saturating_sub(usize::from(area.height))).unwrap_or(u16::MAX)
 }
 
 pub(super) fn header(state: &SetupState) -> Vec<Line<'static>> {
@@ -368,8 +368,7 @@ fn render_models_page(lines: &mut Vec<Line<'static>>, state: &SetupState) {
         "  Hosted web search",
         theme.style(Role::Muted),
     ));
-    if state.definition().web_search.len() == 1 {
-        let search = &state.definition().web_search[0];
+    if let [search] = state.definition().web_search.as_slice() {
         choice(lines, &search.label, &search.description, false, "[fixed]");
     } else {
         let search_start = state.model_choice_count() + state.reasoning_choice_count();
@@ -393,12 +392,14 @@ fn render_models_page(lines: &mut Vec<Line<'static>>, state: &SetupState) {
 fn render_agent_page(lines: &mut Vec<Line<'static>>, state: &SetupState, width: u16) {
     let layout = agent_layout(state, usize::from(width));
     for row in 0..state.middleware_row_count() {
-        match state
-            .middleware_row(row)
-            .expect("visible agent rows have a catalog entry")
-        {
+        let Some(middleware_row) = state.middleware_row(row) else {
+            break;
+        };
+        match middleware_row {
             MiddlewareRow::Feature(feature_index) => {
-                let feature = &state.features[feature_index];
+                let Some(feature) = state.features.get(feature_index) else {
+                    continue;
+                };
                 let disabled_by = state.disabled_by(&feature.id);
                 let description: Cow<'_, str> = disabled_by.map_or_else(
                     || Cow::Borrowed(feature.description.as_str()),
@@ -406,7 +407,7 @@ fn render_agent_page(lines: &mut Vec<Line<'static>>, state: &SetupState, width: 
                 );
                 let disclosure = if !state.feature_has_children(feature_index) {
                     ""
-                } else if state.expanded_features.contains(&feature.id) {
+                } else if state.expanded_features.contains(&feature_index) {
                     " ▾"
                 } else {
                     " ▸"
@@ -427,8 +428,12 @@ fn render_agent_page(lines: &mut Vec<Line<'static>>, state: &SetupState, width: 
                 );
             }
             MiddlewareRow::Setting { feature, setting } => {
-                let feature = &state.features[feature];
-                let setting = &feature.settings[setting];
+                let Some(feature) = state.features.get(feature) else {
+                    continue;
+                };
+                let Some(setting) = feature.settings.get(setting) else {
+                    continue;
+                };
                 let (value, role) =
                     middleware_setting_value(&state.middleware, &feature.id, setting);
                 setting_choice(
@@ -442,7 +447,9 @@ fn render_agent_page(lines: &mut Vec<Line<'static>>, state: &SetupState, width: 
                 );
             }
             MiddlewareRow::Extension { extension, .. } => {
-                let extension = &state.available_extensions[extension];
+                let Some(extension) = state.available_extensions.get(extension) else {
+                    continue;
+                };
                 let version = extension
                     .version
                     .as_deref()
@@ -463,7 +470,7 @@ fn render_agent_page(lines: &mut Vec<Line<'static>>, state: &SetupState, width: 
                         extension.description
                     ),
                     state.row == row,
-                    if state.selected_extensions.contains(&extension.id) {
+                    if state.selected_extensions.contains(&*extension.id) {
                         "[x]"
                     } else {
                         "[ ]"
@@ -541,8 +548,8 @@ pub(super) fn middleware_setting_value<'a>(
         ) => (
             options
                 .iter()
-                .find(|option| option.value == *value)
-                .map_or(value.as_str(), |option| option.label.as_str())
+                .find(|option| *option.value == **value)
+                .map_or(value.as_str(), |option| option.label.as_ref())
                 .into(),
             Role::Accent,
         ),

@@ -2,6 +2,7 @@ use std::fs;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -85,7 +86,7 @@ async fn generate_in(
     let temporary = tempfile::Builder::new()
         .prefix(".mobius-keygen-")
         .tempdir_in(directory)
-        .map_err(|_| ssh_error("failed to prepare SSH key generation"))?;
+        .map_err(|error| ssh_error(format!("failed to prepare SSH key generation: {error}")))?;
     let private_key = temporary.path().join("key");
     let status = tokio::time::timeout(KEYGEN_TIMEOUT, async {
         Command::new("ssh-keygen")
@@ -106,8 +107,8 @@ async fn generate_in(
             .await
     })
     .await
-    .map_err(|_| ssh_error("SSH key generation exceeded 10 seconds"))?
-    .map_err(|_| ssh_error("ssh-keygen is unavailable on the host"))?;
+    .map_err(|error| ssh_error(format!("SSH key generation exceeded 10 seconds: {error}")))?
+    .map_err(|error| ssh_error(format!("ssh-keygen is unavailable on the host: {error}")))?;
     if !status.success() {
         return Err(ssh_error("ssh-keygen failed to generate an Ed25519 key"));
     }
@@ -123,8 +124,9 @@ fn protect_directory(directory: &Path) -> std::result::Result<(), Rejection> {
         }
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            fs::create_dir(directory)
-                .map_err(|_| ssh_error("failed to create the host SSH directory"))?;
+            fs::create_dir(directory).map_err(|error| {
+                ssh_error(format!("failed to create the host SSH directory: {error}"))
+            })?;
         }
         Err(_) => return Err(ssh_error("failed to inspect the host SSH directory")),
     }
@@ -151,19 +153,25 @@ fn install_keypair(
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(&temporary_public, fs::Permissions::from_mode(0o644))
-            .map_err(|_| ssh_error("failed to protect host SSH credentials"))?;
+        fs::set_permissions(&temporary_public, fs::Permissions::from_mode(0o644)).map_err(
+            |error| ssh_error(format!("failed to protect host SSH credentials: {error}")),
+        )?;
     }
-    let public_key = read_public_key(&temporary_public)
-        .map_err(|_| ssh_error("ssh-keygen returned an invalid public key"))?;
+    let public_key = read_public_key(&temporary_public).map_err(|error| {
+        ssh_error(format!(
+            "ssh-keygen returned an invalid public key: {error}"
+        ))
+    })?;
     let (identity, public_key) = parse_public_key(GENERATED_KEY_LABEL, &public_key)
         .ok_or_else(|| ssh_error("ssh-keygen returned an invalid public key"))?;
 
-    fs::hard_link(temporary_private, destination_private).map_err(|_| identity_install_error())?;
+    fs::hard_link(temporary_private, destination_private).map_err(identity_install_error)?;
     let destination_public = destination_private.with_extension("pub");
-    if fs::hard_link(&temporary_public, &destination_public).is_err() {
-        let _ = fs::remove_file(destination_private);
-        return Err(identity_install_error());
+    if let Err(error) = fs::hard_link(&temporary_public, &destination_public) {
+        if let Err(cleanup) = fs::remove_file(destination_private) {
+            tracing::warn!(error = %cleanup, "failed to remove a partially installed SSH identity");
+        }
+        return Err(identity_install_error(error));
     }
     Ok((identity, public_key))
 }
@@ -246,7 +254,7 @@ fn protect(path: &Path, directory: bool) -> std::result::Result<(), Rejection> {
         mobius::owner_only::file()
     };
     fs::set_permissions(path, permissions)
-        .map_err(|_| ssh_error("failed to protect host SSH credentials"))
+        .map_err(|error| ssh_error(format!("failed to protect host SSH credentials: {error}")))
 }
 
 #[cfg(not(unix))]
@@ -254,16 +262,16 @@ fn protect(_path: &Path, _directory: bool) -> std::result::Result<(), Rejection>
     Ok(())
 }
 
-fn identity_install_error() -> Rejection {
+fn identity_install_error(error: impl std::fmt::Display) -> Rejection {
     Rejection::new(
         "ssh_identity_exists",
         format!(
-            "SSH identity {GENERATED_KEY_LABEL} could not be installed without overwriting a host file"
+            "SSH identity {GENERATED_KEY_LABEL} could not be installed without overwriting a host file: {error}"
         ),
     )
 }
 
-fn ssh_error(message: impl Into<String>) -> Rejection {
+fn ssh_error(message: impl Into<Arc<str>>) -> Rejection {
     Rejection::new("ssh_error", message)
 }
 

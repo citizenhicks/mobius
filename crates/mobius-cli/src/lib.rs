@@ -40,6 +40,10 @@ fn scoped_bearer(
 }
 
 /// Converts a gateway transport/protocol failure without losing its diagnostic text.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "used as a `map_err` adapter across the crate, which passes the error by value"
+)]
 pub fn gateway_error(error: mobius_gateway::Error) -> mobius::Error {
     mobius::Error::Stopped(error.to_string())
 }

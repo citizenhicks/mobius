@@ -39,12 +39,18 @@ pub struct Artifacts {
     store: Arc<SessionFileStore>,
 }
 
+impl std::fmt::Debug for Artifacts {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("Artifacts").finish_non_exhaustive()
+    }
+}
+
 impl Artifacts {
     #[must_use]
     /// Creates a new instance.
-    pub fn new(store: SessionFileStore) -> Self {
+    pub fn new(store: impl Into<Arc<SessionFileStore>>) -> Self {
         Self {
-            store: Arc::new(store),
+            store: store.into(),
         }
     }
 }
@@ -57,7 +63,7 @@ impl Middleware for Artifacts {
     fn register(&self, catalog: &mut Catalog, runtime: &RuntimeContext) -> Result<()> {
         catalog.register(Arc::new(SendArtifact {
             store: Arc::clone(&self.store),
-            session_id: runtime.session_id.clone(),
+            session_id: Arc::clone(&runtime.session_id),
         }))
     }
 
@@ -82,7 +88,7 @@ impl Middleware for Artifacts {
         if result.is_error {
             return Some(block);
         }
-        let Some(file) = result.output.files().next().cloned() else {
+        let Some(file) = result.output.files().next() else {
             return Some(block);
         };
         block.update = crate::protocol::FrontendBlockUpdate::Replace;
@@ -95,7 +101,7 @@ impl Middleware for Artifacts {
         );
         block.text.clear();
         block.content = Default::default();
-        block.files = vec![file];
+        block.files = vec![file.clone()]; // rules-allow: the owned block carries a copy of the borrowed event's file
         Some(block)
     }
 }
@@ -109,23 +115,23 @@ struct SendArtifactArgs {
 
 struct SendArtifact {
     store: Arc<SessionFileStore>,
-    session_id: String,
+    session_id: Arc<str>,
 }
 
 impl Tool for SendArtifact {
-    fn definition(&self) -> ToolDefinition {
-        text::DEFINITION.send_artifact.tool.clone()
+    fn definition(&self) -> &Arc<ToolDefinition> {
+        &text::DEFINITION.send_artifact.tool
     }
 
     fn approval(&self) -> ApprovalRequirement {
         ApprovalRequirement::Always
     }
 
-    fn call<'a>(
-        &'a self,
+    fn call(
+        &self,
         context: ToolContext,
         arguments: Value,
-    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
+    ) -> BoxFuture<'_, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             let arguments: SendArtifactArgs = serde_json::from_value(arguments)?;
             let file = match (arguments.path, arguments.file_id) {
@@ -136,7 +142,7 @@ impl Tool for SendArtifact {
                         .ok_or_else(|| {
                             Error::Tool(text::DEFINITION.error_path_not_file.as_str().into())
                         })?
-                        .to_string();
+                        .to_owned();
                     let bytes = context
                         .sandbox
                         .read_bytes(&path, MAX_BINARY_FILE_BYTES, &context.permissions)

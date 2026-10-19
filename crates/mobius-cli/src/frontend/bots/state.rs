@@ -1,23 +1,35 @@
+use std::sync::Arc;
+
 use mobius_gateway::wire::{
     ClientMessage, ReadyPayload, Routine, RoutineAction, RoutineCommand, RoutineRun,
     RoutineRunPreview, RoutineRunStatus,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use uuid::Uuid;
 
 use super::form::{BotForm, Form, FormFlow, RoutineForm};
-use super::{Action, FollowUp, request_action};
+use super::{Action, FollowUp, moved, request_action};
 use crate::frontend::setup::SetupMode;
 use crate::frontend::theme::Role;
 
 #[derive(Clone)]
 pub(super) enum Page {
     Root,
-    Bot(String),
-    Conversations(String),
-    Routines(String),
-    Routine { bot_id: String, routine_id: String },
-    Runs { bot_id: String, routine_id: String },
-    Run { bot_id: String, routine_id: String },
+    Bot(Arc<str>),
+    Conversations(Arc<str>),
+    Routines(Arc<str>),
+    Routine {
+        bot_id: Arc<str>,
+        routine_id: Arc<str>,
+    },
+    Runs {
+        bot_id: Arc<str>,
+        routine_id: Arc<str>,
+    },
+    Run {
+        bot_id: Arc<str>,
+        routine_id: Arc<str>,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -49,23 +61,23 @@ pub(super) enum RoutineRow {
 
 pub(super) enum Confirmation {
     Bot {
-        id: String,
+        id: Arc<str>,
         revision: u64,
-        handle: String,
+        handle: Arc<str>,
     },
     Routine {
-        id: String,
+        id: Arc<str>,
         label: String,
     },
     Run {
-        id: String,
-        routine_id: String,
+        id: Arc<str>,
+        routine_id: Arc<str>,
         label: String,
     },
 }
 
 pub(super) struct Pending {
-    pub(super) request_id: String,
+    pub(super) request_id: Uuid,
     pub(super) label: &'static str,
     pub(super) follow_up: FollowUp,
 }
@@ -79,7 +91,7 @@ pub(super) struct BotsState {
     pub(super) lifecycle_refresh: bool,
     pub(super) page: Page,
     pub(super) selected: usize,
-    pub(super) protected_bot_id: Option<String>,
+    pub(super) protected_bot_id: Option<Arc<str>>,
     pub(super) routines: Vec<Routine>,
     pub(super) runs: Vec<RoutineRun>,
     pub(super) preview: Option<RoutineRunPreview>,
@@ -95,13 +107,13 @@ impl BotsState {
         protected_bot_id: Option<&str>,
     ) -> Self {
         let page = preferred_bot_id
-            .filter(|id| gateway.bots.iter().any(|bot| bot.id == *id))
+            .filter(|id| gateway.bots.iter().any(|bot| *bot.id == **id))
             .map_or(Page::Root, |id| Page::Bot(id.into()));
         Self {
             lifecycle_refresh: false,
             page,
             selected: 0,
-            protected_bot_id: protected_bot_id.map(str::to_owned),
+            protected_bot_id: protected_bot_id.map(Arc::from),
             routines: Vec::new(),
             runs: Vec::new(),
             preview: None,
@@ -120,13 +132,13 @@ impl BotsState {
             Page::Routines(id) => self
                 .routines
                 .iter()
-                .filter(|routine| routine.bot_id == *id)
+                .filter(|routine| *routine.bot_id == **id)
                 .count(),
             Page::Routine { .. } => 4,
             Page::Runs { routine_id, .. } => self
                 .runs
                 .iter()
-                .filter(|run| run.routine_id == *routine_id)
+                .filter(|run| *run.routine_id == **routine_id)
                 .count(),
             Page::Run { .. } => 0,
         }
@@ -139,7 +151,7 @@ impl BotsState {
         | Page::Routine { bot_id: id, .. }
         | Page::Runs { bot_id: id, .. }
         | Page::Run { bot_id: id, .. } = &self.page
-            && !gateway.bots.iter().any(|bot| bot.id == *id)
+            && !gateway.bots.iter().any(|bot| *bot.id == **id)
         {
             self.page = Page::Root;
             self.selected = 0;
@@ -150,7 +162,7 @@ impl BotsState {
             && !self
                 .routines
                 .iter()
-                .any(|routine| routine.id == *routine_id)
+                .any(|routine| *routine.id == **routine_id)
         {
             self.page = Page::Routines(std::mem::take(bot_id));
             self.selected = 0;
@@ -163,7 +175,7 @@ impl BotsState {
         if length == 0 {
             return;
         }
-        self.selected = (self.selected as isize + delta).rem_euclid(length as isize) as usize;
+        self.selected = moved(self.selected, length, delta);
         self.notice = None;
     }
 
@@ -211,14 +223,14 @@ impl BotsState {
             Page::Root => self.handle_root_key(key, gateway),
             Page::Bot(_) => self.handle_bot_key(key, gateway),
             Page::Conversations(id) => {
-                if key.code != KeyCode::Enter {
-                    Action::None
-                } else {
+                if key.code == KeyCode::Enter {
                     sessions_for_bot(gateway, id)
                         .get(self.selected)
                         .map_or(Action::None, |session| {
-                            Action::OpenSession(session.session_id.clone())
+                            Action::OpenSession(Arc::clone(&session.session_id))
                         })
+                } else {
+                    Action::None
                 }
             }
             Page::Routines(_) => self.handle_routine_key(key),
@@ -238,7 +250,7 @@ impl BotsState {
         };
         match key.code {
             KeyCode::Enter => {
-                self.page = Page::Bot(bot.id.clone());
+                self.page = Page::Bot(Arc::clone(&bot.id));
                 self.selected = 0;
             }
             KeyCode::Char('e') => {
@@ -251,9 +263,9 @@ impl BotsState {
                     );
                 } else {
                     self.confirmation = Some(Confirmation::Bot {
-                        id: bot.id.clone(),
+                        id: Arc::clone(&bot.id),
                         revision: bot.config.revision,
-                        handle: bot.handle.clone(),
+                        handle: Arc::clone(&bot.handle),
                     });
                 }
             }
@@ -267,7 +279,7 @@ impl BotsState {
             return Action::None;
         };
         if key.code == KeyCode::Char('e') {
-            if let Some(bot) = gateway.bots.iter().find(|bot| bot.id == *id) {
+            if let Some(bot) = gateway.bots.iter().find(|bot| *bot.id == **id) {
                 self.form = Some(Form::Bot(Box::new(BotForm::update(bot))));
             }
             return Action::None;
@@ -280,25 +292,19 @@ impl BotsState {
         };
         match row {
             BotRow::Identity => {
-                if let Some(bot) = gateway.bots.iter().find(|bot| bot.id == *id) {
+                if let Some(bot) = gateway.bots.iter().find(|bot| *bot.id == **id) {
                     self.form = Some(Form::Bot(Box::new(BotForm::update(bot))));
                 }
                 Action::None
             }
-            BotRow::Model => Action::Setup {
-                bot_id: id.clone(),
-                mode: SetupMode::BotModel,
-            },
-            BotRow::Capabilities => Action::Setup {
-                bot_id: id.clone(),
-                mode: SetupMode::Bot,
-            },
+            BotRow::Model => Action::Setup(SetupMode::BotModel),
+            BotRow::Capabilities => Action::Setup(SetupMode::Bot),
             BotRow::Conversation => gateway
                 .bots
                 .iter()
-                .find(|bot| bot.id == *id)
+                .find(|bot| *bot.id == **id)
                 .map_or(Action::None, |bot| {
-                    Action::OpenSession(bot.conversation_session_id.clone())
+                    Action::OpenSession(Arc::clone(&bot.conversation_session_id))
                 }),
             BotRow::Conversations => {
                 self.page = Page::Conversations(std::mem::take(id));
@@ -318,13 +324,15 @@ impl BotsState {
             return Action::None;
         };
         if key.code == KeyCode::Char('n') {
-            self.form = Some(Form::Routine(Box::new(RoutineForm::create(bot_id.clone()))));
+            self.form = Some(Form::Routine(Box::new(RoutineForm::create(Arc::clone(
+                bot_id,
+            )))));
             return Action::None;
         }
         let Some(routine) = self
             .routines
             .iter()
-            .filter(|routine| routine.bot_id == *bot_id)
+            .filter(|routine| *routine.bot_id == **bot_id)
             .nth(self.selected)
         else {
             return Action::None;
@@ -333,7 +341,7 @@ impl BotsState {
             KeyCode::Enter => {
                 self.page = Page::Routine {
                     bot_id: std::mem::take(bot_id),
-                    routine_id: routine.id.clone(),
+                    routine_id: Arc::clone(&routine.id),
                 };
                 self.selected = 0;
                 Action::None
@@ -347,15 +355,15 @@ impl BotsState {
                 ClientMessage::RoutineCommand {
                     request_id,
                     command: RoutineCommand {
-                        routine_id: routine.id.clone(),
+                        routine_id: Arc::clone(&routine.id),
                         action: RoutineAction::Start,
                     },
                 }
             }),
             KeyCode::Delete | KeyCode::Char('x') => {
                 self.confirmation = Some(Confirmation::Routine {
-                    id: routine.id.clone(),
-                    label: routine.instructions.clone(),
+                    id: Arc::clone(&routine.id),
+                    label: routine.instructions.clone(), // rules-allow: owned copy from the routine list
                 });
                 Action::None
             }
@@ -370,16 +378,20 @@ impl BotsState {
         let Some(routine) = self
             .routines
             .iter()
-            .find(|routine| routine.id == *routine_id)
+            .find(|routine| *routine.id == **routine_id)
         else {
             return Action::None;
         };
-        let row = [
+        let Some(row) = [
             RoutineRow::Edit,
             RoutineRow::Toggle,
             RoutineRow::Run,
             RoutineRow::History,
-        ][self.selected];
+        ]
+        .get(self.selected)
+        .copied() else {
+            return Action::None;
+        };
         if key.code == KeyCode::Char('e') {
             self.form = Some(Form::Routine(Box::new(RoutineForm::update(routine))));
             return Action::None;
@@ -392,7 +404,7 @@ impl BotsState {
                 ClientMessage::RoutineCommand {
                     request_id,
                     command: RoutineCommand {
-                        routine_id: routine.id.clone(),
+                        routine_id: Arc::clone(&routine.id),
                         action: RoutineAction::Start,
                     },
                 }
@@ -411,7 +423,7 @@ impl BotsState {
                 ClientMessage::RoutineCommand {
                     request_id,
                     command: RoutineCommand {
-                        routine_id: routine.id.clone(),
+                        routine_id: Arc::clone(&routine.id),
                         action: RoutineAction::Start,
                     },
                 }
@@ -425,7 +437,7 @@ impl BotsState {
                 request_action("Load run history", FollowUp::None, |request_id| {
                     ClientMessage::ListRoutineHistory {
                         request_id,
-                        id: Some(routine.id.clone()),
+                        id: Some(Arc::clone(&routine.id)),
                     }
                 })
             }
@@ -452,7 +464,7 @@ impl BotsState {
                 request_action("Load run", FollowUp::None, |request_id| {
                     ClientMessage::GetRoutineRunPreview {
                         request_id,
-                        id: run.id.clone(),
+                        id: Arc::clone(&run.id),
                         before_sequence: None,
                     }
                 })
@@ -460,8 +472,8 @@ impl BotsState {
             KeyCode::Delete | KeyCode::Char('x') => {
                 let label = routine_run_label(run);
                 self.confirmation = Some(Confirmation::Run {
-                    id: run.id.clone(),
-                    routine_id: routine_id.clone(),
+                    id: Arc::clone(&run.id),
+                    routine_id: Arc::clone(routine_id),
                     label,
                 });
                 Action::None
@@ -543,7 +555,7 @@ impl BotsState {
         }
     }
 
-    pub(super) fn begin(&mut self, request_id: String, label: &'static str, follow_up: FollowUp) {
+    pub(super) fn begin(&mut self, request_id: Uuid, label: &'static str, follow_up: FollowUp) {
         self.pending = Some(Pending {
             request_id,
             label,
@@ -602,7 +614,7 @@ impl BotsState {
     }
 }
 pub(super) fn update_routine_action(routine: &Routine, enabled: bool) -> Action {
-    let id = routine.id.clone();
+    let id = Arc::clone(&routine.id);
     request_action(
         if enabled {
             "Resume routine"
@@ -630,7 +642,7 @@ pub(super) fn runs_for_routine<'a>(
 ) -> Vec<&'a RoutineRun> {
     let mut runs = runs
         .iter()
-        .filter(|run| run.routine_id == routine_id)
+        .filter(|run| *run.routine_id == *routine_id)
         .collect::<Vec<_>>();
     runs.sort_by_key(|run| std::cmp::Reverse(run.started_at));
     runs
@@ -656,7 +668,7 @@ pub(super) fn sessions_for_bot<'a>(
     let mut sessions = gateway
         .sessions
         .iter()
-        .filter(|session| session.session_context.owner_id == bot_id)
+        .filter(|session| *session.session_context.owner_id == *bot_id)
         .collect::<Vec<_>>();
     sessions.sort_by_key(|session| std::cmp::Reverse(session.updated_at));
     sessions

@@ -82,10 +82,25 @@ mod text {
         pub(super) render_open_empty: String,
         pub(super) status_title: String,
     }
-    crate::embedded_config! { pub(super) static DEFINITION: Definition = include_str!("subagents.toml"); }
+    crate::embedded_config! { pub(super) static DEFINITION: Definition = include_str!("subagents.toml") => super::prepare_schema; }
 }
 const MIN_WAIT_MS: u64 = 10_000;
 const MAX_WAIT_MS: u64 = 120_000;
+
+fn prepare_schema(definition: &mut text::Definition) {
+    super::tools::fill_max_bytes(
+        &mut definition.spawn_agent.tool,
+        "/properties/task_name/description",
+        MAX_TASK_NAME_BYTES,
+    );
+    super::tools::limit_schema(
+        &mut definition.wait_agent.tool,
+        [
+            ("/properties/timeout_ms", "minimum", MIN_WAIT_MS.into()),
+            ("/properties/timeout_ms", "maximum", MAX_WAIT_MS.into()),
+        ],
+    );
+}
 
 static DEFAULT_WAIT_MS: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
     let wait = text::DEFINITION.defaults_wait_ms;
@@ -119,31 +134,45 @@ pub struct SubagentCeilings {
 }
 
 impl Default for SubagentCeilings {
+    #[expect(
+        clippy::expect_used,
+        reason = "subagents.toml is compiled in, so invalid ceilings are a build defect"
+    )]
     fn default() -> Self {
-        let ceiling = |id| match text::DEFINITION
-            .settings
-            .iter()
-            .find(|setting| setting.id() == id)
-        {
-            Some(MiddlewareSettingManifest::Integer { max: Some(max), .. }) => *max,
-            _ => panic!("missing embedded subagent ceiling {id}"),
-        };
-        Self::new(
-            ceiling("max_depth")
-                .try_into()
-                .expect("depth ceiling must fit"),
-            ceiling("max_concurrency")
-                .try_into()
-                .expect("concurrency ceiling must fit"),
-            ceiling("max_agents")
-                .try_into()
-                .expect("agent ceiling must fit"),
-        )
-        .expect("valid embedded subagent ceilings")
+        Self::embedded().expect("valid embedded subagent ceilings")
     }
 }
 
 impl SubagentCeilings {
+    fn embedded() -> Result<Self> {
+        let ceiling = |id: &str| match text::DEFINITION
+            .settings
+            .iter()
+            .find(|setting| setting.id() == id)
+        {
+            Some(MiddlewareSettingManifest::Integer { max: Some(max), .. }) => Ok(*max),
+            _ => Err(Error::Config(format!(
+                "missing embedded subagent ceiling {id}"
+            ))),
+        };
+        let out_of_range = |name: &str, error: std::num::TryFromIntError| {
+            Error::Config(format!(
+                "embedded subagent {name} ceiling must fit: {error}"
+            ))
+        };
+        Self::new(
+            ceiling("max_depth")?
+                .try_into()
+                .map_err(|error| out_of_range("depth", error))?,
+            ceiling("max_concurrency")?
+                .try_into()
+                .map_err(|error| out_of_range("concurrency", error))?,
+            ceiling("max_agents")?
+                .try_into()
+                .map_err(|error| out_of_range("agent", error))?,
+        )
+    }
+
     /// Sets operator ceilings independently of a Bot's selected limits.
     /// # Errors
     /// Returns an error for zero depth, fewer than two concurrent slots, an agent
@@ -186,7 +215,7 @@ impl SubagentCeilings {
         text::DEFINITION
             .settings
             .iter()
-            .cloned()
+            .cloned() // rules-allow: each caller gets its own settings, bounded from the static definition
             .map(|mut setting| {
                 if let MiddlewareSettingManifest::Integer {
                     id, max, default, ..
@@ -194,10 +223,10 @@ impl SubagentCeilings {
                 {
                     let ceiling = match id.as_str() {
                         "max_depth" => i64::from(self.max_depth),
-                        "max_concurrency" => i64::try_from(self.max_concurrency)
-                            .expect("validated concurrency ceiling must fit"),
-                        "max_agents" => i64::try_from(self.max_agents)
-                            .expect("validated agent ceiling must fit"),
+                        "max_concurrency" => {
+                            i64::try_from(self.max_concurrency).unwrap_or(i64::MAX)
+                        }
+                        "max_agents" => i64::try_from(self.max_agents).unwrap_or(i64::MAX),
                         _ => return setting,
                     };
                     *max = Some(ceiling);
@@ -303,7 +332,17 @@ impl AgentIdentity {
         };
         Ok(serde::Deserialize::deserialize(value)?)
     }
+}
 
+/// The serialized form of an [`AgentIdentity`], borrowed from its owner.
+#[derive(Serialize)]
+struct IdentityRecord<'a> {
+    root_session_id: &'a str,
+    agent_path: &'a str,
+    depth: u8,
+}
+
+impl IdentityRecord<'_> {
     fn metadata(&self, mut metadata: BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>> {
         metadata.insert(IDENTITY_KEY.into(), serde_json::to_value(self)?);
         Ok(metadata)
@@ -314,17 +353,17 @@ struct AgentScope {
     files: Option<Arc<crate::backend::session_files::SessionFileStore>>,
     checkpoints: Arc<dyn CheckpointStore>,
     children: ChildAgents,
-    session_id: String,
-    root_session_id: Arc<str>,
+    session_id: Arc<str>,
+    root_session_id: String,
     agent_path: String,
     depth: u8,
-    model: String,
+    model: Arc<str>,
 }
 
 impl AgentScope {
-    fn child_role(&self, parent_turn_id: String) -> AgentRole {
+    fn child_role(&self, parent_turn_id: Arc<str>) -> AgentRole {
         AgentRole::Subagent {
-            parent_session_id: self.session_id.clone(),
+            parent_session_id: Arc::clone(&self.session_id),
             parent_turn_id,
         }
     }
@@ -343,23 +382,23 @@ impl AgentScope {
         Ok(Self {
             files,
             checkpoints: Arc::clone(&runtime.checkpoints),
-            children: ChildAgents::clone(&runtime.children),
-            session_id: runtime.session_id.clone(),
-            root_session_id: identity.root_session_id.into(),
+            children: ChildAgents::clone(&runtime.children), // rules-allow: the scope outlives the borrowed runtime
+            session_id: Arc::clone(&runtime.session_id),
+            root_session_id: identity.root_session_id,
             agent_path: identity.agent_path,
             depth: identity.depth,
-            model: runtime.model_route.clone(),
+            model: Arc::clone(&runtime.model_route),
         })
     }
 
     async fn fork(
         &self,
-        session_id: String,
-        agent_path: String,
-        model: String,
+        session_id: &str,
+        agent_path: &str,
+        model: &str,
         reasoning_effort: Option<String>,
         turns: ForkTurns,
-        parent_turn_id: String,
+        parent_turn_id: Arc<str>,
     ) -> Result<Agent> {
         let parent = self
             .checkpoints
@@ -370,15 +409,15 @@ impl AgentScope {
         let pending = parent
             .pending_tools
             .iter()
-            .map(|call| call.call_id.as_str())
+            .map(|call| call.call_id.as_ref())
             .collect::<BTreeSet<_>>();
-        let mut checkpoint = Checkpoint::empty(&session_id);
+        let mut checkpoint = Checkpoint::empty(session_id);
         checkpoint.catalog_visible = false;
         checkpoint.context = Arc::new(fork_context(&parent.context, turns, &pending));
         checkpoint.context_model_route = parent.context_model_route.or(parent.model_route);
         checkpoint.session_context = parent.session_context;
-        let mut metadata = AgentIdentity {
-            root_session_id: self.root_session_id.to_string(),
+        let mut metadata = IdentityRecord {
+            root_session_id: &self.root_session_id,
             agent_path,
             depth: self.next_depth()?,
         }
@@ -388,19 +427,21 @@ impl AgentScope {
         crate::backend::session_files::grant_context(
             self.files.as_deref(),
             &self.session_id,
-            &session_id,
+            session_id,
             &checkpoint.context,
         )
         .await?;
+        let session_id = Arc::clone(&checkpoint.session_id);
+        let metadata = checkpoint.metadata.clone(); // rules-allow: the forked checkpoint and the child agent each own the metadata
         self.checkpoints
-            .fork(&self.session_id, parent_sequence, &checkpoint)
+            .fork(&self.session_id, parent_sequence, checkpoint)
             .await?;
         self.children
             .create(
                 session_id,
-                checkpoint.metadata,
+                metadata,
                 self.child_role(parent_turn_id),
-                &model,
+                model,
                 reasoning_effort.as_deref(),
             )
             .await
@@ -408,31 +449,38 @@ impl AgentScope {
 
     async fn resume(
         &self,
-        session_id: String,
-        agent_path: String,
+        session_id: &str,
+        agent_path: &str,
         depth: u8,
-        model: String,
-        parent_turn_id: String,
+        model: &str,
+        parent_turn_id: Arc<str>,
     ) -> Result<Agent> {
-        let checkpoint = self.checkpoints.load(&session_id).await?.ok_or_else(|| {
+        let checkpoint = self.checkpoints.load(session_id).await?.ok_or_else(|| {
             Error::Checkpoint(format!("checkpoint for `{agent_path}` is missing"))
         })?;
-        let metadata = AgentIdentity {
-            root_session_id: self.root_session_id.to_string(),
+        let metadata = IdentityRecord {
+            root_session_id: &self.root_session_id,
             agent_path,
             depth,
         }
         .metadata(checkpoint.metadata)?;
         self.children
             .create(
-                session_id,
+                checkpoint.session_id,
                 metadata,
                 self.child_role(parent_turn_id),
-                &model,
+                model,
                 None,
             )
             .await
     }
+}
+
+/// The state one session's collaboration tools share.
+struct Collaboration {
+    shared: Arc<Shared>,
+    scope: AgentScope,
+    default_model: Option<Arc<str>>,
 }
 
 /// Contributes asynchronous collaboration tools.
@@ -443,11 +491,24 @@ pub struct Subagents {
     shared: Arc<Shared>,
 }
 
+impl std::fmt::Debug for Subagents {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Subagents")
+            .field("max_depth", &self.max_depth)
+            .field("default_model", &self.default_model)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Subagents {
     /// Injects durable media storage used for child observation grants.
     #[must_use]
-    pub fn session_files(mut self, files: crate::backend::session_files::SessionFileStore) -> Self {
-        self.files = Some(Arc::new(files));
+    pub fn session_files(
+        mut self,
+        files: impl Into<Arc<crate::backend::session_files::SessionFileStore>>,
+    ) -> Self {
+        self.files = Some(files.into());
         self
     }
 
@@ -472,7 +533,7 @@ impl Subagents {
         self
     }
 
-    fn section(&self, identity: &AgentIdentity) -> PromptSection {
+    fn section(identity: &AgentIdentity) -> PromptSection {
         if identity.depth == 0 {
             PromptSection::new(text::DEFINITION.prompt_root.as_str())
         } else {
@@ -525,7 +586,7 @@ impl Subagents {
     ) -> Result<MiddlewareCommandOutput> {
         let identity = AgentIdentity::read(session_id, metadata)?;
         let cursor: PreviewCursor = serde_json::from_str(arguments)
-            .map_err(|_| Error::Tool("invalid subagent preview cursor".into()))?;
+            .map_err(|error| Error::Tool(format!("invalid subagent preview cursor: {error}")))?;
         if cursor.path.trim() != cursor.path
             || cursor.path.is_empty()
             || cursor.before_sequence == 0
@@ -570,8 +631,8 @@ impl Subagents {
                 started_at_ms: None,
                 id: path.into(),
                 title: path.rsplit('/').next().unwrap_or(path).into(),
-                subtitle: page.subtitle,
-                page_id: page.page_id,
+                subtitle: page.subtitle.into(),
+                page_id: page.page_id.into(),
                 update: if before_sequence.is_some() {
                     FrontendPreviewUpdate::Prepend
                 } else {
@@ -600,38 +661,23 @@ impl Middleware for Subagents {
     }
 
     fn register(&self, catalog: &mut Catalog, runtime: &RuntimeContext) -> Result<()> {
-        let scope = Arc::new(AgentScope::new(
-            runtime,
-            self.files.as_ref().map(Arc::clone),
-        )?);
-        if scope.depth < self.max_depth {
-            catalog.register(Arc::new(SpawnAgent {
-                default_model: self.default_model.as_ref().map(Arc::clone),
-                shared: Arc::clone(&self.shared),
-                scope: Arc::clone(&scope),
-            }))?;
+        let collaboration = Arc::new(Collaboration {
+            shared: Arc::clone(&self.shared),
+            scope: AgentScope::new(runtime, self.files.as_ref().map(Arc::clone))?,
+            default_model: self.default_model.as_ref().map(Arc::clone),
+        });
+        if collaboration.scope.depth < self.max_depth {
+            catalog.register(Arc::new(SpawnAgent(Arc::clone(&collaboration))))?;
         }
-        catalog.register(Arc::new(SendMessage {
-            shared: Arc::clone(&self.shared),
-            scope: Arc::clone(&scope),
-        }))?;
-        catalog.register(Arc::new(ListAgents {
-            shared: Arc::clone(&self.shared),
-            scope: Arc::clone(&scope),
-        }))?;
-        catalog.register(Arc::new(InterruptAgent {
-            shared: Arc::clone(&self.shared),
-            scope: Arc::clone(&scope),
-        }))?;
-        catalog.register(Arc::new(WaitAgent {
-            shared: Arc::clone(&self.shared),
-            scope,
-        }))
+        catalog.register(Arc::new(SendMessage(Arc::clone(&collaboration))))?;
+        catalog.register(Arc::new(ListAgents(Arc::clone(&collaboration))))?;
+        catalog.register(Arc::new(InterruptAgent(Arc::clone(&collaboration))))?;
+        catalog.register(Arc::new(WaitAgent(collaboration)))
     }
 
     fn prompt_section(&self, runtime: &RuntimeContext) -> Result<Option<PromptSection>> {
         let identity = AgentIdentity::read(&runtime.session_id, &runtime.metadata)?;
-        Ok(Some(self.section(&identity)))
+        Ok(Some(Self::section(&identity)))
     }
 
     fn frontend(&self, _session_id: &str) -> FrontendContribution {
@@ -640,8 +686,8 @@ impl Middleware for Subagents {
             count: None,
             commands: vec![FrontendCommand {
                 name: Command::Open.as_str().into(),
-                arguments: String::new(),
-                description: text::DEFINITION.command_description.clone(),
+                arguments: String::new().into(),
+                description: text::DEFINITION.command_description.clone().into(), // rules-allow: the command owns its description from the static definition
                 requires_idle: false,
             }],
             widgets: Vec::new(),
@@ -660,7 +706,7 @@ impl Middleware for Subagents {
         .into_iter()
         .find_map(|spec| spec.render(event))?;
         if let EventMsg::ToolCallBegin(call) = event
-            && call.name == "send_message"
+            && &*call.name == "send_message"
             && let Some(message) = call.arguments.get("text").and_then(Value::as_str)
         {
             FrontendBlockUpdate::Append.apply(&mut block.text, message);
@@ -738,13 +784,11 @@ impl Middleware for Subagents {
                     &identity.root_session_id,
                     &identity.agent_path,
                     &acknowledged,
+                    &delivered_message_ids,
                 )
                 .await?;
-            for update in updates {
-                context.push_input(internal_user_message(
-                    &update.internal_kind(),
-                    &update.render(&delivered_message_ids),
-                ))?;
+            for (kind, text) in updates {
+                context.push_input(internal_user_message(&kind, &text))?;
             }
             Ok(())
         })

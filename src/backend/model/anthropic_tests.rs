@@ -396,18 +396,17 @@ async fn empty_refusals_are_non_retryable_errors_and_visible_refusals_are_preser
             .apply(serde_json::json!({"type": "message_stop"}), &events)
             .await
             .expect("message stop");
-        match answer {
-            Some(answer) => assert_eq!(stream.finish().expect("visible refusal").text(), answer),
-            None => {
-                let Error::Provider(error) = stream.finish().expect_err("empty refusal") else {
-                    panic!("expected provider error");
-                };
-                assert_eq!(
-                    error.to_string(),
-                    "Anthropic refused the request without an answer"
-                );
-                assert!(!error.is_retryable());
-            }
+        if let Some(answer) = answer {
+            assert_eq!(stream.finish().expect("visible refusal").text(), answer);
+        } else {
+            let Error::Provider(error) = stream.finish().expect_err("empty refusal") else {
+                panic!("expected provider error");
+            };
+            assert_eq!(
+                error.to_string(),
+                "Anthropic refused the request without an answer"
+            );
+            assert!(!error.is_retryable());
         }
     }
 }
@@ -428,10 +427,10 @@ fn route_replay_strips_private_reasoning_without_copying_untouched_items() {
         "type": "function_call_output", "call_id": "call", "output": []
     }));
     let mut input = vec![
-        private.clone(),
-        call.clone(),
-        result.clone(),
-        visible.clone(),
+        std::sync::Arc::clone(&private),
+        std::sync::Arc::clone(&call),
+        std::sync::Arc::clone(&result),
+        std::sync::Arc::clone(&visible),
     ];
     assert!(super::super::strip_shared_provider_reasoning(&mut input));
     assert_eq!(input[0]["content"], "Visible answer");

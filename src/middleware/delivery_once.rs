@@ -54,14 +54,17 @@ impl<'a> DeliveryOnce<'a> {
             return Ok(false);
         }
         let mut item = make();
-        if item.get("role").and_then(Value::as_str) != Some("user")
-            || crate::protocol::internal_message_kind(&item).is_none()
-        {
+        let internal_user = item.get("role").and_then(Value::as_str) == Some("user")
+            && crate::protocol::internal_message_kind(&item).is_some();
+        let Some(object) = item.as_object_mut().filter(|_| internal_user) else {
             return Err(Error::Config(
                 "once-only guidance requires an internal user message".into(),
             ));
-        }
-        item[FIELD] = serde_json::json!({"owner": self.owner, "key": key});
+        };
+        object.insert(
+            FIELD.into(),
+            serde_json::json!({"owner": self.owner, "key": key}),
+        );
         input.push(item.into());
         Ok(true)
     }

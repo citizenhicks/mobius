@@ -35,13 +35,14 @@ struct CallSummary {
     started_at_ms: Option<i64>,
 }
 
-#[derive(Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 struct HandoffCursor {
     sequence: u64,
     drafts: BTreeMap<String, String>,
 }
 
 /// A frozen discussion snapshot, acknowledged only after its workspace message is committed.
+#[derive(Debug)]
 pub struct VoiceHandoff {
     /// New speech since the last committed handoff, within the recent-discussion budget.
     pub text: String,
@@ -58,7 +59,7 @@ struct Recording {
 /// The sole writer for one call, protected by the gateway's parent-session voice lease.
 pub struct VoiceTranscript {
     checkpoints: Arc<dyn CheckpointStore>,
-    session_id: String,
+    session_id: Arc<str>,
     frontend: FrontendEventSink,
     recordings: BTreeMap<String, Recording>,
     visible: bool,
@@ -67,7 +68,22 @@ pub struct VoiceTranscript {
     call_started: Option<Instant>,
 }
 
+impl std::fmt::Debug for VoiceTranscript {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("VoiceTranscript")
+            .field("session_id", &self.session_id)
+            .field("visible", &self.visible)
+            .finish_non_exhaustive()
+    }
+}
+
 impl VoiceTranscript {
+    /// The chat's checkpoint store this transcript writes through.
+    pub(super) fn checkpoints(&self) -> &dyn CheckpointStore {
+        self.checkpoints.as_ref()
+    }
+
     /// Opens the parent's durable voice transcript without starting an Agent or copying context.
     /// # Errors
     ///
@@ -79,7 +95,7 @@ impl VoiceTranscript {
     ) -> Result<Self> {
         let session_id =
             if let Some(session_id) = child_id(checkpoints.as_ref(), parent_session_id).await? {
-                session_id
+                session_id.into()
             } else {
                 let parent = checkpoints
                     .load(parent_session_id)
@@ -88,17 +104,14 @@ impl VoiceTranscript {
                 let mut child = Checkpoint::empty(uuid::Uuid::new_v4().to_string());
                 child.catalog_visible = false;
                 child.session_context = parent.session_context;
+                let session_id = Arc::clone(&child.session_id);
                 checkpoints
-                    .fork(parent_session_id, parent.sequence, &child)
+                    .fork(parent_session_id, parent.sequence, child)
                     .await?;
                 checkpoints
-                    .save_state(
-                        parent_session_id,
-                        STATE_KEY,
-                        &serde_json::json!(child.session_id),
-                    )
+                    .save_state(parent_session_id, STATE_KEY, &serde_json::json!(session_id))
                     .await?;
-                child.session_id
+                session_id
             };
         let visible = has_events(checkpoints.as_ref(), &session_id).await?;
         let cursor = checkpoints
@@ -137,7 +150,7 @@ impl VoiceTranscript {
 
     /// The linked session used for read-only previews and voice context on a later call.
     #[must_use]
-    pub fn session_id(&self) -> &str {
+    pub fn session_id(&self) -> &Arc<str> {
         &self.session_id
     }
 
@@ -302,7 +315,7 @@ impl VoiceTranscript {
             .append_event(
                 &self.session_id,
                 chrono::Utc::now().timestamp_millis(),
-                &event,
+                event,
             )
             .await?;
         if complete {
@@ -356,7 +369,7 @@ impl VoiceTranscript {
                 .append_event(
                     &self.session_id,
                     chrono::Utc::now().timestamp_millis(),
-                    &event,
+                    event,
                 )
                 .await?;
             recording.text.clear();
@@ -494,7 +507,7 @@ fn command(before: Option<u64>) -> Op {
 fn widget() -> FrontendEvent {
     FrontendEvent::Widget {
         capability: super::MANIFEST.id.into(),
-        item: FrontendWidget {
+        item: Arc::new(FrontendWidget {
             id: "voice".into(),
             slot: FrontendSlot::ComposerFooter,
             text: super::text::DEFINITION.widget_text.as_str().into(),
@@ -504,7 +517,7 @@ fn widget() -> FrontendEvent {
             progress: None,
             content: None,
             action: Some(command(None)),
-        },
+        }),
     }
 }
 
@@ -589,11 +602,12 @@ async fn preview(
         started_at_ms: summary.started_at_ms,
         id: session_id.into(),
         title: super::text::DEFINITION.transcript_title.as_str().into(),
-        subtitle: summary.voice,
+        subtitle: summary.voice.into(),
         page_id: format!(
             "{session_id}:{}",
             before.map_or_else(|| "latest".into(), |before| before.to_string())
-        ),
+        )
+        .into(),
         update: if before.is_some() {
             FrontendPreviewUpdate::Prepend
         } else {

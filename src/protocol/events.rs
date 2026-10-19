@@ -20,7 +20,7 @@ pub struct ErrorEvent {
     /// The kind.
     pub kind: ErrorKind,
     /// The message.
-    pub message: String,
+    pub message: Arc<str>,
     /// The retryable.
     pub retryable: bool,
     /// The status.
@@ -55,12 +55,13 @@ impl ErrorEvent {
             }
             crate::Error::Http(_) => (ErrorKind::Http, false, None, None),
             crate::Error::Json(_) => (ErrorKind::Json, false, None, None),
-            crate::Error::StorageFull => (ErrorKind::Storage, false, None, None),
-            crate::Error::Sqlite(_) => (ErrorKind::Storage, false, None, None),
+            crate::Error::StorageFull | crate::Error::Sqlite(_) => {
+                (ErrorKind::Storage, false, None, None)
+            }
         };
         Self {
             kind,
-            message: error.to_string(),
+            message: error.to_string().into(),
             retryable,
             status,
             retry_after,
@@ -108,7 +109,7 @@ pub enum ErrorKind {
 /// Data for warning event.
 pub struct WarningEvent {
     /// The message.
-    pub message: String,
+    pub message: Arc<str>,
 }
 
 /// A submission the agent rejected without changing durable turn state.
@@ -122,9 +123,9 @@ pub struct SubmissionRejectedEvent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionConfiguredEvent {
     /// The session identifier.
-    pub session_id: String,
+    pub session_id: Arc<str>,
     /// The context.
-    pub context: SessionContext,
+    pub context: Arc<SessionContext>,
     /// The model.
     pub model: ModelChangedEvent,
 }
@@ -133,7 +134,7 @@ pub struct SessionConfiguredEvent {
 /// Data for turn started event.
 pub struct TurnStartedEvent {
     /// The turn identifier.
-    pub turn_id: String,
+    pub turn_id: Arc<str>,
     /// The model context window.
     pub model_context_window: Option<i64>,
 }
@@ -142,16 +143,16 @@ pub struct TurnStartedEvent {
 /// Data for turn complete event.
 pub struct TurnCompleteEvent {
     /// The turn identifier.
-    pub turn_id: String,
+    pub turn_id: Arc<str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 /// Data for turn aborted event.
 pub struct TurnAbortedEvent {
     /// The turn identifier.
-    pub turn_id: String,
+    pub turn_id: Arc<str>,
     /// The reason.
-    pub reason: String,
+    pub reason: Arc<str>,
 }
 
 /// Exact durable transcript prefix selected by a message action.
@@ -377,7 +378,7 @@ pub enum ModelStepOutcome {
         /// The end turn.
         end_turn: bool,
         /// The tool call identifiers.
-        tool_call_ids: Vec<String>,
+        tool_call_ids: Vec<Arc<str>>,
         /// The usage.
         usage: TokenUsage,
     },
@@ -547,11 +548,11 @@ pub struct SessionHistoryEvent {
 /// Data for model changed event.
 pub struct ModelChangedEvent {
     /// The route.
-    pub route: String,
+    pub route: Arc<str>,
     /// The model.
-    pub model: String,
+    pub model: Arc<str>,
     /// The reasoning effort.
-    pub reasoning_effort: Option<String>,
+    pub reasoning_effort: Option<Arc<str>>,
     /// The model context window.
     pub model_context_window: Option<i64>,
 }
@@ -560,20 +561,20 @@ pub struct ModelChangedEvent {
 /// Data for session resume requested event.
 pub struct SessionResumeRequestedEvent {
     /// The session identifier.
-    pub session_id: String,
+    pub session_id: Arc<str>,
     /// The context.
-    pub context: SessionContext,
+    pub context: Arc<SessionContext>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 /// Data for tool call begin event.
 pub struct ToolCallBeginEvent {
     /// The turn identifier.
-    pub turn_id: String,
+    pub turn_id: Arc<str>,
     /// The call identifier.
-    pub call_id: String,
+    pub call_id: Arc<str>,
     /// The name.
-    pub name: String,
+    pub name: Arc<str>,
     /// The arguments.
     pub arguments: serde_json::Value,
 }
@@ -582,11 +583,11 @@ pub struct ToolCallBeginEvent {
 /// Data for tool call end event.
 pub struct ToolCallEndEvent {
     /// The turn identifier.
-    pub turn_id: String,
+    pub turn_id: Arc<str>,
     /// The call identifier.
-    pub call_id: String,
+    pub call_id: Arc<str>,
     /// The name.
-    pub name: String,
+    pub name: Arc<str>,
     /// The output.
     pub output: super::ToolContent,
     /// The is error.
@@ -597,7 +598,7 @@ pub struct ToolCallEndEvent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolLoadEvent {
     /// The turn identifier.
-    pub turn_id: String,
+    pub turn_id: Arc<str>,
     /// The load identifier.
     pub load_id: String,
     /// The catalog revision.
@@ -606,26 +607,26 @@ pub struct ToolLoadEvent {
     pub tools: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 /// Data for exec approval request event.
 pub struct ExecApprovalRequestEvent {
     /// The identifier.
-    pub id: String,
+    pub id: Arc<str>,
     /// The turn identifier.
-    pub turn_id: String,
+    pub turn_id: Arc<str>,
     /// The calls.
     pub calls: Vec<ApprovalCall>,
     /// The reason.
     pub reason: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 /// Data for approval call.
 pub struct ApprovalCall {
     /// The call identifier.
-    pub call_id: String,
+    pub call_id: Arc<str>,
     /// The name.
-    pub name: String,
+    pub name: Arc<str>,
     /// The arguments.
     pub arguments: serde_json::Value,
 }
@@ -647,7 +648,7 @@ pub enum ReviewDecision {
     Abort,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 /// Data for token usage.
 pub struct TokenUsage {
     /// The input tokens.
@@ -706,6 +707,57 @@ pub struct TokenUsageInfo {
     pub last_token_usage: TokenUsage,
     /// The model context window.
     pub model_context_window: Option<i64>,
+    /// Where the last model request's input tokens went; absent from other usage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<ContextBreakdown>,
+}
+
+/// One model request's input by part: the gateway's estimate of each, scaled so the counted
+/// parts add up to the input tokens the provider reported.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextBreakdown {
+    /// Counted parts, largest first, then deferred tools, which are listed but not counted.
+    pub parts: Vec<ContextPart>,
+    /// Tokens kept free so compaction can run before the window fills.
+    pub compaction_buffer: i64,
+}
+
+/// One part of a model request's input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextPart {
+    /// What the part holds.
+    pub kind: ContextPartKind,
+    /// Its tokens.
+    pub tokens: i64,
+    /// How many tools, prompt sections or items it holds.
+    pub items: u32,
+}
+
+/// What a part of a model request's input holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ContextPartKind {
+    /// The Bot's own prompt and the workspace's instruction files.
+    Instructions,
+    /// The skills and extensions index.
+    Skills,
+    /// What each capability tells the model about itself.
+    Capabilities,
+    /// Schemas of the tools the model can call this step.
+    Tools,
+    /// Conversation messages, attachments included.
+    Messages,
+    /// The model's tool calls.
+    ToolCalls,
+    /// What the tools returned.
+    ToolResults,
+    /// Scratchpad, tasks and hook state the gateway adds each step.
+    Memory,
+    /// Reasoning carried between steps.
+    Reasoning,
+    /// Tools the model can load on demand: listed, not in context.
+    DeferredTools,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -727,7 +779,7 @@ pub struct WebSearchBeginEvent {
     /// The model step identifier.
     pub model_step_id: Arc<str>,
     /// The call identifier.
-    pub call_id: String,
+    pub call_id: Arc<str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -740,7 +792,7 @@ pub struct WebSearchEndEvent {
     /// The model step identifier.
     pub model_step_id: Arc<str>,
     /// The call identifier.
-    pub call_id: String,
+    pub call_id: Arc<str>,
     /// The action.
     pub action: WebSearchAction,
 }

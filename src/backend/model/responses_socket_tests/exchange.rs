@@ -112,7 +112,7 @@ async fn websocket_burst_waits_for_the_event_sink_in_order() {
             delivered
                 .send(event)
                 .await
-                .map_err(|_| Error::Stopped("test event consumer closed".into()))
+                .map_err(|error| Error::Stopped(format!("test event consumer closed: {error}")))
         })
     });
     let exchange = tokio::spawn(async move { read_exchange(&mut messages, &events).await });

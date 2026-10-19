@@ -44,6 +44,10 @@ fn default_supported_tool_discovery() -> Vec<ToolDiscoveryMode> {
 }
 
 impl ProviderMetadata {
+    #[expect(
+        clippy::expect_used,
+        reason = "embedded API-key manifests always name a credential variable; provider tests build each one"
+    )]
     pub(super) fn api_key_auth(&'static self) -> ProviderAuth {
         ProviderAuth::ApiKey(
             self.credential_env
@@ -70,6 +74,7 @@ pub use super::transport::streaming_client;
 /// Additional trust roots for shared HTTP clients.
 pub use reqwest::Certificate as HttpCertificate;
 pub use reqwest::Client as HttpClient;
+pub use reqwest::Response as HttpResponse;
 /// Redirect policy for shared HTTP clients.
 pub use reqwest::redirect::Policy as HttpRedirectPolicy;
 
@@ -155,8 +160,10 @@ impl ModelCatalog {
                     .map(|reasoning| reasoning.id.as_str()),
             )?;
             if model.id.trim().is_empty()
-                || self.models[..index]
+                || self
+                    .models
                     .iter()
+                    .take(index)
                     .any(|other| other.id == model.id)
             {
                 return Err(Error::Config(format!(
@@ -300,6 +307,23 @@ pub struct ProviderBuildConfig {
     pub transport: super::ModelTransportSettings,
 }
 
+impl std::fmt::Debug for ProviderBuildConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProviderBuildConfig")
+            .field("capability", &self.capability)
+            .field("tool_discovery", &self.tool_discovery)
+            .field("credential", &self.credential)
+            .field("model", &self.model)
+            .field("base_url", &self.base_url)
+            .field("reasoning_effort", &self.reasoning_effort)
+            .field("service_tier", &self.service_tier)
+            .field("web_search", &self.web_search)
+            .field("transport", &self.transport)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Concrete pending browser and device authentication flows.
 pub use super::openai_codex::{BrowserLogin, DeviceLogin};
 
@@ -318,6 +342,15 @@ pub struct BrowserAuth {
     start: BrowserLoginStart,
     start_device: Option<DeviceLoginStart>,
     usage_limits: Option<BrowserUsageRead>,
+}
+
+impl std::fmt::Debug for BrowserAuth {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BrowserAuth")
+            .field("label", &self.label)
+            .finish_non_exhaustive()
+    }
 }
 
 impl BrowserAuth {
@@ -449,7 +482,7 @@ impl BrowserAuth {
 }
 
 /// Authentication required by a provider manifest.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub enum ProviderAuth {
     /// Selects the API key case.
     ApiKey(&'static str),
@@ -466,6 +499,16 @@ pub enum ProviderCredential {
     Browser(Arc<dyn Any + Send + Sync>),
     /// Selects the credentialless case.
     Credentialless,
+}
+
+impl std::fmt::Debug for ProviderCredential {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::ApiKey(_) => "ApiKey",
+            Self::Browser(_) => "Browser",
+            Self::Credentialless => "Credentialless",
+        })
+    }
 }
 
 impl ProviderCredential {
@@ -494,8 +537,13 @@ impl ProviderCredential {
     /// Returns an error if validation or an operation required by this function fails.
     pub fn into_browser<T: Any + Send + Sync>(self, provider: &str) -> Result<Arc<T>> {
         match self {
-            Self::Browser(credential) => Arc::downcast(credential)
-                .map_err(|_| Error::Config(format!("provider `{provider}` received wrong login"))),
+            Self::Browser(credential) => match Arc::downcast(credential) {
+                Ok(credential) => Ok(credential),
+                Err(_) => Err(Error::Config(format!(
+                    "provider `{provider}` received wrong login; expected {}",
+                    std::any::type_name::<T>()
+                ))),
+            },
             Self::ApiKey(_) | Self::Credentialless => Err(Error::Config(format!(
                 "provider `{provider}` requires browser login"
             ))),
@@ -547,6 +595,19 @@ pub struct ProviderDefinition {
     builder: ProviderBuilder,
     pub(super) replay_reasoning_field: Option<&'static str>,
     pub(super) web_search_type: Option<&'static str>,
+}
+
+impl std::fmt::Debug for ProviderDefinition {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProviderDefinition")
+            .field("id", &self.id)
+            .field("label", &self.label)
+            .field("auth", &self.auth)
+            .field("default_model", &self.default_model)
+            .field("default_base_url", &self.default_base_url)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ProviderDefinition {
@@ -811,7 +872,7 @@ impl ProviderDefinition {
                 config.reasoning_effort = self
                     .model(&config.model)
                     .and_then(|model| model.default_reasoning.as_deref())
-                    .map(str::to_string);
+                    .map(str::to_owned);
             }
             self.build_config_is_valid(
                 &config.model,
@@ -886,8 +947,7 @@ impl ProviderDefinition {
             && !preset.reasoning.iter().any(|preset| preset.id == effort)
         {
             return Err(Error::Config(format!(
-                "model `{}` does not support reasoning effort `{effort}`",
-                model
+                "model `{model}` does not support reasoning effort `{effort}`"
             )));
         }
         Ok(())
@@ -999,6 +1059,10 @@ pub fn providers() -> &'static [ProviderDefinition] {
 
 /// Returns the provider used by an unconfigured composition.
 #[must_use]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "PROVIDERS is a non-empty static list; provider tests read its first entry"
+)]
 pub fn default_provider() -> &'static ProviderDefinition {
     &PROVIDERS[0]
 }
@@ -1045,7 +1109,9 @@ mod tests {
                     http: reqwest::Client::new(),
                     transport: super::super::ModelTransportSettings::default(),
                 });
-                if !definition.supports_tool_discovery(discovery) {
+                if definition.supports_tool_discovery(discovery) {
+                    assert_eq!(built.unwrap().tool_discovery(), discovery, "{id}");
+                } else {
                     assert!(
                         built
                             .err()
@@ -1053,8 +1119,6 @@ mod tests {
                             .to_string()
                             .contains("does not support Native tool discovery")
                     );
-                } else {
-                    assert_eq!(built.unwrap().tool_discovery(), discovery, "{id}");
                 }
             }
         }
@@ -1204,7 +1268,7 @@ mod tests {
                     model: definition
                         .default_model()
                         .unwrap_or("test-model")
-                        .to_string(),
+                        .to_owned(),
                     base_url: Some("https://proxy.example/v1".into()),
                     reasoning_effort: None,
                     service_tier: None,

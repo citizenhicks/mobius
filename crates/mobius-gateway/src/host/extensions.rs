@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    Arc, ConfigStore, Error, GatewayConfig, GatewayHost, GatewayState, Ordering, ReadyPayload,
+    Rejection, ServerFrame, ServerMessage, finish_publication, gateway_ready_after_unlock,
+    internal, invalid_config,
+};
 use crate::extensions::ExtensionStore;
 
 impl GatewayHost {
@@ -10,16 +14,16 @@ impl GatewayHost {
     ) -> std::result::Result<ReadyPayload, Rejection> {
         let (mutation, store) = {
             let state = self.state.lock().await;
-            (Arc::clone(&state.extension_mutations), state.store.clone())
+            (Arc::clone(&state.extension_mutations), state.store.clone()) // rules-allow: lock_owned and staging run after the state lock is released
         };
         let _extension_mutation = mutation.lock_owned().await;
         let staged = ExtensionStore::new(&store)
             .stage(&source, reference.as_deref(), subdirectory.as_deref())
             .await
             .map_err(invalid_config)?;
-        let staged_digest = staged.installed.digest.clone();
+        let staged_digest = Arc::clone(&staged.installed.digest);
         let snapshot_created = staged.snapshot_created;
-        let id = staged.id.clone();
+        let id = Arc::clone(&staged.id);
         let result = async {
             let sessions_guard = self.begin_exclusive_mutation().await?;
             let state = self.state.lock().await;
@@ -31,12 +35,13 @@ impl GatewayHost {
                         staged.id
                     ))));
                 }
-                let mut next = current.clone();
+                let mut next = current.clone(); // rules-allow: the live configuration stays unchanged until the new one is saved
+                drop(current);
                 next.installed_extensions
                     .insert(staged.id, staged.installed);
                 next
             };
-            let Some(publication) = self.commit_extensions(&state, next)? else {
+            let Some(publication) = Self::commit_extensions(&state, next)? else {
                 return gateway_ready_after_unlock(state).await;
             };
             drop(state);
@@ -55,11 +60,11 @@ impl GatewayHost {
 
     pub(crate) async fn update_extension(
         &self,
-        id: String,
+        id: Arc<str>,
     ) -> std::result::Result<ReadyPayload, Rejection> {
         let (mutation, store) = {
             let state = self.state.lock().await;
-            (Arc::clone(&state.extension_mutations), state.store.clone())
+            (Arc::clone(&state.extension_mutations), state.store.clone()) // rules-allow: lock_owned and staging run after the state lock is released
         };
         let _extension_mutation = mutation.lock_owned().await;
         let installed = {
@@ -67,9 +72,9 @@ impl GatewayHost {
             let config = state.config()?;
             config
                 .installed_extensions
-                .get(&id)
+                .get(&*id)
                 // Asynchronous staging retains the original installation for concurrent-change validation.
-                .cloned()
+                .cloned() // rules-allow: the original installation validates concurrent changes after staging
                 .ok_or_else(|| unknown_extension(&id))?
         };
         let mut staged = ExtensionStore::new(&store)
@@ -81,8 +86,11 @@ impl GatewayHost {
             .await
             .map_err(invalid_config)?;
         if staged.id != id || staged.installed.kind != installed.kind {
-            if staged.snapshot_created {
-                let _ = ExtensionStore::new(&store).remove_snapshot(&staged.installed.digest);
+            if staged.snapshot_created
+                && let Err(error) =
+                    ExtensionStore::new(&store).remove_snapshot(&staged.installed.digest)
+            {
+                tracing::warn!(%error, "failed to remove a rejected extension snapshot");
             }
             return Err(invalid_config(Error::Config(
                 "an extension update cannot change package identity".into(),
@@ -94,25 +102,26 @@ impl GatewayHost {
                 .trusted_hook_digest
                 .clone_from(&installed.trusted_hook_digest);
         }
-        let staged_digest = staged.installed.digest.clone();
+        let staged_digest = Arc::clone(&staged.installed.digest);
         let snapshot_created = staged.snapshot_created;
         let result = async {
             let sessions_guard = self.begin_exclusive_mutation().await?;
             let state = self.state.lock().await;
             let next = {
                 let current = state.config()?;
-                if current.installed_extensions.get(&id) != Some(&installed) {
+                if current.installed_extensions.get(&*id) != Some(&installed) {
                     return Err(Rejection::new(
                         "extension_changed",
                         format!("extension `{id}` changed while its update was prepared"),
                     ));
                 }
-                let mut next = current.clone();
+                let mut next = current.clone(); // rules-allow: the live configuration stays unchanged until the new one is saved
+                drop(current);
                 next.installed_extensions
-                    .insert(id.clone(), staged.installed);
+                    .insert(Arc::clone(&id), staged.installed);
                 next
             };
-            let Some(publication) = self.commit_extensions(&state, next)? else {
+            let Some(publication) = Self::commit_extensions(&state, next)? else {
                 return gateway_ready_after_unlock(state).await;
             };
             drop(state);
@@ -131,7 +140,7 @@ impl GatewayHost {
 
     pub(crate) async fn uninstall_extension(
         &self,
-        id: String,
+        id: Arc<str>,
     ) -> std::result::Result<ReadyPayload, Rejection> {
         let mutation = {
             let state = self.state.lock().await;
@@ -145,7 +154,7 @@ impl GatewayHost {
             .bots()
             .map_err(internal)?
             .into_iter()
-            .find(|bot| bot.config.config.extensions.contains(&id))
+            .find(|bot| bot.config.config.extensions.contains(&*id))
             .map(|bot| format!("Bot @{}", bot.handle));
         let next = {
             let current = state.config()?;
@@ -153,7 +162,7 @@ impl GatewayHost {
                 current
                     .bot_defaults
                     .as_ref()
-                    .filter(|agent| agent.config.extensions.contains(&id))
+                    .filter(|agent| agent.config.extensions.contains(&*id))
                     .map(|_| "the default Bot template".to_owned())
             });
             if let Some(selected_by) = selected_by {
@@ -164,13 +173,14 @@ impl GatewayHost {
                     ),
                 ));
             }
-            let mut next = current.clone();
+            let mut next = current.clone(); // rules-allow: the live configuration stays unchanged until the new one is saved
+            drop(current);
             next.installed_extensions
-                .remove(&id)
+                .remove(&*id)
                 .ok_or_else(|| unknown_extension(&id))?;
             next
         };
-        let Some(publication) = self.commit_extensions(&state, next)? else {
+        let Some(publication) = Self::commit_extensions(&state, next)? else {
             return gateway_ready_after_unlock(state).await;
         };
         drop(state);
@@ -182,8 +192,8 @@ impl GatewayHost {
 
     pub(crate) async fn set_extension_hooks_trusted(
         &self,
-        id: String,
-        expected_digest: String,
+        id: Arc<str>,
+        expected_digest: Arc<str>,
         trusted: bool,
     ) -> std::result::Result<ReadyPayload, Rejection> {
         let mutation = {
@@ -195,10 +205,11 @@ impl GatewayHost {
         let state = self.state.lock().await;
         let next = {
             let current = state.config()?;
-            let mut next = current.clone();
+            let mut next = current.clone(); // rules-allow: the live configuration stays unchanged until the new one is saved
+            drop(current);
             let installed = next
                 .installed_extensions
-                .get_mut(&id)
+                .get_mut(&*id)
                 .ok_or_else(|| unknown_extension(&id))?;
             if installed.digest != expected_digest {
                 return Err(Rejection::new(
@@ -211,10 +222,10 @@ impl GatewayHost {
                     "extension `{id}` has no executable hooks"
                 ))));
             }
-            installed.trusted_hook_digest = trusted.then(|| installed.digest.clone());
+            installed.trusted_hook_digest = trusted.then(|| Arc::clone(&installed.digest));
             next
         };
-        let Some(publication) = self.commit_extensions(&state, next)? else {
+        let Some(publication) = Self::commit_extensions(&state, next)? else {
             return gateway_ready_after_unlock(state).await;
         };
         drop(state);
@@ -225,7 +236,6 @@ impl GatewayHost {
     }
 
     fn commit_extensions(
-        &self,
         state: &GatewayState,
         next: GatewayConfig,
     ) -> std::result::Result<Option<crate::publication::Outcome>, Rejection> {
@@ -236,9 +246,14 @@ impl GatewayHost {
         let publication =
             crate::publication::Outcome::applied(state.store.save(&next)).map_err(internal)?;
         *current = next;
+        drop(current);
         Ok(Some(publication))
     }
 
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the state lock moves into gateway_ready_after_unlock"
+    )]
     async fn finish_extension_mutation(
         &self,
         id: &str,
@@ -257,9 +272,11 @@ impl GatewayHost {
         }
         drop(cache);
         let payload = gateway_ready_after_unlock(state).await?;
-        let _ = self.events.send(ServerFrame::new(ServerMessage::Ready {
-            payload: payload.clone(),
-        }));
+        if let Err(error) = self.events.send(ServerFrame::new(ServerMessage::Ready {
+            payload: payload.clone(), // rules-allow: the broadcast and the requester each own the ready payload
+        })) {
+            tracing::debug!(%error, "ready payload had no subscribers");
+        }
         Ok(payload)
     }
 
@@ -278,11 +295,11 @@ impl GatewayHost {
                 config
                     .installed_extensions
                     .values()
-                    .any(|extension| extension.digest == digest)
+                    .any(|extension| *extension.digest == *digest)
             })
         };
-        if !referenced {
-            let _ = ExtensionStore::new(store).remove_snapshot(digest);
+        if !referenced && let Err(error) = ExtensionStore::new(store).remove_snapshot(digest) {
+            tracing::warn!(%error, "failed to remove an unreferenced extension snapshot");
         }
     }
 }
@@ -302,6 +319,7 @@ mod tests {
     use crate::bots::BotStore;
     use crate::config::{ConfigStore, CredentialStore};
     use crate::extensions::{ExtensionSource, InstalledExtension};
+    use crate::wire::AgentComposition;
     use crate::wire::{ExtensionHookRecord, ExtensionKind};
 
     const EXTENSION_ID: &str = "skill:fixture";
@@ -360,10 +378,10 @@ mod tests {
                 reference: None,
                 subdirectory: None,
             },
-            resolved_revision: "a".repeat(40),
-            digest: "b".repeat(64),
-            skills: vec!["fixture".into()],
-            hooks: Vec::new(),
+            resolved_revision: "a".repeat(40).into(),
+            digest: "b".repeat(64).into(),
+            skills: Arc::from(["fixture".into()]),
+            hooks: Vec::new().into(),
             trusted_hook_digest: None,
         }
     }
@@ -402,23 +420,23 @@ mod tests {
         let previous = InstalledExtension {
             kind: ExtensionKind::Plugin,
             name: "fixture".into(),
-            description: String::new(),
+            description: String::new().into(),
             version: None,
             source: ExtensionSource {
                 url: "https://example.com/fixture.git".into(),
                 reference: None,
                 subdirectory: None,
             },
-            resolved_revision: "c".repeat(40),
-            digest: previous_digest.clone(),
-            skills: Vec::new(),
-            hooks: vec![hook.clone()],
-            trusted_hook_digest: Some(previous_digest),
+            resolved_revision: "c".repeat(40).into(),
+            digest: previous_digest.clone().into(),
+            skills: Vec::new().into(),
+            hooks: Arc::from([hook.clone()]),
+            trusted_hook_digest: Some(previous_digest.into()),
         };
         let mut next = InstalledExtension {
-            digest: "b".repeat(64),
+            digest: "b".repeat(64).into(),
             trusted_hook_digest: None,
-            hooks: vec![hook],
+            hooks: Arc::from([hook]),
             ..previous.clone()
         };
 

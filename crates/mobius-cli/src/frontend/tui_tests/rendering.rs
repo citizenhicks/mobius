@@ -74,10 +74,8 @@ fn transcript_viewport_matches_full_paragraph_for_unicode_scroll_and_resize() {
         reference
             .transcript_viewport
             .update(rendered_lines, usize::from(area.height));
-        let paragraph_scroll = reference
-            .transcript_viewport
-            .effective_scroll()
-            .min(usize::from(u16::MAX)) as u16;
+        let paragraph_scroll = reference.transcript_viewport.effective_scroll();
+        let paragraph_scroll = u16::try_from(paragraph_scroll).unwrap_or(u16::MAX);
         let mut reference_terminal =
             Terminal::new(TestBackend::new(width, height)).expect("reference terminal");
         reference_terminal
@@ -171,10 +169,8 @@ fn transcript_viewport_matches_full_paragraph_for_unicode_scroll_and_resize() {
         preview
             .viewport
             .update(rendered_lines, usize::from(inner.height));
-        let paragraph_scroll = preview
-            .viewport
-            .effective_scroll()
-            .min(usize::from(u16::MAX)) as u16;
+        let paragraph_scroll = preview.viewport.effective_scroll();
+        let paragraph_scroll = u16::try_from(paragraph_scroll).unwrap_or(u16::MAX);
         let mut reference_terminal =
             Terminal::new(TestBackend::new(width, height)).expect("reference preview terminal");
         reference_terminal
@@ -227,8 +223,8 @@ fn transcript_viewport_matches_full_paragraph_for_unicode_scroll_and_resize() {
         state.streaming = "streaming λ界 ".repeat(8);
         state.reasoning = "reasoning e\u{301} 👩‍💻".into();
         state.widgets.push((
-            ("test".into(), "tail".into()),
-            FrontendWidget {
+            "test".into(),
+            Arc::new(FrontendWidget {
                 id: "tail".into(),
                 slot: FrontendSlot::TranscriptTail,
                 text: "tail λ界".into(),
@@ -238,7 +234,7 @@ fn transcript_viewport_matches_full_paragraph_for_unicode_scroll_and_resize() {
                 progress: None,
                 content: None,
                 action: None,
-            },
+            }),
         ));
         state
     }

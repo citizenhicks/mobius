@@ -29,7 +29,7 @@ pub(super) trait OpenAiAuthorization: Send + Sync {
 pub(super) struct ApiKeyAuthorization(Arc<str>);
 
 impl ApiKeyAuthorization {
-    pub fn new(api_key: String) -> Self {
+    pub(super) fn new(api_key: String) -> Self {
         Self(api_key.into())
     }
 }

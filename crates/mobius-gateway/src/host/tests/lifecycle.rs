@@ -103,17 +103,18 @@ async fn concurrent_catalog_updates_preserve_both_fields_for_resident_and_stoppe
         let sessions = latest_sessions.expect("broadcast catalog");
         let session = sessions
             .iter()
-            .find(|session| session.session_id == session_id)
+            .find(|session| session.session_id == *session_id)
             .expect("broadcast session");
         assert_eq!(session.title.as_deref(), Some("Updated title"));
         assert!(session.pinned);
         let ready = gateway.ready().await.expect("ready catalog");
         assert!(ready.sessions.iter().any(|session| {
-            session.session_id == session_id
+            session.session_id == *session_id
                 && session.title.as_deref() == Some("Updated title")
                 && session.pinned
         }));
     }
+    drop(gateway);
 }
 
 #[tokio::test]
@@ -134,7 +135,7 @@ async fn durable_event_journal_restores_complete_turn_pages() {
         .await
         .expect("create session");
     let checkpoints = Arc::clone(&gateway.state.lock().await.checkpoints);
-    let session_id = host.session_id().to_owned();
+    let session_id = host.session_id().to_string();
     assert!(host.stop_if_idle().await);
     gateway.state.lock().await.sessions.remove(&session_id);
     drop(host);
@@ -168,7 +169,7 @@ async fn durable_event_journal_restores_complete_turn_pages() {
             .append_event(
                 &session_id,
                 i64::try_from(index).expect("timestamp"),
-                &Event {
+                Event {
                     submission_id: None,
                     msg: event,
                 },
@@ -183,7 +184,7 @@ async fn durable_event_journal_restores_complete_turn_pages() {
         .append_event(
             &session_id,
             6,
-            &Event {
+            Event {
                 submission_id: None,
                 msg: EventMsg::Frontend(FrontendEvent::Preview {
                     symbol: None,
@@ -191,7 +192,7 @@ async fn durable_event_journal_restores_complete_turn_pages() {
                     started_at_ms: None,
                     id: "transient".into(),
                     title: "Transient".into(),
-                    subtitle: String::new(),
+                    subtitle: String::new().into(),
                     page_id: "transient:latest".into(),
                     update: mobius::protocol::FrontendPreviewUpdate::Replace,
                     events: Vec::new(),
@@ -207,6 +208,7 @@ async fn durable_event_journal_restores_complete_turn_pages() {
         .open_session(&session_id)
         .await
         .expect("reopen session");
+    drop(gateway);
     let snapshot = reopened.snapshot(None).await.expect("session snapshot");
     let older = reopened
         .history_page(snapshot.ready.next_before_sequence)
@@ -231,9 +233,9 @@ async fn durable_event_journal_restores_complete_turn_pages() {
                 event: Event { msg: EventMsg::TurnComplete(completed), .. },
                 ..
             }
-        ] if started.turn_id == "older"
-            && warning.message == "older work"
-            && completed.turn_id == "older"
+        ] if &*started.turn_id == "older"
+            && &*warning.message == "older work"
+            && &*completed.turn_id == "older"
     ));
 }
 
@@ -257,8 +259,8 @@ async fn delete_sessions_preflight_all_roots_before_durable_removal() {
     let other_host = create_test_session(&gateway, &workspace)
         .await
         .expect("create other root session");
-    let root_id = root_host.session_id().to_owned();
-    let other_id = other_host.session_id().to_owned();
+    let root_id = root_host.session_id().to_string();
+    let other_id = other_host.session_id().to_string();
     let checkpoints = Arc::clone(&gateway.state.lock().await.checkpoints);
     let root_checkpoint = checkpoints
         .load(&root_id)
@@ -266,9 +268,9 @@ async fn delete_sessions_preflight_all_roots_before_durable_removal() {
         .expect("load root")
         .expect("root checkpoint");
     let mut child = Checkpoint::empty("child");
-    child.session_context = root_checkpoint.session_context.clone();
+    child.session_context = Arc::clone(&root_checkpoint.session_context);
     checkpoints
-        .fork(&root_id, root_checkpoint.sequence, &child)
+        .fork(&root_id, root_checkpoint.sequence, child.clone())
         .await
         .expect("fork child");
 
@@ -287,8 +289,10 @@ async fn delete_sessions_preflight_all_roots_before_durable_removal() {
     let (commands, mut receiver) = mpsc::channel(1);
     tokio::spawn(async move {
         for _ in 0..2 {
-            if let Some(HostCommand::ProviderCutoverStatus { reply }) = receiver.recv().await {
-                let _ = reply.send(ProviderCutoverStatus { idle: false });
+            if let Some(HostCommand::ProviderCutoverStatus { reply }) = receiver.recv().await
+                && reply.send(ProviderCutoverStatus { idle: false }).is_err()
+            {
+                tracing::debug!("cutover status requester stopped waiting");
             }
         }
     });
@@ -310,15 +314,14 @@ async fn delete_sessions_preflight_all_roots_before_durable_removal() {
     );
 
     let purge_error = super::super::deletion::prepare_session_tree_deletion(
-        &mut *gateway.state.lock().await,
+        &*gateway.state.lock().await,
         &["child".into()],
         mobius::backend::session_files::SessionFileSelection::Origins(vec![
             mobius::backend::session_files::SessionFileOrigin::Artifact,
         ]),
     )
     .await
-    .err()
-    .expect("busy purge rejected");
+    .expect_err("busy purge rejected");
     assert_eq!(purge_error.code, "agent_busy");
 
     let error = gateway
@@ -337,6 +340,7 @@ async fn delete_sessions_preflight_all_roots_before_durable_removal() {
     assert!(state.sessions.contains_key(&other_id));
     assert!(state.sessions.contains_key("child"));
     drop(state);
+    drop(gateway);
     assert!(
         checkpoints
             .load(&other_id)
@@ -365,7 +369,7 @@ async fn opening_a_chat_rejects_tampered_bot_identity() {
     let host = create_test_session(&gateway, &workspace)
         .await
         .expect("create session");
-    let session_id = host.session_id().to_owned();
+    let session_id = host.session_id().to_string();
     assert!(host.stop_if_idle().await);
     while host.is_alive() {
         tokio::task::yield_now().await;
@@ -375,17 +379,17 @@ async fn opening_a_chat_rejects_tampered_bot_identity() {
         .await
         .expect("load checkpoint")
         .expect("checkpoint");
-    checkpoint.session_context.owner_id = Uuid::new_v4().to_string();
+    Arc::make_mut(&mut checkpoint.session_context).owner_id = Uuid::new_v4().to_string().into();
     checkpoint.sequence += 1;
     checkpoints
-        .save(&checkpoint, &[], None)
+        .save(checkpoint.clone(), Vec::new(), None)
         .await
         .expect("save tampered checkpoint");
 
-    let rejection = match gateway.open_session(&session_id).await {
-        Ok(_) => panic!("tampered Bot identity must be rejected"),
-        Err(rejection) => rejection,
+    let Err(rejection) = gateway.open_session(&session_id).await else {
+        panic!("tampered Bot identity must be rejected");
     };
+    drop(gateway);
     assert_eq!(rejection.code, "invalid_session_bot");
 }
 
@@ -407,7 +411,7 @@ async fn message_pins_accept_only_assistant_messages_and_survive_reopen() {
         .await
         .expect("create session");
     let checkpoints = Arc::clone(&gateway.state.lock().await.checkpoints);
-    let session_id = host.session_id().to_owned();
+    let session_id = host.session_id().to_string();
     assert!(host.stop_if_idle().await);
     gateway.state.lock().await.sessions.remove(&session_id);
     drop(host);
@@ -419,8 +423,8 @@ async fn message_pins_accept_only_assistant_messages_and_survive_reopen() {
     checkpoint.sequence += 1;
     checkpoints
         .save(
-            &checkpoint,
-            &[
+            checkpoint.clone(),
+            vec![
                 Arc::new(serde_json::json!({"type": "message", "role": "user", "content": []})),
                 Arc::new(
                     serde_json::json!({"type": "message", "role": "assistant", "content": []}),
@@ -463,6 +467,7 @@ async fn message_pins_accept_only_assistant_messages_and_survive_reopen() {
     drop(opened);
 
     let reopened = gateway.open_session(&session_id).await.expect("reopen");
+    drop(gateway);
     let ready = reopened.ready().await.expect("ready");
     assert_eq!(
         ready.pinned_messages.into_iter().collect::<Vec<_>>(),

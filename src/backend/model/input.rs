@@ -32,15 +32,15 @@ impl<'a> Source<'a> {
 
     fn prefix(self, end: usize) -> Self {
         match self {
-            Self::Values(items) => Self::Values(&items[..end]),
-            Self::Shared(items) => Self::Shared(&items[..end]),
+            Self::Values(items) => Self::Values(items.get(..end).unwrap_or(items)),
+            Self::Shared(items) => Self::Shared(items.get(..end).unwrap_or(items)),
         }
     }
 
     fn suffix(self, start: usize) -> Self {
         match self {
-            Self::Values(items) => Self::Values(&items[start..]),
-            Self::Shared(items) => Self::Shared(&items[start..]),
+            Self::Values(items) => Self::Values(items.get(start..).unwrap_or_default()),
+            Self::Shared(items) => Self::Shared(items.get(start..).unwrap_or_default()),
         }
     }
 }
@@ -125,7 +125,7 @@ impl<'a> ModelInput<'a> {
 
     /// Iterates over the logical sequence while borrowing every item.
     pub fn iter(self) -> impl ExactSizeIterator<Item = &'a Value> + DoubleEndedIterator + Clone {
-        (0..self.len()).map(move |index| self.get(index).expect("model input index is in bounds"))
+        Items(self)
     }
 
     /// Takes at most the first `end` items without copying them.
@@ -187,9 +187,42 @@ impl<'a> From<&'a Vec<Arc<Value>>> for ModelInput<'a> {
     }
 }
 
+#[derive(Clone)]
+struct Items<'a>(ModelInput<'a>);
+
+impl<'a> Iterator for Items<'a> {
+    type Item = &'a Value;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let item = self.0.get(0)?;
+        self.0 = self.0.suffix(1);
+        Some(item)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = self.0.len();
+        (len, Some(len))
+    }
+}
+
+impl DoubleEndedIterator for Items<'_> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        let last = self.0.len().checked_sub(1)?;
+        let item = self.0.get(last)?;
+        self.0 = self.0.prefix(last);
+        Some(item)
+    }
+}
+
+impl ExactSizeIterator for Items<'_> {}
+
 impl Index<usize> for ModelInput<'_> {
     type Output = Value;
 
+    #[expect(
+        clippy::expect_used,
+        reason = "Index panics on an out-of-bounds position, like slice indexing; get is the checked form"
+    )]
     fn index(&self, index: usize) -> &Self::Output {
         self.get(index).expect("model input index is in bounds")
     }

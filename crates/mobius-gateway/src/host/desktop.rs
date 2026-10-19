@@ -1,10 +1,13 @@
-use super::*;
+use super::{
+    Arc, GatewayHost, Rejection, RemoteDesktop, Uuid, invalid_bot, invalid_config,
+    require_catalog_session,
+};
 use futures_util::StreamExt as _;
 
 const DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 struct Takeover {
-    remote: Arc<RemoteDesktop>,
+    remote: Option<Arc<RemoteDesktop>>,
     drain: Option<tokio::task::JoinHandle<()>>,
     granted: bool,
 }
@@ -14,11 +17,15 @@ impl Drop for Takeover {
         if self.granted {
             return;
         }
-        let remote = Arc::clone(&self.remote);
+        let Some(remote) = self.remote.take() else {
+            return;
+        };
         let drain = self.drain.take();
         tokio::spawn(async move {
-            if let Some(drain) = drain {
-                let _ = drain.await;
+            if let Some(drain) = drain
+                && let Err(error) = drain.await
+            {
+                tracing::warn!(%error, "desktop execution drain failed");
             }
             remote.cancel_takeover().await;
         });
@@ -78,9 +85,9 @@ impl GatewayHost {
         self.remote_desktop
             .begin_takeover()
             .map_err(invalid_config)?;
-        let gateway = self.clone();
+        let gateway = self.clone(); // rules-allow: the spawned drain task owns a gateway handle
         let mut takeover = Takeover {
-            remote: Arc::clone(&self.remote_desktop),
+            remote: Some(Arc::clone(&self.remote_desktop)),
             granted: false,
             drain: Some(tokio::spawn(async move {
                 gateway.drain_desktop_execution().await;
@@ -88,13 +95,16 @@ impl GatewayHost {
         };
         tokio::time::timeout(
             DRAIN_TIMEOUT,
-            takeover.drain.as_mut().expect("the drain is installed"),
+            takeover
+                .drain
+                .as_mut()
+                .ok_or_else(|| invalid_config("the desktop execution drain is missing"))?,
         )
         .await
-        .map_err(|_| {
-            invalid_config(
-                "execution cleanup timed out; the desktop remains view-only while cleanup finishes",
-            )
+        .map_err(|error| {
+            invalid_config(format!(
+                "execution cleanup timed out; the desktop remains view-only while cleanup finishes: {error}"
+            ))
         })?
         .map_err(invalid_config)?;
         takeover.drain.take();
@@ -103,13 +113,14 @@ impl GatewayHost {
             self.remote_desktop.grant_control(connection, session_id),
         )
         .await
-        .map_err(|_| {
-            invalid_config(
-                "execution cleanup timed out; the desktop remains view-only while cleanup finishes",
-            )
+        .map_err(|error| {
+            invalid_config(format!(
+                "execution cleanup timed out; the desktop remains view-only while cleanup finishes: {error}"
+            ))
         })?
         .map_err(invalid_config)?;
         takeover.granted = true;
+        drop(takeover);
         Ok(())
     }
 
@@ -139,6 +150,10 @@ mod tests {
     use super::*;
 
     #[tokio::test(start_paused = true)]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the remote desktop keeps the change channel open while the test waits"
+    )]
     async fn granted_takeover_does_not_schedule_stale_cancellation() {
         let directory = tempfile::tempdir().unwrap();
         let remote = Arc::new(RemoteDesktop::new(
@@ -148,7 +163,7 @@ mod tests {
         ));
         let mut changed = remote.subscribe();
         drop(Takeover {
-            remote: Arc::clone(&remote),
+            remote: Some(Arc::clone(&remote)),
             drain: None,
             granted: true,
         });

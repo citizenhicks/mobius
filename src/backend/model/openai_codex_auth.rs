@@ -74,7 +74,7 @@ const MAX_USAGE_WINDOW_SECONDS: u64 = 366 * 24 * 60 * 60;
 const MAX_USAGE_RESET_AT: i64 = 253_402_300_799;
 
 pub(super) struct ChatGptAuth {
-    path: PathBuf,
+    path: Arc<Path>,
     client: Client,
     credential: Mutex<OAuthCredential>,
 }
@@ -96,6 +96,25 @@ pub struct DeviceLogin {
     device_auth_id: String,
     interval: Duration,
     client: Client,
+}
+
+impl std::fmt::Debug for BrowserLogin {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BrowserLogin")
+            .field("settings", &self.settings)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for DeviceLogin {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DeviceLogin")
+            .field("settings", &self.settings)
+            .field("interval", &self.interval)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -122,7 +141,8 @@ struct DeviceUserCodeRequest {
 #[derive(Deserialize)]
 struct DeviceUserCodeResponse {
     device_auth_id: String,
-    #[serde(alias = "usercode")]
+    // The device-code endpoint has returned both spellings.
+    #[serde(alias = "usercode")] // rules-allow: external API spelling
     user_code: String,
     interval: String,
 }
@@ -152,7 +172,7 @@ impl ChatGptAuth {
         path: impl Into<PathBuf>,
         settings: super::super::ModelTransportSettings,
     ) -> Result<Self> {
-        let path = path.into();
+        let path: Arc<Path> = path.into().into();
         let credential = read_credential(&path)?;
         Ok(Self {
             path,
@@ -182,7 +202,7 @@ impl ChatGptAuth {
             return Ok(resolved(&credential));
         }
 
-        let path = self.path.clone();
+        let path = Arc::clone(&self.path);
         let (lock, saved) = tokio::task::spawn_blocking(move || {
             let lock = acquire_lock(&path)?;
             let saved = read_credential(&path)?;
@@ -196,15 +216,17 @@ impl ChatGptAuth {
         }
 
         let refreshed = refresh_token(&self.client, &saved.refresh).await?;
-        let path = self.path.clone();
+        let path = Arc::clone(&self.path);
         let (refreshed, durability) =
             tokio::task::spawn_blocking(move || write_credential(&path, refreshed))
                 .await
                 .map_err(|error| Error::Auth(format!("credential save task failed: {error}")))??;
         *credential = refreshed;
+        let authorization = resolved(&credential);
+        drop(credential);
         drop(lock);
         durability?;
-        Ok(resolved(&credential))
+        Ok(authorization)
     }
 
     async fn usage_limits(&self) -> Result<Vec<UsageLimit>> {
@@ -233,7 +255,7 @@ impl ChatGptAuth {
                     "ChatGPT usage request failed with HTTP {status}"
                 )));
             }
-            return parse_usage_limits(bounded_json(response, "usage").await?);
+            return parse_usage_limits(&bounded_json(response, "usage").await?);
         }
         unreachable!("usage authorization retry is bounded")
     }
@@ -245,7 +267,7 @@ impl BrowserLogin {
         let (verifier, challenge) = pkce();
         let state = Uuid::new_v4().simple().to_string();
         let redirect = reqwest::Url::parse(&MANIFEST.redirect_uri)
-            .map_err(|_| Error::Config("invalid OAuth redirect URI".into()))?;
+            .map_err(|error| Error::Config(format!("invalid OAuth redirect URI: {error}")))?;
         if redirect.scheme() != "http" || redirect.host_str() != Some("localhost") {
             return Err(Error::Config(
                 "OAuth callback must use HTTP localhost".into(),
@@ -288,7 +310,9 @@ impl BrowserLogin {
 
     /// Opens the authorization URL with the platform's default browser.
     pub fn open_browser(&self) {
-        let _ = open_browser(&self.url);
+        if let Err(error) = open_browser(&self.url) {
+            tracing::warn!(%error, "could not open the browser for ChatGPT login");
+        }
     }
 
     /// Completes authentication and stores the credential at the given path.
@@ -304,7 +328,7 @@ impl BrowserLogin {
             ),
         )
         .await
-        .map_err(|_| Error::Auth("ChatGPT login timed out".into()))??;
+        .map_err(|error| Error::Auth(format!("ChatGPT login timed out: {error}")))??;
         let credential = exchange_code(
             &self.client,
             &code,
@@ -343,7 +367,9 @@ impl DeviceLogin {
             .interval
             .trim()
             .parse::<u64>()
-            .map_err(|_| Error::Auth("ChatGPT device-code interval was invalid".into()))?
+            .map_err(|error| {
+                Error::Auth(format!("ChatGPT device-code interval was invalid: {error}"))
+            })?
             .clamp(1, 30);
         Ok(Self {
             user_code: response.user_code,
@@ -375,7 +401,7 @@ impl DeviceLogin {
             self.finish_inner(path),
         )
         .await
-        .map_err(|_| Error::Auth("ChatGPT device-code login timed out".into()))?
+        .map_err(|error| Error::Auth(format!("ChatGPT device-code login timed out: {error}")))?
     }
 
     async fn finish_inner(self, path: PathBuf) -> Result<()> {
@@ -438,8 +464,12 @@ where
         }
         body.extend_from_slice(&chunk);
     }
-    serde_json::from_slice(&body)
-        .map_err(|_| Error::Auth(format!("ChatGPT {operation} response was invalid")))
+    serde_json::from_slice(&body).map_err(|error| {
+        Error::Auth(format!(
+            "ChatGPT {operation} response was invalid: {}",
+            json_error_summary(&error)
+        ))
+    })
 }
 
 async fn save_login_credential(path: PathBuf, credential: OAuthCredential) -> Result<()> {
@@ -459,7 +489,7 @@ fn http_client_with_settings(settings: &super::super::ModelTransportSettings) ->
         .build()?)
 }
 
-fn parse_usage_limits(payload: Value) -> Result<Vec<UsageLimit>> {
+fn parse_usage_limits(payload: &Value) -> Result<Vec<UsageLimit>> {
     let payload = payload
         .as_object()
         .ok_or_else(|| Error::Auth("ChatGPT usage response was not an object".into()))?;
@@ -560,7 +590,7 @@ fn parse_usage_window(
     };
     Ok(Some(UsageLimit {
         id: format!("{bucket_id}:{suffix}"),
-        label: label.to_string(),
+        label: label.to_owned(),
         remaining_fraction: 1.0 - used_percent / 100.0,
         window_seconds,
         resets_at,
@@ -571,7 +601,7 @@ fn required_usage_name(value: Option<&Value>, field: &str) -> Result<String> {
     value
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty() && value.len() <= MAX_USAGE_LABEL_BYTES)
-        .map(str::to_string)
+        .map(str::to_owned)
         .ok_or_else(|| Error::Auth(format!("ChatGPT usage response contained invalid {field}")))
 }
 
@@ -614,7 +644,7 @@ async fn wait_for_callback_with_settings(
             }
         };
         let redirect = reqwest::Url::parse(&MANIFEST.redirect_uri)
-            .map_err(|_| Error::Config("invalid OAuth redirect URI".into()))?;
+            .map_err(|error| Error::Config(format!("invalid OAuth redirect URI: {error}")))?;
         if request.path() != redirect.path() {
             respond(&mut stream, "404 Not Found", "Callback route not found.").await?;
             continue;
@@ -670,7 +700,7 @@ async fn read_callback_request_with_timeout(
 ) -> Result<reqwest::Url> {
     timeout(duration, read_callback_request(stream))
         .await
-        .map_err(|_| Error::Auth("OAuth callback request timed out".into()))?
+        .map_err(|error| Error::Auth(format!("OAuth callback request timed out: {error}")))?
 }
 
 async fn read_callback_request(stream: &mut TcpStream) -> Result<reqwest::Url> {
@@ -681,7 +711,7 @@ async fn read_callback_request(stream: &mut TcpStream) -> Result<reqwest::Url> {
         if count == 0 {
             return Err(Error::Auth("OAuth callback closed before a request".into()));
         }
-        request.extend_from_slice(&buffer[..count]);
+        request.extend_from_slice(buffer.get(..count).unwrap_or_default());
         if request.len() > CALLBACK_LIMIT {
             return Err(Error::Auth("OAuth callback request was too large".into()));
         }
@@ -690,7 +720,7 @@ async fn read_callback_request(stream: &mut TcpStream) -> Result<reqwest::Url> {
         }
     }
     let request = std::str::from_utf8(&request)
-        .map_err(|_| Error::Auth("OAuth callback was not valid UTF-8".into()))?;
+        .map_err(|error| Error::Auth(format!("OAuth callback was not valid UTF-8: {error}")))?;
     let mut parts = request
         .lines()
         .next()
@@ -703,7 +733,7 @@ async fn read_callback_request(stream: &mut TcpStream) -> Result<reqwest::Url> {
         .next()
         .ok_or_else(|| Error::Auth("OAuth callback omitted its target".into()))?;
     reqwest::Url::parse(&format!("http://localhost{target}"))
-        .map_err(|_| Error::Auth("OAuth callback target was invalid".into()))
+        .map_err(|error| Error::Auth(format!("OAuth callback target was invalid: {error}")))
 }
 
 async fn respond(stream: &mut TcpStream, status: &str, message: &str) -> Result<()> {
@@ -778,8 +808,12 @@ async fn token_request(
     if !status.is_success() {
         return Err(token_failure(status, operation, &body));
     }
-    let token: TokenResponse = serde_json::from_slice(&body)
-        .map_err(|_| Error::Auth(format!("ChatGPT token {operation} response was invalid")))?;
+    let token: TokenResponse = serde_json::from_slice(&body).map_err(|error| {
+        Error::Auth(format!(
+            "ChatGPT token {operation} response was invalid: {}",
+            json_error_summary(&error)
+        ))
+    })?;
     if token.access_token.is_empty() || token.refresh_token.is_empty() || token.expires_in == 0 {
         return Err(Error::Auth(format!(
             "ChatGPT token {operation} response omitted credentials"
@@ -830,17 +864,21 @@ fn account_id(access_token: &str) -> Result<String> {
     if segments.next().is_none() || segments.next().is_some() {
         return Err(Error::Auth("ChatGPT access token was not a JWT".into()));
     }
-    let payload = URL_SAFE_NO_PAD
-        .decode(payload)
-        .map_err(|_| Error::Auth("ChatGPT access token payload was invalid".into()))?;
-    let payload: Value = serde_json::from_slice(&payload)
-        .map_err(|_| Error::Auth("ChatGPT access token payload was invalid".into()))?;
+    let payload = URL_SAFE_NO_PAD.decode(payload).map_err(|error| {
+        Error::Auth(format!("ChatGPT access token payload was invalid: {error}"))
+    })?;
+    let payload: Value = serde_json::from_slice(&payload).map_err(|error| {
+        Error::Auth(format!(
+            "ChatGPT access token payload was invalid: {}",
+            json_error_summary(&error)
+        ))
+    })?;
     payload
         .get(MANIFEST.jwt_auth_claim.as_str())
         .and_then(|claim| claim.get("chatgpt_account_id"))
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
-        .map(str::to_string)
+        .map(str::to_owned)
         .ok_or_else(|| Error::Auth("ChatGPT access token omitted its account ID".into()))
 }
 
@@ -860,13 +898,31 @@ fn refresh_required(credential: &OAuthCredential, rejected_token: Option<&str>) 
 }
 
 fn resolved(credential: &OAuthCredential) -> (String, String) {
-    (credential.access.clone(), credential.account_id.clone())
+    (
+        credential.access.clone(), // rules-allow: the token leaves the credential lock as an owned copy
+        credential.account_id.clone(), // rules-allow: the account ID leaves the credential lock as an owned copy
+    )
+}
+
+/// Describes a JSON failure by kind and position without echoing credential-bearing input.
+fn json_error_summary(error: &serde_json::Error) -> String {
+    format!(
+        "{:?} error at line {} column {}",
+        error.classify(),
+        error.line(),
+        error.column()
+    )
 }
 
 fn read_credential(path: &Path) -> Result<OAuthCredential> {
     let contents = fs::read(path)?;
-    let mut auth: AuthFile = serde_json::from_slice(&contents)
-        .map_err(|_| Error::Auth(format!("{} is not a valid auth file", path.display())))?;
+    let mut auth: AuthFile = serde_json::from_slice(&contents).map_err(|error| {
+        Error::Auth(format!(
+            "{} is not a valid auth file: {}",
+            path.display(),
+            json_error_summary(&error)
+        ))
+    })?;
     let credential = auth
         .remove(PROVIDER_ID)
         .ok_or_else(|| Error::Auth("ChatGPT login is required".into()))?;
@@ -920,8 +976,13 @@ fn write_credential_with_sync(
 ) -> Result<(OAuthCredential, Result<()>)> {
     secure_parent(path)?;
     let mut auth = match fs::read(path) {
-        Ok(contents) => serde_json::from_slice(&contents)
-            .map_err(|_| Error::Auth(format!("{} is not a valid auth file", path.display())))?,
+        Ok(contents) => serde_json::from_slice(&contents).map_err(|error| {
+            Error::Auth(format!(
+                "{} is not a valid auth file: {}",
+                path.display(),
+                json_error_summary(&error)
+            ))
+        })?,
         Err(error) if error.kind() == io::ErrorKind::NotFound => AuthFile::new(),
         Err(error) => return Err(error.into()),
     };

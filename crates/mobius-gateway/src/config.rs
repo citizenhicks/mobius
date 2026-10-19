@@ -13,7 +13,7 @@ use std::net::SocketAddr;
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Component, Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use mobius::agent::DEFAULT_MAX_MODEL_STEPS;
@@ -35,15 +35,20 @@ use crate::wire::{
 use crate::{Error, Result};
 
 pub use self::runtime::RuntimeConfig;
-use self::store::*;
 pub use self::store::{
     ConfigStore, CredentialStore, ResolvedCredential, load_secret_file, state_dir,
 };
+use self::store::{UsageHistory, validate_usage, validate_usage_provider};
 pub use self::validation::validate_agent_composition;
-use self::validation::*;
 pub(crate) use self::validation::{
     configured_approval_policy, effective_reasoning_effort, model_route_id,
     validate_bot_compatibility,
+};
+use self::validation::{
+    invalid_cloudflare_hostname, validate_agent_composition_with_ceilings,
+    validate_cloudflare_token, validate_configured_provider,
+    validate_configured_provider_selection, validate_custom_model_route_count,
+    validate_provider_config, validate_telemetry,
 };
 pub(crate) use self::workspace::{
     create_workspace_directory, local_user_name, validate_chat_workspace, workspace_id,
@@ -161,7 +166,7 @@ pub struct GatewayConfig {
     /// The bot defaults.
     pub bot_defaults: Option<VersionedAgentConfig>,
     pub(crate) configured_providers: BTreeMap<String, ConfiguredProvider>,
-    pub(crate) installed_extensions: BTreeMap<String, crate::extensions::InstalledExtension>,
+    pub(crate) installed_extensions: BTreeMap<Arc<str>, crate::extensions::InstalledExtension>,
     usage: UsageHistory,
 }
 
@@ -199,7 +204,7 @@ pub(crate) struct ChatSpec {
     version: u32,
     pub(crate) workspace: Option<PathBuf>,
     pub(crate) attached_folders: Vec<PathBuf>,
-    pub(crate) bot_id: String,
+    pub(crate) bot_id: Arc<str>,
     #[serde(skip)]
     pub(crate) catalog_visible: bool,
 }
@@ -220,6 +225,10 @@ impl Default for AgentComposition {
 }
 
 impl AgentComposition {
+    #[expect(
+        clippy::expect_used,
+        reason = "the embedded default provider manifest always lists a web-search mode"
+    )]
     pub(crate) fn defaults_with_ceilings(
         ceilings: mobius::middleware::subagents::SubagentCeilings,
     ) -> Self {
@@ -238,7 +247,7 @@ impl AgentComposition {
                 instance: provider.id().into(),
                 provider: provider.id().into(),
                 model: model.map_or_else(String::new, |model| model.id.as_str().into()),
-                base_url: provider.default_base_url().map(str::to_string),
+                base_url: provider.default_base_url().map(str::to_owned),
                 endpoint_auth: ProviderEndpointAuth::ProviderDefault,
                 reasoning_effort: model
                     .and_then(|model| model.default_reasoning.as_deref())
@@ -336,7 +345,7 @@ impl GatewayConfig {
                 configured.selection.instance, current.selection.provider
             )));
         }
-        let mut next = self.clone();
+        let mut next = self.clone(); // rules-allow: staged copy; the caller keeps the current value until the new one is published
         let mut previous = next
             .configured_providers
             .remove(&configured.selection.instance);
@@ -390,7 +399,7 @@ impl GatewayConfig {
             )?;
         }
         let default_selection = (self.bot_defaults.is_none() && !selection.model.is_empty())
-            .then(|| configured.selection.clone());
+            .then(|| configured.selection.clone()); // rules-allow: Bot defaults hold their own copy of the first selection
         let models = if configured.models.is_empty() {
             previous.map_or_else(
                 || {
@@ -402,7 +411,7 @@ impl GatewayConfig {
                         crate::provider_catalog::prepare_configured_models(
                             definition,
                             vec![ConfiguredModel {
-                                id: configured.selection.model.clone(),
+                                id: configured.selection.model.clone(), // rules-allow: the catalog entry and the selection each own the model ID
                                 ..Default::default()
                             }],
                             Vec::new(),
@@ -419,7 +428,7 @@ impl GatewayConfig {
             )
         };
         next.configured_providers.insert(
-            configured.selection.instance.clone(),
+            configured.selection.instance.clone(), // rules-allow: the map key and the stored selection each own the instance ID
             ConfiguredProvider {
                 selection: configured.selection,
                 label,
@@ -460,7 +469,7 @@ impl GatewayConfig {
                 "choose another provider for Bot defaults before removing this provider".into(),
             ));
         }
-        let mut next = self.clone();
+        let mut next = self.clone(); // rules-allow: staged copy; the caller keeps the current value until the new one is published
         next.configured_providers.remove(instance);
         if let Some(mut default) = next.bot_defaults.take() {
             if clear_missing_model_routes(&mut default.config, &next)? {
@@ -491,7 +500,7 @@ impl GatewayConfig {
                 current.revision
             )));
         }
-        let mut next = self.clone();
+        let mut next = self.clone(); // rules-allow: staged copy; the caller keeps the current value until the new one is published
         next.bot_defaults = Some(VersionedAgentConfig {
             revision: current
                 .revision
@@ -534,8 +543,8 @@ impl GatewayConfig {
                 .flat_map(|(unix_day, providers)| {
                     providers.iter().map(|(provider, usage)| DailyUsage {
                         unix_day: *unix_day,
-                        provider: provider.clone(),
-                        usage: usage.clone(),
+                        provider: provider.clone(), // rules-allow: the profile snapshot is sent to clients
+                        usage: *usage,
                     })
                 })
                 .collect(),
@@ -658,7 +667,7 @@ impl ChatSpec {
             version: CHAT_SPEC_VERSION,
             workspace: Some(validate_chat_workspace(workspace, state_dir, tls)?),
             attached_folders: Vec::new(),
-            bot_id: bot.id.clone(),
+            bot_id: Arc::clone(&bot.id),
             catalog_visible: true,
         };
         spec.validate(state_dir, tls)?;
@@ -714,7 +723,7 @@ impl ChatSpec {
             version: CHAT_SPEC_VERSION,
             workspace: None,
             attached_folders: Vec::new(),
-            bot_id: bot.id.clone(),
+            bot_id: Arc::clone(&bot.id),
             catalog_visible: true,
         }
     }
@@ -726,9 +735,9 @@ impl ChatSpec {
         tls: Option<&TlsConfig>,
     ) -> Result<PathBuf> {
         if let Some(workspace) = &self.workspace {
-            return Ok(workspace.clone());
+            return Ok(workspace.clone()); // rules-allow: the caller owns the resolved execution root
         }
-        let root = state_dir.with_extension("workspaces").join(&self.bot_id);
+        let root = state_dir.with_extension("workspaces").join(&*self.bot_id);
         fs::create_dir_all(&root)?;
         #[cfg(unix)]
         fs::set_permissions(&root, mobius::owner_only::dir())?;
@@ -739,7 +748,7 @@ impl ChatSpec {
     pub(crate) fn workspace_info(&self) -> Option<WorkspaceInfo> {
         self.workspace.as_ref().map(|path| WorkspaceInfo {
             id: workspace_id(path),
-            path: path.clone(),
+            path: path.clone(), // rules-allow: workspace info is sent to clients
         })
     }
 
@@ -763,7 +772,7 @@ impl ChatSpec {
                 "a chat cannot attach more than {MAX_ATTACHED_FOLDERS} folders"
             )));
         }
-        let mut next = self.clone();
+        let mut next = self.clone(); // rules-allow: staged copy; the caller keeps the current value until the new one is published
         next.attached_folders.push(folder);
         next.validate(state_dir, tls)?;
         Ok(Some(next))

@@ -17,7 +17,8 @@ pub(super) fn next_projection(input: ModelInput<'_>, entries: &[Entry]) -> Resul
         return Ok(None);
     }
     validate_scope_budget(entries).map_err(Error::Checkpoint)?;
-    let mut text = text::DEFINITION.prompt_projection_header.clone();
+    let mut text = String::new();
+    text.push_str(&text::DEFINITION.prompt_projection_header);
     text.push_str(&text::DEFINITION.prompt_projection_global);
     if entries.is_empty() {
         text.push_str(&text::DEFINITION.prompt_projection_empty);
@@ -33,7 +34,9 @@ pub(super) fn next_projection(input: ModelInput<'_>, entries: &[Entry]) -> Resul
             "shared scratchpad projection exceeds its byte limit".into(),
         ));
     }
-    if previous.and_then(|item| item["content"][0]["text"].as_str()) == Some(text.as_str()) {
+    if previous.and_then(|item| item.pointer("/content/0/text").and_then(Value::as_str))
+        == Some(text.as_str())
+    {
         return Ok(None);
     }
     Ok(Some(internal_user_message(PROJECTION_KIND, &text)))

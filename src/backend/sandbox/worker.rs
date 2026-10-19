@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 #[cfg(unix)]
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -29,6 +30,7 @@ pub struct WorkerCommand {
 
 /// A backend-launched process with a length-prefixed binary stdin/stdout channel.
 /// Dropping it closes the channel and kills its process group.
+#[derive(Debug)]
 pub struct WorkerProcess {
     child: Child,
     stdin: ChildStdin,
@@ -94,8 +96,9 @@ impl WorkerProcess {
         }
         self.stdin
             .write_u32(
-                u32::try_from(request.len())
-                    .map_err(|_| Error::Sandbox("worker request too large".into()))?,
+                u32::try_from(request.len()).map_err(|error| {
+                    Error::Sandbox(format!("worker request too large: {error}"))
+                })?,
             )
             .await?;
         self.stdin.write_all(request).await?;
@@ -133,7 +136,7 @@ impl WorkerProcess {
             }
             let connection = host.as_mut().ok_or_else(state_lost)?;
             connection
-                .write_u32(u32::try_from(response.len()).map_err(|_| state_lost())?)
+                .write_u32(u32::try_from(response.len()).map_err(|error| state_lost_by(&error))?)
                 .await?;
             connection.write_all(&response).await?;
             connection.flush().await?;
@@ -152,7 +155,9 @@ impl WorkerProcess {
     async fn host_reply(&mut self, response: &[u8], flags: u32) -> Result<()> {
         self.stdin
             .write_u32(
-                HOST_REQUEST | flags | u32::try_from(response.len()).map_err(|_| state_lost())?,
+                HOST_REQUEST
+                    | flags
+                    | u32::try_from(response.len()).map_err(|error| state_lost_by(&error))?,
             )
             .await?;
         self.stdin.write_all(response).await?;
@@ -171,7 +176,7 @@ struct Entry {
 #[derive(Default)]
 pub(super) struct Workers {
     // ponytail: all sessions serialize through one map lock; per-session locks if concurrency matters.
-    entries: Mutex<BTreeMap<String, Entry>>,
+    entries: Mutex<BTreeMap<Arc<str>, Entry>>,
 }
 
 impl Workers {
@@ -210,10 +215,10 @@ impl Workers {
                 permissions.network_access,
             )?;
             entries.insert(
-                permissions.session_id.clone(),
+                Arc::clone(&permissions.session_id),
                 Entry {
                     // The persistent worker retains its launch contract to reject policy drift on later requests.
-                    command: command.clone(),
+                    command: command.clone(), // rules-allow: the worker keeps its launch contract
                     sandbox_mode: permissions.sandbox_mode,
                     network_access: permissions.network_access,
                     process: Some(process),
@@ -236,9 +241,10 @@ impl Workers {
         // the next call reports state loss, even when the action may already have completed.
         let mut process = entry.process.take().ok_or_else(state_lost)?;
         let response = tokio::time::timeout(timeout, process.exchange(request, backend, permissions)).await
-            .map_err(|_| Error::Sandbox("overall evaluation deadline expired; session state: lost (worker terminated); action outcome unknown; reset explicitly before continuing; do not repeat automatically".into()))?
+            .map_err(|elapsed| Error::Sandbox(format!("overall evaluation deadline expired ({elapsed}); session state: lost (worker terminated); action outcome unknown; reset explicitly before continuing; do not repeat automatically")))?
             .map_err(|error| Error::Sandbox(format!("worker/interpreter lost; session state: lost; action outcome unknown; reset before continuing: {error}")))?;
         entry.process = Some(process);
+        drop(entries);
         Ok(response)
     }
 
@@ -247,8 +253,14 @@ impl Workers {
     }
 }
 
+const STATE_LOST: &str = "worker state lost; session state: lost; the last action may have completed; inspect the environment and reset explicitly before continuing";
+
 fn state_lost() -> Error {
-    Error::Sandbox("worker state lost; session state: lost; the last action may have completed; inspect the environment and reset explicitly before continuing".into())
+    Error::Sandbox(STATE_LOST.into())
+}
+
+fn state_lost_by(error: &dyn std::fmt::Display) -> Error {
+    Error::Sandbox(format!("{STATE_LOST}: {error}"))
 }
 
 #[cfg(test)]
@@ -280,7 +292,10 @@ mod tests {
                             break;
                         }
                         let reply = vec![b'x'; 2 * MAX_FRAME_BYTES];
-                        if host.write_u32(reply.len() as u32).await.is_err()
+                        if host
+                            .write_u32(u32::try_from(reply.len()).expect("reply length fits"))
+                            .await
+                            .is_err()
                             || host.write_all(&reply).await.is_err()
                         {
                             break;
@@ -335,7 +350,7 @@ mod tests {
         let state = tempfile::tempdir().expect("state");
         let marker = state.path().join("actions");
         std::fs::write(&marker, "").expect("action log");
-        let script = r#"import sys, struct, time
+        let script = r"import sys, struct, time
 count = 0
 while True:
     header = sys.stdin.buffer.read(4)
@@ -348,7 +363,7 @@ while True:
     response = str(count).encode()
     sys.stdout.buffer.write(struct.pack('>I', len(response)) + response)
     sys.stdout.buffer.flush()
-"#;
+";
         let command = WorkerCommand {
             executable: "/usr/bin/python3".into(),
             arguments: vec![

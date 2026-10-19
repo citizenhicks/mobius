@@ -1,4 +1,12 @@
-use super::*;
+use super::{
+    AuthStore, CONNECTION_POLL_INTERVAL, ClientKind, ClientMessage, CloudflareConfig, ConfigStore,
+    ConnectOptions, Duration, Endpoint, Error, GatewayClient, GatewayConfig, Instant,
+    MAX_PENDING_FRAMES, PROCESS_FILE, PairingGrant, PairingStatus, PathBuf, Result, Serialize,
+    ServerMessage, SignalKind, StartupGuard, SystemTime, UNIX_EPOCH, Write,
+    direct_loopback_endpoint, loopback_endpoint, new_request_id, print_line, reuse_current_gateway,
+    running_process_pid, running_process_record, shutdown_signal, signal, start_background_gateway,
+    stop_gateway,
+};
 
 #[cfg(unix)]
 pub(super) async fn connect(
@@ -15,24 +23,20 @@ pub(super) async fn connect(
         load_local_client,
     )
     .await?;
-    if let Some((client_endpoint, pairing_endpoint)) =
+    if let Some((local_endpoint, pairing_endpoint)) =
         running_connection_endpoints(&store, &config, configured_endpoint.as_ref())?
     {
-        let token = load_local_client(&client_endpoint)?.ok_or_else(|| {
+        let client_endpoint = local_endpoint.as_ref().unwrap_or(&pairing_endpoint);
+        let token = load_local_client(client_endpoint)?.ok_or_else(|| {
             Error::Config(
                 "this machine has no local gateway credential; restart the gateway once and retry"
                     .into(),
             )
         })?;
         drop(startup);
-        let grant = request_running_pairing_code(&client_endpoint, &token).await?;
-        print_connection(
-            &pairing_endpoint,
-            config.cloudflare.is_some().then_some(&client_endpoint),
-            &grant.code,
-        )?;
-        println!("gateway remains running");
-        return Ok(());
+        let grant = request_running_pairing_code(client_endpoint, &token).await?;
+        print_connection(&pairing_endpoint, local_endpoint.as_ref(), &grant.code)?;
+        return Ok(print_line(format_args!("gateway remains running"))?);
     }
     ensure_gateway_stopped(&store, &config)?;
     let mut interrupts = signal(SignalKind::interrupt())?;
@@ -52,8 +56,7 @@ pub(super) async fn connect(
         Ok(Some(process)) => process,
         Ok(None) => {
             AuthStore::open(store.auth_path(), config.auth)?.revoke_pairing_code(&grant.code)?;
-            println!("connection cancelled");
-            return Ok(());
+            return Ok(print_line(format_args!("connection cancelled"))?);
         }
         Err(error) => {
             if let Err(revoke) =
@@ -82,11 +85,11 @@ pub(super) async fn connect(
         .as_ref()
         .and_then(CloudflareConfig::hostname)
     {
-        println!("Cloudflare connector is running.");
-        println!(
+        print_line(format_args!("Cloudflare connector is running."))?;
+        print_line(format_args!(
             "If needed, publish {hostname} to http://{} now; möbius will keep waiting for pairing.",
             config.listen,
-        );
+        ))?;
     }
     let local_endpoint = config
         .cloudflare
@@ -96,7 +99,7 @@ pub(super) async fn connect(
     if let Err(error) = print_connection(&endpoint, local_endpoint.as_ref(), &grant.code) {
         return stop_connect_gateway(&store, config.auth, pid, &grant.code, error.into());
     }
-    println!("waiting for a client…");
+    print_line(format_args!("waiting for a client…"))?;
 
     let process_path = store.state_dir().join(PROCESS_FILE);
     loop {
@@ -134,12 +137,14 @@ pub(super) async fn connect(
         };
         match pairing {
             PairingStatus::Consumed => {
-                println!("paired; gateway running in background (pid {pid})");
-                return Ok(());
+                return Ok(print_line(format_args!(
+                    "paired; gateway running in background (pid {pid})"
+                ))?);
             }
             PairingStatus::Replaced => {
-                println!("another pairing code was issued; gateway remains running");
-                return Ok(());
+                return Ok(print_line(format_args!(
+                    "another pairing code was issued; gateway remains running"
+                ))?);
             }
             PairingStatus::Pending => {}
         }
@@ -157,8 +162,7 @@ pub(super) async fn connect(
         tokio::select! {
             () = shutdown_signal(&mut interrupts, &mut terminations) => {
                 cleanup_connect(&store, config.auth, pid, &grant.code)?;
-                println!("connection cancelled");
-                return Ok(());
+                return Ok(print_line(format_args!("connection cancelled"))?);
             }
             () = tokio::time::sleep(CONNECTION_POLL_INTERVAL) => {}
         }
@@ -173,25 +177,28 @@ pub(super) async fn connect(
     Err(unsupported_lifecycle())
 }
 
+/// Returns the separate local client endpoint of a tunneled gateway, if any, and the
+/// endpoint clients pair with.
 #[cfg(unix)]
-pub(super) fn running_connection_endpoints(
+pub(super) fn running_connection_endpoints<'a>(
     store: &ConfigStore,
     config: &GatewayConfig,
-    configured_endpoint: Option<&Endpoint>,
-) -> Result<Option<(Endpoint, Endpoint)>> {
+    configured_endpoint: Option<&'a Endpoint>,
+) -> Result<Option<(Option<Endpoint>, std::borrow::Cow<'a, Endpoint>)>> {
     let Some(process) = running_process_record(&store.state_dir().join(PROCESS_FILE))? else {
         return Ok(None);
     };
     let pairing_endpoint = process
         .endpoint()?
-        .or_else(|| configured_endpoint.cloned())
+        .map(std::borrow::Cow::Owned)
+        .or_else(|| configured_endpoint.map(std::borrow::Cow::Borrowed))
         .ok_or_else(|| Error::Config("gateway did not publish its runtime endpoint".into()))?;
-    let client_endpoint = if config.cloudflare.is_some() {
-        loopback_endpoint(config)?
-    } else {
-        pairing_endpoint.clone()
-    };
-    Ok(Some((client_endpoint, pairing_endpoint)))
+    let local_endpoint = config
+        .cloudflare
+        .as_ref()
+        .map(|_| loopback_endpoint(config))
+        .transpose()?;
+    Ok(Some((local_endpoint, pairing_endpoint)))
 }
 
 pub(super) async fn request_running_pairing_code(
@@ -201,10 +208,11 @@ pub(super) async fn request_running_pairing_code(
     let client =
         GatewayClient::connect(client_endpoint, token, ClientKind::GatewayDashboard).await?;
     let (sender, mut events) = client.into_parts();
-    let request_id = Uuid::new_v4().to_string();
+    let mut request_id = [0; uuid::fmt::Hyphenated::LENGTH];
+    let request_id = new_request_id(&mut request_id);
     sender
         .send(ClientMessage::CreatePairingCode {
-            request_id: request_id.clone(),
+            request_id: request_id.into(),
         })
         .await?;
 
@@ -212,7 +220,7 @@ pub(super) async fn request_running_pairing_code(
         let frame = events.next().await?.ok_or_else(|| {
             Error::Protocol("gateway disconnected before returning a pairing code".into())
         })?;
-        if let Some(error) = frame.message.response_error(Some(&request_id)) {
+        if let Some(error) = frame.message.response_error(Some(request_id)) {
             return Err(Error::Protocol(error.message.into()));
         }
         match frame.message {
@@ -220,7 +228,7 @@ pub(super) async fn request_running_pairing_code(
                 request_id: actual,
                 code,
                 expires_at,
-            } if actual == request_id => return Ok(PairingGrant { code, expires_at }),
+            } if *actual == *request_id => return Ok(PairingGrant { code, expires_at }),
             _ => {}
         }
     }
@@ -238,8 +246,7 @@ pub(super) async fn pairing_code(
     let token = load_local_client(&endpoint)?
         .ok_or_else(|| Error::Config("gateway local control credential is unavailable".into()))?;
     let grant = request_running_pairing_code(&endpoint, &token).await?;
-    println!("{}", pairing_code_json(&grant)?);
-    Ok(())
+    Ok(print_line(format_args!("{}", pairing_code_json(&grant)?))?)
 }
 
 #[derive(Serialize)]
@@ -304,10 +311,11 @@ pub(super) fn ensure_gateway_stopped(store: &ConfigStore, config: &GatewayConfig
 pub(super) fn pairing_deadline(expires_at: i64) -> Result<Instant> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|_| Error::Config("system clock is before the Unix epoch".into()))?
+        .map_err(|error| Error::Config(format!("system clock is before the Unix epoch: {error}")))?
         .as_secs();
-    let expires_at =
-        u64::try_from(expires_at).map_err(|_| Error::Config("pairing expiry is invalid".into()))?;
+    let expires_at = u64::try_from(expires_at).map_err(|error| {
+        Error::Config(format!("pairing expiry {expires_at} is invalid: {error}"))
+    })?;
     let remaining = expires_at
         .checked_sub(now)
         .ok_or_else(|| Error::Config("one-time code expired before startup".into()))?;

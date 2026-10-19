@@ -1,5 +1,6 @@
 //! User uploads exposed to the owning workspace.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -63,12 +64,21 @@ pub struct Attachments {
     workspace_path: Option<PathBuf>,
 }
 
+impl std::fmt::Debug for Attachments {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Attachments")
+            .field("workspace_path", &self.workspace_path)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Attachments {
     #[must_use]
     /// Creates a new instance.
-    pub fn new(store: SessionFileStore) -> Self {
+    pub fn new(store: impl Into<Arc<SessionFileStore>>) -> Self {
         Self {
-            store: Arc::new(store),
+            store: store.into(),
             workspace: None,
             workspace_path: None,
         }
@@ -104,23 +114,29 @@ impl Middleware for Attachments {
     ) {
         // ponytail: scan the retained context; index message identities if large histories make this costly.
         for index in (0..compacted.len()).rev() {
-            let item = &compacted[index];
+            let Some(item) = compacted.get(index) else {
+                continue;
+            };
             if item.get("role").and_then(Value::as_str) != Some("user") {
                 continue;
             }
-            let materialization = (1..original.len()).rev().find_map(|position| {
-                let previous = &original[position - 1];
-                let materialization = &original[position];
-                (previous.get("role") == item.get("role")
-                    && previous.get("content") == item.get("content")
-                    && previous.get(MESSAGE_METADATA_FIELD) == item.get(MESSAGE_METADATA_FIELD)
-                    && is_attachment_materialization(materialization))
-                .then(|| {
-                    original
-                        .shared_item(position)
-                        .map_or_else(|| Arc::new(materialization.to_owned()), Arc::clone)
-                })
-            });
+            let pairs = original.iter().zip(original.iter().skip(1)).enumerate();
+            let materialization =
+                pairs
+                    .rev()
+                    .find_map(|(previous_index, (previous, materialization))| {
+                        let position = previous_index + 1;
+                        (previous.get("role") == item.get("role")
+                            && previous.get("content") == item.get("content")
+                            && previous.get(MESSAGE_METADATA_FIELD)
+                                == item.get(MESSAGE_METADATA_FIELD)
+                            && is_attachment_materialization(materialization))
+                        .then(|| {
+                            original
+                                .shared_item(position)
+                                .map_or_else(|| Arc::new(materialization.to_owned()), Arc::clone)
+                        })
+                    });
             restore_attachment_materialization(compacted, index, materialization);
         }
     }
@@ -132,7 +148,7 @@ impl Middleware for Attachments {
     fn register(&self, catalog: &mut Catalog, runtime: &RuntimeContext) -> Result<()> {
         catalog.register(Arc::new(ListAttachments {
             store: Arc::clone(&self.store),
-            session_id: runtime.session_id.clone(),
+            session_id: Arc::clone(&runtime.session_id),
             workspace: self.workspace.as_ref().map(Arc::clone),
         }))
     }
@@ -272,12 +288,13 @@ fn restore_attachment_materialization(
     let Some(materialization) = materialization else {
         return;
     };
-    match compacted.get(user_index + 1) {
-        Some(retained) if retained == &materialization => {}
+    let slot = user_index + 1;
+    match compacted.get_mut(slot) {
+        Some(retained) if *retained == materialization => {}
         Some(retained) if is_attachment_materialization(retained) => {
-            compacted[user_index + 1] = materialization;
+            *retained = materialization;
         }
-        Some(_) | None => compacted.insert(user_index + 1, materialization),
+        Some(_) | None => compacted.insert(slot, materialization),
     }
 }
 
@@ -298,11 +315,18 @@ fn materialization_message(attachments: &[MaterializedAttachment]) -> Result<Val
         ATTACHMENT_CONTEXT_MARKER,
         &render_attachment_context(&available, &unavailable),
     );
-    message[MATERIALIZED_ATTACHMENTS_FIELD] = serde_json::to_value(attachments)?;
+    message
+        .as_object_mut()
+        .ok_or_else(|| Error::Checkpoint("attachment context is not an object".into()))?
+        .insert(
+            MATERIALIZED_ATTACHMENTS_FIELD.into(),
+            serde_json::to_value(attachments)?,
+        );
     for attachment in attachments {
         if let Some(image) = &attachment.image {
-            message["content"]
-                .as_array_mut()
+            message
+                .get_mut("content")
+                .and_then(Value::as_array_mut)
                 .ok_or_else(|| Error::Checkpoint("attachment content is not an array".into()))?
                 .push(serde_json::json!({"type": "input_image", "image": image}));
         }
@@ -446,33 +470,39 @@ fn replace_with_copy(source: &Path, destination: &Dir, name: &str) -> Result<()>
             )
         })?;
     if let Err(error) = destination.rename(&temporary, destination, name) {
-        let _ = destination.remove_file(&temporary);
+        remove_temporary_copy(destination, &temporary);
         return Err(error.into());
     }
-    let _ = destination.remove_file(&temporary);
+    remove_temporary_copy(destination, &temporary);
     Ok(())
+}
+
+fn remove_temporary_copy(destination: &Dir, temporary: &str) {
+    if let Err(error) = destination.remove_file(temporary) {
+        tracing::debug!(%error, temporary, "attachment temporary copy cleanup failed");
+    }
 }
 
 struct ListAttachments {
     store: Arc<SessionFileStore>,
-    session_id: String,
+    session_id: Arc<str>,
     workspace: Option<Arc<Dir>>,
 }
 
 impl Tool for ListAttachments {
-    fn definition(&self) -> ToolDefinition {
-        text::DEFINITION.list_attachments.tool.clone()
+    fn definition(&self) -> &Arc<ToolDefinition> {
+        &text::DEFINITION.list_attachments.tool
     }
 
     fn execution_mode(&self) -> ExecutionMode {
         ExecutionMode::Parallel
     }
 
-    fn call<'a>(
-        &'a self,
+    fn call(
+        &self,
         _context: ToolContext,
         arguments: Value,
-    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
+    ) -> BoxFuture<'_, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             let _: EmptyArgs = serde_json::from_value(arguments)?;
             let references = self
@@ -551,33 +581,43 @@ fn referenced_attachments(
     Ok(messages)
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "fmt::Write for String never returns an error"
+)]
 fn render_attachment_context(
     available: &[&MaterializedAttachment],
     unavailable: &[&MaterializedAttachment],
 ) -> String {
-    let mut output = text::DEFINITION.prompt_available_header.clone();
+    let mut output = String::new();
+    output.push_str(&text::DEFINITION.prompt_available_header);
     for attachment in available {
         let reference = &attachment.reference;
         if let Some(path) = attachment.path.as_deref() {
-            output.push_str(&format!(
-                "- {} (path: {}, attachment_id: {}, media_type: {}, {} bytes)\n",
+            writeln!(
+                output,
+                "- {} (path: {}, attachment_id: {}, media_type: {}, {} bytes)",
                 reference.name, path, reference.id, reference.media_type, reference.size
-            ));
+            )
         } else {
-            output.push_str(&format!(
-                "- {} (attachment_id: {}, media_type: {}, {} bytes)\n",
+            writeln!(
+                output,
+                "- {} (attachment_id: {}, media_type: {}, {} bytes)",
                 reference.name, reference.id, reference.media_type, reference.size
-            ));
+            )
         }
+        .expect("writing to String cannot fail");
     }
     if !unavailable.is_empty() {
         output.push_str(&text::DEFINITION.prompt_unavailable_header);
         for attachment in unavailable {
             let reference = &attachment.reference;
-            output.push_str(&format!(
-                "- {} (attachment_id: {})\n",
+            writeln!(
+                output,
+                "- {} (attachment_id: {})",
                 reference.name, reference.id
-            ));
+            )
+            .expect("writing to String cannot fail");
         }
     }
     output
@@ -606,18 +646,18 @@ mod tests {
             "second image",
         ));
         let original = vec![
-            first.clone(),
-            first_media.clone(),
-            second.clone(),
-            second_media.clone(),
+            Arc::clone(&first),
+            Arc::clone(&first_media),
+            Arc::clone(&second),
+            Arc::clone(&second_media),
         ];
         let marker =
             Arc::new(serde_json::json!({"type": "compaction", "encrypted_content": "opaque"}));
         let mut compacted = vec![
-            first.clone(),
-            second_media.clone(),
-            marker.clone(),
-            second.clone(),
+            Arc::clone(&first),
+            Arc::clone(&second_media),
+            Arc::clone(&marker),
+            Arc::clone(&second),
         ];
         let directory = tempfile::tempdir().expect("files");
         let attachments = Attachments::new(SessionFileStore::new(directory.path(), None));

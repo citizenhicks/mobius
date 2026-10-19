@@ -1,3 +1,10 @@
+use super::init::initialize_auth;
+#[cfg(unix)]
+use super::lifecycle::{
+    ProcessRecord, ProcessRecordGuard, open_process_record, process_is_running,
+    remove_unlocked_process_record, stop_background_child,
+};
+use super::provider::read_provider_credential;
 use super::*;
 use clap::CommandFactory as _;
 
@@ -242,7 +249,8 @@ async fn gateway_reuse_evicts_only_a_confirmed_older_release() {
         })
         .await;
         let running = running_process_pid(&path);
-        let _ = cleanup.send(());
+        // The version check may already have stopped the child and dropped the receiver.
+        cleanup.send(()).unwrap_or_default();
         stopped.await.expect("process task").expect("reap process");
         peer.await.expect("version peer");
 
@@ -360,7 +368,7 @@ async fn set_runtime_preserves_omitted_policy_fields() {
     config.runtime.ingress = Some("0.0.0.0:8742".parse().unwrap());
     config.runtime.require_access_lease = true;
     config.runtime.access_grace_seconds = 30;
-    config.runtime.storage_limit_bytes = Some(5368709120);
+    config.runtime.storage_limit_bytes = Some(5 * 1024 * 1024 * 1024);
     store.save(&config).unwrap();
     run(
         vec![

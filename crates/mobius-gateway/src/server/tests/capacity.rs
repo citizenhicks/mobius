@@ -30,12 +30,12 @@ async fn capacity_server(
 async fn expect_capacity_accepted(events: &mut GatewayEvents, expected: &str) {
     loop {
         match next_gateway_message(events).await {
-            ServerMessage::Accepted { request_id } if request_id == expected => return,
+            ServerMessage::Accepted { request_id } if request_id.as_ref() == expected => return,
             ServerMessage::Rejected {
                 request_id,
                 message,
                 ..
-            } if request_id == expected => {
+            } if request_id.as_ref() == expected => {
                 panic!("capacity operation rejected: {message}")
             }
             _ => {}
@@ -63,7 +63,7 @@ async fn configured_authenticated_limit_rejects_excess_clients_and_keeps_the_fir
     let ready = server.notify_ready();
     let (shutdown, stopped) = tokio::sync::oneshot::channel();
     let serving = tokio::spawn(server.serve_until(async {
-        let _ = stopped.await;
+        stopped.await.ok();
     }));
     ready.await.expect("listener ready");
     let first = GatewayClient::connect(&endpoint, &identity.token, ClientKind::Cli)
@@ -142,7 +142,7 @@ async fn configured_pre_authentication_limit_waits_then_releases_after_disconnec
     let ready = server.notify_ready();
     let (shutdown, stopped) = tokio::sync::oneshot::channel();
     let serving = tokio::spawn(server.serve_until(async {
-        let _ = stopped.await;
+        stopped.await.ok();
     }));
     ready.await.expect("listener ready");
     let stalled = TcpStream::connect(listen)
@@ -192,12 +192,12 @@ async fn begin_capacity_upload(
                 request_id: actual,
                 upload_id,
                 ..
-            } if actual == request_id => return upload_id,
+            } if *actual == *request_id => return upload_id,
             ServerMessage::Rejected {
                 request_id: actual,
                 message,
                 ..
-            } if actual == request_id => panic!("upload rejected: {message}"),
+            } if actual.as_ref() == request_id => panic!("upload rejected: {message}"),
             _ => {}
         }
     }
@@ -222,7 +222,7 @@ async fn configured_pending_upload_limit_is_released_by_cancellation() {
     let ready = server.notify_ready();
     let (shutdown, stopped) = tokio::sync::oneshot::channel();
     let serving = tokio::spawn(server.serve_until(async {
-        let _ = stopped.await;
+        stopped.await.ok();
     }));
     ready.await.expect("listener ready");
     let (client, _) =
@@ -253,14 +253,14 @@ async fn configured_pending_upload_limit_is_released_by_cancellation() {
                 code,
                 message,
                 fatal,
-            } if request_id == "excess-upload" => {
+            } if request_id.as_ref() == "excess-upload" => {
                 assert_eq!(code, "session_file_rejected");
                 assert!(message.contains("more than 1 pending uploads"));
                 assert!(!fatal);
                 break;
             }
             ServerMessage::SessionFileUploadReady { request_id, .. }
-                if request_id == "excess-upload" =>
+                if &*request_id == "excess-upload" =>
             {
                 panic!("configured pending-upload limit bypassed")
             }

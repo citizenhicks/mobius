@@ -72,22 +72,28 @@ pub struct SessionFileChunk {
 /// Protected immutable file storage shared by inbound and outbound transports.
 ///
 /// Display names live only in metadata; payloads always use an internal filename.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct SessionFileStore {
-    root: Arc<PathBuf>,
+    state: Arc<StoreState>,
+    image_policy: ImagePresentation,
+}
+
+#[derive(Debug)]
+struct StoreState {
+    root: PathBuf,
     limit_bytes: Option<u64>,
     // ponytail: one commit lock keeps quota checks and publication atomic.
     commits: Arc<Mutex<()>>,
     reservations: Arc<StdMutex<BTreeMap<String, ReservationTotals>>>,
     // ponytail: immutable private blobs reuse one verified SHA-256 while metadata is unchanged.
-    validated_blobs: Arc<StdMutex<BTreeMap<String, BlobValidationStamp>>>,
-    initialized: Arc<OnceCell<()>>,
-    image_policy: ImagePresentation,
+    validated_blobs: StdMutex<BTreeMap<String, BlobValidationStamp>>,
+    initialized: OnceCell<()>,
     image_work: Arc<tokio::sync::Semaphore>,
-    renditions: Arc<Mutex<()>>,
+    renditions: Mutex<()>,
 }
 
 /// Prepared deletion whose commit lock protects removal from the live file catalog.
+#[derive(Debug)]
 pub struct SessionFileDeletion {
     store: SessionFileStore,
     session_ids: Vec<String>,
@@ -95,18 +101,19 @@ pub struct SessionFileDeletion {
     commit: Option<OwnedMutexGuard<()>>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct BlobValidationStamp {
     size: u64,
     modified: SystemTime,
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct ReservationTotals {
     files: usize,
     bytes: u64,
 }
 
+#[derive(Debug)]
 struct SessionFileReservation {
     reservations: Arc<StdMutex<BTreeMap<String, ReservationTotals>>>,
     session_id: String,
@@ -182,11 +189,22 @@ struct AttachmentWorkspaceIdentity {
 }
 
 impl AttachmentWorkspaceIdentity {
-    fn from_workspace(workspace: &Dir, _path: &Path) -> Result<Self> {
+    fn from_workspace(
+        workspace: &Dir,
+        #[cfg_attr(
+            not(target_os = "macos"),
+            expect(
+                unused_variables,
+                reason = "only macOS resolves the volume from the path"
+            )
+        )]
+        path: &Path,
+    ) -> Result<Self> {
         let metadata = workspace.dir_metadata()?;
         #[cfg(target_os = "macos")]
         {
-            let location = whichdisk::resolve(_path)?;
+            use std::os::unix::fs::MetadataExt as _;
+            let location = whichdisk::resolve(path)?;
             let volume_uuid = match location
                 .volume_identity()
                 .filter(whichdisk::IdentityReading::is_vouched)
@@ -201,8 +219,7 @@ impl AttachmentWorkspaceIdentity {
                     ));
                 }
             };
-            let path_metadata = std::fs::metadata(_path)?;
-            use std::os::unix::fs::MetadataExt as _;
+            let path_metadata = std::fs::metadata(path)?;
             if metadata.dev() != path_metadata.dev() || metadata.ino() != path_metadata.ino() {
                 return Err(Error::Config(
                     "attachment workspace changed while resolving its identity".into(),
@@ -240,15 +257,25 @@ impl SessionFileStore {
     #[must_use]
     pub fn new(state_dir: &Path, limit_bytes: Option<u64>) -> Self {
         Self {
-            root: Arc::new(state_dir.join("session-files")),
-            limit_bytes,
-            commits: Arc::new(Mutex::new(())),
-            reservations: Arc::new(StdMutex::new(BTreeMap::new())),
-            validated_blobs: Arc::new(StdMutex::new(BTreeMap::new())),
-            initialized: Arc::new(OnceCell::new()),
+            state: Arc::new(StoreState {
+                root: state_dir.join("session-files"),
+                limit_bytes,
+                commits: Arc::new(Mutex::new(())),
+                reservations: Arc::new(StdMutex::new(BTreeMap::new())),
+                validated_blobs: StdMutex::new(BTreeMap::new()),
+                initialized: OnceCell::new(),
+                image_work: Arc::new(tokio::sync::Semaphore::new(2)),
+                renditions: Mutex::new(()),
+            }),
             image_policy: ImagePresentation::default(),
-            image_work: Arc::new(tokio::sync::Semaphore::new(2)),
-            renditions: Arc::new(Mutex::new(())),
+        }
+    }
+
+    // Pending operations keep the store alive through a shared handle.
+    fn share(&self) -> Self {
+        Self {
+            state: Arc::clone(&self.state),
+            image_policy: self.image_policy,
         }
     }
 
@@ -348,7 +375,7 @@ impl SessionFileStore {
         validate_session_id(session_id)?;
         let identity = AttachmentWorkspaceIdentity::from_workspace(workspace, workspace_path)?;
         self.ensure_initialized().await?;
-        let _commit = self.commits.lock().await;
+        let _commit = self.state.commits.lock().await;
         let directory = self.session_dir(session_id);
         ensure_private_dir(&directory).await?;
         let stored = StoredAttachmentWorkspace {
@@ -403,7 +430,7 @@ impl SessionFileStore {
         }
         if session_ids.is_empty() {
             return Ok(SessionFileDeletion {
-                store: self.clone(),
+                store: self.share(),
                 session_ids: Vec::new(),
                 selection,
                 commit: None,
@@ -413,12 +440,13 @@ impl SessionFileStore {
             validate_session_id(session_id)?;
         }
         self.ensure_initialized().await?;
-        let commit = Arc::clone(&self.commits).lock_owned().await;
+        let commit = Arc::clone(&self.state.commits).lock_owned().await;
         if selection == SessionFileSelection::All {
-            let reservations = self
-                .reservations
-                .lock()
-                .map_err(|_| Error::Tool("session file reservation lock is poisoned".into()))?;
+            let reservations = self.state.reservations.lock().map_err(|error| {
+                Error::Tool(format!(
+                    "session file reservation lock is poisoned: {error}"
+                ))
+            })?;
             if let Some(session_id) = session_ids
                 .iter()
                 .find(|session_id| reservations.contains_key(*session_id))
@@ -432,7 +460,7 @@ impl SessionFileStore {
             self.validate_session_deletion(session_id).await?;
         }
         Ok(SessionFileDeletion {
-            store: self.clone(),
+            store: self.share(),
             session_ids: session_ids.to_vec(),
             selection,
             commit: Some(commit),
@@ -464,7 +492,7 @@ impl SessionFileStore {
     /// Returns an error if validation or an operation required by this function fails.
     pub async fn cleanup_deleted_sessions(&self) -> Result<()> {
         self.ensure_initialized().await?;
-        let mut entries = tokio::fs::read_dir(self.root.as_ref()).await?;
+        let mut entries = tokio::fs::read_dir(&self.state.root).await?;
         // ponytail: sequential retries; bound parallel cleanup if unavailable mounts delay reclamation.
         while let Some(entry) = entries.next_entry().await? {
             let name = entry.file_name();
@@ -483,17 +511,17 @@ impl SessionFileStore {
             }
             self.cleanup_deleted_directory(key).await?;
         }
-        let _commit = self.commits.lock().await;
-        gc_unreferenced_blobs(&self.root).await
+        let _commit = self.state.commits.lock().await;
+        gc_unreferenced_blobs(&self.state.root).await
     }
 
     async fn cleanup_deleted_directory(&self, key: &str) -> Result<()> {
-        let directory = self.root.join(format!("{DELETED_PREFIX}{key}"));
+        let directory = self.state.root.join(format!("{DELETED_PREFIX}{key}"));
         match tokio::fs::symlink_metadata(&directory).await {
             Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
                 let workspace = load_optional_attachment_workspace(&directory).await?;
                 if let Some(workspace) = workspace {
-                    remove_staged_attachments(&workspace, key).await?;
+                    remove_staged_attachments(Arc::new(workspace), key).await?;
                 }
                 tokio::fs::remove_dir_all(directory).await?;
             }
@@ -560,7 +588,7 @@ impl SessionFileStore {
     pub(crate) async fn content_blob_path(&self, content_hash: &str, size: u64) -> Result<PathBuf> {
         validate_content_hash(content_hash)?;
         let path = self.blob_path(content_hash);
-        validate_content_blob(&path, content_hash, size, &self.validated_blobs).await?;
+        validate_content_blob(&path, content_hash, size, &self.state.validated_blobs).await?;
         Ok(path)
     }
 
@@ -582,7 +610,7 @@ impl SessionFileStore {
             )));
         }
         self.ensure_initialized().await?;
-        let _commit = self.commits.lock().await;
+        let _commit = self.state.commits.lock().await;
         let session_dir = self.session_dir(session_id);
         ensure_private_dir(&session_dir).await?;
         let existing = list_completed(&session_dir, &self.blob_dir()).await?;
@@ -606,7 +634,7 @@ impl SessionFileStore {
         set_private_file(temporary.path()).await?;
         let (file, path) = temporary.into_parts();
         Ok(PendingSessionFileWrite {
-            store: self.clone(),
+            store: self.share(),
             session_id: session_id.into(),
             record,
             reservation,
@@ -626,7 +654,7 @@ impl SessionFileStore {
         protected_from_cleanup: bool,
     ) -> Result<SessionFileReference> {
         let size = u64::try_from(bytes.len())
-            .map_err(|_| Error::Tool("file size is unsupported".into()))?;
+            .map_err(|error| Error::Tool(format!("file size is unsupported: {error}")))?;
         let pending = self
             .begin(
                 session_id,
@@ -662,7 +690,7 @@ impl SessionFileStore {
             &path,
             &metadata.content_hash,
             metadata.file.size,
-            &self.validated_blobs,
+            &self.state.validated_blobs,
         )
         .await?;
         Ok((metadata, path))
@@ -704,11 +732,11 @@ impl SessionFileStore {
     }
 
     fn session_dir(&self, session_id: &str) -> PathBuf {
-        self.root.join(session_storage_key(session_id))
+        self.state.root.join(session_storage_key(session_id))
     }
 
     fn blob_dir(&self) -> PathBuf {
-        self.root.join(BLOB_DIR)
+        self.state.root.join(BLOB_DIR)
     }
 
     fn blob_path(&self, content_hash: &str) -> PathBuf {
@@ -716,13 +744,14 @@ impl SessionFileStore {
     }
 
     async fn ensure_initialized(&self) -> Result<()> {
-        self.initialized
+        self.state
+            .initialized
             .get_or_try_init(|| async {
-                ensure_private_dir(&self.root).await?;
-                cleanup_stale_files(&self.root).await
+                ensure_private_dir(&self.state.root).await?;
+                cleanup_stale_files(&self.state.root).await
             })
-            .await
-            .map(|_| ())
+            .await?;
+        Ok(())
     }
 
     /// Measures content bytes charged against the gateway allowance.
@@ -730,7 +759,7 @@ impl SessionFileStore {
     /// Returns an error if the protected blob directory cannot be measured.
     pub async fn stored_bytes(&self) -> Result<u64> {
         self.ensure_initialized().await?;
-        let _commit = self.commits.lock().await;
+        let _commit = self.state.commits.lock().await;
         self.blob_bytes().await
     }
 
@@ -754,24 +783,27 @@ impl SessionFileStore {
 
     // Call while holding the commit lock so the scan and reservation admission agree.
     async fn validate_storage_capacity(&self, size: u64) -> Result<()> {
-        let Some(limit) = self.limit_bytes else {
+        let Some(limit) = self.state.limit_bytes else {
             return Ok(());
         };
         // ponytail: one flat blob scan per write; use a durable counter if blob counts grow large.
-        let mut charged = self
+        let stored = self
             .blob_bytes()
             .await?
             .checked_add(size)
             .ok_or_else(|| Error::Tool("session file quota overflow".into()))?;
-        let reservations = self
+        let charged = self
+            .state
             .reservations
             .lock()
-            .map_err(|_| Error::Tool("session file reservation state is unavailable".into()))?;
-        for pending in reservations.values() {
-            charged = charged
-                .checked_add(pending.bytes)
-                .ok_or_else(|| Error::Tool("session file quota overflow".into()))?;
-        }
+            .map_err(|error| {
+                Error::Tool(format!(
+                    "session file reservation state is unavailable: {error}"
+                ))
+            })?
+            .values()
+            .try_fold(stored, |total, pending| total.checked_add(pending.bytes))
+            .ok_or_else(|| Error::Tool("session file quota overflow".into()))?;
         if charged > limit {
             return Err(Error::StorageFull);
         }
@@ -789,10 +821,11 @@ impl SessionFileStore {
                 .checked_add(item.file.size)
                 .ok_or_else(|| Error::Tool("session file quota overflow".into()))
         })?;
-        let mut reservations = self
-            .reservations
-            .lock()
-            .map_err(|_| Error::Tool("session file reservation state is unavailable".into()))?;
+        let mut reservations = self.state.reservations.lock().map_err(|error| {
+            Error::Tool(format!(
+                "session file reservation state is unavailable: {error}"
+            ))
+        })?;
         let pending_files = reservations
             .get(session_id)
             .map_or(0, |pending| pending.files);
@@ -816,8 +849,9 @@ impl SessionFileStore {
         let pending = reservations.entry(session_id.into()).or_default();
         pending.files += 1;
         pending.bytes += size;
+        drop(reservations);
         Ok(SessionFileReservation {
-            reservations: Arc::clone(&self.reservations),
+            reservations: Arc::clone(&self.state.reservations),
             session_id: session_id.into(),
             size,
             active: true,
@@ -834,13 +868,17 @@ impl SessionFileStore {
                 .checked_add(item.file.size)
                 .ok_or_else(|| Error::Tool("session file quota overflow".into()))
         })?;
-        let reservations = self
+        let (pending_files, pending_bytes) = self
+            .state
             .reservations
             .lock()
-            .map_err(|_| Error::Tool("session file reservation state is unavailable".into()))?;
-        let pending = reservations.get(session_id);
-        let pending_files = pending.map_or(0, |pending| pending.files);
-        let pending_bytes = pending.map_or(0, |pending| pending.bytes);
+            .map_err(|error| {
+                Error::Tool(format!(
+                    "session file reservation state is unavailable: {error}"
+                ))
+            })?
+            .get(session_id)
+            .map_or((0, 0), |pending| (pending.files, pending.bytes));
         if completed.len().saturating_add(pending_files) > MAX_SESSION_FILES
             || completed_bytes
                 .checked_add(pending_bytes)
@@ -866,14 +904,14 @@ impl SessionFileDeletion {
         }
         for session_id in &self.session_ids {
             let key = session_storage_key(session_id);
-            let destination = self.store.root.join(format!("{DELETED_PREFIX}{key}"));
+            let destination = self.store.state.root.join(format!("{DELETED_PREFIX}{key}"));
             match tokio::fs::rename(self.store.session_dir(session_id), destination).await {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error.into()),
             }
         }
-        std::fs::File::open(self.store.root.as_ref())?.sync_all()?;
+        std::fs::File::open(&self.store.state.root)?.sync_all()?;
         self.commit.take();
         Ok(())
     }
@@ -896,15 +934,19 @@ impl SessionFileDeletion {
                 .cleanup_deleted_directory(&session_storage_key(session_id))
                 .await?;
         }
-        let _commit = self.store.commits.lock().await;
-        gc_unreferenced_blobs(&self.store.root).await
+        let _commit = self.store.state.commits.lock().await;
+        gc_unreferenced_blobs(&self.store.state.root).await
     }
     async fn delete_selected(&mut self) -> Result<()> {
         let Some(_commit) = self.commit.as_ref() else {
             return Ok(());
         };
         if let SessionFileSelection::Ids(ids) = &self.selection {
-            let directory = self.store.session_dir(&self.session_ids[0]);
+            let session_id = self
+                .session_ids
+                .first()
+                .ok_or_else(|| Error::Tool("file deletion has no session".into()))?;
+            let directory = self.store.session_dir(session_id);
             for id in ids {
                 let path = directory.join(id);
                 if tokio::fs::symlink_metadata(&path)
@@ -922,7 +964,9 @@ impl SessionFileDeletion {
         }
         for session_id in &self.session_ids {
             let directory = self.store.session_dir(session_id);
-            let workspace = load_optional_attachment_workspace(&directory).await?;
+            let workspace = load_optional_attachment_workspace(&directory)
+                .await?
+                .map(Arc::new);
             let mut entries = match tokio::fs::read_dir(&directory).await {
                 Ok(entries) => entries,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
@@ -954,7 +998,7 @@ impl SessionFileDeletion {
                     && let Some(workspace) = &workspace
                 {
                     remove_staged_attachments(
-                        workspace,
+                        Arc::clone(workspace),
                         &format!("{}/{id}", session_storage_key(session_id)),
                     )
                     .await?;
@@ -962,13 +1006,14 @@ impl SessionFileDeletion {
                 tokio::fs::remove_dir_all(entry.path()).await?;
             }
         }
-        gc_unreferenced_blobs(&self.store.root).await?;
+        gc_unreferenced_blobs(&self.store.state.root).await?;
         self.commit.take();
         Ok(())
     }
 }
 
 /// An incomplete immutable session-file write.
+#[derive(Debug)]
 pub struct PendingSessionFileWrite {
     store: SessionFileStore,
     session_id: String,
@@ -1046,7 +1091,7 @@ impl PendingSessionFileWrite {
         file.sync_all().await?;
         drop(file);
 
-        let _guard = self.store.commits.lock().await;
+        let _guard = self.store.state.commits.lock().await;
         let session_dir = self.store.session_dir(&self.session_id);
         let existing = list_completed(&session_dir, &self.store.blob_dir()).await?;
         self.store
@@ -1078,7 +1123,7 @@ impl PendingSessionFileWrite {
                         &blob_path,
                         &self.record.content_hash,
                         self.record.file.size,
-                        &self.store.validated_blobs,
+                        &self.store.state.validated_blobs,
                     )
                     .await?;
                 }
@@ -1098,7 +1143,7 @@ impl PendingSessionFileWrite {
             };
             for cleanup in [
                 staging_cleanup,
-                gc_unreferenced_blobs(&self.store.root).await,
+                gc_unreferenced_blobs(&self.store.state.root).await,
             ] {
                 if let Err(rollback) = cleanup {
                     error = Error::Rollback {
@@ -1130,6 +1175,7 @@ impl SessionFileReservation {
         if remove {
             reservations.remove(&self.session_id);
         }
+        drop(reservations);
         self.active = false;
     }
 }

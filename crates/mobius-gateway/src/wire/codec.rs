@@ -23,6 +23,10 @@ impl SharedFrame {
         })
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "replay frames are always built by `encoded`, which stores the payload"
+    )]
     pub(crate) fn encoded_len(&self) -> usize {
         self.payload
             .as_ref()
@@ -48,6 +52,7 @@ impl std::ops::Deref for SharedFrame {
 }
 
 /// Cancellation-safe reader for length-prefixed gateway frames.
+#[derive(Debug)]
 pub struct FrameReader<R> {
     reader: R,
     buffer: Vec<u8>,
@@ -98,20 +103,18 @@ where
     T: DeserializeOwned,
 {
     loop {
-        let needed = if reader.buffer.len() >= 4 {
-            let prefix = reader.buffer[..4]
-                .try_into()
-                .map_err(|_| Error::Protocol("frame length is unsupported".into()))?;
-            let length = usize::try_from(u32::from_be_bytes(prefix))
-                .map_err(|_| Error::Protocol("frame length is unsupported".into()))?;
+        let needed = if let Some(prefix) = reader.buffer.first_chunk::<4>() {
+            let length = usize::try_from(u32::from_be_bytes(*prefix)).map_err(|error| {
+                Error::Protocol(format!("frame length is unsupported: {error}"))
+            })?;
             if length == 0 || length > max_bytes {
                 return Err(Error::Protocol(format!(
                     "frame length must be 1–{max_bytes} bytes"
                 )));
             }
             let frame_end = 4 + length;
-            if reader.buffer.len() >= frame_end {
-                let frame = serde_json::from_slice(&reader.buffer[4..frame_end])?;
+            if let Some(payload) = reader.buffer.get(4..frame_end) {
+                let frame = serde_json::from_slice(payload)?;
                 reader.buffer.clear();
                 // Reuse ordinary frames without pinning bulk-transfer memory for idle clients.
                 if reader.buffer.capacity() > 64 * 1024 {
@@ -125,14 +128,21 @@ where
         };
         let mut chunk = [0_u8; 8 * 1024];
         let chunk_bytes = needed.min(chunk.len());
-        let read = reader.reader.read(&mut chunk[..chunk_bytes]).await?;
+        let read = reader
+            .reader
+            .read(chunk.get_mut(..chunk_bytes).unwrap_or_default())
+            .await?;
         if read == 0 {
             if reader.buffer.is_empty() {
                 return Ok(None);
             }
             return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
         }
-        reader.buffer.extend_from_slice(&chunk[..read]);
+        reader.buffer.extend_from_slice(
+            chunk
+                .get(..read)
+                .ok_or_else(|| Error::Protocol("frame read overflowed its buffer".into()))?,
+        );
     }
 }
 
@@ -141,6 +151,10 @@ where
 /// # Errors
 ///
 /// Returns an error if the value cannot be encoded or persisted.
+#[expect(
+    clippy::future_not_send,
+    reason = "generic over the caller's writer and value; the future is Send whenever they are"
+)]
 pub async fn write_frame<T>(writer: &mut (impl AsyncWrite + Unpin), value: &T) -> Result<()>
 where
     T: Serialize,
@@ -158,9 +172,12 @@ fn encode_frame(value: &impl Serialize) -> Result<Vec<u8>> {
             "encoded frame must be 1–{MAX_FRAME_BYTES} bytes"
         )));
     }
-    let length = u32::try_from(payload_len)
-        .map_err(|_| Error::Protocol("encoded frame length is unsupported".into()))?;
-    encoded[..4].copy_from_slice(&length.to_be_bytes());
+    let length = u32::try_from(payload_len).map_err(|error| {
+        Error::Protocol(format!("encoded frame length is unsupported: {error}"))
+    })?;
+    if let Some(prefix) = encoded.first_chunk_mut::<4>() {
+        *prefix = length.to_be_bytes();
+    }
     Ok(encoded)
 }
 
@@ -170,7 +187,7 @@ async fn write_encoded(writer: &mut (impl AsyncWrite + Unpin), encoded: &[u8]) -
         writer.flush().await
     })
     .await
-    .map_err(|_| std::io::Error::from(std::io::ErrorKind::TimedOut))??;
+    .map_err(|elapsed| std::io::Error::new(std::io::ErrorKind::TimedOut, elapsed))??;
     Ok(())
 }
 

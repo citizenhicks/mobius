@@ -47,12 +47,16 @@ struct ApprovalTool(Arc<AtomicUsize>);
 struct HideAfterModel(AtomicUsize);
 
 impl Tool for ApprovalTool {
-    fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "approval_work".into(),
-            description: "Perform approval work".into(),
-            parameters: serde_json::json!({"type": "object"}),
-        }
+    fn definition(&self) -> &std::sync::Arc<ToolDefinition> {
+        static DEFINITION: std::sync::LazyLock<std::sync::Arc<ToolDefinition>> =
+            std::sync::LazyLock::new(|| {
+                std::sync::Arc::new(ToolDefinition {
+                    name: "approval_work".into(),
+                    description: "Perform approval work".into(),
+                    parameters: serde_json::json!({"type": "object"}),
+                })
+            });
+        &DEFINITION
     }
 
     fn exposure(&self) -> ToolExposure {
@@ -63,11 +67,11 @@ impl Tool for ApprovalTool {
         ApprovalRequirement::Always
     }
 
-    fn call<'a>(
-        &'a self,
+    fn call(
+        &self,
         _context: ToolContext,
         _arguments: Value,
-    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
+    ) -> BoxFuture<'_, Result<crate::protocol::ToolResponse>> {
         self.0.fetch_add(1, Ordering::SeqCst);
         Box::pin(async { Ok("approval work complete".into()) })
     }
@@ -91,13 +95,13 @@ impl Middleware for HideAfterModel {
     }
 }
 
-fn tool_call(call_id: &str, name: &str, arguments: Value) -> ModelOutput {
+fn tool_call(call_id: &str, name: &str, arguments: &Value) -> ModelOutput {
     ModelOutput::from_output(
         vec![serde_json::json!({
             "type": "function_call",
             "call_id": call_id,
             "name": name,
-            "arguments": serde_json::to_string(&arguments).expect("arguments")
+            "arguments": serde_json::to_string(arguments).expect("arguments")
         })],
         false,
         scripted_usage(),
@@ -115,7 +119,7 @@ async fn tool_hidden_after_inference_never_reaches_approval() {
     let model = Arc::new(DiscoveryModel {
         mode: crate::protocol::ToolDiscoveryMode::Rebuild,
         outputs: Mutex::new(VecDeque::from([
-            tool_call("approval", "approval_work", serde_json::json!({})),
+            tool_call("approval", "approval_work", &serde_json::json!({})),
             scripted_message("done"),
         ])),
         requests: Mutex::new(Vec::new()),
@@ -148,7 +152,7 @@ async fn tool_hidden_after_inference_never_reaches_approval() {
     loop {
         match agent.next_event().await.expect("agent event").msg {
             EventMsg::ExecApprovalRequest(_) => approval_requested = true,
-            EventMsg::ToolCallEnd(result) if result.call_id == "approval" => {
+            EventMsg::ToolCallEnd(result) if &*result.call_id == "approval" => {
                 unavailable = result.is_error && result.output.text().contains("unavailable");
             }
             EventMsg::TurnComplete(_) => break,

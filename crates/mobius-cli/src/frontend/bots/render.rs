@@ -5,7 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, HighlightSpacing, List, ListState, Paragraph, Wrap};
 use std::borrow::Cow;
 
-use super::form::{BotFormMode, Form};
+use super::form::{BotFormMode, Form, RoutineForm};
 use super::state::{
     BOT_ROWS, BotRow, BotsState, Confirmation, Page, routine_run_label, runs_for_routine,
     sessions_for_bot,
@@ -96,14 +96,15 @@ fn render_form(frame: &mut ratatui::Frame<'_>, area: Rect, form: &Form) {
                     .as_deref()
                     .or(form.name.error.as_deref())
                     .or(form.description.error.as_deref())
-                    .or(form
-                        .prompt
-                        .as_ref()
-                        .and_then(|prompt| prompt.error.as_deref())),
+                    .or_else(|| {
+                        form.prompt
+                            .as_ref()
+                            .and_then(|prompt| prompt.error.as_deref())
+                    }),
             )
         }
         Form::Routine(form) => {
-            let save_row = form.save_row();
+            let save_row = RoutineForm::SAVE_ROW;
             let mut lines = vec![
                 form_line("Workspace", &form.workspace.value, form.row == 0),
                 form_line("Instructions", &form.instructions.value, form.row == 1),
@@ -285,7 +286,7 @@ fn render_bot(
     gateway: &ReadyPayload,
     bot_id: &str,
 ) {
-    let Some(bot) = gateway.bots.iter().find(|bot| bot.id == bot_id) else {
+    let Some(bot) = gateway.bots.iter().find(|bot| *bot.id == *bot_id) else {
         return;
     };
     let rows = BOT_ROWS;
@@ -293,7 +294,7 @@ fn render_bot(
     let routines = state
         .routines
         .iter()
-        .filter(|routine| routine.bot_id == bot_id)
+        .filter(|routine| *routine.bot_id == *bot_id)
         .count();
     let lines = rows.iter().map(|row| match row {
         BotRow::Identity => Line::from(" Identity & system prompt"),
@@ -363,7 +364,7 @@ fn render_routines(
     let routines = state
         .routines
         .iter()
-        .filter(|routine| routine.bot_id == bot_id)
+        .filter(|routine| *routine.bot_id == *bot_id)
         .collect::<Vec<_>>();
     let rows = routines.iter().map(|routine| {
         Line::from(format!(
@@ -390,14 +391,14 @@ fn render_routine(frame: &mut ratatui::Frame<'_>, area: Rect, state: &BotsState,
     let Some(routine) = state
         .routines
         .iter()
-        .find(|routine| routine.id == routine_id)
+        .find(|routine| *routine.id == *routine_id)
     else {
         return;
     };
     let runs = state
         .runs
         .iter()
-        .filter(|run| run.routine_id == routine_id)
+        .filter(|run| *run.routine_id == *routine_id)
         .count();
     let rows = [
         Line::from(" Edit settings"),

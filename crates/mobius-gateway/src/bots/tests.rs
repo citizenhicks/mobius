@@ -78,7 +78,7 @@ impl BotStore {
         )
     }
 
-    fn take_due(&self, now: i64) -> Result<Vec<(String, ActiveRoutineRun)>> {
+    fn take_due(&self, now: i64) -> Result<Vec<(Arc<str>, ActiveRoutineRun)>> {
         self.poll_due(now)?;
         let mut runs = Vec::new();
         for pending in self.pending_actions(now, 1000)? {
@@ -93,7 +93,7 @@ impl BotStore {
                 &pending.id,
                 Some(&pending.event),
             )? {
-                BeginRun::Started(run) => runs.push((command.routine_id.clone(), run)),
+                BeginRun::Started(run) => runs.push((Arc::clone(&command.routine_id), run)),
                 BeginRun::Skipped | BeginRun::AlreadyRecorded => {}
             }
             self.action_accepted(&pending.id)?;
@@ -111,7 +111,7 @@ fn scheduled_definition(
         workspace: workspace.to_path_buf(),
         instructions: instructions.into(),
         bindings: vec![RoutineBinding {
-            id: Uuid::new_v4().to_string(),
+            id: Uuid::new_v4().to_string().into(),
             on: HookSelector::Schedule { schedule, ends_at },
             action: RoutineAction::Start,
         }],
@@ -124,9 +124,9 @@ fn schedule_of(routine: &StoredRoutine) -> RoutineSchedule {
     schedule.clone()
 }
 
-fn finish_due(store: &BotStore, now: i64) -> Vec<String> {
+fn finish_due(store: &BotStore, now: i64) -> Vec<Arc<str>> {
     let due = store.take_due(now).expect("due routines");
-    let ids = due.iter().map(|(id, _)| id.clone()).collect();
+    let ids = due.iter().map(|(id, _)| Arc::clone(id)).collect();
     for (_, run) in due {
         store
             .finish_run(run, RoutineRunStatus::Succeeded, None)
@@ -265,7 +265,7 @@ async fn routine_creation_cannot_commit_after_its_bot_is_deleted() {
         .expect("prepare Bot deletion");
     let creating = tokio::task::spawn_blocking({
         let store = Arc::clone(&store);
-        let bot_id = bot.id.clone();
+        let bot_id = Arc::clone(&bot.id);
         move || {
             store.create_scheduled(
                 &bot_id,
@@ -423,7 +423,10 @@ fn once_and_interval_schedules_advance_without_replay_storms() {
 
     assert_eq!(
         finish_due(&store, now),
-        [once_routine.id.clone(), interval_routine.id.clone()]
+        [
+            Arc::clone(&once_routine.id),
+            Arc::clone(&interval_routine.id)
+        ]
     );
     assert!(finish_due(&store, now).is_empty());
     assert!(
@@ -493,14 +496,21 @@ fn run_history_exceeds_one_megabyte_without_evicting_sessions() {
         };
         newest = Some(
             store
-                .finish_run(run, RoutineRunStatus::Succeeded, Some(message.clone()))
+                .finish_run(
+                    run,
+                    RoutineRunStatus::Succeeded,
+                    Some(message.as_str().into()),
+                )
                 .expect("finish run")
                 .id,
         );
     }
 
     let history = store.history(Some(&routine.id)).expect("history");
-    assert!(serde_json::to_vec(&history).expect("history JSON").len() > MAX_STATE_BYTES as usize);
+    assert!(
+        serde_json::to_vec(&history).expect("history JSON").len()
+            > usize::try_from(MAX_STATE_BYTES).expect("state bound fits usize")
+    );
     assert_eq!(history.len(), 64);
     assert_eq!(
         history.first().expect("newest run").id,
@@ -533,14 +543,14 @@ fn persisted_routine_paths_must_stay_in_the_private_directory() {
     let mut state = BotState::default();
     state.bots.push(StoredBot::from(&bot));
     state.routines.push(StoredRoutine {
-        id: Uuid::new_v4().to_string(),
+        id: Uuid::new_v4().to_string().into(),
         bot_id: bot.id,
         workspace: std::fs::canonicalize(workspace).expect("workspace"),
         instructions: root.path().join("outside.md"),
         bindings: vec![
             StoredRoutineBinding::new(
                 RoutineBinding {
-                    id: Uuid::new_v4().to_string(),
+                    id: Uuid::new_v4().to_string().into(),
                     on: HookSelector::Schedule {
                         schedule: cron("0 9 * * *", "UTC"),
                         ends_at: None,

@@ -101,7 +101,7 @@ struct RenderedTranscript {
 
 #[derive(Clone, PartialEq, Eq)]
 struct BlockKey {
-    capability: String,
+    capability: Arc<str>,
     value: String,
 }
 
@@ -133,12 +133,12 @@ impl StreamedStepPhases {
 #[derive(Clone)]
 enum PickerAction {
     Submit(Box<Op>),
-    Resume(String),
+    Resume(Arc<str>),
     Gateway(GatewayAction),
     Download(SessionFileReference),
     CreateSession {
         workspace: PathBuf,
-        bot_id: String,
+        bot_id: Arc<str>,
         clear: bool,
     },
     ConfirmDeleteFile(SessionFileReference),
@@ -189,7 +189,8 @@ impl PickerState {
     }
 
     fn matching_options(&self) -> impl Iterator<Item = &PickerOption> {
-        self.matching_indices().map(|index| &self.options[index])
+        self.matching_indices()
+            .filter_map(|index| self.options.get(index))
     }
 
     fn match_count(&self) -> usize {
@@ -269,9 +270,9 @@ struct PreviewState {
 }
 
 impl PreviewState {
-    fn new(title: String, content: PreviewContent) -> Self {
+    fn new(title: &str, content: PreviewContent) -> Self {
         Self {
-            title: bounded_title(&title),
+            title: bounded_title(title),
             subtitle: String::new(),
             content,
             viewport: Viewport::default(),
@@ -279,16 +280,16 @@ impl PreviewState {
     }
 
     fn snapshot(
-        id: String,
-        title: String,
-        subtitle: String,
-        page_id: String,
+        id: Arc<str>,
+        title: &str,
+        subtitle: &str,
+        page_id: Arc<str>,
         transcript: VecDeque<TranscriptEntry>,
         next: Option<Op>,
     ) -> Self {
         Self {
-            title: bounded_title(&title),
-            subtitle: bounded_title(&subtitle),
+            title: bounded_title(title),
+            subtitle: bounded_title(subtitle),
             content: PreviewContent::Snapshot(Box::new(SnapshotPreview::new(
                 id, page_id, transcript, next,
             ))),
@@ -309,7 +310,7 @@ enum PreviewContent {
 }
 
 struct PendingFileDownload {
-    request_id: String,
+    request_id: Arc<str>,
     session_id: String,
     file: SessionFileReference,
     destination: PathBuf,
@@ -320,16 +321,16 @@ struct PendingFileDownload {
 }
 
 struct SnapshotPreview {
-    id: String,
-    page_ids: BTreeSet<String>,
+    id: Arc<str>,
+    page_ids: BTreeSet<Arc<str>>,
     transcript: VecDeque<TranscriptEntry>,
     next: Option<Op>,
 }
 
 impl SnapshotPreview {
     fn new(
-        id: String,
-        page_id: String,
+        id: Arc<str>,
+        page_id: Arc<str>,
         transcript: VecDeque<TranscriptEntry>,
         next: Option<Op>,
     ) -> Self {
@@ -343,7 +344,7 @@ impl SnapshotPreview {
 
     fn prepend(
         &mut self,
-        page_id: String,
+        page_id: Arc<str>,
         mut transcript: VecDeque<TranscriptEntry>,
         next: Option<Op>,
     ) {
@@ -365,7 +366,7 @@ struct InputDraft {
 
 #[derive(Default)]
 struct TuiState {
-    widgets: Vec<((String, String), FrontendWidget)>,
+    widgets: Vec<(Arc<str>, Arc<FrontendWidget>)>,
     transcript: VecDeque<TranscriptEntry>,
     transcript_viewport: Viewport,
     streaming: String,
@@ -375,7 +376,7 @@ struct TuiState {
     reasoning_markdown: markdown::StreamCache,
     reasoning_title: Option<String>,
     git_diff: [Option<String>; 2],
-    git_diff_requests: BTreeMap<String, usize>,
+    git_diff_requests: BTreeMap<Arc<str>, usize>,
     git_diff_refresh: bool,
     streamed_step_phases: BTreeMap<Arc<str>, StreamedStepPhases>,
     input: String,
@@ -387,18 +388,18 @@ struct TuiState {
     composer_history: VecDeque<String>,
     composer_history_index: Option<usize>,
     composer_history_draft: Option<InputDraft>,
-    pending_message_drafts: BTreeMap<String, InputDraft>,
+    pending_message_drafts: BTreeMap<Arc<str>, InputDraft>,
     failed_message_drafts: VecDeque<InputDraft>,
     approvals: VecDeque<ExecApprovalRequestEvent>,
     approval_draft: Option<InputDraft>,
-    active_turns: Vec<String>,
+    active_turns: Vec<Arc<str>>,
     active_message_delivery: Option<ActiveMessageDelivery>,
     turn_started_at: Option<Instant>,
     usage: UsageStatus,
     context_limit: Option<i64>,
     cwd: String,
     model: ModelInfo,
-    model_route: String,
+    model_route: Arc<str>,
     agent_summary: String,
     disconnected: bool,
     slash_selection: usize,
@@ -408,13 +409,13 @@ struct TuiState {
     reference_cache: Option<(char, String, Vec<MenuItem>)>,
     picker: Option<PickerState>,
     preview: Option<PreviewState>,
-    preview_request_id: Option<String>,
+    preview_request_id: Option<Arc<str>>,
     capability_overlay: Option<CapabilityOverlay>,
     requested_resume: Option<SessionResumeRequestedEvent>,
     background_approval_count: usize,
     next_before_sequence: Option<u64>,
-    history_request_id: Option<String>,
-    deletion_request_id: Option<String>,
+    history_request_id: Option<Arc<str>>,
+    deletion_request_id: Option<Arc<str>>,
     file_download: Option<PendingFileDownload>,
 }
 
@@ -423,11 +424,13 @@ impl TuiState {
         catalog: &UiCatalog,
         cwd: Option<std::path::PathBuf>,
         mut model: ModelInfo,
-        model_route: String,
+        model_route: Arc<str>,
         agent_summary: String,
     ) -> Self {
-        model.model = terminal_text(&model.model);
-        model.reasoning_effort = model.reasoning_effort.map(|effort| terminal_text(&effort));
+        model.model = terminal_text(&model.model).into();
+        model.reasoning_effort = model
+            .reasoning_effort
+            .map(|effort| terminal_text(&effort).into());
         Self {
             widgets: initial_widgets(catalog),
             transcript: VecDeque::new(),
@@ -502,17 +505,19 @@ impl TuiState {
         }
     }
 
-    fn active_turn(&self) -> Option<&str> {
+    fn active_turn(&self) -> Option<&Arc<str>> {
         self.approval()
-            .map(|request| request.turn_id.as_str())
-            .or_else(|| self.active_turns.first().map(String::as_str))
+            .map(|request| &request.turn_id)
+            .or_else(|| self.active_turns.first())
     }
 
     fn composer_target_turn(&self) -> Option<&str> {
-        self.active_message_delivery.and(self.active_turn())
+        self.active_message_delivery
+            .and_then(|_| self.active_turn())
+            .map(|turn_id| &**turn_id)
     }
 
-    fn start_turn(&mut self, turn_id: String) {
+    fn start_turn(&mut self, turn_id: Arc<str>) {
         if !self.active_turns.contains(&turn_id) {
             self.active_turns.push(turn_id);
         }
@@ -524,7 +529,7 @@ impl TuiState {
     }
 
     fn begin_approval(&mut self, request: ExecApprovalRequestEvent) {
-        self.start_turn(request.turn_id.clone());
+        self.start_turn(Arc::clone(&request.turn_id));
         if self
             .approvals
             .iter()
@@ -539,7 +544,7 @@ impl TuiState {
         self.sync_attention_approvals();
     }
 
-    fn take_approval(&mut self) -> Option<String> {
+    fn take_approval(&mut self) -> Option<Arc<str>> {
         let request = self.approvals.pop_front()?;
         self.sync_attention_approvals();
         self.input.clear();
@@ -573,10 +578,10 @@ impl TuiState {
 
     fn snapshot_input_draft(&self) -> InputDraft {
         InputDraft {
-            text: self.input.clone(),
+            text: self.input.clone(), // rules-allow: the snapshot restores the composer after a failed send
             cursor: self.cursor,
-            pastes: self.pastes.clone(),
-            attachments: self.attachments.clone(),
+            pastes: self.pastes.clone(), // rules-allow: the snapshot restores the composer after a failed send
+            attachments: self.attachments.clone(), // rules-allow: the snapshot restores the composer after a failed send
         }
     }
 
@@ -660,14 +665,13 @@ impl TuiState {
         if self.composer_history.is_empty() {
             return;
         }
-        let index = match self.composer_history_index {
-            Some(index) => index.saturating_sub(1),
-            None => {
-                let draft = self.take_input_draft();
-                self.attachments.clone_from(&draft.attachments);
-                self.composer_history_draft = Some(draft);
-                self.composer_history.len() - 1
-            }
+        let index = if let Some(index) = self.composer_history_index {
+            index.saturating_sub(1)
+        } else {
+            let draft = self.take_input_draft();
+            self.attachments.clone_from(&draft.attachments);
+            self.composer_history_draft = Some(draft);
+            self.composer_history.len() - 1
         };
         self.recall_composer_input(index);
     }
@@ -700,18 +704,23 @@ impl TuiState {
     }
 
     fn recall_composer_input(&mut self, index: usize) {
-        let input = std::mem::take(&mut self.composer_history[index]);
+        let Some(entry) = self.composer_history.get_mut(index) else {
+            return;
+        };
+        let input = std::mem::take(entry);
         self.input.clear();
         self.pastes.clear();
         self.cursor = 0;
         self.insert_paste(&input);
-        self.composer_history[index] = input;
+        if let Some(entry) = self.composer_history.get_mut(index) {
+            *entry = input;
+        }
         self.composer_history_index = Some(index);
     }
 
     fn apply_block(&mut self, rendered: RenderedBlock) {
         self.commit_reasoning();
-        let capability = rendered.capability;
+        let capability = Arc::<str>::from(rendered.capability);
         let mut block = rendered.block;
         let title = bounded_title(&std::mem::take(&mut block.title));
         let mut text = bounded_terminal_text(&super::block_text(&block), MAX_ENTRY_BYTES);
@@ -723,7 +732,7 @@ impl TuiState {
             && !text.is_empty())
         .then(|| std::mem::take(&mut text));
         let id = block.id.map(|value| BlockKey {
-            capability: capability.clone(),
+            capability: Arc::clone(&capability),
             value,
         });
         let group = block.group.map(|value| BlockKey { capability, value });
@@ -772,9 +781,9 @@ impl TuiState {
         self.trim_transcript();
     }
 
-    fn remember_streamed_phase(&mut self, model_step_id: &Arc<str>, phase: ModelStepContentPhase) {
+    fn remember_streamed_phase(&mut self, model_step_id: Arc<str>, phase: ModelStepContentPhase) {
         self.streamed_step_phases
-            .entry(Arc::clone(model_step_id))
+            .entry(model_step_id)
             .or_default()
             .insert(phase);
     }
@@ -875,8 +884,9 @@ impl TuiState {
     fn finish_turn(&mut self, turn_id: &str) {
         self.commit_reasoning();
         self.commit_stream();
-        self.active_turns.retain(|active| active != turn_id);
-        self.approvals.retain(|request| request.turn_id != turn_id);
+        self.active_turns.retain(|active| **active != *turn_id);
+        self.approvals
+            .retain(|request| *request.turn_id != *turn_id);
         self.sync_attention_approvals();
         if self.active_turns.is_empty() {
             self.streamed_step_phases.clear();
@@ -890,7 +900,7 @@ impl TuiState {
         self.picker = None;
         self.capability_overlay = None;
         self.preview = Some(PreviewState::new(
-            "Transcript".into(),
+            "Transcript",
             PreviewContent::LiveTranscript,
         ));
     }
@@ -912,7 +922,7 @@ impl TuiState {
         });
     }
 
-    fn open_diff_preview(&mut self, title: String, text: String) {
+    fn open_diff_preview(&mut self, title: &str, text: &str) {
         self.picker = None;
         self.capability_overlay = None;
         self.preview = Some(PreviewState::new(

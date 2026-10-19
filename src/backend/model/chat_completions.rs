@@ -47,6 +47,7 @@ pub(super) struct StreamOptions {
     pub(super) include_usage: bool,
 }
 
+#[derive(Clone, Copy)]
 pub(super) enum MessageSource<'a> {
     System(&'a str),
     History { role: &'a str, item: &'a Value },
@@ -108,17 +109,6 @@ fn wire_messages<'a, C: Default>(
     for item in input.iter() {
         match item.get("type").and_then(Value::as_str) {
             Some("function_call") => {
-                if messages
-                    .last()
-                    .is_none_or(|message| message.role != "assistant")
-                {
-                    messages.push(WireMessage {
-                        role: "assistant",
-                        payload: C::default(),
-                        tool_calls: Vec::new(),
-                        tool_call_id: None,
-                    });
-                }
                 let call = WireToolCall {
                     id: required_string(item, "call_id", provider)?,
                     kind: "function",
@@ -127,11 +117,15 @@ fn wire_messages<'a, C: Default>(
                         arguments: argument_text(item.get("arguments"))?,
                     },
                 };
-                messages
-                    .last_mut()
-                    .expect("assistant message was just inserted")
-                    .tool_calls
-                    .push(call);
+                match messages.last_mut() {
+                    Some(message) if message.role == "assistant" => message.tool_calls.push(call),
+                    _ => messages.push(WireMessage {
+                        role: "assistant",
+                        payload: C::default(),
+                        tool_calls: vec![call],
+                        tool_call_id: None,
+                    }),
+                }
             }
             Some("function_call_output") => messages.push(WireMessage {
                 role: "tool",

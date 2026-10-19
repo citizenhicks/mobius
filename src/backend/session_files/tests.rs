@@ -31,7 +31,7 @@ async fn upload_round_trip_is_session_scoped_and_atomic() {
 
         let session = store.session_dir(session_id);
         let directory = session.join(&file.id);
-        for path in [store.root.as_path(), &session, &directory] {
+        for path in [&*store.state.root, &session, &directory] {
             let mode = std::fs::metadata(path)
                 .expect("directory mode")
                 .permissions()

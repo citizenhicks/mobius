@@ -148,8 +148,7 @@ fn custom_openai_roots_require_endpoint_bound_stored_credentials() {
             &credentials,
             &mobius::backend::model::ModelTransportSettings::default(),
         )
-        .err()
-        .expect("custom provider must require stored credentials");
+        .expect_err("custom provider must require stored credentials");
 
         assert!(
             error
@@ -240,17 +239,17 @@ fn selected_trusted_plugin_snapshot_reaches_extensions_assembly_only_when_active
         "plugin:fixture".into(),
         InstalledExtension {
             kind: ExtensionKind::Plugin,
-            name: inspected.name,
-            description: inspected.description,
-            version: inspected.version,
+            name: inspected.name.into(),
+            description: inspected.description.into(),
+            version: inspected.version.map(Into::into),
             source: ExtensionSource {
                 url: "https://example.com/fixture.git".into(),
                 reference: None,
                 subdirectory: None,
             },
-            resolved_revision: "a".repeat(40),
-            digest: digest.clone(),
-            skills: inspected.skills,
+            resolved_revision: "a".repeat(40).into(),
+            digest: digest.clone().into(),
+            skills: inspected.skills.into(),
             hooks: inspected
                 .hooks
                 .into_iter()
@@ -261,7 +260,7 @@ fn selected_trusted_plugin_snapshot_reaches_extensions_assembly_only_when_active
                     timeout_seconds: hook.timeout_seconds,
                 })
                 .collect(),
-            trusted_hook_digest: Some(digest.clone()),
+            trusted_hook_digest: Some(digest.clone().into()),
         },
     );
     let active = extension_store
@@ -280,7 +279,7 @@ fn selected_trusted_plugin_snapshot_reaches_extensions_assembly_only_when_active
             resolved
                 .plugins
                 .iter()
-                .map(|plugin| plugin.activation(Arc::clone(&gateway))),
+                .map(|plugin| plugin.activation(&gateway)),
         )
         .and_then(|extensions| extensions.start_hooks(Arc::clone(&backend)))
         .expect("middleware")
@@ -299,13 +298,13 @@ fn selected_trusted_plugin_snapshot_reaches_extensions_assembly_only_when_active
         active
             .references
             .iter()
-            .any(|reference| reference.value == "fixture:review")
+            .any(|reference| &*reference.value == "fixture:review")
     );
     assert!(
         inactive
             .references
             .iter()
-            .all(|reference| reference.value != "fixture:review")
+            .all(|reference| &*reference.value != "fixture:review")
     );
 
     extension_store

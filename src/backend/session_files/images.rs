@@ -46,9 +46,9 @@ impl ImagePresentation {
         let scaled = |side: u32| {
             (
                 u32::try_from((u64::from(width) * u64::from(side) / u64::from(longest)).max(1))
-                    .unwrap_or(width.max(1)),
+                    .unwrap_or_else(|_| width.max(1)),
                 u32::try_from((u64::from(height) * u64::from(side) / u64::from(longest)).max(1))
-                    .unwrap_or(height.max(1)),
+                    .unwrap_or_else(|_| height.max(1)),
             )
         };
         let (mut low, mut high) = (1, longest.min(self.max_dimension).max(1));
@@ -113,7 +113,7 @@ impl SessionFileStore {
         }
         // ponytail: legacy references scan session records under one preparation lock; add a bounded
         // in-memory key-to-reference cache if repeated legacy replay scans become a bottleneck.
-        let _preparation = self.renditions.lock().await;
+        let _preparation = self.state.renditions.lock().await;
         // Session-file records are the cache: authorization, restart recovery and cleanup share one owner.
         if let Some(record) = super::list_completed(&self.session_dir(session_id), &self.blob_dir())
             .await?
@@ -135,10 +135,10 @@ impl SessionFileStore {
             }));
         }
         // Blocking image work retains its semaphore permit even when the async caller is cancelled.
-        let permit = Arc::clone(&self.image_work)
+        let permit = Arc::clone(&self.state.image_work)
             .acquire_owned()
             .await
-            .map_err(|_| Error::Tool("image preparation unavailable".into()))?;
+            .map_err(|error| Error::Tool(format!("image preparation unavailable: {error}")))?;
         let bytes = self.read_file(session_id, &image.file).await?;
         let prepared = tokio::task::spawn_blocking(move || {
             let _permit = permit;
@@ -162,7 +162,7 @@ impl SessionFileStore {
             }));
         };
         let size = u64::try_from(bytes.len())
-            .map_err(|_| Error::Tool("image rendition size overflow".into()))?;
+            .map_err(|error| Error::Tool(format!("image rendition size overflow: {error}")))?;
         let mut pending = self
             .begin(
                 session_id,
@@ -193,27 +193,28 @@ impl SessionFileStore {
         if record.file != image.file {
             return Err(Error::Tool("image reference metadata mismatch".into()));
         }
-        let dimensions = match (record.image_dimensions, record.image_orientation) {
-            (Some(dimensions), Some(_)) => dimensions,
-            _ => {
-                let bytes = self.read_file(session_id, &image.file).await?;
-                let (_, media_type, width, height, orientation) =
-                    validated_image(bytes, &self.image_work).await?;
-                if media_type != image.file.media_type {
-                    return Err(Error::Tool("image reference media type mismatch".into()));
-                }
-                self.remember_image_preparation(
-                    session_id,
-                    &image.file,
-                    [width, height],
-                    orientation,
-                    None,
-                )
-                .await?;
-                record.image_dimensions = Some([width, height]);
-                record.image_orientation = Some(orientation);
-                [width, height]
+        let dimensions = if let (Some(dimensions), Some(_)) =
+            (record.image_dimensions, record.image_orientation)
+        {
+            dimensions
+        } else {
+            let bytes = self.read_file(session_id, &image.file).await?;
+            let (_, media_type, width, height, orientation) =
+                validated_image(bytes, &self.state.image_work).await?;
+            if media_type != image.file.media_type {
+                return Err(Error::Tool("image reference media type mismatch".into()));
             }
+            self.remember_image_preparation(
+                session_id,
+                &image.file,
+                [width, height],
+                orientation,
+                None,
+            )
+            .await?;
+            record.image_dimensions = Some([width, height]);
+            record.image_orientation = Some(orientation);
+            [width, height]
         };
         if dimensions != [image.width, image.height] {
             return Err(Error::Tool("image reference dimensions mismatch".into()));
@@ -258,7 +259,7 @@ impl SessionFileStore {
         orientation: u8,
         key: Option<String>,
     ) -> Result<()> {
-        let _commit = self.commits.lock().await;
+        let _commit = self.state.commits.lock().await;
         let (mut record, _) = self.resolve(session_id, &file.id).await?;
         if record.file != *file
             || record
@@ -289,7 +290,7 @@ impl SessionFileStore {
         file: &SessionFileReference,
     ) -> Result<Vec<u8>> {
         let bytes = self.read_file(session_id, file).await?;
-        let (bytes, media_type, _, _, _) = validated_image(bytes, &self.image_work).await?;
+        let (bytes, media_type, _, _, _) = validated_image(bytes, &self.state.image_work).await?;
         if file.media_type != media_type {
             return Err(Error::Tool(
                 "stored file media type does not match the image".into(),
@@ -310,7 +311,7 @@ impl SessionFileStore {
     ) -> Result<ImageReference> {
         let bytes = self.read_file(session_id, file).await?;
         let (_, media_type, width, height, orientation) =
-            validated_image(bytes, &self.image_work).await?;
+            validated_image(bytes, &self.state.image_work).await?;
         if file.media_type != media_type {
             return Err(Error::Tool(
                 "stored file media type does not match the image".into(),
@@ -397,7 +398,7 @@ impl SessionFileStore {
     ) -> Result<SessionFileReference> {
         super::validate_session_id(target)?;
         self.ensure_initialized().await?;
-        let _commit = self.commits.lock().await;
+        let _commit = self.state.commits.lock().await;
         let (mut record, _) = self.resolve(source, &file.id).await?;
         if record.file != *file {
             return Err(Error::Tool("stored reference metadata mismatch".into()));
@@ -467,7 +468,8 @@ impl SessionFileStore {
         detail: ImageDetail,
         coordinates: bool,
     ) -> Result<ImageReference> {
-        let image @ (_, _, width, height, _) = validated_image(bytes, &self.image_work).await?;
+        let image @ (_, _, width, height, _) =
+            validated_image(bytes, &self.state.image_work).await?;
         if coordinates && !self.image_policy.fits(width, height) {
             return Err(Error::Tool("computer capture exceeds presentation dimensions; reduce the viewport or capture size to preserve click coordinates".into()));
         }
@@ -492,7 +494,8 @@ impl SessionFileStore {
         declared_media_type: &str,
         bytes: Vec<u8>,
     ) -> Result<ImageReference> {
-        let image @ (_, media_type, _, _, _) = validated_image(bytes, &self.image_work).await?;
+        let image @ (_, media_type, _, _, _) =
+            validated_image(bytes, &self.state.image_work).await?;
         if declared_media_type != media_type {
             return Err(Error::Tool(
                 "generated image media type does not match its bytes".into(),
@@ -517,7 +520,7 @@ impl SessionFileStore {
         origin: SessionFileOrigin,
     ) -> Result<ImageReference> {
         let size = u64::try_from(bytes.len())
-            .map_err(|_| Error::Tool("image file size overflow".into()))?;
+            .map_err(|error| Error::Tool(format!("image file size overflow: {error}")))?;
         let mut pending = self
             .begin(
                 session_id,
@@ -638,7 +641,7 @@ async fn validated_image(
     let permit = Arc::clone(work)
         .acquire_owned()
         .await
-        .map_err(|_| Error::Tool("image decoder unavailable".into()))?;
+        .map_err(|error| Error::Tool(format!("image decoder unavailable: {error}")))?;
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
         let (media_type, width, height, orientation) = validate_image(&bytes)?;
@@ -784,6 +787,10 @@ fn decode_image(bytes: &[u8]) -> Result<(&'static str, image::DynamicImage, Orie
     Ok((media_type, decoded, orientation))
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a map_err adaptor receives the error by value"
+)]
 fn image_error(error: image::ImageError) -> Error {
     Error::Tool(format!("invalid or unsupported image: {error}"))
 }

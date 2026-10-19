@@ -21,7 +21,7 @@ use crate::{Error, Result};
 
 pub(super) struct SubmissionDrain {
     pub(super) input_changed: bool,
-    pub(super) interrupted: Option<String>,
+    pub(super) interrupted: Option<Arc<str>>,
 }
 
 impl Runner {
@@ -32,7 +32,7 @@ impl Runner {
         Ok(self.runtime.turn_identity(turn_id, self.active_author()?))
     }
 
-    pub(super) fn active_author(&self) -> Result<&MessageAuthor> {
+    pub(super) fn active_author(&self) -> Result<&Arc<MessageAuthor>> {
         self.state
             .active_execution
             .as_ref()
@@ -47,8 +47,8 @@ impl Runner {
         let Some(execution) = self.state.active_execution.as_ref() else {
             return Ok(());
         };
-        let submission_id = execution.submission_id.clone();
-        let turn_id = execution.turn_id.clone();
+        let submission_id = Arc::clone(&execution.submission_id);
+        let turn_id = Arc::clone(&execution.turn_id);
         self.abort(&submission_id, &turn_id, &reason, ExecutionOutcome::Aborted)
             .await
     }
@@ -56,7 +56,7 @@ impl Runner {
     pub(super) async fn ready_or_aborted<T>(
         &mut self,
         wait: Wait<T>,
-        turn_id: &str,
+        turn_id: &Arc<str>,
     ) -> Result<Option<T>> {
         match wait {
             Wait::Ready { value, .. } => Ok(Some(value)),
@@ -73,14 +73,14 @@ impl Runner {
         }
     }
 
-    pub(super) async fn fail_turn(&mut self, submission_id: &str, error: Error) -> Result<()> {
+    pub(super) async fn fail_turn(&mut self, submission_id: &Arc<str>, error: Error) -> Result<()> {
         self.fail_turn_with_events(submission_id, error, Vec::new())
             .await
     }
 
     pub(super) async fn fail_turn_with_events(
         &mut self,
-        submission_id: &str,
+        submission_id: &Arc<str>,
         error: Error,
         mut events: Vec<Event>,
     ) -> Result<()> {
@@ -88,7 +88,7 @@ impl Runner {
             .state
             .active_execution
             .as_ref()
-            .map(|execution| execution.turn_id.clone())
+            .map(|execution| Arc::clone(&execution.turn_id))
         else {
             return Err(error);
         };
@@ -97,7 +97,7 @@ impl Runner {
             Error::Stopped(reason) if reason == FRONTEND_DISCONNECTED_REASON => {
                 FRONTEND_DISCONNECTED_REASON.into()
             }
-            _ => event.message.clone(),
+            _ => Arc::clone(&event.message),
         };
         events.push(turn_event(submission_id, EventMsg::Error(event)));
         self.abort_with_events(
@@ -116,10 +116,10 @@ impl Runner {
         mut message: PreparedMessage,
     ) -> Result<()> {
         let author = match &message.event {
-            EventMsg::Message(event) => event.author.clone(),
+            EventMsg::Message(event) => Arc::new(event.author.clone()), // rules-allow: the turn keeps the author while the message moves on
             _ => return Err(Error::Checkpoint("prepared message has no author".into())),
         };
-        let turn_id = Uuid::new_v4().to_string();
+        let turn_id: Arc<str> = Uuid::new_v4().to_string().into();
         let mut hook_messages = Vec::new();
         let submitted = self
             .config
@@ -138,7 +138,8 @@ impl Runner {
                 .config
                 .middleware
                 .consume_next_turn(&mut self.state.make_mut().pending_messages, &submission_id)?;
-            if let Err(error) = self.begin_turn(&submission_id, turn_id.clone(), author) {
+            let started = self.begin_turn(&submission_id, Arc::clone(&turn_id), author);
+            if let Err(error) = started {
                 self.state
                     .make_mut()
                     .pending_messages
@@ -148,7 +149,7 @@ impl Runner {
             let mut events = vec![turn_event(
                 &submission_id,
                 EventMsg::TurnStarted(TurnStartedEvent {
-                    turn_id: turn_id.clone(),
+                    turn_id: Arc::clone(&turn_id),
                     model_context_window: Some(self.config.context_window),
                 }),
             )];
@@ -181,9 +182,10 @@ impl Runner {
             return result;
         }
         let mut model_input = message.input;
-        self.config
-            .model
-            .prepare_turn_input(self.state.context.as_slice().into(), &mut model_input);
+        crate::backend::model::prepare_turn_input(
+            self.state.context.as_slice().into(),
+            &mut model_input,
+        );
         let checkpoint_sequence = self
             .state
             .sequence
@@ -192,7 +194,7 @@ impl Runner {
         let mut events = vec![turn_event(
             &submission_id,
             EventMsg::TurnStarted(TurnStartedEvent {
-                turn_id: turn_id.clone(),
+                turn_id: Arc::clone(&turn_id),
                 model_context_window: Some(self.config.context_window),
             }),
         )];
@@ -220,7 +222,8 @@ impl Runner {
             .config
             .middleware
             .consume_next_turn(&mut self.state.make_mut().pending_messages, &submission_id)?;
-        if let Err(error) = self.begin_turn(&submission_id, turn_id.clone(), author) {
+        let started = self.begin_turn(&submission_id, Arc::clone(&turn_id), author);
+        if let Err(error) = started {
             self.state
                 .make_mut()
                 .pending_messages
@@ -251,7 +254,7 @@ impl Runner {
             state.pending_messages.insert(queue_index, queued_message);
             crate::middleware::delivery_once::rollback(
                 &mut state.delivered_once,
-                &state.context[context_len..],
+                state.context.get(context_len..).unwrap_or_default(),
             );
             Arc::make_mut(&mut self.state.make_mut().context).truncate(context_len);
             self.transcript_delta.truncate(transcript_len);
@@ -262,14 +265,14 @@ impl Runner {
             return Err(error);
         }
         drop(queued_message);
-        self.continue_turn(inbox, submission_id, turn_id).await
+        self.continue_turn(inbox, &submission_id, &turn_id).await
     }
 
     fn begin_turn(
         &mut self,
-        submission_id: &str,
-        turn_id: String,
-        author: MessageAuthor,
+        submission_id: &Arc<str>,
+        turn_id: Arc<str>,
+        author: Arc<MessageAuthor>,
     ) -> Result<()> {
         if self.state.active_execution.is_some() {
             return Err(Error::Checkpoint(
@@ -277,7 +280,7 @@ impl Runner {
             ));
         }
         self.state.make_mut().active_execution = Some(ActiveExecution {
-            submission_id: submission_id.into(),
+            submission_id: Arc::clone(submission_id),
             author,
             turn_id,
             started_at_ms: unix_timestamp_ms()?,
@@ -295,7 +298,7 @@ impl Runner {
     pub(super) async fn drain_submissions(
         &mut self,
         inbox: &mut SubmissionInbox,
-        turn_id: &str,
+        turn_id: &Arc<str>,
     ) -> Result<SubmissionDrain> {
         let cutoff = inbox.cutoff()?;
         let mut input_changed = false;
@@ -329,15 +332,25 @@ impl Runner {
 
     pub(super) fn usage_event(
         &self,
-        submission_id: &str,
+        submission_id: &Arc<str>,
         accounting_usage: Option<&TokenUsage>,
     ) -> Option<Event> {
-        let last = accounting_usage.or(self.state.last_usage.as_ref())?.clone();
+        let last = *accounting_usage.or(self.state.last_usage.as_ref())?;
+        // A model step's own usage scales the parts its request was built from.
+        let window = self.config.context_window;
+        let context = self
+            .context_estimate
+            .filter(|_| accounting_usage.is_none())
+            .map(|estimate| {
+                let buffer = window - self.config.middleware.context_limit(window);
+                estimate.breakdown(last.input_tokens, buffer)
+            });
         Some(turn_event(
             submission_id,
             EventMsg::TokenCount(TokenCountEvent {
                 info: Some(TokenUsageInfo {
-                    total_token_usage: self.state.total_usage.clone(),
+                    context,
+                    total_token_usage: self.state.total_usage,
                     last_token_usage: last,
                     model_context_window: Some(self.config.context_window),
                 }),
@@ -348,8 +361,8 @@ impl Runner {
 
     async fn complete_turn(
         &mut self,
-        submission_id: &str,
-        turn_id: &str,
+        submission_id: &Arc<str>,
+        turn_id: &Arc<str>,
         events: Vec<Event>,
     ) -> Result<()> {
         self.finish_turn(
@@ -357,7 +370,7 @@ impl Runner {
             turn_id,
             ExecutionOutcome::Completed,
             EventMsg::TurnComplete(TurnCompleteEvent {
-                turn_id: turn_id.to_string(),
+                turn_id: Arc::clone(turn_id),
             }),
             events,
         )
@@ -366,8 +379,8 @@ impl Runner {
 
     pub(super) async fn abort(
         &mut self,
-        submission_id: &str,
-        turn_id: &str,
+        submission_id: &Arc<str>,
+        turn_id: &Arc<str>,
         reason: &str,
         outcome: ExecutionOutcome,
     ) -> Result<()> {
@@ -377,8 +390,8 @@ impl Runner {
 
     async fn abort_with_events(
         &mut self,
-        submission_id: &str,
-        turn_id: &str,
+        submission_id: &Arc<str>,
+        turn_id: &Arc<str>,
         reason: &str,
         outcome: ExecutionOutcome,
         mut events: Vec<Event>,
@@ -397,8 +410,8 @@ impl Runner {
                 turn_id,
                 outcome,
                 EventMsg::TurnAborted(TurnAbortedEvent {
-                    turn_id: turn_id.to_string(),
-                    reason: reason.to_string(),
+                    turn_id: Arc::clone(turn_id),
+                    reason: reason.into(),
                 }),
                 events,
             )
@@ -414,8 +427,8 @@ impl Runner {
 
     async fn finish_turn(
         &mut self,
-        submission_id: &str,
-        turn_id: &str,
+        submission_id: &Arc<str>,
+        turn_id: &Arc<str>,
         outcome: ExecutionOutcome,
         terminal: EventMsg,
         mut events: Vec<Event>,
@@ -436,14 +449,14 @@ impl Runner {
 
     async fn turn_end_events(
         &mut self,
-        submission_id: &str,
-        turn_id: &str,
+        submission_id: &Arc<str>,
+        turn_id: &Arc<str>,
         outcome: ExecutionOutcome,
     ) -> Result<Vec<Event>> {
         if self.turn_end_turn_id.as_deref() == Some(turn_id) {
             return Ok(Vec::new());
         }
-        self.turn_end_turn_id = Some(turn_id.to_owned());
+        self.turn_end_turn_id = Some(Arc::clone(turn_id));
         let mut messages = Vec::new();
         self.config
             .middleware
@@ -463,9 +476,9 @@ impl Runner {
     }
 }
 
-pub(super) fn turn_event(submission_id: &str, msg: EventMsg) -> Event {
+pub(super) fn turn_event(submission_id: &Arc<str>, msg: EventMsg) -> Event {
     Event {
-        submission_id: Some(submission_id.into()),
+        submission_id: Some(Arc::clone(submission_id)),
         msg,
     }
 }

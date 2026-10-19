@@ -140,7 +140,10 @@ fn attachment(name: &str) -> mobius::protocol::SessionFileReference {
         id: "3d46beff-7e84-46ea-859a-e66b4614a79b".into(),
         name: name.into(),
         size: 4,
-        media_type: if name.ends_with(".pdf") {
+        media_type: if std::path::Path::new(name)
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
+        {
             "application/pdf"
         } else {
             "image/png"
@@ -157,8 +160,8 @@ fn queued_approvals_keep_the_draft_until_the_last_decision() {
     for suffix in ["a", "b"] {
         state.handle_agent_event(
             EventMsg::ExecApprovalRequest(mobius::protocol::ExecApprovalRequestEvent {
-                id: format!("approval-{suffix}"),
-                turn_id: format!("turn-{suffix}"),
+                id: format!("approval-{suffix}").into(),
+                turn_id: format!("turn-{suffix}").into(),
                 calls: Vec::new(),
                 reason: format!("@bot-{suffix}: approve work"),
             }),
@@ -166,7 +169,7 @@ fn queued_approvals_keep_the_draft_until_the_last_decision() {
         );
     }
     for suffix in ["a", "b"] {
-        assert_eq!(state.approval().unwrap().id, format!("approval-{suffix}"));
+        assert_eq!(*state.approval().unwrap().id, format!("approval-{suffix}"));
         let detail = view::live_transcript_lines(&mut state, 0, 100)
             .iter()
             .map(ToString::to_string)
@@ -188,7 +191,7 @@ fn queued_approvals_keep_the_draft_until_the_last_decision() {
                 &default_catalog()
             ),
             UiAction::submit(Op::ExecApproval {
-                id: format!("approval-{suffix}"),
+                id: format!("approval-{suffix}").into(),
                 decision: ReviewDecision::Approved,
             }),
         );

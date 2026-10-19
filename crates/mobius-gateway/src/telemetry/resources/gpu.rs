@@ -110,7 +110,7 @@ async fn output(program: &str, args: &[&str]) -> crate::Result<Vec<u8>> {
 #[cfg(target_os = "macos")]
 fn apple(bytes: &[u8]) -> crate::Result<Value> {
     let value = plist::Value::from_reader_xml(bytes)
-        .map_err(|_| crate::Error::Config("invalid GPU property list".into()))?;
+        .map_err(|error| crate::Error::Config(format!("invalid GPU property list: {error}")))?;
     let entries = value
         .as_array()
         .ok_or_else(|| crate::Error::Config("invalid GPU device list".into()))?;
@@ -137,7 +137,7 @@ fn apple(bytes: &[u8]) -> crate::Result<Value> {
 #[cfg(target_os = "linux")]
 fn nvidia(bytes: &[u8]) -> crate::Result<Value> {
     let text = std::str::from_utf8(bytes)
-        .map_err(|_| crate::Error::Config("invalid GPU output".into()))?;
+        .map_err(|error| crate::Error::Config(format!("invalid GPU output: {error}")))?;
     let mut devices = Vec::new();
     for line in text.lines().take(64) {
         let fields: Vec<_> = line.split(',').map(str::trim).collect();

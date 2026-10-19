@@ -11,7 +11,7 @@ fn history_frame_bound_rejects_one_oversized_turn() {
             event: Event {
                 submission_id: None,
                 msg: EventMsg::Warning(mobius::protocol::WarningEvent {
-                    message: "x".repeat(MAX_FRAME_BYTES),
+                    message: "x".repeat(MAX_FRAME_BYTES).into(),
                 }),
             },
             stream_metrics: Vec::new(),
@@ -30,7 +30,7 @@ async fn rejection_frames_preserve_request_correlation() {
     let mut reader = FrameReader::new(reader);
     write_rejection(
         &mut writer,
-        "request-7".into(),
+        "request-7",
         Rejection::new("agent_busy", "busy"),
     )
     .await
@@ -43,6 +43,6 @@ async fn rejection_frames_preserve_request_correlation() {
 
     assert!(matches!(
         frame.message,
-        ServerMessage::Rejected { request_id, .. } if request_id == "request-7"
+        ServerMessage::Rejected { request_id, .. } if request_id.as_ref() == "request-7"
     ));
 }

@@ -27,7 +27,7 @@ pub(super) struct StreamedTools {
     pub(super) denied: Vec<ToolResult>,
     pub(super) hook_input: Vec<serde_json::Value>,
     pub(super) hook_events: Vec<EventMsg>,
-    pub(super) started: BTreeSet<String>,
+    pub(super) started: BTreeSet<Arc<str>>,
     running: FuturesOrdered<BoxFuture<'static, Result<ToolResult>>>,
     results: Vec<ToolResult>,
     gate: Arc<RwLock<()>>,
@@ -56,16 +56,16 @@ impl Runner {
         tools: &PreparedToolSet<'_>,
         streamed: &mut StreamedTools,
     ) -> Result<Wait<Result<ModelOutput>>> {
-        let active = self.state.active_execution.as_ref().ok_or_else(|| {
-            Error::Checkpoint("streaming response has no active execution".into())
-        })?;
-        let submission_id = active.submission_id.clone();
-        let turn_id = active.turn_id.clone();
         enum Progress {
             Response(Result<ModelOutput>),
             Call(Option<ToolCall>),
             Tool(Result<ToolResult>),
         }
+        let active = self.state.active_execution.as_ref().ok_or_else(|| {
+            Error::Checkpoint("streaming response has no active execution".into())
+        })?;
+        let submission_id = Arc::clone(&active.submission_id);
+        let turn_id = Arc::clone(&active.turn_id);
         tokio::pin!(response);
         let mut input_changed = false;
         let mut calls_open = true;
@@ -110,8 +110,8 @@ impl Runner {
 
     async fn start_streamed_tool(
         &mut self,
-        submission_id: &str,
-        turn_id: &str,
+        submission_id: &Arc<str>,
+        turn_id: &Arc<str>,
         original: ToolCall,
         tools: &PreparedToolSet<'_>,
         streamed: &mut StreamedTools,
@@ -129,7 +129,7 @@ impl Runner {
             return Ok(());
         }
         // Keep provider arguments for EOF validation while middleware may rewrite the executable call.
-        let mut call = original.clone();
+        let mut call = original.clone(); // rules-allow: EOF validation keeps the provider's original call
         let mut hook_events = Vec::new();
         let mut hook_input = Vec::new();
         // Once hooks run, this response may no longer be retried.
@@ -156,39 +156,35 @@ impl Runner {
             return Ok(());
         };
         // Only rewritten calls need an EOF snapshot separate from execution and recovery.
-        streamed.calls.push(changed.then(|| call.clone()));
+        streamed.calls.push(changed.then(|| call.clone())); // rules-allow: a rewritten call keeps an EOF snapshot apart from execution
         // Pending calls are durable before side effects; full provider output follows at EOF.
-        self.state.make_mut().pending_tools.push(call.clone());
+        self.state.make_mut().pending_tools.push(call.clone()); // rules-allow: the checkpoint records the call before the task executes it
         if let Err(error) = self.save().await {
             self.state.make_mut().pending_tools.pop();
             return Err(error);
         }
-        streamed.started.insert(call.call_id.clone());
+        streamed.started.insert(Arc::clone(&call.call_id));
         let catalog = Arc::clone(&self.catalog);
         let parallel = catalog.execution_mode(&call.name) == ExecutionMode::Parallel;
         let sandbox = Arc::clone(&self.config.sandbox);
         let gate = Arc::clone(&streamed.gate);
         let events = Arc::clone(&self.events);
-        let submission_id = submission_id.to_owned();
-        let turn_id = turn_id.to_owned();
-        let model_route = self.config.provider.clone();
-        let author = self.active_author()?.clone();
+        let submission_id = Arc::clone(submission_id);
+        let turn_id = Arc::clone(turn_id);
+        let model_route = Arc::clone(&self.config.provider);
+        let author = Arc::clone(self.active_author()?);
         streamed.running.push_back(Box::pin(async move {
-            let _read;
-            let _write;
-            if parallel {
-                _read = Some(gate.read().await);
-                _write = None;
+            let _guard = if parallel {
+                (Some(gate.read().await), None)
             } else {
-                _read = None;
-                _write = Some(gate.write().await);
-            }
+                (None, Some(gate.write().await))
+            };
             send_event(
                 &events,
                 turn_event(
                     &submission_id,
                     EventMsg::ToolCallBegin(ToolCallBeginEvent {
-                        turn_id: turn_id.clone(),
+                        turn_id: Arc::clone(&turn_id),
                         call_id: call.call_id,
                         name: call.name,
                         arguments: call.arguments,
@@ -223,13 +219,14 @@ impl Runner {
             return Ok(None);
         }
         let live = self.live_tools().await?;
-        let Ok(bound) = self.catalog.bind_prepared(call.clone(), &live) else {
+        let bound = self.catalog.bind_prepared(call.clone(), &live); // rules-allow: binding consumes a call the caller still records
+        let Ok(bound) = bound else {
             return Ok(None);
         };
         let mutations = self
             .catalog
             .requires_approval(&call.name)
-            .then_some(call.call_id.as_str());
+            .then_some(call.call_id.as_ref());
         Ok(
             match self.config.sandbox.authorize(
                 &self.config.session_id,

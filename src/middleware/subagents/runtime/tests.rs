@@ -52,29 +52,18 @@ impl CheckpointStore for BlockingRetryStore {
         Box::pin(async { Ok(false) })
     }
 
-    fn save<'a>(
-        &'a self,
-        _checkpoint: &'a Checkpoint,
-        _transcript_delta: &'a [Arc<Value>],
-        _execution: Option<&'a ExecutionRecord>,
-    ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async { Ok(()) })
-    }
-
-    fn save_with_events<'a>(
-        &'a self,
+    fn save_with_events(
+        &self,
         checkpoint: Arc<Checkpoint>,
-        transcript_delta: Vec<Arc<Value>>,
-        execution: Option<ExecutionRecord>,
+        _transcript_delta: Vec<Arc<Value>>,
+        _execution: Option<ExecutionRecord>,
         events: Vec<TimestampedEvent>,
-    ) -> BoxFuture<'a, Result<Vec<JournalEvent>>> {
+    ) -> BoxFuture<'_, Result<Vec<JournalEvent>>> {
         Box::pin(async move {
-            self.save(&checkpoint, &transcript_delta, execution.as_ref())
-                .await?;
             let mut records = Vec::with_capacity(events.len());
             for event in events {
                 records.push(
-                    self.append_event(&checkpoint.session_id, event.recorded_at_ms, &event.event)
+                    self.append_event(&checkpoint.session_id, event.recorded_at_ms, event.event)
                         .await?,
                 );
             }
@@ -86,9 +75,8 @@ impl CheckpointStore for BlockingRetryStore {
         &'a self,
         _session_id: &'a str,
         recorded_at_ms: i64,
-        event: &'a Event,
+        event: Event,
     ) -> BoxFuture<'a, Result<JournalEvent>> {
-        let event = event.clone();
         Box::pin(async move {
             Ok(JournalEvent {
                 sequence: 1,
@@ -154,29 +142,18 @@ impl CheckpointStore for FailOnceStore {
         Box::pin(async { Ok(false) })
     }
 
-    fn save<'a>(
-        &'a self,
-        _checkpoint: &'a Checkpoint,
-        _transcript_delta: &'a [Arc<Value>],
-        _execution: Option<&'a ExecutionRecord>,
-    ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async { Ok(()) })
-    }
-
-    fn save_with_events<'a>(
-        &'a self,
+    fn save_with_events(
+        &self,
         checkpoint: Arc<Checkpoint>,
-        transcript_delta: Vec<Arc<Value>>,
-        execution: Option<ExecutionRecord>,
+        _transcript_delta: Vec<Arc<Value>>,
+        _execution: Option<ExecutionRecord>,
         events: Vec<TimestampedEvent>,
-    ) -> BoxFuture<'a, Result<Vec<JournalEvent>>> {
+    ) -> BoxFuture<'_, Result<Vec<JournalEvent>>> {
         Box::pin(async move {
-            self.save(&checkpoint, &transcript_delta, execution.as_ref())
-                .await?;
             let mut records = Vec::with_capacity(events.len());
             for event in events {
                 records.push(
-                    self.append_event(&checkpoint.session_id, event.recorded_at_ms, &event.event)
+                    self.append_event(&checkpoint.session_id, event.recorded_at_ms, event.event)
                         .await?,
                 );
             }
@@ -188,9 +165,8 @@ impl CheckpointStore for FailOnceStore {
         &'a self,
         _session_id: &'a str,
         recorded_at_ms: i64,
-        event: &'a Event,
+        event: Event,
     ) -> BoxFuture<'a, Result<JournalEvent>> {
-        let event = event.clone();
         Box::pin(async move {
             Ok(JournalEvent {
                 sequence: 1,
@@ -297,7 +273,7 @@ async fn reserve_enforces_configured_concurrency_including_root() {
                 "root",
                 &format!("/root/child_{index}"),
                 "/root",
-                format!("child-{index}"),
+                format!("child-{index}").into(),
                 1,
                 test_presentation(),
             )
@@ -330,7 +306,7 @@ async fn terminal_update_is_retained_until_its_checkpoint_marker_is_acknowledged
         fail_next_save: AtomicBool::new(false),
         saved_state: StdMutex::new(None),
     });
-    let checkpoints: Arc<dyn CheckpointStore> = store.clone();
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::<FailOnceStore>::clone(&store);
     shared
         .session_start(&test_context(checkpoints, Arc::new(|_| Ok(()))))
         .await
@@ -357,12 +333,16 @@ async fn terminal_update_is_retained_until_its_checkpoint_marker_is_acknowledged
         .expect("finish child");
 
     let pending = shared
-        .receive_updates("root", "/root", &BTreeSet::new())
+        .receive_updates("root", "/root", &BTreeSet::new(), &BTreeSet::new())
         .await
         .expect("receive updates");
-    let id = pending[0].id.clone();
+    let (kind, text) = &pending[0];
+    let id = kind
+        .strip_prefix("subagent_update:")
+        .expect("update kind")
+        .to_owned();
     assert_eq!(
-        pending[0].render(&BTreeSet::new()),
+        text,
         "<subagent_update agent=\"/root/child\" status=\"completed\">\ndone\n</subagent_update>"
     );
     let updates_len = store
@@ -375,7 +355,12 @@ async fn terminal_update_is_retained_until_its_checkpoint_marker_is_acknowledged
     assert_eq!(updates_len, Some(1));
 
     shared
-        .receive_updates("root", "/root", &BTreeSet::from([id.as_str()]))
+        .receive_updates(
+            "root",
+            "/root",
+            &BTreeSet::from([id.as_str()]),
+            &BTreeSet::new(),
+        )
         .await
         .expect("acknowledge update");
 
@@ -456,7 +441,7 @@ async fn detached_root_mutation_cannot_persist_after_root_eviction() {
         retry_started: Notify::new(),
         release_retry: Notify::new(),
     });
-    let checkpoints: Arc<dyn CheckpointStore> = store.clone();
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::<BlockingRetryStore>::clone(&store);
     shared
         .session_start(&test_context(
             Arc::clone(&checkpoints),
@@ -546,7 +531,7 @@ async fn terminal_persist_failure_is_retried_as_a_durable_error() {
     });
     let frontend_events = Arc::new(StdMutex::new(Vec::new()));
     let events = Arc::clone(&frontend_events);
-    let checkpoints: Arc<dyn CheckpointStore> = store.clone();
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::<FailOnceStore>::clone(&store);
     shared
         .session_start(&test_context(
             checkpoints,
@@ -611,7 +596,7 @@ async fn terminal_persist_failure_is_retried_as_a_durable_error() {
                 .is_some_and(|message| message.contains("state persistence failed")),
             durable["agents"]["/root/child"]["status"].as_str(),
             rendered_error,
-            updates == vec!["/root/child".to_string()],
+            updates == vec![Arc::<str>::from("/root/child")],
         ),
         (Some("errored"), true, Some("errored"), true, true)
     );

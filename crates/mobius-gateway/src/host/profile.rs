@@ -1,4 +1,9 @@
-use super::*;
+use super::{
+    ActiveExecution, Arc, CheckpointStore, Error, ExecutionRecord, GatewayReadySnapshot, HashMap,
+    HashSet, ReadyPayload, Rejection, Result, RunStats, RunSummary, SESSION_PAGE_SIZE,
+    SessionCatalogMetadata, SessionPageRequest, SessionRunGroup, SessionSummary, Utc,
+    configured_model_routes, gateway_catalog, internal, provider_instances, provider_statuses,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 use mobius::backend::model::provider::{ProviderAuth, provider};
@@ -35,7 +40,7 @@ pub(super) fn provider_usage(
     let provider_ids = config
         .configured_providers
         .values()
-        .map(|configured| configured.selection.provider.clone())
+        .map(|configured| configured.selection.provider.clone()) // rules-allow: the usage future outlives the configuration borrow
         .collect::<BTreeSet<_>>();
     let auth_path = store.provider_auth_path();
     let transport = config.model_transport;
@@ -83,14 +88,14 @@ pub(super) fn session_tree_ids(
 ) -> Option<Vec<String>> {
     sessions
         .iter()
-        .any(|session| session.session_id == root_session_id)
+        .any(|session| *session.session_id == *root_session_id)
         .then_some(())?;
     let mut seen = HashSet::from([root_session_id]);
     let mut ordered = vec![root_session_id.to_owned()];
     loop {
         let mut changed = false;
         for session in sessions {
-            if seen.contains(session.session_id.as_str())
+            if seen.contains(session.session_id.as_ref())
                 || !session
                     .parent_session_id
                     .as_ref()
@@ -98,8 +103,8 @@ pub(super) fn session_tree_ids(
             {
                 continue;
             }
-            seen.insert(session.session_id.as_str());
-            ordered.push(session.session_id.clone());
+            seen.insert(session.session_id.as_ref());
+            ordered.push(String::from(&*session.session_id));
             changed = true;
         }
         if !changed {
@@ -145,7 +150,7 @@ pub(super) fn recent_run_groups(
 ) -> Vec<SessionRunGroup> {
     let sessions_by_id = sessions
         .iter()
-        .map(|session| (session.session_id.as_str(), session))
+        .map(|session| (session.session_id.as_ref(), session))
         .collect::<HashMap<_, _>>();
     let mut groups: Vec<SessionRunGroup> = Vec::new();
     for record in records {
@@ -160,7 +165,7 @@ pub(super) fn recent_run_groups(
             group.runs.push(run);
         } else {
             groups.push(SessionRunGroup {
-                session_id: root.session_id.clone(),
+                session_id: Arc::clone(&root.session_id),
                 title: session_run_group_title(root, metadata),
                 runs: vec![run],
             });
@@ -188,7 +193,7 @@ pub(super) fn session_run_group_title(
     metadata: &SessionCatalogMetadata,
 ) -> String {
     metadata
-        .get(&session.session_id)
+        .get(&*session.session_id)
         .and_then(|item| item.title.as_deref())
         .map(str::trim)
         .filter(|title| !title.is_empty())
@@ -203,16 +208,16 @@ pub(super) fn session_run_group_title(
         .to_owned()
 }
 
-pub(super) fn active_run_summary(session_id: &str, active: &ActiveExecution) -> RunSummary {
+pub(super) fn active_run_summary(session_id: &Arc<str>, active: &ActiveExecution) -> RunSummary {
     let elapsed_ms = Utc::now()
         .timestamp_millis()
         .checked_sub(active.started_at_ms)
         .and_then(|elapsed| u64::try_from(elapsed).ok())
         .unwrap_or_default();
     RunSummary {
-        session_id: session_id.into(),
-        submission_id: active.submission_id.clone(),
-        turn_id: active.turn_id.clone(),
+        session_id: Arc::clone(session_id),
+        submission_id: Arc::clone(&active.submission_id),
+        turn_id: Arc::clone(&active.turn_id),
         started_at_ms: active.started_at_ms,
         finished_at_ms: None,
         elapsed_ms,
@@ -220,7 +225,7 @@ pub(super) fn active_run_summary(session_id: &str, active: &ActiveExecution) -> 
         model_calls: active.model_calls,
         tool_calls: active.tool_calls,
         failed_tool_calls: active.failed_tool_calls,
-        usage: active.usage.clone(),
+        usage: active.usage,
     }
 }
 
@@ -257,7 +262,7 @@ pub(super) async fn gateway_ready(
     let models: Vec<_> = routes
         .into_iter()
         .map(|route| {
-            model_providers.insert(route.choice.route.clone(), route.provider.instance);
+            model_providers.insert(Arc::clone(&route.choice.route), route.provider.instance);
             route.choice
         })
         .collect();
@@ -265,7 +270,7 @@ pub(super) async fn gateway_ready(
         routes
             .into_iter()
             .map(|media| {
-                model_providers.insert(media.choice.route.as_str().into(), media.provider.instance);
+                model_providers.insert(Arc::clone(&media.choice.route), media.provider.instance);
                 media.choice
             })
             .collect::<Vec<_>>()
@@ -327,7 +332,12 @@ pub(super) fn local_machine_name() -> Result<String> {
     let name = nix::unistd::gethostname()
         .map_err(|error| Error::Config(format!("failed to read the machine hostname: {error}")))?
         .into_string()
-        .map_err(|_| Error::Config("the machine hostname is not valid UTF-8".into()))?;
+        .map_err(|name| {
+            Error::Config(format!(
+                "the machine hostname is not valid UTF-8: {}",
+                name.display()
+            ))
+        })?;
     let name = name.trim();
     if name.is_empty() || name.len() > 255 || name.chars().any(char::is_control) {
         return Err(Error::Config("the machine hostname is invalid".into()));

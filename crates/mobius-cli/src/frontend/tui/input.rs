@@ -38,7 +38,11 @@ use mobius::protocol::Op;
 use mobius::protocol::ReviewDecision;
 use mobius::protocol::{SessionFileOrigin, SessionFileRecord, SessionFileReference};
 use mobius_gateway::wire::{BackgroundApproval, BotRecord, GitStatus};
-use std::path::PathBuf;
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+type KeyedWidgets = Vec<(Arc<str>, Arc<FrontendWidget>)>;
 
 const COLLAPSED_PASTE_BYTES: usize = 200;
 const SCROLL_ROWS: usize = 3;
@@ -49,7 +53,7 @@ pub(super) enum UiAction {
     None,
     PasteClipboard,
     Submit(Box<Op>),
-    Resume(String),
+    Resume(Arc<str>),
     Gateway(GatewayAction),
     Download(SessionFileReference),
     GatewaySettings,
@@ -67,7 +71,7 @@ pub(super) enum UiAction {
     },
     CreateSession {
         workspace: PathBuf,
-        bot_id: String,
+        bot_id: Arc<str>,
         clear: bool,
     },
     Events,
@@ -150,10 +154,11 @@ impl TuiState {
                 UiAction::None
             }
             KeyCode::Esc if self.approval().is_some() => {
-                let id = self.take_approval().expect("approval checked");
-                UiAction::submit(Op::ExecApproval {
-                    id,
-                    decision: ReviewDecision::Abort,
+                self.take_approval().map_or(UiAction::None, |id| {
+                    UiAction::submit(Op::ExecApproval {
+                        id,
+                        decision: ReviewDecision::Abort,
+                    })
                 })
             }
             KeyCode::Esc if self.reference_suggestions(catalog).is_some() => {
@@ -164,13 +169,13 @@ impl TuiState {
                 self.slash_menu_dismissed = true;
                 UiAction::None
             }
-            KeyCode::Esc if key.kind == KeyEventKind::Press && self.is_working() => self
-                .active_turn()
-                .map(str::to_owned)
-                .map_or(UiAction::None, |turn_id| {
-                    UiAction::submit(Op::Interrupt { turn_id })
-                }),
-            KeyCode::Esc => UiAction::None,
+            KeyCode::Esc if key.kind == KeyEventKind::Press && self.is_working() => {
+                self.active_turn().map_or(UiAction::None, |turn_id| {
+                    UiAction::submit(Op::Interrupt {
+                        turn_id: Arc::clone(turn_id),
+                    })
+                })
+            }
             KeyCode::Backspace => {
                 if self.input.is_empty() {
                     self.attachments.pop();
@@ -239,7 +244,7 @@ impl TuiState {
             .filter(|_| self.is_working())
             .map_or(UiAction::Exit, |turn_id| {
                 UiAction::submit(Op::Interrupt {
-                    turn_id: turn_id.to_owned(),
+                    turn_id: Arc::clone(turn_id),
                 })
             })
     }
@@ -260,20 +265,28 @@ impl TuiState {
                 UiAction::None
             }
             KeyCode::Char('a') => {
-                self.cursor = self.input[..self.cursor]
+                self.cursor = self
+                    .input
+                    .get(..self.cursor)
+                    .unwrap_or_default()
                     .rfind('\n')
                     .map_or(0, |index| index + 1);
                 UiAction::None
             }
             KeyCode::Char('e') => {
-                self.cursor = self.input[self.cursor..]
+                self.cursor = self
+                    .input
+                    .get(self.cursor..)
+                    .unwrap_or_default()
                     .find('\n')
                     .map_or(self.input.len(), |index| self.cursor + index);
                 UiAction::None
             }
             KeyCode::Char('u' | 'w') => {
                 let start = if code == KeyCode::Char('u') {
-                    self.input[..self.cursor]
+                    self.input
+                        .get(..self.cursor)
+                        .unwrap_or_default()
                         .rfind('\n')
                         .map_or(0, |index| index + 1)
                 } else {
@@ -343,11 +356,13 @@ impl TuiState {
                     let PreviewContent::Snapshot(snapshot) = &preview.content else {
                         return None;
                     };
-                    snapshot.next.clone()
+                    snapshot.next.clone() // rules-allow: the preview keeps offering the next page until the gateway replaces it
                 })
                 .map_or(UiAction::None, UiAction::submit);
         }
-        let preview = self.preview.as_mut().expect("preview checked");
+        let Some(preview) = self.preview.as_mut() else {
+            return UiAction::None;
+        };
         if let PreviewContent::Diff(browser) = &mut preview.content {
             browser.handle_key(key);
             return UiAction::None;
@@ -461,7 +476,9 @@ impl TuiState {
             }
             KeyCode::Delete => {
                 let index = picker.matching_indices().nth(picker.selected);
-                let Some(action) = index.and_then(|index| picker.options[index].secondary.take())
+                let Some(action) = index
+                    .and_then(|index| picker.options.get_mut(index))
+                    .and_then(|option| option.secondary.take())
                 else {
                     return UiAction::None;
                 };
@@ -485,7 +502,7 @@ impl TuiState {
     pub(super) fn open_bot_picker(
         &mut self,
         bots: &[BotRecord],
-        workspace: Option<PathBuf>,
+        workspace: Option<&Path>,
         current_bot_id: &str,
         clear: bool,
     ) {
@@ -495,7 +512,7 @@ impl TuiState {
             title: "Select Bot".into(),
             selected: bots
                 .iter()
-                .position(|bot| bot.id == current_bot_id)
+                .position(|bot| *bot.id == *current_bot_id)
                 .unwrap_or_default(),
             options: bots
                 .iter()
@@ -504,11 +521,11 @@ impl TuiState {
                     description: terminal_text(&bot.name),
                     detail: terminal_text(&bot.config.config.provider.model),
                     shows_detail: true,
-                    action: workspace.as_ref().map_or_else(
-                        || super::PickerAction::Resume(bot.conversation_session_id.clone()),
+                    action: workspace.map_or_else(
+                        || super::PickerAction::Resume(Arc::clone(&bot.conversation_session_id)),
                         |workspace| super::PickerAction::CreateSession {
-                            workspace: workspace.clone(),
-                            bot_id: bot.id.clone(),
+                            workspace: workspace.to_path_buf(), // rules-allow: each picker option owns the workspace path its action creates
+                            bot_id: Arc::clone(&bot.id),
                             clear,
                         },
                     ),
@@ -527,18 +544,18 @@ impl TuiState {
                 description: terminal_text(&bot.name),
                 detail: terminal_text(&bot.config.config.provider.model),
                 shows_detail: true,
-                action: super::PickerAction::Gateway(GatewayAction::Reassign(bot.id.clone())),
+                action: super::PickerAction::Gateway(GatewayAction::Reassign(Arc::clone(&bot.id))),
                 secondary: None,
             }),
             bots.iter()
-                .position(|bot| bot.id == current_bot_id)
+                .position(|bot| *bot.id == *current_bot_id)
                 .unwrap_or_default(),
         );
     }
 
     pub(super) fn open_background_approvals(
         &mut self,
-        approvals: &[BackgroundApproval],
+        approvals: &[Arc<BackgroundApproval>],
         bots: &[BotRecord],
     ) {
         if approvals.is_empty() {
@@ -551,13 +568,13 @@ impl TuiState {
                 let handle = bots
                     .iter()
                     .find(|bot| bot.id == approval.bot_id)
-                    .map_or(approval.bot_id.as_str(), |bot| bot.handle.as_str());
+                    .map_or(&*approval.bot_id, |bot| &*bot.handle);
                 super::PickerOption {
                     label: format!("@{}", terminal_text(handle)),
                     description: "approval required".into(),
                     detail: terminal_text(&approval.request_id),
                     shows_detail: true,
-                    action: super::PickerAction::Resume(approval.session_id.clone()),
+                    action: super::PickerAction::Resume(Arc::clone(&approval.session_id)),
                     secondary: None,
                 }
             }),
@@ -584,7 +601,7 @@ impl TuiState {
                 },
                 detail: String::new(),
                 shows_detail: false,
-                action: super::PickerAction::Gateway(GatewayAction::SwitchBranch(branch.clone())),
+                action: super::PickerAction::Gateway(GatewayAction::SwitchBranch(branch.clone())), // rules-allow: the picker option owns its action while the session keeps its Git status
                 secondary: None,
             }),
             git.branches
@@ -612,7 +629,7 @@ impl TuiState {
                     description: format!("{origin} · {} bytes", file.size),
                     detail: terminal_text(&file.media_type),
                     shows_detail: true,
-                    action: super::PickerAction::Download(file.clone()),
+                    action: super::PickerAction::Download(file.clone()), // rules-allow: the download and delete actions each own the file
                     secondary: Some(super::PickerAction::ConfirmDeleteFile(file)),
                 }
             }),
@@ -657,7 +674,7 @@ impl TuiState {
             .filter(|(_, widget)| {
                 widget.slot == FrontendSlot::TranscriptTail && widget.action.is_some()
             })
-            .cloned()
+            .cloned() // rules-allow: the queued-message overlay owns copies while the widget list keeps them
             .collect::<Vec<_>>();
         if widgets.is_empty() {
             self.push(
@@ -712,17 +729,9 @@ impl TuiState {
             return UiAction::None;
         }
         if key.code == KeyCode::Esc && !editing {
-            if self
-                .capability_overlay
-                .as_ref()
-                .is_some_and(crate::frontend::dashboard::CapabilityOverlay::can_go_back)
-            {
-                self.capability_overlay
-                    .as_mut()
-                    .expect("overlay checked")
-                    .close_widget();
-            } else {
-                self.capability_overlay = None;
+            match self.capability_overlay.as_mut() {
+                Some(overlay) if overlay.can_go_back() => overlay.close_widget(),
+                _ => self.capability_overlay = None,
             }
             return UiAction::None;
         }
@@ -754,7 +763,7 @@ impl TuiState {
             KeyCode::Char('a') => {
                 return overlay
                     .open_widget()
-                    .and_then(|widget| widget.action.clone())
+                    .and_then(|widget| widget.action.clone()) // rules-allow: the widget keeps its action while the overlay submits a copy
                     .and_then(|op| prepare_overlay_operation(overlay, op))
                     .map_or(UiAction::None, |op| self.submit_attention_operation(op));
             }
@@ -805,6 +814,10 @@ impl TuiState {
         self.slash_input_changed();
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "fmt::Write for String never returns an error"
+    )]
     pub(super) fn visible_input(&self) -> (String, usize) {
         let mut visible = String::new();
         let mut visible_cursor = 0;
@@ -813,7 +826,8 @@ impl TuiState {
                 visible_cursor = visible.len();
             }
             if let Some(paste) = self.pastes.get(&character) {
-                visible.push_str(&format!("[pasted content {} chars]", paste.chars().count()));
+                write!(visible, "[pasted content {} chars]", paste.chars().count())
+                    .expect("writing to String cannot fail");
             } else {
                 visible.push(character);
             }
@@ -853,7 +867,7 @@ impl TuiState {
         if !self.accepts_input(command.len(), token_end) {
             return;
         }
-        let tail = &self.input[token_end..];
+        let tail = self.input.get(token_end..).unwrap_or_default();
         self.input = if tail.is_empty() {
             format!("{command} ")
         } else {
@@ -934,7 +948,7 @@ impl TuiState {
                 });
         if !cached {
             let matches = catalog.reference_suggestions(trigger, &token.query);
-            self.reference_cache = Some((trigger, token.query.clone(), matches));
+            self.reference_cache = Some((trigger, token.query.clone(), matches)); // rules-allow: the cache keys on the query that the returned token still carries
         }
         let matches = &self.reference_cache.as_ref()?.2;
         (!matches.is_empty()).then_some((token, matches.as_slice()))
@@ -1058,22 +1072,19 @@ impl TuiState {
             )
         {
             return match action {
-                CommandAction::Submit(op) => {
-                    if let Some((capability, widgets, action)) = self.capability_popup_for(&op) {
+                CommandAction::Submit(op) => match (self.capability_popup_for(&op), *op) {
+                    (Some((widgets, action)), Op::CapabilityCommand { capability, .. }) => {
                         self.picker = None;
                         self.preview = None;
-                        let keyed = widgets
-                            .into_iter()
-                            .map(|item| ((capability.clone(), item.id.clone()), item))
-                            .collect();
                         self.capability_overlay =
                             Some(crate::frontend::dashboard::CapabilityOverlay::from_widgets(
-                                capability, keyed,
+                                capability.to_string(),
+                                widgets,
                             ));
-                        return UiAction::submit(action);
+                        UiAction::submit(action)
                     }
-                    UiAction::Submit(op)
-                }
+                    (_, op) => UiAction::submit(op),
+                },
                 CommandAction::Gateway(action) => UiAction::Gateway(action),
                 CommandAction::GatewaySettings => UiAction::GatewaySettings,
                 CommandAction::Extensions => UiAction::Extensions,
@@ -1105,7 +1116,7 @@ impl TuiState {
                         .widgets
                         .iter()
                         .filter(|(_, item)| item.slot == FrontendSlot::Attention)
-                        .cloned()
+                        .cloned() // rules-allow: the attention overlay owns copies while the widget list keeps them
                         .collect();
                     self.capability_overlay = Some(
                         crate::frontend::dashboard::CapabilityOverlay::attention(widgets),
@@ -1132,7 +1143,8 @@ impl TuiState {
         UiAction::submit(op)
     }
 
-    fn capability_popup_for(&self, op: &Op) -> Option<(String, Vec<FrontendWidget>, Op)> {
+    /// Returns the keyed menu widgets and the menu action for a bare capability command.
+    fn capability_popup_for(&self, op: &Op) -> Option<(KeyedWidgets, Op)> {
         let Op::CapabilityCommand {
             capability,
             command,
@@ -1146,7 +1158,7 @@ impl TuiState {
         if !arguments.is_empty() || input.is_some() || target.is_some() {
             return None;
         }
-        let (_, menu) = self.widgets.iter().find(|((owner, _), widget)| {
+        let (_, menu) = self.widgets.iter().find(|(owner, widget)| {
             owner == capability
                 && matches!(
                     widget.slot,
@@ -1161,11 +1173,11 @@ impl TuiState {
                     }) if action_capability == capability && action_command == command
                 )
         })?;
-        let action = menu.action.clone()?;
+        let action = menu.action.clone()?; // rules-allow: the menu widget keeps its action while the popup submits a copy
         let widgets = self
             .widgets
             .iter()
-            .filter(|((owner, _), widget)| {
+            .filter(|(owner, widget)| {
                 owner == capability
                     && matches!(
                         widget.slot,
@@ -1173,9 +1185,9 @@ impl TuiState {
                     )
                     && widget.content.is_some()
             })
-            .map(|(_, widget)| widget.clone())
+            .cloned() // rules-allow: the popup overlay owns copies while the widget list keeps them
             .collect();
-        Some((capability.clone(), widgets, action))
+        Some((widgets, action))
     }
 
     fn status(&self) -> String {
@@ -1238,20 +1250,22 @@ fn approval_decision(input: &str) -> ReviewDecision {
             rejection: "denied by user".into(),
         },
         _ => ReviewDecision::Denied {
-            rejection: input.to_string(),
+            rejection: input.to_owned(),
         },
     }
 }
 
 fn previous_boundary(value: &str, cursor: usize) -> usize {
-    value[..cursor]
+    value
+        .get(..cursor)
+        .unwrap_or_default()
         .char_indices()
         .next_back()
         .map_or(0, |(index, _)| index)
 }
 
 fn previous_word_boundary(value: &str, cursor: usize) -> usize {
-    let mut characters = value[..cursor].char_indices().rev();
+    let mut characters = value.get(..cursor).unwrap_or_default().char_indices().rev();
     let Some((mut start, last)) =
         characters.find(|(_, character)| character.is_control() || !character.is_whitespace())
     else {
@@ -1278,7 +1292,9 @@ fn is_word_separator(character: char) -> bool {
 }
 
 fn next_boundary(value: &str, cursor: usize) -> usize {
-    value[cursor..]
+    value
+        .get(cursor..)
+        .unwrap_or_default()
         .char_indices()
         .nth(1)
         .map_or(value.len(), |(index, _)| cursor + index)

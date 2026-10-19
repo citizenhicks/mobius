@@ -22,7 +22,7 @@ async fn stalled_frame_write_times_out_after_partial_output() {
 async fn shared_frame_writes_preserve_the_wire_payload_for_every_subscriber() {
     let frame = ServerFrame::new(ServerMessage::Error {
         code: "test".into(),
-        message: "shared payload".repeat(100),
+        message: "shared payload".repeat(100).into(),
         fatal: false,
     });
     let shared = SharedFrame::encoded(frame.clone()).expect("encode frame");
@@ -302,7 +302,7 @@ fn server_frame_decodes_session_opened_with_a_widget_action_tag() {
                 "references": []
             }],
             "widgets": [],
-            "context_limit_tokens": 250000,
+            "context_limit_tokens": 250_000,
             "active_message_delivery": "steer",
             "pinned_messages": [{"checkpoint_sequence": 4, "batch_item_count": 2}],
             "run_stats": {
@@ -337,8 +337,8 @@ fn server_frame_decodes_session_opened_with_a_widget_action_tag() {
 
     assert_eq!(
         (
-            request_id.as_str(),
-            payload.session.session_id.as_str(),
+            &*request_id,
+            &*payload.session.session_id,
             payload.next_before_sequence,
             payload.context_limit_tokens,
             payload.contributions[0].widgets[0].action.is_some(),

@@ -1,5 +1,7 @@
 //! Core-owned middleware configuration manifests.
 
+use std::sync::Arc;
+
 use crate::protocol::ModelChoice;
 use crate::protocol::{
     FrontendSetting, FrontendSettingKind, FrontendSettingOption, FrontendSettingValue,
@@ -140,7 +142,7 @@ impl MiddlewareSettingManifest {
             Self::Integer { default, .. } => Some(FrontendSettingValue::Integer(*default)),
             Self::Select { default, .. } => default
                 .as_ref()
-                .map(|value| FrontendSettingValue::String(value.clone())),
+                .map(|value| FrontendSettingValue::String(value.clone())), // rules-allow: the setting value is owned by the caller
         }
     }
 
@@ -182,7 +184,7 @@ impl MiddlewareSettingManifest {
                 composer: *composer,
                 kind: FrontendSettingKind::Select {
                     options: choices.options(catalogs),
-                    unset_label: unset_label.clone(),
+                    unset_label: unset_label.clone(), // rules-allow: owned frontend record built from the shared manifest
                 },
             },
         }
@@ -207,9 +209,6 @@ impl MiddlewareSettingManifest {
             (Self::Integer { id, .. }, Some(FrontendSettingValue::String(_))) => {
                 Err(setting_type(middleware, id, "integer"))
             }
-            (Self::Integer { id, .. }, None) => Err(Error::Config(format!(
-                "missing middleware setting `{middleware}.{id}`"
-            ))),
             (
                 Self::Select {
                     choices, max_bytes, ..
@@ -243,9 +242,9 @@ impl MiddlewareSettingManifest {
                 },
                 None,
             ) => Ok(()),
-            (Self::Select { id, .. }, None) => Err(Error::Config(format!(
-                "missing middleware setting `{middleware}.{id}`"
-            ))),
+            (Self::Integer { id, .. } | Self::Select { id, .. }, None) => Err(Error::Config(
+                format!("missing middleware setting `{middleware}.{id}`"),
+            )),
         }
     }
 
@@ -303,12 +302,12 @@ impl MiddlewareSettingChoices {
             Self::Static(choices) => choices
                 .iter()
                 .map(|choice| FrontendSettingOption {
-                    value: choice.value.clone(),
-                    label: choice.label.clone(),
-                    description: choice.description.clone(),
+                    value: Arc::clone(&choice.value),
+                    label: Arc::clone(&choice.label),
+                    description: Arc::clone(&choice.description),
                     symbol: choice.symbol.as_deref().map(FrontendSymbol::from_wire),
                     tone: choice.tone,
-                    disables: choice.disables.clone(),
+                    disables: Arc::clone(&choice.disables),
                 })
                 .collect(),
             Self::ModelRoutes => route_options(catalogs.models),
@@ -319,12 +318,12 @@ impl MiddlewareSettingChoices {
 
     fn contains(&self, catalogs: ModelCatalogs<'_>, value: &str) -> bool {
         let routes = match self {
-            Self::Static(choices) => return choices.iter().any(|choice| choice.value == value),
+            Self::Static(choices) => return choices.iter().any(|choice| *choice.value == *value),
             Self::ModelRoutes => catalogs.models,
             Self::ImageModels => catalogs.images,
             Self::VoiceModels => catalogs.voices,
         };
-        routes.iter().any(|choice| choice.route == value)
+        routes.iter().any(|choice| *choice.route == *value)
     }
 }
 
@@ -332,19 +331,19 @@ fn route_options(choices: &[ModelChoice]) -> Vec<FrontendSettingOption> {
     choices
         .iter()
         .map(|choice| FrontendSettingOption {
-            value: choice.route.clone(),
+            value: Arc::clone(&choice.route),
             label: choice
                 .variant_label
                 .as_deref()
                 .or(choice.reasoning_effort.as_deref())
                 .map_or_else(
-                    || choice.group.to_owned(),
-                    |variant| format!("{} · {variant}", choice.group),
+                    || Arc::clone(&choice.group),
+                    |variant| format!("{} · {variant}", choice.group).into(),
                 ),
-            description: format!("{} · {}", choice.model, choice.route),
+            description: format!("{} · {}", choice.model, choice.route).into(),
             symbol: None,
             tone: FrontendTone::Neutral,
-            disables: Vec::new(),
+            disables: Arc::default(),
         })
         .collect()
 }
@@ -354,17 +353,17 @@ fn route_options(choices: &[ModelChoice]) -> Vec<FrontendSettingOption> {
 #[serde(deny_unknown_fields)]
 pub struct MiddlewareSettingChoice {
     /// The value.
-    pub value: String,
+    pub value: Arc<str>,
     /// The label.
-    pub label: String,
+    pub label: Arc<str>,
     /// The description.
-    pub description: String,
+    pub description: Arc<str>,
     /// The symbol.
     pub symbol: Option<String>,
     /// The tone.
     pub tone: FrontendTone,
     /// Optional middleware excluded by this policy choice.
-    pub disables: Vec<String>,
+    pub disables: Arc<[String]>,
 }
 
 pub(crate) fn deserialize_settings<'de, D>(
@@ -411,6 +410,10 @@ where
     Ok(settings)
 }
 
+#[expect(
+    clippy::panic,
+    reason = "callers pass embedded settings validated at load; a missing default is a build defect"
+)]
 pub(crate) fn integer_default(settings: &[MiddlewareSettingManifest], id: &str) -> i64 {
     match settings.iter().find(|setting| setting.id() == id) {
         Some(MiddlewareSettingManifest::Integer { default, .. }) => *default,
@@ -418,6 +421,10 @@ pub(crate) fn integer_default(settings: &[MiddlewareSettingManifest], id: &str) 
     }
 }
 
+#[expect(
+    clippy::panic,
+    reason = "callers pass embedded settings validated at load; a missing default is a build defect"
+)]
 pub(crate) fn string_default<'a>(settings: &'a [MiddlewareSettingManifest], id: &str) -> &'a str {
     match settings.iter().find(|setting| setting.id() == id) {
         Some(MiddlewareSettingManifest::Select {
@@ -441,8 +448,8 @@ mod tests {
     #[test]
     fn embedded_settings_reject_invalid_ranges_defaults_and_duplicate_ids() {
         let valid = serde_json::json!({"type":"integer", "id":"count", "label":"Count", "description":"Count", "min":1, "max":10, "step":1, "default":4});
-        assert!(deserialize_settings(&serde_json::json!([valid.clone()])).is_ok());
-        assert!(deserialize_settings(&serde_json::json!([valid.clone(), valid.clone()])).is_err());
+        assert!(deserialize_settings(&serde_json::json!([valid])).is_ok());
+        assert!(deserialize_settings(&serde_json::json!([valid, valid])).is_err());
         for (key, value) in [("step", 0), ("max", 0), ("default", 11)] {
             let mut invalid = valid.clone();
             invalid[key] = value.into();

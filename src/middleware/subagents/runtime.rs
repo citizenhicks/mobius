@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Weak};
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -55,7 +55,7 @@ struct RootSlot {
     state: Mutex<Root>,
     writer: Mutex<()>,
     closing: AtomicBool,
-    executions: Mutex<Vec<Arc<Execution>>>,
+    executions: Mutex<Vec<Weak<Execution>>>,
 }
 
 struct Execution {
@@ -85,7 +85,7 @@ struct Root {
 /// A child's message to its parent, kept to deduplicate its completion report.
 #[derive(Clone)]
 struct ParentReport {
-    message_id: String,
+    message_id: Arc<str>,
     text: String,
 }
 
@@ -94,8 +94,8 @@ impl ParentReport {
         match &message.author {
             // The submission is sent on; keep only the two fields deduplication reads.
             MessageAuthor::Source { message_id, .. } => Some(Self {
-                message_id: message_id.clone(),
-                text: message.text.clone(),
+                message_id: Arc::clone(message_id),
+                text: message.text.clone(), // rules-allow: the submission is sent on while the report is kept
             }),
             MessageAuthor::User => None,
         }
@@ -112,14 +112,14 @@ struct Tree {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct AgentRecord {
-    pub(super) parent: String,
-    pub(super) session_id: String,
+    pub(super) parent: Arc<str>,
+    pub(super) session_id: Arc<str>,
     pub(super) depth: u8,
-    pub(super) model: String,
+    pub(super) model: Arc<str>,
     spawn_context: String,
-    active_turn_id: Option<String>,
+    active_turn_id: Option<Arc<str>>,
     status: AgentStatus,
-    last_message: Option<String>,
+    last_message: Option<Arc<str>>,
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
@@ -140,12 +140,12 @@ pub(super) struct PreviewPage {
 }
 
 pub(super) struct AgentPresentation {
-    pub(super) model: String,
+    pub(super) model: Arc<str>,
     pub(super) spawn_context: String,
 }
 
 impl AgentStatus {
-    fn label(&self) -> &'static str {
+    const fn label(self) -> &'static str {
         match self {
             Self::PendingInit => "pending_init",
             Self::Running => "running",
@@ -155,11 +155,11 @@ impl AgentStatus {
         }
     }
 
-    fn is_active(&self) -> bool {
+    const fn is_active(self) -> bool {
         matches!(self, Self::PendingInit | Self::Running)
     }
 
-    fn presentation_order(&self) -> u8 {
+    const fn presentation_order(self) -> u8 {
         match self {
             Self::PendingInit | Self::Running => 0,
             Self::Interrupted | Self::Completed => 1,
@@ -181,11 +181,11 @@ impl Shared {
     pub(super) async fn session_start(&self, context: &RuntimeContext) -> Result<()> {
         let identity = super::AgentIdentity::read(&context.session_id, &context.metadata)?;
         let root_id = identity.root_session_id;
-        let existing = self.roots.lock().await.get(&root_id).cloned();
+        let existing = self.roots.lock().await.get(&root_id).map(Arc::clone);
         if let Some(root) = existing {
             let mut root = root.state.lock().await;
             if identity.depth == 0 {
-                root.root_sender = Some(context.sender.clone());
+                root.root_sender = Some(context.sender.clone()); // rules-allow: the root keeps a handle from the borrowed runtime
                 root.frontend = Arc::clone(&context.frontend);
                 if !root.tree.agents.is_empty() {
                     emit_status(&root)?;
@@ -218,7 +218,7 @@ impl Shared {
             checkpoints: Arc::clone(&context.checkpoints),
             frontend: Arc::clone(&context.frontend),
             tree,
-            root_sender: Some(context.sender.clone()),
+            root_sender: Some(context.sender.clone()), // rules-allow: the root keeps a handle from the borrowed runtime
             senders: BTreeMap::new(),
             parent_reports: BTreeMap::new(),
         };
@@ -240,13 +240,13 @@ impl Shared {
     }
 
     pub(super) async fn remove_root(&self, root_id: &str) -> Result<()> {
-        let root = self.roots.lock().await.get(root_id).cloned();
+        let root = self.roots.lock().await.get(root_id).map(Arc::clone);
         let Some(root) = root else {
             self.changed.notify_waiters();
             return Ok(());
         };
         root.closing.store(true, Ordering::Release);
-        let _writer = root.writer.lock().await;
+        let writer = root.writer.lock().await;
         let result = self
             .commit_locked_root(
                 root_id,
@@ -278,9 +278,9 @@ impl Shared {
         }
         drop(roots);
         root.state.lock().await.senders.clear();
-        drop(_writer);
+        drop(writer);
         let executions = std::mem::take(&mut *root.executions.lock().await);
-        for execution in executions {
+        for execution in executions.iter().filter_map(Weak::upgrade) {
             loop {
                 let changed = execution.changed.notified();
                 if execution.finished.load(Ordering::Acquire) {
@@ -302,12 +302,17 @@ impl Shared {
         if root.closing.load(Ordering::Acquire) {
             return Err(Error::Config("the parent agent is stopping".into()));
         }
-        executions.retain(|execution| !execution.finished.load(Ordering::Acquire));
+        executions.retain(|execution| {
+            execution
+                .upgrade()
+                .is_some_and(|execution| !execution.finished.load(Ordering::Acquire))
+        });
         let execution = Arc::new(Execution {
             finished: AtomicBool::new(false),
             changed: Notify::new(),
         });
-        executions.push(Arc::clone(&execution));
+        executions.push(Arc::downgrade(&execution));
+        drop(executions);
         Ok(ExecutionGuard(execution))
     }
 
@@ -328,7 +333,7 @@ impl Shared {
         root_id: &str,
         path: &str,
         parent: &str,
-        session_id: String,
+        session_id: Arc<str>,
         depth: u8,
         presentation: AgentPresentation,
     ) -> Result<()> {
@@ -377,7 +382,7 @@ impl Shared {
         root_id: &str,
         path: &str,
         sender: AgentSender,
-        model: Option<String>,
+        model: Option<Arc<str>>,
     ) -> Result<()> {
         self.mutate_root(root_id, |root| {
             let entry = root
@@ -428,23 +433,24 @@ impl Shared {
                 Error::Tool(format!("agent `{target}` has no active turn to interrupt"))
             })?;
             sender.submit(Op::Interrupt {
-                turn_id: turn_id.clone(),
+                turn_id: Arc::clone(turn_id),
             })?;
         }
         let status = entry.status.label();
+        drop(root);
         Ok(status.into())
     }
 
-    async fn sender(&self, root_id: &str, path: &str) -> Result<AgentSender> {
-        self.root(root_id)
-            .await?
-            .state
-            .lock()
-            .await
+    async fn submit(&self, root_id: &str, path: &str, op: Op) -> Result<()> {
+        let root = self.root(root_id).await?;
+        let state = root.state.lock().await;
+        state
             .senders
             .get(path)
-            .cloned()
-            .ok_or_else(|| Error::Stopped("agent runtime is unavailable".into()))
+            .ok_or_else(|| Error::Stopped("agent runtime is unavailable".into()))?
+            .submit(op)?;
+        drop(state);
+        Ok(())
     }
 
     pub(super) async fn list(&self, root_id: &str, prefix: Option<&str>) -> Result<Vec<Value>> {
@@ -488,13 +494,14 @@ impl Shared {
                 .ok_or_else(|| unknown_target(path))?;
             (
                 Arc::clone(&root.checkpoints),
-                entry.session_id.clone(),
-                entry.spawn_context.clone(),
+                Arc::clone(&entry.session_id),
+                entry.spawn_context.clone(), // rules-allow: the page loads after the state lock is released
                 if before_sequence.is_none() && matches!(&entry.status, AgentStatus::Errored) {
                     entry
                         .last_message
-                        .clone()
+                        .as_ref()
                         .filter(|message| !message.is_empty())
+                        .map(Arc::clone)
                 } else {
                     None
                 },
@@ -515,7 +522,7 @@ impl Shared {
             events.push(FrontendPreviewEvent {
                 submission_id: None,
                 recorded_at_ms: events.last().map_or(0, |event| event.recorded_at_ms),
-                event: EventMsg::Frontend(subagent_error_notice(message)),
+                event: EventMsg::Frontend(subagent_error_notice(message.to_string())),
             });
         }
         if serde_json::to_vec(&events)?.len() > MAX_PREVIEW_PAGE_BYTES {
@@ -539,7 +546,7 @@ impl Shared {
             .lock()
             .await
             .get(root_id)
-            .cloned()
+            .map(Arc::clone)
             .ok_or_else(|| Error::Unknown(format!("agent tree `{root_id}`")))
     }
 
@@ -604,20 +611,15 @@ impl Shared {
         {
             return Err(Error::Unknown(format!("agent tree `{root_id}`")));
         }
-        let (mut candidate, output) = {
-            let current = root.state.lock().await;
-            // Persistence can fail; stage an independent candidate so readers keep the last committed tree.
-            let mut candidate = current.clone();
-            match mutate(&mut candidate)? {
-                Stage::Unchanged(output) => return Ok(Stage::Unchanged(output)),
-                Stage::Changed(output) => (candidate, output),
-            }
+        // Persistence can fail; stage an independent candidate so readers keep the last committed tree.
+        let mut candidate = root.state.lock().await.clone(); // rules-allow: the staged candidate must not alias committed state
+        let output = match mutate(&mut candidate)? {
+            Stage::Unchanged(output) => return Ok(Stage::Unchanged(output)),
+            Stage::Changed(output) => output,
         };
         let error = match persist(root_id, &candidate).await {
             Ok(()) => {
-                let frontend = Arc::clone(&candidate.frontend);
-                let status = status_event(&candidate.tree);
-                *root.state.lock().await = candidate;
+                let (frontend, status) = install(root, candidate).await;
                 frontend(status)?;
                 return Ok(Stage::Changed(output));
             }
@@ -626,9 +628,7 @@ impl Shared {
         match on_failure {
             OnPersistFailure::Abort => Err(error),
             OnPersistFailure::CommitWithStatus => {
-                let frontend = Arc::clone(&candidate.frontend);
-                let status = status_event(&candidate.tree);
-                *root.state.lock().await = candidate;
+                let (frontend, status) = install(root, candidate).await;
                 if let Err(delivery) = frontend(status) {
                     return Err(Error::Stopped(format!(
                         "{error}; frontend status delivery failed: {delivery}"
@@ -639,9 +639,7 @@ impl Shared {
             OnPersistFailure::RepairRetry(repair) => {
                 let (retry_message, failure_event) = repair(&mut candidate, &error);
                 let retry = persist(root_id, &candidate).await;
-                let frontend = Arc::clone(&candidate.frontend);
-                let status = status_event(&candidate.tree);
-                *root.state.lock().await = candidate;
+                let (frontend, status) = install(root, candidate).await;
                 frontend(status)?;
                 frontend(failure_event)?;
                 if let Err(retry_error) = retry {
@@ -653,6 +651,17 @@ impl Shared {
             }
         }
     }
+}
+
+/// Commits `candidate` as the root's state and returns its sink and status event.
+async fn install(
+    root: &RootSlot,
+    candidate: Root,
+) -> (crate::middleware::FrontendEventSink, FrontendEvent) {
+    let frontend = Arc::clone(&candidate.frontend);
+    let status = status_event(&candidate.tree);
+    *root.state.lock().await = candidate;
+    (frontend, status)
 }
 
 fn unknown_target(target: &str) -> Error {
@@ -801,7 +810,7 @@ fn agent_items(tree: &Tree) -> Vec<FrontendActionListItem> {
                 op: Op::command(
                     super::MANIFEST.id,
                     super::Command::Open.as_str(),
-                    path.clone(),
+                    path.clone(), // rules-allow: the action owns its path from the borrowed tree
                 ),
                 input_from_label: false,
                 editor: None,
@@ -818,7 +827,7 @@ fn picker_options(tree: &Tree) -> Vec<FrontendPickerOption> {
         .map(|(path, entry)| FrontendPickerOption {
             label: path.rsplit('/').next().unwrap_or(path).into(),
             description: entry.status.label().into(),
-            detail: entry.model.clone(),
+            detail: entry.model.to_string(),
             symbol: Some(if entry.status.is_active() {
                 FrontendSymbol::Progress
             } else {
@@ -828,7 +837,7 @@ fn picker_options(tree: &Tree) -> Vec<FrontendPickerOption> {
             op: Op::command(
                 super::MANIFEST.id,
                 super::Command::Open.as_str(),
-                path.clone(),
+                path.clone(), // rules-allow: the option owns its path from the borrowed tree
             ),
         })
         .collect()
@@ -843,7 +852,7 @@ fn status_event(tree: &Tree) -> FrontendEvent {
     } else {
         FrontendEvent::Widget {
             capability: super::MANIFEST.id.into(),
-            item: status_widget(tree),
+            item: Arc::new(status_widget(tree)),
         }
     }
 }

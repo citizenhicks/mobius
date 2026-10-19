@@ -111,8 +111,11 @@ pub(in crate::frontend) fn render_capability_overlay(
 }
 
 pub(super) fn render_action_input(frame: &mut ratatui::Frame<'_>, area: Rect, input: &ActionInput) {
-    let mut value = input.text.clone();
-    value.insert(input.cursor, '█');
+    let (before, after) = input
+        .text
+        .split_at_checked(input.cursor)
+        .unwrap_or((&input.text, ""));
+    let value = format!("{before}█{after}");
     frame.render_widget(
         Paragraph::new(value)
             .style(current().style(Role::Text))
@@ -148,7 +151,7 @@ pub(super) fn render_navigation_widgets(
         overlay
             .widgets
             .iter()
-            .map(|((capability, _), widget)| {
+            .map(|(capability, widget)| {
                 Line::from(vec![
                     Span::styled(
                         format!(" {}", terminal_text(widget_title(widget))),
@@ -452,12 +455,12 @@ pub(super) fn render_chats(frame: &mut ratatui::Frame<'_>, area: Rect, state: &m
                     SessionActivityState::Running => ("●", Role::Success),
                     SessionActivityState::AwaitingApproval => ("●", Role::Warning),
                 };
-                let bot = session.session_context.owner_id.as_str();
+                let bot = &*session.session_context.owner_id;
                 let bot = state
                     .gateway
                     .bots
                     .iter()
-                    .find(|candidate| candidate.id == bot)
+                    .find(|candidate| *candidate.id == *bot)
                     .map_or_else(String::new, |bot| format!(" · @{}", bot.handle));
                 Line::styled(
                     format!(
@@ -625,7 +628,7 @@ pub(super) fn current_unix_day() -> Option<u64> {
         .map(|duration| duration.as_secs() / 86_400)
 }
 
-pub(super) fn number(value: impl ToString) -> String {
+pub(super) fn number(value: impl ToString + Copy) -> String {
     let digits = value.to_string();
     let mut formatted = String::with_capacity(digits.len() + digits.len() / 3);
     for (index, character) in digits.chars().enumerate() {
