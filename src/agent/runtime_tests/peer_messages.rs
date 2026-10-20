@@ -112,7 +112,7 @@ async fn idle_peer_messages_start_turns_and_replay_without_becoming_user_prompts
             .all(|message| message.delivery == MessageDelivery::Turn)
     );
     let saved = checkpoints
-        .load("peer-message")
+        .load(&"peer-message".parse().expect("session ID"))
         .await
         .expect("load checkpoint")
         .expect("saved checkpoint");
@@ -173,7 +173,7 @@ async fn idle_peer_messages_start_turns_and_replay_without_becoming_user_prompts
 
     let transcript = checkpoints
         .transcript_page(
-            "peer-message",
+            &"peer-message".parse().expect("session ID"),
             TranscriptPageRequest {
                 before_sequence: None,
                 max_batches: 100,
@@ -182,17 +182,18 @@ async fn idle_peer_messages_start_turns_and_replay_without_becoming_user_prompts
         .await
         .expect("load transcript")
         .into_positioned_items_chronological();
-    let replayed_peers = crate::protocol::replay_events(&transcript, "peer-message")
-        .into_iter()
-        .filter_map(|event| match event {
-            EventMsg::Message(message)
-                if matches!(message.author, MessageAuthor::Source { .. }) =>
-            {
-                Some(message)
-            }
-            _ => None,
-        })
-        .collect::<Vec<_>>();
+    let replayed_peers =
+        crate::protocol::replay_events(&transcript, &"peer-message".parse().expect("session ID"))
+            .into_iter()
+            .filter_map(|event| match event {
+                EventMsg::Message(message)
+                    if matches!(message.author, MessageAuthor::Source { .. }) =>
+                {
+                    Some(message)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
 
     assert_eq!(replayed_peers, live_peers);
 

@@ -1,5 +1,6 @@
 //! Ordered middleware and capability registration.
 
+use crate::SessionId;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -137,15 +138,11 @@ pub struct MiddlewareCommandOutput {
 #[derive(Clone, Debug)]
 pub struct FrontendExtensions {
     stack: Arc<MiddlewareStack>,
-    session_id: Arc<str>,
+    session_id: SessionId,
 }
 
 impl FrontendExtensions {
-    pub(crate) fn new(
-        stack: Arc<MiddlewareStack>,
-        session_id: impl Into<Arc<str>>,
-    ) -> Result<Self> {
-        let session_id = session_id.into();
+    pub(crate) fn new(stack: Arc<MiddlewareStack>, session_id: SessionId) -> Result<Self> {
         stack.frontend(&session_id)?;
         Ok(Self { stack, session_id })
     }
@@ -425,7 +422,10 @@ pub trait Middleware: Send + Sync {
     }
 
     /// Reports work this capability still runs for the session outside an active turn.
-    fn has_background_work<'a>(&'a self, _session_id: &'a str) -> BoxFuture<'a, Result<bool>> {
+    fn has_background_work<'a>(
+        &'a self,
+        _session_id: &'a SessionId,
+    ) -> BoxFuture<'a, Result<bool>> {
         Box::pin(async { Ok(false) })
     }
 }
@@ -885,7 +885,7 @@ impl MiddlewareStack {
 
     pub(crate) async fn resolve_tool_exposure(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         supports_tool_image_input: bool,
         input: crate::backend::model::ModelInput<'_>,
         available: &mut BTreeSet<String>,

@@ -49,7 +49,7 @@ additionalProperties = false
 
 [read_history.tool.parameters.properties.session_id]
 type = "string"
-maxLength = 512
+maxLength = 4096
 description = "Defaults to this chat; an explicit other chat must belong to this owner."
 
 [read_history.tool.parameters.properties.target]

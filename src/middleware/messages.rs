@@ -1,5 +1,6 @@
 //! Durable conversation-message delivery.
 
+use crate::SessionId;
 use std::sync::Arc;
 
 use super::{
@@ -348,7 +349,7 @@ impl Middleware for Messages {
 /// Accepts a reply only when it quotes a durable message of this chat exactly.
 async fn validate_reply(
     checkpoints: &dyn CheckpointStore,
-    session_id: &str,
+    session_id: &SessionId,
     reply: &MessageReply,
 ) -> Result<Option<&'static str>> {
     let mut before_sequence = None;
@@ -451,7 +452,7 @@ mod tests {
         stack
             .route_message(&mut MessageRouteContext {
                 checkpoints,
-                session_id: "session-1",
+                session_id: &"session-1".parse().expect("session ID"),
                 submission_id: "message-1",
                 message: &mut message,
                 active_turn_id,
@@ -482,7 +483,8 @@ mod tests {
             text: "Earlier".into(),
         });
         let (_directory, checkpoints) = checkpoints();
-        let mut session = crate::backend::checkpoint::Checkpoint::empty("session-1");
+        let mut session =
+            crate::backend::checkpoint::Checkpoint::empty("session-1".parse().expect("session ID"));
         std::sync::Arc::make_mut(&mut session.session_context).owner_id = "test-bot".into();
         checkpoints
             .save(session.clone(), Vec::new(), None)
@@ -490,7 +492,7 @@ mod tests {
             .expect("save session");
         checkpoints
             .append_event(
-                "session-1",
+                &"session-1".parse().expect("session ID"),
                 1,
                 event(
                     "earlier",
@@ -518,7 +520,7 @@ mod tests {
                     &mut ActiveCommandContext {
                         checkpoints: &checkpoints,
                         submission_id,
-                        session_id: "session-1",
+                        session_id: &"session-1".parse().expect("session ID"),
                         metadata: &metadata,
                         active_turn_id: "turn-1",
                         command: EDIT_COMMAND,
@@ -573,7 +575,7 @@ mod tests {
             author: MessageAuthor::Source {
                 message_id: "board-1".into(),
                 source: crate::protocol::MessageSource::Session {
-                    session_id: "peer-1".into(),
+                    session_id: "peer-1".parse().expect("session ID"),
                 },
                 cause_id: None,
                 ancestry: Vec::new(),
@@ -641,7 +643,7 @@ mod tests {
     async fn reply_matches_a_durable_message_in_its_own_session() {
         let (_directory, store) = checkpoints();
         for session_id in ["current", "other"] {
-            let mut checkpoint = Checkpoint::empty(session_id);
+            let mut checkpoint = Checkpoint::empty(session_id.parse().expect("session ID"));
             std::sync::Arc::make_mut(&mut checkpoint.session_context).owner_id = "test-bot".into();
             store
                 .save(checkpoint.clone(), Vec::new(), None)
@@ -654,7 +656,7 @@ mod tests {
         };
         store
             .append_event(
-                "current",
+                &"current".parse().expect("session ID"),
                 1,
                 event(
                     "attachment",
@@ -681,12 +683,12 @@ mod tests {
         };
         store
             .append_event(
-                "current",
+                &"current".parse().expect("session ID"),
                 2,
                 event(
                     "assistant",
                     EventMsg::AssistantMessage(crate::protocol::AssistantMessageEvent {
-                        session_id: "current".into(),
+                        session_id: "current".parse().expect("session ID"),
                         turn_id: "turn".into(),
                         model_step_id: "step".into(),
                         content: vec![
@@ -717,7 +719,7 @@ mod tests {
         };
         store
             .append_event(
-                "other",
+                &"other".parse().expect("session ID"),
                 1,
                 event(
                     "other",
@@ -757,21 +759,25 @@ mod tests {
 
         assert_eq!(
             (
-                validate_reply(&store, "current", &exact)
+                validate_reply(&store, &"current".parse().expect("session ID"), &exact)
                     .await
                     .expect("validate exact reply"),
-                validate_reply(&store, "current", &changed)
+                validate_reply(&store, &"current".parse().expect("session ID"), &changed)
                     .await
                     .expect("validate changed reply"),
-                validate_reply(&store, "current", &other)
+                validate_reply(&store, &"current".parse().expect("session ID"), &other)
                     .await
                     .expect("validate cross-session reply"),
-                validate_reply(&store, "current", &assistant)
+                validate_reply(&store, &"current".parse().expect("session ID"), &assistant)
                     .await
                     .expect("validate assistant reply"),
-                validate_reply(&store, "current", &combined_assistant)
-                    .await
-                    .expect("validate combined assistant reply"),
+                validate_reply(
+                    &store,
+                    &"current".parse().expect("session ID"),
+                    &combined_assistant
+                )
+                .await
+                .expect("validate combined assistant reply"),
             ),
             (
                 None,
@@ -789,7 +795,7 @@ mod tests {
         let result = stack
             .route_message(&mut MessageRouteContext {
                 checkpoints: &store,
-                session_id: "current",
+                session_id: &"current".parse().expect("session ID"),
                 submission_id: "message-1",
                 message: &mut forged,
                 active_turn_id: None,

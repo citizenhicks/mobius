@@ -124,7 +124,7 @@ impl Runner {
             self.save().await?;
         }
         let permissions = SandboxPermissions::restore(
-            &self.config.session_id,
+            &self.runtime.session_id,
             pending.sandbox_mode,
             pending.network_access,
             std::mem::take(&mut pending.authorized_call_ids),
@@ -148,7 +148,7 @@ impl Runner {
         abort_submission_id: &Arc<str>,
     ) -> Result<Option<ToolCompletion>> {
         let permissions = self.config.sandbox.resolve_approval(
-            &self.config.session_id,
+            &self.runtime.session_id,
             &pending.calls,
             &pending.approval_call_ids,
             &decision,

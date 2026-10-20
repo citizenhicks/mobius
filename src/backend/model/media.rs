@@ -49,7 +49,7 @@ impl std::fmt::Debug for MediaPreparation<'_> {
 impl MediaPreparation<'_> {
     pub(super) async fn prepare<M: super::Model + ?Sized>(
         self,
-        session_id: &str,
+        session_id: Option<&crate::SessionId>,
         input: ModelInput<'_>,
         model: &M,
         replay: bool,
@@ -62,6 +62,9 @@ impl MediaPreparation<'_> {
         }) {
             return Ok(None);
         }
+        let session_id = session_id.ok_or_else(|| {
+            Error::Provider("image observations require a session identity".into())
+        })?;
         let historical_end = if replay {
             input
                 .iter()
@@ -212,7 +215,7 @@ pub(super) fn check_request_bytes(bytes: usize, max_bytes: usize) -> Result<()> 
 
 pub(super) async fn hydrate<M: super::Model + ?Sized>(
     files: Option<&SessionFileStore>,
-    session_id: &str,
+    session_id: &crate::SessionId,
     input: ModelInput<'_>,
     model: &M,
     historical_end: usize,
@@ -435,6 +438,8 @@ mod tests {
 
     #[tokio::test]
     async fn replay_replaces_deleted_history_but_keeps_fresh_and_invalid_images_strict() {
+        let history = crate::SessionId::new("history").expect("session");
+        let other = crate::SessionId::new("other").expect("session");
         let state = tempfile::tempdir().expect("state");
         let store = SessionFileStore::new(state.path(), None);
         let mut bytes = std::io::Cursor::new(Vec::new());
@@ -443,20 +448,15 @@ mod tests {
             .expect("PNG");
         let bytes = bytes.into_inner();
         let old = store
-            .ingest_image(
-                "history",
-                "old.png".into(),
-                bytes.clone(),
-                ImageDetail::High,
-            )
+            .ingest_image(&history, "old.png".into(), bytes.clone(), ImageDetail::High)
             .await
             .expect("old image");
         store
-            .delete_session("history")
+            .delete_session(&history)
             .await
             .expect("purge old image");
         let fresh = store
-            .ingest_image("history", "fresh.png".into(), bytes, ImageDetail::High)
+            .ingest_image(&history, "fresh.png".into(), bytes, ImageDetail::High)
             .await
             .expect("fresh image");
         let input = vec![
@@ -471,7 +471,7 @@ mod tests {
             limits: ImageInputLimits::default(),
         };
         for model in [Vision::None, Vision::User] {
-            let prepared = hydrate(None, "history", (&input[2..3]).into(), &model, 0)
+            let prepared = hydrate(None, &history, (&input[2..3]).into(), &model, 0)
                 .await
                 .expect("unsupported tool images do not require stored pixels");
             assert!(
@@ -480,8 +480,21 @@ mod tests {
                     .is_some_and(|text| text.contains(&old.file.id))
             );
         }
+        assert!(
+            media
+                .prepare(None, (&input).into(), &Vision::All, true)
+                .await
+                .is_err()
+        );
+        assert!(
+            media
+                .prepare(None, (&[]).into(), &Vision::All, true)
+                .await
+                .unwrap()
+                .is_none()
+        );
         let prepared = media
-            .prepare("history", (&input).into(), &Vision::All, true)
+            .prepare(Some(&history), (&input).into(), &Vision::All, true)
             .await
             .expect("cold replay after purge")
             .expect("image materialization");
@@ -503,13 +516,13 @@ mod tests {
         assert_eq!(input[2]["output"][1]["type"], "input_image");
         assert!(
             media
-                .prepare("history", (&input).into(), &Vision::All, false)
+                .prepare(Some(&history), (&input).into(), &Vision::All, false)
                 .await
                 .is_err()
         );
         assert!(
             media
-                .prepare("other", (&input).into(), &Vision::All, true)
+                .prepare(Some(&other), (&input).into(), &Vision::All, true)
                 .await
                 .is_err()
         );
@@ -517,7 +530,7 @@ mod tests {
         let mut continued = input[..4].to_vec();
         continued.push(serde_json::json!({"role":"user","content":"continue without images"}));
         media
-            .prepare("history", (&continued).into(), &Vision::All, true)
+            .prepare(Some(&history), (&continued).into(), &Vision::All, true)
             .await
             .expect("purged prior batch does not poison later text turns");
         continued.push(
@@ -525,7 +538,7 @@ mod tests {
         );
         assert!(
             media
-                .prepare("history", (&continued).into(), &Vision::All, true)
+                .prepare(Some(&history), (&continued).into(), &Vision::All, true)
                 .await
                 .is_err()
         );
@@ -535,7 +548,7 @@ mod tests {
         invalid[0]["content"][0]["image"]["file"]["size"] = serde_json::json!(1);
         assert!(matches!(
             media
-                .prepare("history", (&invalid).into(), &Vision::All, true)
+                .prepare(Some(&history), (&invalid).into(), &Vision::All, true)
                 .await,
             Err(Error::Tool(_))
         ));
@@ -544,6 +557,9 @@ mod tests {
     #[tokio::test]
     async fn large_native_observations_keep_exact_prefix_and_durable_file_references() {
         use image::ImageEncoder as _;
+        let parent = crate::SessionId::new("parent").expect("session");
+        let child = crate::SessionId::new("child").expect("session");
+        let other = crate::SessionId::new("other").expect("session");
         let state = tempfile::tempdir().expect("state");
         let store = SessionFileStore::new(state.path(), None);
         let mut random = 1_u32;
@@ -561,7 +577,7 @@ mod tests {
             .expect("PNG");
         assert!(bytes.len() > 8 * 1024 * 1024);
         let observation = store
-            .ingest_image("parent", "screen.png".into(), bytes, ImageDetail::High)
+            .ingest_image(&parent, "screen.png".into(), bytes, ImageDetail::High)
             .await
             .expect("image");
         let content = ToolContent(vec![
@@ -582,7 +598,7 @@ mod tests {
         super::super::reset_prompt_cache_breakpoint(&mut input);
         input.push(super::super::user_message("retained text beside the image"));
         let mut input = input.into_iter().map(Arc::new).collect::<Vec<_>>();
-        let prepared = hydrate(Some(&store), "parent", (&input).into(), &Vision::All, 0)
+        let prepared = hydrate(Some(&store), &parent, (&input).into(), &Vision::All, 0)
             .await
             .expect("large images admitted");
         assert!(Arc::ptr_eq(&prepared[1], &input[1]));
@@ -620,35 +636,35 @@ mod tests {
             }]),
             false,
         )));
-        let appended = hydrate(Some(&store), "parent", (&input).into(), &Vision::All, 0)
+        let appended = hydrate(Some(&store), &parent, (&input).into(), &Vision::All, 0)
             .await
             .expect("append");
         assert_eq!(prepared, appended[..2]);
         assert!(
-            hydrate(Some(&store), "other", (&input).into(), &Vision::All, 0)
+            hydrate(Some(&store), &other, (&input).into(), &Vision::All, 0)
                 .await
                 .is_err()
         );
-        crate::backend::session_files::grant_context(Some(&store), "parent", "child", &input)
+        crate::backend::session_files::grant_context(Some(&store), &parent, &child, &input)
             .await
             .expect("fork grants");
         let published = store
-            .publish_reference("parent", &observation.file)
+            .publish_reference(&parent, &observation.file)
             .await
             .expect("publish existing observation");
         assert_eq!(
             store
-                .read_file("parent", &published)
+                .read_file(&parent, &published)
                 .await
                 .expect("published bytes"),
             store
-                .read_file("parent", &observation.file)
+                .read_file(&parent, &observation.file)
                 .await
                 .expect("original bytes")
         );
-        store.delete_session("parent").await.expect("delete parent");
+        store.delete_session(&parent).await.expect("delete parent");
         assert_eq!(
-            hydrate(Some(&store), "child", (&input).into(), &Vision::All, 0)
+            hydrate(Some(&store), &child, (&input).into(), &Vision::All, 0)
                 .await
                 .expect("fork retains blobs"),
             appended

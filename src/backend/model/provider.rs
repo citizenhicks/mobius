@@ -21,7 +21,7 @@ pub(super) struct ProviderMetadata {
     pub(super) label: String,
     pub(super) symbol: String,
     pub(super) description: String,
-    pub(super) base_url: String,
+    pub(super) base_url: BaseUrl,
     pub(super) credential_env: Option<String>,
     pub(super) tool_discovery: ToolDiscoveryMode,
     #[serde(default = "default_supported_tool_discovery")]
@@ -292,7 +292,7 @@ pub struct ProviderBuildConfig {
     /// The model.
     pub model: String,
     /// The base URL.
-    pub base_url: Option<String>,
+    pub base_url: Option<BaseUrl>,
     /// The reasoning effort.
     pub reasoning_effort: Option<String>,
     /// Optional native Responses processing tier; omission uses the endpoint default.
@@ -415,7 +415,6 @@ impl BrowserAuth {
         path: &Path,
         settings: super::ModelTransportSettings,
     ) -> Result<ProviderCredential> {
-        settings.validate()?;
         (self.load)(path, settings)
     }
 
@@ -551,7 +550,7 @@ impl ProviderCredential {
     }
 }
 
-type ProviderBuilder = fn(ProviderBuildConfig) -> Result<Arc<dyn Model>>;
+type ProviderBuilder = fn(ProviderBuildConfig, BaseUrl) -> Result<Arc<dyn Model>>;
 
 /// Reports whether an endpoint selection uses the provider-advertised default.
 /// An omitted selection uses the default endpoint.
@@ -589,7 +588,7 @@ pub struct ProviderDefinition {
     tool_discovery: ToolDiscoveryMode,
     supported_tool_discovery: &'static [ToolDiscoveryMode],
     custom_endpoint_tool_discovery: Option<ToolDiscoveryMode>,
-    default_base_url: Option<&'static str>,
+    default_base_url: Option<&'static BaseUrl>,
     native_custom_endpoints: bool,
     credentialless_endpoints: bool,
     builder: ProviderBuilder,
@@ -782,7 +781,7 @@ impl ProviderDefinition {
     pub fn default_tool_discovery(&self) -> ToolDiscoveryMode {
         self.tool_discovery(
             self.default_model.unwrap_or_default(),
-            self.default_base_url,
+            self.default_base_url.map(BaseUrl::as_str),
         )
     }
 
@@ -831,14 +830,14 @@ impl ProviderDefinition {
 
     #[must_use]
     /// Returns the default base URL.
-    pub const fn default_base_url(&self) -> Option<&'static str> {
+    pub const fn default_base_url(&self) -> Option<&'static BaseUrl> {
         self.default_base_url
     }
 
     /// Reports whether a resolved base URL selects the provider's default endpoint.
     #[must_use]
     pub fn uses_default_endpoint(&self, base_url: Option<&str>) -> bool {
-        uses_default_endpoint(self.default_base_url, base_url)
+        uses_default_endpoint(self.default_base_url.map(BaseUrl::as_str), base_url)
     }
 
     /// Reports whether non-default endpoints may be configured without credentials.
@@ -858,34 +857,30 @@ impl ProviderDefinition {
     ///
     /// Returns an error if validation or an operation required by this function fails.
     pub fn build(&self, mut config: ProviderBuildConfig) -> Result<Arc<dyn Model>> {
-        config.transport.validate()?;
         if matches!(config.credential, ProviderCredential::Credentialless) {
-            self.validate_credentialless_endpoint(config.base_url.as_deref())?;
+            self.validate_credentialless_endpoint(config.base_url.as_ref())?;
         }
-        if config.base_url.is_none() {
-            config.base_url = self.default_base_url.map(str::to_owned);
-        }
-        if config.capability.is_some() {
-            self.validate_base_url(config.base_url.as_deref())?;
-        } else {
+        let base_url = self.validate_base_url(config.base_url.as_ref())?;
+        if config.capability.is_none() {
             if self.locked_models && config.reasoning_effort.is_none() {
                 config.reasoning_effort = self
                     .model(&config.model)
                     .and_then(|model| model.default_reasoning.as_deref())
                     .map(str::to_owned);
             }
-            self.build_config_is_valid(
-                &config.model,
-                config.base_url.as_deref(),
-                config.reasoning_effort.as_deref(),
-                config.web_search,
-            )?;
+            self.validate_model(&config.model, config.reasoning_effort.as_deref())?;
+            self.validate_web_search(config.web_search)?;
+        } else if config.model.trim().is_empty() {
+            return Err(Error::Config(format!(
+                "provider `{}` requires a model",
+                self.id
+            )));
         }
         let tool_discovery = *config
             .tool_discovery
-            .get_or_insert_with(|| self.tool_discovery(&config.model, config.base_url.as_deref()));
+            .get_or_insert_with(|| self.tool_discovery(&config.model, Some(base_url.as_str())));
         self.validate_tool_discovery(tool_discovery)?;
-        let model = (self.builder)(config)?;
+        let model = (self.builder)(config, base_url)?;
         if model.tool_discovery() != tool_discovery {
             return Err(Error::Config(format!(
                 "provider `{}` built a model with inconsistent tool discovery",
@@ -902,11 +897,15 @@ impl ProviderDefinition {
     pub fn build_config_is_valid(
         &self,
         model: &str,
-        base_url: Option<&str>,
+        base_url: Option<&BaseUrl>,
         reasoning_effort: Option<&str>,
         web_search: HostedWebSearch,
     ) -> Result<()> {
         self.model_config_is_valid(model, base_url, reasoning_effort)?;
+        self.validate_web_search(web_search)
+    }
+
+    fn validate_web_search(&self, web_search: HostedWebSearch) -> Result<()> {
         if !self.web_search.contains(&web_search) {
             return Err(Error::Config(format!(
                 "provider `{}` does not support web search mode `{}`",
@@ -924,9 +923,14 @@ impl ProviderDefinition {
     pub fn model_config_is_valid(
         &self,
         model: &str,
-        base_url: Option<&str>,
+        base_url: Option<&BaseUrl>,
         reasoning_effort: Option<&str>,
     ) -> Result<()> {
+        self.validate_base_url(base_url)?;
+        self.validate_model(model, reasoning_effort)
+    }
+
+    fn validate_model(&self, model: &str, reasoning_effort: Option<&str>) -> Result<()> {
         if model.trim().is_empty() {
             return Err(Error::Config(format!(
                 "provider `{}` requires a model",
@@ -940,7 +944,6 @@ impl ProviderDefinition {
                 self.id
             )));
         }
-        self.validate_base_url(base_url)?;
         if self.locked_models
             && let Some(effort) = reasoning_effort
             && let Some(preset) = preset
@@ -957,15 +960,18 @@ impl ProviderDefinition {
     /// # Errors
     ///
     /// Returns an error if the supplied value is invalid.
-    pub fn validate_base_url(&self, base_url: Option<&str>) -> Result<()> {
+    pub fn validate_base_url(&self, base_url: Option<&BaseUrl>) -> Result<BaseUrl> {
         match (self.default_base_url, base_url) {
             (None, Some(_)) => Err(Error::Config(format!(
                 "provider `{}` has a fixed API endpoint",
                 self.id
             ))),
-            (Some(default), None) => validate_base_url(default),
-            (Some(_), Some(base_url)) => validate_base_url(base_url),
-            (None, None) => Ok(()),
+            (Some(default), None) => Ok(default.share()),
+            (Some(_), Some(base_url)) => Ok(base_url.share()),
+            (None, None) => Err(Error::Config(format!(
+                "provider `{}` has no API endpoint",
+                self.id
+            ))),
         }
     }
 
@@ -973,7 +979,7 @@ impl ProviderDefinition {
     /// # Errors
     ///
     /// Returns an error if the supplied value is invalid.
-    pub fn validate_credentialless_endpoint(&self, base_url: Option<&str>) -> Result<()> {
+    pub fn validate_credentialless_endpoint(&self, base_url: Option<&BaseUrl>) -> Result<()> {
         if !self.supports_credentialless_endpoints() {
             return Err(Error::Config(format!(
                 "provider `{}` does not support credentialless endpoints",
@@ -982,7 +988,7 @@ impl ProviderDefinition {
         }
         let base_url = base_url
             .ok_or_else(|| Error::Config("credentialless endpoint requires a base URL".into()))?;
-        let endpoint = reqwest::Url::parse(base_url)
+        let endpoint = reqwest::Url::parse(base_url.as_str())
             .map_err(|error| Error::Config(format!("invalid base URL: {error}")))?;
         if endpoint.scheme() != "https" {
             return Err(Error::Config(
@@ -990,7 +996,8 @@ impl ProviderDefinition {
             ));
         }
         if self.default_base_url.is_some_and(|default| {
-            reqwest::Url::parse(default).is_ok_and(|default| same_origin(&default, &endpoint))
+            reqwest::Url::parse(default.as_str())
+                .is_ok_and(|default| same_origin(&default, &endpoint))
         }) {
             return Err(Error::Config(format!(
                 "provider `{}` default endpoint requires provider authentication",
@@ -1013,28 +1020,91 @@ fn same_origin(left: &reqwest::Url, right: &reqwest::Url) -> bool {
         && left.port_or_known_default() == right.port_or_known_default()
 }
 
-pub(super) fn validate_base_url(base_url: &str) -> Result<()> {
-    let url = reqwest::Url::parse(base_url)
-        .map_err(|error| Error::Config(format!("invalid base URL: {error}")))?;
-    let host = url
-        .host_str()
-        .ok_or_else(|| Error::Config("base URL requires a host".into()))?;
-    let loopback = matches!(host, "localhost" | "127.0.0.1" | "::1" | "[::1]");
-    if url.scheme() != "https" && !(url.scheme() == "http" && loopback) {
-        return Err(Error::Config(
-            "base URL must use HTTPS, except for loopback HTTP".into(),
-        ));
+/// A provider API root checked once, preserving its exact credential-scope spelling.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String")]
+pub struct BaseUrl(Arc<str>);
+
+impl BaseUrl {
+    /// Accepts HTTPS, or loopback HTTP, without credentials, a query or a fragment.
+    /// # Errors
+    /// Returns a configuration error naming the violated URL rule.
+    pub fn new(base_url: impl Into<Arc<str>>) -> Result<Self> {
+        let base_url = base_url.into();
+        let url = reqwest::Url::parse(&base_url)
+            .map_err(|error| Error::Config(format!("invalid base URL: {error}")))?;
+        let host = url
+            .host_str()
+            .ok_or_else(|| Error::Config("base URL requires a host".into()))?;
+        let loopback = matches!(host, "localhost" | "127.0.0.1" | "::1" | "[::1]");
+        if url.scheme() != "https" && !(url.scheme() == "http" && loopback) {
+            return Err(Error::Config(
+                "base URL must use HTTPS, except for loopback HTTP".into(),
+            ));
+        }
+        if !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return Err(Error::Config(
+                "base URL cannot contain credentials, a query, or a fragment".into(),
+            ));
+        }
+        Ok(Self(base_url))
     }
-    if !url.username().is_empty()
-        || url.password().is_some()
-        || url.query().is_some()
-        || url.fragment().is_some()
-    {
-        return Err(Error::Config(
-            "base URL cannot contain credentials, a query, or a fragment".into(),
-        ));
+
+    /// Returns the unchanged, validated root.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
-    Ok(())
+
+    /// Shares this validated root without copying or checking its text again.
+    #[must_use]
+    pub fn share(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+
+    pub(super) fn root(&self) -> &str {
+        self.0.trim_end_matches('/')
+    }
+}
+
+impl TryFrom<String> for BaseUrl {
+    type Error = Error;
+
+    fn try_from(value: String) -> Result<Self> {
+        Self::new(value)
+    }
+}
+
+impl std::str::FromStr for BaseUrl {
+    type Err = Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        Self::new(value)
+    }
+}
+
+impl std::ops::Deref for BaseUrl {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl AsRef<str> for BaseUrl {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl std::fmt::Display for BaseUrl {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
 }
 
 static PROVIDERS: std::sync::LazyLock<[ProviderDefinition; 8]> = std::sync::LazyLock::new(|| {
@@ -1240,9 +1310,10 @@ mod tests {
                 "responses"
             ])
         );
+        let proxy = BaseUrl::new("https://proxy.example/v1").expect("proxy URL");
         let error = provider("openai_socket")
             .expect("fixed-endpoint provider")
-            .validate_credentialless_endpoint(Some("https://proxy.example/v1"))
+            .validate_credentialless_endpoint(Some(&proxy))
             .expect_err("a provider that does not opt in is rejected");
         assert!(
             error
@@ -1254,7 +1325,7 @@ mod tests {
                 .default_base_url()
                 .expect("credentialless provider advertises a default base URL");
             definition
-                .validate_credentialless_endpoint(Some("https://proxy.example/v1"))
+                .validate_credentialless_endpoint(Some(&proxy))
                 .expect("a non-default HTTPS endpoint is accepted");
             definition
                 .validate_credentialless_endpoint(Some(base_url))
@@ -1268,7 +1339,7 @@ mod tests {
                         .default_model()
                         .unwrap_or("test-model")
                         .to_owned(),
-                    base_url: Some("https://proxy.example/v1".into()),
+                    base_url: Some(proxy.share()),
                     reasoning_effort: None,
                     service_tier: None,
                     web_search: HostedWebSearch::Off,

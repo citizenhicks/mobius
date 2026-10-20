@@ -12,7 +12,7 @@ use mobius::backend::sandbox::{
     CommandAuthorization, CommandMode, CommandOutput, CommandOutputSink, NetworkAccess,
     OutputLimit, SandboxBackend, SandboxMode, local::LocalSandbox,
 };
-use mobius::{BoxFuture, Error, Result};
+use mobius::{BoxFuture, Error, Result, SessionId};
 
 use crate::git::{GIT_ENVIRONMENT, REPOSITORY_LOCAL_GIT_ENVIRONMENT};
 
@@ -395,7 +395,7 @@ impl SandboxBackend for GatewaySandbox {
 
     fn worker_connection<'a>(
         &'a self,
-        session_id: &'a str,
+        session_id: &'a SessionId,
         sandbox_mode: SandboxMode,
         network_access: NetworkAccess,
     ) -> BoxFuture<'a, Result<tokio::io::DuplexStream>> {
@@ -432,7 +432,7 @@ impl SandboxBackend for GatewaySandbox {
 
     fn desktop_browser_page<'a>(
         &'a self,
-        session_id: &'a str,
+        session_id: &'a SessionId,
     ) -> BoxFuture<'a, Result<Option<mobius::backend::sandbox::DesktopBrowserPage>>> {
         Box::pin(async move {
             self.check_execution()?;

@@ -1,5 +1,6 @@
 //! SQLite checkpoint storage tests.
 
+use crate::SessionId;
 use std::sync::mpsc;
 
 use serde_json::json;
@@ -11,8 +12,12 @@ use crate::backend::checkpoint::ExecutionOutcome;
 use crate::protocol::EventMsg;
 use crate::protocol::ModelStepOutcome;
 
-fn checkpoint(session_id: impl Into<Arc<str>>) -> Checkpoint {
-    let mut checkpoint = Checkpoint::empty(session_id);
+fn session(value: &str) -> SessionId {
+    SessionId::new(value).unwrap()
+}
+
+fn checkpoint(session_id: &str) -> Checkpoint {
+    let mut checkpoint = Checkpoint::empty(session(session_id));
     Arc::make_mut(&mut checkpoint.session_context).owner_id = "test-bot".into();
     checkpoint
 }
@@ -22,6 +27,7 @@ async fn admission_receipts_commit_with_queue_and_survive_consumption() {
     use crate::backend::checkpoint::{QueuedMessage, QueuedMessageBoundary};
     use crate::protocol::{MessageAuthor, MessageDelivery, MessageEvent};
 
+    let session_id = session("session");
     let directory = tempfile::tempdir().expect("directory");
     let store = SqliteCheckpoint::new(directory.path().join("receipts.sqlite3")).expect("store");
     let mut state = checkpoint("session");
@@ -48,7 +54,7 @@ async fn admission_receipts_commit_with_queue_and_survive_consumption() {
     assert!(store.save(state.clone(), Vec::new(), None).await.is_err());
     assert!(
         !store
-            .message_accepted("session", "input")
+            .message_accepted(&session_id, "input")
             .await
             .expect("absent receipt")
     );
@@ -65,23 +71,23 @@ async fn admission_receipts_commit_with_queue_and_survive_consumption() {
         .expect("consume");
     assert!(
         store
-            .message_accepted("session", "input")
+            .message_accepted(&session_id, "input")
             .await
             .expect("durable receipt")
     );
     assert!(
         !store
-            .message_accepted("other", "input")
+            .message_accepted(&session("other"), "input")
             .await
             .expect("session scope")
     );
     store
-        .delete_sessions(&["session".into()])
+        .delete_sessions(&[session_id.share()])
         .await
         .expect("delete");
     assert!(
         !store
-            .message_accepted("session", "input")
+            .message_accepted(&session_id, "input")
             .await
             .expect("deleted receipt")
     );
@@ -90,7 +96,7 @@ async fn admission_receipts_commit_with_queue_and_survive_consumption() {
 fn execution(session_id: &str, turn: u64) -> ExecutionRecord {
     let started_at_ms = i64::try_from(turn * 100).expect("execution start");
     ExecutionRecord {
-        session_id: session_id.into(),
+        session_id: session(session_id),
         submission_id: format!("submission-{turn}").into(),
         author: crate::protocol::MessageAuthor::User.into(),
         turn_id: format!("turn-{turn}").into(),

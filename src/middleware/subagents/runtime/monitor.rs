@@ -1,3 +1,4 @@
+use crate::SessionId;
 use std::sync::Arc;
 
 use uuid::Uuid;
@@ -19,7 +20,7 @@ use crate::protocol::ReviewDecision;
 use crate::truncate_utf8;
 
 impl Shared {
-    async fn turn_started(&self, root_id: &str, path: &str, turn_id: Arc<str>) -> Result<()> {
+    async fn turn_started(&self, root_id: &SessionId, path: &str, turn_id: Arc<str>) -> Result<()> {
         self.mutate_root(root_id, |root| {
             root.parent_reports.remove(path);
             let entry = root
@@ -35,7 +36,12 @@ impl Shared {
         .await
     }
 
-    async fn approval_pending(&self, root_id: &str, path: &str, turn_id: Arc<str>) -> Result<()> {
+    async fn approval_pending(
+        &self,
+        root_id: &SessionId,
+        path: &str,
+        turn_id: Arc<str>,
+    ) -> Result<()> {
         self.mutate_root(root_id, |root| {
             let entry = root
                 .tree
@@ -49,7 +55,12 @@ impl Shared {
         .await
     }
 
-    pub(super) async fn message(&self, root_id: &str, path: &str, message: String) -> Result<()> {
+    pub(super) async fn message(
+        &self,
+        root_id: &SessionId,
+        path: &str,
+        message: String,
+    ) -> Result<()> {
         self.mutate_root(root_id, |root| {
             let entry = root
                 .tree
@@ -65,7 +76,7 @@ impl Shared {
     /// Records a terminal status; `None` reports the agent's last recorded message.
     pub(super) async fn finished(
         &self,
-        root_id: &str,
+        root_id: &SessionId,
         path: &str,
         status: AgentStatus,
         message: Option<Arc<str>>,
@@ -132,7 +143,7 @@ impl Shared {
         Ok(())
     }
 
-    async fn active(&self, root_id: &str, path: &str) -> bool {
+    async fn active(&self, root_id: &SessionId, path: &str) -> bool {
         let Ok(root) = self.root(root_id).await else {
             return false;
         };
@@ -189,7 +200,7 @@ pub(in crate::middleware::subagents) async fn monitor_agent(
 
 async fn monitor_events(
     shared: &Shared,
-    root_id: &str,
+    root_id: &SessionId,
     path: &str,
     events: &mut AgentEvents,
 ) -> Result<()> {

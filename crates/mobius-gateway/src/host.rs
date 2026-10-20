@@ -1,5 +1,6 @@
 //! Per-chat agent ownership, event sequencing, replay, and authenticated operations.
 
+use mobius::SessionId;
 mod bot_events;
 mod catalog;
 mod deletion;
@@ -58,7 +59,7 @@ use crate::wire::{
     RecordedEvent, RenderedEvent, RenderedPreview, RoutineRunStatus, RunStats, RunSummary,
     ServerFrame, ServerMessage, SessionActivity, SessionActivityState, SessionReadyPayload,
     SessionRecord, SessionRunGroup, SessionWidget, SharedFrame, SshIdentityRecord,
-    VersionedAgentConfig, WorkspaceFileScope, validate_session_id,
+    VersionedAgentConfig, WorkspaceFileScope,
 };
 use crate::{Error, Result};
 
@@ -163,8 +164,8 @@ struct GatewayState {
     provider_epoch: Arc<AtomicU64>,
     activities: SessionActivities,
     provider_login: Arc<StdMutex<providers::ProviderLogins>>,
-    sessions: HashMap<String, HostHandle>,
-    starting_sessions: Arc<StdMutex<HashMap<String, String>>>,
+    sessions: HashMap<SessionId, HostHandle>,
+    starting_sessions: Arc<StdMutex<HashMap<SessionId, String>>>,
     idle_cleanup_tasks: Vec<JoinHandle<()>>,
 }
 
@@ -728,7 +729,7 @@ impl GatewayHost {
         self.create_session_with_id(
             Some(workspace),
             bot_id,
-            Uuid::new_v4().to_string(),
+            SessionId::generate(),
             true,
             "mobius-gateway",
         )
@@ -757,12 +758,10 @@ impl GatewayHost {
         &self,
         workspace: Option<&Path>,
         bot_id: &str,
-        session_id: String,
+        session_id: SessionId,
         catalog_visible: bool,
         origin_label: &str,
     ) -> std::result::Result<HostHandle, Rejection> {
-        validate_session_id(&session_id)
-            .map_err(|error| Rejection::new("invalid_session_id", error.to_string()))?;
         let mutation = self.begin_mutation().await?;
         let state = self.state.lock().await;
         // Blocking workspace validation must not retain the configuration lock.
@@ -878,7 +877,7 @@ impl GatewayHost {
 
     pub(crate) async fn open_session(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
     ) -> std::result::Result<HostHandle, Rejection> {
         self.open_session_with_cache(session_id, true)
             .await
@@ -887,7 +886,7 @@ impl GatewayHost {
 
     async fn open_session_with_cache(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         cache: bool,
     ) -> std::result::Result<(HostHandle, bool), Rejection> {
         let (chat, mutation) = self.authorize_chat(session_id, Admission::Execute).await?;
@@ -899,7 +898,7 @@ impl GatewayHost {
                     .create_session_with_id(
                         None,
                         &bot_id,
-                        session_id.into(),
+                        session_id.share(),
                         true,
                         "persistent chat",
                     )
@@ -934,12 +933,10 @@ impl GatewayHost {
     /// Applies every check selecting `session_id` makes, without starting it.
     async fn authorize_chat(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         admission: Admission,
     ) -> std::result::Result<(AuthorizedChat, tokio::sync::OwnedRwLockReadGuard<()>), Rejection>
     {
-        validate_session_id(session_id)
-            .map_err(|error| Rejection::new("invalid_session_id", error.to_string()))?;
         let guard = match admission {
             Admission::Execute => self.begin_mutation().await?,
             Admission::Observe => self.begin_access().await?,
@@ -973,7 +970,7 @@ impl GatewayHost {
                 .bots()
                 .map_err(internal)?
                 .into_iter()
-                .find(|bot| *bot.conversation_session_id == *session_id)
+                .find(|bot| &bot.conversation_session_id == session_id)
                 .ok_or_else(unknown_session)?;
             return Ok((AuthorizedChat::Unstarted { bot_id: bot.id }, guard));
         };
@@ -1007,7 +1004,7 @@ impl GatewayHost {
     /// its event journal with framework-rendered blocks only.
     pub(crate) async fn read_session_history(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         before_sequence: Option<u64>,
     ) -> std::result::Result<SessionHistoryPage, Rejection> {
         let (chat, access) = self.authorize_chat(session_id, Admission::Observe).await?;
@@ -1027,7 +1024,7 @@ impl GatewayHost {
 
     pub(crate) async fn reassign_session(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         bot_id: &str,
     ) -> std::result::Result<(), Rejection> {
         let mutation = self.begin_mutation().await?;
@@ -1046,7 +1043,7 @@ impl GatewayHost {
 
     pub(crate) async fn rename_session(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         title: &str,
     ) -> std::result::Result<(), Rejection> {
         let _mutation = self.begin_mutation().await?;
@@ -1060,7 +1057,7 @@ impl GatewayHost {
 
     pub(crate) async fn set_session_pinned(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         pinned: bool,
     ) -> std::result::Result<(), Rejection> {
         let _mutation = self.begin_mutation().await?;
@@ -1070,7 +1067,7 @@ impl GatewayHost {
 
     async fn update_session_metadata(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         update: impl FnOnce(&mut catalog::SessionMetadata),
     ) -> std::result::Result<(), Rejection> {
         let (checkpoints, catalog_lock) = {
@@ -1093,7 +1090,7 @@ impl GatewayHost {
         let mut metadata = load_session_metadata(&checkpoints)
             .await
             .map_err(internal)?;
-        update(metadata.entry(session_id.into()).or_default());
+        update(metadata.entry(session_id.share()).or_default());
         save_session_metadata(&checkpoints, &metadata)
             .await
             .map_err(internal)?;
@@ -1226,8 +1223,8 @@ fn validate_bot_workspace(
 }
 
 struct SessionStartGuard {
-    id: String,
-    starting: Arc<StdMutex<HashMap<String, String>>>,
+    id: SessionId,
+    starting: Arc<StdMutex<HashMap<SessionId, String>>>,
 }
 
 impl Drop for SessionStartGuard {
@@ -1269,7 +1266,7 @@ impl GatewayState {
 
     fn reserve_start(
         &self,
-        id: &str,
+        id: &SessionId,
         bot_id: &str,
     ) -> std::result::Result<SessionStartGuard, Rejection> {
         if self.resident_sessions() >= self.session_capacity()? {
@@ -1282,10 +1279,10 @@ impl GatewayState {
                 "this chat is starting; retry shortly",
             ));
         }
-        starting.insert(id.into(), bot_id.into());
+        starting.insert(id.share(), bot_id.into());
         drop(starting);
         Ok(SessionStartGuard {
-            id: id.into(),
+            id: id.share(),
             starting: Arc::clone(&self.starting_sessions),
         })
     }
@@ -1470,10 +1467,8 @@ fn unknown_session() -> Rejection {
 
 async fn require_catalog_session(
     checkpoints: &Arc<dyn CheckpointStore>,
-    session_id: &str,
+    session_id: &SessionId,
 ) -> std::result::Result<SessionSummary, Rejection> {
-    validate_session_id(session_id)
-        .map_err(|error| Rejection::new("invalid_session_id", error.to_string()))?;
     let checkpoint = checkpoints
         .session_summary(session_id)
         .await
@@ -1483,10 +1478,6 @@ async fn require_catalog_session(
         return Err(unknown_session());
     }
     Ok(checkpoint)
-}
-
-fn invalid_session_id() -> Rejection {
-    Rejection::new("invalid_session_id", "session ID must be 1–4096 bytes")
 }
 
 fn invalid_bot(error: impl std::fmt::Display) -> Rejection {
@@ -1509,7 +1500,7 @@ mod tests;
 
 #[cfg(test)]
 impl GatewayHost {
-    pub(crate) async fn stop_idle_session(&self, session_id: &str) {
+    pub(crate) async fn stop_idle_session(&self, session_id: &SessionId) {
         let host = self
             .state
             .lock()
@@ -1520,7 +1511,7 @@ impl GatewayHost {
         assert!(host.stop_if_idle().await);
     }
 
-    pub(crate) async fn is_resident(&self, session_id: &str) -> bool {
+    pub(crate) async fn is_resident(&self, session_id: &SessionId) -> bool {
         let state = self.state.lock().await;
         state.sessions.contains_key(session_id)
             || mobius::sync::recover_lock(&state.starting_sessions).contains_key(session_id)

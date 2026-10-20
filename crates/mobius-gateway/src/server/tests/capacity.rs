@@ -1,4 +1,5 @@
 use super::*;
+use mobius::SessionId;
 
 async fn capacity_server(
     state_dir: PathBuf,
@@ -175,13 +176,13 @@ async fn configured_pre_authentication_limit_waits_then_releases_after_disconnec
 async fn begin_capacity_upload(
     sender: &GatewaySender,
     events: &mut GatewayEvents,
-    session_id: &str,
+    session_id: &SessionId,
     request_id: &str,
 ) -> String {
     sender
         .send(ClientMessage::BeginSessionFileUpload {
             request_id: request_id.into(),
-            session_id: session_id.into(),
+            session_id: session_id.share(),
             name: format!("{request_id}.txt"),
             size: 1,
             media_type: "text/plain".into(),
@@ -241,7 +242,7 @@ async fn configured_pending_upload_limit_is_released_by_cancellation() {
     sender
         .send(ClientMessage::BeginSessionFileUpload {
             request_id: "excess-upload".into(),
-            session_id: session_id.as_str().into(),
+            session_id: session_id.share(),
             name: "second.txt".into(),
             size: 1,
             media_type: "text/plain".into(),
@@ -272,7 +273,7 @@ async fn configured_pending_upload_limit_is_released_by_cancellation() {
     sender
         .send(ClientMessage::DeleteSessions {
             request_id: "cancel-first-upload".into(),
-            session_ids: vec![session_id.as_str().into()],
+            session_ids: vec![session_id.share()],
             selection: mobius::backend::session_files::SessionFileSelection::Ids(vec![upload_id]),
         })
         .await

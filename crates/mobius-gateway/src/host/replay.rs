@@ -6,6 +6,7 @@ use super::{
     SessionHistoryPage, SessionWidgets, SharedFrame, VecDeque, broadcast, event_turn_page,
     internal,
 };
+use mobius::SessionId;
 
 #[derive(Clone)]
 pub(super) struct ReplayEntry {
@@ -31,10 +32,10 @@ thread_local! {
 
 pub(super) async fn load_replay(
     checkpoints: &dyn CheckpointStore,
-    session_id: &str,
+    session_id: &SessionId,
     frontend: &FrontendExtensions,
 ) -> Result<LoadedReplay> {
-    let shared_session_id: Arc<str> = session_id.into();
+    let shared_session_id = session_id.share();
     let mut latest_sequence = 0;
     let mut before_sequence = None;
     let mut scanned = 0;
@@ -64,7 +65,7 @@ pub(super) async fn load_replay(
             scanned += 1;
             latest_sequence = latest_sequence.max(journal.sequence);
             let frame = ServerFrame::new(ServerMessage::AgentEvent {
-                session_id: Arc::clone(&shared_session_id),
+                session_id: shared_session_id.share(),
                 record: project_record(frontend, journal),
             });
             if !replayable(&frame) {
@@ -132,7 +133,7 @@ impl RenderEvents for FrameworkPresentation {
 /// One complete durable turn page, projected for clients.
 pub(super) async fn durable_history_page(
     checkpoints: &dyn CheckpointStore,
-    session_id: &str,
+    session_id: &SessionId,
     frontend: &impl RenderEvents,
     before_sequence: Option<u64>,
 ) -> std::result::Result<SessionHistoryPage, Rejection> {

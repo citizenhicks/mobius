@@ -4,12 +4,13 @@ use super::{
     ServerFrame, ServerMessage, SessionHistoryPage, fs, write_frame,
 };
 use crate::wire::{encode_bounded_frame, write_encoded};
+use mobius::SessionId;
 
 pub(super) async fn write_session_history(
     writer: &mut (impl AsyncWrite + Unpin),
     page: std::result::Result<SessionHistoryPage, Rejection>,
     request_id: Arc<str>,
-    session_id: String,
+    session_id: SessionId,
 ) -> Result<()> {
     let page = match page {
         Ok(page) => page,
@@ -81,7 +82,7 @@ pub(super) async fn open_selected(
         writer,
         &ServerFrame::new(ServerMessage::SessionReplayComplete {
             request_id,
-            session_id: host.session_id().to_string(),
+            session_id: host.session_id().share(),
         }),
     )
     .await?;
@@ -95,10 +96,10 @@ pub(super) async fn open_selected(
 
 pub(super) fn require_selected<'a>(
     selected: Option<&'a SelectedChat>,
-    session_id: &str,
+    session_id: &SessionId,
 ) -> std::result::Result<&'a HostHandle, Rejection> {
     let host = require_any_selected(selected)?;
-    if **host.session_id() != *session_id {
+    if host.session_id() != session_id {
         return Err(Rejection::new(
             "session_not_selected",
             "open this chat on the connection before controlling it",
@@ -109,7 +110,7 @@ pub(super) fn require_selected<'a>(
 
 pub(super) async fn require_uploads_enabled<'a>(
     selected: Option<&'a SelectedChat>,
-    session_id: &str,
+    session_id: &SessionId,
 ) -> std::result::Result<&'a HostHandle, Rejection> {
     let host = require_selected(selected, session_id)?;
     if !host.accepts_file_attachments().await? {

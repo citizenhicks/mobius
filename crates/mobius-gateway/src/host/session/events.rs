@@ -92,7 +92,7 @@ impl HostState {
         let sequence_kind = classify_journal_sequence(self.sequence, journal.sequence, delivery)?;
         let sequence = journal.sequence;
         let frame = ServerFrame::new(ServerMessage::AgentEvent {
-            session_id: Arc::clone(&self.running.session_id),
+            session_id: self.running.session_id.share(),
             record: project_record(&self.running.frontend, journal),
         });
         let entry = ReplayEntry::new(frame)?;
@@ -270,7 +270,7 @@ impl HostState {
             .await
             .map_err(internal)?;
         self.broadcast(ServerMessage::MessagePinsChanged {
-            session_id: Arc::clone(&self.running.session_id),
+            session_id: self.running.session_id.share(),
             pinned_messages: pins,
         });
         Ok(())
@@ -569,7 +569,7 @@ mod accounting_tests {
                 ancestry: Vec::new(),
                 message_id: "message-1".into(),
                 source: mobius::protocol::MessageSource::Session {
-                    session_id: "reviewer".into(),
+                    session_id: mobius::SessionId::new("reviewer").unwrap(),
                 },
                 handle: "reviewer".into(),
                 symbol: None,

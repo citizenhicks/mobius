@@ -47,8 +47,8 @@ pub use image_generation::{
 };
 pub use media::{ImageInputLimits, MediaPreparation};
 mod transport;
-pub use transport::ModelTransportSettings;
 pub(crate) use transport::retry_delay;
+pub use transport::{ModelTransportSettings, RawModelTransportSettings};
 
 pub use self::realtime::{
     RealtimeVoiceCall, RealtimeVoiceCommand, RealtimeVoiceEvent, RealtimeVoiceRequest,
@@ -264,8 +264,8 @@ impl StreamingToolCalls {
 /// Input for one model turn.
 #[derive(Debug, Clone, Copy)]
 pub struct ModelRequest<'a> {
-    /// Local session identity used for transport continuation state.
-    pub session_id: &'a str,
+    /// Checked local identity for transport continuation and owned media; `None` is stateless.
+    pub session_id: Option<&'a crate::SessionId>,
     /// Optional local cause recorded before an unfinished request is dropped.
     pub cancellation: Option<&'a ModelCancellation>,
     /// Optional provider-visible prompt-cache identity.
@@ -313,7 +313,7 @@ impl PromptCacheMode {
 
 /// Hashes a local session identity into a stable provider cache key.
 #[must_use]
-pub fn prompt_cache_key(session_id: &str) -> String {
+pub fn prompt_cache_key(session_id: &crate::SessionId) -> String {
     let mut digest = Sha256::new();
     digest.update(b"mobius/prompt-cache/v1/");
     digest.update(session_id.as_bytes());
@@ -704,7 +704,7 @@ impl From<OutputTextAnnotation> for ModelStepAnnotation {
 /// A model provider Adapter used by the agent loop.
 pub trait Model: Send + Sync {
     /// Validated operational policy for this route; custom providers inherit owner defaults.
-    /// Overrides must validate settings during provider construction.
+    /// The returned settings have already passed their construction boundary.
     fn transport_settings(&self) -> ModelTransportSettings {
         ModelTransportSettings::default()
     }
@@ -849,7 +849,10 @@ pub trait Model: Send + Sync {
     ///
     /// Called after retry exhaustion only when replaying the model request is safe.
     /// Returns whether a new transport was activated; providers without one return false.
-    fn fallback_transport<'a>(&'a self, _session_id: &'a str) -> BoxFuture<'a, Result<bool>> {
+    fn fallback_transport<'a>(
+        &'a self,
+        _session_id: &'a crate::SessionId,
+    ) -> BoxFuture<'a, Result<bool>> {
         Box::pin(async { Ok(false) })
     }
 }

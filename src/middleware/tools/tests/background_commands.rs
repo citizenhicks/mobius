@@ -4,7 +4,7 @@ fn command_context(sandbox: &Arc<Sandbox>, owner: &str, authorized: bool) -> Too
     ToolContext::new(
         Arc::clone(sandbox),
         SandboxPermissions::restore(
-            owner,
+            &owner.parse().expect("session ID"),
             crate::backend::sandbox::SandboxMode::WorkspaceWrite,
             crate::backend::sandbox::NetworkAccess::Denied,
             authorized.then(|| "command".into()),
@@ -79,7 +79,7 @@ async fn bash_caps_output_and_restricts_poll_and_stop_to_its_owner() {
     }
     assert!(
         !sandbox
-            .has_background_commands("owner")
+            .has_background_commands(&"owner".parse().expect("session ID"))
             .expect("stopped command removed")
     );
     assert!(

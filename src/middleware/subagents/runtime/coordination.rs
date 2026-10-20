@@ -1,3 +1,4 @@
+use crate::SessionId;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
@@ -57,7 +58,7 @@ pub(in crate::middleware::subagents) struct Wake {
 pub(in crate::middleware::subagents) enum WakeTarget {
     Live(AgentSender),
     Resume {
-        session_id: Arc<str>,
+        session_id: SessionId,
         depth: u8,
         model: Arc<str>,
     },
@@ -67,7 +68,7 @@ impl Shared {
     /// Returns each pending update for `recipient` as its internal kind and rendered text.
     pub(in crate::middleware::subagents) async fn receive_updates(
         &self,
-        root_id: &str,
+        root_id: &SessionId,
         recipient: &str,
         acknowledged: &BTreeSet<&str>,
         delivered_message_ids: &BTreeSet<Arc<str>>,
@@ -103,7 +104,7 @@ impl Shared {
 
     pub(in crate::middleware::subagents) async fn send_message(
         &self,
-        root_id: &str,
+        root_id: &SessionId,
         from: &str,
         target: &str,
         message: MessageSubmission,
@@ -205,7 +206,7 @@ impl Shared {
                         let wake_target = match root.senders.get(target) {
                             Some(sender) => WakeTarget::Live(sender.clone()), // rules-allow: the root keeps the live sender
                             None => WakeTarget::Resume {
-                                session_id: Arc::clone(&entry.session_id),
+                                session_id: entry.session_id.share(),
                                 depth: entry.depth,
                                 model: Arc::clone(&entry.model),
                             },
@@ -228,7 +229,7 @@ impl Shared {
 
     pub(in crate::middleware::subagents) async fn wait(
         &self,
-        root_id: &str,
+        root_id: &SessionId,
         recipient: &str,
         duration: Duration,
     ) -> Result<Vec<Arc<str>>> {
@@ -252,7 +253,7 @@ impl Shared {
 
     async fn pending_sources(
         &self,
-        root_id: &str,
+        root_id: &SessionId,
         recipient: &str,
     ) -> Result<(Vec<Arc<str>>, bool)> {
         let root = self.root(root_id).await?;

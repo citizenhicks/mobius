@@ -4,6 +4,7 @@ use reqwest::Client;
 use reqwest::Response;
 use std::sync::Arc;
 
+use super::provider::BaseUrl;
 use crate::Error;
 use crate::ProviderError;
 use crate::Result;
@@ -66,10 +67,10 @@ pub(super) const MAX_SSE_FRAME_BYTES: usize = 8 * 1024 * 1024;
 pub(super) const MAX_STREAM_BYTES: usize = 64 * 1024 * 1024;
 crate::embedded_config! {
     copy;
-    /// Runtime policy for model HTTP, sockets, voice and authentication.
+    /// Unvalidated wire shape of [`ModelTransportSettings`].
     /// Millisecond units allow short local test deadlines without changing wire protocols.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct ModelTransportSettings {
+    pub struct RawModelTransportSettings {
         /// Complete serialized outgoing request limit, including text and tool schemas.
         pub max_request_bytes: usize,
         /// HTTP connection deadline.
@@ -106,29 +107,61 @@ crate::embedded_config! {
     defaults = include_str!("transport.toml");
 }
 
-impl ModelTransportSettings {
+/// Runtime policy for model HTTP, sockets, voice and authentication, validated once
+/// when constructed or deserialized; fields are read through `Deref`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(
+    try_from = "RawModelTransportSettings",
+    into = "RawModelTransportSettings"
+)]
+pub struct ModelTransportSettings(RawModelTransportSettings);
+
+impl Default for ModelTransportSettings {
+    fn default() -> Self {
+        crate::embedded_config! {
+            static DEFAULTS: ModelTransportSettings = include_str!("transport.toml");
+        }
+        *DEFAULTS
+    }
+}
+
+impl std::ops::Deref for ModelTransportSettings {
+    type Target = RawModelTransportSettings;
+
+    fn deref(&self) -> &RawModelTransportSettings {
+        &self.0
+    }
+}
+
+impl From<ModelTransportSettings> for RawModelTransportSettings {
+    fn from(settings: ModelTransportSettings) -> Self {
+        settings.0
+    }
+}
+
+impl TryFrom<RawModelTransportSettings> for ModelTransportSettings {
+    type Error = Error;
+
     /// Rejects zero deadlines, excessive retry budgets and overflowing backoff policy.
-    /// # Errors
-    /// Returns a configuration error for invalid operational policy.
-    pub fn validate(&self) -> Result<()> {
-        if self.max_request_bytes == 0 {
+    fn try_from(raw: RawModelTransportSettings) -> Result<Self> {
+        if raw.max_request_bytes == 0 {
             return Err(Error::Config("model request limit must be positive".into()));
         }
         let deadlines = [
-            self.http_connect_timeout_ms,
-            self.http_idle_timeout_ms,
-            self.socket_connect_timeout_ms,
-            self.socket_io_timeout_ms,
-            self.socket_idle_timeout_ms,
-            self.stream_retry_backoff_ms,
-            self.stream_retry_max_backoff_ms,
-            self.voice_start_timeout_ms,
-            self.voice_io_timeout_ms,
-            self.voice_call_timeout_ms,
-            self.oauth_request_timeout_ms,
-            self.oauth_callback_timeout_ms,
-            self.oauth_callback_request_timeout_ms,
-            self.device_code_timeout_ms,
+            raw.http_connect_timeout_ms,
+            raw.http_idle_timeout_ms,
+            raw.socket_connect_timeout_ms,
+            raw.socket_io_timeout_ms,
+            raw.socket_idle_timeout_ms,
+            raw.stream_retry_backoff_ms,
+            raw.stream_retry_max_backoff_ms,
+            raw.voice_start_timeout_ms,
+            raw.voice_io_timeout_ms,
+            raw.voice_call_timeout_ms,
+            raw.oauth_request_timeout_ms,
+            raw.oauth_callback_timeout_ms,
+            raw.oauth_callback_request_timeout_ms,
+            raw.device_code_timeout_ms,
         ];
         if deadlines
             .into_iter()
@@ -138,24 +171,25 @@ impl ModelTransportSettings {
                 "model transport deadlines must be positive and at most one year".into(),
             ));
         }
-        if self.stream_retry_limit > 100 {
+        if raw.stream_retry_limit > 100 {
             return Err(Error::Config(
                 "model transport retry limits must be at most 100".into(),
             ));
         }
-        if self.stream_retry_backoff_ms > self.stream_retry_max_backoff_ms {
+        if raw.stream_retry_backoff_ms > raw.stream_retry_max_backoff_ms {
             return Err(Error::Config(
                 "initial model retry backoff exceeds its ceiling".into(),
             ));
         }
-        Ok(())
+        Ok(Self(raw))
     }
+}
 
+impl ModelTransportSettings {
     /// Builds an HTTP streaming pool from this validated policy.
     /// # Errors
-    /// Returns invalid configuration or HTTP client construction errors.
+    /// Returns HTTP client construction errors.
     pub fn streaming_client(&self) -> Result<Client> {
-        self.validate()?;
         Ok(Client::builder()
             // Provider credentials and account headers must never follow redirects.
             .redirect(reqwest::redirect::Policy::none())
@@ -177,11 +211,11 @@ pub fn streaming_client() -> Result<Client> {
 
 #[cfg(test)]
 fn streaming_client_with_idle_timeout(idle_timeout: Duration) -> Result<Client> {
-    ModelTransportSettings {
+    ModelTransportSettings::try_from(RawModelTransportSettings {
         http_idle_timeout_ms: u64::try_from(idle_timeout.as_millis())
             .map_err(|error| Error::Config(format!("test timeout does not fit: {error}")))?,
-        ..ModelTransportSettings::default()
-    }
+        ..RawModelTransportSettings::default()
+    })?
     .streaming_client()
 }
 
@@ -406,7 +440,7 @@ pub(super) struct ApiKeyModel {
     pub(super) client: Client,
     pub(super) transport: ModelTransportSettings,
     pub(super) api_key: Option<String>,
-    pub(super) base_url: String,
+    pub(super) base_url: BaseUrl,
     pub(super) model: Arc<str>,
     pub(super) reasoning_effort: Option<Arc<str>>,
 }
@@ -423,25 +457,18 @@ impl std::fmt::Debug for ApiKeyModel {
 impl ApiKeyModel {
     pub(super) fn new(
         api_key: Option<String>,
-        base_url: impl Into<String>,
+        base_url: BaseUrl,
         model: impl Into<String>,
         client: Client,
     ) -> Result<Self> {
         if api_key.as_deref().is_some_and(|key| key.trim().is_empty()) {
             return Err(Error::Config("provider API key cannot be empty".into()));
         }
-        let mut base_url = base_url.into();
-        base_url.truncate(base_url.trim_end_matches('/').len());
-        super::provider::validate_base_url(&base_url)?;
-        let model = model.into();
-        if model.trim().is_empty() {
-            return Err(Error::Config("model is empty".into()));
-        }
         Ok(Self {
             client,
             api_key,
             base_url,
-            model: model.into(),
+            model: Arc::from(model.into()),
             reasoning_effort: None,
             transport: ModelTransportSettings::default(),
         })
@@ -495,6 +522,31 @@ mod tests {
     use super::*;
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
+
+    #[test]
+    fn transport_settings_validate_once_on_construction_and_decoding() {
+        let settings = ModelTransportSettings::default();
+        assert_eq!(
+            ModelTransportSettings::try_from(*settings).ok(),
+            Some(settings)
+        );
+        let wire = serde_json::to_value(settings).expect("encode");
+        assert_eq!(wire, serde_json::to_value(*settings).expect("encode raw"));
+        assert_eq!(
+            serde_json::from_value::<ModelTransportSettings>(wire).ok(),
+            Some(settings)
+        );
+        assert!(
+            serde_json::from_str::<ModelTransportSettings>(r#"{"http_idle_timeout_ms":0}"#)
+                .is_err()
+        );
+        let inverted = RawModelTransportSettings {
+            stream_retry_backoff_ms: 2,
+            stream_retry_max_backoff_ms: 1,
+            ..*settings
+        };
+        assert!(ModelTransportSettings::try_from(inverted).is_err());
+    }
 
     #[test]
     fn quota_errors_are_terminal_while_transient_limits_remain_retryable() {

@@ -1,3 +1,4 @@
+use crate::SessionId;
 use std::sync::Arc;
 
 use serde_json::Value;
@@ -55,7 +56,7 @@ const STREAM_BATCH_BYTES: usize = 16 * 1024;
 #[derive(PartialEq, Eq)]
 struct StreamKey {
     submission_id: Option<Arc<str>>,
-    session_id: Arc<str>,
+    session_id: SessionId,
     turn_id: Arc<str>,
     model_step_id: Arc<str>,
     phase: ModelStepContentPhase,
@@ -68,7 +69,7 @@ impl StreamKey {
         };
         Some(Self {
             submission_id: event.submission_id.as_ref().map(Arc::clone),
-            session_id: Arc::clone(&delta.session_id),
+            session_id: delta.session_id.share(),
             turn_id: Arc::clone(&delta.turn_id),
             model_step_id: Arc::clone(&delta.model_step_id),
             phase: delta.phase,
@@ -106,7 +107,7 @@ impl StreamBatch {
 impl RecorderIngress {
     pub(super) fn spawn(
         checkpoints: Arc<dyn CheckpointStore>,
-        session_id: Arc<str>,
+        session_id: SessionId,
     ) -> (Arc<Self>, mpsc::Receiver<JournalEvent>) {
         let (commands, receiver) = mpsc::channel(RECORDER_COMMAND_CAPACITY);
         let (events, event_receiver) = mpsc::channel(EVENT_QUEUE_CAPACITY);
@@ -250,7 +251,7 @@ fn reply(result: oneshot::Sender<Result<()>>, outcome: Result<()>) {
 )]
 async fn run_recorder(
     checkpoints: Arc<dyn CheckpointStore>,
-    session_id: Arc<str>,
+    session_id: SessionId,
     mut commands: mpsc::Receiver<RecorderCommand>,
     events: mpsc::Sender<JournalEvent>,
 ) {
@@ -344,7 +345,7 @@ async fn run_recorder(
 async fn flush_on_shutdown(
     pending: &mut Option<StreamBatch>,
     checkpoints: &Arc<dyn CheckpointStore>,
-    session_id: &str,
+    session_id: &SessionId,
     events: &mpsc::Sender<JournalEvent>,
 ) {
     if let Err(failure) = flush_stream(pending, checkpoints, session_id, events).await {
@@ -390,7 +391,7 @@ async fn record_save(
 async fn flush_stream(
     pending: &mut Option<StreamBatch>,
     checkpoints: &Arc<dyn CheckpointStore>,
-    session_id: &str,
+    session_id: &SessionId,
     events: &mpsc::Sender<JournalEvent>,
 ) -> std::result::Result<(), RecorderFailure> {
     if let Some(batch) = pending.take() {
@@ -402,7 +403,7 @@ async fn flush_stream(
 async fn record_append(
     command: AppendCommand,
     checkpoints: &Arc<dyn CheckpointStore>,
-    session_id: &str,
+    session_id: &SessionId,
     events: &mpsc::Sender<JournalEvent>,
 ) -> std::result::Result<(), RecorderFailure> {
     let AppendCommand {

@@ -17,13 +17,13 @@ use crate::gateway_error;
 pub async fn run(
     sender: GatewaySender,
     mut events: GatewayEvents,
-    session_id: Arc<str>,
+    session_id: mobius::SessionId,
     task: String,
 ) -> Result<Option<String>> {
     let submission_id: Arc<str> = crate::fresh_id();
     sender
         .send(ClientMessage::Submit {
-            session_id: Arc::clone(&session_id),
+            session_id: session_id.share(),
             submission: Submission {
                 id: Arc::clone(&submission_id),
                 op: Op::Message {
@@ -58,7 +58,7 @@ pub async fn run(
                 session_id: actual,
                 record,
                 ..
-            } if *actual == *session_id => record.event,
+            } if actual == session_id => record.event,
             _ => continue,
         };
         match event.msg {
@@ -76,7 +76,7 @@ pub async fn run(
                 ));
                 sender
                     .send(ClientMessage::Submit {
-                        session_id: Arc::clone(&session_id),
+                        session_id: session_id.share(),
                         submission: Submission {
                             id: crate::fresh_id(),
                             op: Op::ExecApproval {

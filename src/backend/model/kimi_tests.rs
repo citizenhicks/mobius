@@ -12,7 +12,7 @@ async fn credentialless_post_uses_custom_path_and_omits_authorization() {
     let (address, server) = capture_http_request().await;
     let provider = Kimi::with_client(
         None,
-        format!("http://{address}/proxy"),
+        BaseUrl::new(format!("http://{address}/proxy")).unwrap(),
         "test-model",
         reqwest::Client::new(),
     )
@@ -20,7 +20,7 @@ async fn credentialless_post_uses_custom_path_and_omits_authorization() {
 
     super::super::chat_completions::post(
         &provider.config.client,
-        &provider.config.base_url,
+        provider.config.base_url.as_str(),
         provider.config.api_key.as_deref(),
         b"{}".to_vec(),
         "Kimi",
@@ -35,7 +35,7 @@ async fn credentialless_post_uses_custom_path_and_omits_authorization() {
 
 #[test]
 fn responses_history_becomes_kimi_messages_and_tools() {
-    let provider = Kimi::new("test-key", MANIFEST.base_url.as_str(), "kimi-k3")
+    let provider = Kimi::new("test-key", MANIFEST.base_url.share(), "kimi-k3")
         .expect("provider")
         .with_reasoning_effort("high")
         .expect("reasoning");
@@ -72,7 +72,7 @@ fn responses_history_becomes_kimi_messages_and_tools() {
         }),
     })];
     let request = ModelRequest {
-        session_id: "session-7",
+        session_id: None,
         cancellation: None,
         prompt_cache: Some(PromptCacheIdentity {
             key: "hashed-session-7",

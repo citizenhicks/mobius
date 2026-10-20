@@ -7,7 +7,7 @@ use super::*;
 use crate::backend::model::{PromptCacheIdentity, ToolDefinition, user_message};
 
 fn model() -> Mistral {
-    Mistral::new("test-key", MANIFEST.base_url.as_str(), "mistral-large-4-0")
+    Mistral::new("test-key", MANIFEST.base_url.share(), "mistral-large-4-0")
         .expect("Mistral provider")
         .with_reasoning_effort("high")
         .expect("Mistral effort")
@@ -15,7 +15,7 @@ fn model() -> Mistral {
 
 fn request<'a>(input: &'a [Value], tools: &'a [Arc<ToolDefinition>]) -> ModelRequest<'a> {
     ModelRequest {
-        session_id: "session",
+        session_id: None,
         cancellation: None,
         prompt_cache: Some(PromptCacheIdentity {
             key: "cache-key",
@@ -174,7 +174,7 @@ async fn native_stream_round_trip_preserves_thinking_signatures_tools_and_usage(
         mock_response("200 OK", "Content-Type: text/event-stream\r\n", &body).await;
     let model = Mistral::with_client(
         Some("test-key".into()),
-        root,
+        BaseUrl::new(root.as_str()).unwrap(),
         "mistral-large-4-0",
         Client::new(),
     )

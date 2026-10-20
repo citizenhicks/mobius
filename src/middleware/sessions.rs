@@ -1,11 +1,11 @@
 //! Chat catalog, durable forking, and bounded owner-scoped history retrieval.
 
+use crate::SessionId;
 use std::borrow::Cow;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use uuid::Uuid;
 
 use super::Middleware;
 use super::MiddlewareCommandContext;
@@ -117,7 +117,7 @@ super::manifest::middleware_manifest! {
 #[derive(Debug, PartialEq, Eq)]
 pub struct LiveChat {
     /// The durable chat identifier.
-    pub session_id: Arc<str>,
+    pub session_id: SessionId,
     /// The user-visible chat title.
     pub title: Option<String>,
     /// The workspace label.
@@ -188,7 +188,7 @@ pub trait LiveChats: Send + Sync {
     /// # Errors
     ///
     /// Returns an error if the host cannot read its open chats.
-    fn list<'a>(&'a self, session_id: &'a str) -> BoxFuture<'a, Result<Vec<LiveChat>>>;
+    fn list<'a>(&'a self, session_id: &'a SessionId) -> BoxFuture<'a, Result<Vec<LiveChat>>>;
 
     /// Delivers a message or interrupt, returning the destination's session ID.
     /// # Errors
@@ -197,11 +197,11 @@ pub trait LiveChats: Send + Sync {
     /// initiating turn cannot authorize it, or the destination rejects it.
     fn send<'a>(
         &'a self,
-        session_id: &'a str,
+        session_id: &'a SessionId,
         command: PeerCommand<'a>,
         initiating_author: &'a crate::protocol::MessageAuthor,
         command_id: &'a str,
-    ) -> BoxFuture<'a, Result<Arc<str>>>;
+    ) -> BoxFuture<'a, Result<SessionId>>;
 }
 
 /// Adds chat discovery and branching without changing the core loop.
@@ -267,7 +267,7 @@ impl Middleware for Sessions {
     fn register(&self, catalog: &mut Catalog, runtime: &RuntimeContext) -> Result<()> {
         let history = Arc::new(History {
             checkpoints: Arc::clone(&runtime.checkpoints),
-            session_id: Arc::clone(&runtime.session_id),
+            session_id: runtime.session_id.share(),
             owner_id: Arc::clone(&runtime.session_context.owner_id),
         });
         catalog.register(Arc::new(SearchHistory(Arc::clone(&history))))?;
@@ -374,7 +374,7 @@ struct SearchHistoryArgs {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ReadHistoryArgs {
-    session_id: Option<String>,
+    session_id: Option<SessionId>,
     target: MessageTarget,
     #[serde(default)]
     offset: usize,
@@ -392,7 +392,7 @@ struct HistoryCursor {
     scope: HistoryScope,
     query: String,
     catalog: Option<SessionCursor>,
-    session_id: Option<Arc<str>>,
+    session_id: Option<SessionId>,
     before_sequence: Option<u64>,
     remaining_items: Option<usize>,
     offset: usize,
@@ -400,7 +400,7 @@ struct HistoryCursor {
 
 #[derive(Serialize)]
 struct HistoryHit<'a> {
-    session_id: &'a str,
+    session_id: &'a SessionId,
     target: MessageTarget,
     kind: &'static str,
     offset: usize,
@@ -408,7 +408,7 @@ struct HistoryHit<'a> {
 }
 
 struct HistoryDocument {
-    session_id: Arc<str>,
+    session_id: SessionId,
     target: MessageTarget,
     kind: &'static str,
     offset: usize,
@@ -417,7 +417,7 @@ struct HistoryDocument {
 
 struct History {
     checkpoints: Arc<dyn crate::backend::checkpoint::CheckpointStore>,
-    session_id: Arc<str>,
+    session_id: SessionId,
     owner_id: Arc<str>,
 }
 
@@ -597,7 +597,7 @@ impl Tool for ReadHistory {
 impl History {
     async fn page(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         before_sequence: Option<u64>,
     ) -> Result<crate::backend::checkpoint::TranscriptPage> {
         self.checkpoints
@@ -610,8 +610,7 @@ impl History {
             )
             .await
     }
-    async fn authorize(&self, session_id: &str) -> Result<()> {
-        validate_history_session_id(session_id)?;
+    async fn authorize(&self, session_id: &SessionId) -> Result<()> {
         let checkpoint = self.checkpoints.load(session_id).await?;
         if checkpoint.is_none_or(|checkpoint| checkpoint.session_context.owner_id != self.owner_id)
         {
@@ -635,7 +634,7 @@ impl History {
                 query: query.into(),
                 catalog: None,
                 session_id: (arguments.scope == HistoryScope::Current)
-                    .then(|| Arc::clone(&self.session_id)),
+                    .then(|| self.session_id.share()),
                 before_sequence: None,
                 remaining_items: None,
                 offset: 0,
@@ -651,17 +650,16 @@ impl History {
             || (cursor.remaining_items.is_some() && cursor.before_sequence.is_none())
             || (cursor.remaining_items.is_none() && cursor.offset != 0)
             || (cursor.scope == HistoryScope::Current
-                && (cursor.session_id.as_deref() != Some(&self.session_id)
+                && (cursor.session_id.as_ref() != Some(&self.session_id)
                     || cursor.catalog.is_some()))
             || (cursor.scope == HistoryScope::OtherChats
-                && cursor.session_id.as_deref() == Some(&self.session_id))
+                && cursor.session_id.as_ref() == Some(&self.session_id))
         {
             return Err(Error::Tool(
                 "history cursor does not match this query and scope".into(),
             ));
         }
         if let Some(catalog) = &cursor.catalog {
-            validate_history_session_id(&catalog.session_id)?;
             validate_history_sequence(catalog.sequence)?;
         }
         if let Some(sequence) = cursor.before_sequence {
@@ -684,14 +682,14 @@ impl History {
         let mut complete = false;
         // ponytail: scan bounded transcript batches on demand; add an index only if measured latency warrants it.
         for _ in 0..MAX_HISTORY_PAGES {
-            let Some(session_id) = cursor.session_id.as_deref() else {
+            let Some(session_id) = cursor.session_id.as_ref() else {
                 if !self.advance_session(&mut cursor).await? {
                     complete = true;
                     break;
                 }
                 continue;
             };
-            let session_id = Arc::<str>::from(session_id);
+            let session_id = session_id.share();
             let page = self.page(&session_id, cursor.before_sequence).await?;
             let Some(batch) = page.batches.into_iter().next() else {
                 if cursor.scope == HistoryScope::Current {
@@ -762,7 +760,7 @@ impl History {
         cursor.catalog = Some(SessionCursor {
             updated_at: summary.updated_at,
             sequence: summary.sequence,
-            session_id: Arc::clone(&summary.session_id),
+            session_id: summary.session_id.share(),
         });
         if summary.session_id != self.session_id {
             cursor.session_id = Some(summary.session_id);
@@ -776,7 +774,7 @@ impl History {
                 "max_chars must be 1–{MAX_HISTORY_READ_CHARS}"
             )));
         }
-        let session_id = arguments.session_id.as_deref().unwrap_or(&self.session_id);
+        let session_id = arguments.session_id.as_ref().unwrap_or(&self.session_id);
         self.authorize(session_id).await?;
         let before_sequence = arguments
             .target
@@ -802,16 +800,6 @@ impl History {
     }
 }
 
-fn validate_history_session_id(session_id: &str) -> Result<()> {
-    if session_id.trim().is_empty()
-        || session_id.len() > 512
-        || session_id.chars().any(char::is_control)
-    {
-        return Err(Error::Tool("history session_id must be 1–512 bytes".into()));
-    }
-    Ok(())
-}
-
 fn validate_history_sequence(sequence: u64) -> Result<()> {
     if i64::try_from(sequence).is_err() {
         return Err(Error::Tool(
@@ -823,7 +811,7 @@ fn validate_history_sequence(sequence: u64) -> Result<()> {
 
 fn scan_history_batch(
     batch: &crate::backend::checkpoint::TranscriptBatch,
-    session_id: &Arc<str>,
+    session_id: &SessionId,
     cursor: &mut HistoryCursor,
     documents: &mut Vec<HistoryDocument>,
     scanned_items: &mut usize,
@@ -849,7 +837,7 @@ fn scan_history_batch(
                 let (chunk, next) = history_chunk(&text, cursor.offset, limit)?;
                 *scanned_chars += chunk.chars().count();
                 documents.push(HistoryDocument {
-                    session_id: Arc::clone(session_id),
+                    session_id: session_id.share(),
                     target: MessageTarget {
                         checkpoint_sequence: batch.sequence,
                         batch_item_count: std::num::NonZeroUsize::MIN.saturating_add(remaining - 1),
@@ -1045,7 +1033,7 @@ async fn fork(
         &checkpoint.context,
     )
     .await?;
-    let session_id = Arc::clone(&checkpoint.session_id);
+    let session_id = checkpoint.session_id.share();
     context
         .checkpoints
         .fork(
@@ -1097,7 +1085,7 @@ async fn transcript_items_through(
 
 fn fork_options(
     items: &[(MessageTarget, serde_json::Value)],
-    session_id: &str,
+    session_id: &SessionId,
 ) -> Vec<FrontendPickerOption> {
     replay_events(items, session_id)
         .into_iter()
@@ -1137,7 +1125,7 @@ fn fork_options(
 fn fork_prefix(
     items: Vec<(MessageTarget, serde_json::Value)>,
     target: &MessageTarget,
-    session_id: &str,
+    session_id: &SessionId,
 ) -> Result<Vec<serde_json::Value>> {
     let index = items
         .iter()
@@ -1194,7 +1182,7 @@ fn compact_message(message: &str) -> String {
 }
 
 fn manual_fork_checkpoint(parent: &Checkpoint, context: Vec<serde_json::Value>) -> Checkpoint {
-    let mut checkpoint = Checkpoint::empty(Uuid::new_v4().to_string());
+    let mut checkpoint = Checkpoint::empty(SessionId::generate());
     let mut context = context.into_iter().map(Arc::new).collect();
     strip_attachment_references(&mut context);
     checkpoint.context = Arc::new(context);
@@ -1265,7 +1253,7 @@ async fn resume_options(
 
 fn resume_page_options(
     page: SessionPage,
-    current_session_id: &str,
+    current_session_id: &SessionId,
 ) -> Result<Vec<FrontendPickerOption>> {
     let mut options = page
         .sessions
@@ -1291,9 +1279,9 @@ fn resume_page_options(
 
 fn resume_option(
     session: SessionSummary,
-    current_session_id: &str,
+    current_session_id: &SessionId,
 ) -> Option<FrontendPickerOption> {
-    if !session.catalog_visible || *session.session_id == *current_session_id {
+    if !session.catalog_visible || session.session_id == *current_session_id {
         return None;
     }
     let description = session_description(&session);
@@ -1345,7 +1333,7 @@ mod tests {
         owner_id: &str,
         items: Vec<Value>,
     ) -> Checkpoint {
-        let mut checkpoint = Checkpoint::empty(session_id);
+        let mut checkpoint = Checkpoint::empty(session_id.parse().expect("session ID"));
         checkpoint.sequence = 1;
         std::sync::Arc::make_mut(&mut checkpoint.session_context).owner_id = owner_id.into();
         let items = items.into_iter().map(Arc::new).collect::<Vec<_>>();
@@ -1362,7 +1350,7 @@ mod tests {
             checkpoints: Arc::new(
                 crate::backend::checkpoint::sqlite::SqliteCheckpoint::new(path).expect("store"),
             ),
-            session_id: "current".into(),
+            session_id: "current".parse().expect("session ID"),
             owner_id: "researcher".into(),
         }
     }
@@ -1529,9 +1517,10 @@ mod tests {
     async fn history_requires_explicit_other_chat_scope_and_rejects_foreign_owner_reads() {
         let state = tempfile::tempdir().expect("state");
         let history = history_store(&state.path().join("history.sqlite3"));
+        let prior = "prior".repeat(140);
         for (session, owner) in [
             ("current", "researcher"),
-            ("prior", "researcher"),
+            (prior.as_str(), "researcher"),
             ("private", "writer"),
         ] {
             save_history(
@@ -1546,7 +1535,7 @@ mod tests {
         }
         for (scope, expected) in [
             (HistoryScope::Current, "current"),
-            (HistoryScope::OtherChats, "prior"),
+            (HistoryScope::OtherChats, prior.as_str()),
         ] {
             let result: Value = serde_json::from_str(
                 &history
@@ -1566,7 +1555,7 @@ mod tests {
         assert!(
             history
                 .read(ReadHistoryArgs {
-                    session_id: Some("prior".into()),
+                    session_id: Some(prior.parse().expect("session ID")),
                     target,
                     offset: 0,
                     max_chars: 100
@@ -1577,7 +1566,7 @@ mod tests {
         assert!(
             history
                 .read(ReadHistoryArgs {
-                    session_id: Some("private".into()),
+                    session_id: Some("private".parse().expect("session ID")),
                     target,
                     offset: 0,
                     max_chars: 100
@@ -1588,7 +1577,7 @@ mod tests {
         let mut forged = history
             .cursor(search_args("needle", HistoryScope::OtherChats, None))
             .expect("cursor");
-        forged.session_id = Some("private".into());
+        forged.session_id = Some("private".parse().expect("session ID"));
         assert!(
             history
                 .search(search_args(
@@ -1599,7 +1588,7 @@ mod tests {
                 .await
                 .is_err()
         );
-        forged.session_id = Some("prior".into());
+        forged.session_id = Some(prior.parse().expect("session ID"));
         assert!(
             history
                 .search(search_args(
@@ -1632,7 +1621,8 @@ mod tests {
         ];
         let target = items[1].0;
 
-        let error = fork_prefix(items, &target, "session").expect_err("unsafe fork must fail");
+        let error = fork_prefix(items, &target, &"session".parse().expect("session ID"))
+            .expect_err("unsafe fork must fail");
 
         assert_eq!(
             error.to_string(),
@@ -1643,7 +1633,7 @@ mod tests {
     #[test]
     fn resume_excludes_only_current_and_explicitly_hidden_chats() {
         let summary = |session_id: &str, catalog_visible: bool| SessionSummary {
-            session_id: session_id.into(),
+            session_id: session_id.parse().expect("session ID"),
             session_context: Default::default(),
             parent_session_id: None,
             parent_sequence: None,
@@ -1663,7 +1653,7 @@ mod tests {
                 ],
                 next_cursor: None,
             },
-            "current",
+            &"current".parse().expect("session ID"),
         )
         .expect("resume options");
         let session_ids = options
@@ -1674,12 +1664,12 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        assert_eq!(session_ids, [Arc::from("visible")]);
+        assert_eq!(session_ids, ["visible".parse().expect("session ID")]);
     }
 
     #[test]
     fn manual_fork_keeps_context_workspace_and_metadata_but_clears_origin() {
-        let mut parent = Checkpoint::empty("parent");
+        let mut parent = Checkpoint::empty("parent".parse().expect("session ID"));
         parent.context = std::sync::Arc::new(
             vec![serde_json::json!({
                 "role": "user",

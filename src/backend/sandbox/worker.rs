@@ -1,10 +1,10 @@
 //! Session-owned framed execution. Cancellation poisons the worker; actions are never replayed.
 
+use crate::SessionId;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 #[cfg(unix)]
 use std::process::Stdio;
-use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -176,7 +176,7 @@ struct Entry {
 #[derive(Default)]
 pub(super) struct Workers {
     // ponytail: all sessions serialize through one map lock; per-session locks if concurrency matters.
-    entries: Mutex<BTreeMap<Arc<str>, Entry>>,
+    entries: Mutex<BTreeMap<SessionId, Entry>>,
 }
 
 impl Workers {
@@ -206,7 +206,7 @@ impl Workers {
                 permissions.network_access,
             )?;
             entries.insert(
-                Arc::clone(&permissions.session_id),
+                permissions.session_id.share(),
                 Entry {
                     // The persistent worker retains its launch contract to reject policy drift on later requests.
                     command: command.clone(), // rules-allow: the worker keeps its launch contract
@@ -239,7 +239,7 @@ impl Workers {
         Ok(response)
     }
 
-    pub(super) async fn shutdown(&self, session_id: &str) {
+    pub(super) async fn shutdown(&self, session_id: &SessionId) {
         self.entries.lock().await.remove(session_id);
     }
 }
@@ -267,7 +267,7 @@ mod tests {
     impl SandboxBackend for TestBackend {
         fn worker_connection<'a>(
             &'a self,
-            _: &'a str,
+            _: &'a SessionId,
             mode: SandboxMode,
             _: NetworkAccess,
         ) -> BoxFuture<'a, Result<tokio::io::DuplexStream>> {
@@ -368,7 +368,7 @@ while True:
         // Python's cold start on macOS CI can exceed a second; only `wait` tests a deadline.
         let response_timeout = Duration::from_secs(10);
         let allowed = SandboxPermissions::restore(
-            "session",
+            &"session".parse().expect("session ID"),
             SandboxMode::WorkspaceWrite,
             NetworkAccess::Denied,
             ["call".into()],

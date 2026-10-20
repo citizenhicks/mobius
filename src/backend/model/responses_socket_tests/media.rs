@@ -14,6 +14,8 @@ async fn continuation_skips_old_pixels_and_preparation_failure_preserves_connect
             ..model_request()
         }
     }
+    let session_id = model_request().session_id.expect("session");
+    let backup_id = crate::SessionId::new("backup").expect("session");
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
         .expect("listener");
@@ -64,7 +66,7 @@ async fn continuation_skips_old_pixels_and_preparation_failure_preserves_connect
     });
     let provider = OpenAiSocket::with_authorization(
         Arc::new(ApiKeyAuthorization::new("test".into())),
-        "http://127.0.0.1:1",
+        BaseUrl::new("http://127.0.0.1:1").unwrap(),
         format!("ws://{address}/responses"),
         "test-model",
         reqwest::Client::new(),
@@ -79,7 +81,7 @@ async fn continuation_skips_old_pixels_and_preparation_failure_preserves_connect
         .expect("PNG");
     let image = files
         .ingest_image(
-            "test-session",
+            session_id,
             "image.png".into(),
             bytes.into_inner(),
             ImageDetail::High,
@@ -88,7 +90,7 @@ async fn continuation_skips_old_pixels_and_preparation_failure_preserves_connect
         .expect("image");
     let mut input =
         vec![serde_json::json!({"role":"user","content":[{"type":"input_image","image": image}]})];
-    grant_context(Some(&files), "test-session", "backup", &input)
+    grant_context(Some(&files), session_id, &backup_id, &input)
         .await
         .expect("backup");
     let media = MediaPreparation {
@@ -102,7 +104,7 @@ async fn continuation_skips_old_pixels_and_preparation_failure_preserves_connect
         .expect("initial");
     input.extend(output.output);
     files
-        .delete_session("test-session")
+        .delete_session(session_id)
         .await
         .expect("old pixels unavailable");
     input
@@ -132,7 +134,7 @@ async fn continuation_skips_old_pixels_and_preparation_failure_preserves_connect
         .await
         .expect("only suffix reads pixels");
     input.extend(output.output);
-    grant_context(Some(&files), "backup", "test-session", &input[..1])
+    grant_context(Some(&files), &backup_id, session_id, &input[..1])
         .await
         .expect("restore original files for replay");
     input.push(serde_json::json!({"role":"user","content":"again"}));

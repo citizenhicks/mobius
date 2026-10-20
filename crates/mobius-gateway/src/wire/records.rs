@@ -1,7 +1,8 @@
+use mobius::SessionId;
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use mobius::backend::model::provider::MediaModelPreset;
+use mobius::backend::model::provider::{BaseUrl, MediaModelPreset};
 pub use mobius::backend::model::provider::{
     ModelPreset as ProviderModel, ReasoningPreset as ReasoningChoice,
 };
@@ -219,7 +220,7 @@ impl CatalogHint {
 #[serde(untagged)]
 pub enum SessionSlot {
     /// A session unchanged since the catalog this connection last received, by ID.
-    Unchanged(Arc<str>),
+    Unchanged(SessionId),
     /// A new or changed session.
     Changed(Box<SessionRecord>),
 }
@@ -252,7 +253,7 @@ pub struct DiffTotals {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BackgroundApproval {
     /// The session identifier.
-    pub session_id: Arc<str>,
+    pub session_id: SessionId,
     /// The bot identifier.
     pub bot_id: Arc<str>,
     /// The turn identifier.
@@ -307,11 +308,11 @@ pub struct SessionWidget {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionRecord {
     /// The session identifier.
-    pub session_id: Arc<str>,
+    pub session_id: SessionId,
     /// The session context.
     pub session_context: mobius::protocol::SessionContext,
     /// The parent session identifier.
-    pub parent_session_id: Option<String>,
+    pub parent_session_id: Option<SessionId>,
     /// The parent sequence.
     pub parent_sequence: Option<u64>,
     /// The sequence.
@@ -569,7 +570,7 @@ pub struct ProviderConfig {
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     /// The base URL.
-    pub base_url: Option<String>,
+    pub base_url: Option<BaseUrl>,
     /// The endpoint auth.
     pub endpoint_auth: ProviderEndpointAuth,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -611,7 +612,7 @@ pub struct ProviderStatus {
     /// The auth.
     pub auth: ProviderAuthKind,
     /// The default base URL.
-    pub default_base_url: Option<String>,
+    pub default_base_url: Option<BaseUrl>,
     /// Always true: custom roots keep every native capability. Kept for older clients.
     pub native_custom_endpoints: bool,
     /// The default API key env.
@@ -1003,7 +1004,7 @@ pub struct ProviderUsage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionRunGroup {
     /// The session identifier.
-    pub session_id: Arc<str>,
+    pub session_id: SessionId,
     /// The title.
     pub title: String,
     /// The runs.
@@ -1024,7 +1025,7 @@ pub struct RunStats {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunSummary {
     /// The session identifier.
-    pub session_id: Arc<str>,
+    pub session_id: SessionId,
     /// The submission identifier.
     pub submission_id: Arc<str>,
     /// The turn identifier.
@@ -1062,7 +1063,7 @@ pub struct DailyUsage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BotRecord {
     /// Canonical project-free conversation, opened through the ordinary session API.
-    pub conversation_session_id: Arc<str>,
+    pub conversation_session_id: SessionId,
     /// The identifier.
     pub id: Arc<str>,
     /// The handle.
@@ -1171,7 +1172,7 @@ pub struct RoutineRun {
     /// The status.
     pub status: RoutineRunStatus,
     /// The session identifier.
-    pub session_id: Option<String>,
+    pub session_id: Option<SessionId>,
     /// The message.
     pub message: Option<Arc<str>>,
 }
@@ -1236,7 +1237,7 @@ pub enum BotAction {
     /// Submit an ordinary message or interrupt to an owned session.
     Session {
         /// Owned destination.
-        session_id: String,
+        session_id: SessionId,
         /// Existing core operation.
         op: Box<mobius::protocol::Op>,
     },
@@ -1293,7 +1294,7 @@ pub enum HookSource {
     /// An owned session.
     Session {
         /// Session identity.
-        session_id: String,
+        session_id: SessionId,
     },
     /// A timer on an owned routine.
     Schedule {
@@ -1437,7 +1438,7 @@ pub enum HookData {
         /// Invocation identity.
         run_id: Arc<str>,
         /// Execution transcript.
-        session_id: Option<String>,
+        session_id: Option<SessionId>,
     },
     /// Invocation completed, failed or was cancelled.
     RunFinished {
@@ -1448,7 +1449,7 @@ pub enum HookData {
         /// Terminal outcome.
         status: RoutineRunStatus,
         /// Execution transcript.
-        session_id: Option<String>,
+        session_id: Option<SessionId>,
         /// Failure or cancellation reason.
         reason: Option<Arc<str>>,
     },
@@ -1469,19 +1470,19 @@ pub enum HookData {
     /// A session was created.
     SessionCreated {
         /// Session identity.
-        session_id: String,
+        session_id: SessionId,
     },
     /// A session turn began.
     SessionTurnStarted {
         /// Session identity.
-        session_id: String,
+        session_id: SessionId,
         /// Turn identity.
         turn_id: Arc<str>,
     },
     /// A session turn reached its committed outcome.
     SessionTurnFinished {
         /// Session identity.
-        session_id: String,
+        session_id: SessionId,
         /// Turn identity.
         turn_id: Arc<str>,
         /// Core execution outcome.
@@ -1490,7 +1491,7 @@ pub enum HookData {
     /// A session awaits an execution decision.
     SessionApproval {
         /// Session identity.
-        session_id: String,
+        session_id: SessionId,
         /// Turn identity.
         turn_id: Arc<str>,
         /// Approval identity.
@@ -1499,7 +1500,7 @@ pub enum HookData {
     /// A capability requests a user decision.
     SessionAttention {
         /// Session identity.
-        session_id: String,
+        session_id: SessionId,
         /// Owning capability.
         capability: Arc<str>,
         /// Stable item identity.
@@ -1510,12 +1511,12 @@ pub enum HookData {
     /// Session removed.
     SessionDeleted {
         /// Session identity.
-        session_id: String,
+        session_id: SessionId,
     },
     /// Session transferred to another Bot.
     SessionOwnerChanged {
         /// Session identity.
-        session_id: String,
+        session_id: SessionId,
         /// Previous Bot identity.
         previous_bot_id: Arc<str>,
     },

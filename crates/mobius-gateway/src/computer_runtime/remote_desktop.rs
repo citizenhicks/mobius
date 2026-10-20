@@ -1,5 +1,6 @@
 //! One gateway-owned browser/profile; Linux adds a private virtual desktop.
 
+use mobius::SessionId;
 #[cfg(any(target_os = "linux", test))]
 mod linux;
 mod processes;
@@ -44,7 +45,7 @@ pub(crate) struct RemoteDesktop {
     executions: Arc<tokio::sync::RwLock<()>>,
     held: Arc<AtomicBool>,
     user: Mutex<Option<UserControl>>,
-    last_session: Mutex<Option<Arc<str>>>,
+    last_session: Mutex<Option<SessionId>>,
     changed: broadcast::Sender<()>,
 }
 
@@ -63,7 +64,7 @@ struct Runtime {
     state_profile: PathBuf,
     endpoint: String,
     websocket: String,
-    tabs: BTreeMap<String, String>,
+    tabs: BTreeMap<SessionId, String>,
     display: Option<String>,
     authority: PathBuf,
     socket: PathBuf,
@@ -184,7 +185,7 @@ impl RemoteDesktop {
         }
     }
 
-    pub(crate) fn control_state(&self, connection: Uuid) -> (bool, bool, Option<Arc<str>>) {
+    pub(crate) fn control_state(&self, connection: Uuid) -> (bool, bool, Option<SessionId>) {
         let user = mobius::sync::recover_lock(&self.user);
         let (held, owner) = match user.as_ref() {
             Some(user) => (true, user.connection == connection),
@@ -192,12 +193,12 @@ impl RemoteDesktop {
         };
         let session = mobius::sync::recover_lock(&self.last_session)
             .as_ref()
-            .map(Arc::clone);
+            .map(SessionId::share);
         drop(user);
         (held, owner, session)
     }
 
-    pub(crate) async fn page(&self, session_id: &str) -> Result<Option<DesktopBrowserPage>> {
+    pub(crate) async fn page(&self, session_id: &SessionId) -> Result<Option<DesktopBrowserPage>> {
         self.check_execution()?;
         if !self.enabled {
             return Ok(None);
@@ -213,7 +214,7 @@ impl RemoteDesktop {
         Ok(Some(self.binding(session_id, false).await?))
     }
 
-    pub(crate) async fn show(&self, session_id: &str) -> Result<()> {
+    pub(crate) async fn show(&self, session_id: &SessionId) -> Result<()> {
         self.check_execution()?;
         if !self.enabled {
             return Err(unavailable());
@@ -230,14 +231,14 @@ impl RemoteDesktop {
             if let Some(runtime) = guard.as_mut() {
                 runtime.show(session_id, &self.config).await?;
             }
-            *mobius::sync::recover_lock(&self.last_session) = Some(session_id.into());
+            *mobius::sync::recover_lock(&self.last_session) = Some(session_id.share());
             drop(guard);
         }
         self.notify_changed();
         Ok(())
     }
 
-    async fn binding(&self, session_id: &str, activate: bool) -> Result<DesktopBrowserPage> {
+    async fn binding(&self, session_id: &SessionId, activate: bool) -> Result<DesktopBrowserPage> {
         if cfg!(target_os = "macos") {
             let endpoint = self
                 .browser
@@ -260,7 +261,7 @@ impl RemoteDesktop {
         runtime.ensure_browser(&self.config).await?;
         let page = runtime.page(session_id, activate, &self.config).await?;
         if activate {
-            *mobius::sync::recover_lock(&self.last_session) = Some(session_id.into());
+            *mobius::sync::recover_lock(&self.last_session) = Some(session_id.share());
             self.notify_changed();
         }
         drop(guard);
@@ -269,7 +270,7 @@ impl RemoteDesktop {
 
     pub(crate) fn connect(
         self: &Arc<Self>,
-        session_id: &str,
+        session_id: &SessionId,
         native: Arc<DesktopControl>,
     ) -> mobius::Result<DuplexStream> {
         self.check_execution()?;
@@ -283,7 +284,7 @@ impl RemoteDesktop {
         self.check_execution()?;
         let (worker, channel) = tokio::io::duplex(64 * 1024);
         let owner = Arc::clone(self);
-        let session_id = session_id.to_owned();
+        let session_id = session_id.share();
         tokio::spawn(async move {
             let _lease = lease;
             if let Err(error) = owner.relay(channel, &session_id, native).await {
@@ -296,7 +297,7 @@ impl RemoteDesktop {
     async fn relay(
         &self,
         mut channel: DuplexStream,
-        session_id: &str,
+        session_id: &SessionId,
         // Linux gateways act on their own display; only a local Mac app hosts native control.
         #[cfg_attr(
             target_os = "linux",
@@ -378,7 +379,7 @@ impl RemoteDesktop {
     async fn linux_request(
         &self,
         request: Value,
-        session: &str,
+        session: &SessionId,
         begin: bool,
         cancelled: Arc<AtomicBool>,
     ) -> Result<Value> {
@@ -416,7 +417,7 @@ impl RemoteDesktop {
             drop(guard);
             native
         };
-        let session = session.to_owned();
+        let session = session.share();
         let held = Arc::clone(&self.held);
         let task_native = Arc::clone(&native);
         let (result, timed_out, input_submitted) =
@@ -469,7 +470,7 @@ impl RemoteDesktop {
             // Browser activation awaits without holding the synchronous last-session mutex.
             let session_id = mobius::sync::recover_lock(&self.last_session)
                 .as_ref()
-                .map(Arc::clone);
+                .map(SessionId::share);
             if let Some(session_id) = session_id {
                 runtime
                     .as_mut()
@@ -519,7 +520,11 @@ impl RemoteDesktop {
         }
     }
 
-    pub(crate) async fn grant_control(&self, connection: Uuid, session_id: String) -> Result<()> {
+    pub(crate) async fn grant_control(
+        &self,
+        connection: Uuid,
+        session_id: SessionId,
+    ) -> Result<()> {
         let execution = Arc::clone(&self.executions).write_owned().await;
         let lease = Arc::clone(&self.control).lock_owned().await;
         {
@@ -532,7 +537,7 @@ impl RemoteDesktop {
             runtime.show(&session_id, &self.config).await?;
             drop(guard);
         }
-        *mobius::sync::recover_lock(&self.last_session) = Some(session_id.into());
+        *mobius::sync::recover_lock(&self.last_session) = Some(session_id);
         if let Err(error) = self.set_input(true).await {
             if self.set_input(false).await.is_err() {
                 self.shutdown().await;
@@ -794,7 +799,7 @@ impl Runtime {
         ))
     }
 
-    async fn show(&mut self, session_id: &str, config: &ComputerConfig) -> Result<()> {
+    async fn show(&mut self, session_id: &SessionId, config: &ComputerConfig) -> Result<()> {
         for child in &mut self.children {
             child.check_running()?;
         }
@@ -806,7 +811,7 @@ impl Runtime {
 
     async fn page(
         &mut self,
-        session_id: &str,
+        session_id: &SessionId,
         activate: bool,
         config: &ComputerConfig,
     ) -> Result<DesktopBrowserPage> {
@@ -834,7 +839,7 @@ impl Runtime {
             let Some(Value::String(target)) = target.get_mut("targetId").map(Value::take) else {
                 return Err(unavailable());
             };
-            self.tabs.insert(session_id.to_owned(), target);
+            self.tabs.insert(session_id.share(), target);
         }
         let target_id = self.tabs.get(session_id).ok_or_else(unavailable)?;
         if activate {

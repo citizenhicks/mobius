@@ -782,7 +782,7 @@ mod tests {
         truncate_diff(&mut diff, MAX_GIT_DIFF_BYTES);
         let frame = ServerFrame::new(ServerMessage::GitDiff {
             request_id: "r".repeat(4 * 1024).into(),
-            session_id: "s".repeat(4 * 1024),
+            session_id: mobius::SessionId::new("s".repeat(4 * 1024)).unwrap(),
             scope: GitDiffScope::Unstaged,
             diff: String::from_utf8(diff).expect("control bytes are valid UTF-8"),
         });

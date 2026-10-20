@@ -2,6 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn execution_insert_failure_rolls_back_checkpoint_and_transcript() {
+    let session_id = session("session");
     let workspace = tempfile::tempdir().expect("create workspace");
     let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
         .expect("open checkpoint database");
@@ -41,13 +42,13 @@ async fn execution_insert_failure_rolls_back_checkpoint_and_transcript() {
             .is_err()
     );
     assert_eq!(
-        store.load("session").await.expect("load session"),
+        store.load(&session_id).await.expect("load session"),
         Some(original)
     );
     assert!(
         store
             .transcript_page(
-                "session",
+                &session_id,
                 TranscriptPageRequest {
                     before_sequence: None,
                     max_batches: 1,

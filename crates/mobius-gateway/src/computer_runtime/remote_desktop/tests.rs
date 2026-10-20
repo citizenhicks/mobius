@@ -74,8 +74,14 @@ async fn one_lease_blocks_all_other_evaluations_and_releases_on_disconnect() {
         ComputerConfig::default(),
     ));
     let native = Arc::new(DesktopControl::default());
-    let worker = remote.connect("one", Arc::clone(&native)).unwrap();
-    assert!(remote.connect("two", Arc::clone(&native)).is_err());
+    let worker = remote
+        .connect(&SessionId::new("one").unwrap(), Arc::clone(&native))
+        .unwrap();
+    assert!(
+        remote
+            .connect(&SessionId::new("two").unwrap(), Arc::clone(&native))
+            .is_err()
+    );
     drop(worker);
     tokio::time::timeout(Duration::from_secs(1), async {
         loop {
@@ -87,7 +93,11 @@ async fn one_lease_blocks_all_other_evaluations_and_releases_on_disconnect() {
     })
     .await
     .unwrap();
-    assert!(remote.connect("two", native).is_ok());
+    assert!(
+        remote
+            .connect(&SessionId::new("two").unwrap(), native)
+            .is_ok()
+    );
     drop(remote);
 }
 
@@ -172,7 +182,7 @@ async fn dropping_a_pending_grant_never_starts_a_late_controller() {
     ));
     let execution = remote.execution_lease().await.unwrap();
     remote.held.store(true, Ordering::Release);
-    let mut grant = Box::pin(remote.grant_control(Uuid::new_v4(), "chat".into()));
+    let mut grant = Box::pin(remote.grant_control(Uuid::new_v4(), SessionId::new("chat").unwrap()));
     assert!(
         tokio::time::timeout(Duration::from_millis(10), &mut grant)
             .await

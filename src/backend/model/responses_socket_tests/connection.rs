@@ -47,18 +47,22 @@ async fn cancelled_request_flushes_reason_and_reconnects() {
         });
         let provider = OpenAiSocket::with_authorization(
             Arc::new(ApiKeyAuthorization::new("test-key".into())),
-            &format!("http://{address}"),
+            BaseUrl::new(format!("http://{address}")).unwrap(),
             format!("ws://{address}/responses"),
             "test-model",
             reqwest::Client::new(),
             crate::backend::model::ModelTransportSettings::default(),
         )
         .unwrap();
+        let session_id = (reason != ModelCancellationReason::RequestDropped)
+            .then_some(model_request().session_id)
+            .flatten();
         let cancellation = ModelCancellation::default();
         let events: ModelEventSink = Arc::new(|_| Box::pin(async { Ok(()) }));
         let mut request = Box::pin(provider.respond(
             ModelRequest {
                 cancellation: Some(&cancellation),
+                session_id,
                 ..model_request()
             },
             Arc::clone(&events),
@@ -73,12 +77,22 @@ async fn cancelled_request_flushes_reason_and_reconnects() {
         drop(request);
         let output = timeout(
             Duration::from_secs(2),
-            provider.respond(model_request(), events),
+            provider.respond(
+                ModelRequest {
+                    session_id,
+                    ..model_request()
+                },
+                events,
+            ),
         )
         .await
         .expect("fresh response timeout")
         .expect("fresh response");
         assert_eq!(output.text(), "recovered");
+        assert_eq!(
+            provider.sessions.lock().await.len(),
+            usize::from(session_id.is_some())
+        );
         timeout(Duration::from_secs(2), server)
             .await
             .expect("close flush timeout")
@@ -214,7 +228,7 @@ async fn connection_limit_closes_other_idle_connections() {
     let socket_url = format!("ws://{address}/responses");
     let provider = OpenAiSocket::with_authorization(
         Arc::new(ApiKeyAuthorization::new("test-key".into())),
-        &format!("http://{address}"),
+        BaseUrl::new(format!("http://{address}")).unwrap(),
         &socket_url,
         "test-model",
         reqwest::Client::new(),

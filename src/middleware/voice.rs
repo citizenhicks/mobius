@@ -4,6 +4,7 @@
 mod call;
 pub mod transcript;
 
+use crate::SessionId;
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -157,7 +158,7 @@ fn transcript_command() -> FrontendCommand {
 fn instructions(
     bot_instructions: &str,
     checkpoint: &crate::backend::checkpoint::Checkpoint,
-    voice_session_id: &str,
+    voice_session_id: &SessionId,
     voice_context: &str,
 ) -> Result<String> {
     let identity = format!(
@@ -269,7 +270,7 @@ fn joined_text<'a>(parts: impl Iterator<Item = &'a str>) -> Cow<'a, str> {
 
 fn parent_context(
     checkpoint: &crate::backend::checkpoint::Checkpoint,
-    voice_session_id: &str,
+    voice_session_id: &SessionId,
 ) -> String {
     let mut context = Vec::new();
     for (index, item) in checkpoint.context.iter().enumerate() {
@@ -330,7 +331,7 @@ fn delegated_task(utterance: Option<&str>, voice_context: &str) -> Result<String
     ))
 }
 
-fn progress_text(event: &EventMsg, voice_session_id: &str) -> Option<String> {
+fn progress_text(event: &EventMsg, voice_session_id: &SessionId) -> Option<String> {
     match event {
         EventMsg::Message(message) => {
             let author = match &message.author {
@@ -338,7 +339,7 @@ fn progress_text(event: &EventMsg, voice_session_id: &str) -> Option<String> {
                 MessageAuthor::Source {
                     source: crate::protocol::MessageSource::Session { session_id },
                     ..
-                } if **session_id == *voice_session_id => {
+                } if session_id == voice_session_id => {
                     return None;
                 }
                 MessageAuthor::Source { handle, .. } => handle,
@@ -405,24 +406,24 @@ struct PendingHandoff {
 }
 
 /// Correlates one live voice call with the agent's existing durable message lifecycle.
-#[derive(Default)]
 struct VoiceConversation {
     pending: BTreeMap<Arc<str>, PendingHandoff>,
     seen: BTreeSet<String>,
     active_turn_id: Option<Arc<str>>,
-    session_id: Arc<str>,
+    session_id: SessionId,
     bot_name: Arc<str>,
 }
 
 impl VoiceConversation {
     /// Attaches a linked voice session to the currently committed Bot turn.
     #[must_use]
-    fn new(session_id: Arc<str>, active_turn_id: Option<Arc<str>>, bot_name: Arc<str>) -> Self {
+    fn new(session_id: SessionId, active_turn_id: Option<Arc<str>>, bot_name: Arc<str>) -> Self {
         Self {
             active_turn_id,
             session_id,
             bot_name,
-            ..Self::default()
+            pending: BTreeMap::new(),
+            seen: BTreeSet::new(),
         }
     }
 
@@ -458,7 +459,7 @@ impl VoiceConversation {
                     author: MessageAuthor::Source {
                         message_id: Arc::clone(&submission_id),
                         source: crate::protocol::MessageSource::Session {
-                            session_id: Arc::clone(&self.session_id),
+                            session_id: self.session_id.share(),
                         },
                         cause_id: None,
                         ancestry: Vec::new(),
@@ -629,7 +630,11 @@ mod tests {
 
     #[test]
     fn voice_submits_once_and_only_speaks_its_committed_complete_answer() {
-        let mut voice = VoiceConversation::new("voice-session".into(), None, "Builder".into());
+        let mut voice = VoiceConversation::new(
+            "voice-session".parse().expect("session ID"),
+            None,
+            "Builder".into(),
+        );
         let submission = voice
             .handoff("audio-1".into(), "Help me".into())
             .unwrap()
@@ -659,7 +664,7 @@ mod tests {
         assert!(voice.observe(&event("another", started.clone())).is_empty());
         assert!(voice.observe(&event(&submission.id, started)).is_empty());
         let answer = EventMsg::AssistantMessage(AssistantMessageEvent {
-            session_id: "session".into(),
+            session_id: "session".parse().expect("session ID"),
             turn_id: "turn".into(),
             model_step_id: "step".into(),
             message_target: None,

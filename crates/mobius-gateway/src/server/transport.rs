@@ -10,6 +10,7 @@ use super::{
     read_frame_with_limit, selected_broadcast, validate_version, websocket_error, write_frame,
     write_rejection, write_server_error,
 };
+use mobius::SessionId;
 
 use std::collections::VecDeque;
 use std::fs::File;
@@ -749,7 +750,7 @@ async fn serve_authenticated_connection(
     let mut remote_desktop = None;
     let mut pending_desktop_control = None;
     let session_files = host.session_file_store().await;
-    let mut uploads: BTreeMap<(String, String), PendingSessionFileWrite> = BTreeMap::new();
+    let mut uploads: BTreeMap<(SessionId, String), PendingSessionFileWrite> = BTreeMap::new();
     let mut pending_requests = JoinSet::new();
     let mut pending_profile = None;
     let mut queued_profile_request = None;

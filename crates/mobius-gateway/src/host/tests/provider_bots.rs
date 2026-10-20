@@ -1,3 +1,4 @@
+use mobius::backend::model::provider::BaseUrl;
 use std::sync::Arc;
 
 use mobius::backend::model::provider::HostedWebSearch;
@@ -14,7 +15,7 @@ fn selection(instance: &str, provider: &str, model: &str) -> ProviderConfig {
         instance: instance.into(),
         provider: provider.into(),
         model: model.into(),
-        base_url: Some("https://gateway.example/v1".into()),
+        base_url: Some(BaseUrl::new("https://gateway.example/v1").unwrap()),
         endpoint_auth: ProviderEndpointAuth::Credentialless,
         reasoning_effort: None,
         service_tier: None,

@@ -1,5 +1,6 @@
 //! A voice conversation is a read-only child transcript, never a second tool-running Agent.
 
+use crate::SessionId;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -59,7 +60,7 @@ struct Recording {
 /// The sole writer for one call, protected by the gateway's parent-session voice lease.
 pub struct VoiceTranscript {
     checkpoints: Arc<dyn CheckpointStore>,
-    session_id: Arc<str>,
+    session_id: SessionId,
     frontend: FrontendEventSink,
     recordings: BTreeMap<String, Recording>,
     visible: bool,
@@ -90,21 +91,21 @@ impl VoiceTranscript {
     /// Returns an error if the resource cannot be read, decoded, or validated.
     pub async fn open(
         checkpoints: Arc<dyn CheckpointStore>,
-        parent_session_id: &str,
+        parent_session_id: &SessionId,
         frontend: FrontendEventSink,
     ) -> Result<Self> {
         let session_id =
             if let Some(session_id) = child_id(checkpoints.as_ref(), parent_session_id).await? {
-                session_id.into()
+                session_id
             } else {
                 let parent = checkpoints
                     .load(parent_session_id)
                     .await?
                     .ok_or_else(|| Error::Checkpoint("voice parent session is missing".into()))?;
-                let mut child = Checkpoint::empty(uuid::Uuid::new_v4().to_string());
+                let mut child = Checkpoint::empty(SessionId::generate());
                 child.catalog_visible = false;
                 child.session_context = parent.session_context;
-                let session_id = Arc::clone(&child.session_id);
+                let session_id = child.session_id.share();
                 checkpoints
                     .fork(parent_session_id, parent.sequence, child)
                     .await?;
@@ -150,7 +151,7 @@ impl VoiceTranscript {
 
     /// The linked session used for read-only previews and voice context on a later call.
     #[must_use]
-    pub fn session_id(&self) -> &Arc<str> {
+    pub fn session_id(&self) -> &SessionId {
         &self.session_id
     }
 
@@ -384,7 +385,10 @@ impl VoiceTranscript {
     }
 }
 
-async fn call_summary(checkpoints: &dyn CheckpointStore, session_id: &str) -> Result<CallSummary> {
+async fn call_summary(
+    checkpoints: &dyn CheckpointStore,
+    session_id: &SessionId,
+) -> Result<CallSummary> {
     Ok(checkpoints
         .load_state(session_id, CALL_KEY)
         .await?
@@ -394,7 +398,7 @@ async fn call_summary(checkpoints: &dyn CheckpointStore, session_id: &str) -> Re
 }
 
 fn speech_event(
-    session_id: &str,
+    session_id: &SessionId,
     id: &str,
     role: ConversationRole,
     text: &str,
@@ -414,7 +418,7 @@ fn speech_event(
         }),
         (ConversationRole::Assistant, false) => {
             EventMsg::AssistantContentDelta(AssistantContentDeltaEvent {
-                session_id: session_id.into(),
+                session_id: session_id.share(),
                 turn_id: id.into(),
                 model_step_id: id.into(),
                 delta: text.into(),
@@ -422,7 +426,7 @@ fn speech_event(
             })
         }
         (ConversationRole::Assistant, true) => EventMsg::AssistantMessage(AssistantMessageEvent {
-            session_id: session_id.into(),
+            session_id: session_id.share(),
             turn_id: id.into(),
             model_step_id: id.into(),
             message_target: None,
@@ -441,7 +445,10 @@ fn speech_event(
     }
 }
 
-async fn child_id(checkpoints: &dyn CheckpointStore, parent: &str) -> Result<Option<String>> {
+async fn child_id(
+    checkpoints: &dyn CheckpointStore,
+    parent: &SessionId,
+) -> Result<Option<SessionId>> {
     checkpoints
         .load_state(parent, STATE_KEY)
         .await?
@@ -450,7 +457,7 @@ async fn child_id(checkpoints: &dyn CheckpointStore, parent: &str) -> Result<Opt
         .map_err(Into::into)
 }
 
-async fn has_events(checkpoints: &dyn CheckpointStore, session_id: &str) -> Result<bool> {
+async fn has_events(checkpoints: &dyn CheckpointStore, session_id: &SessionId) -> Result<bool> {
     Ok(!checkpoints
         .event_page(
             session_id,
@@ -466,7 +473,7 @@ async fn has_events(checkpoints: &dyn CheckpointStore, session_id: &str) -> Resu
 
 pub(crate) async fn restore_widget(
     checkpoints: &dyn CheckpointStore,
-    parent: &str,
+    parent: &SessionId,
 ) -> Result<Option<FrontendEvent>> {
     let Some(session_id) = child_id(checkpoints, parent).await? else {
         return Ok(None);
@@ -476,7 +483,7 @@ pub(crate) async fn restore_widget(
 
 pub(crate) async fn read_preview(
     checkpoints: &dyn CheckpointStore,
-    parent: &str,
+    parent: &SessionId,
     arguments: &str,
 ) -> Result<FrontendEvent> {
     let before = if arguments.is_empty() {
@@ -523,7 +530,7 @@ fn widget() -> FrontendEvent {
 
 async fn history_page(
     checkpoints: &dyn CheckpointStore,
-    session_id: &str,
+    session_id: &SessionId,
     before: Option<u64>,
 ) -> Result<EventPage> {
     let mut page = checkpoints
@@ -576,7 +583,7 @@ async fn history_page(
 
 async fn preview(
     checkpoints: &dyn CheckpointStore,
-    session_id: &str,
+    session_id: &SessionId,
     before: Option<u64>,
 ) -> Result<FrontendEvent> {
     let page = history_page(checkpoints, session_id, before).await?;
@@ -600,7 +607,7 @@ async fn preview(
         symbol: Some(FrontendSymbol::Custom(super::SYMBOL.into())),
         duration_ms: (!summary.voice.is_empty()).then_some(summary.duration_ms),
         started_at_ms: summary.started_at_ms,
-        id: session_id.into(),
+        id: session_id.as_str().into(),
         title: super::text::DEFINITION.transcript_title.as_str().into(),
         subtitle: summary.voice.into(),
         page_id: format!(

@@ -1,25 +1,27 @@
 use super::*;
+use crate::SessionId;
 use cap_std::{ambient_authority, fs::Dir};
+
+fn session(value: &str) -> SessionId {
+    SessionId::new(value).unwrap()
+}
 
 #[tokio::test]
 async fn upload_round_trip_is_session_scoped_and_atomic() {
     let state = tempfile::tempdir().expect("state");
     let store = SessionFileStore::new(state.path(), None);
-    let session_id = "thread:not-a-uuid";
+    let id = &session("thread:not-a-uuid");
     let mut pending = store
-        .begin_upload(session_id, "notes.txt".into(), 5, "text/plain".into())
+        .begin_upload(id, "notes.txt".into(), 5, "text/plain".into())
         .await
         .expect("begin");
     pending.append(0, b"hello").await.expect("append");
     let file = pending.finish().await.expect("finish");
 
-    store
-        .verify_upload(session_id, &file)
-        .await
-        .expect("verify upload");
+    store.verify_upload(id, &file).await.expect("verify upload");
 
     let bytes = store
-        .read_chunk(session_id, &file.id, 0, MAX_READ_CHUNK_BYTES)
+        .read_chunk(id, &file.id, 0, MAX_READ_CHUNK_BYTES)
         .await
         .expect("read");
 
@@ -29,7 +31,7 @@ async fn upload_round_trip_is_session_scoped_and_atomic() {
     {
         use std::os::unix::fs::PermissionsExt as _;
 
-        let session = store.session_dir(session_id);
+        let session = store.session_dir(id);
         let directory = session.join(&file.id);
         for path in [&*store.state.root, &session, &directory] {
             let mode = std::fs::metadata(path)
@@ -56,29 +58,26 @@ async fn upload_round_trip_is_session_scoped_and_atomic() {
 
 #[tokio::test]
 async fn delete_session_removes_only_that_sessions_files() {
+    let deleted = session("deleted");
+    let retained = session("retained");
     let state = tempfile::tempdir().expect("state");
     let store = SessionFileStore::new(state.path(), None);
-    for session_id in ["deleted", "retained"] {
+    for id in [&deleted, &retained] {
         store
-            .publish_artifact(
-                session_id,
-                "result.txt".into(),
-                "text/plain".into(),
-                b"result",
-            )
+            .publish_artifact(id, "result.txt".into(), "text/plain".into(), b"result")
             .await
             .expect("publish artifact");
     }
 
     store
-        .delete_session("deleted")
+        .delete_session(&deleted)
         .await
         .expect("delete session files");
 
     assert!(
         store
             .list_files(
-                "deleted",
+                &deleted,
                 &[crate::backend::session_files::SessionFileOrigin::Artifact]
             )
             .await
@@ -88,7 +87,7 @@ async fn delete_session_removes_only_that_sessions_files() {
     assert_eq!(
         store
             .list_files(
-                "retained",
+                &retained,
                 &[crate::backend::session_files::SessionFileOrigin::Artifact]
             )
             .await
@@ -96,46 +95,29 @@ async fn delete_session_removes_only_that_sessions_files() {
             .len(),
         1
     );
+    assert_eq!(blob_entries(&store), 1);
+    store
+        .delete_session(&retained)
+        .await
+        .expect("delete retained");
+    assert_eq!(blob_entries(&store), 0);
 }
 
 #[tokio::test]
 async fn tampered_content_blob_is_rejected() {
+    let id = session("session");
     let state = tempfile::tempdir().expect("state");
     let store = SessionFileStore::new(state.path(), None);
     let file = store
-        .publish_artifact("session", "result.txt".into(), "text/plain".into(), b"safe")
+        .publish_artifact(&id, "result.txt".into(), "text/plain".into(), b"safe")
         .await
         .expect("artifact");
-    let metadata = load_metadata(
-        &store
-            .session_dir("session")
-            .join(&file.id)
-            .join(METADATA_FILE),
-    )
-    .await
-    .expect("metadata");
+    let metadata = load_metadata(&store.session_dir(&id).join(&file.id).join(METADATA_FILE))
+        .await
+        .expect("metadata");
     std::fs::write(store.blob_path(&metadata.content_hash), b"evil").expect("tamper");
 
-    assert!(store.read_chunk("session", &file.id, 0, 4).await.is_err());
-}
-
-#[tokio::test]
-async fn deleting_last_reference_garbage_collects_the_blob() {
-    let state = tempfile::tempdir().expect("state");
-    let store = SessionFileStore::new(state.path(), None);
-    store
-        .publish_artifact("first", "one.txt".into(), "text/plain".into(), b"same")
-        .await
-        .expect("first artifact");
-    store
-        .publish_artifact("second", "two.txt".into(), "text/plain".into(), b"same")
-        .await
-        .expect("second artifact");
-
-    store.delete_session("first").await.expect("delete first");
-    assert_eq!(blob_entries(&store), 1);
-    store.delete_session("second").await.expect("delete second");
-    assert_eq!(blob_entries(&store), 0);
+    assert!(store.read_chunk(&id, &file.id, 0, 4).await.is_err());
 }
 
 #[cfg(unix)]
@@ -147,30 +129,30 @@ async fn attachment_cleanup_remains_safe_after_symlink_workspace_replacement_and
     let root = tempfile::tempdir().expect("workspace root");
     let workspace = root.path().join("workspace");
     let outside = root.path().join("outside");
-    let session_id = "session";
+    let id = &session("session");
     let outside_staged = outside
         .join(".mobius")
         .join("attachments")
-        .join(session_storage_key(session_id));
+        .join(session_storage_key(id));
     std::fs::create_dir_all(
         workspace
             .join(".mobius")
             .join("attachments")
-            .join(session_storage_key(session_id)),
+            .join(session_storage_key(id)),
     )
     .expect("staged attachments");
     std::fs::create_dir_all(&outside_staged).expect("outside attachments");
     let pinned_workspace = Dir::open_ambient_dir(&workspace, ambient_authority()).expect("pin");
 
     SessionFileStore::new(state.path(), None)
-        .register_attachment_workspace(session_id, &pinned_workspace, &workspace)
+        .register_attachment_workspace(id, &pinned_workspace, &workspace)
         .await
         .expect("register workspace");
     std::fs::rename(&workspace, root.path().join("original")).expect("move original");
     symlink(&outside, &workspace).expect("install symlink");
 
     SessionFileStore::new(state.path(), None)
-        .delete_session(session_id)
+        .delete_session(id)
         .await
         .expect("delete session");
 
@@ -179,22 +161,24 @@ async fn attachment_cleanup_remains_safe_after_symlink_workspace_replacement_and
 
 #[tokio::test]
 async fn staged_deletion_releases_uploads_and_resumes_after_restart() {
+    let deleted = session("deleted");
+    let retained = session("retained");
     let state = tempfile::tempdir().expect("state");
     let workspace = tempfile::tempdir().expect("workspace");
     let staged = workspace
         .path()
         .join(".mobius/attachments")
-        .join(session_storage_key("deleted"));
+        .join(session_storage_key(&deleted));
     std::fs::create_dir_all(&staged).expect("staged attachment directory");
     let directory =
         Dir::open_ambient_dir(workspace.path(), ambient_authority()).expect("workspace");
     let store = SessionFileStore::new(state.path(), None);
     store
-        .register_attachment_workspace("deleted", &directory, workspace.path())
+        .register_attachment_workspace(&deleted, &directory, workspace.path())
         .await
         .expect("register");
     let mut deletion = store
-        .prepare_delete_sessions(&["deleted".into()], SessionFileSelection::All)
+        .prepare_delete_sessions(&[deleted.share()], SessionFileSelection::All)
         .await
         .expect("prepare");
     deletion.stage().await.expect("stage deletion");
@@ -206,7 +190,7 @@ async fn staged_deletion_releases_uploads_and_resumes_after_restart() {
     tokio::time::timeout(
         std::time::Duration::from_secs(1),
         store.publish_artifact(
-            "retained",
+            &retained,
             "result.txt".into(),
             "text/plain".into(),
             b"result",
@@ -225,7 +209,7 @@ async fn staged_deletion_releases_uploads_and_resumes_after_restart() {
     assert_eq!(
         reopened
             .list_files(
-                "retained",
+                &retained,
                 &[crate::backend::session_files::SessionFileOrigin::Artifact]
             )
             .await
@@ -237,12 +221,13 @@ async fn staged_deletion_releases_uploads_and_resumes_after_restart() {
 
 #[tokio::test]
 async fn display_names_never_select_internal_storage_paths() {
+    let id = session("session");
     let state = tempfile::tempdir().expect("state");
     let store = SessionFileStore::new(state.path(), None);
 
     for name in [METADATA_FILE, ".SESSION-FILE.JSON"] {
         let mut pending = store
-            .begin_upload("session", name.into(), 1, "application/octet-stream".into())
+            .begin_upload(&id, name.into(), 1, "application/octet-stream".into())
             .await
             .expect("begin");
         pending.append(0, b"x").await.expect("append");
@@ -251,23 +236,16 @@ async fn display_names_never_select_internal_storage_paths() {
         assert_eq!(file.name, name);
         assert_eq!(
             store
-                .read_chunk("session", &file.id, 0, MAX_READ_CHUNK_BYTES)
+                .read_chunk(&id, &file.id, 0, MAX_READ_CHUNK_BYTES)
                 .await
                 .expect("read")
                 .data,
             b"x"
         );
     }
-}
-
-#[tokio::test]
-async fn upload_rejects_traversal_names() {
-    let state = tempfile::tempdir().expect("state");
-    let store = SessionFileStore::new(state.path(), None);
-
     assert!(
         store
-            .begin_upload("session", "../secret".into(), 1, "text/plain".into())
+            .begin_upload(&id, "../secret".into(), 1, "text/plain".into())
             .await
             .is_err()
     );
@@ -281,28 +259,26 @@ fn blob_entries(store: &SessionFileStore) -> usize {
 
 #[tokio::test]
 async fn origin_purge_preserves_uploads_and_shared_fork_blobs_and_removes_staged_copies() {
+    let parent = session("parent");
+    let fork = session("fork");
+    let source = session("source");
     let state = tempfile::tempdir().unwrap();
     let workspace = tempfile::tempdir().unwrap();
     let store = SessionFileStore::new(state.path(), None);
     let mut pending = store
-        .begin_upload("parent", "input.txt".into(), 5, "text/plain".into())
+        .begin_upload(&parent, "input.txt".into(), 5, "text/plain".into())
         .await
         .unwrap();
     pending.append(0, b"input").await.unwrap();
     let upload = pending.finish().await.unwrap();
     store
-        .publish_artifact(
-            "parent",
-            "result.txt".into(),
-            "text/plain".into(),
-            b"result",
-        )
+        .publish_artifact(&parent, "result.txt".into(), "text/plain".into(), b"result")
         .await
         .unwrap();
-    store.grant_file("parent", "fork", &upload).await.unwrap();
+    store.grant_file(&parent, &fork, &upload).await.unwrap();
     let observation = store
         .publish_artifact(
-            "source",
+            &source,
             "observed.txt".into(),
             "text/plain".into(),
             b"observed",
@@ -310,13 +286,13 @@ async fn origin_purge_preserves_uploads_and_shared_fork_blobs_and_removes_staged
         .await
         .unwrap();
     store
-        .grant_file("source", "parent", &observation)
+        .grant_file(&source, &parent, &observation)
         .await
         .unwrap();
-    store.delete_session("source").await.unwrap();
+    store.delete_session(&source).await.unwrap();
     assert_eq!(
         store
-            .list_files("parent", &[SessionFileOrigin::Observation])
+            .list_files(&parent, &[SessionFileOrigin::Observation])
             .await
             .unwrap()
             .len(),
@@ -324,19 +300,19 @@ async fn origin_purge_preserves_uploads_and_shared_fork_blobs_and_removes_staged
     );
     let pinned = Dir::open_ambient_dir(workspace.path(), ambient_authority()).unwrap();
     store
-        .register_attachment_workspace("parent", &pinned, workspace.path())
+        .register_attachment_workspace(&parent, &pinned, workspace.path())
         .await
         .unwrap();
     let staged = workspace
         .path()
         .join(".mobius/attachments")
-        .join(session_storage_key("parent"))
+        .join(session_storage_key(&parent))
         .join(&upload.id);
     std::fs::create_dir_all(&staged).unwrap();
     std::fs::write(staged.join("input.txt"), b"input").unwrap();
     store
         .prepare_delete_sessions(
-            &["parent".into()],
+            &[parent.share()],
             SessionFileSelection::Origins(vec![
                 SessionFileOrigin::Artifact,
                 SessionFileOrigin::Observation,
@@ -349,7 +325,7 @@ async fn origin_purge_preserves_uploads_and_shared_fork_blobs_and_removes_staged
         .unwrap();
     assert_eq!(
         store
-            .list_files("parent", &[SessionFileOrigin::Upload])
+            .list_files(&parent, &[SessionFileOrigin::Upload])
             .await
             .unwrap()
             .len(),
@@ -358,7 +334,7 @@ async fn origin_purge_preserves_uploads_and_shared_fork_blobs_and_removes_staged
     assert!(
         store
             .list_files(
-                "parent",
+                &parent,
                 &[SessionFileOrigin::Artifact, SessionFileOrigin::Observation]
             )
             .await
@@ -367,7 +343,7 @@ async fn origin_purge_preserves_uploads_and_shared_fork_blobs_and_removes_staged
     );
     store
         .prepare_delete_sessions(
-            &["parent".into()],
+            &[parent.share()],
             SessionFileSelection::Origins(vec![SessionFileOrigin::Upload]),
         )
         .await
@@ -379,13 +355,13 @@ async fn origin_purge_preserves_uploads_and_shared_fork_blobs_and_removes_staged
     assert_eq!(store.blob_bytes().await.unwrap(), 5);
     assert_eq!(
         store
-            .list_files("fork", &[SessionFileOrigin::Observation])
+            .list_files(&fork, &[SessionFileOrigin::Observation])
             .await
             .unwrap()
             .len(),
         1
     );
-    store.delete_session("fork").await.unwrap();
+    store.delete_session(&fork).await.unwrap();
     assert_eq!(store.blob_bytes().await.unwrap(), 0);
 }
 
@@ -393,9 +369,11 @@ async fn origin_purge_preserves_uploads_and_shared_fork_blobs_and_removes_staged
 async fn simultaneous_upload_admission_cannot_overbook_gateway_capacity() {
     let state = tempfile::tempdir().unwrap();
     let store = SessionFileStore::new(state.path(), Some(5));
+    let first_id = session("first");
+    let second_id = session("second");
     let (first, second) = tokio::join!(
-        store.begin_upload("first", "input.txt".into(), 5, "text/plain".into()),
-        store.begin_upload("second", "input.txt".into(), 5, "text/plain".into()),
+        store.begin_upload(&first_id, "input.txt".into(), 5, "text/plain".into()),
+        store.begin_upload(&second_id, "input.txt".into(), 5, "text/plain".into()),
     );
     assert!(matches!(
         (&first, &second),
@@ -403,13 +381,19 @@ async fn simultaneous_upload_admission_cannot_overbook_gateway_capacity() {
     ));
     drop((first, second));
     store
-        .begin_upload("retry", "input.txt".into(), 5, "text/plain".into())
+        .begin_upload(
+            &session("retry"),
+            "input.txt".into(),
+            5,
+            "text/plain".into(),
+        )
         .await
         .unwrap();
 }
 
 #[tokio::test]
 async fn generated_images_survive_selective_cleanup_until_the_chat_is_deleted() {
+    let id = session("session");
     for legacy in [false, true] {
         let state = tempfile::tempdir().unwrap();
         let store = SessionFileStore::new(state.path(), None);
@@ -424,13 +408,13 @@ async fn generated_images_survive_selective_cleanup_until_the_chat_is_deleted() 
             "custom-name.png"
         };
         let generated = store
-            .publish_image("session", name.into(), "image/png", bytes.clone())
+            .publish_image(&id, name.into(), "image/png", bytes.clone())
             .await
             .unwrap()
             .file;
         if legacy {
             let path = store
-                .session_dir("session")
+                .session_dir(&id)
                 .join(&generated.id)
                 .join(METADATA_FILE);
             let mut metadata: serde_json::Value =
@@ -444,26 +428,20 @@ async fn generated_images_survive_selective_cleanup_until_the_chat_is_deleted() 
                 .unwrap();
         }
         let ordinary = store
-            .publish_artifact("session", "ordinary.png".into(), "image/png".into(), &bytes)
+            .publish_artifact(&id, "ordinary.png".into(), "image/png".into(), &bytes)
             .await
             .unwrap();
         let origins = [SessionFileOrigin::Artifact];
+        assert_eq!(store.list_files(&id, &origins).await.unwrap().len(), 2);
+        assert_eq!(store.read_image(&id, &generated).await.unwrap(), bytes);
         assert_eq!(
-            store.list_files("session", &origins).await.unwrap().len(),
-            2
-        );
-        assert_eq!(
-            store.read_image("session", &generated).await.unwrap(),
-            bytes
-        );
-        assert_eq!(
-            store.list_cleanup_files("session", &origins).await.unwrap(),
+            store.list_cleanup_files(&id, &origins).await.unwrap(),
             vec![(SessionFileOrigin::Artifact, ordinary.clone())]
         );
 
         let mut deletion = store
             .prepare_delete_sessions(
-                &["session".into()],
+                &[id.share()],
                 SessionFileSelection::Ids(vec![ordinary.id.clone(), generated.id.clone()]),
             )
             .await
@@ -473,19 +451,13 @@ async fn generated_images_survive_selective_cleanup_until_the_chat_is_deleted() 
             assert!(error.to_string().contains("generated images"));
         }
         drop(deletion);
-        assert_eq!(
-            store.list_files("session", &origins).await.unwrap().len(),
-            2
-        );
-        assert_eq!(store.read_image("session", &ordinary).await.unwrap(), bytes);
-        assert_eq!(
-            store.read_image("session", &generated).await.unwrap(),
-            bytes
-        );
+        assert_eq!(store.list_files(&id, &origins).await.unwrap().len(), 2);
+        assert_eq!(store.read_image(&id, &ordinary).await.unwrap(), bytes);
+        assert_eq!(store.read_image(&id, &generated).await.unwrap(), bytes);
 
         store
             .prepare_delete_sessions(
-                &["session".into()],
+                &[id.share()],
                 SessionFileSelection::Origins(origins.to_vec()),
             )
             .await
@@ -494,31 +466,22 @@ async fn generated_images_survive_selective_cleanup_until_the_chat_is_deleted() 
             .await
             .unwrap();
         assert_eq!(
-            store.list_files("session", &origins).await.unwrap(),
+            store.list_files(&id, &origins).await.unwrap(),
             vec![(SessionFileOrigin::Artifact, generated.clone())]
         );
         assert!(
             store
-                .list_cleanup_files("session", &origins)
+                .list_cleanup_files(&id, &origins)
                 .await
                 .unwrap()
                 .is_empty()
         );
-        assert_eq!(
-            store.read_image("session", &generated).await.unwrap(),
-            bytes
-        );
-        assert!(store.read_image("session", &ordinary).await.is_err());
+        assert_eq!(store.read_image(&id, &generated).await.unwrap(), bytes);
+        assert!(store.read_image(&id, &ordinary).await.is_err());
 
-        store.delete_session("session").await.unwrap();
-        assert!(
-            store
-                .list_files("session", &origins)
-                .await
-                .unwrap()
-                .is_empty()
-        );
-        assert!(store.read_image("session", &generated).await.is_err());
+        store.delete_session(&id).await.unwrap();
+        assert!(store.list_files(&id, &origins).await.unwrap().is_empty());
+        assert!(store.read_image(&id, &generated).await.is_err());
         assert_eq!(store.stored_bytes().await.unwrap(), 0);
     }
 }

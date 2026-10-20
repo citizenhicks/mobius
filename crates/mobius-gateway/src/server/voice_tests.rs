@@ -3,8 +3,10 @@ use crate::bots::BotStore;
 use crate::config::{ConfigStore, CredentialStore};
 use crate::host::GatewayHost;
 use mobius::backend::checkpoint::{CheckpointStore, sqlite::SqliteCheckpoint};
+use mobius::backend::model::provider::BaseUrl;
 use mobius::backend::model::{
-    ModelRouter, RealtimeVoiceCall, RealtimeVoiceCommand, RealtimeVoiceEvent, openai::OpenAi,
+    ModelRouter, RawModelTransportSettings, RealtimeVoiceCall, RealtimeVoiceCommand,
+    RealtimeVoiceEvent, openai::OpenAi,
 };
 use mobius::middleware::voice::VoiceCallContext;
 use mobius::middleware::voice::transcript::VoiceTranscript;
@@ -19,7 +21,7 @@ async fn voice_delegation_preserves_committed_speech_and_delayed_final_transcrip
     let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    let base = BaseUrl::new(format!("http://{}/v1", listener.local_addr().unwrap())).unwrap();
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let count = Arc::clone(&calls);
     let server = tokio::spawn(async move {
@@ -84,14 +86,19 @@ async fn voice_delegation_preserves_committed_speech_and_delayed_final_transcrip
         None,
     )
     .unwrap();
-    config.model_transport.voice_io_timeout_ms = 15_000;
+    config.model_transport = RawModelTransportSettings {
+        voice_io_timeout_ms: 15_000,
+        ..config.model_transport.into()
+    }
+    .try_into()
+    .unwrap();
     let transport = config.model_transport;
     let provider = crate::wire::ProviderConfig {
         tool_discovery: None,
         instance: "voice-test".into(),
         provider: "responses".into(),
         model: "local-test".into(),
-        base_url: Some(base.clone()),
+        base_url: Some(base.share()),
         endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
         reasoning_effort: None,
         service_tier: None,
@@ -148,12 +155,13 @@ async fn voice_delegation_preserves_committed_speech_and_delayed_final_transcrip
     let voice = "voice-test::gpt-live-1::sol";
     let mut router = ModelRouter::new(
         Arc::clone(&route),
-        Arc::new(OpenAi::new("test-key", &base, "local-test").unwrap()),
+        Arc::new(OpenAi::new("test-key", base.share(), "local-test").unwrap()),
     );
     router
         .register_voice(
             Arc::new(
-                OpenAi::new_with_transport("test-key", &base, "gpt-live-1", transport).unwrap(),
+                OpenAi::new_with_transport("test-key", base.share(), "gpt-live-1", transport)
+                    .unwrap(),
             ),
             mobius::protocol::ModelChoice {
                 route: voice.into(),
@@ -171,7 +179,7 @@ async fn voice_delegation_preserves_committed_speech_and_delayed_final_transcrip
         )
         .unwrap();
     let context = VoiceCallContext {
-        session_id: Arc::clone(host.session_id()),
+        session_id: host.session_id().share(),
         router: Arc::new(router),
         voice: voice.into(),
         bot_name: "Builder".into(),

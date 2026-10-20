@@ -1,4 +1,5 @@
 use super::*;
+use mobius::SessionId;
 
 fn fixture() -> (tempfile::TempDir, BotStorage) {
     let root = tempfile::tempdir().expect("root");
@@ -8,7 +9,7 @@ fn fixture() -> (tempfile::TempDir, BotStorage) {
 
 fn source() -> HookSource {
     HookSource::Session {
-        session_id: "session-a".into(),
+        session_id: SessionId::new("session-a").unwrap(),
     }
 }
 
@@ -28,7 +29,7 @@ fn started(id: &str) -> HookEvent {
     event(
         id,
         HookData::SessionTurnStarted {
-            session_id: "session-a".into(),
+            session_id: SessionId::new("session-a").unwrap(),
             turn_id: id.into(),
         },
     )
@@ -139,7 +140,7 @@ fn projection_atomically_advances_cursor_with_the_fact_and_matching_actions() {
     assert!(storage.project_session(&invalid, 7).is_err());
     assert_eq!(
         storage
-            .source_cursor("session-a")
+            .source_cursor(&SessionId::new("session-a").unwrap())
             .expect("rolled back cursor"),
         (6, Some("bot-a".into()))
     );
@@ -151,17 +152,19 @@ fn projection_atomically_advances_cursor_with_the_fact_and_matching_actions() {
     );
     assert!(
         storage
-            .advance_source_cursor("session-a", "bot-b", 7)
+            .advance_source_cursor(&SessionId::new("session-a").unwrap(), "bot-b", 7)
             .is_err()
     );
     storage
-        .advance_source_cursor("session-a", "bot-a", 9)
+        .advance_source_cursor(&SessionId::new("session-a").unwrap(), "bot-a", 9)
         .expect("ignored records advance");
     storage
-        .advance_source_cursor("session-a", "bot-a", 8)
+        .advance_source_cursor(&SessionId::new("session-a").unwrap(), "bot-a", 8)
         .expect("monotonic");
     assert_eq!(
-        storage.source_cursor("session-a").expect("cursor"),
+        storage
+            .source_cursor(&SessionId::new("session-a").unwrap())
+            .expect("cursor"),
         (9, Some("bot-a".into()))
     );
 }
@@ -187,7 +190,7 @@ fn closing_session_retains_final_actions_and_replaying_closure_does_not_cancel_t
     let closure = event(
         "owner-change",
         HookData::SessionOwnerChanged {
-            session_id: "session-a".into(),
+            session_id: SessionId::new("session-a").unwrap(),
             previous_bot_id: "bot-a".into(),
         },
     );
@@ -207,11 +210,13 @@ fn closing_session_retains_final_actions_and_replaying_closure_does_not_cancel_t
             .is_empty()
     );
     assert_eq!(
-        storage.source_cursor("session-a").expect("removed cursor"),
+        storage
+            .source_cursor(&SessionId::new("session-a").unwrap())
+            .expect("removed cursor"),
         (0, None)
     );
     storage
-        .advance_source_cursor("session-a", "bot-b", 2)
+        .advance_source_cursor(&SessionId::new("session-a").unwrap(), "bot-b", 2)
         .expect("new owner cursor");
     storage
         .close_session_sources(std::slice::from_ref(&closure), "{\"replayed\":true}")
@@ -223,7 +228,7 @@ fn closing_session_retains_final_actions_and_replaying_closure_does_not_cancel_t
     );
     assert_eq!(
         storage
-            .source_cursor("session-a")
+            .source_cursor(&SessionId::new("session-a").unwrap())
             .expect("new cursor survives replay"),
         (2, Some("bot-b".into()))
     );
@@ -241,7 +246,7 @@ fn running() -> RoutineRun {
         started_at: 100,
         finished_at: None,
         status: RoutineRunStatus::Running,
-        session_id: Some(uuid::Uuid::new_v4().to_string()),
+        session_id: Some(SessionId::generate()),
         message: None,
     }
 }

@@ -380,7 +380,7 @@ async fn prepare_response(
         .with_appended(std::slice::from_ref(&guidance).into())?;
     let cache_key = prompt_cache_key(context.session_id);
     let request = ModelRequest {
-        session_id: context.session_id,
+        session_id: Some(context.session_id),
         cancellation: context.cancellation,
         prompt_cache: Some(PromptCacheIdentity {
             key: &cache_key,

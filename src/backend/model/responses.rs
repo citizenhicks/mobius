@@ -22,7 +22,7 @@ use super::authorization::OpenAiAuthorization;
 #[cfg(test)]
 use super::authorization::ResolvedAuthorization;
 use super::image_generation::{ImageApi, image_api};
-use super::provider::validate_base_url;
+use super::provider::BaseUrl;
 use super::realtime::RealtimeTransport;
 use super::responses_wire::{RequestMetadata, ResponsesBody, WireInput, WireTools};
 use super::transport::SseDecoder;
@@ -76,7 +76,7 @@ pub struct OpenAi {
     transport: super::ModelTransportSettings,
     auth: Option<Arc<dyn OpenAiAuthorization>>,
     realtime: Option<Arc<RealtimeTransport>>,
-    base_url: String,
+    base_url: BaseUrl,
     model: Arc<str>,
     reasoning_effort: Option<Arc<str>>,
     service_tier: Option<String>,
@@ -108,7 +108,7 @@ impl OpenAi {
     /// Returns an error if configuration is invalid or a required resource cannot be initialized.
     pub fn new(
         api_key: impl Into<String>,
-        base_url: impl Into<String>,
+        base_url: BaseUrl,
         model: impl Into<String>,
     ) -> Result<Self> {
         Self::new_with_transport(
@@ -124,10 +124,14 @@ impl OpenAi {
     /// Returns invalid provider policy or HTTP client construction errors.
     pub fn new_with_transport(
         api_key: impl Into<String>,
-        base_url: impl Into<String>,
+        base_url: BaseUrl,
         model: impl Into<String>,
         settings: super::ModelTransportSettings,
     ) -> Result<Self> {
+        let model = model.into();
+        if model.trim().is_empty() {
+            return Err(Error::Config("OPENAI_MODEL is empty".into()));
+        }
         Self::with_client(
             Some(api_key.into()),
             base_url,
@@ -140,7 +144,7 @@ impl OpenAi {
 
     pub(super) fn with_client(
         api_key: Option<String>,
-        base_url: impl Into<String>,
+        base_url: BaseUrl,
         model: impl Into<String>,
         client: Client,
         settings: super::ModelTransportSettings,
@@ -155,7 +159,7 @@ impl OpenAi {
 
     pub(super) fn with_authorization(
         auth: Arc<dyn OpenAiAuthorization>,
-        base_url: impl Into<String>,
+        base_url: BaseUrl,
         model: impl Into<String>,
         client: Client,
         settings: super::ModelTransportSettings,
@@ -165,18 +169,11 @@ impl OpenAi {
 
     fn from_parts(
         auth: Option<Arc<dyn OpenAiAuthorization>>,
-        base_url: impl Into<String>,
+        base_url: BaseUrl,
         model: impl Into<String>,
         client: Client,
         settings: super::ModelTransportSettings,
     ) -> Result<Self> {
-        settings.validate()?;
-        let base_url = base_url.into().trim_end_matches('/').to_owned();
-        let model = model.into();
-        validate_base_url(&base_url)?;
-        if model.trim().is_empty() {
-            return Err(Error::Config("OPENAI_MODEL is empty".into()));
-        }
         let image_api = Some(image_api("openai")?);
         Ok(Self {
             client,
@@ -184,7 +181,7 @@ impl OpenAi {
             auth,
             realtime: None,
             base_url,
-            model: model.into(),
+            model: Arc::from(model.into()),
             reasoning_effort: None,
             service_tier: None,
             reasoning_summary: false,
@@ -199,12 +196,11 @@ impl OpenAi {
 
     /// Sets validated socket, voice and retry policy for this model.
     /// # Errors
-    /// Returns an error for invalid operational settings.
+    /// Returns an error while a voice call holds the realtime transport.
     pub fn with_transport_settings(
         mut self,
         settings: super::ModelTransportSettings,
     ) -> Result<Self> {
-        settings.validate()?;
         if let Some(realtime) = self.realtime.take() {
             let Ok(realtime) = Arc::try_unwrap(realtime) else {
                 return Err(Error::Config(
@@ -217,17 +213,13 @@ impl OpenAi {
         Ok(self)
     }
 
-    pub(super) fn with_codex_realtime_voice(
-        mut self,
-        base_url: &str,
-        default_endpoint: bool,
-    ) -> Result<Self> {
+    pub(super) fn with_codex_realtime_voice(mut self, default_endpoint: bool) -> Result<Self> {
         let auth = self
             .auth
             .as_ref()
             .ok_or_else(|| Error::Config("Codex voice requires authorization".into()))?;
         self.realtime = Some(Arc::new(RealtimeTransport::new_codex(
-            base_url,
+            &self.base_url,
             default_endpoint,
             Arc::clone(auth),
             self.transport,
@@ -351,7 +343,7 @@ impl OpenAi {
         events: ModelEventSink,
         media: Option<super::MediaPreparation<'_>>,
     ) -> Result<ModelOutput> {
-        let session_id = request.session_id;
+        let session_id = request.session_id.map_or("", crate::SessionId::as_str);
         let deferred_tools = request.deferred_tools;
         let body = super::media::encode_request(self, request, media, true, |input| {
             Ok(serde_json::to_vec(
@@ -361,7 +353,7 @@ impl OpenAi {
         .await?;
         let template = self
             .client
-            .post(format!("{}/responses", self.base_url))
+            .post(format!("{}/responses", self.base_url.root()))
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(body);
         let mut response = self
@@ -433,7 +425,7 @@ impl OpenAi {
             self.send_authorized_with(false, None, || {
                 Ok(self
                     .client
-                    .post(format!("{}/{}", self.base_url, api.edit_path))
+                    .post(format!("{}/{}", self.base_url.root(), api.edit_path))
                     .multipart(request.edit_form()?))
             })
             .await?
@@ -553,7 +545,7 @@ impl OpenAi {
         self.send_authorized_with(streaming, session_id, || {
             Ok(self
                 .client
-                .post(format!("{}/{endpoint}", self.base_url))
+                .post(format!("{}/{endpoint}", self.base_url.root()))
                 .json(body))
         })
         .await

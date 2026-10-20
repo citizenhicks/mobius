@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use mobius::backend::model::provider::HostedWebSearch;
+use mobius::backend::model::provider::{BaseUrl, HostedWebSearch};
 use mobius::protocol::{FrontendSettingKind, FrontendSettingValue, MiddlewareFeature, ModelChoice};
 use mobius::{Error, Result};
 use mobius_gateway::wire::{
@@ -1191,7 +1191,7 @@ impl SetupState {
             instance: self.target_instance().into(),
             provider: definition.provider.clone(), // rules-allow: the provider request owns the provider id
             model: model.into(),
-            base_url: base_url.map(str::to_owned),
+            base_url: base_url.map(BaseUrl::new).transpose()?,
             endpoint_auth,
             reasoning_effort,
             web_search,

@@ -323,7 +323,8 @@ mod tests {
             },
             serde_json::json!({"type": "function_call", "call_id": "call", "name": "show_ui", "arguments": raw}),
         )];
-        let events = crate::protocol::replay_events(&history, "session");
+        let events =
+            crate::protocol::replay_events(&history, &"session".parse().expect("session ID"));
         let block = IntelligentUi
             .render(&events[0], "session")
             .expect("document");

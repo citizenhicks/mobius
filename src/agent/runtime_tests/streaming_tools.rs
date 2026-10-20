@@ -365,7 +365,7 @@ fn streaming_config_with_tools(
         "test prompt",
     )
     .session_context(test_session_context())
-    .session_id(session_id)
+    .session_id(session_id.parse().expect("session ID"))
 }
 
 async fn collect_until_turn_end(agent: &mut Agent) -> Vec<EventMsg> {
@@ -439,7 +439,7 @@ async fn argument_repair_preserves_the_provider_history_prefix() {
             EventMsg::ToolCallEnd(result) if &*result.call_id == "stream-call" && !result.is_error
         )));
         let saved = checkpoints
-            .load("repaired-prefix")
+            .load(&"repaired-prefix".parse().expect("session ID"))
             .await
             .expect("load")
             .expect("saved");
@@ -514,7 +514,7 @@ async fn streaming_tool_error_or_mismatch_does_not_retry_and_records_unknown_res
 
         assert_eq!(model.calls.load(Ordering::SeqCst), 1);
         let saved = checkpoints
-            .load(session_id)
+            .load(&session_id.parse().expect("session ID"))
             .await
             .expect("load checkpoint")
             .expect("saved checkpoint");
@@ -646,7 +646,7 @@ async fn streaming_mixed_parallel_and_exclusive_tools_respect_barriers() {
     assert_eq!(model.calls.load(Ordering::SeqCst), 2);
 
     let saved = checkpoints
-        .load("streaming-mixed-barriers")
+        .load(&"streaming-mixed-barriers".parse().expect("session ID"))
         .await
         .expect("load checkpoint")
         .expect("saved checkpoint");
@@ -727,7 +727,7 @@ async fn interrupt_drops_a_running_streaming_tool() {
     assert!(!tool_done.load(Ordering::SeqCst));
     assert_eq!(model.calls.load(Ordering::SeqCst), 1);
     let saved = checkpoints
-        .load("streaming-interrupt")
+        .load(&"streaming-interrupt".parse().expect("session ID"))
         .await
         .expect("load checkpoint")
         .expect("saved checkpoint");

@@ -26,7 +26,7 @@ pub struct StorageCategory {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionStorageUsage {
     /// Chat ID for navigation and later cleanup.
-    pub session_id: Arc<str>,
+    pub session_id: mobius::SessionId,
     /// Optional owning project ID.
     pub project_id: Option<String>,
     /// User uploads, including shared content once per reference.

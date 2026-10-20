@@ -12,8 +12,8 @@ use serde_json::Value;
 use super::chat_completions::{
     MessageSource, RequestBody, ToolCalls, WireContent, content_text, decode_usage,
 };
-use super::provider::{ProviderBuildConfig, ProviderDefinition};
-use super::transport::{SseHandler, streaming_client};
+use super::provider::{BaseUrl, ProviderBuildConfig, ProviderDefinition};
+use super::transport::SseHandler;
 use super::{
     Model, ModelEventSink, ModelOutput, ModelRequest, PromptCacheMode, REPLAY_REASONING_FIELD,
 };
@@ -39,9 +39,10 @@ const MAX_THINKING_BLOCKS: usize = 1_024;
 /// # Examples
 ///
 /// ```
-/// use mobius::backend::model::mistral::Mistral;
+/// use mobius::backend::model::{mistral::Mistral, provider::BaseUrl};
 ///
-/// let provider = Mistral::new("api-key", "https://api.mistral.ai/v1", "mistral-small-2603")?
+/// let base_url = BaseUrl::new("https://api.mistral.ai/v1")?;
+/// let provider = Mistral::new("api-key", base_url, "mistral-small-2603")?
 ///     .with_reasoning_effort("high")?;
 /// # Ok::<(), mobius::Error>(())
 /// ```
@@ -56,10 +57,15 @@ impl Mistral {
     /// Returns invalid credentials, endpoint or model configuration.
     pub fn new(
         api_key: impl Into<String>,
-        base_url: impl Into<String>,
+        base_url: BaseUrl,
         model: impl Into<String>,
     ) -> Result<Self> {
-        Self::with_client(Some(api_key.into()), base_url, model, streaming_client()?)
+        Self::new_with_transport(
+            api_key,
+            base_url,
+            model,
+            super::ModelTransportSettings::default(),
+        )
     }
 
     /// Creates a provider with explicit HTTP and retry policy.
@@ -67,10 +73,14 @@ impl Mistral {
     /// Returns invalid provider configuration or transport policy.
     pub fn new_with_transport(
         api_key: impl Into<String>,
-        base_url: impl Into<String>,
+        base_url: BaseUrl,
         model: impl Into<String>,
         transport: super::ModelTransportSettings,
     ) -> Result<Self> {
+        let model = model.into();
+        if model.trim().is_empty() {
+            return Err(Error::Config("model is empty".into()));
+        }
         Self::with_client(
             Some(api_key.into()),
             base_url,
@@ -85,7 +95,7 @@ impl Mistral {
 
     fn with_client(
         api_key: Option<String>,
-        base_url: impl Into<String>,
+        base_url: BaseUrl,
         model: impl Into<String>,
         client: Client,
     ) -> Result<Self> {
@@ -129,7 +139,7 @@ impl Mistral {
         .await?;
         let response = super::chat_completions::post(
             &self.config.client,
-            &self.config.base_url,
+            self.config.base_url.root(),
             self.config.api_key.as_deref(),
             body,
             "Mistral",
@@ -457,10 +467,7 @@ pub(super) fn provider() -> ProviderDefinition {
     .with_replay_reasoning_field(RAW_THINKING)
 }
 
-fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn Model>> {
-    let base_url = config
-        .base_url
-        .ok_or_else(|| Error::Config("Mistral requires a base URL".into()))?;
+fn build_provider(config: ProviderBuildConfig, base_url: BaseUrl) -> Result<Arc<dyn Model>> {
     let api_key = config.credential.into_optional_api_key("mistral")?;
     let mut provider = Mistral::with_client(api_key, base_url, config.model, config.http)?;
     provider.config.transport = config.transport;

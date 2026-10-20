@@ -31,18 +31,32 @@ async fn desktop_registration_rejects_remote_and_non_macos_clients() {
             if request_id.as_ref() == "register" && code == "desktop_control")
         );
         assert!(connection.is_none());
-        assert!(control.connect("session").is_err());
+        assert!(
+            control
+                .connect(&SessionId::new("session").unwrap())
+                .is_err()
+        );
     }
 }
 
 #[tokio::test]
 async fn desktop_serializes_evaluations_and_rejects_stale_replies() {
     let control = Arc::new(DesktopControl::default());
-    assert!(control.connect("session").is_err());
+    assert!(
+        control
+            .connect(&SessionId::new("session").unwrap())
+            .is_err()
+    );
     let mut app = control.attach().expect("local runtime");
     assert!(control.attach().is_err());
-    let mut worker = control.connect("session").expect("evaluation");
-    assert!(control.connect("other-session").is_err());
+    let mut worker = control
+        .connect(&SessionId::new("session").unwrap())
+        .expect("evaluation");
+    assert!(
+        control
+            .connect(&SessionId::new("other-session").unwrap())
+            .is_err()
+    );
     let request = serde_json::to_vec(&json!({"action": "apps"})).expect("request");
     worker
         .write_u32(u32::try_from(request.len()).expect("size fits"))
@@ -58,7 +72,7 @@ async fn desktop_serializes_evaluations_and_rejects_stale_replies() {
     else {
         panic!("desktop request");
     };
-    assert_eq!(session_id, "session");
+    assert_eq!(session_id.as_str(), "session");
     assert_eq!(request, json!({"action": "apps"}));
     assert!(app.reply("stale", json!({"result": []})).is_err());
     app.reply(&request_id, json!({"result": []}))
@@ -75,6 +89,8 @@ async fn desktop_serializes_evaluations_and_rejects_stale_replies() {
     assert!(
         matches!(app.outgoing.recv().await, Some(ServerMessage::DesktopControlEnded { execution_id: id }) if id == execution_id)
     );
-    let worker = control.connect("next").expect("released lease");
+    let worker = control
+        .connect(&SessionId::new("next").unwrap())
+        .expect("released lease");
     drop(worker);
 }

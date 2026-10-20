@@ -9,7 +9,6 @@ fn continuation_ignores_searchable_inventory_and_resets_on_catalog_change() {
         serde_json::json!({"type":"function_call_output", "call_id":"screenshot-1", "output":[{"type":"input_text","text":"before"},{"type":"input_image","media_type":"image/png","data":"immutable-encoded-pixels","detail":"high"}]}),
     ];
     let mut state = SocketState {
-        connection: None,
         continuation: Some(Continuation {
             response_id: "resp-1".into(),
             known_items: known.len(),
@@ -17,8 +16,7 @@ fn continuation_ignores_searchable_inventory_and_resets_on_catalog_change() {
             envelope_fingerprint: envelope_fingerprint("test-model", &model_request(), None, &[])
                 .expect("envelope fingerprint"),
         }),
-        use_http: false,
-        last_used_at: Instant::now(),
+        ..SocketState::default()
     };
     let mut continued = known.clone();
     continued.push(serde_json::json!({"type": "function_call_output"}));

@@ -23,11 +23,11 @@ use super::TOOL_ERROR_FIELD;
 use super::TOOLS_SEARCH_NAME;
 use super::ToolDefinition;
 use super::image_input;
+use super::provider::BaseUrl;
 use super::provider::HostedWebSearch;
 use super::provider::ProviderBuildConfig;
 use super::provider::ProviderDefinition;
 use super::transport::status_error;
-use super::transport::streaming_client;
 use super::usage_i64;
 use crate::BoxFuture;
 use crate::Error;
@@ -80,10 +80,15 @@ impl Anthropic {
     /// Returns an error if configuration is invalid or a required resource cannot be initialized.
     pub fn new(
         api_key: impl Into<String>,
-        base_url: impl Into<String>,
+        base_url: BaseUrl,
         model: impl Into<String>,
     ) -> Result<Self> {
-        Self::with_client(Some(api_key.into()), base_url, model, streaming_client()?)
+        Self::new_with_transport(
+            api_key,
+            base_url,
+            model,
+            super::ModelTransportSettings::default(),
+        )
     }
 
     /// Creates a provider with explicit HTTP, socket and retry policy.
@@ -91,27 +96,32 @@ impl Anthropic {
     /// Returns invalid provider policy or HTTP client construction errors.
     pub fn new_with_transport(
         api_key: impl Into<String>,
-        base_url: impl Into<String>,
+        base_url: BaseUrl,
         model: impl Into<String>,
         settings: super::ModelTransportSettings,
     ) -> Result<Self> {
-        Self::with_client(
+        let model = model.into();
+        if model.trim().is_empty() {
+            return Err(Error::Config("model is empty".into()));
+        }
+        Ok(Self::with_client(
             Some(api_key.into()),
             base_url,
             model,
             settings.streaming_client()?,
         )?
-        .with_transport_settings(settings)
+        .with_transport_settings(settings))
     }
 
     fn with_client(
         api_key: Option<String>,
-        base_url: impl Into<String>,
+        base_url: BaseUrl,
         model: impl Into<String>,
         client: Client,
     ) -> Result<Self> {
         let config = ApiKeyModel::new(api_key, base_url, model, client)?;
-        let tool_discovery = provider().tool_discovery(&config.model, Some(&config.base_url));
+        let tool_discovery =
+            provider().tool_discovery(&config.model, Some(config.base_url.as_str()));
         Ok(Self {
             config,
             max_output_tokens: MANIFEST
@@ -123,15 +133,10 @@ impl Anthropic {
     }
 
     /// Applies validated operational transport policy.
-    /// # Errors
-    /// Returns an error for invalid operational settings.
-    pub fn with_transport_settings(
-        mut self,
-        settings: super::ModelTransportSettings,
-    ) -> Result<Self> {
-        settings.validate()?;
+    #[must_use]
+    pub fn with_transport_settings(mut self, settings: super::ModelTransportSettings) -> Self {
         self.config.transport = settings;
-        Ok(self)
+        self
     }
 
     /// Chooses the output-token budget independently from the advertised model context.
@@ -255,7 +260,7 @@ impl Anthropic {
         let mut request = self
             .config
             .client
-            .post(format!("{}/messages", self.config.base_url));
+            .post(format!("{}/messages", self.config.base_url.root()));
         for (name, value) in &MANIFEST.headers {
             request = request.header(name, value);
         }
@@ -1246,16 +1251,13 @@ pub(super) fn provider() -> ProviderDefinition {
     .with_replay_reasoning_field(RAW_CONTENT)
 }
 
-fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn Model>> {
+fn build_provider(config: ProviderBuildConfig, base_url: BaseUrl) -> Result<Arc<dyn Model>> {
     let tool_discovery = config
         .tool_discovery
-        .unwrap_or_else(|| provider().tool_discovery(&config.model, config.base_url.as_deref()));
-    let base_url = config
-        .base_url
-        .ok_or_else(|| Error::Config("Anthropic requires a base URL".into()))?;
+        .unwrap_or_else(|| provider().tool_discovery(&config.model, Some(base_url.as_str())));
     let api_key = config.credential.into_optional_api_key("anthropic")?;
     let mut provider = Anthropic::with_client(api_key, base_url, config.model, config.http)?
-        .with_transport_settings(config.transport)?;
+        .with_transport_settings(config.transport);
     provider.tool_discovery = tool_discovery;
     let provider = match config.reasoning_effort {
         Some(effort) => provider.with_reasoning_effort(effort)?,

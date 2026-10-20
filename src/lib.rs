@@ -31,7 +31,7 @@
 //! ) -> Result<Agent> {
 //!     let model: Arc<dyn Model> = Arc::new(OpenAi::new(
 //!         api_key,
-//!         "https://api.openai.com/v1",
+//!         "https://api.openai.com/v1".parse()?,
 //!         model_id,
 //!     )?);
 //!     let files = mobius::backend::session_files::SessionFileStore::new(state_dir, None);
@@ -160,7 +160,9 @@ pub mod middleware;
 #[cfg(unix)]
 pub mod owner_only;
 pub mod protocol;
+mod session_id;
 pub mod sync;
+pub use session_id::SessionId;
 
 /// A boxed asynchronous operation used by runtime-pluggable interfaces.
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;

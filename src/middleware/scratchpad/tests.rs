@@ -135,7 +135,7 @@ async fn compaction_discards_projections_before_a_post_hook_stops_or_fails() {
                 middleware,
                 "test",
             )
-            .session_id("session")
+            .session_id("session".parse().expect("session ID"))
             .session_context(session_context()),
         )
         .await
@@ -168,7 +168,7 @@ async fn compaction_discards_projections_before_a_post_hook_stops_or_fails() {
         let checkpoint = store
             .store
             .checkpoints
-            .load("session")
+            .load(&"session".parse().expect("session ID"))
             .await
             .expect("load")
             .expect("checkpoint");

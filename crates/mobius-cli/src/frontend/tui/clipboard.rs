@@ -271,7 +271,7 @@ impl ClipboardUploads {
     pub(super) fn start(
         &mut self,
         candidates: Vec<UploadCandidate>,
-        session_id: &str,
+        session_id: &mobius::SessionId,
     ) -> Result<ClientMessage, String> {
         if self.is_active() {
             return Err("an attachment upload is already in progress".into());
@@ -309,7 +309,7 @@ impl ClipboardUploads {
     pub(super) async fn handle(
         &mut self,
         message: ServerMessage,
-        session_id: &str,
+        session_id: &mobius::SessionId,
     ) -> Result<UploadAdvance, String> {
         let current = self
             .current
@@ -325,7 +325,7 @@ impl ClipboardUploads {
                 max_chunk_bytes,
                 ..
             } if matches!(current.phase, UploadPhase::Begin { .. })
-                && actual_session == session_id =>
+                && &actual_session == session_id =>
             {
                 let wire_upload_id = upload_id.clone(); // rules-allow: the first chunk message and the pending phase both need the gateway's new upload id
                 self.next_transfer(session_id, wire_upload_id, upload_id, max_chunk_bytes, 0)
@@ -340,7 +340,7 @@ impl ClipboardUploads {
                 upload_id: actual_upload,
                 next_offset,
                 ..
-            } if actual_session == session_id => match &mut current.phase {
+            } if &actual_session == session_id => match &mut current.phase {
                 UploadPhase::Chunk {
                     upload_id,
                     max_chunk_bytes,
@@ -370,7 +370,7 @@ impl ClipboardUploads {
                 file,
                 ..
             } if matches!(current.phase, UploadPhase::Finish { .. })
-                && actual_session == session_id =>
+                && &actual_session == session_id =>
             {
                 self.current = None;
                 Ok(UploadAdvance {
@@ -386,7 +386,7 @@ impl ClipboardUploads {
         result
     }
 
-    fn begin_next(&mut self, session_id: &str) -> Option<ClientMessage> {
+    fn begin_next(&mut self, session_id: &mobius::SessionId) -> Option<ClientMessage> {
         let UploadCandidate {
             name,
             size,
@@ -396,7 +396,7 @@ impl ClipboardUploads {
         let request_id = Uuid::new_v4();
         let message = ClientMessage::BeginSessionFileUpload {
             request_id: request_id.to_string().into(),
-            session_id: session_id.into(),
+            session_id: session_id.share(),
             name: name.clone(), // rules-allow: a rejection names the file after this message is sent
             size,
             media_type,
@@ -412,7 +412,7 @@ impl ClipboardUploads {
 
     async fn next_transfer(
         &mut self,
-        session_id: &str,
+        session_id: &mobius::SessionId,
         wire_upload_id: String,
         upload_id: String,
         max_chunk_bytes: usize,
@@ -430,7 +430,7 @@ impl ClipboardUploads {
             current.phase = UploadPhase::Finish { request_id };
             return Ok(ClientMessage::FinishSessionFileUpload {
                 request_id: request_id.to_string().into(),
-                session_id: session_id.into(),
+                session_id: session_id.share(),
                 upload_id: wire_upload_id,
             });
         }
@@ -445,7 +445,7 @@ impl ClipboardUploads {
         let request_id = Uuid::new_v4();
         let message = ClientMessage::UploadSessionFileChunk {
             request_id: request_id.to_string().into(),
-            session_id: session_id.into(),
+            session_id: session_id.share(),
             upload_id: wire_upload_id,
             offset: next_offset,
             data,
@@ -466,7 +466,7 @@ mod tests {
     async fn handled(
         uploads: &mut ClipboardUploads,
         message: ServerMessage,
-        session_id: &str,
+        session_id: &mobius::SessionId,
     ) -> Option<Result<UploadAdvance, String>> {
         if !uploads.claims(&message) {
             return None;
@@ -545,13 +545,14 @@ mod tests {
 
     #[tokio::test]
     async fn upload_machine_correlates_chunks_and_starts_the_next_file() {
+        let session_id = mobius::SessionId::new("session").expect("session");
         let first = UploadCandidate::from_bytes("one.txt", "text/plain", b"abc".to_vec())
             .expect("first candidate");
         let second = UploadCandidate::from_bytes("two.txt", "text/plain", b"d".to_vec())
             .expect("second candidate");
         let mut uploads = ClipboardUploads::default();
         let begin = uploads
-            .start(vec![first, second], "session")
+            .start(vec![first, second], &session_id)
             .expect("begin upload");
         let ClientMessage::BeginSessionFileUpload { request_id, .. } = begin else {
             panic!("begin message");
@@ -562,11 +563,11 @@ mod tests {
                 &mut uploads,
                 ServerMessage::SessionFileUploadReady {
                     request_id: "other".into(),
-                    session_id: "session".into(),
+                    session_id: session_id.share(),
                     upload_id: UPLOAD_ID.into(),
                     max_chunk_bytes: 2,
                 },
-                "session",
+                &session_id,
             )
             .await
             .is_none()
@@ -575,11 +576,11 @@ mod tests {
             &mut uploads,
             ServerMessage::SessionFileUploadReady {
                 request_id,
-                session_id: "session".into(),
+                session_id: session_id.share(),
                 upload_id: UPLOAD_ID.into(),
                 max_chunk_bytes: 2,
             },
-            "session",
+            &session_id,
         )
         .await
         .expect("matched ready")
@@ -599,11 +600,11 @@ mod tests {
             &mut uploads,
             ServerMessage::SessionFileUploadChunkAccepted {
                 request_id,
-                session_id: "session".into(),
+                session_id: session_id.share(),
                 upload_id: UPLOAD_ID.into(),
                 next_offset: 2,
             },
-            "session",
+            &session_id,
         )
         .await
         .expect("matched chunk")
@@ -623,11 +624,11 @@ mod tests {
             &mut uploads,
             ServerMessage::SessionFileUploadChunkAccepted {
                 request_id,
-                session_id: "session".into(),
+                session_id: session_id.share(),
                 upload_id: UPLOAD_ID.into(),
                 next_offset: 3,
             },
-            "session",
+            &session_id,
         )
         .await
         .expect("matched final chunk")
@@ -642,7 +643,7 @@ mod tests {
             &mut uploads,
             ServerMessage::SessionFileUploadCompleted {
                 request_id,
-                session_id: "session".into(),
+                session_id: session_id.share(),
                 file: SessionFileReference {
                     id: Uuid::new_v4().to_string(),
                     name: "one.txt".into(),
@@ -650,7 +651,7 @@ mod tests {
                     media_type: "text/plain".into(),
                 },
             },
-            "session",
+            &session_id,
         )
         .await
         .expect("matched completion")
@@ -665,10 +666,11 @@ mod tests {
 
     #[tokio::test]
     async fn upload_machine_aborts_on_an_unexpected_acknowledged_offset() {
+        let session_id = mobius::SessionId::new("session").expect("session");
         let candidate = UploadCandidate::from_bytes("one.txt", "text/plain", b"abc".to_vec())
             .expect("candidate");
         let mut uploads = ClipboardUploads::default();
-        let begin = uploads.start(vec![candidate], "session").expect("begin");
+        let begin = uploads.start(vec![candidate], &session_id).expect("begin");
         let ClientMessage::BeginSessionFileUpload { request_id, .. } = begin else {
             panic!("begin message");
         };
@@ -676,11 +678,11 @@ mod tests {
             &mut uploads,
             ServerMessage::SessionFileUploadReady {
                 request_id,
-                session_id: "session".into(),
+                session_id: session_id.share(),
                 upload_id: UPLOAD_ID.into(),
                 max_chunk_bytes: 2,
             },
-            "session",
+            &session_id,
         )
         .await
         .expect("matched ready")
@@ -695,11 +697,11 @@ mod tests {
             &mut uploads,
             ServerMessage::SessionFileUploadChunkAccepted {
                 request_id,
-                session_id: "session".into(),
+                session_id: session_id.share(),
                 upload_id: UPLOAD_ID.into(),
                 next_offset: 1,
             },
-            "session",
+            &session_id,
         )
         .await
         .expect("matched chunk");

@@ -84,7 +84,7 @@ async fn agent(
                 .expect("middleware"),
             "test",
         )
-        .session_id("session")
+        .session_id("session".parse().expect("session ID"))
         .session_context(SessionContext {
             owner_id: "test-owner".into(),
             ..SessionContext::default()
@@ -173,7 +173,9 @@ async fn answers_are_user_messages_during_active_and_idle_turns() {
                 MessageDelivery::Turn
             }
         );
-        let session = questions.session("session").expect("session");
+        let session = questions
+            .session(&"session".parse().expect("session ID"))
+            .expect("session");
         let saved = session.load().await.expect("load");
         assert!(matches!(&saved[0].outcome, Some(Outcome::Answered { .. })));
         assert!(
@@ -214,7 +216,8 @@ async fn concurrent_answers_close_a_question_once() {
         }),
     )
     .await;
-    let checkpoint = crate::backend::checkpoint::Checkpoint::empty("session");
+    let checkpoint =
+        crate::backend::checkpoint::Checkpoint::empty("session".parse().expect("session ID"));
     let context = SessionContext {
         owner_id: "test-owner".into(),
         ..SessionContext::default()
@@ -225,7 +228,7 @@ async fn concurrent_answers_close_a_question_once() {
             arguments: "q",
             input: Some(input),
             target: None,
-            session_id: "session",
+            session_id: &checkpoint.session_id,
             session_context: &context,
             checkpoint: &checkpoint,
             checkpoints: Arc::clone(&store),
@@ -234,7 +237,7 @@ async fn concurrent_answers_close_a_question_once() {
     let (first, second) = tokio::join!(answer("A"), answer("B"));
     assert_ne!(first.is_ok(), second.is_ok());
     let saved = questions
-        .session("session")
+        .session(&"session".parse().expect("session ID"))
         .expect("session")
         .load()
         .await
@@ -266,7 +269,7 @@ async fn ask_skip_restore_and_bounds_are_durable() {
     let events = Arc::new(Mutex::new(Vec::new()));
     let captured = Arc::clone(&events);
     let session = Arc::new(QuestionSession {
-        id: "session".into(),
+        id: "session".parse().expect("session ID"),
         checkpoints: store,
         sender: crate::agent::test_sender(),
         frontend: Arc::new(move |event| {
@@ -281,7 +284,7 @@ async fn ask_skip_restore_and_bounds_are_durable() {
         ApprovalPolicy::Allow,
     ));
     let permissions = SandboxPermissions::restore(
-        "session",
+        &"session".parse().expect("session ID"),
         SandboxMode::WorkspaceWrite,
         NetworkAccess::Denied,
         Vec::new(),

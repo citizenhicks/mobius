@@ -3,6 +3,7 @@ use crate::wire::{
     BotAction, BotSubscription, HookBinding, HookKind, HookSource, RoutineSchedule,
     RoutineScheduleKind,
 };
+use mobius::SessionId;
 
 #[tokio::test]
 async fn runtime_activity_tracks_reservations_and_pending_deliveries() {
@@ -89,10 +90,10 @@ async fn runtime_activity_tracks_reservations_and_pending_deliveries() {
     let (commands, mut receiver) = mpsc::channel(1);
     let (events, _) = broadcast::channel(1);
     gateway.state.lock().await.sessions.insert(
-        "activity-probe".into(),
+        SessionId::new("activity-probe").unwrap(),
         HostHandle {
             inner: Arc::new(HostInner {
-                session_id: "activity-probe".into(),
+                session_id: SessionId::new("activity-probe").unwrap(),
                 commands,
                 events,
                 alive: Arc::new(AtomicBool::new(true)),

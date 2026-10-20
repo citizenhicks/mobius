@@ -15,6 +15,7 @@ use tokio_tungstenite::tungstenite::{
 };
 
 use super::authorization::OpenAiAuthorization;
+use super::provider::BaseUrl;
 use super::transport::{read_limited, status_error};
 use crate::{Error, ProviderError, Result};
 
@@ -77,7 +78,7 @@ type Socket =
 #[derive(Debug)]
 pub struct RealtimeVoiceRequest {
     /// The session identifier.
-    pub session_id: Arc<str>,
+    pub session_id: crate::SessionId,
     /// The provider voice model selected by the router.
     pub model: Arc<str>,
     /// The provider voice selected by the router.
@@ -211,16 +212,11 @@ pub(super) struct RealtimeTransport {
 
 impl RealtimeTransport {
     pub(super) fn new_openai(
-        base_url: &str,
+        base_url: &BaseUrl,
         auth: Arc<dyn OpenAiAuthorization>,
         settings: super::ModelTransportSettings,
     ) -> Result<Self> {
-        super::provider::validate_base_url(base_url)?;
-        let endpoint = format!(
-            "{}/{}",
-            base_url.trim_end_matches('/'),
-            MANIFEST.openai.calls_path
-        );
+        let endpoint = format!("{}/{}", base_url.root(), MANIFEST.openai.calls_path);
         let sideband = MANIFEST
             .openai
             .sideband_base_url
@@ -230,17 +226,12 @@ impl RealtimeTransport {
     }
 
     pub(super) fn new_codex(
-        base_url: &str,
+        base_url: &BaseUrl,
         default_endpoint: bool,
         auth: Arc<dyn OpenAiAuthorization>,
         settings: super::ModelTransportSettings,
     ) -> Result<Self> {
-        super::provider::validate_base_url(base_url)?;
-        let calls_url = format!(
-            "{}/{}",
-            base_url.trim_end_matches('/'),
-            MANIFEST.codex.calls_path
-        );
+        let calls_url = format!("{}/{}", base_url.root(), MANIFEST.codex.calls_path);
         let api_url = if default_endpoint {
             std::borrow::Cow::Borrowed(
                 MANIFEST
@@ -250,7 +241,7 @@ impl RealtimeTransport {
                     .ok_or_else(|| invalid("Codex native sideband endpoint is required"))?,
             )
         } else {
-            std::borrow::Cow::Owned(format!("{}/live", base_url.trim_end_matches('/')))
+            std::borrow::Cow::Owned(format!("{}/live", base_url.root()))
         };
         Self::with_endpoints(VoiceApi::Codex, auth, &calls_url, &api_url, settings)
     }
@@ -428,7 +419,7 @@ impl RealtimeTransport {
     async fn negotiate(
         self: &Arc<Self>,
         response: reqwest::Response,
-        session_id: Arc<str>,
+        session_id: crate::SessionId,
     ) -> Result<(CallCleanup, String)> {
         enum Answer {
             Live(Value),
@@ -612,7 +603,7 @@ impl RealtimeTransport {
 struct CallCleanup {
     transport: Arc<RealtimeTransport>,
     call_id: String,
-    session_id: Arc<str>,
+    session_id: crate::SessionId,
 }
 
 impl Drop for CallCleanup {
@@ -625,7 +616,7 @@ impl Drop for CallCleanup {
         } else {
             url.set_path(&format!("{}/{}/hangup", url.path(), self.call_id));
         }
-        let session_id = std::mem::take(&mut self.session_id);
+        let session_id = self.session_id.share();
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(async move {
                 match timeout(

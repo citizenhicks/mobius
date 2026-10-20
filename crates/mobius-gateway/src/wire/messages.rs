@@ -1,3 +1,4 @@
+use mobius::SessionId;
 use std::sync::Arc;
 
 use super::*;
@@ -27,7 +28,21 @@ impl<'de> Deserialize<'de> for ClientFrame {
         {
             return Err(D::Error::custom("request ID must be 1–256 bytes"));
         }
-        let message = serde_json::from_value(message).map_err(D::Error::custom)?;
+        // Keep the correlation identity while typed decoding consumes the owned request.
+        let request_id: Option<Arc<str>> = message
+            .get("request_id")
+            .and_then(Value::as_str)
+            .map(Arc::from);
+        let message = match serde_json::from_value(message) {
+            Ok(message) => message,
+            Err(error) => match request_id {
+                Some(request_id) => ClientMessage::InvalidRequest {
+                    request_id,
+                    message: error.to_string().into(),
+                },
+                None => return Err(D::Error::custom(error)),
+            },
+        };
         Ok(Self { version, message })
     }
 }
@@ -48,12 +63,20 @@ impl ClientFrame {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 #[non_exhaustive]
 pub enum ClientMessage {
+    /// An invalid request decoded locally so its caller receives a correlated rejection.
+    #[serde(skip)]
+    InvalidRequest {
+        /// The checked correlation identity from the request envelope.
+        request_id: Arc<str>,
+        /// The typed decoder's validation error.
+        message: Arc<str>,
+    },
     /// Opens the gateway-owned computer and foregrounds the chat's assigned tab.
     OpenComputer {
         /// The request identifier.
         request_id: Arc<str>,
         /// The chat whose assigned browser tab to show.
-        session_id: String,
+        session_id: SessionId,
     },
     /// Opens or closes this authenticated connection's remote desktop stream.
     SetDesktopStream {
@@ -75,7 +98,7 @@ pub enum ClientMessage {
         /// Whether to take control.
         enabled: bool,
         /// The chat whose computer view requested control.
-        session_id: Option<String>,
+        session_id: Option<SessionId>,
     },
     /// Replaces this connection's optional notification exclusions.
     SetNotifications {
@@ -91,14 +114,14 @@ pub enum ClientMessage {
         /// The request identifier.
         request_id: Arc<str>,
         /// The session identifier.
-        session_id: String,
+        session_id: SessionId,
     },
     /// Asks for the line totals of a Git diff, as Git counts them.
     GetGitDiffTotals {
         /// The request identifier.
         request_id: Arc<str>,
         /// The session identifier.
-        session_id: String,
+        session_id: SessionId,
         /// The scope.
         scope: GitDiffScope,
     },
@@ -237,7 +260,7 @@ pub enum ClientMessage {
         /// The request identifier.
         request_id: Arc<str>,
         /// The session identifier.
-        session_id: Arc<str>,
+        session_id: SessionId,
         /// The last sequence.
         last_sequence: Option<u64>,
     },
@@ -249,7 +272,7 @@ pub enum ClientMessage {
         /// The request identifier.
         request_id: Arc<str>,
         /// The session identifier.
-        session_id: String,
+        session_id: SessionId,
         /// The before sequence.
         before_sequence: Option<u64>,
     },
@@ -258,7 +281,7 @@ pub enum ClientMessage {
         /// The request identifier.
         request_id: Arc<str>,
         /// The session identifier.
-        session_id: String,
+        session_id: SessionId,
         /// The bot identifier.
         bot_id: Arc<str>,
     },
@@ -267,7 +290,7 @@ pub enum ClientMessage {
         /// The request identifier.
         request_id: Arc<str>,
         /// The session identifier.
-        session_id: String,
+        session_id: SessionId,
         /// The title.
         title: String,
     },
@@ -276,7 +299,7 @@ pub enum ClientMessage {
         /// The request identifier.
         request_id: Arc<str>,
         /// The session identifier.
-        session_id: String,
+        session_id: SessionId,
         /// The folder.
         folder: PathBuf,
     },
@@ -285,7 +308,7 @@ pub enum ClientMessage {
         /// The request identifier.
         request_id: Arc<str>,
         /// The session identifier.
-        session_id: String,
+        session_id: SessionId,
         /// The pinned.
         pinned: bool,
     },
@@ -294,7 +317,7 @@ pub enum ClientMessage {
         /// The request identifier.
         request_id: Arc<str>,
         /// The session identifier.
-        session_id: String,
+        session_id: SessionId,
         /// The assistant message.
         target: MessageTarget,
         /// The pinned.
@@ -305,14 +328,14 @@ pub enum ClientMessage {
         /// The request identifier.
         request_id: Arc<str>,
         /// The session identifiers.
-        session_ids: Vec<String>,
+        session_ids: Vec<SessionId>,
         /// Required deletion scope; history is removed only for all.
         selection: mobius::backend::session_files::SessionFileSelection,
     },
     /// Selects the submit case.
     Submit {
         /// The session identifier.
-        session_id: Arc<str>,
+        session_id: SessionId,
         /// The submission.
         submission: Submission,
     },
@@ -321,14 +344,14 @@ pub enum ClientMessage {
         /// The request identifier.
         request_id: Arc<str>,
         /// The session identifier.
-        session_id: String,
+        session_id: SessionId,
         /// The offer sdp.
         offer_sdp: String,
     },
     /// Selects the end realtime voice case.
     EndRealtimeVoice {
         /// The session identifier.
-        session_id: Arc<str>,
+        session_id: SessionId,
         /// The voice identifier.
         voice_id: Arc<str>,
     },
@@ -349,7 +372,7 @@ pub enum ClientMessage {
         /// The request identifier.
         request_id: Arc<str>,
         /// The session identifier.
-        session_id: String,
+        session_id: SessionId,
         /// The name.
         name: String,
         /// The size.
@@ -362,7 +385,7 @@ pub enum ClientMessage {
         /// The request identifier.
         request_id: Arc<str>,
         /// The session identifier.
-        session_id: String,
+        session_id: SessionId,
         /// The upload identifier.
         upload_id: String,
         /// The offset.
@@ -376,7 +399,7 @@ pub enum ClientMessage {
         /// The request identifier.
         request_id: Arc<str>,
         /// The session identifier.
-        session_id: String,
+        session_id: SessionId,
         /// The upload identifier.
         upload_id: String,
     },
@@ -385,14 +408,14 @@ pub enum ClientMessage {
         /// The request identifier.
         request_id: Arc<str>,
         /// The session identifier.
-        session_id: String,
+        session_id: SessionId,
     },
     /// Selects the read session file case.
     ReadSessionFile {
         /// The request identifier.
         request_id: Arc<str>,
         /// The session identifier.
-        session_id: String,
+        session_id: SessionId,
         /// The file identifier.
         file_id: String,
         /// The offset.
@@ -527,7 +550,7 @@ pub enum ClientMessage {
         /// The request identifier.
         request_id: Arc<str>,
         /// The session identifier.
-        session_id: String,
+        session_id: SessionId,
         /// The scope.
         scope: GitDiffScope,
     },
@@ -536,7 +559,7 @@ pub enum ClientMessage {
         /// The request identifier.
         request_id: Arc<str>,
         /// The session identifier.
-        session_id: String,
+        session_id: SessionId,
         /// The branch.
         branch: String,
     },
@@ -554,7 +577,7 @@ pub enum ClientMessage {
         /// The request identifier.
         request_id: Arc<str>,
         /// The session identifier.
-        session_id: String,
+        session_id: SessionId,
         /// The scope.
         scope: WorkspaceFileScope,
     },
@@ -563,7 +586,7 @@ pub enum ClientMessage {
         /// The request identifier.
         request_id: Arc<str>,
         /// The session identifier.
-        session_id: String,
+        session_id: SessionId,
         /// The path.
         path: String,
         /// The offset.
@@ -576,7 +599,7 @@ pub enum ClientMessage {
         /// Request correlation identifier.
         request_id: Arc<str>,
         /// Selected project chat.
-        session_id: String,
+        session_id: SessionId,
         /// Relative regular file path.
         path: String,
     },
@@ -585,7 +608,7 @@ pub enum ClientMessage {
         /// The request identifier.
         request_id: Arc<str>,
         /// The session identifier.
-        session_id: String,
+        session_id: SessionId,
         /// The path.
         path: String,
         /// The content.
@@ -620,7 +643,7 @@ pub enum ClientMessage {
         /// The provider.
         provider: String,
         /// The base URL.
-        base_url: String,
+        base_url: mobius::backend::model::provider::BaseUrl,
         /// The API key.
         api_key: String,
         /// The expires at.
@@ -767,7 +790,7 @@ pub enum ServerMessage {
         /// The request identifier.
         request_id: Arc<str>,
         /// The chat whose browser tab was shown.
-        session_id: String,
+        session_id: SessionId,
     },
     /// Acknowledges opening or closing this connection's desktop stream.
     DesktopStreamState {
@@ -791,7 +814,7 @@ pub enum ServerMessage {
         /// Whether this connection owns control.
         is_owner: bool,
         /// The controlling chat, or the latest agent chat when watching.
-        session_id: Option<Arc<str>>,
+        session_id: Option<SessionId>,
     },
     /// A committed source changed; clients refresh their existing snapshots.
     HookEvent {
@@ -819,7 +842,7 @@ pub enum ServerMessage {
         /// The request identifier.
         request_id: Arc<str>,
         /// The chat identifier.
-        session_id: String,
+        session_id: SessionId,
         /// Whether the human explicitly asked to activate this page.
         foreground: bool,
     },
@@ -830,7 +853,7 @@ pub enum ServerMessage {
         /// The execution identifier.
         execution_id: String,
         /// The session identifier.
-        session_id: String,
+        session_id: SessionId,
         /// The request.
         request: Value,
     },
@@ -865,14 +888,14 @@ pub enum ServerMessage {
         /// The request identifier.
         request_id: Arc<str>,
         /// The session identifier.
-        session_id: String,
+        session_id: SessionId,
     },
     /// Selects the session history case.
     SessionHistory {
         /// The request identifier.
         request_id: Arc<str>,
         /// The session identifier.
-        session_id: String,
+        session_id: SessionId,
         /// The records.
         records: Vec<RecordedEvent>,
         /// The next before sequence.
@@ -886,7 +909,7 @@ pub enum ServerMessage {
     /// Replaces the opened chat's message pins without refreshing its runtime state.
     MessagePinsChanged {
         /// The session identifier.
-        session_id: std::sync::Arc<str>,
+        session_id: SessionId,
         /// Pinned assistant messages, in transcript order.
         pinned_messages: BTreeSet<MessageTarget>,
     },
@@ -895,7 +918,7 @@ pub enum ServerMessage {
         /// The request identifier.
         request_id: Arc<str>,
         /// The session identifier.
-        session_id: Arc<str>,
+        session_id: SessionId,
         /// The voice identifier.
         voice_id: Arc<str>,
         /// The answer sdp.
@@ -906,14 +929,14 @@ pub enum ServerMessage {
         /// The request identifier.
         request_id: Arc<str>,
         /// The session identifier.
-        session_id: Arc<str>,
+        session_id: SessionId,
         /// The message.
         message: Arc<str>,
     },
     /// Selects the realtime voice ended case.
     RealtimeVoiceEnded {
         /// The session identifier.
-        session_id: Arc<str>,
+        session_id: SessionId,
         /// The voice identifier.
         voice_id: Arc<str>,
         /// The reason.
@@ -943,7 +966,7 @@ pub enum ServerMessage {
         /// The request identifier.
         request_id: Arc<str>,
         /// The session identifier.
-        session_id: String,
+        session_id: SessionId,
         /// The upload identifier.
         upload_id: String,
         /// The max chunk bytes.
@@ -954,7 +977,7 @@ pub enum ServerMessage {
         /// The request identifier.
         request_id: Arc<str>,
         /// The session identifier.
-        session_id: String,
+        session_id: SessionId,
         /// The upload identifier.
         upload_id: String,
         /// The next offset.
@@ -965,7 +988,7 @@ pub enum ServerMessage {
         /// The request identifier.
         request_id: Arc<str>,
         /// The session identifier.
-        session_id: String,
+        session_id: SessionId,
         /// The file.
         file: SessionFileReference,
     },
@@ -974,7 +997,7 @@ pub enum ServerMessage {
         /// The request identifier.
         request_id: Arc<str>,
         /// The session identifier.
-        session_id: String,
+        session_id: SessionId,
         /// The files.
         files: Vec<SessionFileRecord>,
     },
@@ -983,7 +1006,7 @@ pub enum ServerMessage {
         /// The request identifier.
         request_id: Arc<str>,
         /// The session identifier.
-        session_id: String,
+        session_id: SessionId,
         /// The file identifier.
         file_id: String,
         /// The offset.
@@ -1008,7 +1031,7 @@ pub enum ServerMessage {
     /// Selects the agent event case.
     AgentEvent {
         /// Shared across the token events retained by a running session.
-        session_id: std::sync::Arc<str>,
+        session_id: SessionId,
         /// The record.
         record: RecordedEvent,
     },
@@ -1146,7 +1169,7 @@ pub enum ServerMessage {
         /// The request identifier.
         request_id: Arc<str>,
         /// The session identifier.
-        session_id: String,
+        session_id: SessionId,
         /// The scope.
         scope: GitDiffScope,
         /// The diff.
@@ -1157,7 +1180,7 @@ pub enum ServerMessage {
         /// The request identifier.
         request_id: Arc<str>,
         /// The session identifier.
-        session_id: String,
+        session_id: SessionId,
         /// The scope.
         scope: GitDiffScope,
         /// The totals.
@@ -1175,7 +1198,7 @@ pub enum ServerMessage {
         /// The request identifier.
         request_id: Arc<str>,
         /// The session identifier.
-        session_id: String,
+        session_id: SessionId,
         /// The files.
         files: Vec<WorkspaceFileRecord>,
         /// The truncated.
@@ -1186,7 +1209,7 @@ pub enum ServerMessage {
         /// The request identifier.
         request_id: Arc<str>,
         /// The session identifier.
-        session_id: String,
+        session_id: SessionId,
         /// The path.
         path: String,
         /// The offset.

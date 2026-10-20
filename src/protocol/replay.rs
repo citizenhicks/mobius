@@ -1,5 +1,6 @@
 //! Converts neutral model history into frontend presentation events.
 
+use crate::SessionId;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -181,11 +182,10 @@ pub(crate) fn tool_complete_boundaries<'a>(
 #[must_use]
 pub fn events<V: std::borrow::Borrow<Value>>(
     context: &[(MessageTarget, V)],
-    session_id: &str,
+    session_id: &SessionId,
 ) -> Vec<EventMsg> {
     let mut events = Vec::new();
     let mut tools = BTreeMap::new();
-    let session_id: Arc<str> = session_id.into();
     let complete = tool_complete_boundaries(context.iter().map(|(_, value)| value.borrow()));
     for (index, (target, value)) in context.iter().enumerate() {
         let value = value.borrow();
@@ -207,7 +207,7 @@ pub fn events<V: std::borrow::Borrow<Value>>(
             let content = assistant_content(value);
             if !content.is_empty() {
                 events.push(EventMsg::AssistantMessage(AssistantMessageEvent {
-                    session_id: Arc::clone(&session_id),
+                    session_id: session_id.share(),
                     turn_id: Arc::clone(&item_id),
                     model_step_id: Arc::clone(&item_id),
                     content,
@@ -220,7 +220,7 @@ pub fn events<V: std::borrow::Borrow<Value>>(
             Some("reasoning") => {
                 if let Some(text) = reasoning_text(value) {
                     events.push(EventMsg::AssistantMessage(AssistantMessageEvent {
-                        session_id: Arc::clone(&session_id),
+                        session_id: session_id.share(),
                         turn_id: Arc::clone(&item_id),
                         model_step_id: item_id,
                         content: vec![ModelStepContent {
@@ -432,7 +432,7 @@ mod tests {
             },
             items.remove(0),
         )];
-        let replayed = replay_events(&context, "fork");
+        let replayed = replay_events(&context, &"fork".parse().expect("session ID"));
 
         assert!(matches!(
             replayed.as_slice(),
@@ -495,7 +495,7 @@ mod tests {
         })
         .collect::<Vec<_>>();
 
-        let replayed = events(&history, "session");
+        let replayed = events(&history, &"session".parse().expect("session ID"));
 
         assert!(matches!(
             replayed.as_slice(),
@@ -540,7 +540,7 @@ mod tests {
             ),
         ];
 
-        let replayed = events(&history, "session");
+        let replayed = events(&history, &"session".parse().expect("session ID"));
 
         assert!(matches!(
             replayed.as_slice(),

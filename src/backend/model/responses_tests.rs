@@ -2,9 +2,25 @@ use super::*;
 use crate::backend::model::PromptCacheIdentity;
 use crate::backend::model::transport::capture_http_request;
 
+fn url(url: &str) -> BaseUrl {
+    BaseUrl::new(url).expect("base URL")
+}
+
+fn max_request_bytes(
+    settings: crate::backend::model::ModelTransportSettings,
+    max_request_bytes: usize,
+) -> crate::backend::model::ModelTransportSettings {
+    crate::backend::model::RawModelTransportSettings {
+        max_request_bytes,
+        ..*settings
+    }
+    .try_into()
+    .expect("transport settings")
+}
+
 fn model_request() -> ModelRequest<'static> {
     ModelRequest {
-        session_id: "test-session",
+        session_id: None,
         cancellation: None,
         prompt_cache: Some(PromptCacheIdentity {
             key: "hashed-cache-key",
@@ -35,8 +51,17 @@ fn base_url_rejects_serializable_secret_locations() {
         "https://example.com/v1?key=secret",
         "https://example.com/v1#secret",
     ] {
-        assert!(OpenAi::new("test-key", url, "test-model").is_err());
+        assert!(BaseUrl::new(url).is_err());
+        assert!(serde_json::from_value::<BaseUrl>(url.into()).is_err());
     }
+    let spelling = "https://EXAMPLE.com:443/v1/";
+    let url = BaseUrl::new(spelling).expect("endpoint");
+    assert_eq!(url.as_str(), spelling);
+    assert_eq!(serde_json::to_value(&url).unwrap(), spelling);
+    assert_eq!(
+        serde_json::from_value::<BaseUrl>(spelling.into()).unwrap(),
+        url
+    );
 }
 
 #[test]
@@ -118,7 +143,7 @@ fn compatible_responses_are_implicit_while_first_party_breakpoints_are_explicit(
         }]
     })];
     let request = ModelRequest {
-        session_id: "local-session",
+        session_id: None,
         cancellation: None,
         prompt_cache: Some(PromptCacheIdentity {
             key: "opaque-cache-key",
@@ -133,7 +158,7 @@ fn compatible_responses_are_implicit_while_first_party_breakpoints_are_explicit(
         allow_continuation: true,
     };
 
-    let compatible = OpenAi::new("test-key", "https://example.com/v1", "test-model")
+    let compatible = OpenAi::new("test-key", url("https://example.com/v1"), "test-model")
         .expect("compatible provider");
     let compatible_body = compatible
         .response_body_value(request)
@@ -145,22 +170,7 @@ fn compatible_responses_are_implicit_while_first_party_breakpoints_are_explicit(
         serde_json::json!({"type": "input_text", "text": "stable prefix"})
     );
 
-    let request = ModelRequest {
-        session_id: "local-session",
-        cancellation: None,
-        prompt_cache: Some(PromptCacheIdentity {
-            key: "opaque-cache-key",
-            context_epoch: 4,
-        }),
-        instructions: "Instructions",
-        input: (&input).into(),
-        catalog_revision: "catalog-1",
-        tools: &[],
-        deferred_tools: &[],
-        allow_hosted_tools: false,
-        allow_continuation: true,
-    };
-    let first_party = OpenAi::new("test-key", "https://api.openai.com/v1", "test-model")
+    let first_party = OpenAi::new("test-key", url("https://api.openai.com/v1"), "test-model")
         .expect("first-party provider")
         .with_explicit_prompt_cache();
     let first_party_body = first_party
@@ -186,7 +196,7 @@ fn inline_search_materializes_only_deferred_tools_it_calls() {
         tool_definition("notebook_post"),
         tool_definition("scratchpad_write"),
     ];
-    let output = OpenAi::new("test-key", "https://vendor.example/v1", "test-model")
+    let output = OpenAi::new("test-key", url("https://vendor.example/v1"), "test-model")
         .expect("provider")
         .with_inline_tool_search("vendor:tool_search")
         .decode_response(
@@ -487,7 +497,7 @@ async fn http_unauthorized_refreshes_and_retries_once() {
     let auth = Arc::new(HttpRefreshingAuthorization::new());
     let mut provider = OpenAi::with_authorization(
         Arc::<HttpRefreshingAuthorization>::clone(&auth),
-        format!("http://{address}"),
+        url(&format!("http://{address}")),
         "test-model",
         reqwest::Client::new(),
         crate::backend::model::ModelTransportSettings::default(),
@@ -495,7 +505,7 @@ async fn http_unauthorized_refreshes_and_retries_once() {
     .expect("provider");
     let expected =
         serde_json::to_vec(&provider.response_body(model_request()).expect("body")).expect("JSON");
-    provider.transport.max_request_bytes = expected.len();
+    provider.transport = max_request_bytes(provider.transport, expected.len());
     provider
         .respond_prepared(
             model_request(),
@@ -518,7 +528,7 @@ async fn http_unauthorized_refreshes_and_retries_once() {
         );
         assert_eq!(body.as_bytes(), expected);
     }
-    provider.transport.max_request_bytes = expected.len() - 1;
+    provider.transport = max_request_bytes(provider.transport, expected.len() - 1);
     let error = provider
         .respond(model_request(), Arc::new(|_| Box::pin(async { Ok(()) })))
         .await
@@ -574,7 +584,7 @@ async fn http_transport_failure_does_not_replay_accepted_post() {
     });
     let provider = OpenAi::with_client(
         Some("test-key".into()),
-        format!("http://{address}"),
+        url(&format!("http://{address}")),
         "test-model",
         reqwest::Client::new(),
         crate::backend::model::ModelTransportSettings::default(),
@@ -596,7 +606,7 @@ async fn http_transport_failure_does_not_replay_accepted_post() {
 async fn eof_without_response_completed_is_a_retryable_interruption() {
     let (address, server) = capture_http_request().await;
     let provider =
-        OpenAi::new("test-key", format!("http://{address}"), "test-model").expect("provider");
+        OpenAi::new("test-key", url(&format!("http://{address}")), "test-model").expect("provider");
     let error = provider
         .send_response(
             model_request(),

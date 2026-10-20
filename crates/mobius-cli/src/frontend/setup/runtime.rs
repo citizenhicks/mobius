@@ -399,7 +399,7 @@ pub(super) async fn set_credential(
             request_id: request_id.into(),
             instance,
             provider,
-            base_url: base_url.into(),
+            base_url: mobius::backend::model::provider::BaseUrl::new(base_url)?,
             api_key,
             expires_at: None,
         },

@@ -1,5 +1,6 @@
 //! Durable, nonblocking questions answered through ordinary user messages.
 
+use crate::SessionId;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -106,7 +107,7 @@ struct AskArgs {
 #[derive(Default)]
 pub struct Questions {
     // Middleware instances may be reused across sessions; each session serializes its own writes.
-    sessions: Mutex<BTreeMap<Arc<str>, Arc<QuestionSession>>>,
+    sessions: Mutex<BTreeMap<SessionId, Arc<QuestionSession>>>,
 }
 
 impl std::fmt::Debug for Questions {
@@ -116,7 +117,7 @@ impl std::fmt::Debug for Questions {
 }
 
 struct QuestionSession {
-    id: Arc<str>,
+    id: SessionId,
     checkpoints: Arc<dyn CheckpointStore>,
     sender: WeakAgentSender,
     frontend: FrontendEventSink,
@@ -145,14 +146,14 @@ impl Command {
 }
 
 impl Questions {
-    fn sessions(&self) -> Result<MutexGuard<'_, BTreeMap<Arc<str>, Arc<QuestionSession>>>> {
+    fn sessions(&self) -> Result<MutexGuard<'_, BTreeMap<SessionId, Arc<QuestionSession>>>> {
         self.sessions.lock().map_err(|error| {
             tracing::warn!(%error, "questions sessions lock poisoned");
             Error::Poisoned("questions sessions")
         })
     }
 
-    fn session(&self, id: &str) -> Result<Arc<QuestionSession>> {
+    fn session(&self, id: &SessionId) -> Result<Arc<QuestionSession>> {
         self.sessions()?
             .get(id)
             .map(Arc::clone)
@@ -170,15 +171,14 @@ impl Middleware for Questions {
             return Ok(());
         }
         let session = Arc::new(QuestionSession {
-            id: Arc::clone(&runtime.session_id),
+            id: runtime.session_id.share(),
             checkpoints: Arc::clone(&runtime.checkpoints),
             sender: runtime.sender.clone(), // rules-allow: the session owns its weak sender handle
             frontend: Arc::clone(&runtime.frontend),
             access: tokio::sync::Mutex::new(()),
         });
         catalog.register(Arc::new(AskUser(Arc::clone(&session))))?;
-        self.sessions()?
-            .insert(Arc::clone(&runtime.session_id), session);
+        self.sessions()?.insert(runtime.session_id.share(), session);
         Ok(())
     }
 

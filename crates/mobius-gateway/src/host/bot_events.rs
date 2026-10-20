@@ -8,6 +8,7 @@ use super::{
     unknown_session, validate_bot_workspace,
 };
 use crate::wire::{BotAction, BotSubscription, HookData, HookEvent, HookSelector, HookSource};
+use mobius::SessionId;
 use mobius::backend::checkpoint::ExecutionPageRequest;
 use mobius::protocol::{ActiveMessageDelivery, MessageSource};
 
@@ -31,7 +32,7 @@ impl GatewayHost {
 
     pub(crate) async fn execute_session_command(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         mut op: Op,
         bot_id: &str,
         cause: Option<&HookEvent>,
@@ -44,14 +45,19 @@ impl GatewayHost {
                         "session hook messages cannot attach files or target transcript replies",
                     ));
                 }
-                let sender = crate::bots::conversation_session_id(bot_id);
+                let sender = self
+                    .state
+                    .lock()
+                    .await
+                    .bots
+                    .bot(bot_id)
+                    .map_err(invalid_bot)?
+                    .conversation_session_id;
                 let handle = format!("chat #{sender}");
                 message.author = source_author(
                     command_id,
                     cause,
-                    MessageSource::Session {
-                        session_id: sender.into(),
-                    },
+                    MessageSource::Session { session_id: sender },
                     handle.into(),
                 );
                 message
@@ -288,9 +294,11 @@ impl GatewayHost {
         }
         match &pending.action {
             BotAction::Report { instruction } => {
-                let host = self
-                    .open_session(&crate::bots::conversation_session_id(&pending.bot_id))
-                    .await?;
+                let session = bots
+                    .bot(&pending.bot_id)
+                    .map_err(invalid_bot)?
+                    .conversation_session_id;
+                let host = self.open_session(&session).await?;
                 let _delivery = self.begin_mutation().await?;
                 if !bots.action_pending(&pending.id).map_err(internal)? {
                     return Ok(());
@@ -357,7 +365,7 @@ pub(super) async fn validate_source(
             Ok(0)
         }
         HookSource::Session { session_id } => {
-            if *session_id == crate::bots::conversation_session_id(bot_id) {
+            if session_id.as_str() == crate::bots::conversation_session_id(bot_id) {
                 return Err(invalid_config(
                     "a Bot cannot subscribe to its main conversation",
                 ));
@@ -445,7 +453,7 @@ fn require_routine_owner_local(
 async fn require_session_target(
     state: &GatewayState,
     bot_id: &str,
-    session_id: &str,
+    session_id: &SessionId,
 ) -> std::result::Result<(), Rejection> {
     let summary = state
         .checkpoints
@@ -456,7 +464,7 @@ async fn require_session_target(
     if *summary.session_context.owner_id != *bot_id
         || !summary.catalog_visible
         || summary.parent_session_id.is_some()
-        || session_id == crate::bots::conversation_session_id(bot_id)
+        || session_id.as_str() == crate::bots::conversation_session_id(bot_id)
     {
         return Err(unknown_session());
     }
@@ -489,26 +497,26 @@ async fn lifecycle_event(
     checkpoints: &Arc<dyn CheckpointStore>,
     bots: &BotStore,
     bot_id: &str,
-    session_id: &str,
+    session_id: &SessionId,
     record: &JournalEvent,
 ) -> Result<Option<HookEvent>> {
     let (data, turn_id) = match &record.event.msg {
         EventMsg::SessionConfigured(_) if record.sequence == 1 => (
             HookData::SessionCreated {
-                session_id: session_id.into(),
+                session_id: session_id.share(),
             },
             None,
         ),
         EventMsg::TurnStarted(turn) => (
             HookData::SessionTurnStarted {
-                session_id: session_id.into(),
+                session_id: session_id.share(),
                 turn_id: Arc::clone(&turn.turn_id),
             },
             Some(&*turn.turn_id),
         ),
         EventMsg::ExecApprovalRequest(approval) => (
             HookData::SessionApproval {
-                session_id: session_id.into(),
+                session_id: session_id.share(),
                 turn_id: Arc::clone(&approval.turn_id),
                 request_id: Arc::clone(&approval.id),
             },
@@ -520,7 +528,7 @@ async fn lifecycle_event(
                 .ok_or_else(|| Error::Config("terminal event has no execution record".into()))?;
             (
                 HookData::SessionTurnFinished {
-                    session_id: session_id.into(),
+                    session_id: session_id.share(),
                     turn_id: Arc::clone(&turn.turn_id),
                     outcome: execution.outcome,
                 },
@@ -533,7 +541,7 @@ async fn lifecycle_event(
                 .ok_or_else(|| Error::Config("terminal event has no execution record".into()))?;
             (
                 HookData::SessionTurnFinished {
-                    session_id: session_id.into(),
+                    session_id: session_id.share(),
                     turn_id: Arc::clone(&turn.turn_id),
                     outcome: execution.outcome,
                 },
@@ -551,7 +559,7 @@ async fn session_hook(
     checkpoints: &Arc<dyn CheckpointStore>,
     bots: &BotStore,
     bot_id: &str,
-    session_id: &str,
+    session_id: &SessionId,
     record: &JournalEvent,
     data: HookData,
     turn_id: Option<&str>,
@@ -577,7 +585,7 @@ async fn session_hook(
         && let Some(run) = bots
             .history(None)?
             .into_iter()
-            .find(|run| run.session_id.as_deref() == Some(session_id))
+            .find(|run| run.session_id.as_ref() == Some(session_id))
         && let Some(cause) = bots.hook_event(&format!("run-{}-running", run.id))?
     {
         cause_id = Some(Arc::clone(&cause.id));
@@ -590,7 +598,7 @@ async fn session_hook(
         id: format!("session-{session_id}-{}", record.sequence).into(),
         bot_id: bot_id.into(),
         source: HookSource::Session {
-            session_id: session_id.into(),
+            session_id: session_id.share(),
         },
         data,
         occurred_at: record.recorded_at_ms.div_euclid(1000),
@@ -603,7 +611,7 @@ async fn project_attention(
     checkpoints: &Arc<dyn CheckpointStore>,
     bots: &BotStore,
     bot_id: &str,
-    session_id: &str,
+    session_id: &SessionId,
     record: &JournalEvent,
 ) -> Result<()> {
     use sha2::{Digest as _, Sha256};
@@ -628,7 +636,7 @@ async fn project_attention(
             session_id,
             record,
             HookData::SessionAttention {
-                session_id: session_id.into(),
+                session_id: session_id.share(),
                 capability: Arc::clone(capability),
                 item_id: Arc::clone(&item.id),
                 text: item.text.chars().take(200).collect(),
@@ -657,7 +665,7 @@ fn session_causality(author: MessageAuthor) -> (Option<Arc<str>>, Vec<Arc<str>>)
 async fn project_session_journal(
     checkpoints: &Arc<dyn CheckpointStore>,
     bots: &BotStore,
-    session_id: &str,
+    session_id: &SessionId,
     fallback_owner: &str,
     through: Option<u64>,
 ) -> Result<()> {
@@ -716,7 +724,7 @@ async fn project_session_journal(
 
 fn close_owner_change(
     bots: &BotStore,
-    session_id: &str,
+    session_id: &SessionId,
     previous: &Arc<str>,
     next: &str,
     record: &JournalEvent,
@@ -725,10 +733,10 @@ fn close_owner_change(
         id: format!("session-{session_id}-{}", record.sequence).into(),
         bot_id: Arc::clone(previous),
         source: HookSource::Session {
-            session_id: session_id.into(),
+            session_id: session_id.share(),
         },
         data: HookData::SessionOwnerChanged {
-            session_id: session_id.into(),
+            session_id: session_id.share(),
             previous_bot_id: Arc::clone(previous),
         },
         occurred_at: record.recorded_at_ms.div_euclid(1000),
@@ -741,7 +749,7 @@ fn close_owner_change(
 pub(super) async fn close_reassigned_source(
     checkpoints: &Arc<dyn CheckpointStore>,
     bots: &BotStore,
-    session_id: &str,
+    session_id: &SessionId,
     previous: &str,
 ) -> Result<()> {
     let page = checkpoints
@@ -771,7 +779,7 @@ pub(super) async fn close_reassigned_source(
 
 async fn execution_for_turn(
     checkpoints: &Arc<dyn CheckpointStore>,
-    session_id: &str,
+    session_id: &SessionId,
     turn_id: &str,
 ) -> Result<Option<ExecutionRecord>> {
     let mut before_sequence = None;
@@ -873,7 +881,7 @@ mod tests {
                 &checkpoints,
                 &bots,
                 "bot",
-                "chat",
+                &SessionId::new("chat").unwrap(),
                 &record(Arc::new(widget.clone())),
             )
             .await
@@ -896,7 +904,7 @@ mod tests {
             &checkpoints,
             &bots,
             "bot",
-            "chat",
+            &SessionId::new("chat").unwrap(),
             &record(Arc::new(widget)),
         )
         .await

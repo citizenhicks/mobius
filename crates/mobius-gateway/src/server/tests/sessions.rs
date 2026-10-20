@@ -1,4 +1,6 @@
 use super::*;
+use mobius::SessionId;
+use mobius::backend::model::provider::BaseUrl;
 
 #[cfg(unix)]
 #[tokio::test]
@@ -188,7 +190,7 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
     };
     sender
         .send(ClientMessage::Submit {
-            session_id: session_id.as_str().into(),
+            session_id: session_id.share(),
             submission: Submission {
                 id: "invalid-duplicate-attachments".into(),
                 op: user_message("invalid", vec![missing.clone(), missing]),
@@ -488,7 +490,7 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
     let submission_id = "submit-attachment".to_owned();
     sender
         .send(ClientMessage::Submit {
-            session_id: session_id.as_str().into(),
+            session_id: session_id.share(),
             submission: Submission {
                 id: submission_id.as_str().into(),
                 op: user_message("describe the image", vec![file.clone()]),
@@ -506,7 +508,7 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
         else {
             continue;
         };
-        if actual_session.as_ref() != session_id
+        if actual_session != session_id
             || record.event.submission_id.as_deref() != Some(&submission_id)
         {
             continue;
@@ -646,10 +648,11 @@ async fn shutdown_stops_a_blocked_routine_and_fails_its_durable_run() {
     let model_listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("model listener");
-    let model_base_url = format!(
+    let model_base_url = BaseUrl::new(format!(
         "http://{}/v1",
         model_listener.local_addr().expect("model address")
-    );
+    ))
+    .expect("model endpoint");
     let (model_seen, model_request) = tokio::sync::oneshot::channel();
     let model_server = tokio::spawn(async move {
         let (mut stream, _) = model_listener.accept().await.expect("model request");
@@ -667,7 +670,7 @@ async fn shutdown_stops_a_blocked_routine_and_fails_its_durable_run() {
         instance: "blocked-routine".into(),
         provider: "responses".into(),
         model: "local-test".into(),
-        base_url: Some(model_base_url.clone()),
+        base_url: Some(model_base_url.share()),
         endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
         reasoning_effort: None,
         service_tier: None,
@@ -789,13 +792,13 @@ async fn shutdown_stops_a_blocked_routine_and_fails_its_durable_run() {
 async fn request_history(
     sender: &GatewaySender,
     events: &mut GatewayEvents,
-    session_id: &str,
+    session_id: &SessionId,
 ) -> std::result::Result<Vec<crate::wire::RecordedEvent>, String> {
     let request_id = Uuid::new_v4().to_string();
     sender
         .send(ClientMessage::GetSessionHistory {
             request_id: request_id.as_str().into(),
-            session_id: session_id.into(),
+            session_id: session_id.share(),
             before_sequence: None,
         })
         .await
@@ -890,22 +893,17 @@ async fn unselected_chat_history_is_read_without_starting_the_chat() {
         .expect("selected history");
     assert!(host.is_resident(&selected).await);
 
-    for (session_id, expected) in [
-        ("missing-chat", "unknown_session"),
-        ("  ", "invalid_session_id"),
-    ] {
-        assert_eq!(
-            request_history(&sender, &mut events, session_id)
-                .await
-                .err()
-                .as_deref(),
-            Some(expected)
-        );
-    }
+    let missing = "missing-chat".parse().expect("session ID");
+    assert_eq!(
+        request_history(&sender, &mut events, &missing)
+            .await
+            .expect_err("unknown chat"),
+        "unknown_session"
+    );
     sender
         .send(ClientMessage::DeleteSessions {
             request_id: "delete-away".into(),
-            session_ids: vec![away.as_str().into()],
+            session_ids: vec![away.share()],
             selection: mobius::backend::session_files::SessionFileSelection::All,
         })
         .await

@@ -1,5 +1,5 @@
 use super::super::*;
-use super::support::completed_events;
+use super::support::{completed_events, model_request};
 use crate::backend::model::PromptCacheIdentity;
 
 #[tokio::test]
@@ -82,31 +82,28 @@ async fn previous_response_not_found_rebuilds_full_context_on_the_same_connectio
     let socket_url = format!("ws://{address}/responses");
     let provider = OpenAiSocket::with_authorization(
         Arc::new(ApiKeyAuthorization::new("test-key".into())),
-        &format!("http://{address}"),
+        BaseUrl::new(format!("http://{address}")).unwrap(),
         &socket_url,
         "test-model",
         reqwest::Client::new(),
         crate::backend::model::ModelTransportSettings::default(),
     )
     .expect("provider");
+    let request = ModelRequest {
+        prompt_cache: Some(PromptCacheIdentity {
+            key: "hashed-cache-key",
+            context_epoch: 1,
+        }),
+        allow_continuation: true,
+        ..model_request()
+    };
     let initial_input = vec![serde_json::json!({"role": "user", "content": "one"})];
     let events: ModelEventSink = Arc::new(|_| Box::pin(async { Ok(()) }));
     let initial_output = provider
         .respond(
             ModelRequest {
-                cancellation: None,
-                session_id: "test-session",
-                prompt_cache: Some(PromptCacheIdentity {
-                    key: "hashed-cache-key",
-                    context_epoch: 1,
-                }),
-                instructions: "Test instructions",
                 input: (&initial_input).into(),
-                catalog_revision: "catalog-1",
-                tools: &[],
-                deferred_tools: &[],
-                allow_hosted_tools: false,
-                allow_continuation: true,
+                ..request
             },
             Arc::clone(&events),
         )
@@ -119,19 +116,8 @@ async fn previous_response_not_found_rebuilds_full_context_on_the_same_connectio
     let output = provider
         .respond(
             ModelRequest {
-                cancellation: None,
-                session_id: "test-session",
-                prompt_cache: Some(PromptCacheIdentity {
-                    key: "hashed-cache-key",
-                    context_epoch: 1,
-                }),
-                instructions: "Test instructions",
                 input: (&input).into(),
-                catalog_revision: "catalog-1",
-                tools: &[],
-                deferred_tools: &[],
-                allow_hosted_tools: false,
-                allow_continuation: true,
+                ..request
             },
             events,
         )

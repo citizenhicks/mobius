@@ -1,3 +1,4 @@
+use mobius::SessionId;
 use mobius::middleware::sessions::{ChatTarget, LiveChats, PeerCommand};
 use mobius::protocol::ActiveMessageDelivery;
 
@@ -85,7 +86,7 @@ async fn session_commands_and_chat_messages_preserve_sender_and_hook_ancestry() 
                     crate::wire::HookKind::CustomReceived,
                 ),
                 action: crate::wire::BotAction::Session {
-                    session_id: target.session_id().to_string(),
+                    session_id: target.session_id().share(),
                     op: Box::new(message("Saved test", None)),
                 },
             },
@@ -173,7 +174,7 @@ async fn peer_delivery_needs_the_current_bot_and_reports_the_agents_rejection() 
                     ancestry: Vec::new(),
                     message_id: Uuid::new_v4().to_string().into(),
                     source: mobius::protocol::MessageSource::Session {
-                        session_id: "sender".into(),
+                        session_id: SessionId::new("sender").unwrap(),
                     },
                     handle: "chat #sender".into(),
                     symbol: None,

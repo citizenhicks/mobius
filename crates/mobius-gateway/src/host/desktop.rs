@@ -3,6 +3,7 @@ use super::{
     require_catalog_session,
 };
 use futures_util::StreamExt as _;
+use mobius::SessionId;
 
 const DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
@@ -35,7 +36,7 @@ impl Drop for Takeover {
 impl GatewayHost {
     pub(crate) async fn open_computer(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
     ) -> std::result::Result<(), Rejection> {
         self.require_desktop_chat(session_id).await?;
         self.remote_desktop
@@ -44,7 +45,10 @@ impl GatewayHost {
             .map_err(invalid_config)
     }
 
-    async fn require_desktop_chat(&self, session_id: &str) -> std::result::Result<(), Rejection> {
+    async fn require_desktop_chat(
+        &self,
+        session_id: &SessionId,
+    ) -> std::result::Result<(), Rejection> {
         let (checkpoints, bots) = {
             let state = self.state.lock().await;
             (Arc::clone(&state.checkpoints), Arc::clone(&state.bots))
@@ -70,7 +74,7 @@ impl GatewayHost {
         &self,
         connection: Uuid,
         enabled: bool,
-        session_id: Option<String>,
+        session_id: Option<SessionId>,
     ) -> std::result::Result<(), Rejection> {
         if !enabled {
             return self

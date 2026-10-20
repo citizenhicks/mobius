@@ -1,5 +1,6 @@
 //! Gateway-owned Bot profiles, routines, run history, and schedule matching.
 
+use mobius::SessionId;
 mod events;
 mod storage;
 #[cfg(test)]
@@ -260,7 +261,7 @@ pub(crate) enum BeginRun {
 /// A durable running invocation whose file lock is held until completion.
 pub(crate) struct ActiveRoutineRun {
     run_id: Arc<str>,
-    session_id: String,
+    session_id: SessionId,
     _lock: RoutineLock,
 }
 
@@ -297,7 +298,7 @@ impl BotDeletion {
 #[derive(Debug)]
 pub(crate) struct RoutineDeletion {
     routine_id: Arc<str>,
-    session_ids: BTreeSet<String>,
+    session_ids: BTreeSet<SessionId>,
     instructions: PathBuf,
     _state_lock: File,
     _lock: RoutineLock,
@@ -309,13 +310,13 @@ pub(crate) struct RoutineDeletion {
 pub(crate) struct PendingBotDeletion {
     pub(crate) bot_id: Arc<str>,
     pub(crate) expected_revision: u64,
-    pub(crate) session_roots: Vec<String>,
-    pub(crate) session_ids: Vec<String>,
+    pub(crate) session_roots: Vec<SessionId>,
+    pub(crate) session_ids: Vec<SessionId>,
     instruction_paths: Vec<PathBuf>,
 }
 
 impl RoutineDeletion {
-    pub(crate) fn session_ids(&self) -> &BTreeSet<String> {
+    pub(crate) fn session_ids(&self) -> &BTreeSet<SessionId> {
         &self.session_ids
     }
 }
@@ -324,7 +325,7 @@ impl ActiveRoutineRun {
     pub(crate) fn id(&self) -> &str {
         &self.run_id
     }
-    pub(crate) fn session_id(&self) -> &str {
+    pub(crate) fn session_id(&self) -> &SessionId {
         &self.session_id
     }
 }
@@ -355,7 +356,7 @@ impl StoredBot {
         let (accepts_file_attachments, routine_interaction_policy) =
             crate::assembly::bot_semantics(&self.config.config)?;
         Ok(BotRecord {
-            conversation_session_id: conversation_session_id(&self.id).into(),
+            conversation_session_id: SessionId::new(conversation_session_id(&self.id))?,
             id: Arc::clone(&self.id),
             handle: Arc::clone(&self.handle),
             name: Arc::clone(&self.name),
@@ -594,8 +595,8 @@ impl BotStore {
     pub(crate) fn record_bot_deletion(
         &self,
         deletion: &mut BotDeletion,
-        session_roots: &[String],
-        session_ids: &[String],
+        session_roots: &[SessionId],
+        session_ids: &[SessionId],
     ) -> Result<PendingBotDeletion> {
         let intent = PendingBotDeletion {
             bot_id: Arc::clone(&deletion.bot_id),
@@ -1464,7 +1465,7 @@ impl BotStore {
     }
     pub(crate) fn advance_source_cursor(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         bot_id: &str,
         sequence: u64,
     ) -> Result<()> {
@@ -1487,7 +1488,7 @@ impl BotStore {
             _lock: lock,
         })
     }
-    pub(crate) fn source_cursor(&self, session_id: &str) -> Result<(u64, Option<Arc<str>>)> {
+    pub(crate) fn source_cursor(&self, session_id: &SessionId) -> Result<(u64, Option<Arc<str>>)> {
         self.storage.source_cursor(session_id)
     }
     pub(crate) fn project_session(&self, event: &HookEvent, sequence: u64) -> Result<bool> {
@@ -1603,13 +1604,6 @@ impl BotStore {
 #[cfg(test)]
 thread_local! {
     static CATALOG_PARSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-fn validate_session_id(session_id: &str) -> Result<()> {
-    if session_id.trim().is_empty() {
-        return Err(Error::Config("routine session ID cannot be empty".into()));
-    }
-    Ok(())
 }
 
 fn catalog_json(state: &BotState) -> Result<String> {
@@ -1963,9 +1957,6 @@ fn validate_records(state: &BotState, routines_dir: &Path) -> Result<()> {
         if *parsed.to_string() != *pending.bot_id || pending.expected_revision == 0 {
             return Err(Error::Config("invalid pending Bot deletion".into()));
         }
-        for session_id in pending.session_roots.iter().chain(&pending.session_ids) {
-            validate_session_id(session_id)?;
-        }
         if pending
             .session_roots
             .iter()
@@ -2060,7 +2051,7 @@ fn new_run(
         started_at: now,
         finished_at: (status != RoutineRunStatus::Running).then_some(now),
         status,
-        session_id: (status == RoutineRunStatus::Running).then(|| Uuid::new_v4().to_string()),
+        session_id: (status == RoutineRunStatus::Running).then(SessionId::generate),
         message,
     }
 }

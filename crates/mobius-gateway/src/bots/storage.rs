@@ -1,3 +1,4 @@
+use mobius::SessionId;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -491,7 +492,7 @@ impl BotStorage {
         runs
     }
 
-    pub(super) fn session_ids_for_routine(&self, routine_id: &str) -> Result<Vec<String>> {
+    pub(super) fn session_ids_for_routine(&self, routine_id: &str) -> Result<Vec<SessionId>> {
         let connection = self.lock()?;
         let mut statement = connection
             .prepare(
@@ -500,7 +501,7 @@ impl BotStorage {
             )
             .map_err(Error::from)?;
         let session_ids = statement
-            .query_map([routine_id], |row| row.get::<_, String>(0))
+            .query_map([routine_id], |row| row.get::<_, SessionId>(0))
             .map_err(Error::from)?
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Error::from);
@@ -705,9 +706,6 @@ fn validate_run(run: &RoutineRun) -> Result<()> {
             "completed routine run has no finish time".into(),
         ));
     }
-    if let Some(session_id) = &run.session_id {
-        super::validate_session_id(session_id)?;
-    }
     Ok(())
 }
 
@@ -733,7 +731,7 @@ mod tests {
             started_at: 1,
             finished_at: Some(1),
             status: RoutineRunStatus::Succeeded,
-            session_id: Some(uuid::Uuid::new_v4().to_string()),
+            session_id: Some(SessionId::generate()),
             message: None,
         }
     }

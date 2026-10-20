@@ -1,3 +1,4 @@
+use crate::SessionId;
 use std::collections::BTreeSet;
 use std::future::Future;
 use std::sync::Arc;
@@ -62,7 +63,7 @@ impl Tool for SpawnAgent {
                 arguments.task_name
             )
             .into();
-            let session_id: Arc<str> = Uuid::new_v4().to_string().into();
+            let session_id = SessionId::generate();
             let collaboration = Arc::clone(&self.0);
             let submission = peer_submission(
                 &collaboration.scope.session_id,
@@ -83,7 +84,7 @@ impl Tool for SpawnAgent {
                         &scope.root_session_id,
                         &path,
                         &scope.agent_path,
-                        Arc::clone(&session_id),
+                        session_id.share(),
                         scope.next_depth()?,
                         AgentPresentation {
                             model: Arc::clone(&model),
@@ -460,7 +461,7 @@ fn validate_text(text: String) -> Result<String> {
 }
 
 fn peer_submission(
-    session_id: &str,
+    session_id: &SessionId,
     agent_path: &str,
     text: String,
     origin: &MessageAuthor,
@@ -475,7 +476,7 @@ fn peer_submission(
                 command_id.into()
             },
             source: crate::protocol::MessageSource::Session {
-                session_id: session_id.into(),
+                session_id: session_id.share(),
             },
             cause_id,
             ancestry,
@@ -529,7 +530,7 @@ mod tests {
     #[test]
     fn peer_submission_preserves_agent_provenance() {
         let submission = peer_submission(
-            "session-reviewer",
+            &"session-reviewer".parse().expect("session ID"),
             "/root/team/reviewer",
             "Review the parser".into(),
             &MessageAuthor::User,
@@ -557,7 +558,7 @@ mod tests {
         let mut origin = MessageAuthor::User;
         for depth in 0..=16 {
             let next = peer_submission(
-                "sender-session",
+                &"sender-session".parse().expect("session ID"),
                 "/root/reviewer",
                 "check it".into(),
                 &origin,
@@ -568,7 +569,7 @@ mod tests {
             origin = next.author;
         }
         let next = peer_submission(
-            "sender-session",
+            &"sender-session".parse().expect("session ID"),
             "/root/reviewer",
             "check it".into(),
             &origin,

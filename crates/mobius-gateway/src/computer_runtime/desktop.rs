@@ -2,7 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use mobius::{Error, Result};
+use mobius::{Error, Result, SessionId};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 use tokio::sync::{mpsc, oneshot};
@@ -51,7 +51,7 @@ impl DesktopControl {
         })
     }
 
-    pub(crate) fn connect(self: &Arc<Self>, session_id: &str) -> Result<DuplexStream> {
+    pub(crate) fn connect(self: &Arc<Self>, session_id: &SessionId) -> Result<DuplexStream> {
         let lease = Arc::clone(&self.control).try_lock_owned().map_err(|busy| {
             Error::Sandbox(format!(
                 "another Bot is controlling this Mac ({busy}); inspect again after it finishes"
@@ -64,7 +64,7 @@ impl DesktopControl {
             drop(guard);
             attached
         };
-        let session_id = session_id.to_owned();
+        let session_id = session_id.share();
         let execution_id = Uuid::new_v4().to_string();
         let control = Arc::clone(self);
         let (worker, mut relay) = tokio::io::duplex(64 * 1024);
@@ -98,7 +98,7 @@ impl DesktopControl {
         channel: &mut DuplexStream,
         runtime_id: Uuid,
         outgoing: &mpsc::Sender<ServerMessage>,
-        session_id: &str,
+        session_id: &SessionId,
         execution_id: &str,
     ) -> Result<()> {
         loop {
@@ -124,7 +124,7 @@ impl DesktopControl {
                 .send(ServerMessage::DesktopControlRequested {
                     request_id: request_id.to_string().into(),
                     execution_id: execution_id.into(),
-                    session_id: session_id.into(),
+                    session_id: session_id.share(),
                     request,
                 })
                 .await

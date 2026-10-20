@@ -27,8 +27,7 @@ use crate::{Error, Result};
 use self::codec::deserialize_frame;
 pub use self::codec::{FrameReader, read_frame, validate_version, write_frame};
 pub(crate) use self::codec::{
-    SharedFrame, encode_bounded_frame, read_frame_with_limit, validate_session_id, websocket_error,
-    write_encoded,
+    SharedFrame, encode_bounded_frame, read_frame_with_limit, websocket_error, write_encoded,
 };
 pub use self::messages::{
     ClientFrame, ClientMessage, GatewayResponseError, ServerFrame, ServerMessage,

@@ -1,3 +1,4 @@
+use mobius::SessionId;
 use tokio::io::duplex;
 
 use super::*;
@@ -72,15 +73,17 @@ async fn framed_json_round_trip_preserves_the_versioned_message() {
 
 #[test]
 fn client_frames_reject_unknown_fields() {
-    let error = serde_json::from_value::<ClientFrame>(serde_json::json!({
+    let frame = serde_json::from_value::<ClientFrame>(serde_json::json!({
         "version": PROTOCOL_VERSION,
         "type": "list_sessions",
         "request_id": "request-a",
         "unexpected": true,
     }))
-    .expect_err("reject unknown client field");
-
-    assert!(error.to_string().contains("unknown field `unexpected`"));
+    .expect("preserve request correlation");
+    assert!(matches!(frame.message,
+        ClientMessage::InvalidRequest { request_id, message }
+            if &*request_id == "request-a" && message.contains("unknown field `unexpected`")
+    ));
 }
 
 #[test]
@@ -105,7 +108,7 @@ fn client_request_ids_are_bounded_without_echoing_rejected_values() {
 fn session_file_bytes_use_standard_base64_and_round_trip() {
     let expected = ClientFrame::new(ClientMessage::UploadSessionFileChunk {
         request_id: "request-upload".into(),
-        session_id: "session-a".into(),
+        session_id: SessionId::new("session-a").unwrap(),
         upload_id: "upload-a".into(),
         offset: 0,
         data: vec![0, 0xff],

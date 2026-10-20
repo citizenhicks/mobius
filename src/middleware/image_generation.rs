@@ -1,5 +1,6 @@
 //! Native image generation, publication, and transcript presentation.
 
+use crate::SessionId;
 use std::sync::Arc;
 
 use serde::Deserialize;
@@ -123,7 +124,7 @@ impl Middleware for ImageGeneration {
         catalog.register(Arc::new(GenerateImage {
             models: Arc::clone(&self.models),
             store: Arc::clone(&self.store),
-            session_id: Arc::clone(&runtime.session_id),
+            session_id: runtime.session_id.share(),
             route: self.route.as_ref().map(Arc::clone),
         }))
     }
@@ -178,7 +179,7 @@ struct GenerateImageArgs {
 struct GenerateImage {
     models: Arc<ModelRouter>,
     store: Arc<SessionFileStore>,
-    session_id: Arc<str>,
+    session_id: SessionId,
     route: Option<Arc<str>>,
 }
 
@@ -389,13 +390,18 @@ mod tests {
             .register(&mut Catalog::default(), &unsupported_runtime)
             .expect("a router without image models registers no tool");
         let source = store
-            .publish_artifact("session", "source.png".into(), "image/png".into(), &png)
+            .publish_artifact(
+                &"session".parse().expect("session ID"),
+                "source.png".into(),
+                "image/png".into(),
+                &png,
+            )
             .await
             .expect("source image");
         let tool = GenerateImage {
             models: Arc::clone(&middleware.models),
             store: Arc::new(store.clone()),
-            session_id: "session".into(),
+            session_id: "session".parse().expect("session ID"),
             route: None,
         };
         assert_eq!(tool.exposure(), ToolExposure::Deferred);
@@ -405,7 +411,7 @@ mod tests {
             ApprovalPolicy::Ask,
         ));
         let permissions = SandboxPermissions::restore(
-            "session",
+            &"session".parse().expect("session ID"),
             SandboxMode::WorkspaceWrite,
             NetworkAccess::Allowed,
             ["image-call".into()],
@@ -433,10 +439,16 @@ mod tests {
             .next()
             .expect("published file")
             .clone();
-        assert_eq!(store.read_file("session", &file).await.expect("image"), png);
+        assert_eq!(
+            store
+                .read_file(&"session".parse().expect("session ID"), &file)
+                .await
+                .expect("image"),
+            png
+        );
         let artifacts = store
             .list_files(
-                "session",
+                &"session".parse().expect("session ID"),
                 &[crate::backend::session_files::SessionFileOrigin::Artifact],
             )
             .await
@@ -446,7 +458,7 @@ mod tests {
         assert_eq!(
             store
                 .list_files(
-                    "session",
+                    &"session".parse().expect("session ID"),
                     &[
                         crate::backend::session_files::SessionFileOrigin::Upload,
                         crate::backend::session_files::SessionFileOrigin::Artifact
@@ -509,7 +521,7 @@ mod tests {
         let unsupported_tool = GenerateImage {
             models: Arc::clone(&unsupported.models),
             store: Arc::new(store),
-            session_id: "session".into(),
+            session_id: "session".parse().expect("session ID"),
             route: None,
         };
         let schema = &unsupported_tool.definition().parameters;

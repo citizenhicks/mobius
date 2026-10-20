@@ -228,7 +228,7 @@ impl BotsState {
                     sessions_for_bot(gateway, id)
                         .get(self.selected)
                         .map_or(Action::None, |session| {
-                            Action::OpenSession(Arc::clone(&session.session_id))
+                            Action::OpenSession(session.session_id.share())
                         })
                 } else {
                     Action::None
@@ -305,7 +305,7 @@ impl BotsState {
                 .iter()
                 .find(|bot| *bot.id == **id)
                 .map_or(Action::None, |bot| {
-                    Action::OpenSession(Arc::clone(&bot.conversation_session_id))
+                    Action::OpenSession(bot.conversation_session_id.share())
                 }),
             BotRow::Conversations => {
                 self.page = Page::Conversations(std::mem::take(id));

@@ -11,16 +11,20 @@ async fn handoff_cursor_advances_only_on_acknowledgement_and_survives_reopen() {
     let directory = tempfile::tempdir().unwrap();
     let checkpoints: Arc<dyn CheckpointStore> =
         Arc::new(SqliteCheckpoint::new(directory.path().join("checkpoints.sqlite3")).unwrap());
-    let mut parent = Checkpoint::empty("parent");
+    let mut parent = Checkpoint::empty("parent".parse().expect("session ID"));
     std::sync::Arc::make_mut(&mut parent.session_context).owner_id = "bot".into();
     checkpoints
         .save(parent.clone(), Vec::new(), None)
         .await
         .unwrap();
     let sink: FrontendEventSink = Arc::new(|_| Ok(()));
-    let mut voice = VoiceTranscript::open(Arc::clone(&checkpoints), "parent", Arc::clone(&sink))
-        .await
-        .unwrap();
+    let mut voice = VoiceTranscript::open(
+        Arc::clone(&checkpoints),
+        &parent.session_id,
+        Arc::clone(&sink),
+    )
+    .await
+    .unwrap();
     voice
         .record(
             "plan",
@@ -55,7 +59,7 @@ async fn handoff_cursor_advances_only_on_acknowledgement_and_survives_reopen() {
     voice.acknowledge(second).await.unwrap();
     voice.acknowledge(retry).await.unwrap();
     drop(voice);
-    let voice = VoiceTranscript::open(checkpoints, "parent", sink)
+    let voice = VoiceTranscript::open(checkpoints, &parent.session_id, sink)
         .await
         .unwrap();
     assert!(voice.handoff_context().await.unwrap().text.is_empty());
@@ -73,13 +77,13 @@ async fn finish_retries_failed_persistence_without_losing_or_duplicating_speech(
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("checkpoints.sqlite3");
     let checkpoints: Arc<dyn CheckpointStore> = Arc::new(SqliteCheckpoint::new(&path).unwrap());
-    let mut parent = Checkpoint::empty("parent");
+    let mut parent = Checkpoint::empty("parent".parse().expect("session ID"));
     std::sync::Arc::make_mut(&mut parent.session_context).owner_id = "bot".into();
     checkpoints
         .save(parent.clone(), Vec::new(), None)
         .await
         .unwrap();
-    let mut voice = VoiceTranscript::open(checkpoints, "parent", Arc::new(|_| Ok(())))
+    let mut voice = VoiceTranscript::open(checkpoints, &parent.session_id, Arc::new(|_| Ok(())))
         .await
         .unwrap();
     voice
@@ -141,7 +145,7 @@ async fn voice_transcript_is_linked_read_only_and_resumes_without_reusing_messag
     let path = directory.path().join("checkpoints.sqlite3");
     let checkpoints: Arc<dyn CheckpointStore> =
         Arc::new(SqliteCheckpoint::new(&path).expect("store"));
-    let mut parent = Checkpoint::empty("parent");
+    let mut parent = Checkpoint::empty("parent".parse().expect("session ID"));
     std::sync::Arc::make_mut(&mut parent.session_context).owner_id = "bot".into();
     parent.context = std::sync::Arc::new(
         vec![serde_json::json!({"role":"user","content":"private parent task"})]
@@ -160,13 +164,17 @@ async fn voice_transcript_is_linked_read_only_and_resumes_without_reusing_messag
         received.lock().expect("events").push(event);
         Ok(())
     });
-    let mut voice = VoiceTranscript::open(Arc::clone(&checkpoints), "parent", Arc::clone(&sink))
-        .await
-        .expect("voice");
-    let child_id = voice.session_id().to_owned();
+    let mut voice = VoiceTranscript::open(
+        Arc::clone(&checkpoints),
+        &parent.session_id,
+        Arc::clone(&sink),
+    )
+    .await
+    .expect("voice");
+    let child_id = voice.session_id().share();
     assert!(updates.lock().expect("events").is_empty());
     assert!(
-        restore_widget(checkpoints.as_ref(), "parent")
+        restore_widget(checkpoints.as_ref(), &parent.session_id)
             .await
             .expect("widget")
             .is_none()
@@ -180,7 +188,7 @@ async fn voice_transcript_is_linked_read_only_and_resumes_without_reusing_messag
         .record("input-1", ConversationRole::User, "lo", false)
         .await
         .expect("partial");
-    let draft = read_preview(checkpoints.as_ref(), "parent", "")
+    let draft = read_preview(checkpoints.as_ref(), &parent.session_id, "")
         .await
         .expect("preview");
     let FrontendEvent::Preview { events, .. } = draft else {
@@ -215,12 +223,12 @@ async fn voice_transcript_is_linked_read_only_and_resumes_without_reusing_messag
 
     let checkpoints: Arc<dyn CheckpointStore> =
         Arc::new(SqliteCheckpoint::new(&path).expect("reopen store"));
-    let mut voice = VoiceTranscript::open(Arc::clone(&checkpoints), "parent", sink)
+    let mut voice = VoiceTranscript::open(Arc::clone(&checkpoints), &parent.session_id, sink)
         .await
         .expect("reopen call");
-    assert_eq!(**voice.session_id(), *child_id);
+    assert_eq!(voice.session_id(), &child_id);
     assert!(
-        restore_widget(checkpoints.as_ref(), "parent")
+        restore_widget(checkpoints.as_ref(), &parent.session_id)
             .await
             .expect("restored widget")
             .is_some()
@@ -236,7 +244,7 @@ async fn voice_transcript_is_linked_read_only_and_resumes_without_reusing_messag
         .active_command(&mut ActiveCommandContext {
             checkpoints: checkpoints.as_ref(),
             submission_id: "preview-request",
-            session_id: "parent",
+            session_id: &parent.session_id,
             metadata: &metadata,
             active_turn_id: "ongoing-parent-work",
             command: COMMAND,
@@ -260,17 +268,21 @@ async fn voice_transcript_is_linked_read_only_and_resumes_without_reusing_messag
         matches!(&events[1].event, EventMsg::AssistantMessage(message) if message.content[0].text == "Hi there")
     );
     assert!(
-        read_preview(checkpoints.as_ref(), "other-parent", "")
-            .await
-            .is_err()
+        read_preview(
+            checkpoints.as_ref(),
+            &"other-parent".parse().expect("session ID"),
+            ""
+        )
+        .await
+        .is_err()
     );
     assert!(
-        read_preview(checkpoints.as_ref(), "parent", "0")
+        read_preview(checkpoints.as_ref(), &parent.session_id, "0")
             .await
             .is_err()
     );
     let parent_after = checkpoints
-        .load("parent")
+        .load(&parent.session_id)
         .await
         .expect("parent")
         .expect("exists");
@@ -304,7 +316,7 @@ async fn voice_transcript_is_linked_read_only_and_resumes_without_reusing_messag
         Some("parent")
     );
     checkpoints
-        .delete_sessions(&["parent".into()])
+        .delete_sessions(&["parent".parse().expect("session ID")])
         .await
         .expect("delete parent");
     assert!(

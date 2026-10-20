@@ -1,7 +1,7 @@
 //! OpenAI API-key provider registration and default endpoint.
 
 use super::Model;
-use super::provider::{HostedWebSearch, ProviderBuildConfig, ProviderDefinition};
+use super::provider::{BaseUrl, HostedWebSearch, ProviderBuildConfig, ProviderDefinition};
 use super::responses::CATALOG;
 use crate::Result;
 use std::sync::Arc;
@@ -19,11 +19,10 @@ impl OpenAiSocket {
     ///
     /// Returns an error if configuration is invalid or a required resource cannot be initialized.
     pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Result<Self> {
-        Self::with_client(
+        Self::new_with_transport(
             api_key,
-            MANIFEST.base_url.as_str(),
+            MANIFEST.base_url.share(),
             model,
-            super::transport::streaming_client()?,
             super::ModelTransportSettings::default(),
         )
     }
@@ -42,15 +41,11 @@ pub(super) fn provider() -> ProviderDefinition {
     .with_voice_models(&super::realtime::OPENAI_MODELS)
 }
 
-fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn Model>> {
+fn build_provider(config: ProviderBuildConfig, base_url: BaseUrl) -> Result<Arc<dyn Model>> {
     let tool_discovery = config
         .tool_discovery
-        .unwrap_or_else(|| provider().tool_discovery(&config.model, config.base_url.as_deref()));
+        .unwrap_or_else(|| provider().tool_discovery(&config.model, Some(base_url.as_str())));
     let api_key = config.credential.into_api_key("openai_socket")?;
-    let base_url = config
-        .base_url
-        .as_deref()
-        .unwrap_or(MANIFEST.base_url.as_str());
     let provider = OpenAiSocket::with_client(
         api_key,
         base_url,

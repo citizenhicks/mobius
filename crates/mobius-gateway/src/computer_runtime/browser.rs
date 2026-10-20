@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-use mobius::{Error, Result};
+use mobius::{Error, Result, SessionId};
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
@@ -57,7 +57,7 @@ impl BrowserHost {
     }
 
     /// Requests the renderer's assigned page for this chat.
-    pub(crate) async fn page(&self, session_id: &str, foreground: bool) -> Option<String> {
+    pub(crate) async fn page(&self, session_id: &SessionId, foreground: bool) -> Option<String> {
         let request = Uuid::new_v4();
         let (reply, answer) = oneshot::channel();
         {
@@ -71,7 +71,7 @@ impl BrowserHost {
             app.outgoing
                 .try_send(ServerMessage::BrowserPageRequested {
                     request_id: request.to_string().into(),
-                    session_id: session_id.to_owned(),
+                    session_id: session_id.share(),
                     foreground,
                 })
                 .ok()?;

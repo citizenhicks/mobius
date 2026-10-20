@@ -28,13 +28,13 @@ fn config_with_store<M: Model + 'static>(
         .expect("middleware"),
         "test system prompt",
     )
-    .session_id(session)
+    .session_id(SessionId::new(session).unwrap())
     .session_context(test_session_context())
 }
 
 #[tokio::test(start_paused = true)]
 async fn checkpoint_preparation_retries_are_bounded_and_interruptible() {
-    use mobius::backend::model::ModelTransportSettings;
+    use mobius::backend::model::{ModelTransportSettings, RawModelTransportSettings};
     use std::time::Duration;
     use tokio::time::Instant;
 
@@ -50,12 +50,14 @@ async fn checkpoint_preparation_retries_are_bounded_and_interruptible() {
 
     impl Model for RetryingModel {
         fn transport_settings(&self) -> ModelTransportSettings {
-            ModelTransportSettings {
+            RawModelTransportSettings {
                 stream_retry_limit: 1,
                 stream_retry_backoff_ms: 10,
                 stream_retry_max_backoff_ms: 100,
                 ..Default::default()
             }
+            .try_into()
+            .unwrap()
         }
 
         fn respond<'a>(
@@ -89,7 +91,7 @@ async fn checkpoint_preparation_retries_are_bounded_and_interruptible() {
             })
         }
 
-        fn fallback_transport<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Result<bool>> {
+        fn fallback_transport<'a>(&'a self, _: &'a SessionId) -> BoxFuture<'a, Result<bool>> {
             self.fallbacks.fetch_add(1, Ordering::SeqCst);
             // Even a provider that always offers fallback must not create an unbounded retry loop.
             Box::pin(async { Ok(true) })
@@ -181,7 +183,7 @@ async fn checkpoint_preparation_retries_are_bounded_and_interruptible() {
         }
         if !succeeds {
             let saved = checkpoints
-                .load("checkpoint-retry")
+                .load(&SessionId::new("checkpoint-retry").unwrap())
                 .await
                 .expect("load")
                 .expect("saved checkpoint");
@@ -292,7 +294,7 @@ async fn checkpoint_model_override_keeps_the_conversation_on_its_selected_route(
         .expect("middleware"),
         "test system prompt",
     )
-    .session_id("separate-writer")
+    .session_id(SessionId::new("separate-writer").unwrap())
     .session_context(test_session_context());
     let mut agent = create_agent(config).await.expect("agent");
     agent
@@ -358,7 +360,7 @@ async fn invalid_checkpoint_preserves_original_and_pending_input() {
     let checkpoints =
         SqliteCheckpoint::new(workspace.path().join("checkpoint.sqlite3")).expect("store");
     let saved = checkpoints
-        .load("failed-checkpoint")
+        .load(&SessionId::new("failed-checkpoint").unwrap())
         .await
         .expect("load")
         .expect("saved");
@@ -377,7 +379,7 @@ async fn oversized_history_summarizes_a_complete_prefix_and_preserves_parallel_r
         text_response("continued"),
     ]));
     let checkpoints = Arc::new(MemoryCheckpoints::default());
-    let mut checkpoint = Checkpoint::empty("over-budget");
+    let mut checkpoint = Checkpoint::empty(SessionId::new("over-budget").unwrap());
     checkpoint.session_context = test_session_context().into();
     checkpoint.model_route = Some("test".into());
     checkpoint.context_model_route = Some("test".into());
@@ -394,7 +396,7 @@ async fn oversized_history_summarizes_a_complete_prefix_and_preserves_parallel_r
         .sessions
         .lock()
         .expect("sessions")
-        .insert(Arc::clone(&checkpoint.session_id), checkpoint);
+        .insert(checkpoint.session_id.share(), checkpoint);
     let mut agent = create_agent(
         config_with_store(
             workspace.path(),

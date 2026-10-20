@@ -1,5 +1,6 @@
 //! One live call: provider media, its private transcript, and workspace handoffs.
 
+use crate::SessionId;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,7 +22,7 @@ const REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 /// The chat a host attaches one call to.
 pub struct VoiceCallContext {
     /// The chat session that owns the call.
-    pub session_id: Arc<str>,
+    pub session_id: SessionId,
     /// The chat's model router, which serves the voice route.
     pub router: Arc<ModelRouter>,
     /// The selected voice route.
@@ -179,7 +180,7 @@ impl VoiceCall {
         transcript.start_call(&call.voice).await?;
         Ok(Self {
             conversation: VoiceConversation::new(
-                Arc::clone(transcript.session_id()),
+                transcript.session_id().share(),
                 active_turn_id,
                 bot_name,
             ),

@@ -399,7 +399,11 @@ impl ModelRouter {
     /// # Errors
     ///
     /// Returns an error if the route is unknown or the provider cannot switch transports.
-    pub async fn fallback_transport(&self, provider: &str, session_id: &str) -> Result<bool> {
+    pub async fn fallback_transport(
+        &self,
+        provider: &str,
+        session_id: &crate::SessionId,
+    ) -> Result<bool> {
         self.provider(provider)?
             .fallback_transport(session_id)
             .await
@@ -412,14 +416,14 @@ impl ModelRouter {
     pub async fn validate_media(
         &self,
         provider: &str,
-        session_id: &str,
+        session_id: &crate::SessionId,
         input: super::ModelInput<'_>,
     ) -> Result<()> {
         super::MediaPreparation {
             files: self.files.as_deref(),
             limits: self.image_limits,
         }
-        .prepare(session_id, input, self.provider(provider)?, false)
+        .prepare(Some(session_id), input, self.provider(provider)?, false)
         .await
         .map(|_| ())
     }
@@ -488,7 +492,7 @@ impl ModelRouter {
     pub async fn start_realtime_voice(
         &self,
         voice_route: Option<&str>,
-        session_id: Arc<str>,
+        session_id: crate::SessionId,
         offer_sdp: String,
         instructions: String,
     ) -> Result<super::RealtimeVoiceCall> {

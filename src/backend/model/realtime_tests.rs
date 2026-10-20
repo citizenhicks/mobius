@@ -13,7 +13,7 @@ fn request(api: VoiceApi) -> RealtimeVoiceRequest {
         VoiceApi::Codex => &CODEX_MODELS[0],
     };
     RealtimeVoiceRequest {
-        session_id: "session-1".into(),
+        session_id: crate::SessionId::new("session-1").expect("session"),
         model: model.id.as_str().into(),
         voice: model.variants[0].id.as_str().into(),
         offer_sdp: SDP.into(),
@@ -64,7 +64,7 @@ async fn transport(api: VoiceApi) -> (Arc<RealtimeTransport>, TcpListener) {
         return (
             Arc::new(
                 RealtimeTransport::new_openai(
-                    &base,
+                    &BaseUrl::new(base.as_str()).unwrap(),
                     Arc::new(Auth::default()),
                     crate::backend::model::ModelTransportSettings::default(),
                 )

@@ -462,7 +462,7 @@ impl Runner {
         self.config
             .middleware
             .turn_end(TurnEndContext {
-                session_id: &self.config.session_id,
+                session_id: &self.runtime.session_id,
                 turn_id,
                 outcome,
                 queued_messages: &self.state.pending_messages,

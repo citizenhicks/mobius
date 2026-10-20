@@ -49,7 +49,7 @@ async fn interrupted_stream_retries_in_a_fresh_model_step() {
         }
     }
     let saved = checkpoints
-        .load("stream-retry")
+        .load(&"stream-retry".parse().expect("session ID"))
         .await
         .expect("load checkpoint")
         .expect("saved checkpoint");

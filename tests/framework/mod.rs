@@ -9,6 +9,7 @@ use std::sync::atomic::Ordering;
 use mobius::BoxFuture;
 use mobius::Error;
 use mobius::Result;
+use mobius::SessionId;
 use mobius::agent::AgentConfig;
 use mobius::agent::create_agent;
 use mobius::backend::checkpoint::Checkpoint;
@@ -162,15 +163,15 @@ impl Model for GatedModel {
 
 #[derive(Default)]
 struct MemoryCheckpoints {
-    sessions: Mutex<BTreeMap<Arc<str>, Checkpoint>>,
-    receipts: Mutex<std::collections::BTreeSet<(Arc<str>, String)>>,
+    sessions: Mutex<BTreeMap<SessionId, Checkpoint>>,
+    receipts: Mutex<std::collections::BTreeSet<(SessionId, String)>>,
     state: Mutex<BTreeMap<(String, String), Value>>,
 }
 
 impl CheckpointStore for MemoryCheckpoints {
     fn message_accepted<'a>(
         &'a self,
-        session_id: &'a str,
+        session_id: &'a SessionId,
         submission_id: &'a str,
     ) -> BoxFuture<'a, Result<bool>> {
         Box::pin(async move {
@@ -179,11 +180,11 @@ impl CheckpointStore for MemoryCheckpoints {
                 .receipts
                 .lock()
                 .expect("receipts")
-                .contains(&(session_id.into(), submission_id.into())))
+                .contains(&(session_id.share(), submission_id.into())))
         })
     }
 
-    fn load<'a>(&'a self, session_id: &'a str) -> BoxFuture<'a, Result<Option<Checkpoint>>> {
+    fn load<'a>(&'a self, session_id: &'a SessionId) -> BoxFuture<'a, Result<Option<Checkpoint>>> {
         Box::pin(async move {
             Ok(self
                 .sessions
@@ -194,7 +195,7 @@ impl CheckpointStore for MemoryCheckpoints {
         })
     }
 
-    fn delete_sessions<'a>(&'a self, session_ids: &'a [String]) -> BoxFuture<'a, Result<bool>> {
+    fn delete_sessions<'a>(&'a self, session_ids: &'a [SessionId]) -> BoxFuture<'a, Result<bool>> {
         Box::pin(async move {
             let mut sessions = self.sessions.lock().expect("checkpoint store");
             if session_ids
@@ -229,10 +230,10 @@ impl CheckpointStore for MemoryCheckpoints {
                 checkpoint
                     .pending_messages
                     .iter()
-                    .map(|message| (Arc::clone(&checkpoint.session_id), message.id().into())),
+                    .map(|message| (checkpoint.session_id.share(), message.id().into())),
             );
             self.sessions.lock().expect("checkpoint store").insert(
-                Arc::clone(&checkpoint.session_id),
+                checkpoint.session_id.share(),
                 Checkpoint::clone(&checkpoint),
             );
             let mut records = Vec::with_capacity(events.len());
@@ -248,7 +249,7 @@ impl CheckpointStore for MemoryCheckpoints {
 
     fn append_event<'a>(
         &'a self,
-        _session_id: &'a str,
+        _session_id: &'a SessionId,
         recorded_at_ms: i64,
         event: Event,
     ) -> BoxFuture<'a, Result<JournalEvent>> {
@@ -264,7 +265,7 @@ impl CheckpointStore for MemoryCheckpoints {
 
     fn event_page<'a>(
         &'a self,
-        _session_id: &'a str,
+        _session_id: &'a SessionId,
         _request: EventPageRequest,
     ) -> BoxFuture<'a, Result<EventPage>> {
         Box::pin(async { Ok(EventPage::default()) })
@@ -391,7 +392,7 @@ async fn failed_turn(agent: &mut mobius::agent::Agent) -> std::sync::Arc<str> {
 
 async fn upload_attachment(
     store: &SessionFileStore,
-    session_id: &str,
+    session_id: &SessionId,
     name: &str,
     media_type: &str,
     bytes: &[u8],

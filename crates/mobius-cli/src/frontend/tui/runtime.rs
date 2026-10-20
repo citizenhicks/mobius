@@ -71,7 +71,7 @@ impl ReplayHydration {
         !self.pending
     }
 
-    fn observe(&mut self, message: &ServerMessage, session_id: &str) {
+    fn observe(&mut self, message: &ServerMessage, session_id: &mobius::SessionId) {
         if matches!(
             message,
             ServerMessage::SessionReplayComplete {
@@ -317,7 +317,7 @@ async fn refresh_workspace(
             session_id: actual,
             files,
             ..
-        } if *actual == **session_id => {
+        } if &actual == session_id => {
             catalog.set_workspace_paths(files.into_iter().map(|file| file.path));
             state.reference_cache = None;
             return None;
@@ -339,7 +339,11 @@ async fn refresh_workspace(
     Some(message)
 }
 
-async fn request_git_summary(sender: &GatewaySender, session_id: &str, state: &mut TuiState) {
+async fn request_git_summary(
+    sender: &GatewaySender,
+    session_id: &mobius::SessionId,
+    state: &mut TuiState,
+) {
     if !state.git_diff_refresh || !state.git_diff_requests.is_empty() {
         return;
     }
@@ -352,7 +356,7 @@ async fn request_git_summary(sender: &GatewaySender, session_id: &str, state: &m
         if sender
             .send(ClientMessage::GetGitDiffTotals {
                 request_id: Arc::clone(&request_id),
-                session_id: session_id.into(),
+                session_id: session_id.share(),
                 scope,
             })
             .await
@@ -367,13 +371,13 @@ async fn request_git_summary(sender: &GatewaySender, session_id: &str, state: &m
 
 async fn request_workspace_inventory(
     sender: &GatewaySender,
-    session_id: &str,
+    session_id: &mobius::SessionId,
     state: &mut TuiState,
 ) {
     if let Err(error) = sender
         .send(ClientMessage::ListWorkspaceFiles {
             request_id: crate::fresh_id(),
-            session_id: session_id.into(),
+            session_id: session_id.share(),
             scope: WorkspaceFileScope::All,
         })
         .await
@@ -384,11 +388,11 @@ async fn request_workspace_inventory(
 
 fn refresh_workspace_inventory(
     message: &ServerMessage,
-    session_id: &str,
+    session_id: &mobius::SessionId,
     reference_open: bool,
 ) -> bool {
     matches!(message, ServerMessage::AgentEvent { session_id: actual, record }
-        if actual.as_ref() == session_id && (matches!(record.event.msg, EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_))
+        if actual == session_id && (matches!(record.event.msg, EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_))
             || reference_open && matches!(record.event.msg, EventMsg::ToolCallEnd(_))))
 }
 
@@ -457,9 +461,9 @@ async fn handle_terminal_input(
             }
             UiAction::Conversation => {
                 let bot = session_bot(gateway, session)?;
-                return Ok(Some(FrontendExit::Resume(Arc::clone(
-                    &bot.conversation_session_id,
-                ))));
+                return Ok(Some(FrontendExit::Resume(
+                    bot.conversation_session_id.share(),
+                )));
             }
             UiAction::ReassignBot => {
                 state.open_reassign_bot_picker(&gateway.bots, &session.session.context.owner_id);
@@ -671,7 +675,7 @@ async fn handle_upload_message(
     sender: &GatewaySender,
     state: &mut TuiState,
     uploads: &mut ClipboardUploads,
-    session_id: &str,
+    session_id: &mobius::SessionId,
 ) -> Option<ServerMessage> {
     if !uploads.claims(&message) {
         return Some(message);
@@ -701,12 +705,12 @@ fn handle_server_message(
     state: &mut TuiState,
     session_opened: bool,
 ) -> Option<FrontendExit> {
-    let session_id = session.session.session_id.as_ref();
+    let session_id = &session.session.session_id;
     match message {
         ServerMessage::AgentEvent {
             session_id: actual,
             mut record,
-        } if actual.as_ref() == session_id => {
+        } if &actual == session_id => {
             settle_message_draft(state, &record.event);
             enrich_resume_picker(
                 &mut record.event.msg,
@@ -726,7 +730,7 @@ fn handle_server_message(
             session_id: actual,
             mut records,
             next_before_sequence,
-        } if actual == session_id && state.history_request_id.as_deref() == Some(&*request_id) => {
+        } if &actual == session_id && state.history_request_id.as_deref() == Some(&*request_id) => {
             state.history_request_id = None;
             state.next_before_sequence = next_before_sequence;
             session.next_before_sequence = next_before_sequence;
@@ -767,7 +771,7 @@ fn handle_server_message(
                 state.push(error.to_string(), TranscriptTone::Error);
             }
         }
-        ServerMessage::SessionChanged { payload } if *payload.session.session_id == *session_id => {
+        ServerMessage::SessionChanged { payload } if payload.session.session_id == *session_id => {
             if payload.workspace == session.workspace
                 && payload.contributions == session.contributions
             {
@@ -776,22 +780,20 @@ fn handle_server_message(
                 }
             } else {
                 *session = payload;
-                return Some(FrontendExit::Resume(Arc::clone(
-                    &session.session.session_id,
-                )));
+                return Some(FrontendExit::Resume(session.session.session_id.share()));
             }
         }
         ServerMessage::SessionFiles {
             session_id: actual,
             files,
             ..
-        } if actual == session_id => state.open_session_files(files),
+        } if &actual == session_id => state.open_session_files(files),
         ServerMessage::GitDiffTotals {
             request_id,
             session_id: actual,
             totals,
             ..
-        } if actual == session_id => {
+        } if &actual == session_id => {
             if let Some(slot) = state
                 .git_diff_requests
                 .remove(&*request_id)
@@ -805,7 +807,7 @@ fn handle_server_message(
             scope,
             diff,
             ..
-        } if actual == session_id => {
+        } if &actual == session_id => {
             let title = format!("{scope:?} diff").to_ascii_lowercase();
             state.open_diff_preview(&title, &diff);
         }
@@ -974,7 +976,7 @@ async fn handle_clipboard_preparation(
         tokio::sync::oneshot::error::RecvError,
     >,
     sender: &GatewaySender,
-    session_id: &str,
+    session_id: &mobius::SessionId,
     state: &mut TuiState,
     uploads: &mut ClipboardUploads,
 ) {
@@ -1011,7 +1013,7 @@ async fn handle_clipboard_preparation(
 
 async fn interrupt_active_turn(
     sender: &GatewaySender,
-    session_id: &Arc<str>,
+    session_id: &mobius::SessionId,
     state: &mut TuiState,
 ) {
     if let Some(turn_id) = state.active_turn().map(Arc::clone)
@@ -1026,7 +1028,7 @@ async fn interrupt_active_turn(
 
 async fn send_and_report(
     sender: &GatewaySender,
-    session_id: &Arc<str>,
+    session_id: &mobius::SessionId,
     op: Op,
     state: &mut TuiState,
     draft: Option<InputDraft>,
@@ -1055,7 +1057,7 @@ async fn send_and_report(
 
 async fn send_gateway_action(
     sender: &GatewaySender,
-    session_id: &str,
+    session_id: &mobius::SessionId,
     action: GatewayAction,
     state: &mut TuiState,
 ) {
@@ -1065,7 +1067,7 @@ async fn send_gateway_action(
             let result = sender
                 .send(ClientMessage::DeleteSessions {
                     request_id: Arc::clone(&request_id),
-                    session_ids: vec![session_id.into()],
+                    session_ids: vec![session_id.share()],
                     selection: mobius::backend::session_files::SessionFileSelection::All,
                 })
                 .await;
@@ -1082,7 +1084,11 @@ async fn send_gateway_action(
     }
 }
 
-async fn request_earlier_history(sender: &GatewaySender, session_id: &str, state: &mut TuiState) {
+async fn request_earlier_history(
+    sender: &GatewaySender,
+    session_id: &mobius::SessionId,
+    state: &mut TuiState,
+) {
     let Some(before_sequence) = state.next_before_sequence else {
         return;
     };
@@ -1090,7 +1096,7 @@ async fn request_earlier_history(sender: &GatewaySender, session_id: &str, state
     match sender
         .send(ClientMessage::GetSessionHistory {
             request_id: Arc::clone(&request_id),
-            session_id: session_id.into(),
+            session_id: session_id.share(),
             before_sequence: Some(before_sequence),
         })
         .await
@@ -1102,7 +1108,7 @@ async fn request_earlier_history(sender: &GatewaySender, session_id: &str, state
 
 async fn start_file_download(
     sender: &GatewaySender,
-    session_id: &str,
+    session_id: &mobius::SessionId,
     file: SessionFileReference,
     state: &mut TuiState,
 ) {
@@ -1130,7 +1136,7 @@ async fn start_file_download(
     let request_id: Arc<str> = crate::fresh_id();
     let request = ClientMessage::ReadSessionFile {
         request_id: Arc::clone(&request_id),
-        session_id: session_id.into(),
+        session_id: session_id.share(),
         file_id: file.id.clone(), // rules-allow: the wire message and the pending download each own the file id
         offset: 0,
         max_bytes: FILE_READ_CHUNK_BYTES,
@@ -1148,7 +1154,7 @@ async fn start_file_download(
     }
     state.file_download = Some(super::PendingFileDownload {
         request_id,
-        session_id: session_id.into(),
+        session_id: session_id.share(),
         file,
         destination,
         output,
@@ -1242,7 +1248,7 @@ async fn handle_file_download_message(
                 download.request_id.clone_from(&request_id);
                 let request = ClientMessage::ReadSessionFile {
                     request_id,
-                    session_id: download.session_id.clone(), // rules-allow: the wire message and the pending download each own the session id
+                    session_id: download.session_id.share(),
                     file_id: download.file.id.clone(), // rules-allow: the wire message and the pending download each own the file id
                     offset: *offset,
                     max_bytes: FILE_READ_CHUNK_BYTES,
@@ -1631,13 +1637,13 @@ fn agent_summary(gateway: &ReadyPayload, session: &SessionReadyPayload, bot: &Bo
 
 async fn send_op(
     sender: &mobius_gateway::client::GatewaySender,
-    session_id: &Arc<str>,
+    session_id: &mobius::SessionId,
     op: Op,
 ) -> Result<Arc<str>> {
     let id: Arc<str> = crate::fresh_id();
     sender
         .send(ClientMessage::Submit {
-            session_id: Arc::clone(session_id),
+            session_id: session_id.share(),
             submission: Submission {
                 id: Arc::clone(&id),
                 op,
@@ -1747,7 +1753,7 @@ mod tests {
         let mut state = TuiState {
             file_download: Some(super::super::PendingFileDownload {
                 request_id: "request".into(),
-                session_id: "session".into(),
+                session_id: mobius::SessionId::new("session").expect("session"),
                 file: SessionFileReference {
                     id: "file".into(),
                     name: "report.txt".into(),
@@ -1840,7 +1846,7 @@ mod tests {
             }),
             git: None,
             session: Arc::new(SessionConfiguredEvent {
-                session_id: session_id.into(),
+                session_id: mobius::SessionId::new(session_id).expect("session"),
                 context: Arc::new(SessionContext {
                     owner_id: "bot-a".into(),
                     ..SessionContext::default()
@@ -1868,7 +1874,8 @@ mod tests {
             computer_view: mobius_gateway::wire::ComputerView::Unavailable,
             bots: vec![BotRecord {
                 id: "bot-a".into(),
-                conversation_session_id: "bot-conversation-test".into(),
+                conversation_session_id: mobius::SessionId::new("bot-conversation-test")
+                    .expect("session"),
                 handle: "ada".into(),
                 name: "Ada".into(),
                 description: "".into(),

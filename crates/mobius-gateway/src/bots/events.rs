@@ -1,5 +1,6 @@
 //! Durable typed hooks and their user-authored consumers in the Bot database.
 
+use mobius::SessionId;
 use std::sync::Arc;
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -155,7 +156,7 @@ impl BotStorage {
         })
     }
 
-    pub(super) fn source_cursor(&self, session_id: &str) -> Result<(u64, Option<Arc<str>>)> {
+    pub(super) fn source_cursor(&self, session_id: &SessionId) -> Result<(u64, Option<Arc<str>>)> {
         let connection = self.lock()?;
         let Some((sequence, owner)) = connection
             .query_row(
@@ -174,7 +175,7 @@ impl BotStorage {
     }
     pub(super) fn advance_source_cursor(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         bot_id: &str,
         sequence: u64,
     ) -> Result<()> {
@@ -326,7 +327,7 @@ pub(crate) fn caused_event(
     })
 }
 
-fn cursor(connection: &Connection, session_id: &str) -> Result<u64> {
+fn cursor(connection: &Connection, session_id: &SessionId) -> Result<u64> {
     let value = connection
         .query_row(
             "SELECT sequence FROM bot_session_cursors WHERE session_id=?1",
@@ -339,7 +340,7 @@ fn cursor(connection: &Connection, session_id: &str) -> Result<u64> {
 }
 fn advance_cursor(
     tx: &Transaction<'_>,
-    session_id: &str,
+    session_id: &SessionId,
     bot_id: &str,
     sequence: u64,
 ) -> Result<bool> {
@@ -483,7 +484,7 @@ pub(super) fn record_run(tx: &Transaction<'_>, run: &RoutineRun) -> Result<()> {
     let cause=tx.query_row("SELECT COALESCE((SELECT cause_json FROM routine_stop_requests WHERE run_id=?1),(SELECT cause_json FROM routine_commands WHERE run_id=?1))",[&run.id],|row|row.get::<_,Option<String>>(0))?.map(|json|serde_json::from_str::<HookEvent>(&json)).transpose()?;
     let routine_id = || Arc::clone(&run.routine_id);
     let run_id = || Arc::clone(&run.id);
-    let session_id = || run.session_id.clone(); // rules-allow: the run stays with its caller; the run event owns a copy
+    let session_id = || run.session_id.as_ref().map(SessionId::share);
     let data = match run.status {
         RoutineRunStatus::Running => HookData::RunStarted {
             routine_id: routine_id(),
@@ -687,20 +688,17 @@ pub(crate) fn validate_bot_binding(
             validate_id(&command.routine_id)?;
             super::validate_routine_action(&command.action, 0, timestamp_limit)?;
         }
-        BotAction::Session { session_id, op } => {
-            validate_id(session_id)?;
-            match op.as_ref() {
-                mobius::protocol::Op::Message { message } => {
-                    message.validate(mobius::backend::session_files::session_file_limits())?;
-                }
-                mobius::protocol::Op::Interrupt { turn_id } => validate_id(turn_id)?,
-                _ => {
-                    return Err(Error::Config(
-                        "session hooks support only message and interrupt operations".into(),
-                    ));
-                }
+        BotAction::Session { op, .. } => match op.as_ref() {
+            mobius::protocol::Op::Message { message } => {
+                message.validate(mobius::backend::session_files::session_file_limits())?;
             }
-        }
+            mobius::protocol::Op::Interrupt { turn_id } => validate_id(turn_id)?,
+            _ => {
+                return Err(Error::Config(
+                    "session hooks support only message and interrupt operations".into(),
+                ));
+            }
+        },
     }
     Ok(())
 }
@@ -708,7 +706,7 @@ fn validate_source(source: &HookSource) -> Result<()> {
     match source {
         HookSource::Bot { bot_id } => validate_id(bot_id),
         HookSource::Routine { routine_id } => validate_id(routine_id),
-        HookSource::Session { session_id } => validate_id(session_id),
+
         HookSource::Schedule {
             routine_id,
             binding_id,
@@ -717,7 +715,7 @@ fn validate_source(source: &HookSource) -> Result<()> {
             validate_id(binding_id)
         }
         HookSource::Client { client_id } => validate_id(client_id),
-        HookSource::Gateway => Ok(()),
+        HookSource::Session { .. } | HookSource::Gateway => Ok(()),
     }
 }
 /// Validates an event and returns its JSON encoding.

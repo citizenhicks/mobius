@@ -2,6 +2,7 @@
 // Protocol matches stay exhaustive: a new variant must be handled, not caught by `_`.
 #![deny(clippy::wildcard_enum_match_arm)]
 
+use crate::SessionId;
 use std::sync::Arc;
 
 use serde::Deserialize;
@@ -295,7 +296,7 @@ pub enum MessageSource {
     /// Coordination from another conversation within the recipient's existing permissions.
     Session {
         /// The source session identifier.
-        session_id: Arc<str>,
+        session_id: SessionId,
     },
     /// Advisory evidence from a host-owned integration or lifecycle subscription.
     External {
@@ -500,12 +501,16 @@ pub(crate) fn validate_message_content(
                 message_id,
                 crate::MAX_IDENTIFIER_BYTES,
             )?;
-            crate::validate_identifier(
-                "message source ID",
-                source.id(),
-                crate::MAX_IDENTIFIER_BYTES,
-            )?;
-            if let MessageSource::External { event_id, .. } = source {
+            if let MessageSource::External {
+                source_id,
+                event_id,
+            } = source
+            {
+                crate::validate_identifier(
+                    "message source ID",
+                    source_id,
+                    crate::MAX_IDENTIFIER_BYTES,
+                )?;
                 crate::validate_identifier(
                     "source event ID",
                     event_id,
@@ -628,7 +633,7 @@ pub enum Op {
     /// Requests that the frontend reopen an existing session.
     ResumeSession {
         /// The session identifier to reopen.
-        session_id: Arc<str>,
+        session_id: SessionId,
     },
 }
 
@@ -905,7 +910,7 @@ impl ModelEvent {
     #[must_use]
     pub fn into_event(
         self,
-        session_id: Arc<str>,
+        session_id: SessionId,
         turn_id: Arc<str>,
         model_step_id: Arc<str>,
     ) -> Option<EventMsg> {
@@ -963,12 +968,12 @@ mod tests {
 
     #[test]
     fn model_events_keep_typed_correlation_and_web_search_fields() {
-        let session_id = Arc::from("session-1");
+        let session_id: SessionId = "session-1".parse().expect("session ID");
         let turn_id = Arc::from("turn-1");
         let model_step_id = Arc::from("step-1");
         let delta = ModelEvent::CommentaryDelta("Checking".into())
             .into_event(
-                Arc::clone(&session_id),
+                session_id.share(),
                 Arc::clone(&turn_id),
                 Arc::clone(&model_step_id),
             )
@@ -980,7 +985,7 @@ mod tests {
             },
         }
         .into_event(
-            Arc::clone(&session_id),
+            session_id.share(),
             Arc::clone(&turn_id),
             Arc::clone(&model_step_id),
         )
@@ -991,10 +996,10 @@ mod tests {
         let EventMsg::WebSearchEnd(search_ids) = &search else {
             panic!("expected a web search result");
         };
-        assert!(Arc::ptr_eq(&delta_ids.session_id, &session_id));
+        assert_eq!(delta_ids.session_id, session_id);
         assert!(Arc::ptr_eq(&delta_ids.turn_id, &turn_id));
         assert!(Arc::ptr_eq(&delta_ids.model_step_id, &model_step_id));
-        assert!(Arc::ptr_eq(&search_ids.session_id, &session_id));
+        assert_eq!(search_ids.session_id, session_id);
         assert!(Arc::ptr_eq(&search_ids.turn_id, &turn_id));
         assert!(Arc::ptr_eq(&search_ids.model_step_id, &model_step_id));
 
@@ -1028,7 +1033,7 @@ mod tests {
     #[test]
     fn session_configured_has_a_stable_wire_shape() {
         let event = EventMsg::SessionConfigured(Arc::new(SessionConfiguredEvent {
-            session_id: "session-1".into(),
+            session_id: "session-1".parse().expect("session ID"),
             context: Arc::new(SessionContext {
                 owner_id: "bot-1".into(),
                 tenant_id: Some("tenant-1".into()),

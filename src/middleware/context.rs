@@ -1,3 +1,4 @@
+use crate::SessionId;
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -434,7 +435,7 @@ pub struct RuntimeContext {
     /// The checkpoints.
     pub checkpoints: Arc<dyn CheckpointStore>,
     /// The session identifier.
-    pub session_id: Arc<str>,
+    pub session_id: SessionId,
     /// The model route.
     pub model_route: Arc<str>,
     /// The model.
@@ -486,7 +487,7 @@ pub struct TurnIdentity<'a> {
     /// Trusted provenance of the message that initiated the turn.
     pub author: &'a MessageAuthor,
     /// The session identifier.
-    pub session_id: &'a str,
+    pub session_id: &'a SessionId,
     /// The turn identifier.
     pub turn_id: &'a str,
     /// The model.
@@ -704,7 +705,7 @@ pub struct ModelContext<'a> {
     /// The route whose accepted output last contributed to durable context.
     pub context_provider: &'a str,
     /// The session identifier.
-    pub session_id: &'a str,
+    pub session_id: &'a SessionId,
     /// Cause recorded before model preparation is cancelled.
     pub cancellation: Option<&'a ModelCancellation>,
     /// The session context.
@@ -765,7 +766,7 @@ impl std::fmt::Debug for ModelContext<'_> {
 #[derive(Debug)]
 pub struct ToolExposureContext<'a> {
     /// The session identifier.
-    pub session_id: &'a str,
+    pub session_id: &'a SessionId,
     pub(crate) supports_tool_image_input: bool,
     pub(crate) input: ModelInput<'a>,
     pub(crate) available: &'a mut BTreeSet<String>,
@@ -978,7 +979,7 @@ pub struct ModelRequestContext<'a> {
     /// The provider.
     pub provider: &'a str,
     /// The session identifier.
-    pub session_id: &'a str,
+    pub session_id: &'a SessionId,
     /// The turn identifier.
     pub turn_id: &'a str,
     /// The model step.
@@ -1199,7 +1200,7 @@ impl PostToolUseContext<'_> {
 #[derive(Debug)]
 pub struct CompactContext<'a> {
     /// The session identifier.
-    pub session_id: &'a str,
+    pub session_id: &'a SessionId,
     /// The turn identifier.
     pub turn_id: &'a str,
     /// The model.
@@ -1326,7 +1327,7 @@ pub struct MessageRouteContext<'a> {
     /// The checkpoints.
     pub checkpoints: &'a dyn CheckpointStore,
     /// The session identifier.
-    pub session_id: &'a str,
+    pub session_id: &'a SessionId,
     /// The submission identifier.
     pub submission_id: &'a str,
     /// The message; the preparer may move its contents into the queue.
@@ -1357,7 +1358,7 @@ pub struct ActiveCommandContext<'a> {
     /// The submission identifier.
     pub submission_id: &'a str,
     /// The session identifier.
-    pub session_id: &'a str,
+    pub session_id: &'a SessionId,
     /// The metadata.
     pub metadata: &'a BTreeMap<String, Value>,
     /// The active turn identifier.
@@ -1408,7 +1409,7 @@ pub enum SubmissionResult {
 #[derive(Debug)]
 pub struct TurnEndContext<'a> {
     /// The session identifier.
-    pub session_id: &'a str,
+    pub session_id: &'a SessionId,
     /// The turn identifier.
     pub turn_id: &'a str,
     pub(crate) outcome: ExecutionOutcome,
@@ -1446,7 +1447,7 @@ pub struct MiddlewareCommandContext<'a> {
     /// The target.
     pub target: Option<MessageTarget>,
     /// The session identifier.
-    pub session_id: &'a str,
+    pub session_id: &'a SessionId,
     /// The session context.
     pub session_context: &'a SessionContext,
     /// The checkpoint.

@@ -26,7 +26,7 @@ async fn completed_pre_model_usage_is_settled_when_a_later_hook_rejects_preparat
         "test prompt",
     )
     .session_context(test_session_context())
-    .session_id("settled-hooks")
+    .session_id("settled-hooks".parse().expect("session ID"))
     .usage_observer(move |route, usage| {
         usage_observer
             .lock()
@@ -50,13 +50,13 @@ async fn completed_pre_model_usage_is_settled_when_a_later_hook_rejects_preparat
         }
     }
     let saved = checkpoints
-        .load("settled-hooks")
+        .load(&"settled-hooks".parse().expect("session ID"))
         .await
         .expect("load checkpoint")
         .expect("saved checkpoint");
     let execution = checkpoints
         .execution_page(
-            "settled-hooks",
+            &"settled-hooks".parse().expect("session ID"),
             ExecutionPageRequest {
                 before_sequence: None,
                 limit: 1,

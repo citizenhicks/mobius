@@ -1,4 +1,5 @@
 use super::*;
+use mobius::SessionId;
 
 #[tokio::test]
 async fn full_session_queue_rejects_external_work_but_preserves_shutdown() {
@@ -6,7 +7,7 @@ async fn full_session_queue_rejects_external_work_but_preserves_shutdown() {
     let (events, _) = broadcast::channel(1);
     let handle = HostHandle {
         inner: Arc::new(HostInner {
-            session_id: Arc::from("saturated"),
+            session_id: SessionId::new("saturated").unwrap(),
             commands,
             events,
             alive: Arc::new(AtomicBool::new(true)),
@@ -135,7 +136,7 @@ async fn durable_event_journal_restores_complete_turn_pages() {
         .await
         .expect("create session");
     let checkpoints = Arc::clone(&gateway.state.lock().await.checkpoints);
-    let session_id = host.session_id().to_string();
+    let session_id = host.session_id().share();
     assert!(host.stop_if_idle().await);
     gateway.state.lock().await.sessions.remove(&session_id);
     drop(host);
@@ -259,15 +260,15 @@ async fn delete_sessions_preflight_all_roots_before_durable_removal() {
     let other_host = create_test_session(&gateway, &workspace)
         .await
         .expect("create other root session");
-    let root_id = root_host.session_id().to_string();
-    let other_id = other_host.session_id().to_string();
+    let root_id = root_host.session_id().share();
+    let other_id = other_host.session_id().share();
     let checkpoints = Arc::clone(&gateway.state.lock().await.checkpoints);
     let root_checkpoint = checkpoints
         .load(&root_id)
         .await
         .expect("load root")
         .expect("root checkpoint");
-    let mut child = Checkpoint::empty("child");
+    let mut child = Checkpoint::empty(SessionId::new("child").unwrap());
     child.session_context = Arc::clone(&root_checkpoint.session_context);
     checkpoints
         .fork(&root_id, root_checkpoint.sequence, child.clone())
@@ -298,10 +299,10 @@ async fn delete_sessions_preflight_all_roots_before_durable_removal() {
     });
     let (events, _) = broadcast::channel(1);
     gateway.state.lock().await.sessions.insert(
-        "child".into(),
+        SessionId::new("child").unwrap(),
         HostHandle {
             inner: Arc::new(HostInner {
-                session_id: "child".into(),
+                session_id: SessionId::new("child").unwrap(),
                 commands,
                 events,
                 alive: Arc::new(AtomicBool::new(true)),
@@ -315,7 +316,7 @@ async fn delete_sessions_preflight_all_roots_before_durable_removal() {
 
     let purge_error = super::super::deletion::prepare_session_tree_deletion(
         &*gateway.state.lock().await,
-        &["child".into()],
+        &[SessionId::new("child").unwrap()],
         mobius::backend::session_files::SessionFileSelection::Origins(vec![
             mobius::backend::session_files::SessionFileOrigin::Artifact,
         ]),
@@ -369,7 +370,7 @@ async fn opening_a_chat_rejects_tampered_bot_identity() {
     let host = create_test_session(&gateway, &workspace)
         .await
         .expect("create session");
-    let session_id = host.session_id().to_string();
+    let session_id = host.session_id().share();
     assert!(host.stop_if_idle().await);
     while host.is_alive() {
         tokio::task::yield_now().await;
@@ -411,7 +412,7 @@ async fn message_pins_accept_only_assistant_messages_and_survive_reopen() {
         .await
         .expect("create session");
     let checkpoints = Arc::clone(&gateway.state.lock().await.checkpoints);
-    let session_id = host.session_id().to_string();
+    let session_id = host.session_id().share();
     assert!(host.stop_if_idle().await);
     gateway.state.lock().await.sessions.remove(&session_id);
     drop(host);
@@ -460,7 +461,7 @@ async fn message_pins_accept_only_assistant_messages_and_survive_reopen() {
     assert!(matches!(
         &events.try_recv().expect("pin update").message,
         ServerMessage::MessagePinsChanged { session_id: changed, pinned_messages }
-            if changed.as_ref() == session_id && pinned_messages.iter().eq([&assistant])
+            if *changed == session_id && pinned_messages.iter().eq([&assistant])
     ));
     assert!(opened.stop_if_idle().await);
     gateway.state.lock().await.sessions.remove(&session_id);

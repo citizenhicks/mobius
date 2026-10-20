@@ -84,7 +84,7 @@ pub(super) fn lifecycle_runtime(path: &std::path::Path) -> RuntimeContext {
         checkpoints: Arc::new(
             SqliteCheckpoint::new(path.join("checkpoints.sqlite3")).expect("checkpoint store"),
         ),
-        session_id: "session".into(),
+        session_id: "session".parse().expect("session ID"),
         model_route: "model".into(),
         model: "model".into(),
         approval_policy: crate::backend::sandbox::ApprovalPolicy::Ask,
@@ -217,7 +217,7 @@ fn hook_policy_decisions_are_monotonic_and_stop_continuation_is_bounded() {
     let mut permission = PermissionRequestContext {
         turn: TurnIdentity {
             author: &crate::protocol::MessageAuthor::User,
-            session_id: "session",
+            session_id: &"session".parse().expect("session ID"),
             turn_id: "turn",
             model: "model",
             approval_policy: crate::backend::sandbox::ApprovalPolicy::Ask,
@@ -277,7 +277,7 @@ fn pre_tool_rewrite_rejects_invalid_calls_without_mutation() {
             delivery_once: crate::middleware::delivery_once::DeliveryOnce::testing(),
             turn: TurnIdentity {
                 author: &crate::protocol::MessageAuthor::User,
-                session_id: "session",
+                session_id: &"session".parse().expect("session ID"),
                 turn_id: "turn",
                 model: "model",
                 approval_policy: crate::backend::sandbox::ApprovalPolicy::Ask,

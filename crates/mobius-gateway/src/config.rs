@@ -18,7 +18,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use mobius::agent::DEFAULT_MAX_MODEL_STEPS;
 use mobius::backend::model::provider::{
-    ModelPreset, ProviderAuth, ProviderDefinition, default_provider, provider,
+    BaseUrl, ModelPreset, ProviderAuth, ProviderDefinition, default_provider, provider,
 };
 use mobius::protocol::TokenUsage;
 use serde::{Deserialize, Serialize};
@@ -247,7 +247,7 @@ impl AgentComposition {
                 instance: provider.id().into(),
                 provider: provider.id().into(),
                 model: model.map_or_else(String::new, |model| model.id.as_str().into()),
-                base_url: provider.default_base_url().map(str::to_owned),
+                base_url: provider.default_base_url().map(BaseUrl::share),
                 endpoint_auth: ProviderEndpointAuth::ProviderDefault,
                 reasoning_effort: model
                     .and_then(|model| model.default_reasoning.as_deref())
@@ -416,7 +416,7 @@ impl GatewayConfig {
         if !selection.model.is_empty() {
             definition.build_config_is_valid(
                 &selection.model,
-                selection.base_url.as_deref(),
+                selection.base_url.as_ref(),
                 selection.reasoning_effort.as_deref(),
                 selection.web_search,
             )?;
@@ -579,7 +579,6 @@ impl GatewayConfig {
         self.connections.validate()?;
         self.auth.validate()?;
         self.computer.validate()?;
-        self.model_transport.validate()?;
         self.execution.validate()?;
         if let Some(ingress) = self.runtime.ingress
             && (ingress == self.listen

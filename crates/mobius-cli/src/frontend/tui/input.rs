@@ -53,7 +53,7 @@ pub(super) enum UiAction {
     None,
     PasteClipboard,
     Submit(Box<Op>),
-    Resume(Arc<str>),
+    Resume(mobius::SessionId),
     Gateway(GatewayAction),
     Download(SessionFileReference),
     GatewaySettings,
@@ -522,7 +522,7 @@ impl TuiState {
                     detail: terminal_text(&bot.config.config.provider.model),
                     shows_detail: true,
                     action: workspace.map_or_else(
-                        || super::PickerAction::Resume(Arc::clone(&bot.conversation_session_id)),
+                        || super::PickerAction::Resume(bot.conversation_session_id.share()),
                         |workspace| super::PickerAction::CreateSession {
                             workspace: workspace.to_path_buf(), // rules-allow: each picker option owns the workspace path its action creates
                             bot_id: Arc::clone(&bot.id),
@@ -574,7 +574,7 @@ impl TuiState {
                     description: "approval required".into(),
                     detail: terminal_text(&approval.request_id),
                     shows_detail: true,
-                    action: super::PickerAction::Resume(Arc::clone(&approval.session_id)),
+                    action: super::PickerAction::Resume(approval.session_id.share()),
                     secondary: None,
                 }
             }),

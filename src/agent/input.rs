@@ -1,3 +1,4 @@
+use crate::SessionId;
 use std::future::Future;
 use std::sync::Arc;
 
@@ -71,7 +72,7 @@ enum AdmissionOutcome {
 struct ActiveTurnRouter<'a> {
     pub checkpoints: &'a dyn crate::backend::checkpoint::CheckpointStore,
     pub middleware: &'a MiddlewareStack,
-    pub session_id: &'a str,
+    pub session_id: &'a SessionId,
     pub metadata: &'a std::collections::BTreeMap<String, serde_json::Value>,
     pub turn_id: &'a str,
     pub queued_messages: &'a mut Vec<QueuedMessage>,
@@ -99,7 +100,7 @@ impl Runner {
     async fn message_accepted(&self, submission_id: &Arc<str>) -> Result<bool> {
         self.config
             .checkpoints
-            .message_accepted(&self.config.session_id, submission_id)
+            .message_accepted(&self.runtime.session_id, submission_id)
             .await
     }
 
@@ -116,7 +117,7 @@ impl Runner {
             .middleware
             .route_message(&mut MessageRouteContext {
                 checkpoints: self.config.checkpoints.as_ref(),
-                session_id: &self.config.session_id,
+                session_id: &self.runtime.session_id,
                 submission_id: &submission_id,
                 message: &mut message,
                 active_turn_id: None,
@@ -248,7 +249,7 @@ impl Runner {
         let route = (ActiveTurnRouter {
             checkpoints: self.config.checkpoints.as_ref(),
             middleware: &self.config.middleware,
-            session_id: &self.config.session_id,
+            session_id: &self.runtime.session_id,
             metadata: &self.runtime.metadata,
             turn_id,
             queued_messages: &mut self.state.make_mut().pending_messages,
@@ -517,7 +518,7 @@ mod tests {
             SqliteCheckpoint::new(directory.path().join("checkpoints.sqlite3"))
                 .expect("checkpoint store"),
         );
-        let mut checkpoint = Checkpoint::empty("session-1");
+        let mut checkpoint = Checkpoint::empty("session-1".parse().expect("session ID"));
         std::sync::Arc::make_mut(&mut checkpoint.session_context).owner_id = "test-bot".into();
         checkpoints
             .save(checkpoint.clone(), Vec::new(), None)
@@ -525,7 +526,7 @@ mod tests {
             .expect("initial checkpoint");
         let (recorder, events) = crate::agent::recorder::RecorderIngress::spawn(
             Arc::clone(&checkpoints),
-            "session-1".into(),
+            "session-1".parse().expect("session ID"),
         );
         (directory, checkpoints, recorder, events)
     }
@@ -580,7 +581,7 @@ mod tests {
             let result = (ActiveTurnRouter {
                 middleware: &middleware,
                 checkpoints: checkpoints.as_ref(),
-                session_id: "session-1",
+                session_id: &"session-1".parse().expect("session ID"),
                 metadata: &std::collections::BTreeMap::new(),
                 turn_id: "turn-1",
                 queued_messages: &mut queued,

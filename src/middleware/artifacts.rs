@@ -1,5 +1,6 @@
 //! Agent-published session files and their frontend presentation.
 
+use crate::SessionId;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -63,7 +64,7 @@ impl Middleware for Artifacts {
     fn register(&self, catalog: &mut Catalog, runtime: &RuntimeContext) -> Result<()> {
         catalog.register(Arc::new(SendArtifact {
             store: Arc::clone(&self.store),
-            session_id: Arc::clone(&runtime.session_id),
+            session_id: runtime.session_id.share(),
         }))
     }
 
@@ -115,7 +116,7 @@ struct SendArtifactArgs {
 
 struct SendArtifact {
     store: Arc<SessionFileStore>,
-    session_id: Arc<str>,
+    session_id: SessionId,
 }
 
 impl Tool for SendArtifact {
@@ -188,14 +189,14 @@ mod tests {
         let store = SessionFileStore::new(state.path(), None);
         let tool = SendArtifact {
             store: Arc::new(store.clone()),
-            session_id: "session-a".into(),
+            session_id: "session-a".parse().expect("session ID"),
         };
         let sandbox = Arc::new(Sandbox::new(
             Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
             ApprovalPolicy::Ask,
         ));
         let permissions = SandboxPermissions::restore(
-            "session-a",
+            &"session-a".parse().expect("session ID"),
             crate::backend::sandbox::SandboxMode::WorkspaceWrite,
             NetworkAccess::Denied,
             ["call".into()],
@@ -215,7 +216,7 @@ mod tests {
         assert!(
             store
                 .list_files(
-                    "session-a",
+                    &"session-a".parse().expect("session ID"),
                     &[crate::backend::session_files::SessionFileOrigin::Upload]
                 )
                 .await
@@ -225,7 +226,7 @@ mod tests {
         );
         assert_eq!(
             store
-                .read_chunk("session-a", &file.id, 0, 16)
+                .read_chunk(&"session-a".parse().expect("session ID"), &file.id, 0, 16)
                 .await
                 .expect("read")
                 .data,

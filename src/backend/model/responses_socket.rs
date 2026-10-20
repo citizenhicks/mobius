@@ -41,6 +41,7 @@ use super::authorization::ApiKeyAuthorization;
 use super::authorization::OpenAiAuthorization;
 #[cfg(test)]
 use super::authorization::ResolvedAuthorization;
+use super::provider::BaseUrl;
 use super::responses::decode_response;
 use super::responses::wire_tools;
 use super::responses::{CATALOG, OpenAi};
@@ -55,8 +56,8 @@ use crate::protocol::ToolDiscoveryMode;
 
 mod connection;
 
-pub(super) fn responses_socket_url(base_url: &str) -> Result<reqwest::Url> {
-    let mut url = reqwest::Url::parse(&format!("{}/responses", base_url.trim_end_matches('/')))
+pub(super) fn responses_socket_url(base_url: &BaseUrl) -> Result<reqwest::Url> {
+    let mut url = reqwest::Url::parse(&format!("{}/responses", base_url.root()))
         .map_err(|error| Error::Config(format!("invalid Responses endpoint: {error}")))?;
     let scheme = if url.scheme() == "https" { "wss" } else { "ws" };
     url.set_scheme(scheme)
@@ -93,6 +94,17 @@ struct SocketState {
     last_used_at: Instant,
 }
 
+impl Default for SocketState {
+    fn default() -> Self {
+        Self {
+            connection: None,
+            continuation: None,
+            use_http: false,
+            last_used_at: Instant::now(),
+        }
+    }
+}
+
 struct Continuation {
     response_id: String,
     known_items: usize,
@@ -106,10 +118,14 @@ impl OpenAiSocket {
     /// Returns invalid policy or HTTP client construction errors.
     pub fn new_with_transport(
         api_key: impl Into<String>,
-        base_url: &str,
+        base_url: BaseUrl,
         model: impl Into<String>,
         settings: super::ModelTransportSettings,
     ) -> Result<Self> {
+        let model = model.into();
+        if model.trim().is_empty() {
+            return Err(Error::Config("OPENAI_MODEL is empty".into()));
+        }
         Self::with_client(
             api_key,
             base_url,
@@ -121,7 +137,7 @@ impl OpenAiSocket {
 
     pub(super) fn with_client(
         api_key: impl Into<String>,
-        base_url: &str,
+        base_url: BaseUrl,
         model: impl Into<String>,
         client: reqwest::Client,
         settings: super::ModelTransportSettings,
@@ -131,8 +147,7 @@ impl OpenAiSocket {
         if api_key.trim().is_empty() {
             return Err(Error::Config("provider API key cannot be empty".into()));
         }
-        super::provider::validate_base_url(base_url)?;
-        let socket_url = responses_socket_url(base_url)?;
+        let socket_url = responses_socket_url(&base_url)?;
         let mut provider = Self::with_authorization(
             Arc::new(ApiKeyAuthorization::new(api_key)),
             base_url,
@@ -152,7 +167,7 @@ impl OpenAiSocket {
 
     pub(super) fn with_authorization(
         auth: Arc<dyn OpenAiAuthorization>,
-        http_url: &str,
+        http_url: BaseUrl,
         socket_url: impl Into<String>,
         model: impl Into<String>,
         client: reqwest::Client,
@@ -189,14 +204,8 @@ impl OpenAiSocket {
         Ok(self)
     }
 
-    pub(super) fn with_codex_realtime_voice(
-        mut self,
-        base_url: &str,
-        default_endpoint: bool,
-    ) -> Result<Self> {
-        self.http = self
-            .http
-            .with_codex_realtime_voice(base_url, default_endpoint)?;
+    pub(super) fn with_codex_realtime_voice(mut self, default_endpoint: bool) -> Result<Self> {
+        self.http = self.http.with_codex_realtime_voice(default_endpoint)?;
         Ok(self)
     }
 
@@ -265,7 +274,11 @@ impl OpenAiSocket {
         events: ModelEventSink,
         media: Option<super::MediaPreparation<'_>>,
     ) -> Result<ModelOutput> {
-        let session = self.session(request.session_id).await?;
+        let session_id = request.session_id.map_or("", crate::SessionId::as_str);
+        let session = match request.session_id {
+            Some(session_id) => self.session(session_id).await?,
+            None => Arc::new(Mutex::new(SocketState::default())),
+        };
         // A connection and its continuation cursor form one ordered session exchange.
         let mut state = session.lock().await;
         state.last_used_at = Instant::now();
@@ -289,7 +302,7 @@ impl OpenAiSocket {
                     match connect(
                         self.auth.as_ref(),
                         &self.socket_url,
-                        request.session_id,
+                        session_id,
                         &self.transport,
                     )
                     .await
@@ -390,7 +403,7 @@ impl OpenAiSocket {
                     connection.close().await;
                     let error = websocket_failure(&mut state, retry_after);
                     drop(state);
-                    self.close_idle_connections(request.session_id).await;
+                    self.close_idle_connections(session_id).await;
                     return Err(error);
                 }
                 Exchange::Reconnect => {
@@ -476,12 +489,7 @@ impl OpenAiSocket {
                 ));
             }
         }
-        let session = Arc::new(Mutex::new(SocketState {
-            connection: None,
-            continuation: None,
-            use_http: false,
-            last_used_at: Instant::now(),
-        }));
+        let session = Arc::new(Mutex::new(SocketState::default()));
         sessions.insert(session_id.to_owned(), Arc::clone(&session));
         drop(sessions);
         close_connections(close).await;
@@ -599,7 +607,10 @@ impl Model for OpenAiSocket {
         Box::pin(self.send_response(request, events, None))
     }
 
-    fn fallback_transport<'a>(&'a self, session_id: &'a str) -> BoxFuture<'a, Result<bool>> {
+    fn fallback_transport<'a>(
+        &'a self,
+        session_id: &'a crate::SessionId,
+    ) -> BoxFuture<'a, Result<bool>> {
         Box::pin(async move {
             let session = self.session(session_id).await?;
             let mut state = session.lock().await;

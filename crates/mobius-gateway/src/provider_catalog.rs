@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use mobius::backend::model::provider::{
-    ModelPreset, ProviderAuth, ProviderDefinition, ReasoningPreset, provider, providers,
+    BaseUrl, ModelPreset, ProviderAuth, ProviderDefinition, ReasoningPreset, provider, providers,
 };
 use mobius::middleware::manifest::ModelCatalogs;
 use mobius::protocol::{FrontendSettingOption, FrontendTone, ModelCapability, ModelChoice};
@@ -26,13 +26,13 @@ pub(crate) fn provider_statuses() -> Vec<ProviderStatus> {
 pub(crate) fn selected_base_url<'a>(
     definition: &ProviderDefinition,
     selection: &'a ProviderConfig,
-) -> Option<&'a str> {
+) -> Option<&'a BaseUrl> {
     definition
         .configurable_base_url()
         .then(|| {
             selection
                 .base_url
-                .as_deref()
+                .as_ref()
                 .or_else(|| definition.default_base_url())
         })
         .flatten()
@@ -320,7 +320,7 @@ pub(crate) fn catalog_routes(
             let provider = ProviderConfig {
                 instance: selection.instance.clone(), // rules-allow: each catalog route owns its provider selection
                 provider: selection.provider.clone(), // rules-allow: each catalog route owns its provider selection
-                base_url: configured.selection.base_url.clone(), // rules-allow: each catalog route owns its provider selection
+                base_url: configured.selection.base_url.as_ref().map(BaseUrl::share),
                 endpoint_auth: configured.selection.endpoint_auth,
                 model: id.into(),
                 reasoning_effort: effort.map(str::to_owned),
@@ -409,7 +409,7 @@ pub(crate) fn media_routes(
                 instance: instance.into(),
                 provider: configured.selection.provider.as_str().into(),
                 model: model.into(),
-                base_url: configured.selection.base_url.as_deref().map(Into::into),
+                base_url: configured.selection.base_url.as_ref().map(BaseUrl::share),
                 endpoint_auth: configured.selection.endpoint_auth,
                 reasoning_effort: None,
                 service_tier: None,
@@ -493,7 +493,7 @@ pub(crate) fn credential_is_configured(
             {
                 return Ok(true);
             }
-            if !definition.uses_default_endpoint(base_url) {
+            if !definition.uses_default_endpoint(base_url.map(BaseUrl::as_str)) {
                 return Ok(false);
             }
             Ok(std::env::var(default_env).is_ok_and(|value| !value.trim().is_empty()))
@@ -562,7 +562,7 @@ fn provider_status(definition: &ProviderDefinition) -> ProviderStatus {
             && definition.supports_at(ModelCapability::ImageGeneration, None),
         voice_models: std::borrow::Cow::Borrowed(definition.voice_models()),
         auth,
-        default_base_url: definition.default_base_url().map(str::to_owned),
+        default_base_url: definition.default_base_url().map(BaseUrl::share),
         native_custom_endpoints: definition.native_custom_endpoints(),
         default_api_key_env,
         models: provider_models(definition),
@@ -603,7 +603,10 @@ mod tests {
             (
                 "openai_codex",
                 None,
-                provider("openai_codex").expect("Codex").default_base_url(),
+                provider("openai_codex")
+                    .expect("Codex")
+                    .default_base_url()
+                    .map(BaseUrl::as_str),
             ),
             (
                 "openai_codex",
@@ -613,9 +616,10 @@ mod tests {
         ] {
             let mut selection = crate::wire::AgentComposition::default().provider;
             selection.provider = provider_id.into();
-            selection.base_url = explicit.map(str::to_owned);
+            selection.base_url = explicit.map(|url| BaseUrl::new(url).unwrap());
             assert_eq!(
-                selected_base_url(provider(provider_id).expect("provider"), &selection),
+                selected_base_url(provider(provider_id).expect("provider"), &selection)
+                    .map(BaseUrl::as_str),
                 expected
             );
         }

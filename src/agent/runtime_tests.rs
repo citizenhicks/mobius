@@ -167,7 +167,7 @@ fn active_user_op(
 
 fn peer_op(
     message_id: impl Into<std::sync::Arc<str>>,
-    session_id: impl Into<std::sync::Arc<str>>,
+    session_id: &str,
     handle: impl Into<std::sync::Arc<str>>,
     text: impl Into<String>,
 ) -> Op {
@@ -176,7 +176,7 @@ fn peer_op(
             author: MessageAuthor::Source {
                 message_id: message_id.into(),
                 source: crate::protocol::MessageSource::Session {
-                    session_id: session_id.into(),
+                    session_id: session_id.parse().expect("session ID"),
                 },
                 cause_id: None,
                 ancestry: Vec::new(),
@@ -503,7 +503,7 @@ fn config_with_model(
         "test prompt",
     )
     .session_context(test_session_context())
-    .session_id(session_id)
+    .session_id(session_id.parse().expect("session ID"))
 }
 
 #[path = "runtime_tests/admission.rs"]

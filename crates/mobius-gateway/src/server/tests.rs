@@ -1,4 +1,5 @@
 use futures_util::StreamExt as _;
+use mobius::SessionId;
 use mobius::protocol::{
     Event, EventMsg, MessageAuthor, MessageSubmission, Op, SessionFileReference, Submission,
 };
@@ -92,7 +93,7 @@ async fn create_bot_chat(
     sender: &GatewaySender,
     events: &mut GatewayEvents,
     workspace: &Path,
-) -> (String, Arc<str>) {
+) -> (SessionId, Arc<str>) {
     create_bot_chat_with_config(
         sender,
         events,
@@ -107,7 +108,7 @@ async fn create_bot_chat_with_config(
     events: &mut GatewayEvents,
     workspace: &Path,
     config: crate::wire::AgentComposition,
-) -> (String, Arc<str>) {
+) -> (SessionId, Arc<str>) {
     let token = Uuid::new_v4().simple().to_string();
     let bot_request_id = format!("bot-{token}");
     let bot_name = format!("Test Bot {}", token.get(..12).unwrap());
@@ -194,7 +195,7 @@ async fn create_bot_chat_with_config(
             ServerMessage::SessionOpened {
                 request_id: actual,
                 payload,
-            } if *actual == *request_id => return (payload.session.session_id.to_string(), bot_id),
+            } if *actual == *request_id => return (payload.session.session_id.share(), bot_id),
             ServerMessage::Rejected {
                 request_id: actual,
                 message,
@@ -209,16 +210,16 @@ async fn create_chat(
     sender: &GatewaySender,
     events: &mut GatewayEvents,
     workspace: &Path,
-) -> String {
+) -> SessionId {
     create_bot_chat(sender, events, workspace).await.0
 }
 
-async fn open_chat(sender: &GatewaySender, events: &mut GatewayEvents, session_id: &str) {
+async fn open_chat(sender: &GatewaySender, events: &mut GatewayEvents, session_id: &SessionId) {
     let request_id = Uuid::new_v4().to_string();
     sender
         .send(ClientMessage::OpenSession {
             request_id: request_id.as_str().into(),
-            session_id: session_id.into(),
+            session_id: session_id.share(),
             last_sequence: None,
         })
         .await
@@ -257,7 +258,7 @@ async fn wait_submission(events: &mut GatewayEvents, submission_id: &str) {
 
 async fn wait_session_activity(
     events: &mut GatewayEvents,
-    session_id: &str,
+    session_id: &SessionId,
     state: SessionActivityState,
 ) -> SessionActivity {
     loop {
@@ -269,7 +270,7 @@ async fn wait_session_activity(
         match frame.message {
             ServerMessage::AgentEvent {
                 session_id: actual, ..
-            } if actual.as_ref() == session_id => {
+            } if &actual == session_id => {
                 panic!("a nonselected chat event crossed the gateway-wide stream")
             }
             ServerMessage::SessionsChanged { sessions, .. } => {
@@ -277,7 +278,7 @@ async fn wait_session_activity(
                     .into_iter()
                     .find_map(|slot| match slot {
                         crate::wire::SessionSlot::Changed(session)
-                            if *session.session_id == *session_id =>
+                            if &session.session_id == session_id =>
                         {
                             Some(session.activity)
                         }

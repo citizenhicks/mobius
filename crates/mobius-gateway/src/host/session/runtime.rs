@@ -225,7 +225,7 @@ impl HostState {
                     Ok(RealtimeModel {
                         route: router.default_provider().into(),
                         call: mobius::middleware::voice::VoiceCallContext {
-                            session_id: Arc::clone(&self.running.session_id),
+                            session_id: self.running.session_id.share(),
                             router: Arc::clone(router),
                             voice,
                             bot_name: bot.name,
@@ -540,7 +540,7 @@ impl HostState {
             let mut replay = Vec::new();
             for journal in page.into_chronological() {
                 let frame = ServerFrame::new(ServerMessage::AgentEvent {
-                    session_id: Arc::clone(&self.running.session_id),
+                    session_id: self.running.session_id.share(),
                     record: project_record(&self.running.frontend, journal),
                 });
                 if replayable(&frame) {

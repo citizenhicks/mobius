@@ -1,5 +1,6 @@
 //! Durable asynchronous child-agent middleware.
 
+use crate::SessionId;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -309,7 +310,7 @@ impl ForkTurns {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AgentIdentity {
-    root_session_id: String,
+    root_session_id: SessionId,
     agent_path: String,
     depth: u8,
 }
@@ -322,10 +323,10 @@ struct PreviewCursor {
 }
 
 impl AgentIdentity {
-    fn read(session_id: &str, metadata: &BTreeMap<String, Value>) -> Result<Self> {
+    fn read(session_id: &SessionId, metadata: &BTreeMap<String, Value>) -> Result<Self> {
         let Some(value) = metadata.get(IDENTITY_KEY) else {
             return Ok(Self {
-                root_session_id: session_id.into(),
+                root_session_id: session_id.share(),
                 agent_path: "/root".into(),
                 depth: 0,
             });
@@ -337,7 +338,7 @@ impl AgentIdentity {
 /// The serialized form of an [`AgentIdentity`], borrowed from its owner.
 #[derive(Serialize)]
 struct IdentityRecord<'a> {
-    root_session_id: &'a str,
+    root_session_id: &'a SessionId,
     agent_path: &'a str,
     depth: u8,
 }
@@ -353,8 +354,8 @@ struct AgentScope {
     files: Option<Arc<crate::backend::session_files::SessionFileStore>>,
     checkpoints: Arc<dyn CheckpointStore>,
     children: ChildAgents,
-    session_id: Arc<str>,
-    root_session_id: String,
+    session_id: SessionId,
+    root_session_id: SessionId,
     agent_path: String,
     depth: u8,
     model: Arc<str>,
@@ -363,7 +364,7 @@ struct AgentScope {
 impl AgentScope {
     fn child_role(&self, parent_turn_id: Arc<str>) -> AgentRole {
         AgentRole::Subagent {
-            parent_session_id: Arc::clone(&self.session_id),
+            parent_session_id: self.session_id.share(),
             parent_turn_id,
         }
     }
@@ -383,7 +384,7 @@ impl AgentScope {
             files,
             checkpoints: Arc::clone(&runtime.checkpoints),
             children: ChildAgents::clone(&runtime.children), // rules-allow: the scope outlives the borrowed runtime
-            session_id: Arc::clone(&runtime.session_id),
+            session_id: runtime.session_id.share(),
             root_session_id: identity.root_session_id,
             agent_path: identity.agent_path,
             depth: identity.depth,
@@ -393,7 +394,7 @@ impl AgentScope {
 
     async fn fork(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         agent_path: &str,
         model: &str,
         reasoning_effort: Option<String>,
@@ -411,7 +412,7 @@ impl AgentScope {
             .iter()
             .map(|call| call.call_id.as_ref())
             .collect::<BTreeSet<_>>();
-        let mut checkpoint = Checkpoint::empty(session_id);
+        let mut checkpoint = Checkpoint::empty(session_id.share());
         checkpoint.catalog_visible = false;
         checkpoint.context = Arc::new(fork_context(&parent.context, turns, &pending));
         checkpoint.context_model_route = parent.context_model_route.or(parent.model_route);
@@ -431,7 +432,7 @@ impl AgentScope {
             &checkpoint.context,
         )
         .await?;
-        let session_id = Arc::clone(&checkpoint.session_id);
+        let session_id = checkpoint.session_id.share();
         let metadata = checkpoint.metadata.clone(); // rules-allow: the forked checkpoint and the child agent each own the metadata
         self.checkpoints
             .fork(&self.session_id, parent_sequence, checkpoint)
@@ -449,7 +450,7 @@ impl AgentScope {
 
     async fn resume(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         agent_path: &str,
         depth: u8,
         model: &str,
@@ -547,7 +548,7 @@ impl Subagents {
 
     async fn read_command(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         metadata: &BTreeMap<String, Value>,
         arguments: &str,
     ) -> Result<MiddlewareCommandOutput> {
@@ -580,7 +581,7 @@ impl Subagents {
 
     async fn read_preview_page(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         metadata: &BTreeMap<String, Value>,
         arguments: &str,
     ) -> Result<MiddlewareCommandOutput> {
@@ -603,7 +604,7 @@ impl Subagents {
 
     async fn preview_page(
         &self,
-        root_session_id: &str,
+        root_session_id: &SessionId,
         path: &str,
         before_sequence: Option<u64>,
     ) -> Result<MiddlewareCommandOutput> {
@@ -794,7 +795,7 @@ impl Middleware for Subagents {
         })
     }
 
-    fn has_background_work<'a>(&'a self, session_id: &'a str) -> BoxFuture<'a, Result<bool>> {
+    fn has_background_work<'a>(&'a self, session_id: &'a SessionId) -> BoxFuture<'a, Result<bool>> {
         Box::pin(self.shared.has_active_children(session_id))
     }
 

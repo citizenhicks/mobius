@@ -37,7 +37,7 @@ async fn pipelined_open_resumes_after_ready_and_selection_skips_replay() {
     let submission = Uuid::new_v4().to_string();
     sender
         .send(ClientMessage::Submit {
-            session_id: session_id.as_str().into(),
+            session_id: session_id.share(),
             submission: Submission {
                 id: submission.as_str().into(),
                 op: user_message("hello", Vec::new()),
@@ -51,7 +51,7 @@ async fn pipelined_open_resumes_after_ready_and_selection_skips_replay() {
 
     let open = |last_sequence| ClientMessage::OpenSession {
         request_id: "open".into(),
-        session_id: session_id.as_str().into(),
+        session_id: session_id.share(),
         last_sequence,
     };
     let (_, mut full) = GatewayClient::connect_with(
@@ -90,7 +90,7 @@ async fn pipelined_open_resumes_after_ready_and_selection_skips_replay() {
         &mut ConnectOptions {
             pipelined: vec![ClientMessage::SelectSession {
                 request_id: "select".into(),
-                session_id: session_id.as_str().into(),
+                session_id: session_id.share(),
             }],
             ..ConnectOptions::default()
         },
@@ -101,12 +101,12 @@ async fn pipelined_open_resumes_after_ready_and_selection_skips_replay() {
     for request in [
         ClientMessage::GetGitDiffTotals {
             request_id: "totals".into(),
-            session_id: session_id.as_str().into(),
+            session_id: session_id.share(),
             scope: GitDiffScope::Unstaged,
         },
         ClientMessage::GetGitDiff {
             request_id: "diff".into(),
-            session_id: session_id.as_str().into(),
+            session_id: session_id.share(),
             scope: GitDiffScope::Unstaged,
         },
     ] {

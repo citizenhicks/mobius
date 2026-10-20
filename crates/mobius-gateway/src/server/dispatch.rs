@@ -8,6 +8,7 @@ use super::{
     write_client_inventory, write_frame, write_gateway_result, write_rejection, write_result,
     write_server_error, write_session_history,
 };
+use mobius::SessionId;
 use mobius::backend::session_files::session_file_limits;
 use mobius::backend::session_files::{SessionFileOrigin as StoredFileOrigin, SessionFileSelection};
 use mobius::protocol::{MessageAuthor, MessageTarget, Submission};
@@ -44,7 +45,7 @@ pub(super) struct ConnectionSessionState<'a> {
     pub(super) requests: &'a mut JoinSet<ServerMessage>,
     pub(super) session_files: &'a SessionFileStore,
     pub(super) bots: &'a BotStore,
-    pub(super) uploads: &'a mut BTreeMap<(String, String), PendingSessionFileWrite>,
+    pub(super) uploads: &'a mut BTreeMap<(SessionId, String), PendingSessionFileWrite>,
     pub(super) voice: &'a mut Option<super::voice::ConnectionVoice>,
     pub(super) browser: &'a mut Option<crate::computer_runtime::browser::BrowserConnection>,
     pub(super) desktop: &'a mut Option<crate::computer_runtime::desktop::DesktopConnection>,
@@ -100,6 +101,17 @@ pub(super) async fn handle_message(
         return Ok(());
     };
     match message {
+        ClientMessage::InvalidRequest {
+            request_id,
+            message,
+        } => {
+            return write_rejection(
+                writer,
+                request_id,
+                Rejection::new("invalid_request", message),
+            )
+            .await;
+        }
         ClientMessage::GetStorageUsage { .. }
         | ClientMessage::GetTelemetry { .. }
         | ClientMessage::ConfigureTelemetry { .. }
@@ -875,7 +887,7 @@ async fn open_session(
     writer: &mut (impl AsyncWrite + Unpin),
     selected: &mut Option<SelectedChat>,
     request_id: Arc<str>,
-    session_id: Arc<str>,
+    session_id: SessionId,
     last_sequence: Option<u64>,
     gateway: &GatewayHost,
 ) -> Result<()> {
@@ -890,7 +902,7 @@ async fn select_session(
     writer: &mut (impl AsyncWrite + Unpin),
     selected: &mut Option<SelectedChat>,
     request_id: Arc<str>,
-    session_id: String,
+    session_id: SessionId,
     gateway: &GatewayHost,
 ) -> Result<()> {
     let opened = match gateway.open_session(&session_id).await {
@@ -922,7 +934,7 @@ async fn get_session_history(
     writer: &mut (impl AsyncWrite + Unpin),
     connection: &mut ConnectionSessionState<'_>,
     request_id: Arc<str>,
-    session_id: String,
+    session_id: SessionId,
     before_sequence: Option<u64>,
 ) -> Result<()> {
     let page = match connection.selected {
@@ -943,7 +955,7 @@ async fn rename_session(
     writer: &mut (impl AsyncWrite + Unpin),
     gateway: &GatewayHost,
     request_id: Arc<str>,
-    session_id: String,
+    session_id: SessionId,
     title: String,
 ) -> Result<()> {
     write_result(
@@ -959,7 +971,7 @@ async fn attach_session_folder(
     selected: Option<&SelectedChat>,
     gateway: &GatewayHost,
     request_id: Arc<str>,
-    session_id: String,
+    session_id: SessionId,
     folder: PathBuf,
 ) -> Result<()> {
     let host = match require_selected(selected, &session_id) {
@@ -977,7 +989,7 @@ async fn set_session_pinned(
     writer: &mut (impl AsyncWrite + Unpin),
     gateway: &GatewayHost,
     request_id: Arc<str>,
-    session_id: String,
+    session_id: SessionId,
     pinned: bool,
 ) -> Result<()> {
     write_result(
@@ -992,7 +1004,7 @@ async fn set_message_pinned(
     writer: &mut (impl AsyncWrite + Unpin),
     selected: Option<&SelectedChat>,
     request_id: Arc<str>,
-    session_id: String,
+    session_id: SessionId,
     target: MessageTarget,
     pinned: bool,
 ) -> Result<()> {
@@ -1030,7 +1042,7 @@ async fn write_bot_catalog_result(
     writer: &mut (impl AsyncWrite + Unpin),
     connection: &mut ConnectionSessionState<'_>,
     request_id: Arc<str>,
-    result: std::result::Result<(Vec<crate::wire::BotRecord>, Vec<String>), Rejection>,
+    result: std::result::Result<(Vec<crate::wire::BotRecord>, Vec<SessionId>), Rejection>,
 ) -> Result<()> {
     match result {
         Ok((bots, deleted_sessions)) => {
@@ -1048,23 +1060,22 @@ async fn delete_sessions(
     writer: &mut (impl AsyncWrite + Unpin),
     connection: &mut ConnectionSessionState<'_>,
     request_id: Arc<str>,
-    mut session_ids: Vec<String>,
+    session_ids: Vec<SessionId>,
     mut selection: SessionFileSelection,
     gateway: &GatewayHost,
 ) -> Result<()> {
     if let SessionFileSelection::Ids(ids) = &mut selection
-        && let [selected_id] = session_ids.as_mut_slice()
+        && let [selected_id] = session_ids.as_slice()
         && !ids.is_empty()
     {
-        // Reuse the owned IDs as a lookup key, restoring the selection before any await.
-        let mut key = (std::mem::take(selected_id), String::new());
+        // Keep the checked session identity while moving each file ID through the lookup key.
+        let mut key = (selected_id.share(), String::new());
         ids.retain_mut(|id| {
             std::mem::swap(id, &mut key.1);
             let retained = connection.uploads.remove(&key).is_none();
             std::mem::swap(id, &mut key.1);
             retained
         });
-        *selected_id = key.0;
         if ids.is_empty() {
             return write_result(writer, request_id, Ok(())).await;
         }
@@ -1081,11 +1092,11 @@ async fn delete_sessions(
     }
 }
 
-fn forget_deleted_sessions(connection: &mut ConnectionSessionState<'_>, deleted: &[String]) {
+fn forget_deleted_sessions(connection: &mut ConnectionSessionState<'_>, deleted: &[SessionId]) {
     if connection
         .voice
         .as_ref()
-        .is_some_and(|voice| deleted.iter().any(|id| **id == *voice.session_id))
+        .is_some_and(|voice| deleted.iter().any(|id| id == &voice.session_id))
     {
         *connection.voice = None;
     }
@@ -1095,7 +1106,7 @@ fn forget_deleted_sessions(connection: &mut ConnectionSessionState<'_>, deleted:
     if connection.selected.as_ref().is_some_and(|selected| {
         deleted
             .iter()
-            .any(|session_id| **session_id == **selected.host.session_id())
+            .any(|session_id| session_id == selected.host.session_id())
     }) {
         *connection.selected = None;
     }
@@ -1108,7 +1119,7 @@ fn forget_deleted_sessions(connection: &mut ConnectionSessionState<'_>, deleted:
 async fn submit(
     writer: &mut (impl AsyncWrite + Unpin),
     connection: &mut ConnectionSessionState<'_>,
-    session_id: Arc<str>,
+    session_id: SessionId,
     submission: Submission,
 ) -> Result<()> {
     let request_id = Arc::clone(&submission.id);
@@ -1190,7 +1201,7 @@ async fn begin_session_file_upload(
     writer: &mut (impl AsyncWrite + Unpin),
     connection: &mut ConnectionSessionState<'_>,
     request_id: Arc<str>,
-    session_id: String,
+    session_id: SessionId,
     name: String,
     size: u64,
     media_type: String,
@@ -1230,7 +1241,7 @@ async fn begin_session_file_upload(
             let upload_id = upload.id().to_owned();
             connection
                 .uploads
-                .insert((session_id.clone(), upload_id.clone()), upload); // rules-allow: the upload table and the ready frame each own the IDs
+                .insert((session_id.share(), upload_id.clone()), upload); // rules-allow: the upload table and ready frame each own the upload ID
             write_frame(
                 writer,
                 &ServerFrame::new(ServerMessage::SessionFileUploadReady {
@@ -1250,7 +1261,7 @@ async fn upload_session_file_chunk(
     writer: &mut (impl AsyncWrite + Unpin),
     connection: &mut ConnectionSessionState<'_>,
     request_id: Arc<str>,
-    session_id: String,
+    session_id: SessionId,
     upload_id: String,
     offset: u64,
     data: Vec<u8>,
@@ -1305,7 +1316,7 @@ async fn finish_session_file_upload(
     writer: &mut (impl AsyncWrite + Unpin),
     connection: &mut ConnectionSessionState<'_>,
     request_id: Arc<str>,
-    session_id: String,
+    session_id: SessionId,
     upload_id: String,
 ) -> Result<()> {
     let key = (session_id, upload_id);
@@ -1352,7 +1363,7 @@ async fn finish_session_file_upload(
 
 fn require_readable_files(
     selected: Option<&SelectedChat>,
-    session_id: &str,
+    session_id: &SessionId,
 ) -> std::result::Result<(), Rejection> {
     require_selected(selected, session_id).map(|_| ())
 }
@@ -1365,7 +1376,7 @@ async fn list_session_files(
     writer: &mut (impl AsyncWrite + Unpin),
     connection: &mut ConnectionSessionState<'_>,
     request_id: Arc<str>,
-    session_id: String,
+    session_id: SessionId,
 ) -> Result<()> {
     if let Err(rejection) = require_readable_files(connection.selected.as_ref(), &session_id) {
         return write_rejection(writer, request_id, rejection).await;
@@ -1414,7 +1425,7 @@ async fn read_session_file(
     writer: &mut (impl AsyncWrite + Unpin),
     connection: &mut ConnectionSessionState<'_>,
     request_id: Arc<str>,
-    session_id: String,
+    session_id: SessionId,
     file_id: String,
     offset: u64,
     max_bytes: usize,
@@ -1537,7 +1548,7 @@ async fn generate_ssh_identity(
 
 struct GitDiffRequest {
     request_id: Arc<str>,
-    session_id: String,
+    session_id: SessionId,
     scope: GitDiffScope,
     /// Answer with line totals instead of the diff text.
     totals: bool,
@@ -1609,7 +1620,7 @@ async fn switch_git_branch(
     writer: &mut (impl AsyncWrite + Unpin),
     connection: &mut ConnectionSessionState<'_>,
     request_id: Arc<str>,
-    session_id: String,
+    session_id: SessionId,
     branch: String,
 ) -> Result<()> {
     let host = match require_selected(connection.selected.as_ref(), &session_id) {
@@ -1627,7 +1638,7 @@ async fn list_workspace_files(
     writer: &mut (impl AsyncWrite + Unpin),
     connection: &mut ConnectionSessionState<'_>,
     request_id: Arc<str>,
-    session_id: String,
+    session_id: SessionId,
     scope: WorkspaceFileScope,
 ) -> Result<()> {
     let host = match require_selected(connection.selected.as_ref(), &session_id) {
@@ -1659,7 +1670,7 @@ async fn read_workspace_file(
     writer: &mut (impl AsyncWrite + Unpin),
     connection: &mut ConnectionSessionState<'_>,
     request_id: Arc<str>,
-    session_id: String,
+    session_id: SessionId,
     path: String,
     offset: u64,
     max_bytes: usize,
@@ -1698,7 +1709,7 @@ async fn write_workspace_file(
     writer: &mut (impl AsyncWrite + Unpin),
     connection: &mut ConnectionSessionState<'_>,
     request_id: Arc<str>,
-    session_id: String,
+    session_id: SessionId,
     path: String,
     content: String,
 ) -> Result<()> {
@@ -1774,7 +1785,7 @@ async fn set_provider_credential(
     instance: String,
     provider: String,
     api_key: String,
-    base_url: Option<String>,
+    base_url: Option<mobius::backend::model::provider::BaseUrl>,
     expires_at: Option<u64>,
     gateway: &GatewayHost,
 ) -> Result<()> {

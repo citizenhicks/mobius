@@ -91,7 +91,7 @@ pub(super) fn validate_provider_config(config: &ProviderConfig) -> Result<()> {
     }
     provider(&config.provider)?.model_config_is_valid(
         &config.model,
-        config.base_url.as_deref(),
+        config.base_url.as_ref(),
         config.reasoning_effort.as_deref(),
     )?;
     Ok(())
@@ -118,7 +118,7 @@ fn validate_provider_endpoint_auth(
         return Ok(());
     }
     definition
-        .validate_credentialless_endpoint(config.base_url.as_deref())
+        .validate_credentialless_endpoint(config.base_url.as_ref())
         .map_err(Error::from)
 }
 
@@ -126,7 +126,7 @@ pub(super) fn validate_configured_provider(configured: &ConfiguredProvider) -> R
     if configured.selection.model.is_empty() {
         validate_provider_transport(&configured.selection)?;
         provider(&configured.selection.provider)?
-            .validate_base_url(configured.selection.base_url.as_deref())?;
+            .validate_base_url(configured.selection.base_url.as_ref())?;
         if !configured.models.is_empty() || configured.selection.reasoning_effort.is_some() {
             return Err(Error::Config(
                 "a chat catalog requires a selected chat model".into(),
@@ -338,8 +338,9 @@ pub(super) fn validate_configured_provider_selection(
         definition.auth(),
         mobius::backend::model::provider::ProviderAuth::Browser(_)
     ) && !mobius::backend::model::provider::uses_default_endpoint(
-        crate::provider_catalog::selected_base_url(definition, &configured.selection),
-        crate::provider_catalog::selected_base_url(definition, selection),
+        crate::provider_catalog::selected_base_url(definition, &configured.selection)
+            .map(BaseUrl::as_str),
+        crate::provider_catalog::selected_base_url(definition, selection).map(BaseUrl::as_str),
     ) {
         return Err(Error::Config(
             "browser-auth provider selection must use its operator-registered endpoint".into(),

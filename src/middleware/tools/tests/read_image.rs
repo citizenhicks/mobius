@@ -60,14 +60,14 @@ async fn extensionless_images_are_durable_and_reinspectable_after_source_deletio
     std::fs::remove_file(path).expect("remove source");
     assert_eq!(
         store
-            .read_file("session", &first.file)
+            .read_file(&"session".parse().expect("session ID"), &first.file)
             .await
             .expect("durable image"),
         bytes
     );
     assert!(
         store
-            .read_file("another-session", &first.file)
+            .read_file(&"another-session".parse().expect("session ID"), &first.file)
             .await
             .is_err()
     );
@@ -96,7 +96,7 @@ async fn extensionless_images_are_durable_and_reinspectable_after_source_deletio
     assert!(!result.is_error, "{}", result.output.text());
     assert_eq!(result.output.files().count(), 1);
     let other_session = SandboxPermissions::restore(
-        "another-session",
+        &"another-session".parse().expect("session ID"),
         crate::backend::sandbox::SandboxMode::WorkspaceWrite,
         crate::backend::sandbox::NetworkAccess::Denied,
         Vec::new(),
@@ -119,7 +119,7 @@ async fn extensionless_images_are_durable_and_reinspectable_after_source_deletio
     assert!(
         store
             .list_files(
-                "session",
+                &"session".parse().expect("session ID"),
                 &[
                     crate::backend::session_files::SessionFileOrigin::Upload,
                     crate::backend::session_files::SessionFileOrigin::Artifact

@@ -1,3 +1,4 @@
+use crate::SessionId;
 use std::io::Cursor;
 use std::sync::Arc;
 
@@ -82,7 +83,7 @@ impl SessionFileStore {
     /// Returns authorization, decoding, or storage errors.
     pub async fn prepare_image(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         image: &ImageReference,
     ) -> Result<Option<ImageRendition>> {
         let record = self.resolve_image(session_id, image).await?;
@@ -186,7 +187,7 @@ impl SessionFileStore {
 
     async fn resolve_image(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         image: &ImageReference,
     ) -> Result<super::StoredSessionFile> {
         let (mut record, _) = self.resolve(session_id, &image.file.id).await?;
@@ -224,7 +225,7 @@ impl SessionFileStore {
 
     async fn resolve_rendition(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         rendition: &ImageRendition,
         key: &str,
         [width, height]: [u32; 2],
@@ -253,7 +254,7 @@ impl SessionFileStore {
 
     async fn remember_image_preparation(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         file: &SessionFileReference,
         dimensions: [u32; 2],
         orientation: u8,
@@ -286,7 +287,7 @@ impl SessionFileStore {
     /// Returns an error if the file is unauthorized, malformed, or not an image.
     pub async fn read_image(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         file: &SessionFileReference,
     ) -> Result<Vec<u8>> {
         let bytes = self.read_file(session_id, file).await?;
@@ -305,7 +306,7 @@ impl SessionFileStore {
     /// Returns an error if validation or an operation required by this function fails.
     pub async fn inspect_image(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         file: &SessionFileReference,
         detail: ImageDetail,
     ) -> Result<ImageReference> {
@@ -319,7 +320,7 @@ impl SessionFileStore {
     /// Returns an error if validation or an operation required by this function fails.
     pub async fn inspect_image_id(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         file_id: &str,
         detail: ImageDetail,
     ) -> Result<ImageReference> {
@@ -331,7 +332,7 @@ impl SessionFileStore {
 
     async fn inspect_bytes(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         file: &SessionFileReference,
         bytes: Vec<u8>,
         detail: ImageDetail,
@@ -365,7 +366,7 @@ impl SessionFileStore {
     /// Returns an error if validation or an operation required by this function fails.
     pub async fn publish_reference(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         file: &SessionFileReference,
     ) -> Result<SessionFileReference> {
         self.retain_reference(session_id, session_id, file, SessionFileOrigin::Artifact)
@@ -378,8 +379,8 @@ impl SessionFileStore {
     /// Returns an error if validation or an operation required by this function fails.
     pub async fn grant_file(
         &self,
-        parent: &str,
-        child: &str,
+        parent: &SessionId,
+        child: &SessionId,
         file: &SessionFileReference,
     ) -> Result<SessionFileReference> {
         self.retain_reference(parent, child, file, SessionFileOrigin::Observation)
@@ -392,8 +393,8 @@ impl SessionFileStore {
     /// Returns an error if validation or an operation required by this function fails.
     pub async fn grant_upload(
         &self,
-        source: &str,
-        target: &str,
+        source: &SessionId,
+        target: &SessionId,
         file: &SessionFileReference,
     ) -> Result<SessionFileReference> {
         self.verify_upload(source, file).await?;
@@ -407,8 +408,8 @@ impl SessionFileStore {
     /// Returns an error if validation or an operation required by this function fails.
     pub async fn share_artifact(
         &self,
-        source: &str,
-        target: &str,
+        source: &SessionId,
+        target: &SessionId,
         file: &SessionFileReference,
     ) -> Result<SessionFileReference> {
         self.retain_reference(source, target, file, SessionFileOrigin::Artifact)
@@ -417,12 +418,11 @@ impl SessionFileStore {
 
     async fn retain_reference(
         &self,
-        source: &str,
-        target: &str,
+        source: &SessionId,
+        target: &SessionId,
         file: &SessionFileReference,
         origin: SessionFileOrigin,
     ) -> Result<SessionFileReference> {
-        super::validate_session_id(target)?;
         self.ensure_initialized().await?;
         let _commit = self.state.commits.lock().await;
         let (mut record, _) = self.resolve(source, &file.id).await?;
@@ -463,7 +463,7 @@ impl SessionFileStore {
     /// Returns an error if validation or an operation required by this function fails.
     pub async fn ingest_image(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         name: String,
         bytes: Vec<u8>,
         detail: ImageDetail,
@@ -477,7 +477,7 @@ impl SessionFileStore {
     /// Rejects oversized captures before any resizing or storage.
     pub async fn ingest_screenshot(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         name: String,
         bytes: Vec<u8>,
         detail: ImageDetail,
@@ -488,7 +488,7 @@ impl SessionFileStore {
 
     async fn ingest_observation(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         name: String,
         bytes: Vec<u8>,
         detail: ImageDetail,
@@ -515,7 +515,7 @@ impl SessionFileStore {
     /// Returns an error if the image is malformed, mislabeled, or cannot be stored.
     pub async fn publish_image(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         name: String,
         declared_media_type: &str,
         bytes: Vec<u8>,
@@ -539,7 +539,7 @@ impl SessionFileStore {
 
     async fn store_image(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         name: String,
         (bytes, media_type, width, height, orientation): (Vec<u8>, &'static str, u32, u32, u8),
         detail: ImageDetail,
@@ -576,7 +576,7 @@ impl SessionFileStore {
     /// Returns an error if the resource cannot be read, decoded, or validated.
     pub async fn read_file(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         file: &SessionFileReference,
     ) -> Result<Vec<u8>> {
         let (record, path) = self.resolve(session_id, &file.id).await?;
@@ -594,7 +594,7 @@ impl SessionFileStore {
     /// Returns an error if validation or an operation required by this function fails.
     pub async fn file_reference(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         file_id: &str,
     ) -> Result<SessionFileReference> {
         Ok(self.resolve(session_id, file_id).await?.0.file)
@@ -683,8 +683,8 @@ async fn validated_image(
 /// Returns an error if validation or an operation required by this function fails.
 pub async fn grant_context<T: std::borrow::Borrow<serde_json::Value> + Sync>(
     files: Option<&SessionFileStore>,
-    parent: &str,
-    child: &str,
+    parent: &SessionId,
+    child: &SessionId,
     input: &[T],
 ) -> Result<()> {
     for item in input {
@@ -869,6 +869,8 @@ mod presentation_tests {
 
     #[tokio::test]
     async fn preparation_rejects_claimed_dimensions_before_reusing_cached_pixels() {
+        let id = SessionId::new("session").unwrap();
+        let child = SessionId::new("child").unwrap();
         let state = tempfile::tempdir().expect("state");
         let store = SessionFileStore::new(state.path(), None)
             .image_presentation(ImagePresentation {
@@ -879,19 +881,19 @@ mod presentation_tests {
         let bytes =
             encode_pixels(&image::DynamicImage::new_rgb8(256, 128), ImageFormat::Png).expect("PNG");
         let mut image = store
-            .ingest_image("session", "image.png".into(), bytes, ImageDetail::High)
+            .ingest_image(&id, "image.png".into(), bytes, ImageDetail::High)
             .await
             .expect("image");
         image.width = 1;
-        assert!(store.prepare_image("session", &image).await.is_err());
+        assert!(store.prepare_image(&id, &image).await.is_err());
         image.width = 256;
         image.rendition.as_mut().expect("rendition").width = 1;
-        assert!(store.prepare_image("session", &image).await.is_err());
+        assert!(store.prepare_image(&id, &image).await.is_err());
         image.rendition.as_mut().expect("rendition").width = 64;
         let old_id = image.rendition.as_ref().expect("rendition").file.id.clone();
         store
             .prepare_delete_sessions(
-                &["session".into()],
+                std::slice::from_ref(&id),
                 super::super::SessionFileSelection::Ids(vec![old_id.clone()]),
             )
             .await
@@ -900,14 +902,14 @@ mod presentation_tests {
             .await
             .expect("purge rendition");
         let regenerated = store
-            .prepare_image("session", &image)
+            .prepare_image(&id, &image)
             .await
             .expect("rebuild purged rendition")
             .expect("rendition");
         assert_ne!(regenerated.file.id, old_id);
         assert_eq!(
             store
-                .prepare_image("session", &image)
+                .prepare_image(&id, &image)
                 .await
                 .expect("reuse regenerated")
                 .as_ref(),
@@ -915,42 +917,49 @@ mod presentation_tests {
         );
         let input =
             [serde_json::json!({"role":"user", "content":[{"type":"input_image", "image":image}]})];
-        grant_context(Some(&store), "session", "child", &input)
+        grant_context(Some(&store), &id, &child, &input)
             .await
             .expect("fork repairs the historical rendition pointer");
         assert_eq!(
             store
-                .prepare_image("child", &image)
+                .prepare_image(&child, &image)
                 .await
                 .expect("child retains the current rendition")
                 .as_ref(),
             Some(&regenerated)
         );
         assert!(
-            grant_context(Some(&store), "stranger", "other", &input)
-                .await
-                .is_err()
+            grant_context(
+                Some(&store),
+                &SessionId::new("stranger").unwrap(),
+                &SessionId::new("other").unwrap(),
+                &input
+            )
+            .await
+            .is_err()
         );
         let (record, _) = store
-            .resolve("session", &regenerated.file.id)
+            .resolve(&id, &regenerated.file.id)
             .await
             .expect("record");
         std::fs::write(store.blob_path(&record.content_hash), b"tampered").expect("tamper blob");
         image.rendition = Some(regenerated);
-        assert!(store.prepare_image("session", &image).await.is_err());
-        let (original, _) = store
-            .resolve("session", &image.file.id)
-            .await
-            .expect("original");
+        assert!(store.prepare_image(&id, &image).await.is_err());
+        let (original, _) = store.resolve(&id, &image.file.id).await.expect("original");
         std::fs::write(
             store.blob_path(&original.content_hash),
             b"tampered original",
         )
         .expect("tamper original");
         assert!(
-            grant_context(Some(&store), "session", "corrupt", &input)
-                .await
-                .is_err()
+            grant_context(
+                Some(&store),
+                &id,
+                &SessionId::new("corrupt").unwrap(),
+                &input
+            )
+            .await
+            .is_err()
         );
     }
 }

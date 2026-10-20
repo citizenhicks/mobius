@@ -8,6 +8,7 @@ fn with_context(session: &str, items: &[Value]) -> Checkpoint {
 
 #[tokio::test]
 async fn context_rows_append_without_rewriting_previous_items() {
+    let session_id = session("session");
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("context.sqlite3");
     let store = SqliteCheckpoint::new(&path).unwrap();
@@ -61,7 +62,7 @@ async fn context_rows_append_without_rewriting_previous_items() {
         )
         .unwrap();
     assert_eq!(inserted, 1);
-    assert_eq!(store.load("session").await.unwrap(), Some(state.clone()));
+    assert_eq!(store.load(&session_id).await.unwrap(), Some(state.clone()));
     state.sequence += 1;
     state.context_epoch += 1;
     state.context = Arc::new(vec![Arc::new(json!({"summary":"all three"}))]);
@@ -85,7 +86,7 @@ async fn context_rows_append_without_rewriting_previous_items() {
     assert_eq!(
         SqliteCheckpoint::new(&path)
             .unwrap()
-            .load("session")
+            .load(&session_id)
             .await
             .unwrap(),
         Some(state)
@@ -133,13 +134,17 @@ async fn same_epoch_accepts_equal_new_arcs_but_rejects_changed_or_truncated_pref
             .to_string()
             .contains("prefix was truncated")
     );
-    assert_eq!(store.load("session").await.unwrap(), Some(durable));
+    assert_eq!(
+        store.load(&session("session")).await.unwrap(),
+        Some(durable)
+    );
 }
 
 #[tokio::test]
 async fn failed_event_rolls_back_context_header_receipt_and_transcript_together() {
     use crate::backend::checkpoint::{QueuedMessage, QueuedMessageBoundary};
     use crate::protocol::{MessageAuthor, MessageDelivery, MessageEvent, WarningEvent};
+    let session_id = session("session");
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("context.sqlite3");
     let store = SqliteCheckpoint::new(&path).unwrap();
@@ -187,10 +192,10 @@ async fn failed_event_rolls_back_context_header_receipt_and_transcript_together(
         )
         .await;
     assert!(result.is_err());
-    assert_eq!(store.load("session").await.unwrap(), Some(original));
+    assert_eq!(store.load(&session_id).await.unwrap(), Some(original));
     assert!(
         !store
-            .message_accepted("session", "new-input")
+            .message_accepted(&session_id, "new-input")
             .await
             .unwrap()
     );
@@ -210,7 +215,7 @@ async fn failed_event_rolls_back_context_header_receipt_and_transcript_together(
         .save(next.clone(), Vec::new(), None)
         .await
         .expect("failed transaction did not advance hint or durable context");
-    assert_eq!(store.load("session").await.unwrap(), Some(next));
+    assert_eq!(store.load(&session_id).await.unwrap(), Some(next));
 }
 
 #[tokio::test]
@@ -256,5 +261,5 @@ async fn cancelled_save_caller_does_not_interrupt_the_started_atomic_worker() {
     })
     .await
     .expect("started worker completes its transaction");
-    assert_eq!(store.load("session").await.unwrap(), Some(state));
+    assert_eq!(store.load(&session("session")).await.unwrap(), Some(state));
 }

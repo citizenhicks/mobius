@@ -1,5 +1,6 @@
 //! Optional durable todo planning.
 
+use crate::SessionId;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -114,7 +115,7 @@ impl Middleware for Tasks {
     fn register(&self, catalog: &mut Catalog, runtime: &RuntimeContext) -> Result<()> {
         catalog.register(Arc::new(WriteTodos {
             checkpoints: Arc::clone(&runtime.checkpoints),
-            session_id: Arc::clone(&runtime.session_id),
+            session_id: runtime.session_id.share(),
             frontend: Arc::clone(&runtime.frontend),
         }))
     }
@@ -199,7 +200,7 @@ impl Middleware for Tasks {
 
 struct WriteTodos {
     checkpoints: Arc<dyn CheckpointStore>,
-    session_id: Arc<str>,
+    session_id: SessionId,
     frontend: super::FrontendEventSink,
 }
 
@@ -251,7 +252,10 @@ fn validate_todos(todos: &mut [Todo]) -> std::result::Result<(), String> {
     Ok(())
 }
 
-async fn load_todos(checkpoints: &Arc<dyn CheckpointStore>, session_id: &str) -> Result<Vec<Todo>> {
+async fn load_todos(
+    checkpoints: &Arc<dyn CheckpointStore>,
+    session_id: &SessionId,
+) -> Result<Vec<Todo>> {
     let mut todos: Vec<Todo> = checkpoints
         .load_state(session_id, STATE_KEY)
         .await?
@@ -350,7 +354,7 @@ mod tests {
         let events = Arc::clone(&frontend_events);
         let mut runtime = crate::middleware::tests::lifecycle_runtime(temporary.path());
         let checkpoints = Arc::clone(&runtime.checkpoints);
-        runtime.session_id = "session-a".into();
+        runtime.session_id = "session-a".parse().expect("session ID");
         runtime.model_route = "default".into();
         runtime.frontend = Arc::new(move |event| {
             events.lock().expect("frontend events").push(event);
@@ -368,7 +372,7 @@ mod tests {
             ApprovalPolicy::Ask,
         ));
         let permissions = SandboxPermissions::restore(
-            "session-a",
+            &"session-a".parse().expect("session ID"),
             crate::backend::sandbox::SandboxMode::WorkspaceWrite,
             NetworkAccess::Denied,
             Vec::new(),
@@ -404,7 +408,7 @@ mod tests {
 
         assert!(!result.is_error, "{}", result.output.text());
         assert_eq!(
-            load_todos(&checkpoints, "session-a")
+            load_todos(&checkpoints, &"session-a".parse().expect("session ID"))
                 .await
                 .expect("saved todos")[0]
                 .content,

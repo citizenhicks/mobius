@@ -1,5 +1,6 @@
 //! User uploads exposed to the owning workspace.
 
+use crate::SessionId;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -148,7 +149,7 @@ impl Middleware for Attachments {
     fn register(&self, catalog: &mut Catalog, runtime: &RuntimeContext) -> Result<()> {
         catalog.register(Arc::new(ListAttachments {
             store: Arc::clone(&self.store),
-            session_id: Arc::clone(&runtime.session_id),
+            session_id: runtime.session_id.share(),
             workspace: self.workspace.as_ref().map(Arc::clone),
         }))
     }
@@ -249,7 +250,7 @@ impl Attachments {
 
     async fn materialize_one(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         attachment: &mut MaterializedAttachment,
     ) -> Result<()> {
         let content_hash = attachment.content_hash.insert(
@@ -367,7 +368,7 @@ fn materialization_matches(
 async fn stage_attachment(
     store: &SessionFileStore,
     workspace: Option<&Dir>,
-    session_id: &str,
+    session_id: &SessionId,
     reference: &SessionFileReference,
     content_hash: &str,
 ) -> Result<Option<String>> {
@@ -386,7 +387,7 @@ async fn stage_attachment(
     Ok(Some(path.into()))
 }
 
-fn staged_attachment_path(session_id: &str, reference: &SessionFileReference) -> PathBuf {
+fn staged_attachment_path(session_id: &SessionId, reference: &SessionFileReference) -> PathBuf {
     PathBuf::from(".mobius")
         .join("attachments")
         .join(session_storage_key(session_id))
@@ -396,7 +397,7 @@ fn staged_attachment_path(session_id: &str, reference: &SessionFileReference) ->
 
 fn ensure_staging_directories(
     workspace: &Dir,
-    session_id: &str,
+    session_id: &SessionId,
     attachment_id: &str,
 ) -> Result<Dir> {
     let mobius = open_or_create_dir(workspace, ".mobius")?;
@@ -485,7 +486,7 @@ fn remove_temporary_copy(destination: &Dir, temporary: &str) {
 
 struct ListAttachments {
     store: Arc<SessionFileStore>,
-    session_id: Arc<str>,
+    session_id: SessionId,
     workspace: Option<Arc<Dir>>,
 }
 
@@ -680,6 +681,13 @@ mod tests {
         let workspace =
             Dir::open_ambient_dir(workspace.path(), ambient_authority()).expect("open workspace");
 
-        assert!(ensure_staging_directories(&workspace, "session", "attachment").is_err());
+        assert!(
+            ensure_staging_directories(
+                &workspace,
+                &"session".parse().expect("session ID"),
+                "attachment"
+            )
+            .is_err()
+        );
     }
 }

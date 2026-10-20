@@ -253,13 +253,6 @@ pub fn validate_version(version: u16) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn validate_session_id(session_id: &str) -> Result<()> {
-    if session_id.trim().is_empty() || session_id.len() > 4 * 1024 {
-        return Err(Error::Config("session ID must be 1–4096 bytes".into()));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

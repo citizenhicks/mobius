@@ -1,3 +1,4 @@
+use mobius::SessionId;
 use mobius::backend::session_files::SessionFileDeletion;
 
 use super::deletion::{prepare_session_tree_deletion, remove_session_trees, session_trees};
@@ -23,7 +24,7 @@ impl GatewayHost {
     async fn finish_routine_deletion(
         &self,
         file_deletion: SessionFileDeletion,
-        session_ids: &[String],
+        session_ids: &[SessionId],
         cleanup: std::result::Result<Option<Rejection>, Rejection>,
     ) {
         self.cleanup_session_files(file_deletion);
@@ -328,7 +329,7 @@ impl GatewayHost {
         let bots = Arc::clone(&state.bots);
         drop(state);
         let run = bots.run(run_id).map_err(invalid_routine)?;
-        let session_id = run.session_id.as_deref().ok_or_else(|| {
+        let session_id = run.session_id.as_ref().ok_or_else(|| {
             Rejection::new(
                 "routine_run_unavailable",
                 "this routine run has no execution session",
@@ -370,7 +371,7 @@ impl GatewayHost {
             ));
         }
         let session_root = run.session_id;
-        let session_ids = if let Some(session_id) = session_root.as_deref() {
+        let session_ids = if let Some(session_id) = session_root.as_ref() {
             let summaries = gateway_session_summaries(&state.checkpoints)
                 .await
                 .map_err(internal)?;
@@ -429,7 +430,7 @@ impl GatewayHost {
             .create_session_with_id(
                 Some(&routine.workspace),
                 &routine.bot_id,
-                run.session_id().to_owned(),
+                run.session_id().share(),
                 false,
                 &label,
             )

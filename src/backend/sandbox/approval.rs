@@ -1,3 +1,4 @@
+use crate::SessionId;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::str::FromStr;
@@ -86,7 +87,7 @@ struct ApprovalState {
 
 pub(super) struct Approval {
     default_policy: ApprovalPolicy,
-    states: Mutex<BTreeMap<String, ApprovalState>>,
+    states: Mutex<BTreeMap<SessionId, ApprovalState>>,
 }
 
 impl Approval {
@@ -127,11 +128,11 @@ impl Approval {
         }
     }
 
-    pub(super) fn session_start(&self, session_id: &str) -> Result<Vec<FrontendEvent>> {
+    pub(super) fn session_start(&self, session_id: &SessionId) -> Result<Vec<FrontendEvent>> {
         self.states
             .lock()
             .map_err(state_lock_error)?
-            .insert(session_id.into(), ApprovalState::default());
+            .insert(session_id.share(), ApprovalState::default());
         Ok(vec![FrontendEvent::Widget {
             capability: CAPABILITY.into(),
             item: Arc::new(widget(self.default_policy)),
@@ -140,7 +141,7 @@ impl Approval {
 
     pub(super) fn authorize<'a>(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         calls: &[ToolCall],
         mutation_call_ids: impl IntoIterator<Item = &'a str>,
     ) -> Result<SandboxAuthorization> {
@@ -171,7 +172,7 @@ impl Approval {
             }
         }
         let permissions = SandboxPermissions::new(
-            session_id,
+            session_id.share(),
             policy.sandbox_mode(),
             policy.network_access(),
             approved,
@@ -192,7 +193,7 @@ impl Approval {
 
     pub(super) fn resolve(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         calls: &[ToolCall],
         approval_call_ids: &[Arc<str>],
         decision: &ReviewDecision,
@@ -233,7 +234,7 @@ impl Approval {
         Ok(permissions)
     }
 
-    pub(super) fn session_end(&self, session_id: &str) -> Result<()> {
+    pub(super) fn session_end(&self, session_id: &SessionId) -> Result<()> {
         self.states
             .lock()
             .map_err(state_lock_error)?
@@ -273,7 +274,7 @@ fn widget(policy: ApprovalPolicy) -> FrontendWidget {
     }
 }
 
-fn call_key(session_id: &str, call: &ToolCall) -> Result<[u8; 32]> {
+fn call_key(session_id: &SessionId, call: &ToolCall) -> Result<[u8; 32]> {
     let value = serde_json::to_vec(&(session_id, &call.name, &call.arguments))?;
     Ok(Sha256::digest(value).into())
 }
@@ -294,7 +295,7 @@ mod tests {
     fn approval_grants_only_the_reviewed_call() {
         let approval = Approval::new(ApprovalPolicy::Ask);
         approval.states.lock().expect("approval state").insert(
-            "session".into(),
+            "session".parse().expect("session ID"),
             ApprovalState {
                 approved_for_session: Arc::default(),
             },
@@ -308,7 +309,7 @@ mod tests {
             request,
             permissions,
         } = approval
-            .authorize("session", &calls, ["write"])
+            .authorize(&"session".parse().expect("session ID"), &calls, ["write"])
             .expect("authorization")
         else {
             panic!("approval required");
@@ -323,7 +324,7 @@ mod tests {
 
         let permissions = approval
             .resolve(
-                "session",
+                &"session".parse().expect("session ID"),
                 &calls,
                 &request.call_ids,
                 &ReviewDecision::Approved,

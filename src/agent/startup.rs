@@ -1,3 +1,4 @@
+use crate::SessionId;
 use std::sync::Arc;
 
 use super::Agent;
@@ -67,6 +68,7 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
     if config.max_model_steps == 0 {
         return Err(Error::Config("maximum model steps must be positive".into()));
     }
+    let session_id = config.session_id.take().unwrap_or_else(SessionId::generate);
     let (children, root_config) = if let Some(children) = config.children.take() {
         (children, None)
     } else {
@@ -80,11 +82,11 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
             .with_sandbox(Arc::clone(&config.sandbox))?,
     );
     config.middleware.require_message_handler()?;
-    let (mut state, is_new) = match config.checkpoints.load(&config.session_id).await? {
+    let (mut state, is_new) = match config.checkpoints.load(&session_id).await? {
         Some(state) => (state, false),
-        None => (Checkpoint::empty(Arc::clone(&config.session_id)), true),
+        None => (Checkpoint::empty(session_id.share()), true),
     };
-    if state.version != CHECKPOINT_VERSION || state.session_id != config.session_id {
+    if state.version != CHECKPOINT_VERSION || state.session_id != session_id {
         return Err(Error::Checkpoint(
             "checkpoint does not match the requested session".into(),
         ));
@@ -113,7 +115,7 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
         let page = config
             .checkpoints
             .transcript_page(
-                &config.session_id,
+                &session_id,
                 TranscriptPageRequest {
                     before_sequence: None,
                     max_batches: config.initial_replay_batches,
@@ -123,7 +125,7 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
         let next_before_sequence = page.next_before_sequence;
         let transcript = page.into_positioned_items_chronological();
         (
-            replay_events(&transcript, &config.session_id),
+            replay_events(&transcript, &session_id),
             next_before_sequence,
         )
     };
@@ -162,10 +164,10 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
     let (sender, inbox) = submission_channel(SUBMISSION_QUEUE_CAPACITY);
     let (event_tx, event_rx) = crate::agent::recorder::RecorderIngress::spawn(
         Arc::clone(&config.checkpoints),
-        Arc::clone(&config.session_id),
+        session_id.share(),
     );
     let session = Arc::new(SessionConfiguredEvent {
-        session_id: Arc::clone(&config.session_id),
+        session_id: session_id.share(),
         context: Arc::clone(&config.session_context),
         model: ModelChangedEvent {
             route: Arc::clone(&route),
@@ -184,7 +186,7 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
     let runtime = RuntimeContext {
         sender: sender.downgrade(),
         checkpoints: Arc::clone(&config.checkpoints),
-        session_id: Arc::clone(&config.session_id),
+        session_id: session_id.share(),
         model_route: Arc::clone(&route),
         model: Arc::clone(&model.model),
         approval_policy: config.sandbox.approval_policy(),
@@ -221,10 +223,7 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
         super::context_estimate::ContextEstimate::prompt(&prompt_sizes, config.token_estimate);
     let catalog = config.middleware.catalog(&runtime)?;
     let tool_count = catalog.registered_definitions().len();
-    let frontend = FrontendExtensions::new(
-        Arc::clone(&config.middleware),
-        Arc::clone(&config.session_id),
-    )?;
+    let frontend = FrontendExtensions::new(Arc::clone(&config.middleware), session_id.share())?;
     let mut state_changed = metadata_changed || state.model_route.as_ref() != Some(&route);
     state.model_route = Some(route);
     let uncertain_tools = !state.pending_tools.is_empty()
@@ -242,7 +241,7 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
         recovery_events.push(crate::agent::turn::turn_event(
             &active.submission_id,
             EventMsg::ModelStepCompleted(ModelStepCompletedEvent {
-                session_id: Arc::clone(&state.session_id),
+                session_id: state.session_id.share(),
                 turn_id: Arc::clone(&active.turn_id),
                 model_step_id: step.model_step_id,
                 step_index: step.step_index,
@@ -345,7 +344,7 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
         if let Err(error) = config
             .middleware
             .turn_end(TurnEndContext {
-                session_id: &config.session_id,
+                session_id: &session_id,
                 turn_id: &execution.turn_id,
                 outcome: ExecutionOutcome::Aborted,
                 queued_messages: &state.pending_messages,

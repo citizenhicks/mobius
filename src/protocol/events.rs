@@ -1,5 +1,6 @@
 //! Frontend-neutral event payload records.
 
+use crate::SessionId;
 use std::borrow::Cow;
 use std::sync::Arc;
 
@@ -122,7 +123,7 @@ pub struct SubmissionRejectedEvent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionConfiguredEvent {
     /// The session identifier.
-    pub session_id: Arc<str>,
+    pub session_id: SessionId,
     /// The context.
     pub context: Arc<SessionContext>,
     /// The model.
@@ -230,7 +231,7 @@ impl MessageEvent {
 /// Data for assistant message event.
 pub struct AssistantMessageEvent {
     /// The session identifier.
-    pub session_id: Arc<str>,
+    pub session_id: SessionId,
     /// The turn identifier.
     pub turn_id: Arc<str>,
     /// The model step identifier.
@@ -256,7 +257,7 @@ impl AssistantMessageEvent {
 /// Data for assistant content delta event.
 pub struct AssistantContentDeltaEvent {
     /// The session identifier.
-    pub session_id: Arc<str>,
+    pub session_id: SessionId,
     /// The turn identifier.
     pub turn_id: Arc<str>,
     /// The model step identifier.
@@ -271,7 +272,7 @@ pub struct AssistantContentDeltaEvent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelStepStartedEvent {
     /// The session identifier.
-    pub session_id: Arc<str>,
+    pub session_id: SessionId,
     /// The turn identifier.
     pub turn_id: Arc<str>,
     /// The model step identifier.
@@ -286,7 +287,7 @@ pub struct ModelStepStartedEvent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelStepCompletedEvent {
     /// The session identifier.
-    pub session_id: Arc<str>,
+    pub session_id: SessionId,
     /// The turn identifier.
     pub turn_id: Arc<str>,
     /// The model step identifier.
@@ -546,7 +547,7 @@ pub struct ModelChangedEvent {
 /// Data for session resume requested event.
 pub struct SessionResumeRequestedEvent {
     /// The session identifier.
-    pub session_id: Arc<str>,
+    pub session_id: SessionId,
     /// The context.
     pub context: Arc<SessionContext>,
 }
@@ -758,7 +759,7 @@ pub struct TokenCountEvent {
 /// Data for web search begin event.
 pub struct WebSearchBeginEvent {
     /// The session identifier.
-    pub session_id: Arc<str>,
+    pub session_id: SessionId,
     /// The turn identifier.
     pub turn_id: Arc<str>,
     /// The model step identifier.
@@ -771,7 +772,7 @@ pub struct WebSearchBeginEvent {
 /// Data for web search end event.
 pub struct WebSearchEndEvent {
     /// The session identifier.
-    pub session_id: Arc<str>,
+    pub session_id: SessionId,
     /// The turn identifier.
     pub turn_id: Arc<str>,
     /// The model step identifier.

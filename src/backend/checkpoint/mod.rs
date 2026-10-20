@@ -1,5 +1,6 @@
 //! Durable agent checkpoints.
 
+use crate::SessionId;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -101,7 +102,7 @@ pub enum ExecutionOutcome {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionRecord {
     /// The session identifier.
-    pub session_id: Arc<str>,
+    pub session_id: SessionId,
     /// The submission identifier.
     pub submission_id: Arc<str>,
     /// Trusted initiating message provenance retained after the turn ends.
@@ -515,7 +516,7 @@ pub struct Checkpoint {
     /// The version.
     pub version: u32,
     /// The session identifier.
-    pub session_id: Arc<str>,
+    pub session_id: SessionId,
     /// The session context.
     pub session_context: Arc<SessionContext>,
     /// The metadata.
@@ -561,10 +562,10 @@ pub struct Checkpoint {
 impl Checkpoint {
     /// Creates an empty session checkpoint.
     #[must_use]
-    pub fn empty(session_id: impl Into<Arc<str>>) -> Self {
+    pub fn empty(session_id: SessionId) -> Self {
         Self {
             version: CHECKPOINT_VERSION,
-            session_id: session_id.into(),
+            session_id,
             session_context: Arc::default(),
             metadata: BTreeMap::new(),
             catalog_visible: true,
@@ -604,7 +605,7 @@ impl Checkpoint {
         let finished_at_ms = finished_at_ms.max(active.started_at_ms);
         let elapsed_ms = finished_at_ms.abs_diff(active.started_at_ms);
         let record = ExecutionRecord {
-            session_id: Arc::clone(&self.session_id),
+            session_id: self.session_id.share(),
             submission_id: active.submission_id,
             author: active.author,
             turn_id: active.turn_id,
@@ -637,11 +638,11 @@ impl Checkpoint {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionSummary {
     /// The session identifier.
-    pub session_id: Arc<str>,
+    pub session_id: SessionId,
     /// The session context.
     pub session_context: SessionContext,
     /// The parent session identifier.
-    pub parent_session_id: Option<String>,
+    pub parent_session_id: Option<SessionId>,
     /// The parent sequence.
     pub parent_sequence: Option<u64>,
     /// The sequence.
@@ -666,7 +667,7 @@ pub struct SessionCursor {
     /// The sequence.
     pub sequence: u64,
     /// The session identifier.
-    pub session_id: Arc<str>,
+    pub session_id: SessionId,
 }
 
 /// Bounds one newest-first session catalog query.
@@ -810,7 +811,7 @@ impl EventPage {
 /// Returns an error if validation or an operation required by this function fails.
 pub async fn event_turn_page(
     checkpoints: &dyn CheckpointStore,
-    session_id: &str,
+    session_id: &SessionId,
     before_sequence: Option<u64>,
 ) -> Result<EventPage> {
     let mut cursor = before_sequence;
@@ -920,7 +921,7 @@ impl TranscriptPage {
 /// journal.
 pub trait CheckpointStore: Send + Sync {
     /// Loads the latest checkpoint for a session.
-    fn load<'a>(&'a self, session_id: &'a str) -> BoxFuture<'a, Result<Option<Checkpoint>>>;
+    fn load<'a>(&'a self, session_id: &'a SessionId) -> BoxFuture<'a, Result<Option<Checkpoint>>>;
 
     /// Returns whether this session durably admitted a message with the submission ID.
     ///
@@ -928,14 +929,14 @@ pub trait CheckpointStore: Send + Sync {
     /// as the checkpoint containing the admitted message.
     fn message_accepted<'a>(
         &'a self,
-        session_id: &'a str,
+        session_id: &'a SessionId,
         submission_id: &'a str,
     ) -> BoxFuture<'a, Result<bool>>;
 
     /// Atomically deletes the selected sessions, their descendants, and session-scoped state.
     ///
     /// Returns `false` without deleting anything when any selected session is absent.
-    fn delete_sessions<'a>(&'a self, session_ids: &'a [String]) -> BoxFuture<'a, Result<bool>>;
+    fn delete_sessions<'a>(&'a self, session_ids: &'a [SessionId]) -> BoxFuture<'a, Result<bool>>;
 
     /// Atomically replaces the checkpoint, appends transcript items, and records a finished turn.
     ///
@@ -980,7 +981,7 @@ pub trait CheckpointStore: Send + Sync {
     /// Assigns a session-local sequence and appends one normalized event atomically.
     fn append_event<'a>(
         &'a self,
-        session_id: &'a str,
+        session_id: &'a SessionId,
         recorded_at_ms: i64,
         event: Event,
     ) -> BoxFuture<'a, Result<JournalEvent>>;
@@ -988,14 +989,14 @@ pub trait CheckpointStore: Send + Sync {
     /// Loads one newest-first page of normalized session events.
     fn event_page<'a>(
         &'a self,
-        session_id: &'a str,
+        session_id: &'a SessionId,
         request: EventPageRequest,
     ) -> BoxFuture<'a, Result<EventPage>>;
 
     /// Loads retained events after a durable cursor in ascending sequence order.
     fn events_after<'a>(
         &'a self,
-        _session_id: &'a str,
+        _session_id: &'a SessionId,
         _after_sequence: u64,
         _limit: usize,
     ) -> BoxFuture<'a, Result<Vec<JournalEvent>>> {
@@ -1009,7 +1010,7 @@ pub trait CheckpointStore: Send + Sync {
     /// Loads catalog metadata for one session without reading its checkpoint context.
     fn session_summary<'a>(
         &'a self,
-        _session_id: &'a str,
+        _session_id: &'a SessionId,
     ) -> BoxFuture<'a, Result<Option<SessionSummary>>> {
         Box::pin(async {
             Err(Error::Checkpoint(
@@ -1022,7 +1023,7 @@ pub trait CheckpointStore: Send + Sync {
     /// Backends may override the checkpoint-based default with a projection query.
     fn session_metadata<'a>(
         &'a self,
-        session_id: &'a str,
+        session_id: &'a SessionId,
     ) -> BoxFuture<'a, Result<Option<BTreeMap<String, Value>>>> {
         Box::pin(async move {
             Ok(self
@@ -1047,7 +1048,7 @@ pub trait CheckpointStore: Send + Sync {
     /// Loads one newest-first page of append-only transcript deltas.
     fn transcript_page<'a>(
         &'a self,
-        _session_id: &'a str,
+        _session_id: &'a SessionId,
         _request: TranscriptPageRequest,
     ) -> BoxFuture<'a, Result<TranscriptPage>> {
         Box::pin(async {
@@ -1060,7 +1061,7 @@ pub trait CheckpointStore: Send + Sync {
     /// Loads one newest-first page of terminal user-turn records.
     fn execution_page<'a>(
         &'a self,
-        _session_id: &'a str,
+        _session_id: &'a SessionId,
         _request: ExecutionPageRequest,
     ) -> BoxFuture<'a, Result<ExecutionPage>> {
         Box::pin(async {
@@ -1082,7 +1083,7 @@ pub trait CheckpointStore: Send + Sync {
     /// Creates a child session at an exact durable parent sequence.
     fn fork<'a>(
         &'a self,
-        _parent_session_id: &'a str,
+        _parent_session_id: &'a SessionId,
         _parent_sequence: u64,
         _checkpoint: Checkpoint,
     ) -> BoxFuture<'a, Result<SessionSummary>> {

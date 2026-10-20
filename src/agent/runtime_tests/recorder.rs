@@ -28,7 +28,7 @@ impl Model for BlockingRetainingModel {
 }
 
 fn test_checkpoint(session_id: &str) -> Checkpoint {
-    let mut checkpoint = Checkpoint::empty(session_id);
+    let mut checkpoint = Checkpoint::empty(session_id.parse().expect("session ID"));
     std::sync::Arc::make_mut(&mut checkpoint.session_context).owner_id = "test-bot".into();
     checkpoint
 }
@@ -45,8 +45,10 @@ async fn recorder_persists_an_event_before_delivery() {
         .await
         .expect("initial checkpoint");
     let store: Arc<dyn CheckpointStore> = Arc::<SqliteCheckpoint>::clone(&checkpoints);
-    let (events, mut receiver) =
-        crate::agent::recorder::RecorderIngress::spawn(store, "session".into());
+    let (events, mut receiver) = crate::agent::recorder::RecorderIngress::spawn(
+        store,
+        "session".parse().expect("session ID"),
+    );
     let event = Event {
         submission_id: Some("submission".into()),
         msg: EventMsg::Warning(WarningEvent {
@@ -59,7 +61,7 @@ async fn recorder_persists_an_event_before_delivery() {
         .expect("record event");
     let page = checkpoints
         .event_page(
-            "session",
+            &"session".parse().expect("session ID"),
             EventPageRequest {
                 before_sequence: None,
                 limit: 1,
@@ -80,8 +82,10 @@ async fn recorder_stops_without_delivering_when_persistence_fails() {
         SqliteCheckpoint::new(directory.path().join("checkpoints.sqlite3"))
             .expect("checkpoint store"),
     );
-    let (events, mut receiver) =
-        crate::agent::recorder::RecorderIngress::spawn(checkpoints, "missing".into());
+    let (events, mut receiver) = crate::agent::recorder::RecorderIngress::spawn(
+        checkpoints,
+        "missing".parse().expect("session ID"),
+    );
 
     let error = send_event(
         &events,

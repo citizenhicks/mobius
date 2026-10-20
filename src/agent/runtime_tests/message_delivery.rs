@@ -152,7 +152,7 @@ async fn rejected_input_refill_cannot_starve_model_completion() {
             "test prompt",
         )
         .session_context(test_session_context())
-        .session_id("refill-model"),
+        .session_id("refill-model".parse().expect("session ID")),
     )
     .await
     .expect("create agent");
@@ -195,7 +195,7 @@ async fn steer_is_durable_before_a_blocked_model_completes() {
             "test prompt",
         )
         .session_context(test_session_context())
-        .session_id("blocked-model"),
+        .session_id("blocked-model".parse().expect("session ID")),
     )
     .await
     .expect("create agent");
@@ -217,7 +217,7 @@ async fn steer_is_durable_before_a_blocked_model_completes() {
         }
     }
     let saved = checkpoints
-        .load("blocked-model")
+        .load(&"blocked-model".parse().expect("session ID"))
         .await
         .expect("load checkpoint")
         .expect("saved checkpoint");
@@ -272,7 +272,7 @@ async fn interrupt_discards_partial_pre_model_context() {
             "test prompt",
         )
         .session_context(test_session_context())
-        .session_id("interrupt-pre-model"),
+        .session_id("interrupt-pre-model".parse().expect("session ID")),
     )
     .await
     .expect("create agent");
@@ -288,7 +288,7 @@ async fn interrupt_discards_partial_pre_model_context() {
     ) {}
     release.notify_one();
     let saved = checkpoints
-        .load("interrupt-pre-model")
+        .load(&"interrupt-pre-model".parse().expect("session ID"))
         .await
         .expect("load checkpoint")
         .expect("saved checkpoint");

@@ -56,7 +56,7 @@ async fn load_completes_while_another_connection_holds_a_write_transaction() {
     });
 
     ready_rx.await.expect("wait for held transaction");
-    let loaded = timeout(Duration::from_secs(1), store.load("session")).await;
+    let loaded = timeout(Duration::from_secs(1), store.load(&session("session"))).await;
     release_tx.send(()).expect("release held transaction");
     writer
         .await

@@ -71,7 +71,7 @@ async fn sqlite_persists_latest_checkpoint_transcript_and_fork_lineage() {
     let workspace = TempDir::new().expect("create workspace");
     let path = workspace.path().join("mobius.sqlite3");
     let store = SqliteCheckpoint::new(&path).expect("open checkpoint database");
-    let mut empty = Checkpoint::empty("session");
+    let mut empty = Checkpoint::empty(SessionId::new("session").unwrap());
     Arc::make_mut(&mut empty.session_context).owner_id = "test-bot".into();
     store
         .save(empty.clone(), Vec::new(), None)
@@ -125,11 +125,11 @@ async fn sqlite_persists_latest_checkpoint_transcript_and_fork_lineage() {
         .expect("replace context and append transcript");
     let branch_user = mobius::backend::model::user_message("branch question");
     let latest = compacted;
-    let mut branch = Checkpoint::empty("branch");
+    let mut branch = Checkpoint::empty(SessionId::new("branch").unwrap());
     branch.session_context.clone_from(&latest.session_context);
     branch.context.clone_from(&latest.context);
     let branch_summary = store
-        .fork("session", latest.sequence, branch.clone())
+        .fork(&latest.session_id, latest.sequence, branch.clone())
         .await
         .expect("fork session");
     let mut branch_latest = branch.clone();
@@ -167,7 +167,7 @@ async fn sqlite_persists_latest_checkpoint_transcript_and_fork_lineage() {
         .expect("branch summary");
     let parent_transcript = store
         .transcript_page(
-            "session",
+            &latest.session_id,
             TranscriptPageRequest {
                 before_sequence: None,
                 max_batches: 100,
@@ -181,7 +181,7 @@ async fn sqlite_persists_latest_checkpoint_transcript_and_fork_lineage() {
         .collect::<Vec<_>>();
     let branch_transcript = store
         .transcript_page(
-            "branch",
+            &branch_latest.session_id,
             TranscriptPageRequest {
                 before_sequence: None,
                 max_batches: 100,
@@ -196,9 +196,15 @@ async fn sqlite_persists_latest_checkpoint_transcript_and_fork_lineage() {
 
     assert_eq!(
         (
-            store.load("session").await.expect("load checkpoint"),
+            store
+                .load(&latest.session_id)
+                .await
+                .expect("load checkpoint"),
             parent_transcript,
-            store.load("branch").await.expect("load branch"),
+            store
+                .load(&branch_latest.session_id)
+                .await
+                .expect("load branch"),
             branch_transcript,
             parent_summary.first_user_message.as_deref(),
             persisted_branch.first_user_message.as_deref(),

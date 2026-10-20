@@ -1,3 +1,4 @@
+use mobius::SessionId;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 #[cfg(test)]
@@ -41,7 +42,7 @@ use crate::provider_catalog::{
 use crate::sandbox::GatewaySandbox;
 use crate::wire::{
     AgentComposition, MiddlewareConfig, ProviderConfig, ProviderEndpointAuth,
-    RoutineInteractionPolicy, validate_session_id,
+    RoutineInteractionPolicy,
 };
 use crate::{Error, Result};
 
@@ -195,15 +196,12 @@ pub(crate) async fn assemble(
     discovery_gate: Arc<tokio::sync::Mutex<()>>,
     desktop: Arc<crate::computer_runtime::desktop::DesktopControl>,
     remote_desktop: Arc<crate::computer_runtime::remote_desktop::RemoteDesktop>,
-    session_id: Option<String>,
+    session_id: Option<SessionId>,
     origin_label: &str,
     prepared: Arc<PreparedBot>,
     live_chats: Option<Arc<dyn LiveChats>>,
     host_access: Option<crate::host::HostAccess>,
 ) -> Result<BuiltAgent> {
-    if let Some(session_id) = session_id.as_deref() {
-        validate_session_id(session_id)?;
-    }
     let (workspace_path, execution, telemetry, tls, profile_directory) = {
         let config = crate::config::lock(&gateway)?;
         // The snapshot outlives the configuration lock.
@@ -326,7 +324,7 @@ pub(crate) async fn assemble(
         Ok((gateway_sandbox, Arc::new(sandbox), middleware))
     })
     .await?;
-    let mut metadata = match session_id.as_deref() {
+    let mut metadata = match session_id.as_ref() {
         Some(session_id) => checkpoints
             .load(session_id)
             .await?
@@ -347,7 +345,7 @@ pub(crate) async fn assemble(
                 "maximum model steps exceed this platform's supported range: {error}"
             ))
         })?;
-    let persistent = session_id.as_deref() == Some(&*prepared.bot.conversation_session_id);
+    let persistent = session_id.as_ref() == Some(&prepared.bot.conversation_session_id);
     if persistent {
         if project || !chat.catalog_visible {
             return Err(Error::Config(
@@ -553,11 +551,11 @@ fn instantiate_routes(
         }
         let definition = provider(&route.provider.provider)?;
         let base_url = if definition.configurable_base_url() {
-            route
-                .provider
-                .base_url
-                .take()
-                .or_else(|| definition.default_base_url().map(str::to_owned))
+            route.provider.base_url.take().or_else(|| {
+                definition
+                    .default_base_url()
+                    .map(mobius::backend::model::provider::BaseUrl::share)
+            })
         } else {
             None
         };
@@ -572,7 +570,7 @@ fn instantiate_routes(
             let credential = resolve_credential(
                 &route.provider.instance,
                 definition,
-                base_url.as_deref(),
+                base_url.as_ref(),
                 store,
                 credentials,
                 transport,
@@ -590,7 +588,7 @@ fn instantiate_routes(
 fn resolve_credential(
     instance: &str,
     definition: &ProviderDefinition,
-    base_url: Option<&str>,
+    base_url: Option<&mobius::backend::model::provider::BaseUrl>,
     store: &ConfigStore,
     credentials: &CredentialStore,
     transport: &mobius::backend::model::ModelTransportSettings,
@@ -600,7 +598,9 @@ fn resolve_credential(
             if let Some(value) = credentials.get(instance, definition.id(), base_url)? {
                 return Ok((ProviderCredential::ApiKey(value.api_key), value.lifetime));
             }
-            if !definition.uses_default_endpoint(base_url) {
+            if !definition.uses_default_endpoint(
+                base_url.map(mobius::backend::model::provider::BaseUrl::as_str),
+            ) {
                 return Err(Error::Config(format!(
                     "set a credential for `{}`",
                     definition.id()
@@ -631,7 +631,7 @@ fn build_route(
     definition: &'static ProviderDefinition,
     credential: ProviderCredential,
     lifetime: ModelCredentialLifetime,
-    base_url: Option<String>,
+    base_url: Option<mobius::backend::model::provider::BaseUrl>,
     http: &HttpClient,
     transport: &mobius::backend::model::ModelTransportSettings,
 ) -> Result<RouteValue> {

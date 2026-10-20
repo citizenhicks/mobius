@@ -1,5 +1,6 @@
 //! SQLite's split checkpoint header and append-only active context.
 
+use crate::SessionId;
 use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 
@@ -22,7 +23,7 @@ pub(super) struct ContextCache {
 
 impl ContextCache {
     pub(super) fn record(
-        contexts: &mut HashMap<Arc<str>, Self>,
+        contexts: &mut HashMap<SessionId, Self>,
         checkpoint: &Checkpoint,
         data_version: i64,
     ) {
@@ -32,7 +33,7 @@ impl ContextCache {
             return;
         }
         let cache = contexts
-            .entry(Arc::clone(&checkpoint.session_id))
+            .entry(checkpoint.session_id.share())
             .or_insert_with(|| Self {
                 sequence: checkpoint.sequence,
                 epoch: checkpoint.context_epoch,
@@ -240,7 +241,7 @@ pub(super) fn append_context(
 )]
 pub(super) fn load_context(
     transaction: &Transaction<'_>,
-    session_id: &str,
+    session_id: &SessionId,
     epoch: i64,
     count: i64,
 ) -> Result<Arc<Vec<Arc<Value>>>> {

@@ -55,7 +55,7 @@ async fn reassigning_chat_preserves_history_and_binds_the_target_bot() {
         .unwrap();
     for stopped in [false, true] {
         let host = gateway.create_session(&workspace, &bot.id).await.unwrap();
-        let id = host.session_id().to_string();
+        let id = host.session_id().share();
         host.submit(Submission {
             id: Uuid::new_v4().to_string().into(),
             op: Op::Message {
@@ -215,7 +215,7 @@ async fn bot_delete_preflight_preserves_sessions_when_instructions_are_invalid()
         .create_session(&workspace, &bot.id)
         .await
         .expect("create Bot chat");
-    let chat_id = chat.session_id().to_string();
+    let chat_id = chat.session_id().share();
     let (bots, checkpoints) = {
         let state = gateway.state.lock().await;
         (Arc::clone(&state.bots), Arc::clone(&state.checkpoints))
@@ -268,7 +268,7 @@ async fn startup_finishes_a_bot_cascade() {
         .create_session(&workspace, &bot.id)
         .await
         .expect("create Bot chat");
-    let chat_id = chat.session_id().to_string();
+    let chat_id = chat.session_id().share();
     let (deletion, file_deletion, bot_store) = {
         let state = gateway.state.lock().await;
         let (roots, ids, file_deletion) = prepare_bot_session_tree_deletion(&state, &bot.id)
@@ -328,7 +328,7 @@ async fn deleting_a_bot_removes_owned_state() {
         .create_session(&workspace, &bot.id)
         .await
         .expect("create Bot chat");
-    let chat_id = chat.session_id().to_string();
+    let chat_id = chat.session_id().share();
     let (bots, checkpoints, session_files) = {
         let state = gateway.state.lock().await;
         (
@@ -342,8 +342,8 @@ async fn deleting_a_bot_removes_owned_state() {
         .await
         .expect("load chat")
         .expect("chat checkpoint");
-    let child_id = Uuid::new_v4().to_string();
-    let mut child = Checkpoint::empty(child_id.as_str());
+    let child_id = SessionId::generate();
+    let mut child = Checkpoint::empty(child_id.share());
     child.session_context = Arc::clone(&parent.session_context);
     checkpoints
         .fork(&chat_id, parent.sequence, child.clone())
@@ -376,7 +376,7 @@ async fn deleting_a_bot_removes_owned_state() {
         .lock()
         .await
         .activities
-        .insert(chat_id.as_str().into(), SessionActivity::default());
+        .insert(chat_id.share(), SessionActivity::default());
 
     let routine = bots
         .create_routine(
@@ -400,8 +400,8 @@ async fn deleting_a_bot_removes_owned_state() {
     let BeginRun::Started(run) = bots.begin_run(&routine.id).expect("begin routine") else {
         panic!("routine must start");
     };
-    let routine_session_id = run.session_id().to_owned();
-    let mut routine_checkpoint = Checkpoint::empty(routine_session_id.as_str());
+    let routine_session_id = run.session_id().share();
+    let mut routine_checkpoint = Checkpoint::empty(routine_session_id.share());
     routine_checkpoint.session_context = parent.session_context;
     routine_checkpoint.catalog_visible = false;
     checkpoints

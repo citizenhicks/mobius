@@ -3,6 +3,7 @@ use super::*;
 use crate::wire::{
     BotAction, BotSubscription, HookBinding, HookData, HookEvent, HookKind, HookSource,
 };
+use mobius::SessionId;
 use mobius::backend::model::{Model, ModelEventSink, ModelOutput, ModelRequest};
 use mobius::protocol::{ActiveMessageDelivery, MessageSource, ToolDiscoveryMode};
 
@@ -68,7 +69,7 @@ pub(super) async fn install_model(
             &selection.instance,
             &selection.provider,
             "test-token",
-            selection.base_url.as_deref(),
+            selection.base_url.as_ref(),
             None,
         )
         .unwrap();
@@ -128,7 +129,7 @@ async fn project_free_chats_expose_reads_without_coding_mutations() {
         .await
         .unwrap();
     let ordinary = gateway
-        .create_session_with_id(None, &bot.id, Uuid::new_v4().to_string(), true, "test")
+        .create_session_with_id(None, &bot.id, SessionId::generate(), true, "test")
         .await
         .unwrap();
     let chats = [(main, true), (ordinary, false)];
@@ -153,7 +154,7 @@ async fn project_free_chats_expose_reads_without_coding_mutations() {
     gateway.shutdown().await;
 }
 
-fn subscription(bot_id: &str, session_id: &str, kind: HookKind, id: &str) -> BotSubscription {
+fn subscription(bot_id: &str, session_id: &SessionId, kind: HookKind, id: &str) -> BotSubscription {
     BotSubscription {
         bot_id: bot_id.into(),
         enabled: true,
@@ -161,7 +162,7 @@ fn subscription(bot_id: &str, session_id: &str, kind: HookKind, id: &str) -> Bot
             id: id.into(),
             on: crate::bots::event_selector(
                 HookSource::Session {
-                    session_id: session_id.into(),
+                    session_id: session_id.share(),
                 },
                 kind,
             ),
@@ -193,7 +194,7 @@ async fn canonical_chat_queues_sources_and_deduplicates_delivery_after_ack_gap()
     let source = MessageAuthor::Source {
         message_id: "peer".into(),
         source: MessageSource::Session {
-            session_id: "owned-session".into(),
+            session_id: SessionId::new("owned-session").unwrap(),
         },
         cause_id: Some("original-hook".into()),
         ancestry: vec!["original-hook".into()],
@@ -339,7 +340,7 @@ async fn canonical_chat_queues_sources_and_deduplicates_delivery_after_ack_gap()
     assert_eq!(
         gateway
             .delete_sessions(
-                &[main.session_id().to_string()],
+                &[main.session_id().share()],
                 mobius::backend::session_files::SessionFileSelection::All
             )
             .await
@@ -403,7 +404,7 @@ async fn session_closure_keeps_final_fact_and_revokes_old_source_authorization()
         .unwrap();
     gateway
         .delete_sessions(
-            &[source.session_id().to_string()],
+            &[source.session_id().share()],
             mobius::backend::session_files::SessionFileSelection::All,
         )
         .await
@@ -440,10 +441,10 @@ async fn deletion_hook_recovers_after_checkpoint_commit_before_bot_commit() {
         id: "committed-deletion".into(),
         bot_id: Arc::clone(&bot.id),
         source: HookSource::Session {
-            session_id: source.session_id().to_string(),
+            session_id: source.session_id().share(),
         },
         data: HookData::SessionDeleted {
-            session_id: source.session_id().to_string(),
+            session_id: source.session_id().share(),
         },
         occurred_at: Utc::now().timestamp(),
         cause_id: None,
@@ -462,7 +463,7 @@ async fn deletion_hook_recovers_after_checkpoint_commit_before_bot_commit() {
         .unwrap();
     state
         .checkpoints
-        .delete_sessions(&[source.session_id().to_string()])
+        .delete_sessions(&[source.session_id().share()])
         .await
         .unwrap();
     super::super::deletion::recover_session_hook_closures(&state)

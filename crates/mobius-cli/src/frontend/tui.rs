@@ -133,7 +133,7 @@ impl StreamedStepPhases {
 #[derive(Clone)]
 enum PickerAction {
     Submit(Box<Op>),
-    Resume(Arc<str>),
+    Resume(mobius::SessionId),
     Gateway(GatewayAction),
     Download(SessionFileReference),
     CreateSession {
@@ -311,7 +311,7 @@ enum PreviewContent {
 
 struct PendingFileDownload {
     request_id: Arc<str>,
-    session_id: String,
+    session_id: mobius::SessionId,
     file: SessionFileReference,
     destination: PathBuf,
     output: tokio::fs::File,

@@ -1,3 +1,4 @@
+use crate::SessionId;
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -45,7 +46,7 @@ pub(super) const MAX_PREVIEW_PAGE_BYTES: usize = 8 * 1024 * 1024;
 pub(super) const MAX_MESSAGE_BYTES: usize = 24_000;
 
 pub(super) struct Shared {
-    roots: Mutex<BTreeMap<String, Arc<RootSlot>>>,
+    roots: Mutex<BTreeMap<SessionId, Arc<RootSlot>>>,
     changed: Notify,
     max_concurrency: usize,
     max_agents: usize,
@@ -113,7 +114,7 @@ struct Tree {
 #[serde(deny_unknown_fields)]
 pub(super) struct AgentRecord {
     pub(super) parent: Arc<str>,
-    pub(super) session_id: Arc<str>,
+    pub(super) session_id: SessionId,
     pub(super) depth: u8,
     pub(super) model: Arc<str>,
     spawn_context: String,
@@ -239,7 +240,7 @@ impl Shared {
         Ok(())
     }
 
-    pub(super) async fn remove_root(&self, root_id: &str) -> Result<()> {
+    pub(super) async fn remove_root(&self, root_id: &SessionId) -> Result<()> {
         let root = self.roots.lock().await.get(root_id).map(Arc::clone);
         let Some(root) = root else {
             self.changed.notify_waiters();
@@ -296,7 +297,7 @@ impl Shared {
         }
     }
 
-    pub(super) async fn track_execution(&self, root_id: &str) -> Result<ExecutionGuard> {
+    pub(super) async fn track_execution(&self, root_id: &SessionId) -> Result<ExecutionGuard> {
         let root = self.root(root_id).await?;
         let mut executions = root.executions.lock().await;
         if root.closing.load(Ordering::Acquire) {
@@ -316,13 +317,13 @@ impl Shared {
         Ok(ExecutionGuard(execution))
     }
 
-    pub(super) async fn has_active_children(&self, root_id: &str) -> Result<bool> {
+    pub(super) async fn has_active_children(&self, root_id: &SessionId) -> Result<bool> {
         let root = self.root(root_id).await?;
         let root = root.state.lock().await;
         Ok(active_count(&root.tree) > 0)
     }
 
-    pub(super) async fn remove_sender(&self, root_id: &str, path: &str) {
+    pub(super) async fn remove_sender(&self, root_id: &SessionId, path: &str) {
         if let Ok(root) = self.root(root_id).await {
             root.state.lock().await.senders.remove(path);
         }
@@ -330,10 +331,10 @@ impl Shared {
 
     pub(super) async fn reserve(
         &self,
-        root_id: &str,
+        root_id: &SessionId,
         path: &str,
         parent: &str,
-        session_id: Arc<str>,
+        session_id: SessionId,
         depth: u8,
         presentation: AgentPresentation,
     ) -> Result<()> {
@@ -367,7 +368,7 @@ impl Shared {
         .await
     }
 
-    pub(super) async fn remove(&self, root_id: &str, path: &str) -> Result<()> {
+    pub(super) async fn remove(&self, root_id: &SessionId, path: &str) -> Result<()> {
         self.cleanup_root(root_id, |root| {
             root.tree.agents.remove(path);
             root.senders.remove(path);
@@ -379,7 +380,7 @@ impl Shared {
 
     pub(super) async fn attach(
         &self,
-        root_id: &str,
+        root_id: &SessionId,
         path: &str,
         sender: AgentSender,
         model: Option<Arc<str>>,
@@ -402,7 +403,7 @@ impl Shared {
 
     pub(super) async fn rollback(
         &self,
-        root_id: &str,
+        root_id: &SessionId,
         path: &str,
         status: AgentStatus,
     ) -> Result<()> {
@@ -417,7 +418,7 @@ impl Shared {
         .await
     }
 
-    pub(super) async fn interrupt(&self, root_id: &str, target: &str) -> Result<String> {
+    pub(super) async fn interrupt(&self, root_id: &SessionId, target: &str) -> Result<String> {
         if target == "/root" {
             return Err(Error::Tool("the root agent cannot interrupt itself".into()));
         }
@@ -441,7 +442,7 @@ impl Shared {
         Ok(status.into())
     }
 
-    async fn submit(&self, root_id: &str, path: &str, op: Op) -> Result<()> {
+    async fn submit(&self, root_id: &SessionId, path: &str, op: Op) -> Result<()> {
         let root = self.root(root_id).await?;
         let state = root.state.lock().await;
         state
@@ -453,7 +454,11 @@ impl Shared {
         Ok(())
     }
 
-    pub(super) async fn list(&self, root_id: &str, prefix: Option<&str>) -> Result<Vec<Value>> {
+    pub(super) async fn list(
+        &self,
+        root_id: &SessionId,
+        prefix: Option<&str>,
+    ) -> Result<Vec<Value>> {
         let root = self.root(root_id).await?;
         let root = root.state.lock().await;
         Ok(root
@@ -472,7 +477,10 @@ impl Shared {
             .collect())
     }
 
-    pub(super) async fn resume_options(&self, root_id: &str) -> Result<Vec<FrontendPickerOption>> {
+    pub(super) async fn resume_options(
+        &self,
+        root_id: &SessionId,
+    ) -> Result<Vec<FrontendPickerOption>> {
         let root = self.root(root_id).await?;
         let root = root.state.lock().await;
         Ok(picker_options(&root.tree))
@@ -480,7 +488,7 @@ impl Shared {
 
     pub(super) async fn preview(
         &self,
-        root_id: &str,
+        root_id: &SessionId,
         path: &str,
         before_sequence: Option<u64>,
     ) -> Result<PreviewPage> {
@@ -494,7 +502,7 @@ impl Shared {
                 .ok_or_else(|| unknown_target(path))?;
             (
                 Arc::clone(&root.checkpoints),
-                Arc::clone(&entry.session_id),
+                entry.session_id.share(),
                 entry.spawn_context.clone(), // rules-allow: the page loads after the state lock is released
                 if before_sequence.is_none() && matches!(&entry.status, AgentStatus::Errored) {
                     entry
@@ -541,7 +549,7 @@ impl Shared {
         })
     }
 
-    async fn root(&self, root_id: &str) -> Result<Arc<RootSlot>> {
+    async fn root(&self, root_id: &SessionId) -> Result<Arc<RootSlot>> {
         self.roots
             .lock()
             .await
@@ -553,7 +561,7 @@ impl Shared {
     /// Strict mutation: the durable write commits before runtime state changes.
     async fn mutate_root<T>(
         &self,
-        root_id: &str,
+        root_id: &SessionId,
         mutate: impl FnOnce(&mut Root) -> Result<T>,
     ) -> Result<T> {
         self.commit_root(
@@ -568,7 +576,7 @@ impl Shared {
     /// Best-effort cleanup: runtime state commits even when the durable write fails.
     async fn cleanup_root<T>(
         &self,
-        root_id: &str,
+        root_id: &SessionId,
         cleanup: impl FnOnce(&mut Root) -> Result<T>,
     ) -> Result<T> {
         self.commit_root(
@@ -584,7 +592,7 @@ impl Shared {
     /// The writer lock orders mutations; the state lock alone never guards a write.
     async fn commit_root<T>(
         &self,
-        root_id: &str,
+        root_id: &SessionId,
         mutate: impl FnOnce(&mut Root) -> Result<Stage<T>>,
         on_failure: OnPersistFailure,
     ) -> Result<Stage<T>> {
@@ -597,7 +605,7 @@ impl Shared {
     // The caller holds the writer through this commit and any root eviction.
     async fn commit_locked_root<T>(
         &self,
-        root_id: &str,
+        root_id: &SessionId,
         root: &Arc<RootSlot>,
         mutate: impl FnOnce(&mut Root) -> Result<Stage<T>>,
         on_failure: OnPersistFailure,
@@ -861,7 +869,7 @@ fn emit_status(root: &Root) -> Result<()> {
     (root.frontend)(status_event(&root.tree))
 }
 
-async fn persist(root_id: &str, root: &Root) -> Result<()> {
+async fn persist(root_id: &SessionId, root: &Root) -> Result<()> {
     root.checkpoints
         .save_state(root_id, STATE_KEY, &serde_json::to_value(&root.tree)?)
         .await

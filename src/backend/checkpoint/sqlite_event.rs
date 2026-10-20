@@ -1,5 +1,6 @@
 //! Event-journal indexing, compaction, and stream metrics.
 
+use crate::SessionId;
 use std::sync::Arc;
 
 use rusqlite::Connection;
@@ -83,7 +84,11 @@ fn matching_output(item: &Value, call: &ToolCallEndEvent) -> bool {
         })
 }
 
-pub(super) fn decode_event(connection: &Connection, session_id: &str, json: &str) -> Result<Event> {
+pub(super) fn decode_event(
+    connection: &Connection,
+    session_id: &SessionId,
+    json: &str,
+) -> Result<Event> {
     match serde_json::from_str::<StoredEvent<Event, String>>(json)? {
         StoredEvent::Inline { event } => Ok(event),
         StoredEvent::ToolOutput {
@@ -135,7 +140,7 @@ pub(super) fn decode_event(connection: &Connection, session_id: &str, json: &str
 
 pub(super) fn store_event(
     transaction: &Transaction<'_>,
-    session_id: &str,
+    session_id: &SessionId,
     timestamped: TimestampedEvent,
     transcript: Option<(i64, &[Arc<Value>])>,
 ) -> Result<JournalEvent> {
@@ -368,7 +373,7 @@ impl StreamMetricAccumulator {
 
 fn load_stream_metrics(
     transaction: &Transaction<'_>,
-    session_id: &str,
+    session_id: &SessionId,
     model_step_id: &str,
 ) -> Result<Vec<StreamMetrics>> {
     let mut statement = transaction.prepare_cached(

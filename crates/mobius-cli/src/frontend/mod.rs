@@ -1,7 +1,6 @@
 //! möbius terminal frontend.
 
 use std::fmt::Write as _;
-use std::sync::Arc;
 
 use mobius::Result;
 use mobius::protocol::FrontendBlock;
@@ -150,7 +149,7 @@ pub enum FrontendExit {
     /// Selects the exit case.
     Exit,
     /// Selects the resume case.
-    Resume(Arc<str>),
+    Resume(mobius::SessionId),
     /// Selects the reload case.
     Reload,
     /// Selects the reconnect case.

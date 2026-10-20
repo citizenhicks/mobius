@@ -1,3 +1,4 @@
+use crate::SessionId;
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -12,8 +13,8 @@ use uuid::Uuid;
 
 use super::{
     ATTACHMENT_WORKSPACE_FILE, BLOB_DIR, BlobValidationStamp, MAX_FILE_BYTES, MAX_READ_CHUNK_BYTES,
-    MAX_SESSION_ID_BYTES, MAX_VALIDATED_BLOBS, METADATA_FILE, SessionFileChunk,
-    StoredAttachmentWorkspace, StoredSessionFile,
+    MAX_VALIDATED_BLOBS, METADATA_FILE, SessionFileChunk, StoredAttachmentWorkspace,
+    StoredSessionFile,
 };
 use crate::protocol::SessionFileReference;
 use crate::{Error, Result};
@@ -325,7 +326,7 @@ pub(super) fn validate_content_hash(content_hash: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn session_storage_key(session_id: &str) -> String {
+pub(crate) fn session_storage_key(session_id: &SessionId) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(session_id.as_bytes()))
 }
 
@@ -407,15 +408,6 @@ async fn validate_content_blob_metadata(path: &Path, size: u64) -> Result<std::f
         ));
     }
     Ok(metadata)
-}
-
-pub(super) fn validate_session_id(id: &str) -> Result<()> {
-    if id.trim().is_empty() || id.len() > MAX_SESSION_ID_BYTES {
-        return Err(Error::Tool(format!(
-            "session ID must be 1–{MAX_SESSION_ID_BYTES} bytes"
-        )));
-    }
-    Ok(())
 }
 
 pub(super) fn validate_file_id(id: &str) -> Result<()> {

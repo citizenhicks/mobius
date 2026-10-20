@@ -4,6 +4,7 @@ use super::{
     SessionCatalogMetadata, SessionPageRequest, SessionRunGroup, SessionSummary, Utc,
     configured_model_routes, gateway_catalog, internal, provider_instances, provider_statuses,
 };
+use mobius::SessionId;
 use std::collections::{BTreeMap, BTreeSet};
 
 use mobius::backend::model::provider::{ProviderAuth, provider};
@@ -83,28 +84,28 @@ pub(super) fn provider_usage(
 }
 
 pub(super) fn session_tree_ids(
-    root_session_id: &str,
+    root_session_id: &SessionId,
     sessions: &[SessionSummary],
-) -> Option<Vec<String>> {
+) -> Option<Vec<SessionId>> {
     sessions
         .iter()
-        .any(|session| *session.session_id == *root_session_id)
+        .any(|session| &session.session_id == root_session_id)
         .then_some(())?;
     let mut seen = HashSet::from([root_session_id]);
-    let mut ordered = vec![root_session_id.to_owned()];
+    let mut ordered = vec![root_session_id.share()];
     loop {
         let mut changed = false;
         for session in sessions {
-            if seen.contains(session.session_id.as_ref())
+            if seen.contains(&session.session_id)
                 || !session
                     .parent_session_id
                     .as_ref()
-                    .is_some_and(|parent| seen.contains(parent.as_str()))
+                    .is_some_and(|parent| seen.contains(parent))
             {
                 continue;
             }
-            seen.insert(session.session_id.as_ref());
-            ordered.push(String::from(&*session.session_id));
+            seen.insert(&session.session_id);
+            ordered.push(session.session_id.share());
             changed = true;
         }
         if !changed {
@@ -150,7 +151,7 @@ pub(super) fn recent_run_groups(
 ) -> Vec<SessionRunGroup> {
     let sessions_by_id = sessions
         .iter()
-        .map(|session| (session.session_id.as_ref(), session))
+        .map(|session| (&session.session_id, session))
         .collect::<HashMap<_, _>>();
     let mut groups: Vec<SessionRunGroup> = Vec::new();
     for record in records {
@@ -165,7 +166,7 @@ pub(super) fn recent_run_groups(
             group.runs.push(run);
         } else {
             groups.push(SessionRunGroup {
-                session_id: Arc::clone(&root.session_id),
+                session_id: root.session_id.share(),
                 title: session_run_group_title(root, metadata),
                 runs: vec![run],
             });
@@ -175,15 +176,15 @@ pub(super) fn recent_run_groups(
 }
 
 pub(super) fn visible_session<'a>(
-    session_id: &str,
-    sessions: &'a HashMap<&str, &'a SessionSummary>,
+    session_id: &SessionId,
+    sessions: &'a HashMap<&SessionId, &'a SessionSummary>,
 ) -> Option<&'a SessionSummary> {
     let mut session = *sessions.get(session_id)?;
     for _ in 0..sessions.len() {
         if session.catalog_visible {
             return Some(session);
         }
-        session = *sessions.get(session.parent_session_id.as_deref()?)?;
+        session = *sessions.get(session.parent_session_id.as_ref()?)?;
     }
     None
 }
@@ -208,14 +209,14 @@ pub(super) fn session_run_group_title(
         .to_owned()
 }
 
-pub(super) fn active_run_summary(session_id: &Arc<str>, active: &ActiveExecution) -> RunSummary {
+pub(super) fn active_run_summary(session_id: &SessionId, active: &ActiveExecution) -> RunSummary {
     let elapsed_ms = Utc::now()
         .timestamp_millis()
         .checked_sub(active.started_at_ms)
         .and_then(|elapsed| u64::try_from(elapsed).ok())
         .unwrap_or_default();
     RunSummary {
-        session_id: Arc::clone(session_id),
+        session_id: session_id.share(),
         submission_id: Arc::clone(&active.submission_id),
         turn_id: Arc::clone(&active.turn_id),
         started_at_ms: active.started_at_ms,

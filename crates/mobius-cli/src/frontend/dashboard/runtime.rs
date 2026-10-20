@@ -2,7 +2,6 @@ pub(super) use crate::frontend::response::wait_ready;
 use std::borrow::Borrow;
 use std::io;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use mobius::protocol::{
     EventMsg, FrontendWidgetContent, MAX_CAPABILITY_INPUT_BYTES, MAX_MESSAGE_BYTES, Op, Submission,
@@ -217,14 +216,18 @@ pub(super) async fn open_selected_session(
     sender: &GatewaySender,
     state: &mut DashboardState,
 ) -> Result<()> {
-    let Some(session_id) = state.selected_session_id.as_ref().map(Arc::clone) else {
+    let Some(session_id) = state
+        .selected_session_id
+        .as_ref()
+        .map(mobius::SessionId::share)
+    else {
         return Ok(());
     };
     let request_id = Uuid::new_v4();
     sender
         .send(ClientMessage::OpenSession {
             request_id: request_id.to_string().into(),
-            session_id: Arc::clone(&session_id),
+            session_id: session_id.share(),
             last_sequence: None,
         })
         .await
@@ -242,9 +245,12 @@ pub(super) async fn handle_overlay_key(
     let Some(overlay) = state.overlay.as_mut() else {
         return Ok(());
     };
+    let Some(session_id) = overlay.session_id.as_ref().map(mobius::SessionId::share) else {
+        return Ok(());
+    };
     if overlay.input.is_some() {
         if let Some(op) = handle_action_input_key(overlay, key) {
-            submit_operation(sender, &overlay.session_id, op).await?;
+            submit_operation(sender, &session_id, op).await?;
         }
         return Ok(());
     }
@@ -273,7 +279,7 @@ pub(super) async fn handle_overlay_key(
             if let Some(op) = activate_overlay(overlay)
                 && let Some(op) = prepare_overlay_operation(overlay, op)
             {
-                submit_operation(sender, &overlay.session_id, op).await?;
+                submit_operation(sender, &session_id, op).await?;
             }
         }
         KeyCode::Char('a') => {
@@ -283,7 +289,7 @@ pub(super) async fn handle_overlay_key(
                 .and_then(|widget| widget.action.clone()) // rules-allow: the overlay keeps its widget action while the submission owns one
                 && let Some(op) = prepare_overlay_operation(overlay, op)
             {
-                submit_operation(sender, &overlay.session_id, op).await?;
+                submit_operation(sender, &session_id, op).await?;
             }
         }
         _ => {}
@@ -507,12 +513,12 @@ pub(super) fn next_boundary(value: &str, cursor: usize) -> usize {
 
 pub(super) async fn submit_operation(
     sender: &GatewaySender,
-    session_id: &str,
+    session_id: &mobius::SessionId,
     op: Op,
 ) -> Result<()> {
     sender
         .send(ClientMessage::Submit {
-            session_id: session_id.into(),
+            session_id: session_id.share(),
             submission: Submission {
                 id: crate::fresh_id(),
                 op,
@@ -599,12 +605,9 @@ pub(super) fn move_selection(state: &mut DashboardState, delta: isize) {
                 .as_ref()
                 .and_then(|id| ordered.iter().position(|session| session.session_id == *id));
             let selected = moved_index(current, ordered.len(), delta);
-            select_id(
-                &mut state.selected_session_id,
-                selected
-                    .and_then(|index| ordered.get(index))
-                    .map(|session| &session.session_id),
-            );
+            state.selected_session_id = selected
+                .and_then(|index| ordered.get(index))
+                .map(|session| session.session_id.share());
             state.chat_list.select(selected);
         }
         DashboardFocus::Bots => {
@@ -649,10 +652,9 @@ pub(super) fn select_edge(state: &mut DashboardState, last: bool) {
         }
         DashboardFocus::Chats => {
             let ordered = ordered_sessions(&state.gateway.sessions);
-            select_id(
-                &mut state.selected_session_id,
-                ordered.get(selected).map(|session| &session.session_id),
-            );
+            state.selected_session_id = ordered
+                .get(selected)
+                .map(|session| session.session_id.share());
             state.chat_list.select(Some(selected));
         }
         DashboardFocus::Bots => {
@@ -773,7 +775,7 @@ pub(super) fn handle_frame(state: &mut DashboardState, message: ServerMessage) -
             if let Some(overlay) = state
                 .overlay
                 .as_mut()
-                .filter(|overlay| *overlay.session_id == *session_id)
+                .filter(|overlay| overlay.session_id.as_ref() == Some(&session_id))
                 && let EventMsg::Frontend(event) = record.event.msg
             {
                 overlay.apply(event);
@@ -835,12 +837,9 @@ pub(super) fn sync_chat_selection(state: &mut DashboardState) {
         .as_ref()
         .and_then(|id| ordered.iter().position(|session| session.session_id == *id))
         .or_else(|| (!ordered.is_empty()).then_some(0));
-    select_id(
-        &mut state.selected_session_id,
-        selected
-            .and_then(|index| ordered.get(index))
-            .map(|session| &session.session_id),
-    );
+    state.selected_session_id = selected
+        .and_then(|index| ordered.get(index))
+        .map(|session| session.session_id.share());
     state.chat_list.select(selected);
 }
 

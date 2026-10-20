@@ -263,7 +263,6 @@ impl ChatGptAuth {
 
 impl BrowserLogin {
     async fn start(settings: super::super::ModelTransportSettings) -> Result<Self> {
-        settings.validate()?;
         let (verifier, challenge) = pkce();
         let state = Uuid::new_v4().simple().to_string();
         let redirect = reqwest::Url::parse(&MANIFEST.redirect_uri)
@@ -342,7 +341,6 @@ impl BrowserLogin {
 
 impl DeviceLogin {
     async fn start(settings: super::super::ModelTransportSettings) -> Result<Self> {
-        settings.validate()?;
         let client = http_client_with_settings(&settings)?;
         let response = client
             .post(MANIFEST.device_user_code_url.as_str())
@@ -482,7 +480,6 @@ async fn save_login_credential(path: PathBuf, credential: OAuthCredential) -> Re
 }
 
 fn http_client_with_settings(settings: &super::super::ModelTransportSettings) -> Result<Client> {
-    settings.validate()?;
     Ok(Client::builder()
         .timeout(Duration::from_millis(settings.oauth_request_timeout_ms))
         .redirect(reqwest::redirect::Policy::none())
@@ -1151,7 +1148,6 @@ fn browser_usage_limits(
 ) -> BoxFuture<'static, Result<Vec<UsageLimit>>> {
     let path = path.to_path_buf();
     Box::pin(async move {
-        settings.validate()?;
         let auth = ChatGptAuth::load_with_transport(path, settings)?;
         auth.usage_limits().await
     })

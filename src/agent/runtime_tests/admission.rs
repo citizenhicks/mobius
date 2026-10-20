@@ -7,7 +7,7 @@ async fn failed_turn_start_preserves_the_complete_durable_queue() {
     let workspace = tempfile::tempdir().expect("workspace");
     let database = workspace.path().join("checkpoints.sqlite3");
     let checkpoints = Arc::new(SqliteCheckpoint::new(&database).expect("checkpoint store"));
-    let mut checkpoint = Checkpoint::empty("failed-start-queue");
+    let mut checkpoint = Checkpoint::empty("failed-start-queue".parse().expect("session ID"));
     checkpoint.session_context = test_session_context().into();
     checkpoint.model_route = Some("test".into());
     checkpoint.pending_messages = vec![
@@ -47,7 +47,7 @@ async fn failed_turn_start_preserves_the_complete_durable_queue() {
     .await
     .expect("failed runner closes its events");
     let saved = checkpoints
-        .load("failed-start-queue")
+        .load(&"failed-start-queue".parse().expect("session ID"))
         .await
         .expect("load")
         .expect("checkpoint");

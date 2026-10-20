@@ -237,7 +237,7 @@ struct RegisterProviderArgs {
 
     /// Provider API base URL override.
     #[arg(long, value_name = "URL")]
-    base_url: Option<String>,
+    base_url: Option<mobius::backend::model::provider::BaseUrl>,
 
     /// Configure an endpoint that does not require a credential.
     #[arg(long, conflicts_with = "credential_stdin")]
@@ -357,7 +357,7 @@ pub(super) struct RegisterProviderOptions {
     pub(super) image_model_ids: Option<Vec<String>>,
     pub(super) tool_discovery: Option<mobius::protocol::ToolDiscoveryMode>,
     pub(super) web_search: HostedWebSearch,
-    pub(super) base_url: Option<String>,
+    pub(super) base_url: Option<mobius::backend::model::provider::BaseUrl>,
     pub(super) credentialless: bool,
     pub(super) credential_stdin: bool,
     pub(super) credential_expires_at: Option<u64>,

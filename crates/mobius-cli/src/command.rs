@@ -146,7 +146,7 @@ async fn run_interactive() -> Result<()> {
                 }
             }
             FrontendExit::Reconnect => {
-                let selected = Some((endpoint, Arc::clone(&session.session.session_id)));
+                let selected = Some((endpoint, session.session.session_id.share()));
                 let Some(connection) = connect(selected, None).await? else {
                     return Ok(());
                 };
@@ -184,20 +184,15 @@ async fn run_task(bot_handle: &str, task_file: &Path) -> Result<()> {
         return Ok(());
     };
     if gateway.models.is_empty() {
-        if let Some(session_id) = disposable_session.as_deref() {
+        if let Some(session_id) = disposable_session.as_ref() {
             discard_session(&sender, &mut events, &mut gateway, session_id).await?;
         }
         return Err(Error::Config(
             "configure the selected Bot's provider before using `mobius run`".into(),
         ));
     }
-    if let Some(message) = frontend::run_headless(
-        sender,
-        events,
-        Arc::clone(&session.session.session_id),
-        task,
-    )
-    .await?
+    if let Some(message) =
+        frontend::run_headless(sender, events, session.session.session_id.share(), task).await?
     {
         print_output(&message);
     }
@@ -255,7 +250,7 @@ async fn pair(endpoint: Endpoint, code: &str) -> std::result::Result<(), mobius_
 }
 
 async fn connect(
-    selected: Option<(Endpoint, Arc<str>)>,
+    selected: Option<(Endpoint, mobius::SessionId)>,
     preferred_bot: Option<&str>,
 ) -> Result<
     Option<(
@@ -263,7 +258,7 @@ async fn connect(
         GatewayEvents,
         ReadyPayload,
         SessionReadyPayload,
-        Option<Arc<str>>,
+        Option<mobius::SessionId>,
         Endpoint,
     )>,
 > {
@@ -293,7 +288,7 @@ async fn connect(
                 bot_id,
             )
             .await?;
-            let disposable_session = Some(Arc::clone(&session.session.session_id));
+            let disposable_session = Some(session.session.session_id.share());
             (session, disposable_session)
         }
         None if preferred_bot.is_some() => {
@@ -305,7 +300,7 @@ async fn connect(
             let first_session_id = gateway
                 .sessions
                 .first()
-                .map(|session| Arc::clone(&session.session_id));
+                .map(|session| session.session_id.share());
             if let Some(session_id) = first_session_id {
                 let session = open_session(&sender, &mut events, &mut gateway, session_id).await?;
                 (session, None)
@@ -315,7 +310,7 @@ async fn connect(
                     .iter()
                     .find(|bot| &*bot.handle == "mobius")
                     .or_else(|| gateway.bots.first())
-                    .map(|bot| Arc::clone(&bot.conversation_session_id))
+                    .map(|bot| bot.conversation_session_id.share())
                     .ok_or_else(|| Error::Config("create a Bot before starting a chat".into()))?;
                 let session = open_session(&sender, &mut events, &mut gateway, session_id).await?;
                 (session, None)
@@ -777,7 +772,7 @@ async fn open_session(
     sender: &GatewaySender,
     events: &mut GatewayEvents,
     gateway: &mut ReadyPayload,
-    session_id: Arc<str>,
+    session_id: mobius::SessionId,
 ) -> Result<SessionReadyPayload> {
     let request_id: Arc<str> = crate::fresh_id();
     sender
@@ -822,13 +817,13 @@ async fn discard_session(
     sender: &GatewaySender,
     events: &mut GatewayEvents,
     gateway: &mut ReadyPayload,
-    session_id: &str,
+    session_id: &mobius::SessionId,
 ) -> Result<()> {
     let request_id: Arc<str> = crate::fresh_id();
     sender
         .send(ClientMessage::DeleteSessions {
             request_id: Arc::clone(&request_id),
-            session_ids: vec![session_id.into()],
+            session_ids: vec![session_id.share()],
             selection: mobius::backend::session_files::SessionFileSelection::All,
         })
         .await
@@ -851,7 +846,7 @@ async fn discard_pristine_session(
     sender: &GatewaySender,
     events: &mut GatewayEvents,
     gateway: &mut ReadyPayload,
-    session_id: &str,
+    session_id: &mobius::SessionId,
 ) -> Result<()> {
     refresh_sessions(sender, events, gateway).await?;
     if catalog_session_is_pristine(gateway, session_id) {
@@ -889,11 +884,11 @@ async fn refresh_sessions(
     Ok(())
 }
 
-fn catalog_session_is_pristine(gateway: &ReadyPayload, session_id: &str) -> bool {
+fn catalog_session_is_pristine(gateway: &ReadyPayload, session_id: &mobius::SessionId) -> bool {
     gateway
         .sessions
         .iter()
-        .find(|session| *session.session_id == *session_id)
+        .find(|session| session.session_id == *session_id)
         .is_some_and(pristine_session)
 }
 

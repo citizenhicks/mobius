@@ -1,3 +1,4 @@
+use mobius::SessionId;
 use mobius::backend::checkpoint::Checkpoint;
 use mobius::protocol::TokenUsage;
 
@@ -23,10 +24,10 @@ impl GatewayHost {
         let terminated = Arc::new(AtomicBool::new(false));
         let termination = Arc::new(tokio::sync::Notify::new());
         self.state.lock().await.sessions.insert(
-            "activity-probe".into(),
+            SessionId::new("activity-probe").unwrap(),
             HostHandle {
                 inner: Arc::new(HostInner {
-                    session_id: "activity-probe".into(),
+                    session_id: SessionId::new("activity-probe").unwrap(),
                     commands,
                     events,
                     alive: Arc::clone(&alive),

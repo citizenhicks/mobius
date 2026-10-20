@@ -1,5 +1,6 @@
 //! Owner-scoped session access through the existing messaging tools.
 
+use mobius::SessionId;
 use std::sync::{Arc, Weak};
 
 use mobius::BoxFuture;
@@ -29,7 +30,7 @@ struct OpenChats {
 impl GatewayLiveChats {
     /// Returns the sender and its owner's other open chats. The registry lock is
     /// released before any chat or store is awaited.
-    async fn open(&self, session_id: &str) -> mobius::Result<OpenChats> {
+    async fn open(&self, session_id: &SessionId) -> mobius::Result<OpenChats> {
         let state = self
             .0
             .upgrade()
@@ -40,9 +41,9 @@ impl GatewayLiveChats {
                 state
                     .sessions
                     .values()
-                    .filter(|host| host.is_alive() && **host.session_id() != *session_id)
+                    .filter(|host| host.is_alive() && host.session_id() != session_id)
                     .cloned() // rules-allow: the chat handles are used after the state lock is released
-                    .map(|host| (Arc::clone(host.session_id()), host))
+                    .map(|host| (host.session_id().share(), host))
                     .collect::<std::collections::HashMap<_, _>>(),
                 Arc::clone(&state.checkpoints),
                 Arc::clone(&state.activities),
@@ -58,7 +59,7 @@ impl GatewayLiveChats {
         let mut metadata = load_session_metadata(&checkpoints)
             .await
             .map_err(|error| mobius::Error::Checkpoint(error.to_string()))?;
-        let summaries = if session_id
+        let summaries = if session_id.as_str()
             == crate::bots::conversation_session_id(&sender.session_context.owner_id)
         {
             super::gateway_session_summaries(&checkpoints)
@@ -74,7 +75,7 @@ impl GatewayLiveChats {
         let mut siblings = Vec::new();
         for summary in summaries {
             let entry = metadata.remove(&*summary.session_id);
-            if *summary.session_id != *session_id
+            if &summary.session_id != session_id
                 && summary.catalog_visible
                 && summary.parent_session_id.is_none()
                 && summary.session_context.owner_id == sender.session_context.owner_id
@@ -121,7 +122,10 @@ impl GatewayLiveChats {
 }
 
 impl LiveChats for GatewayLiveChats {
-    fn list<'a>(&'a self, session_id: &'a str) -> BoxFuture<'a, mobius::Result<Vec<LiveChat>>> {
+    fn list<'a>(
+        &'a self,
+        session_id: &'a SessionId,
+    ) -> BoxFuture<'a, mobius::Result<Vec<LiveChat>>> {
         Box::pin(async move {
             let open = self.open(session_id).await?;
             Ok(open.chats.into_iter().map(|open| open.chat).collect())
@@ -130,11 +134,11 @@ impl LiveChats for GatewayLiveChats {
 
     fn send<'a>(
         &'a self,
-        session_id: &'a str,
+        session_id: &'a SessionId,
         command: PeerCommand<'a>,
         initiating_author: &'a MessageAuthor,
         command_id: &'a str,
-    ) -> BoxFuture<'a, mobius::Result<Arc<str>>> {
+    ) -> BoxFuture<'a, mobius::Result<SessionId>> {
         Box::pin(async move {
             let OpenChats {
                 sender,
@@ -222,7 +226,7 @@ impl LiveChats for GatewayLiveChats {
                     }
                 }
             };
-            let target = Arc::clone(host.session_id());
+            let target = host.session_id().share();
             // The recipient re-checks ownership in its own command order.
             host.deliver_validated_source(submission, bot_id)
                 .await

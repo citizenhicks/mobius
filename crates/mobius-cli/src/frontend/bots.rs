@@ -16,7 +16,7 @@ use uuid::Uuid;
 enum Action {
     None,
     Exit,
-    OpenSession(Arc<str>),
+    OpenSession(mobius::SessionId),
     /// Runs setup for the Bot shown on the current `Page::Bot`.
     Setup(SetupMode),
     Send {
@@ -97,7 +97,8 @@ mod tests {
     fn bot(id: &str) -> BotRecord {
         BotRecord {
             id: id.into(),
-            conversation_session_id: "bot-conversation-test".into(),
+            conversation_session_id: mobius::SessionId::new("bot-conversation-test")
+                .expect("session"),
             handle: id.into(),
             name: id.into(),
             description: "description".into(),
@@ -213,7 +214,7 @@ mod tests {
             id: "event-hook".into(),
             on: HookSelector::Event {
                 source: HookSource::Session {
-                    session_id: "watched".into(),
+                    session_id: mobius::SessionId::new("watched").expect("session"),
                 },
                 kind: HookKind::SessionTurnFinished,
                 routine_outcome: None,
@@ -267,7 +268,7 @@ mod tests {
             started_at: 1,
             finished_at: Some(2),
             status: RoutineRunStatus::Succeeded,
-            session_id: Some("session-a".into()),
+            session_id: Some(mobius::SessionId::new("session-a").expect("session")),
             message: None,
         };
         let (_, deferred) = handle_frame(

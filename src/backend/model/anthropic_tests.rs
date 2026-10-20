@@ -3,7 +3,7 @@ use crate::backend::model::user_message;
 
 #[test]
 fn explicit_cache_endpoint_advances_and_keeps_the_stable_anchor() {
-    let provider = Anthropic::new("test-key", MANIFEST.base_url.as_str(), "claude-sonnet-5-5")
+    let provider = Anthropic::new("test-key", MANIFEST.base_url.share(), "claude-sonnet-5-5")
         .expect("provider");
     let mut first = user_message("stable prefix");
     assert!(crate::backend::model::mark_prompt_cache_breakpoint(
@@ -94,7 +94,12 @@ fn native_discovery_defers_schemas_and_replays_tool_references() {
     let input = discovery_history();
 
     for base_url in [MANIFEST.base_url.as_str(), "https://proxy.example/v1"] {
-        let provider = Anthropic::new("test-key", base_url, "claude-sonnet-5-5").expect("provider");
+        let provider = Anthropic::new(
+            "test-key",
+            BaseUrl::new(base_url).unwrap(),
+            "claude-sonnet-5-5",
+        )
+        .expect("provider");
         let body = provider
             .request_body_value(
                 "instructions",

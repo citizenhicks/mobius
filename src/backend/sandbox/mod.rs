@@ -1,5 +1,6 @@
 //! Sandboxed execution and its approval boundary.
 
+use crate::SessionId;
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -425,7 +426,7 @@ pub trait SandboxBackend: Send + Sync {
     /// Dropping the channel ends its authority; requests are never replayed.
     fn worker_connection<'a>(
         &'a self,
-        _session_id: &'a str,
+        _session_id: &'a SessionId,
         _sandbox_mode: SandboxMode,
         _network_access: NetworkAccess,
     ) -> BoxFuture<'a, Result<tokio::io::DuplexStream>> {
@@ -442,7 +443,7 @@ pub trait SandboxBackend: Send + Sync {
     /// Returns an error if the backend cannot assign a page or has suspended execution.
     fn desktop_browser_page<'a>(
         &'a self,
-        _session_id: &'a str,
+        _session_id: &'a SessionId,
     ) -> BoxFuture<'a, Result<Option<DesktopBrowserPage>>> {
         Box::pin(async { Ok(None) })
     }
@@ -729,7 +730,7 @@ impl Sandbox {
     /// # Errors
     ///
     /// Returns an error if validation or an operation required by this function fails.
-    pub fn has_background_commands(&self, session_id: &str) -> Result<bool> {
+    pub fn has_background_commands(&self, session_id: &SessionId) -> Result<bool> {
         self.background.has_owner(session_id)
     }
 
@@ -753,13 +754,13 @@ impl Sandbox {
         self.approval.frontend()
     }
 
-    pub(crate) fn session_start(&self, session_id: &str) -> Result<Vec<FrontendEvent>> {
+    pub(crate) fn session_start(&self, session_id: &SessionId) -> Result<Vec<FrontendEvent>> {
         self.approval.session_start(session_id)
     }
 
     pub(crate) fn authorize<'a>(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         calls: &[ToolCall],
         mutation_call_ids: impl IntoIterator<Item = &'a str>,
     ) -> Result<SandboxAuthorization> {
@@ -769,7 +770,7 @@ impl Sandbox {
 
     pub(crate) fn resolve_approval(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         calls: &[ToolCall],
         approval_call_ids: &[Arc<str>],
         decision: &ReviewDecision,
@@ -779,7 +780,7 @@ impl Sandbox {
             .resolve(session_id, calls, approval_call_ids, decision, permissions)
     }
 
-    pub(crate) async fn session_end(&self, session_id: &str) -> Result<()> {
+    pub(crate) async fn session_end(&self, session_id: &SessionId) -> Result<()> {
         let approval = self.approval.session_end(session_id);
         let background = self.background.shutdown(session_id).await;
         self.workers.shutdown(session_id).await;
@@ -840,7 +841,7 @@ impl Middleware for Sandbox {
 /// Batch authority issued by the sandbox approval policy.
 #[derive(Debug)]
 pub(crate) struct SandboxPermissions {
-    session_id: Arc<str>,
+    session_id: SessionId,
     sandbox_mode: SandboxMode,
     network_access: NetworkAccess,
     mutation_call_ids: BTreeSet<Arc<str>>,
@@ -848,13 +849,13 @@ pub(crate) struct SandboxPermissions {
 
 impl SandboxPermissions {
     fn new(
-        session_id: impl Into<Arc<str>>,
+        session_id: SessionId,
         sandbox_mode: SandboxMode,
         network_access: NetworkAccess,
         mutation_call_ids: impl IntoIterator<Item = Arc<str>>,
     ) -> Self {
         Self {
-            session_id: session_id.into(),
+            session_id,
             sandbox_mode,
             network_access,
             mutation_call_ids: mutation_call_ids.into_iter().collect(),
@@ -862,13 +863,13 @@ impl SandboxPermissions {
     }
 
     pub(crate) fn restore(
-        session_id: impl AsRef<str>,
+        session_id: &SessionId,
         sandbox_mode: SandboxMode,
         network_access: NetworkAccess,
         mutation_call_ids: impl IntoIterator<Item = Arc<str>>,
     ) -> Self {
         Self::new(
-            session_id.as_ref(),
+            session_id.share(),
             sandbox_mode,
             network_access,
             mutation_call_ids,
@@ -889,7 +890,7 @@ impl SandboxPermissions {
 
     pub(crate) fn for_call(&self, call_id: &str) -> ToolPermissions {
         ToolPermissions {
-            session_id: Arc::clone(&self.session_id),
+            session_id: self.session_id.share(),
             sandbox_mode: self.sandbox_mode,
             network_access: self.network_access,
             mutation: self.mutation_call_ids.contains(call_id),
@@ -904,7 +905,7 @@ impl SandboxPermissions {
 /// Opaque authority attached to exactly one tool call.
 #[derive(Debug)]
 pub struct ToolPermissions {
-    session_id: Arc<str>,
+    session_id: SessionId,
     sandbox_mode: SandboxMode,
     network_access: NetworkAccess,
     mutation: bool,
@@ -919,7 +920,7 @@ impl ToolPermissions {
         self.network_access
     }
 
-    pub(crate) fn session_id(&self) -> &str {
+    pub(crate) fn session_id(&self) -> &SessionId {
         &self.session_id
     }
 
@@ -966,7 +967,7 @@ mod tests {
     #[test]
     fn mutation_permit_requires_per_call_authority() {
         let permissions = SandboxPermissions::new(
-            "session",
+            "session".parse().expect("session ID"),
             SandboxMode::WorkspaceWrite,
             NetworkAccess::Allowed,
             Vec::new(),

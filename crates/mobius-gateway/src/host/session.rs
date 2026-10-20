@@ -1,3 +1,4 @@
+use mobius::SessionId;
 mod events;
 mod runtime;
 
@@ -32,7 +33,7 @@ pub(crate) struct HostHandle {
 }
 
 pub(super) struct HostInner {
-    pub(super) session_id: Arc<str>,
+    pub(super) session_id: SessionId,
     pub(super) commands: mpsc::Sender<HostCommand>,
     pub(super) events: broadcast::Sender<SharedFrame>,
     pub(super) alive: Arc<AtomicBool>,
@@ -102,7 +103,7 @@ struct SourceAdmission {
 }
 
 struct RunningAgent {
-    session_id: Arc<str>,
+    session_id: SessionId,
     sender: Option<AgentSender>,
     events: mpsc::Receiver<JournalEvent>,
     model_router: Arc<ModelRouter>,
@@ -276,7 +277,7 @@ impl HostHandle {
         activities: SessionActivities,
         work_activity: Arc<WorkActivity>,
         gateway_events: broadcast::Sender<ServerFrame>,
-        session_id: String,
+        session_id: SessionId,
         origin_label: &str,
         live_chats: Arc<dyn LiveChats>,
         host_access: HostAccess,
@@ -307,11 +308,11 @@ impl HostHandle {
         let (commands, receiver) = mpsc::channel(COMMAND_CAPACITY);
         let (events, _) = broadcast::channel(BROADCAST_CAPACITY);
         let loaded = load_replay(checkpoints.as_ref(), &session_id, &running.frontend).await?;
-        let shared_session_id = Arc::<str>::from(session_id);
+        let shared_session_id = session_id;
         let mut guard = activities.lock().await;
         let activity = guard
             .activities
-            .entry(Arc::clone(&shared_session_id))
+            .entry(shared_session_id.share())
             .or_default();
         activity.attention = super::replay::attention_count(&loaded.widgets);
         let awaiting_approval = activity.state == SessionActivityState::AwaitingApproval;
@@ -362,7 +363,7 @@ impl HostHandle {
             if let Some(active) = checkpoint.and_then(|checkpoint| checkpoint.active_execution)
                 && let Some(run) = state.bots.history(None)?.into_iter().find(|run| {
                     run.status == RoutineRunStatus::Running
-                        && run.session_id.as_deref() == Some(&*shared_session_id)
+                        && run.session_id.as_ref() == Some(&shared_session_id)
                 })
             {
                 state.active_routine = Some(ActiveRoutine {
@@ -390,7 +391,7 @@ impl HostHandle {
     }
 
     #[must_use]
-    pub(crate) fn session_id(&self) -> &Arc<str> {
+    pub(crate) fn session_id(&self) -> &SessionId {
         &self.inner.session_id
     }
 
@@ -752,7 +753,7 @@ pub(super) enum ProviderRefresh<'a> {
     /// One API-key credential, stored against a single instance.
     Instance {
         instance: &'a str,
-        base_url: Option<&'a str>,
+        base_url: Option<&'a mobius::backend::model::provider::BaseUrl>,
     },
     /// One browser login, shared by every instance of that provider.
     Provider(&'a str),
@@ -804,7 +805,7 @@ async fn start_agent(
     discovery_gate: Arc<Mutex<()>>,
     desktop: Arc<DesktopControl>,
     remote_desktop: Arc<RemoteDesktop>,
-    session_id: &str,
+    session_id: &SessionId,
     origin_label: &str,
     prepared: Option<Arc<crate::assembly::PreparedBot>>,
     provider_epoch: Arc<AtomicU64>,
@@ -890,7 +891,7 @@ async fn start_agent(
         discovery_gate,
         desktop,
         remote_desktop,
-        Some(session_id.into()),
+        Some(session_id.share()),
         origin_label,
         Arc::clone(&prepared),
         Some(live_chats),
@@ -899,7 +900,7 @@ async fn start_agent(
     .await?;
     let frontend_sink = agent.frontend_sink();
     let (sender, events, session, frontend) = agent.into_recorded_parts();
-    let session_id = Arc::clone(&session.session_id);
+    let session_id = session.session_id.share();
     Ok(RunningAgent {
         session_id,
         sender: Some(sender),

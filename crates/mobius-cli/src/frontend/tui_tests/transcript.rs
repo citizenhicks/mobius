@@ -23,7 +23,7 @@ fn final_message_replaces_streams_once_with_or_without_step_completion() {
         let mut state = state();
         state.handle_agent_event(
             EventMsg::AssistantContentDelta(mobius::protocol::AssistantContentDeltaEvent {
-                session_id: "session".into(),
+                session_id: mobius::SessionId::new("session").expect("session"),
                 turn_id: "turn".into(),
                 model_step_id: "step".into(),
                 delta: streamed.into(),
@@ -34,7 +34,7 @@ fn final_message_replaces_streams_once_with_or_without_step_completion() {
         if complete_step {
             state.handle_agent_event(
                 EventMsg::ModelStepCompleted(ModelStepCompletedEvent {
-                    session_id: "session".into(),
+                    session_id: mobius::SessionId::new("session").expect("session"),
                     turn_id: "turn".into(),
                     model_step_id: "step".into(),
                     step_index: 0,
@@ -52,7 +52,7 @@ fn final_message_replaces_streams_once_with_or_without_step_completion() {
         }
         state.handle_agent_event(
             EventMsg::AssistantMessage(mobius::protocol::AssistantMessageEvent {
-                session_id: "session".into(),
+                session_id: mobius::SessionId::new("session").expect("session"),
                 turn_id: "turn".into(),
                 model_step_id: "step".into(),
                 content: vec![ModelStepContent {

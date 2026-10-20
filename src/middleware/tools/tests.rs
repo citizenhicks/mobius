@@ -11,7 +11,7 @@ fn test_sandbox() -> Arc<Sandbox> {
 
 fn test_permissions(mutation_call_ids: &[&str]) -> SandboxPermissions {
     SandboxPermissions::restore(
-        "session",
+        &"session".parse().expect("session ID"),
         crate::backend::sandbox::SandboxMode::WorkspaceWrite,
         crate::backend::sandbox::NetworkAccess::Denied,
         mutation_call_ids.iter().map(|call_id| (*call_id).into()),

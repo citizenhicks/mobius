@@ -21,7 +21,7 @@ async fn rejected_prompt_aborts_without_persisting_or_wedging_the_next_turn() {
         "test prompt",
     )
     .session_context(test_session_context())
-    .session_id("rejected-prompt");
+    .session_id("rejected-prompt".parse().expect("session ID"));
     let mut agent = create_agent(config).await.expect("create agent");
     let rejected_submission = agent
         .sender()
@@ -59,7 +59,7 @@ async fn rejected_prompt_aborts_without_persisting_or_wedging_the_next_turn() {
         EventMsg::Message(_) | EventMsg::ModelStepStarted(_) | EventMsg::TurnComplete(_)
     )));
     let checkpoint = checkpoints
-        .load("rejected-prompt")
+        .load(&"rejected-prompt".parse().expect("session ID"))
         .await
         .expect("load checkpoint")
         .expect("saved checkpoint");
@@ -107,7 +107,9 @@ async fn compaction_notice_is_live_and_closes_on_success_failure_and_interrupt()
                 if request.tools.len() != 1 || request.tools[0].name != "write_handoff" {
                     return Ok(scripted_message("done"));
                 }
-                let _interrupt = (request.session_id == "interrupt").then(|| {
+                let _interrupt = (request.session_id.map(crate::SessionId::as_str)
+                    == Some("interrupt"))
+                .then(|| {
                     InterruptedRequest(request.cancellation.expect("compaction cancellation"))
                 });
                 self.entered.notify_one();
@@ -131,7 +133,7 @@ async fn compaction_notice_is_live_and_closes_on_success_failure_and_interrupt()
             let checkpoints = Arc::new(
                 SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3")).unwrap(),
             );
-            let mut checkpoint = Checkpoint::empty(outcome);
+            let mut checkpoint = Checkpoint::empty(outcome.parse().expect("session ID"));
             checkpoint.model_route = Some("main".into());
             checkpoint.session_context = test_session_context().into();
             checkpoint.context = Arc::new(vec![Arc::new(crate::backend::model::user_message(
@@ -155,7 +157,7 @@ async fn compaction_notice_is_live_and_closes_on_success_failure_and_interrupt()
                     "test prompt",
                 )
                 .session_context(test_session_context())
-                .session_id(outcome),
+                .session_id(outcome.parse().expect("session ID")),
             )
             .await
             .unwrap();
@@ -178,7 +180,11 @@ async fn compaction_notice_is_live_and_closes_on_success_failure_and_interrupt()
             // The pending row must arrive while the provider is still blocked.
             model.entered.notified().await;
             if outcome == "success" {
-                let before = checkpoints.load(outcome).await.unwrap().unwrap();
+                let before = checkpoints
+                    .load(&outcome.parse().expect("session ID"))
+                    .await
+                    .unwrap()
+                    .unwrap();
                 let admission = agent
                     .sender()
                     .send_with_admission(crate::protocol::Submission {
@@ -194,7 +200,11 @@ async fn compaction_notice_is_live_and_closes_on_success_failure_and_interrupt()
                     admission.wait().await.unwrap(),
                     super::super::MessageAcceptance::Accepted
                 );
-                let queued = checkpoints.load(outcome).await.unwrap().unwrap();
+                let queued = checkpoints
+                    .load(&outcome.parse().expect("session ID"))
+                    .await
+                    .unwrap()
+                    .unwrap();
                 assert_eq!(
                     queued.context, before.context,
                     "the source writer cannot persist provisional history while accepting a steer"
@@ -247,7 +257,11 @@ async fn compaction_notice_is_live_and_closes_on_success_failure_and_interrupt()
                 }
             }
             assert_eq!(completions, 1);
-            let saved = checkpoints.load(outcome).await.unwrap().unwrap();
+            let saved = checkpoints
+                .load(&outcome.parse().expect("session ID"))
+                .await
+                .unwrap()
+                .unwrap();
             assert_eq!(
                 compaction_count(checkpoints.as_ref(), outcome).await,
                 u64::from(outcome == "success")
@@ -286,7 +300,7 @@ async fn compaction_marker_survives_transcript_replay() {
         "test prompt",
     )
     .session_context(test_session_context())
-    .session_id("durable-compaction");
+    .session_id("durable-compaction".parse().expect("session ID"));
     let mut agent = create_agent(config).await.expect("create agent");
     agent
         .sender()
@@ -309,13 +323,13 @@ async fn compaction_marker_survives_transcript_replay() {
         }
     }
     let checkpoint = checkpoints
-        .load("durable-compaction")
+        .load(&"durable-compaction".parse().expect("session ID"))
         .await
         .expect("load checkpoint")
         .expect("saved checkpoint");
     let transcript = checkpoints
         .transcript_page(
-            "durable-compaction",
+            &"durable-compaction".parse().expect("session ID"),
             TranscriptPageRequest {
                 before_sequence: None,
                 max_batches: 100,
@@ -324,7 +338,10 @@ async fn compaction_marker_survives_transcript_replay() {
         .await
         .expect("load transcript")
         .into_positioned_items_chronological();
-    let replayed = crate::protocol::replay_events(&transcript, "durable-compaction");
+    let replayed = crate::protocol::replay_events(
+        &transcript,
+        &"durable-compaction".parse().expect("session ID"),
+    );
 
     assert_eq!(live_markers, 1);
     assert_eq!(checkpoint.context_epoch, 1);
@@ -410,7 +427,7 @@ async fn failing_usage_observer_aborts_before_checkpoint_usage_is_committed() {
         "test prompt",
     )
     .session_context(test_session_context())
-    .session_id("usage-observer-failure")
+    .session_id("usage-observer-failure".parse().expect("session ID"))
     .usage_observer(|_, _| {
         Box::pin(async {
             tokio::task::yield_now().await;
@@ -427,13 +444,13 @@ async fn failing_usage_observer_aborts_before_checkpoint_usage_is_committed() {
         EventMsg::TurnAborted(_)
     ) {}
     let saved = checkpoints
-        .load("usage-observer-failure")
+        .load(&"usage-observer-failure".parse().expect("session ID"))
         .await
         .expect("load checkpoint")
         .expect("saved checkpoint");
     let execution = checkpoints
         .execution_page(
-            "usage-observer-failure",
+            &"usage-observer-failure".parse().expect("session ID"),
             ExecutionPageRequest {
                 before_sequence: None,
                 limit: 1,

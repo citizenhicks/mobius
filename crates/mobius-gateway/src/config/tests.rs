@@ -3,7 +3,7 @@ use super::*;
 fn test_bot() -> crate::wire::BotRecord {
     crate::wire::BotRecord {
         id: "bot-fixture".into(),
-        conversation_session_id: "persistent-test".into(),
+        conversation_session_id: mobius::SessionId::new("persistent-test").unwrap(),
         handle: "fixture".into(),
         name: "Fixture".into(),
         description: "Own fixture work.".into(),
@@ -88,7 +88,7 @@ fn provider_registration_never_silently_changes_existing_defaults() {
         instance: "kimi".into(),
         provider: "kimi".into(),
         model: "kimi-k3".into(),
-        base_url: Some("https://api.moonshot.ai/v1".into()),
+        base_url: Some(BaseUrl::new("https://api.moonshot.ai/v1").unwrap()),
         endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
         reasoning_effort: Some("max".into()),
         service_tier: None,
@@ -108,7 +108,7 @@ fn provider_registration_never_silently_changes_existing_defaults() {
         instance: "openrouter".into(),
         provider: "openrouter".into(),
         model: "openrouter/pareto-code".into(),
-        base_url: Some("https://openrouter.ai/api/v1".into()),
+        base_url: Some(BaseUrl::new("https://openrouter.ai/api/v1/").unwrap()),
         endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
         reasoning_effort: None,
         service_tier: None,
@@ -212,7 +212,7 @@ fn saved_search_options_do_not_prevent_loading_but_fail_when_built() {
             .unwrap()
             .build_config_is_valid(
                 &selection.model,
-                selection.base_url.as_deref(),
+                selection.base_url.as_ref(),
                 selection.reasoning_effort.as_deref(),
                 selection.web_search,
             )
@@ -227,7 +227,7 @@ fn credentialless_endpoint_requires_https() {
         instance: "openrouter".into(),
         provider: "openrouter".into(),
         model: "openai/gpt-5".into(),
-        base_url: Some("http://127.0.0.1:8080/v1".into()),
+        base_url: Some(BaseUrl::new("http://127.0.0.1:8080/v1").unwrap()),
         endpoint_auth: ProviderEndpointAuth::Credentialless,
         reasoning_effort: None,
         service_tier: None,
@@ -254,43 +254,6 @@ fn credentialless_endpoint_requires_https() {
 }
 
 #[test]
-fn credentialless_endpoint_rejects_secret_bearing_url_components() {
-    for base_url in [
-        "https://secret@connector.example/v1",
-        "https://connector.example/v1?token=secret",
-        "https://connector.example/v1#secret",
-    ] {
-        let selection = ProviderConfig {
-            tool_discovery: None,
-            instance: "openrouter".into(),
-            provider: "openrouter".into(),
-            model: "openai/gpt-5".into(),
-            base_url: Some(base_url.into()),
-            endpoint_auth: ProviderEndpointAuth::Credentialless,
-            reasoning_effort: None,
-            service_tier: None,
-            web_search: mobius::backend::model::provider::HostedWebSearch::Off,
-        };
-
-        GatewayConfig::new(DEFAULT_LISTEN, None)
-            .expect("gateway config")
-            .registering_provider(
-                selection.clone(),
-                "Test".into(),
-                Default::default(),
-                vec![crate::wire::ConfiguredModel {
-                    id: selection.model,
-                    reasoning_efforts: Some(Vec::new()),
-                    default_reasoning: None,
-                    ..Default::default()
-                }],
-                Vec::new(),
-            )
-            .expect_err("secret-bearing endpoint must be rejected");
-    }
-}
-
-#[test]
 fn saving_defaults_is_revisioned_and_does_not_change_existing_chat_specs() {
     let registered = GatewayConfig::new(DEFAULT_LISTEN, None)
         .expect("gateway config")
@@ -306,7 +269,7 @@ fn saving_defaults_is_revisioned_and_does_not_change_existing_chat_specs() {
     let state = tempfile::tempdir().expect("state");
     let bot = crate::wire::BotRecord {
         id: "bot-fixture".into(),
-        conversation_session_id: "persistent-test".into(),
+        conversation_session_id: mobius::SessionId::new("persistent-test").unwrap(),
         handle: "fixture".into(),
         name: "Fixture".into(),
         description: "Own fixture work.".into(),
@@ -551,7 +514,7 @@ fn provider_credentials_are_owner_only_and_absent_from_agent_snapshots() {
             "openrouter",
             "openrouter",
             "write-only-secret",
-            Some("https://openrouter.ai/api/v1"),
+            Some(&BaseUrl::new("https://openrouter.ai/api/v1/").unwrap()),
             Some(2_000_000_000),
         )
         .expect("store credential");
@@ -560,7 +523,7 @@ fn provider_credentials_are_owner_only_and_absent_from_agent_snapshots() {
             "openrouter",
             "responses",
             "replacement-secret",
-            Some("https://example.com/v1"),
+            Some(&BaseUrl::new("https://example.com/v1").unwrap()),
             None,
         )
         .expect_err("an existing instance must keep its provider");
@@ -571,7 +534,7 @@ fn provider_credentials_are_owner_only_and_absent_from_agent_snapshots() {
             .get(
                 "openrouter",
                 "openrouter",
-                Some("https://openrouter.ai/api/v1")
+                Some(&BaseUrl::new("https://openrouter.ai/api/v1/").unwrap())
             )
             .unwrap()
             .and_then(|credential| credential.lifetime.expires_at),
@@ -579,7 +542,11 @@ fn provider_credentials_are_owner_only_and_absent_from_agent_snapshots() {
     );
     assert_eq!(
         reopened
-            .get("openrouter", "openrouter", Some("https://other.example/v1"))
+            .get(
+                "openrouter",
+                "openrouter",
+                Some(&BaseUrl::new("https://other.example/v1").unwrap())
+            )
             .unwrap()
             .map(|credential| credential.api_key),
         None
@@ -602,7 +569,7 @@ fn provider_credentials_are_owner_only_and_absent_from_agent_snapshots() {
             .get(
                 "openrouter",
                 "openrouter",
-                Some("https://openrouter.ai/api/v1")
+                Some(&BaseUrl::new("https://openrouter.ai/api/v1/").unwrap())
             )
             .expect("original credential")
             .map(|credential| credential.api_key),
@@ -625,7 +592,7 @@ fn provider_credential_write_limit_is_atomic_and_reopenable() {
                 &instance,
                 "openrouter",
                 &api_key,
-                Some("https://openrouter.ai/api/v1"),
+                Some(&BaseUrl::new("https://openrouter.ai/api/v1/").unwrap()),
                 None,
             ) {
                 Ok(()) => {
@@ -643,7 +610,7 @@ fn provider_credential_write_limit_is_atomic_and_reopenable() {
             &rejected.0,
             "openrouter",
             &api_key,
-            Some("https://openrouter.ai/api/v1"),
+            Some(&BaseUrl::new("https://openrouter.ai/api/v1/").unwrap()),
             None,
         )
         .expect_err("oversized candidate must remain rejected");
@@ -660,7 +627,7 @@ fn provider_credential_write_limit_is_atomic_and_reopenable() {
             .get(
                 accepted.last().expect("accepted credential"),
                 "openrouter",
-                Some("https://openrouter.ai/api/v1"),
+                Some(&BaseUrl::new("https://openrouter.ai/api/v1/").unwrap()),
             )
             .expect("read accepted credential")
             .map(|credential| credential.api_key),
@@ -671,7 +638,7 @@ fn provider_credential_write_limit_is_atomic_and_reopenable() {
             .get(
                 &rejected.0,
                 "openrouter",
-                Some("https://openrouter.ai/api/v1"),
+                Some(&BaseUrl::new("https://openrouter.ai/api/v1/").unwrap()),
             )
             .expect("read rejected credential")
             .map(|credential| credential.api_key),
@@ -735,7 +702,8 @@ fn opening_state_rejects_a_public_state_directory() {
 async fn replacing_and_removing_credentials_revokes_resolved_routes() {
     let directory = tempfile::tempdir().unwrap();
     let store = CredentialStore::open(directory.path().join("credentials.json")).unwrap();
-    let base_url = Some("https://api.openai.com/v1");
+    let url = BaseUrl::new("https://api.openai.com/v1").unwrap();
+    let base_url = Some(&url);
     store
         .set(
             "openai_socket",

@@ -12,7 +12,7 @@ pub(super) struct DashboardState {
     pub(super) clients: Vec<ClientStatus>,
     pub(super) current_client_id: Option<String>,
     pub(super) selected_client_id: Option<String>,
-    pub(super) selected_session_id: Option<Arc<str>>,
+    pub(super) selected_session_id: Option<mobius::SessionId>,
     pub(super) selected_bot_id: Option<Arc<str>>,
     pub(super) device_list: ListState,
     pub(super) chat_list: ListState,
@@ -20,14 +20,14 @@ pub(super) struct DashboardState {
     pub(super) focus: DashboardFocus,
     pub(super) pending_unpair: Option<(String, String)>,
     pub(super) profile: Option<ProfileSnapshot>,
-    pub(super) pending_open: Option<(uuid::Uuid, Arc<str>)>,
+    pub(super) pending_open: Option<(uuid::Uuid, mobius::SessionId)>,
     pub(super) overlay: Option<CapabilityOverlay>,
     pub(super) error: Option<String>,
 }
 
 pub(in crate::frontend) struct CapabilityOverlay {
     pub(super) title: String,
-    pub(super) session_id: Arc<str>,
+    pub(super) session_id: Option<mobius::SessionId>,
     pub(super) slots: Vec<FrontendSlot>,
     pub(super) widgets: Vec<(Arc<str>, Arc<FrontendWidget>)>,
     pub(super) widget_list: ListState,
@@ -45,7 +45,7 @@ pub(super) struct ActionInput {
 
 impl CapabilityOverlay {
     pub(super) fn from_session(payload: SessionReadyPayload) -> Self {
-        let session_id = Arc::clone(&payload.session.session_id);
+        let session_id = payload.session.session_id.share();
         let widgets = payload
             .contributions
             .into_iter()
@@ -58,7 +58,7 @@ impl CapabilityOverlay {
             .collect();
         let mut overlay = Self {
             title: format!("Chat capabilities · {session_id}"),
-            session_id,
+            session_id: Some(session_id),
             slots: vec![FrontendSlot::Navigation],
             widgets,
             widget_list: ListState::default(),
@@ -104,7 +104,7 @@ impl CapabilityOverlay {
         };
         let mut overlay = Self {
             title,
-            session_id: Arc::default(),
+            session_id: None,
             slots,
             widgets,
             widget_list: ListState::default(),

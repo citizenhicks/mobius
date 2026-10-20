@@ -287,7 +287,7 @@ impl Runner {
         let model = Arc::clone(&self.config.model);
         let provider = Arc::clone(&self.config.provider);
         let context_provider = self.state.context_model_route.as_ref().map(Arc::clone);
-        let session_id = Arc::clone(&self.config.session_id);
+        let session_id = self.runtime.session_id.share();
         let instructions = Arc::clone(&self.system_prompt);
         let last_usage = self.state.last_usage;
         let catalog = Arc::clone(&self.catalog);
@@ -495,7 +495,7 @@ impl Runner {
         self.config
             .middleware
             .resolve_tool_exposure(
-                &self.config.session_id,
+                &self.runtime.session_id,
                 supports_tool_image_input,
                 self.state.context.as_slice().into(),
                 &mut available,
@@ -517,7 +517,7 @@ impl Runner {
             .filter_map(|event| {
                 event
                     .into_event(
-                        Arc::clone(&started.session_id),
+                        started.session_id.share(),
                         Arc::clone(&started.turn_id),
                         Arc::clone(&started.model_step_id),
                     )
@@ -606,7 +606,7 @@ impl Runner {
     ) -> Result<ModelStepRequest> {
         let model = Arc::clone(&self.config.model);
         let provider = Arc::clone(&self.config.provider);
-        let model_session_id = Arc::clone(&self.state.session_id);
+        let model_session_id = self.state.session_id.share();
         let cache_key = prompt_cache_key(&model_session_id);
         let instructions = Arc::clone(&self.system_prompt);
         let estimate = self.config.token_estimate;
@@ -622,7 +622,7 @@ impl Runner {
         let mut stream_retries = 0;
         loop {
             let started = Arc::new(ModelStepStartedEvent {
-                session_id: Arc::clone(&model_session_id),
+                session_id: model_session_id.share(),
                 turn_id: Arc::clone(turn_id),
                 model_step_id: Uuid::new_v4().to_string().into(),
                 step_index: model_step,
@@ -644,7 +644,7 @@ impl Runner {
             .await?;
             let event_submission_id = Arc::clone(submission_id);
             let event_turn_id = Arc::clone(&started.turn_id);
-            let event_session_id = Arc::clone(&started.session_id);
+            let event_session_id = started.session_id.share();
             let event_model_step_id = Arc::clone(&started.model_step_id);
             let model_events = Arc::new(ModelEventTracker::default());
             let streamed_events = Arc::clone(&model_events);
@@ -663,7 +663,7 @@ impl Runner {
                 let recorder = std::sync::Weak::clone(&recorder);
                 let event_submission_id = Arc::clone(&event_submission_id);
                 let event_turn_id = Arc::clone(&event_turn_id);
-                let event_session_id = Arc::clone(&event_session_id);
+                let event_session_id = event_session_id.share();
                 let event_model_step_id = Arc::clone(&event_model_step_id);
                 Box::pin(async move {
                     let record = async {
@@ -710,7 +710,7 @@ impl Runner {
             });
             let cancellation = ModelCancellation::default();
             let request = ModelRequest {
-                session_id: &model_session_id,
+                session_id: Some(&model_session_id),
                 cancellation: Some(&cancellation),
                 prompt_cache: Some(PromptCacheIdentity {
                     key: &cache_key,
@@ -1082,7 +1082,7 @@ impl Runner {
             model_events.push(turn_event(
                 submission_id,
                 EventMsg::AssistantMessage(AssistantMessageEvent {
-                    session_id: Arc::clone(&step.started.session_id),
+                    session_id: step.started.session_id.share(),
                     turn_id: Arc::clone(&step.started.turn_id),
                     model_step_id: Arc::clone(&step.started.model_step_id),
                     content: std::mem::take(&mut step.output.content),
@@ -1248,7 +1248,7 @@ impl Runner {
         let authorization =
             self.config
                 .sandbox
-                .authorize(&self.config.session_id, &calls, mutation_call_ids)?;
+                .authorize(&self.runtime.session_id, &calls, mutation_call_ids)?;
         let results = match authorization {
             SandboxAuthorization::Execute(permissions) => {
                 let tools = self
@@ -1450,7 +1450,7 @@ fn model_step_completed_event(
     Ok(turn_event(
         submission_id,
         EventMsg::ModelStepCompleted(ModelStepCompletedEvent {
-            session_id: Arc::clone(&started.session_id),
+            session_id: started.session_id.share(),
             turn_id: Arc::clone(&started.turn_id),
             model_step_id: Arc::clone(&started.model_step_id),
             step_index: started.step_index,

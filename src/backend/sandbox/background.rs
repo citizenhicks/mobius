@@ -1,3 +1,4 @@
+use crate::SessionId;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
@@ -55,7 +56,7 @@ impl Default for BackgroundCommands {
 }
 
 struct Entry {
-    owner: String,
+    owner: SessionId,
     started: std::time::Instant,
     delivered: bool,
     output: Arc<Mutex<BufferedOutput>>,
@@ -73,7 +74,7 @@ pub(super) struct StartingCommand<'a> {
 impl StartingCommand<'_> {
     pub(super) async fn wait(
         mut self,
-        owner: &str,
+        owner: &SessionId,
         initial_wait: std::time::Duration,
     ) -> Result<BackgroundCommandPoll> {
         // Completion and an elapsed wait both continue to the poll, which reports the state.
@@ -117,18 +118,18 @@ impl BackgroundCommands {
         self.limit
     }
 
-    pub(super) fn has_owner(&self, owner: &str) -> Result<bool> {
+    pub(super) fn has_owner(&self, owner: &SessionId) -> Result<bool> {
         Ok(self
             .entries
             .lock()
             .map_err(state_error)?
             .values()
-            .any(|entry| entry.owner == owner && !entry.task.is_finished()))
+            .any(|entry| &entry.owner == owner && !entry.task.is_finished()))
     }
 
     pub(super) fn start(
         &self,
-        owner: &str,
+        owner: &SessionId,
         backend: Arc<dyn SandboxBackend>,
         command: String,
         sandbox_mode: SandboxMode,
@@ -145,7 +146,7 @@ impl BackgroundCommands {
             let Some(oldest) = oldest else {
                 let own = entries
                     .iter()
-                    .filter(|(_, entry)| entry.owner == owner)
+                    .filter(|(_, entry)| &entry.owner == owner)
                     .map(|(id, _)| &**id)
                     .collect::<Vec<_>>();
                 return Err(Error::Sandbox(format!(
@@ -196,7 +197,7 @@ impl BackgroundCommands {
         entries.insert(
             Arc::clone(&id),
             Entry {
-                owner: owner.into(),
+                owner: owner.share(),
                 started: std::time::Instant::now(),
                 delivered: false,
                 output,
@@ -212,7 +213,7 @@ impl BackgroundCommands {
         })
     }
 
-    pub(super) async fn poll(&self, owner: &str, id: &str) -> Result<BackgroundCommandPoll> {
+    pub(super) async fn poll(&self, owner: &SessionId, id: &str) -> Result<BackgroundCommandPoll> {
         let entry = {
             let mut entries = self.entries.lock().map_err(state_error)?;
             let entry = entries.get_mut(id).ok_or_else(|| unknown(id))?;
@@ -227,7 +228,7 @@ impl BackgroundCommands {
         completed(entry).await
     }
 
-    pub(super) async fn stop(&self, owner: &str, id: &str) -> Result<BackgroundCommandPoll> {
+    pub(super) async fn stop(&self, owner: &SessionId, id: &str) -> Result<BackgroundCommandPoll> {
         let entry = {
             let mut entries = self.entries.lock().map_err(state_error)?;
             let entry = entries.get(id).ok_or_else(|| unknown(id))?;
@@ -245,11 +246,11 @@ impl BackgroundCommands {
         finish(&entry.output, result)
     }
 
-    pub(super) async fn shutdown(&self, owner: &str) -> Result<()> {
+    pub(super) async fn shutdown(&self, owner: &SessionId) -> Result<()> {
         let entries = {
             let mut entries = self.entries.lock().map_err(state_error)?;
             entries
-                .extract_if(.., |_, entry| entry.owner == owner)
+                .extract_if(.., |_, entry| &entry.owner == owner)
                 .map(|(_, entry)| entry)
                 .collect::<Vec<_>>()
         };
@@ -395,8 +396,8 @@ fn take_output(output: &Arc<Mutex<BufferedOutput>>) -> Result<TakenOutput> {
     Ok(output.lock().map_err(state_error)?.take())
 }
 
-fn ensure_owner(entry: &Entry, owner: &str, id: &str) -> Result<()> {
-    if entry.owner != owner {
+fn ensure_owner(entry: &Entry, owner: &SessionId, id: &str) -> Result<()> {
+    if &entry.owner != owner {
         return Err(unknown(id));
     }
     Ok(())
@@ -484,7 +485,7 @@ mod tests {
         let commands = BackgroundCommands::new(1);
         let start = || {
             commands.start(
-                "session",
+                &"session".parse().expect("session ID"),
                 Arc::clone(&backend),
                 "printf first".into(),
                 SandboxMode::DangerFullAccess,
@@ -505,7 +506,10 @@ mod tests {
 
         assert!(start().is_err());
         let output = first
-            .wait("session", std::time::Duration::ZERO)
+            .wait(
+                &"session".parse().expect("session ID"),
+                std::time::Duration::ZERO,
+            )
             .await
             .expect("first result");
         assert_eq!(output.status, BackgroundCommandStatus::Exited);
@@ -520,7 +524,7 @@ mod tests {
         let commands = BackgroundCommands::default();
         let _command = commands
             .start(
-                "session-a",
+                &"session-a".parse().expect("session ID"),
                 Arc::new(PendingBackend {
                     started: Arc::clone(&started),
                     cancelled: Arc::clone(&cancelled),
@@ -532,7 +536,10 @@ mod tests {
             .expect("start");
         started.notified().await;
 
-        commands.shutdown("session-a").await.expect("shutdown");
+        commands
+            .shutdown(&"session-a".parse().expect("session ID"))
+            .await
+            .expect("shutdown");
 
         assert!(cancelled.load(Ordering::SeqCst));
     }
@@ -542,9 +549,10 @@ mod tests {
         let started = Arc::new(Notify::new());
         let cancelled = Arc::new(AtomicBool::new(false));
         let commands = BackgroundCommands::default();
+        let session: SessionId = "session".parse().expect("session ID");
         let command = commands
             .start(
-                "session",
+                &session,
                 Arc::new(PendingBackend {
                     started: Arc::clone(&started),
                     cancelled: Arc::clone(&cancelled),
@@ -554,13 +562,13 @@ mod tests {
                 NetworkAccess::Denied,
             )
             .expect("start");
-        let mut waiting = Box::pin(command.wait("session", std::time::Duration::from_secs(60)));
+        let mut waiting = Box::pin(command.wait(&session, std::time::Duration::from_secs(60)));
         tokio::select! {
             _ = &mut waiting => panic!("command must still be running"),
             () = started.notified() => {}
         }
         drop(waiting);
-        assert!(!commands.has_owner("session").expect("no orphan command"));
+        assert!(!commands.has_owner(&session).expect("no orphan command"));
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             while !cancelled.load(Ordering::SeqCst) {
                 tokio::task::yield_now().await;

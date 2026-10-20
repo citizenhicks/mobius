@@ -1,3 +1,4 @@
+use mobius::backend::model::provider::BaseUrl;
 use mobius::backend::model::provider::HostedWebSearch;
 
 use super::*;
@@ -133,7 +134,7 @@ fn custom_openai_roots_require_endpoint_bound_stored_credentials() {
             instance: provider_id.into(),
             provider: provider_id.into(),
             model: model.into(),
-            base_url: Some("https://example.com/v1".into()),
+            base_url: Some(BaseUrl::new("https://example.com/v1").unwrap()),
             endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
             reasoning_effort: None,
             service_tier: None,
@@ -143,7 +144,7 @@ fn custom_openai_roots_require_endpoint_bound_stored_credentials() {
         let error = resolve_credential(
             provider_id,
             provider(provider_id).expect("provider"),
-            selection.base_url.as_deref(),
+            selection.base_url.as_ref(),
             &store,
             &credentials,
             &mobius::backend::model::ModelTransportSettings::default(),
@@ -161,7 +162,7 @@ fn custom_openai_roots_require_endpoint_bound_stored_credentials() {
                 provider_id,
                 provider_id,
                 "official-secret",
-                Some("https://api.openai.com/v1"),
+                Some(&BaseUrl::new("https://api.openai.com/v1").unwrap()),
                 None,
             )
             .expect("store endpoint-bound credential");
@@ -169,7 +170,7 @@ fn custom_openai_roots_require_endpoint_bound_stored_credentials() {
             resolve_credential(
                 provider_id,
                 provider(provider_id).expect("provider"),
-                selection.base_url.as_deref(),
+                selection.base_url.as_ref(),
                 &store,
                 &credentials,
                 &mobius::backend::model::ModelTransportSettings::default(),
@@ -181,14 +182,14 @@ fn custom_openai_roots_require_endpoint_bound_stored_credentials() {
                 provider_id,
                 provider_id,
                 "endpoint-token",
-                selection.base_url.as_deref(),
+                selection.base_url.as_ref(),
                 None,
             )
             .expect("endpoint credential");
         let (credential, _) = resolve_credential(
             provider_id,
             provider(provider_id).expect("provider"),
-            selection.base_url.as_deref(),
+            selection.base_url.as_ref(),
             &store,
             &credentials,
             &mobius::backend::model::ModelTransportSettings::default(),

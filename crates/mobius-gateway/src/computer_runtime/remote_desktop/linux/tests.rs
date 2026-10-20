@@ -142,7 +142,7 @@ impl Fixture {
         let held = AtomicBool::new(false);
         let cancelled = AtomicBool::new(false);
         self.desktop.request(
-            "session",
+            &mobius::SessionId::new("session")?,
             false,
             value,
             &Control {
@@ -213,7 +213,9 @@ fn fixture_window(
 #[ignore = "requires a disposable Xvfb display and xauth; never uses the user's desktop"]
 fn x11_captures_only_selected_window_and_targets_input() {
     let mut fixture = Fixture::start();
-    fixture.desktop.begin("session");
+    fixture
+        .desktop
+        .begin(&mobius::SessionId::new("session").unwrap());
     let windows = fixture.request(json!({"action":"windows"})).unwrap();
     assert_eq!(windows.as_array().unwrap().len(), 2);
     assert!(
@@ -256,7 +258,9 @@ fn x11_captures_only_selected_window_and_targets_input() {
     };
     assert_eq!(keyed.event, fixture.red);
     assert!(fixture.request(json!({"action":"click","screenshotId":shot["screenshotId"],"x":60,"y":60,"button":"left","clicks":1})).is_err());
-    fixture.desktop.begin("session");
+    fixture
+        .desktop
+        .begin(&mobius::SessionId::new("session").unwrap());
     assert!(
         fixture
             .request(json!({"action":"screenshot","afterAction":true}))
@@ -268,7 +272,7 @@ fn x11_captures_only_selected_window_and_targets_input() {
         fixture
             .desktop
             .request(
-                "another-session",
+                &mobius::SessionId::new("another-session").unwrap(),
                 true,
                 json!({"action":"apps"}),
                 &Control {
@@ -286,7 +290,9 @@ fn x11_captures_only_selected_window_and_targets_input() {
 #[ignore = "requires a disposable Xvfb display and xauth; never uses the user's desktop"]
 fn x11_rejects_stale_closed_unknown_and_taken_over_windows() {
     let mut fixture = Fixture::start();
-    fixture.desktop.begin("session");
+    fixture
+        .desktop
+        .begin(&mobius::SessionId::new("session").unwrap());
     fixture.request(json!({"action":"windows"})).unwrap();
     assert!(
         fixture

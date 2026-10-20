@@ -1,4 +1,5 @@
 use super::*;
+use mobius::SessionId;
 
 #[tokio::test]
 #[expect(
@@ -269,7 +270,7 @@ async fn websocket_preserves_a_pipelined_bulk_frame_across_authentication() {
         &mut post_auth,
         &ClientFrame::new(ClientMessage::UploadSessionFileChunk {
             request_id: request_id.into(),
-            session_id: "missing-session".into(),
+            session_id: SessionId::new("missing-session").unwrap(),
             upload_id: "missing-upload".into(),
             offset: 0,
             data: vec![0; MAX_PRE_AUTH_FRAME_BYTES],

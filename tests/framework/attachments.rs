@@ -8,9 +8,9 @@ pub(super) fn png() -> Vec<u8> {
 #[tokio::test]
 async fn attachment_hydration_survives_plaintext_checkpoint_reset() {
     let workspace = TempDir::new().expect("create workspace");
-    let session_id = "attachment-compaction";
+    let session_id = SessionId::new("attachment-compaction").unwrap();
     let store = SessionFileStore::new(workspace.path(), None);
-    let attachment = upload_attachment(&store, session_id, "photo.png", "image/png", &png()).await;
+    let attachment = upload_attachment(&store, &session_id, "photo.png", "image/png", &png()).await;
     let model = Arc::new(
         ScriptedModel::new(vec![
             text_response_with_usage("draft", usage(2_000)),
@@ -28,7 +28,7 @@ async fn attachment_hydration_survives_plaintext_checkpoint_reset() {
             Arc::new(Compaction::new(1_000).expect("compaction")),
         ],
     )
-    .session_id(session_id);
+    .session_id(session_id.share());
     let mut agent = create_agent(config).await.expect("create agent");
 
     agent
@@ -57,19 +57,19 @@ async fn attachment_hydration_survives_plaintext_checkpoint_reset() {
 #[tokio::test]
 async fn malformed_current_image_fails_but_does_not_poison_later_turns() {
     let workspace = TempDir::new().expect("create workspace");
-    let session_id = "oversized-attachment";
+    let session_id = SessionId::new("oversized-attachment").unwrap();
     let store = SessionFileStore::new(workspace.path(), None);
     let mut oversized_bytes = vec![0_u8; 8 * 1024 * 1024 + 1];
     oversized_bytes[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
     let oversized = upload_attachment(
         &store,
-        session_id,
+        &session_id,
         "oversized.png",
         "image/png",
         &oversized_bytes,
     )
     .await;
-    let current = upload_attachment(&store, session_id, "current.png", "image/png", &png()).await;
+    let current = upload_attachment(&store, &session_id, "current.png", "image/png", &png()).await;
     let model = Arc::new(
         ScriptedModel::new(vec![
             text_response("text recovered"),
@@ -85,7 +85,7 @@ async fn malformed_current_image_fails_but_does_not_poison_later_turns() {
             Arc::new(Attachments::new(store)),
         ],
     )
-    .session_id(session_id);
+    .session_id(session_id.share());
     let mut agent = create_agent(config).await.expect("create agent");
 
     agent
@@ -166,7 +166,12 @@ async fn request_budget_failure_records_the_action_without_replaying_on_restart(
     let workspace = TempDir::new().expect("workspace");
     let files = SessionFileStore::new(workspace.path(), None);
     let image = files
-        .ingest_image("budget", "screen.png".into(), png(), ImageDetail::High)
+        .ingest_image(
+            &SessionId::new("budget").unwrap(),
+            "screen.png".into(),
+            png(),
+            ImageDetail::High,
+        )
         .await
         .expect("image");
     let content = ToolContent(vec![
@@ -213,7 +218,7 @@ async fn request_budget_failure_records_the_action_without_replaying_on_restart(
             .expect("middleware"),
             "test",
         )
-        .session_id("budget")
+        .session_id(SessionId::new("budget").unwrap())
         .session_context(test_session_context())
     };
     let mut first = create_agent(config(1)).await.expect("agent");
@@ -232,7 +237,7 @@ async fn request_budget_failure_records_the_action_without_replaying_on_restart(
         }
     }
     let saved = checkpoints
-        .load("budget")
+        .load(&SessionId::new("budget").unwrap())
         .await
         .expect("load")
         .expect("checkpoint");

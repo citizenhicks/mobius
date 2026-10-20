@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use self::auth::BROWSER_AUTH;
 use self::auth::ChatGptAuth;
+use super::provider::BaseUrl;
 use super::provider::HostedWebSearch;
 use super::provider::ProviderAuth;
 use super::provider::ProviderBuildConfig;
@@ -36,16 +37,13 @@ pub(super) fn provider() -> ProviderDefinition {
     .with_voice_models(&super::realtime::CODEX_MODELS)
 }
 
-fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn super::Model>> {
+fn build_provider(config: ProviderBuildConfig, base_url: BaseUrl) -> Result<Arc<dyn super::Model>> {
     let tool_discovery = config
         .tool_discovery
-        .unwrap_or_else(|| provider().tool_discovery(&config.model, config.base_url.as_deref()));
+        .unwrap_or_else(|| provider().tool_discovery(&config.model, Some(base_url.as_str())));
     let auth = config.credential.into_browser::<ChatGptAuth>(PROVIDER_ID)?;
-    let base_url = config
-        .base_url
-        .as_deref()
-        .unwrap_or(MANIFEST.base_url.as_str());
-    let socket_url = super::responses_socket::responses_socket_url(base_url)?;
+    let socket_url = super::responses_socket::responses_socket_url(&base_url)?;
+    let default_endpoint = provider().uses_default_endpoint(Some(base_url.as_str()));
     let provider = OpenAiSocket::with_authorization(
         auth,
         base_url,
@@ -56,7 +54,7 @@ fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn super::Model>> 
     )?
     .with_tool_discovery(tool_discovery)
     .with_service_tier(config.service_tier)
-    .with_codex_realtime_voice(base_url, provider().uses_default_endpoint(Some(base_url)))?
+    .with_codex_realtime_voice(default_endpoint)?
     .with_image_api(Some(super::image_generation::image_api("codex")?));
     let provider = match config.reasoning_effort {
         Some(effort) => provider.with_reasoning_effort(effort)?,

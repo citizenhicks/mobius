@@ -28,7 +28,7 @@ pub(in crate::frontend) async fn run(
     gateway: &mut ReadyPayload,
     preferred_bot_id: Option<&str>,
     protected_bot_id: Option<&str>,
-) -> Result<Option<Arc<str>>> {
+) -> Result<Option<mobius::SessionId>> {
     terminal.clear()?;
     let mut state = BotsState::new(gateway, preferred_bot_id, protected_bot_id);
     request_routines(sender, &mut state).await?;

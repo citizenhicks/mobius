@@ -1,3 +1,4 @@
+use crate::SessionId;
 use std::collections::BTreeSet;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicBool;
@@ -38,17 +39,17 @@ fn test_presentation() -> AgentPresentation {
 impl CheckpointStore for BlockingRetryStore {
     fn message_accepted<'a>(
         &'a self,
-        _session_id: &'a str,
+        _session_id: &'a SessionId,
         _submission_id: &'a str,
     ) -> BoxFuture<'a, Result<bool>> {
         Box::pin(async { Ok(false) })
     }
 
-    fn load<'a>(&'a self, _session_id: &'a str) -> BoxFuture<'a, Result<Option<Checkpoint>>> {
+    fn load<'a>(&'a self, _session_id: &'a SessionId) -> BoxFuture<'a, Result<Option<Checkpoint>>> {
         Box::pin(async { Ok(None) })
     }
 
-    fn delete_sessions<'a>(&'a self, _session_ids: &'a [String]) -> BoxFuture<'a, Result<bool>> {
+    fn delete_sessions<'a>(&'a self, _session_ids: &'a [SessionId]) -> BoxFuture<'a, Result<bool>> {
         Box::pin(async { Ok(false) })
     }
 
@@ -73,7 +74,7 @@ impl CheckpointStore for BlockingRetryStore {
 
     fn append_event<'a>(
         &'a self,
-        _session_id: &'a str,
+        _session_id: &'a SessionId,
         recorded_at_ms: i64,
         event: Event,
     ) -> BoxFuture<'a, Result<JournalEvent>> {
@@ -89,7 +90,7 @@ impl CheckpointStore for BlockingRetryStore {
 
     fn event_page<'a>(
         &'a self,
-        _session_id: &'a str,
+        _session_id: &'a SessionId,
         _request: EventPageRequest,
     ) -> BoxFuture<'a, Result<EventPage>> {
         Box::pin(async { Ok(EventPage::default()) })
@@ -128,17 +129,17 @@ impl CheckpointStore for BlockingRetryStore {
 impl CheckpointStore for FailOnceStore {
     fn message_accepted<'a>(
         &'a self,
-        _session_id: &'a str,
+        _session_id: &'a SessionId,
         _submission_id: &'a str,
     ) -> BoxFuture<'a, Result<bool>> {
         Box::pin(async { Ok(false) })
     }
 
-    fn load<'a>(&'a self, _session_id: &'a str) -> BoxFuture<'a, Result<Option<Checkpoint>>> {
+    fn load<'a>(&'a self, _session_id: &'a SessionId) -> BoxFuture<'a, Result<Option<Checkpoint>>> {
         Box::pin(async { Ok(None) })
     }
 
-    fn delete_sessions<'a>(&'a self, _session_ids: &'a [String]) -> BoxFuture<'a, Result<bool>> {
+    fn delete_sessions<'a>(&'a self, _session_ids: &'a [SessionId]) -> BoxFuture<'a, Result<bool>> {
         Box::pin(async { Ok(false) })
     }
 
@@ -163,7 +164,7 @@ impl CheckpointStore for FailOnceStore {
 
     fn append_event<'a>(
         &'a self,
-        _session_id: &'a str,
+        _session_id: &'a SessionId,
         recorded_at_ms: i64,
         event: Event,
     ) -> BoxFuture<'a, Result<JournalEvent>> {
@@ -179,7 +180,7 @@ impl CheckpointStore for FailOnceStore {
 
     fn event_page<'a>(
         &'a self,
-        _session_id: &'a str,
+        _session_id: &'a SessionId,
         _request: EventPageRequest,
     ) -> BoxFuture<'a, Result<EventPage>> {
         Box::pin(async { Ok(EventPage::default()) })
@@ -227,28 +228,36 @@ async fn failed_persist_does_not_mutate_runtime_state() {
 
     let failed = shared
         .reserve(
-            "root",
+            &"root".parse().expect("session ID"),
             "/root/child",
             "/root",
-            "child".into(),
+            "child".parse().expect("session ID"),
             1,
             test_presentation(),
         )
         .await
         .is_err();
-    let after_failure = shared.list("root", None).await.expect("list agents").len();
+    let after_failure = shared
+        .list(&"root".parse().expect("session ID"), None)
+        .await
+        .expect("list agents")
+        .len();
     let retried = shared
         .reserve(
-            "root",
+            &"root".parse().expect("session ID"),
             "/root/child",
             "/root",
-            "child".into(),
+            "child".parse().expect("session ID"),
             1,
             test_presentation(),
         )
         .await
         .is_ok();
-    let after_retry = shared.list("root", None).await.expect("list agents").len();
+    let after_retry = shared
+        .list(&"root".parse().expect("session ID"), None)
+        .await
+        .expect("list agents")
+        .len();
 
     assert_eq!(
         (failed, after_failure, retried, after_retry),
@@ -270,10 +279,10 @@ async fn reserve_enforces_configured_concurrency_including_root() {
     for index in 0..2 {
         shared
             .reserve(
-                "root",
+                &"root".parse().expect("session ID"),
                 &format!("/root/child_{index}"),
                 "/root",
-                format!("child-{index}").into(),
+                format!("child-{index}").parse().expect("session ID"),
                 1,
                 test_presentation(),
             )
@@ -283,10 +292,10 @@ async fn reserve_enforces_configured_concurrency_including_root() {
 
     let error = shared
         .reserve(
-            "root",
+            &"root".parse().expect("session ID"),
             "/root/overflow",
             "/root",
-            "overflow".into(),
+            "overflow".parse().expect("session ID"),
             1,
             test_presentation(),
         )
@@ -313,10 +322,10 @@ async fn terminal_update_is_retained_until_its_checkpoint_marker_is_acknowledged
         .expect("initialize runtime");
     shared
         .reserve(
-            "root",
+            &"root".parse().expect("session ID"),
             "/root/child",
             "/root",
-            "child".into(),
+            "child".parse().expect("session ID"),
             1,
             test_presentation(),
         )
@@ -324,7 +333,7 @@ async fn terminal_update_is_retained_until_its_checkpoint_marker_is_acknowledged
         .expect("reserve child");
     shared
         .finished(
-            "root",
+            &"root".parse().expect("session ID"),
             "/root/child",
             AgentStatus::Completed,
             Some("done".into()),
@@ -333,7 +342,12 @@ async fn terminal_update_is_retained_until_its_checkpoint_marker_is_acknowledged
         .expect("finish child");
 
     let pending = shared
-        .receive_updates("root", "/root", &BTreeSet::new(), &BTreeSet::new())
+        .receive_updates(
+            &"root".parse().expect("session ID"),
+            "/root",
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+        )
         .await
         .expect("receive updates");
     let (kind, text) = &pending[0];
@@ -356,7 +370,7 @@ async fn terminal_update_is_retained_until_its_checkpoint_marker_is_acknowledged
 
     shared
         .receive_updates(
-            "root",
+            &"root".parse().expect("session ID"),
             "/root",
             &BTreeSet::from([id.as_str()]),
             &BTreeSet::new(),
@@ -390,21 +404,28 @@ async fn stale_root_teardown_cannot_evict_a_reconnected_root() {
         .expect("initialize runtime");
     shared
         .reserve(
-            "root",
+            &"root".parse().expect("session ID"),
             "/root/child",
             "/root",
-            "child".into(),
+            "child".parse().expect("session ID"),
             1,
             test_presentation(),
         )
         .await
         .expect("reserve child");
 
-    let old_root = shared.root("root").await.expect("old root");
+    let old_root = shared
+        .root(&"root".parse().expect("session ID"))
+        .await
+        .expect("old root");
     let writer = old_root.writer.lock().await;
     let mut removing = tokio::spawn({
         let shared = Arc::clone(&shared);
-        async move { shared.remove_root("root").await }
+        async move {
+            shared
+                .remove_root(&"root".parse().expect("session ID"))
+                .await
+        }
     });
     tokio::task::yield_now().await;
     assert!(
@@ -428,7 +449,12 @@ async fn stale_root_teardown_cannot_evict_a_reconnected_root() {
         .await
         .expect("teardown task")
         .expect("remove old root");
-    assert!(shared.root("root").await.is_ok());
+    assert!(
+        shared
+            .root(&"root".parse().expect("session ID"))
+            .await
+            .is_ok()
+    );
 }
 
 #[tokio::test]
@@ -451,21 +477,28 @@ async fn detached_root_mutation_cannot_persist_after_root_eviction() {
         .expect("initialize runtime");
     shared
         .reserve(
-            "root",
+            &"root".parse().expect("session ID"),
             "/root/child",
             "/root",
-            "child".into(),
+            "child".parse().expect("session ID"),
             1,
             test_presentation(),
         )
         .await
         .expect("reserve child");
 
-    let old_root = shared.root("root").await.expect("old root");
+    let old_root = shared
+        .root(&"root".parse().expect("session ID"))
+        .await
+        .expect("old root");
     let writer = old_root.writer.lock().await;
     let removing = {
         let shared = Arc::clone(&shared);
-        tokio::spawn(async move { shared.remove_root("root").await })
+        tokio::spawn(async move {
+            shared
+                .remove_root(&"root".parse().expect("session ID"))
+                .await
+        })
     };
     tokio::task::yield_now().await;
     let stale_mutation = {
@@ -475,14 +508,14 @@ async fn detached_root_mutation_cannot_persist_after_root_eviction() {
             let _writer = old_root.writer.lock().await;
             shared
                 .commit_locked_root(
-                    "root",
+                    &"root".parse().expect("session ID"),
                     &old_root,
                     |root| {
                         root.tree.agents.insert(
                             "/root/racing".into(),
                             AgentRecord {
                                 parent: "/root".into(),
-                                session_id: "racing".into(),
+                                session_id: "racing".parse().expect("session ID"),
                                 depth: 1,
                                 model: "test".into(),
                                 spawn_context: String::new(),
@@ -519,7 +552,12 @@ async fn detached_root_mutation_cannot_persist_after_root_eviction() {
         racing.expect("reserve timeout").expect("reserve task"),
         Err(Error::Unknown(_))
     ));
-    assert!(shared.root("root").await.is_ok());
+    assert!(
+        shared
+            .root(&"root".parse().expect("session ID"))
+            .await
+            .is_ok()
+    );
 }
 
 #[tokio::test]
@@ -544,10 +582,10 @@ async fn terminal_persist_failure_is_retried_as_a_durable_error() {
         .expect("initialize runtime");
     shared
         .reserve(
-            "root",
+            &"root".parse().expect("session ID"),
             "/root/child",
             "/root",
-            "child".into(),
+            "child".parse().expect("session ID"),
             1,
             test_presentation(),
         )
@@ -557,7 +595,7 @@ async fn terminal_persist_failure_is_retried_as_a_durable_error() {
 
     shared
         .finished(
-            "root",
+            &"root".parse().expect("session ID"),
             "/root/child",
             AgentStatus::Completed,
             Some("done".into()),
@@ -565,9 +603,16 @@ async fn terminal_persist_failure_is_retried_as_a_durable_error() {
         .await
         .expect("finish child");
 
-    let agents = shared.list("root", None).await.expect("list agents");
+    let agents = shared
+        .list(&"root".parse().expect("session ID"), None)
+        .await
+        .expect("list agents");
     let updates = shared
-        .wait("root", "/root", Duration::ZERO)
+        .wait(
+            &"root".parse().expect("session ID"),
+            "/root",
+            Duration::ZERO,
+        )
         .await
         .expect("parent update");
     let durable = store
@@ -610,7 +655,7 @@ fn test_context(
         children: crate::agent::ChildAgents::default(),
         sender: crate::agent::test_sender(),
         checkpoints,
-        session_id: "root".into(),
+        session_id: "root".parse().expect("session ID"),
         model_route: "test".into(),
         model: "model".into(),
         approval_policy: crate::backend::sandbox::ApprovalPolicy::Ask,

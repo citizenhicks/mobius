@@ -14,8 +14,8 @@ use super::ModelRequest;
 use super::PromptCacheMode;
 use super::REPLAY_REASONING_FIELD;
 use super::chat_completions::{MessageSource, RequestBody, StreamOptions, ToolCalls, WireContent};
-use super::provider::{ProviderBuildConfig, ProviderDefinition};
-use super::transport::{SseHandler, streaming_client};
+use super::provider::{BaseUrl, ProviderBuildConfig, ProviderDefinition};
+use super::transport::SseHandler;
 use crate::BoxFuture;
 use crate::Error;
 use crate::Result;
@@ -77,10 +77,15 @@ impl Kimi {
     /// Returns an error if configuration is invalid or a required resource cannot be initialized.
     pub fn new(
         api_key: impl Into<String>,
-        base_url: impl Into<String>,
+        base_url: BaseUrl,
         model: impl Into<String>,
     ) -> Result<Self> {
-        Self::with_client(Some(api_key.into()), base_url, model, streaming_client()?)
+        Self::new_with_transport(
+            api_key,
+            base_url,
+            model,
+            super::ModelTransportSettings::default(),
+        )
     }
 
     /// Creates a provider with explicit HTTP, socket and retry policy.
@@ -88,22 +93,26 @@ impl Kimi {
     /// Returns invalid provider policy or HTTP client construction errors.
     pub fn new_with_transport(
         api_key: impl Into<String>,
-        base_url: impl Into<String>,
+        base_url: BaseUrl,
         model: impl Into<String>,
         settings: super::ModelTransportSettings,
     ) -> Result<Self> {
-        Self::with_client(
+        let model = model.into();
+        if model.trim().is_empty() {
+            return Err(Error::Config("model is empty".into()));
+        }
+        Ok(Self::with_client(
             Some(api_key.into()),
             base_url,
             model,
             settings.streaming_client()?,
         )?
-        .with_transport_settings(settings)
+        .with_transport_settings(settings))
     }
 
     fn with_client(
         api_key: Option<String>,
-        base_url: impl Into<String>,
+        base_url: BaseUrl,
         model: impl Into<String>,
         client: Client,
     ) -> Result<Self> {
@@ -112,15 +121,10 @@ impl Kimi {
     }
 
     /// Applies validated operational transport policy.
-    /// # Errors
-    /// Returns an error for invalid operational settings.
-    pub fn with_transport_settings(
-        mut self,
-        settings: super::ModelTransportSettings,
-    ) -> Result<Self> {
-        settings.validate()?;
+    #[must_use]
+    pub fn with_transport_settings(mut self, settings: super::ModelTransportSettings) -> Self {
         self.config.transport = settings;
-        Ok(self)
+        self
     }
 
     /// Selects an operator-configured effort for this Kimi model.
@@ -145,7 +149,7 @@ impl Kimi {
         .await?;
         let response = super::chat_completions::post(
             &self.config.client,
-            &self.config.base_url,
+            self.config.base_url.root(),
             self.config.api_key.as_deref(),
             body,
             "Kimi",
@@ -310,13 +314,10 @@ pub(super) fn provider() -> ProviderDefinition {
     .with_credentialless_endpoints()
 }
 
-fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn Model>> {
-    let base_url = config
-        .base_url
-        .ok_or_else(|| Error::Config("Kimi requires a base URL".into()))?;
+fn build_provider(config: ProviderBuildConfig, base_url: BaseUrl) -> Result<Arc<dyn Model>> {
     let api_key = config.credential.into_optional_api_key("kimi")?;
     let provider = Kimi::with_client(api_key, base_url, config.model, config.http)?
-        .with_transport_settings(config.transport)?;
+        .with_transport_settings(config.transport);
     let provider = match config.reasoning_effort {
         Some(effort) => provider.with_reasoning_effort(effort)?,
         None => provider,

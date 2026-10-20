@@ -1,3 +1,4 @@
+use mobius::SessionId;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
@@ -22,12 +23,12 @@ pub(super) struct SessionMetadata {
     pub(super) pinned: bool,
 }
 
-pub(super) type SessionCatalogMetadata = BTreeMap<String, SessionMetadata>;
+pub(super) type SessionCatalogMetadata = BTreeMap<SessionId, SessionMetadata>;
 
 #[derive(Default)]
 pub(super) struct SessionCatalog {
-    pub(super) activities: HashMap<Arc<str>, SessionActivity>,
-    pub(super) approvals: BTreeMap<Arc<str>, Arc<BackgroundApproval>>,
+    pub(super) activities: HashMap<SessionId, SessionActivity>,
+    pub(super) approvals: BTreeMap<SessionId, Arc<BackgroundApproval>>,
     pub(super) snapshot: Option<CatalogSnapshot>,
 }
 
@@ -153,7 +154,7 @@ pub(super) async fn restore_pending_approval_activities(
 pub(super) async fn update_session_activity(
     checkpoints: &Arc<dyn CheckpointStore>,
     activities: &SessionActivities,
-    session_id: &str,
+    session_id: &SessionId,
     activity: SessionActivity,
 ) -> Result<()> {
     let mut catalog = activities.lock().await;
@@ -171,7 +172,7 @@ impl SessionCatalog {
             && activity.state == SessionActivityState::AwaitingApproval
         {
             Some(Arc::new(BackgroundApproval {
-                session_id: Arc::clone(&summary.session_id),
+                session_id: summary.session_id.share(),
                 bot_id: Arc::clone(&summary.session_context.owner_id),
                 turn_id: activity
                     .turn_id
@@ -189,11 +190,10 @@ impl SessionCatalog {
         };
         self.approvals.remove(&summary.session_id);
         if let Some(approval) = approval {
-            self.approvals
-                .insert(Arc::clone(&summary.session_id), approval);
+            self.approvals.insert(summary.session_id.share(), approval);
         }
         self.activities
-            .insert(Arc::clone(&summary.session_id), activity.clone()); // rules-allow: the activity map and the session record each own the activity
+            .insert(summary.session_id.share(), activity.clone()); // rules-allow: the activity map and the session record each own the activity
         if let Some(snapshot) = &mut self.snapshot {
             snapshot
                 .sessions
@@ -226,7 +226,7 @@ enum CatalogFilter<'a> {
 
 async fn filtered_session_catalog(
     checkpoints: &Arc<dyn CheckpointStore>,
-    activities: &HashMap<Arc<str>, SessionActivity>,
+    activities: &HashMap<SessionId, SessionActivity>,
     metadata: &SessionCatalogMetadata,
     filter: CatalogFilter<'_>,
 ) -> Result<Vec<SessionRecord>> {
@@ -400,7 +400,7 @@ mod tests {
                 .expect("checkpoints"),
         );
         for index in 0..=SESSION_PAGE_SIZE {
-            let mut checkpoint = Checkpoint::empty(format!("{index:03}"));
+            let mut checkpoint = Checkpoint::empty(SessionId::new(format!("{index:03}")).unwrap());
             Arc::make_mut(&mut checkpoint.session_context).owner_id = "bot-fixture".into();
             Arc::make_mut(&mut checkpoint.session_context).workspace_id = Some("workspace".into());
             checkpoint.sequence = 1;
@@ -439,7 +439,7 @@ mod tests {
             SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
                 .expect("checkpoints"),
         );
-        let mut root = Checkpoint::empty("hidden-root");
+        let mut root = Checkpoint::empty(SessionId::new("hidden-root").unwrap());
         root.catalog_visible = false;
         Arc::make_mut(&mut root.session_context).owner_id = "bot-a".into();
         root.sequence = 1;
@@ -447,14 +447,14 @@ mod tests {
             .save(root.clone(), Vec::new(), None)
             .await
             .expect("save root");
-        let mut child = Checkpoint::empty("hidden-child");
+        let mut child = Checkpoint::empty(SessionId::new("hidden-child").unwrap());
         child.catalog_visible = false;
         Arc::make_mut(&mut child.session_context).owner_id = "bot-a".into();
         checkpoints
-            .fork("hidden-root", 1, child.clone())
+            .fork(&SessionId::new("hidden-root").unwrap(), 1, child.clone())
             .await
             .expect("fork child");
-        let mut other = Checkpoint::empty("other-root");
+        let mut other = Checkpoint::empty(SessionId::new("other-root").unwrap());
         other.catalog_visible = false;
         Arc::make_mut(&mut other.session_context).owner_id = "bot-b".into();
         checkpoints

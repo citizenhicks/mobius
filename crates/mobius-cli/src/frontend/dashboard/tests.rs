@@ -35,7 +35,7 @@ fn capability_input_paste_stops_at_the_protocol_capability_limit() {
     let key: (Arc<str>, Arc<str>) = ("capability-a".into(), "view".into());
     let mut overlay = CapabilityOverlay {
         title: "Chat capabilities · session-1".into(),
-        session_id: "session-1".into(),
+        session_id: Some(mobius::SessionId::new("session-1").expect("session")),
         slots: vec![FrontendSlot::Navigation],
         widgets: vec![(Arc::clone(&key.0), Arc::new(widget(blocks("Initial"))))],
         widget_list: ListState::default(),

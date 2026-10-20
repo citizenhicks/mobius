@@ -5,7 +5,7 @@ use std::sync::atomic::Ordering;
 
 use futures_util::future::BoxFuture;
 use mobius::backend::model::provider::{
-    DeviceLogin, ProviderAuth, provider, uses_default_endpoint,
+    BaseUrl, DeviceLogin, ProviderAuth, provider, uses_default_endpoint,
 };
 use uuid::Uuid;
 
@@ -106,7 +106,7 @@ impl GatewayHost {
                 .get(&instance)
                 .map(|configured| {
                     provider(&configured.selection.provider).map(|definition| {
-                        selected_base_url(definition, &configured.selection).map(str::to_owned)
+                        selected_base_url(definition, &configured.selection).map(BaseUrl::share)
                     })
                 })
                 .transpose()
@@ -124,7 +124,7 @@ impl GatewayHost {
             publication.confirm(),
             self.refresh_provider_sessions(ProviderRefresh::Instance {
                 instance: &instance,
-                base_url: base_url.as_deref(),
+                base_url: base_url.as_ref(),
             })
             .await,
         )
@@ -135,7 +135,7 @@ impl GatewayHost {
         instance: String,
         provider_id: String,
         api_key: String,
-        base_url: Option<String>,
+        base_url: Option<BaseUrl>,
         expires_at: Option<u64>,
     ) -> std::result::Result<(), Rejection> {
         let credential_mutation = self.begin_credential_mutation().await;
@@ -143,11 +143,9 @@ impl GatewayHost {
             let state = self.state.lock().await;
             let definition = provider(&provider_id).map_err(invalid_config)?;
             let base_url = if definition.configurable_base_url() {
-                base_url
-                    .as_deref()
-                    .or_else(|| definition.default_base_url())
+                base_url.as_ref().or_else(|| definition.default_base_url())
             } else {
-                base_url.as_deref()
+                base_url.as_ref()
             };
             let configured = state
                 .config()?
@@ -570,15 +568,15 @@ fn validate_browser_endpoint_registration(
     let endpoint = selected_base_url(definition, selection);
     if operator
         || !matches!(definition.auth(), ProviderAuth::Browser(_))
-        || definition.uses_default_endpoint(endpoint)
+        || definition.uses_default_endpoint(endpoint.map(BaseUrl::as_str))
     {
         return Ok(());
     }
     let trusted = gateway.configured_providers.values().any(|configured| {
         configured.selection.provider == selection.provider
             && uses_default_endpoint(
-                selected_base_url(definition, &configured.selection),
-                endpoint,
+                selected_base_url(definition, &configured.selection).map(BaseUrl::as_str),
+                endpoint.map(BaseUrl::as_str),
             )
     });
     if trusted {

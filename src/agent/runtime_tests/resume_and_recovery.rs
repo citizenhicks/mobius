@@ -43,7 +43,7 @@ async fn failed_message_submit_leaves_the_accepted_message_for_restart() {
             "test prompt",
         )
         .session_context(test_session_context())
-        .session_id("message-submit-restart")
+        .session_id("message-submit-restart".parse().expect("session ID"))
     };
     let checkpoint_store: Arc<dyn CheckpointStore> = Arc::<SqliteCheckpoint>::clone(&checkpoints);
     let mut first = create_agent(make_config(checkpoint_store))
@@ -60,7 +60,7 @@ async fn failed_message_submit_leaves_the_accepted_message_for_restart() {
         }
     }
     let saved = checkpoints
-        .load("message-submit-restart")
+        .load(&"message-submit-restart".parse().expect("session ID"))
         .await
         .expect("load failed checkpoint")
         .expect("failed checkpoint");
@@ -86,7 +86,7 @@ async fn failed_message_submit_leaves_the_accepted_message_for_restart() {
         EventMsg::TurnComplete(_)
     ) {}
     let saved = checkpoints
-        .load("message-submit-restart")
+        .load(&"message-submit-restart".parse().expect("session ID"))
         .await
         .expect("load completed checkpoint")
         .expect("completed checkpoint");
@@ -149,7 +149,7 @@ async fn route_change_omits_private_reasoning_but_keeps_visible_history_and_tool
             "test prompt",
         )
         .session_context(test_session_context())
-        .session_id("reasoning-route-change"),
+        .session_id("reasoning-route-change".parse().expect("session ID")),
     )
     .await
     .unwrap();
@@ -182,7 +182,7 @@ async fn route_change_omits_private_reasoning_but_keeps_visible_history_and_tool
         EventMsg::ModelChanged(_)
     ) {}
     let selected = checkpoints
-        .load("reasoning-route-change")
+        .load(&"reasoning-route-change".parse().expect("session ID"))
         .await
         .unwrap()
         .unwrap();
@@ -231,7 +231,7 @@ async fn route_change_omits_private_reasoning_but_keeps_visible_history_and_tool
         }
     }
     let saved = checkpoints
-        .load("reasoning-route-change")
+        .load(&"reasoning-route-change".parse().expect("session ID"))
         .await
         .unwrap()
         .unwrap();
@@ -239,7 +239,7 @@ async fn route_change_omits_private_reasoning_but_keeps_visible_history_and_tool
     assert_eq!(saved.context_model_route.as_deref(), Some("destination"));
     let journal = checkpoints
         .transcript_page(
-            "reasoning-route-change",
+            &"reasoning-route-change".parse().expect("session ID"),
             TranscriptPageRequest {
                 before_sequence: None,
                 max_batches: 100,
@@ -271,7 +271,7 @@ async fn stale_save_does_not_leapfrog_winning_checkpoint() {
         .await
         .expect("create agent");
     let mut winner = checkpoints
-        .load("target")
+        .load(&"target".parse().expect("session ID"))
         .await
         .expect("load checkpoint")
         .expect("initial checkpoint");
@@ -292,7 +292,7 @@ async fn stale_save_does_not_leapfrog_winning_checkpoint() {
 
     assert_eq!(
         checkpoints
-            .load("target")
+            .load(&"target".parse().expect("session ID"))
             .await
             .expect("load checkpoint")
             .expect("winning checkpoint"),
@@ -307,7 +307,7 @@ async fn restart_recovers_streamed_calls_without_reexecuting_them() {
         SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
             .expect("checkpoint store"),
     );
-    let mut checkpoint = Checkpoint::empty("recover-streamed-call");
+    let mut checkpoint = Checkpoint::empty("recover-streamed-call".parse().expect("session ID"));
     checkpoint.session_context = test_session_context().into();
     checkpoint.model_route = Some("test".into());
     checkpoint.active_execution = Some(crate::backend::checkpoint::ActiveExecution {

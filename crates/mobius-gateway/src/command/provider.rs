@@ -1,6 +1,6 @@
 use std::io::{IsTerminal as _, Read};
 
-use mobius::backend::model::provider::provider;
+use mobius::backend::model::provider::{BaseUrl, provider};
 
 use super::*;
 use crate::config::{MAX_PROVIDER_API_KEY_BYTES, ProviderRegistration};
@@ -37,7 +37,7 @@ pub(super) async fn register_provider_with_credential(
     let definition = provider(&options.provider)?;
     let base_url = options
         .base_url
-        .or_else(|| definition.default_base_url().map(str::to_owned));
+        .or_else(|| definition.default_base_url().map(BaseUrl::share));
     let instance = options.instance.unwrap_or_else(|| definition.id().into());
     if let Some(api_key) = credential {
         request_provider_credential(
@@ -45,7 +45,7 @@ pub(super) async fn register_provider_with_credential(
             &token,
             &instance,
             &options.provider,
-            base_url.as_deref(),
+            base_url.as_ref(),
             api_key,
             options.credential_expires_at,
         )
@@ -143,7 +143,7 @@ async fn request_provider_credential(
     token: &str,
     instance: &str,
     provider: &str,
-    base_url: Option<&str>,
+    base_url: Option<&BaseUrl>,
     api_key: String,
     expires_at: Option<u64>,
 ) -> Result<()> {
@@ -155,7 +155,7 @@ async fn request_provider_credential(
             request_id: request_id.into(),
             instance: instance.into(),
             provider: provider.into(),
-            base_url: base_url.into(),
+            base_url: base_url.share(),
             api_key,
             expires_at,
         },

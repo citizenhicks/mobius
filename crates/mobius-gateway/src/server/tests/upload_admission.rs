@@ -1,5 +1,6 @@
 use super::*;
 use crate::telemetry::{Telemetry, TelemetrySink};
+use mobius::SessionId;
 
 async fn request_body(stream: &mut tokio::net::TcpStream) -> serde_json::Value {
     let mut bytes = Vec::new();
@@ -86,13 +87,18 @@ async fn upload_admission_requires_a_valid_correlated_collector_decision() {
     receiver.await.unwrap();
     let files = server.host.session_file_store().await;
     files
-        .publish_artifact("chat", "result.txt".into(), "text/plain".into(), b"result")
+        .publish_artifact(
+            &SessionId::new("chat").unwrap(),
+            "result.txt".into(),
+            "text/plain".into(),
+            b"result",
+        )
         .await
         .unwrap();
     // The collector is closed: generated observations still use only the local store.
     files
         .ingest_image(
-            "chat",
+            &SessionId::new("chat").unwrap(),
             "screenshot.png".into(),
             include_bytes!("../../computer_runtime/remote_desktop/logo.png").to_vec(),
             mobius::protocol::ImageDetail::Auto,

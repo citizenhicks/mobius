@@ -1,5 +1,6 @@
 //! Protected, session-bound storage shared by uploads and agent artifacts.
 
+use crate::SessionId;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -29,8 +30,7 @@ use storage::{
     list_completed, load_attachment_workspace, load_metadata, load_optional_attachment_workspace,
     read_resolved_chunk, remove_staged_attachments, require_directory, save_attachment_workspace,
     save_metadata, set_private_file, validate_content_blob, validate_content_hash,
-    validate_file_id, validate_media_type, validate_name, validate_session_id,
-    validate_stored_file,
+    validate_file_id, validate_media_type, validate_name, validate_stored_file,
 };
 
 const MAX_ATTACHMENT_REFERENCES: usize = 16;
@@ -39,7 +39,6 @@ pub(crate) const MAX_SESSION_BYTES: u64 = 250 * 1024 * 1024;
 const MAX_UPLOAD_CHUNK_BYTES: usize = 256 * 1024;
 pub(crate) const MAX_READ_CHUNK_BYTES: usize = 256 * 1024;
 const MAX_SESSION_FILES: usize = 512;
-const MAX_SESSION_ID_BYTES: usize = 4 * 1024;
 const MAX_VALIDATED_BLOBS: usize = 1_024;
 const BLOB_DIR: &str = "blobs";
 const DELETED_PREFIX: &str = ".deleted-";
@@ -84,7 +83,7 @@ struct StoreState {
     limit_bytes: Option<u64>,
     // ponytail: one commit lock keeps quota checks and publication atomic.
     commits: Arc<Mutex<()>>,
-    reservations: Arc<StdMutex<BTreeMap<String, ReservationTotals>>>,
+    reservations: Arc<StdMutex<BTreeMap<SessionId, ReservationTotals>>>,
     // ponytail: immutable private blobs reuse one verified SHA-256 while metadata is unchanged.
     validated_blobs: StdMutex<BTreeMap<String, BlobValidationStamp>>,
     initialized: OnceCell<()>,
@@ -96,7 +95,7 @@ struct StoreState {
 #[derive(Debug)]
 pub struct SessionFileDeletion {
     store: SessionFileStore,
-    session_ids: Vec<String>,
+    session_ids: Vec<SessionId>,
     selection: SessionFileSelection,
     commit: Option<OwnedMutexGuard<()>>,
 }
@@ -115,8 +114,8 @@ struct ReservationTotals {
 
 #[derive(Debug)]
 struct SessionFileReservation {
-    reservations: Arc<StdMutex<BTreeMap<String, ReservationTotals>>>,
-    session_id: String,
+    reservations: Arc<StdMutex<BTreeMap<SessionId, ReservationTotals>>>,
+    session_id: SessionId,
     size: u64,
     active: bool,
 }
@@ -285,7 +284,7 @@ impl SessionFileStore {
     /// Returns an error if validation or an operation required by this function fails.
     pub async fn begin_upload(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         name: String,
         size: u64,
         media_type: String,
@@ -307,7 +306,7 @@ impl SessionFileStore {
     /// Returns an error if validation or an operation required by this function fails.
     pub async fn publish_artifact(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         name: String,
         media_type: String,
         bytes: &[u8],
@@ -328,7 +327,7 @@ impl SessionFileStore {
     /// Returns an error if file metadata cannot be read or validated.
     pub async fn list_files(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         origins: &[SessionFileOrigin],
     ) -> Result<Vec<(SessionFileOrigin, SessionFileReference)>> {
         self.list_files_for(session_id, origins, false).await
@@ -339,7 +338,7 @@ impl SessionFileStore {
     /// Returns an error if file metadata cannot be read or validated.
     pub async fn list_cleanup_files(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         origins: &[SessionFileOrigin],
     ) -> Result<Vec<(SessionFileOrigin, SessionFileReference)>> {
         self.list_files_for(session_id, origins, true).await
@@ -347,11 +346,10 @@ impl SessionFileStore {
 
     async fn list_files_for(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         origins: &[SessionFileOrigin],
         cleanup_only: bool,
     ) -> Result<Vec<(SessionFileOrigin, SessionFileReference)>> {
-        validate_session_id(session_id)?;
         self.ensure_initialized().await?;
         Ok(
             list_completed(&self.session_dir(session_id), &self.blob_dir())
@@ -368,11 +366,10 @@ impl SessionFileStore {
 
     pub(crate) async fn register_attachment_workspace(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         workspace: &Dir,
         workspace_path: &Path,
     ) -> Result<()> {
-        validate_session_id(session_id)?;
         let identity = AttachmentWorkspaceIdentity::from_workspace(workspace, workspace_path)?;
         self.ensure_initialized().await?;
         let _commit = self.state.commits.lock().await;
@@ -399,9 +396,9 @@ impl SessionFileStore {
     /// # Errors
     ///
     /// Returns an error if validation or an operation required by this function fails.
-    pub async fn delete_session(&self, session_id: &str) -> Result<()> {
+    pub async fn delete_session(&self, session_id: &SessionId) -> Result<()> {
         let mut deletion = self
-            .prepare_delete_sessions(&[session_id.to_owned()], SessionFileSelection::All)
+            .prepare_delete_sessions(&[session_id.share()], SessionFileSelection::All)
             .await?;
         deletion.delete().await
     }
@@ -412,7 +409,7 @@ impl SessionFileStore {
     /// Returns an error if validation or an operation required by this function fails.
     pub async fn prepare_delete_sessions(
         &self,
-        session_ids: &[String],
+        session_ids: &[SessionId],
         selection: SessionFileSelection,
     ) -> Result<SessionFileDeletion> {
         if matches!(&selection, SessionFileSelection::Ids(ids) if ids.is_empty())
@@ -436,9 +433,6 @@ impl SessionFileStore {
                 commit: None,
             });
         }
-        for session_id in session_ids {
-            validate_session_id(session_id)?;
-        }
         self.ensure_initialized().await?;
         let commit = Arc::clone(&self.state.commits).lock_owned().await;
         if selection == SessionFileSelection::All {
@@ -461,13 +455,13 @@ impl SessionFileStore {
         }
         Ok(SessionFileDeletion {
             store: self.share(),
-            session_ids: session_ids.to_vec(),
+            session_ids: session_ids.iter().map(SessionId::share).collect(),
             selection,
             commit: Some(commit),
         })
     }
 
-    async fn validate_session_deletion(&self, session_id: &str) -> Result<()> {
+    async fn validate_session_deletion(&self, session_id: &SessionId) -> Result<()> {
         let directory = self.session_dir(session_id);
         match tokio::fs::symlink_metadata(&directory).await {
             Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
@@ -542,7 +536,7 @@ impl SessionFileStore {
     /// Returns an error if the resource cannot be read, decoded, or validated.
     pub async fn read_chunk(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         file_id: &str,
         offset: u64,
         max_bytes: usize,
@@ -557,7 +551,7 @@ impl SessionFileStore {
     /// Returns an error if validation or an operation required by this function fails.
     pub async fn verify_upload(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         expected: &SessionFileReference,
     ) -> Result<()> {
         let (actual, _) = self.resolve_upload(session_id, &expected.id).await?;
@@ -572,7 +566,7 @@ impl SessionFileStore {
     /// Resolves an owned upload to its private content-addressed identity.
     pub(crate) async fn upload_content_hash(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         expected: &SessionFileReference,
     ) -> Result<String> {
         let (record, _) = self.resolve_upload_record(session_id, &expected.id).await?;
@@ -594,14 +588,13 @@ impl SessionFileStore {
 
     async fn begin(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         name: String,
         size: u64,
         media_type: String,
         origin: SessionFileOrigin,
         protected_from_cleanup: bool,
     ) -> Result<PendingSessionFileWrite> {
-        validate_session_id(session_id)?;
         validate_name(&name)?;
         validate_media_type(&media_type)?;
         if !(1..=MAX_FILE_BYTES).contains(&size) {
@@ -635,7 +628,7 @@ impl SessionFileStore {
         let (file, path) = temporary.into_parts();
         Ok(PendingSessionFileWrite {
             store: self.share(),
-            session_id: session_id.into(),
+            session_id: session_id.share(),
             record,
             reservation,
             written: 0,
@@ -646,7 +639,7 @@ impl SessionFileStore {
 
     async fn publish_bytes(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         name: String,
         media_type: String,
         bytes: &[u8],
@@ -670,10 +663,9 @@ impl SessionFileStore {
 
     async fn resolve(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         file_id: &str,
     ) -> Result<(StoredSessionFile, PathBuf)> {
-        validate_session_id(session_id)?;
         validate_file_id(file_id)?;
         self.ensure_initialized().await?;
         let directory = self.session_dir(session_id).join(file_id);
@@ -696,8 +688,11 @@ impl SessionFileStore {
         Ok((metadata, path))
     }
 
-    pub(crate) async fn file_is_missing(&self, session_id: &str, file_id: &str) -> Result<bool> {
-        validate_session_id(session_id)?;
+    pub(crate) async fn file_is_missing(
+        &self,
+        session_id: &SessionId,
+        file_id: &str,
+    ) -> Result<bool> {
         validate_file_id(file_id)?;
         self.ensure_initialized().await?;
         match tokio::fs::symlink_metadata(self.session_dir(session_id).join(file_id)).await {
@@ -710,7 +705,7 @@ impl SessionFileStore {
 
     async fn resolve_upload(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         file_id: &str,
     ) -> Result<(SessionFileReference, PathBuf)> {
         let (record, path) = self.resolve_upload_record(session_id, file_id).await?;
@@ -719,7 +714,7 @@ impl SessionFileStore {
 
     async fn resolve_upload_record(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         file_id: &str,
     ) -> Result<(StoredSessionFile, PathBuf)> {
         let (record, path) = self.resolve(session_id, file_id).await?;
@@ -731,7 +726,7 @@ impl SessionFileStore {
         Ok((record, path))
     }
 
-    fn session_dir(&self, session_id: &str) -> PathBuf {
+    fn session_dir(&self, session_id: &SessionId) -> PathBuf {
         self.state.root.join(session_storage_key(session_id))
     }
 
@@ -812,7 +807,7 @@ impl SessionFileStore {
 
     fn reserve_session(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         size: u64,
         completed: &[StoredSessionFile],
     ) -> Result<SessionFileReservation> {
@@ -846,13 +841,13 @@ impl SessionFileStore {
                 "session files exceed {MAX_SESSION_BYTES} bytes"
             )));
         }
-        let pending = reservations.entry(session_id.into()).or_default();
+        let pending = reservations.entry(session_id.share()).or_default();
         pending.files += 1;
         pending.bytes += size;
         drop(reservations);
         Ok(SessionFileReservation {
             reservations: Arc::clone(&self.state.reservations),
-            session_id: session_id.into(),
+            session_id: session_id.share(),
             size,
             active: true,
         })
@@ -860,7 +855,7 @@ impl SessionFileStore {
 
     fn validate_reserved_capacity(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         completed: &[StoredSessionFile],
     ) -> Result<()> {
         let completed_bytes = completed.iter().try_fold(0_u64, |total, item| {
@@ -1016,7 +1011,7 @@ impl SessionFileDeletion {
 #[derive(Debug)]
 pub struct PendingSessionFileWrite {
     store: SessionFileStore,
-    session_id: String,
+    session_id: SessionId,
     record: StoredSessionFile,
     reservation: SessionFileReservation,
     written: u64,

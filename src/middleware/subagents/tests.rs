@@ -12,7 +12,7 @@ async fn fork_uses_durable_parent_metadata_even_when_the_parent_stopped() {
         )
         .expect("checkpoint store"),
     );
-    let mut parent = Checkpoint::empty("parent");
+    let mut parent = Checkpoint::empty("parent".parse().expect("session ID"));
     std::sync::Arc::make_mut(&mut parent.session_context).owner_id = "test-bot".into();
     parent.metadata.insert(
         "gateway.chat".into(),
@@ -26,7 +26,7 @@ async fn fork_uses_durable_parent_metadata_even_when_the_parent_stopped() {
         children: crate::agent::ChildAgents::default(),
         sender: crate::agent::test_sender(),
         checkpoints: Arc::clone(&checkpoints),
-        session_id: Arc::clone(&parent.session_id),
+        session_id: parent.session_id.share(),
         model_route: "test".into(),
         model: "model".into(),
         approval_policy: crate::backend::sandbox::ApprovalPolicy::Ask,
@@ -47,7 +47,7 @@ async fn fork_uses_durable_parent_metadata_even_when_the_parent_stopped() {
 
     let result = scope
         .fork(
-            "child",
+            &"child".parse().expect("session ID"),
             "/root/child",
             "test",
             None,
@@ -57,17 +57,18 @@ async fn fork_uses_durable_parent_metadata_even_when_the_parent_stopped() {
         .await;
     assert!(matches!(result, Err(Error::Stopped(_))));
     let child = checkpoints
-        .load("child")
+        .load(&"child".parse().expect("session ID"))
         .await
         .expect("load child")
         .expect("child checkpoint");
-    let identity = AgentIdentity::read("child", &child.metadata).expect("child identity");
+    let identity = AgentIdentity::read(&"child".parse().expect("session ID"), &child.metadata)
+        .expect("child identity");
 
     assert_eq!(
         child.metadata.get("gateway.chat"),
         parent.metadata.get("gateway.chat")
     );
-    assert_eq!(identity.root_session_id, "parent");
+    assert_eq!(identity.root_session_id.as_str(), "parent");
     assert_eq!(child.metadata.get("latest"), parent.metadata.get("latest"));
     assert_eq!(identity.agent_path, "/root/child");
     assert_eq!(identity.depth, 1);

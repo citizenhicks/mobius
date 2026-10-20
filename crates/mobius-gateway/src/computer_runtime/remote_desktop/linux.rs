@@ -30,6 +30,7 @@ use x11rb::rust_connection::{DefaultStream, PollMode, RustConnection, Stream};
 use x11rb::utils::RawFdContainer;
 
 use crate::{Error, Result};
+use mobius::SessionId;
 
 const X11_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -204,7 +205,7 @@ pub(super) struct Desktop {
     known: HashSet<Window>,
     redirected: HashSet<Window>,
     screenshots: HashMap<String, Screenshot>,
-    session: String,
+    session: Option<SessionId>,
     last_action: Option<Window>,
     input_submitted: Cell<bool>,
 }
@@ -273,15 +274,15 @@ impl Desktop {
             known: HashSet::new(),
             redirected: HashSet::new(),
             screenshots: HashMap::new(),
-            session: String::new(),
+            session: None,
             last_action: None,
             input_submitted: Cell::new(false),
         })
     }
 
-    pub(super) fn begin(&mut self, session: &str) {
-        if self.session != session {
-            session.clone_into(&mut self.session);
+    pub(super) fn begin(&mut self, session: &SessionId) {
+        if self.session.as_ref() != Some(session) {
+            self.session = Some(session.share());
             self.invalidate();
         }
         self.last_action = None;
@@ -304,7 +305,7 @@ impl Desktop {
 
     pub(super) fn request(
         &mut self,
-        session: &str,
+        session: &SessionId,
         begin: bool,
         value: Value,
         control: &Control<'_>,

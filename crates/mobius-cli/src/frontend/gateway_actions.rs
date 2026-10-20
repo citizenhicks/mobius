@@ -19,7 +19,7 @@ pub(super) enum ResponseSeverity {
     Fatal,
 }
 
-pub(super) fn prepare(action: GatewayAction, session_id: &str) -> PreparedAction {
+pub(super) fn prepare(action: GatewayAction, session_id: &mobius::SessionId) -> PreparedAction {
     match action {
         GatewayAction::Pair => send(|request_id| ClientMessage::CreatePairingCode { request_id }),
         GatewayAction::Profile => send(|request_id| ClientMessage::GetProfile {
@@ -28,50 +28,50 @@ pub(super) fn prepare(action: GatewayAction, session_id: &str) -> PreparedAction
         }),
         GatewayAction::Rename(title) => send(|request_id| ClientMessage::RenameSession {
             request_id,
-            session_id: session_id.into(),
+            session_id: session_id.share(),
             title,
         }),
         GatewayAction::SetPinned(pinned) => send(|request_id| ClientMessage::SetSessionPinned {
             request_id,
-            session_id: session_id.into(),
+            session_id: session_id.share(),
             pinned,
         }),
         GatewayAction::Reassign(bot_id) => send(|request_id| ClientMessage::ReassignSession {
             request_id,
-            session_id: session_id.into(),
+            session_id: session_id.share(),
             bot_id,
         }),
         GatewayAction::AttachFolder(folder) => {
             send(|request_id| ClientMessage::AttachSessionFolder {
                 request_id,
-                session_id: session_id.into(),
+                session_id: session_id.share(),
                 folder,
             })
         }
         GatewayAction::DeleteCurrent => send(|request_id| ClientMessage::DeleteSessions {
             request_id,
-            session_ids: vec![session_id.into()],
+            session_ids: vec![session_id.share()],
             selection: mobius::backend::session_files::SessionFileSelection::All,
         }),
         GatewayAction::ListSessionFiles => send(|request_id| ClientMessage::ListSessionFiles {
             request_id,
-            session_id: session_id.into(),
+            session_id: session_id.share(),
         }),
         GatewayAction::DeleteStoredFile(file_id) => {
             send(|request_id| ClientMessage::DeleteSessions {
                 request_id,
-                session_ids: vec![session_id.into()],
+                session_ids: vec![session_id.share()],
                 selection: mobius::backend::session_files::SessionFileSelection::Ids(vec![file_id]),
             })
         }
         GatewayAction::GitDiff(scope) => send(|request_id| ClientMessage::GetGitDiff {
             request_id,
-            session_id: session_id.into(),
+            session_id: session_id.share(),
             scope,
         }),
         GatewayAction::SwitchBranch(branch) => send(|request_id| ClientMessage::SwitchGitBranch {
             request_id,
-            session_id: session_id.into(),
+            session_id: session_id.share(),
             branch,
         }),
     }

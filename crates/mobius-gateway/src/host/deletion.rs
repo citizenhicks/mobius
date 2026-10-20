@@ -1,3 +1,4 @@
+use mobius::SessionId;
 use std::collections::HashSet;
 
 use mobius::backend::checkpoint::SessionSummary;
@@ -6,8 +7,8 @@ use mobius::backend::session_files::{SessionFileDeletion, SessionFileSelection};
 use super::{
     Arc, Error, GatewayHost, GatewayState, HashMap, MAX_SESSION_DELETE_ROOTS, Rejection, Result,
     Utc, Uuid, bot_delete_rejection, gateway_session_summaries, internal, invalid_bot,
-    invalid_session_id, load_session_metadata, reject_persistent_session, save_session_metadata,
-    send_warning, session_file_rejection, session_tree_ids, unknown_session, validate_session_id,
+    load_session_metadata, reject_persistent_session, save_session_metadata, send_warning,
+    session_file_rejection, session_tree_ids, unknown_session,
 };
 use crate::wire::{HookData, HookEvent, HookSource};
 
@@ -134,7 +135,7 @@ impl GatewayHost {
         &self,
         id: &str,
         expected_revision: u64,
-    ) -> std::result::Result<(Vec<crate::wire::BotRecord>, Vec<String>), Rejection> {
+    ) -> std::result::Result<(Vec<crate::wire::BotRecord>, Vec<SessionId>), Rejection> {
         let _mutation = self.begin_exclusive_mutation().await?;
         let state = self.state.lock().await;
         let bot = state.bots.bot(id).map_err(invalid_bot)?;
@@ -203,9 +204,9 @@ impl GatewayHost {
     )]
     pub(crate) async fn delete_sessions(
         &self,
-        session_ids: &[String],
+        session_ids: &[SessionId],
         selection: SessionFileSelection,
-    ) -> std::result::Result<Vec<String>, Rejection> {
+    ) -> std::result::Result<Vec<SessionId>, Rejection> {
         if session_ids.is_empty() || session_ids.len() > MAX_SESSION_DELETE_ROOTS {
             return Err(Rejection::new(
                 "invalid_session_selection",
@@ -216,15 +217,8 @@ impl GatewayHost {
         let selected = session_ids
             .iter()
             .filter(|session_id| seen.insert(session_id.as_str()))
-            .cloned() // rules-allow: the deduplicated selection is returned to the caller
+            .map(SessionId::share)
             .collect::<Vec<_>>();
-        for session_id in &selected {
-            validate_session_id(session_id).map_err(|error| {
-                let mut rejection = invalid_session_id();
-                rejection.message = format!("{}: {error}", rejection.message).into();
-                rejection
-            })?;
-        }
         let mutation = self.begin_exclusive_mutation().await?;
         let mut state = self.state.lock().await;
         let summaries = gateway_session_summaries(&state.checkpoints)
@@ -233,7 +227,7 @@ impl GatewayHost {
         if selected.iter().any(|selected| {
             !summaries
                 .iter()
-                .any(|session| session.catalog_visible && *session.session_id == **selected)
+                .any(|session| session.catalog_visible && &session.session_id == selected)
         }) {
             return Err(unknown_session());
         }
@@ -251,7 +245,10 @@ impl GatewayHost {
                 reject_persistent_session(summary)?;
             }
         }
-        let selected_set = selected.iter().map(String::as_str).collect::<HashSet<_>>();
+        let selected_set = selected
+            .iter()
+            .map(SessionId::as_str)
+            .collect::<HashSet<_>>();
         let parents = summaries
             .iter()
             .map(|session| {
@@ -296,7 +293,10 @@ impl GatewayHost {
     }
 }
 
-fn bot_session_trees(bot_id: &str, summaries: &[SessionSummary]) -> (Vec<String>, Vec<String>) {
+fn bot_session_trees(
+    bot_id: &str,
+    summaries: &[SessionSummary],
+) -> (Vec<SessionId>, Vec<SessionId>) {
     let owned = summaries
         .iter()
         .filter(|session| *session.session_context.owner_id == *bot_id)
@@ -311,7 +311,7 @@ fn bot_session_trees(bot_id: &str, summaries: &[SessionSummary]) -> (Vec<String>
                     .as_ref()
                     .is_none_or(|parent| !owned.contains(parent.as_str()))
         })
-        .map(|session| String::from(&*session.session_id))
+        .map(|session| session.session_id.share())
         .collect::<Vec<_>>();
     session_trees(roots, summaries)
 }
@@ -319,7 +319,7 @@ fn bot_session_trees(bot_id: &str, summaries: &[SessionSummary]) -> (Vec<String>
 pub(super) async fn prepare_bot_session_tree_deletion(
     state: &GatewayState,
     bot_id: &str,
-) -> std::result::Result<(Vec<String>, Vec<String>, SessionFileDeletion), Rejection> {
+) -> std::result::Result<(Vec<SessionId>, Vec<SessionId>, SessionFileDeletion), Rejection> {
     if mobius::sync::recover_lock(&state.starting_sessions)
         .values()
         .any(|starting_bot| starting_bot == bot_id)
@@ -343,9 +343,9 @@ pub(super) async fn prepare_bot_session_tree_deletion(
 }
 
 pub(super) fn session_trees(
-    roots: Vec<String>,
+    roots: Vec<SessionId>,
     summaries: &[SessionSummary],
-) -> (Vec<String>, Vec<String>) {
+) -> (Vec<SessionId>, Vec<SessionId>) {
     let trees = roots
         .iter()
         .filter_map(|root| session_tree_ids(root, summaries))
@@ -366,7 +366,7 @@ pub(super) fn session_trees(
 
 pub(super) async fn prepare_session_tree_deletion(
     state: &GatewayState,
-    session_ids: &[String],
+    session_ids: &[SessionId],
     selection: SessionFileSelection,
 ) -> std::result::Result<SessionFileDeletion, Rejection> {
     let all = selection == SessionFileSelection::All;
@@ -421,8 +421,8 @@ pub(super) async fn prepare_session_tree_deletion(
 
 pub(super) async fn remove_session_trees(
     state: &mut GatewayState,
-    roots: &[String],
-    session_ids: &[String],
+    roots: &[SessionId],
+    session_ids: &[SessionId],
     file_deletion: &mut SessionFileDeletion,
     missing_roots_are_deleted: bool,
 ) -> std::result::Result<Option<Rejection>, Rejection> {
@@ -461,10 +461,10 @@ pub(super) async fn remove_session_trees(
                 id: format!("deleted-{session_id}-{}", Uuid::new_v4()).into(),
                 bot_id: summary.session_context.owner_id,
                 source: HookSource::Session {
-                    session_id: session_id.clone(), // rules-allow: the closure event names the session twice
+                    session_id: session_id.share(),
                 },
                 data: HookData::SessionDeleted {
-                    session_id: session_id.clone(), // rules-allow: the closure event names the session twice
+                    session_id: session_id.share(),
                 },
                 occurred_at: Utc::now().timestamp(),
                 cause_id: None,

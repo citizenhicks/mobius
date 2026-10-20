@@ -58,6 +58,8 @@ async fn session_context_round_trips_through_save_catalog_and_fork() {
 
 #[tokio::test]
 async fn delete_sessions_remove_complete_trees_atomically() {
+    let parent_id = session("parent");
+    let other_id = session("other");
     let workspace = tempfile::tempdir().expect("create workspace");
     let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
         .expect("open checkpoint database");
@@ -72,11 +74,11 @@ async fn delete_sessions_remove_complete_trees_atomically() {
         .await
         .expect("save parent");
     store
-        .fork("parent", 1, checkpoint("child"))
+        .fork(&parent_id, 1, checkpoint("child"))
         .await
         .expect("fork child");
     store
-        .fork("child", 0, checkpoint("grandchild"))
+        .fork(&session("child"), 0, checkpoint("grandchild"))
         .await
         .expect("fork grandchild");
     store
@@ -84,6 +86,7 @@ async fn delete_sessions_remove_complete_trees_atomically() {
         .await
         .expect("save other root");
     for session_id in ["parent", "child", "grandchild"] {
+        let session_id = &session(session_id);
         store
             .append_event(
                 session_id,
@@ -91,7 +94,7 @@ async fn delete_sessions_remove_complete_trees_atomically() {
                 Event {
                     submission_id: None,
                     msg: EventMsg::Warning(crate::protocol::WarningEvent {
-                        message: session_id.into(),
+                        message: session_id.as_str().into(),
                     }),
                 },
             )
@@ -109,16 +112,16 @@ async fn delete_sessions_remove_complete_trees_atomically() {
 
     assert!(
         !store
-            .delete_sessions(&["parent".into(), "missing".into(), "other".into()])
+            .delete_sessions(&[parent_id.share(), session("missing"), other_id.share()])
             .await
             .expect("reject incomplete selection")
     );
-    assert!(store.load("parent").await.expect("load parent").is_some());
-    assert!(store.load("other").await.expect("load other").is_some());
+    assert!(store.load(&parent_id).await.expect("load parent").is_some());
+    assert!(store.load(&other_id).await.expect("load other").is_some());
 
     assert!(
         store
-            .delete_sessions(&["parent".into(), "other".into()])
+            .delete_sessions(&[parent_id.share(), other_id.share()])
             .await
             .expect("delete trees")
     );
@@ -152,7 +155,7 @@ async fn delete_sessions_remove_complete_trees_atomically() {
     );
     assert!(
         !store
-            .delete_sessions(&["parent".into()])
+            .delete_sessions(&[parent_id.share()])
             .await
             .expect("delete absent tree")
     );

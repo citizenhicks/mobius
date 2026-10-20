@@ -45,7 +45,7 @@ impl std::fmt::Debug for ResolvedCredential {
 struct StoredCredential {
     provider: String,
     api_key: String,
-    base_url: Option<String>,
+    base_url: Option<BaseUrl>,
     expires_at: Option<u64>,
     #[serde(skip)]
     revocation: Option<tokio::sync::watch::Sender<()>>,
@@ -327,7 +327,7 @@ impl CredentialStore {
         instance: &str,
         provider_id: &str,
         api_key: &str,
-        base_url: Option<&str>,
+        base_url: Option<&BaseUrl>,
         expires_at: Option<u64>,
     ) -> Result<()> {
         let api_key = api_key.trim();
@@ -335,7 +335,7 @@ impl CredentialStore {
         let credential = StoredCredential {
             provider: provider_id.into(),
             api_key: api_key.into(),
-            base_url: base_url.map(str::to_owned),
+            base_url: base_url.map(BaseUrl::share),
             expires_at,
             revocation: None,
         };
@@ -383,14 +383,14 @@ impl CredentialStore {
         &self,
         instance: &str,
         provider_id: &str,
-        base_url: Option<&str>,
+        base_url: Option<&BaseUrl>,
     ) -> Result<Option<ResolvedCredential>> {
         let mut values = self
             .values
             .lock()
             .map_err(crate::poisoned("provider credential"))?;
         let Some(credential) = values.get_mut(instance).filter(|credential| {
-            credential.provider == provider_id && credential.base_url.as_deref() == base_url
+            credential.provider == provider_id && credential.base_url.as_ref() == base_url
         }) else {
             return Ok(None);
         };
@@ -416,7 +416,7 @@ impl CredentialStore {
         &self,
         instance: &str,
         provider_id: &str,
-        base_url: Option<&str>,
+        base_url: Option<&BaseUrl>,
     ) -> Result<Option<String>> {
         let values = self
             .values
@@ -425,7 +425,7 @@ impl CredentialStore {
         let hint = values
             .get(instance)
             .filter(|credential| {
-                credential.provider == provider_id && credential.base_url.as_deref() == base_url
+                credential.provider == provider_id && credential.base_url.as_ref() == base_url
             })
             .and_then(|credential| {
                 let suffix = credential.api_key.chars().rev().take(4).collect::<String>();
@@ -577,7 +577,7 @@ fn validate_credential(
     instance: &str,
     provider_id: &str,
     api_key: &str,
-    base_url: Option<&str>,
+    base_url: Option<&BaseUrl>,
     expires_at: Option<u64>,
 ) -> Result<()> {
     if expires_at.is_some_and(|seconds| seconds == 0 || seconds > 253_402_300_799) {
@@ -612,7 +612,7 @@ fn validate_credential_state(values: &BTreeMap<String, StoredCredential>) -> Res
             instance,
             &credential.provider,
             &credential.api_key,
-            credential.base_url.as_deref(),
+            credential.base_url.as_ref(),
             credential.expires_at,
         )?;
     }

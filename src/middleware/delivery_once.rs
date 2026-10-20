@@ -179,7 +179,7 @@ mod tests {
             Arc::ptr_eq(&unchanged, &receipts),
             "repeated notices cannot copy receipts"
         );
-        let mut checkpoint = Checkpoint::empty("session");
+        let mut checkpoint = Checkpoint::empty("session".parse().expect("session ID"));
         checkpoint.context = std::sync::Arc::new(
             vec![user_message("compacted context")]
                 .into_iter()

@@ -4,6 +4,7 @@ use super::*;
 async fn large_tool_output_is_stored_once_and_restored_for_both_event_readers() {
     use crate::protocol::ToolCallEndEvent;
 
+    let session_id = session("session");
     let workspace = tempfile::tempdir().unwrap();
     let path = workspace.path().join("tool-output.sqlite3");
     let store = SqliteCheckpoint::new(&path).unwrap();
@@ -51,7 +52,7 @@ async fn large_tool_output_is_stored_once_and_restored_for_both_event_readers() 
     assert_eq!(
         store
             .event_page(
-                "session",
+                &session_id,
                 EventPageRequest {
                     before_sequence: None,
                     limit: 10
@@ -64,7 +65,7 @@ async fn large_tool_output_is_stored_once_and_restored_for_both_event_readers() 
         event
     );
     assert_eq!(
-        store.events_after("session", 0, 10).await.unwrap()[0].event,
+        store.events_after(&session_id, 0, 10).await.unwrap()[0].event,
         event
     );
     connection
@@ -76,7 +77,7 @@ async fn large_tool_output_is_stored_once_and_restored_for_both_event_readers() 
     assert!(
         store
             .event_page(
-                "session",
+                &session_id,
                 EventPageRequest {
                     before_sequence: None,
                     limit: 10
@@ -85,7 +86,7 @@ async fn large_tool_output_is_stored_once_and_restored_for_both_event_readers() 
             .await
             .is_err()
     );
-    assert!(store.events_after("session", 0, 10).await.is_err());
+    assert!(store.events_after(&session_id, 0, 10).await.is_err());
 }
 
 /// Explicit offline bridge: the public Python migrator feeds the actual Rust readers.
@@ -97,6 +98,7 @@ async fn public_migration_restores_historical_tool_events_through_rust_readers()
 
     use crate::protocol::ToolCallEndEvent;
 
+    let session_id = session("session");
     let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("scripts/upgrade-portable-compaction.py");
     let python =
@@ -169,15 +171,15 @@ with closing(sqlite3.connect(sys.argv[2])) as db, db:
         let report: serde_json::Value = serde_json::from_slice(&migrated.stdout).unwrap();
         assert_eq!(report["tool_outputs_deduplicated"], 1);
         let store = SqliteCheckpoint::new(&path).unwrap();
-        assert!(store.load("session").await.unwrap().is_some());
+        assert!(store.load(&session_id).await.unwrap().is_some());
         assert_eq!(
-            store.events_after("session", 0, 10).await.unwrap()[0].event,
+            store.events_after(&session_id, 0, 10).await.unwrap()[0].event,
             event
         );
         assert_eq!(
             store
                 .event_page(
-                    "session",
+                    &session_id,
                     EventPageRequest {
                         before_sequence: None,
                         limit: 10

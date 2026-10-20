@@ -7,6 +7,7 @@ use crate::wire::HookKind;
 use crate::{Error, Result, host::GatewayHost};
 pub(crate) use activity::ActivityHook;
 pub use activity::ActivityHookConfig;
+use mobius::SessionId;
 use mobius::backend::model::provider::{HttpClient, HttpRedirectPolicy};
 pub use policy::TelemetryPolicy;
 use serde_json::{Value, json};
@@ -235,7 +236,7 @@ pub(crate) struct Telemetry {
     started_at_ms: i64,
     started: Instant,
     resources: resources::Resources,
-    contexts: Mutex<VecDeque<(String, ChatContext)>>,
+    contexts: Mutex<VecDeque<(SessionId, ChatContext)>>,
 }
 
 /// Chats noted at most; the oldest note gives way.
@@ -251,7 +252,11 @@ struct ChatContext {
 
 impl Telemetry {
     /// Keeps `session`'s latest breakdown for the `context` section.
-    pub(crate) fn note_context(&self, session: &str, usage: &mobius::protocol::TokenUsageInfo) {
+    pub(crate) fn note_context(
+        &self,
+        session: &SessionId,
+        usage: &mobius::protocol::TokenUsageInfo,
+    ) {
         let Some(context) = &usage.context else {
             return;
         };
@@ -260,7 +265,7 @@ impl Telemetry {
             .iter()
             .position(|(id, _)| id == session)
             .and_then(|index| contexts.remove(index))
-            .map_or_else(|| session.to_owned(), |(id, _)| id);
+            .map_or_else(|| session.share(), |(id, _)| id);
         let chat = ChatContext {
             window: usage.model_context_window,
             input_tokens: usage.last_token_usage.input_tokens,
@@ -827,9 +832,9 @@ mod context_tests {
         let state = tempfile::tempdir().expect("state");
         let telemetry = Telemetry::new(&TelemetryConfig::default(), state.path());
         for chat in 0..=MAX_CHAT_CONTEXTS {
-            telemetry.note_context(&format!("chat-{chat}"), &usage(10));
+            telemetry.note_context(&SessionId::new(format!("chat-{chat}")).unwrap(), &usage(10));
         }
-        telemetry.note_context("chat-1", &usage(20));
+        telemetry.note_context(&SessionId::new("chat-1").unwrap(), &usage(20));
         let contexts = telemetry.contexts();
         let chats = contexts.as_array().expect("chats");
         assert_eq!(chats.len(), MAX_CHAT_CONTEXTS);

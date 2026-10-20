@@ -1,3 +1,5 @@
+use mobius::SessionId;
+use mobius::backend::model::provider::BaseUrl;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
@@ -27,7 +29,7 @@ async fn provider_removal_gateway(
         instance: "openrouter".into(),
         provider: "openrouter".into(),
         model: "openai/gpt-5".into(),
-        base_url: Some("https://connector.example/v1".into()),
+        base_url: Some(BaseUrl::new("https://connector.example/v1").unwrap()),
         endpoint_auth: ProviderEndpointAuth::Credentialless,
         reasoning_effort: None,
         service_tier: None,
@@ -38,7 +40,7 @@ async fn provider_removal_gateway(
         instance: "kimi-unused".into(),
         provider: "kimi".into(),
         model: "kimi-k3".into(),
-        base_url: Some("https://api.moonshot.ai/v1".into()),
+        base_url: Some(BaseUrl::new("https://api.moonshot.ai/v1").unwrap()),
         endpoint_auth: ProviderEndpointAuth::ProviderDefault,
         reasoning_effort: Some("max".into()),
         service_tier: None,
@@ -77,7 +79,7 @@ async fn provider_removal_gateway(
             &removable.instance,
             &removable.provider,
             "unused-secret",
-            removable.base_url.as_deref(),
+            removable.base_url.as_ref(),
             None,
         )
         .expect("removable credential");
@@ -118,7 +120,7 @@ async fn browser_proxy_registration_requires_operator_and_allows_trusted_root_re
         instance: "trusted-codex".into(),
         provider: "openai_codex".into(),
         model: "gpt-6-luna".into(),
-        base_url: Some("https://operator-proxy.example/native".into()),
+        base_url: Some(BaseUrl::new("https://operator-proxy.example/native").unwrap()),
         endpoint_auth: ProviderEndpointAuth::ProviderDefault,
         reasoning_effort: None,
         service_tier: None,
@@ -156,7 +158,7 @@ async fn browser_proxy_registration_requires_operator_and_allows_trusted_root_re
         .await
         .expect("operator registers native proxy");
     selection.instance = "reused-codex".into();
-    selection.base_url = Some("https://operator-proxy.example/native/".into());
+    selection.base_url = Some(BaseUrl::new("https://operator-proxy.example/native/").unwrap());
     gateway
         .register_provider(
             false,
@@ -172,7 +174,7 @@ async fn browser_proxy_registration_requires_operator_and_allows_trusted_root_re
         )
         .await
         .expect("paired client can reuse an operator-approved root");
-    selection.base_url = Some("https://client-controlled.example/native".into());
+    selection.base_url = Some(BaseUrl::new("https://client-controlled.example/native").unwrap());
     let error = gateway
         .register_provider(
             false,
@@ -209,7 +211,7 @@ async fn provider_removal_save_failure_keeps_idle_resident_and_config_usable() {
     let host = create_test_session(&gateway, &workspace)
         .await
         .expect("chat");
-    let session_id = host.session_id().to_string();
+    let session_id = host.session_id().share();
     let config_path = root.path().join("state").join("gateway.toml");
     std::fs::remove_file(&config_path).expect("remove gateway config");
     std::fs::create_dir(&config_path).expect("block gateway config save");
@@ -240,7 +242,7 @@ async fn provider_removal_save_failure_keeps_idle_resident_and_config_usable() {
             .get(
                 &removable.instance,
                 &removable.provider,
-                removable.base_url.as_deref(),
+                removable.base_url.as_ref(),
             )
             .expect("credential")
             .map(|credential| credential.api_key),
@@ -326,10 +328,10 @@ async fn stale_provider_login_success_does_not_refresh_sessions_or_release_anoth
     let (commands, mut receiver) = mpsc::channel(1);
     let (events, _) = broadcast::channel(1);
     gateway.state.lock().await.sessions.insert(
-        "observer".into(),
+        SessionId::new("observer").unwrap(),
         super::super::HostHandle {
             inner: Arc::new(HostInner {
-                session_id: Arc::from("observer"),
+                session_id: SessionId::new("observer").unwrap(),
                 commands,
                 events,
                 alive: Arc::new(AtomicBool::new(true)),

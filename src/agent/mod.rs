@@ -1,5 +1,6 @@
 //! Agent handles and the single linear command dispatch loop.
 
+use crate::SessionId;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -79,7 +80,7 @@ pub enum AgentRole {
     /// Selects the subagent case.
     Subagent {
         /// The parent session identifier.
-        parent_session_id: Arc<str>,
+        parent_session_id: SessionId,
         /// The parent turn identifier.
         parent_turn_id: Arc<str>,
     },
@@ -94,7 +95,7 @@ pub struct AgentConfig {
     checkpoints: Arc<dyn CheckpointStore>,
     middleware: Arc<MiddlewareStack>,
     system_prompt: Arc<str>,
-    session_id: Arc<str>,
+    session_id: Option<SessionId>,
     context_window: i64,
     default_context_window: i64,
     session_context: Arc<SessionContext>,
@@ -151,7 +152,6 @@ impl AgentConfig {
         system_prompt: impl Into<String>,
     ) -> Self {
         let provider = model.default_provider().into();
-        let session_id = Uuid::new_v4().to_string().into();
         Self {
             model,
             provider,
@@ -159,7 +159,7 @@ impl AgentConfig {
             checkpoints,
             middleware: Arc::new(middleware),
             system_prompt: system_prompt.into().into(),
-            session_id,
+            session_id: None,
             context_window: 272_000,
             default_context_window: 272_000,
             session_context: Arc::default(),
@@ -187,8 +187,8 @@ impl AgentConfig {
 
     /// Sets a stable ID used to resume a checkpointed session.
     #[must_use]
-    pub fn session_id(mut self, session_id: impl Into<Arc<str>>) -> Self {
-        self.session_id = session_id.into();
+    pub fn session_id(mut self, session_id: SessionId) -> Self {
+        self.session_id = Some(session_id);
         self
     }
 
@@ -325,7 +325,7 @@ impl AgentConfig {
             checkpoints: Arc::clone(&self.checkpoints),
             middleware: Arc::new(self.middleware.for_child_agents()),
             system_prompt: Arc::clone(&self.system_prompt),
-            session_id: Arc::default(),
+            session_id: None,
             context_window: self.context_window,
             default_context_window: self.default_context_window,
             session_context: Arc::clone(&self.session_context),
@@ -616,7 +616,7 @@ impl ChildAgents {
     /// Returns an error if the root agent stopped or the child cannot start.
     pub async fn create(
         &self,
-        session_id: Arc<str>,
+        session_id: SessionId,
         metadata: BTreeMap<String, Value>,
         role: AgentRole,
         model: &str,
@@ -702,9 +702,7 @@ pub fn validate_submission(submission: &Submission) -> Result<()> {
         Op::SetModel { route } => {
             crate::validate_identifier("model route", route, crate::MAX_IDENTIFIER_BYTES)
         }
-        Op::ResumeSession { session_id } => {
-            crate::validate_identifier("session ID", session_id, crate::MAX_IDENTIFIER_BYTES)
-        }
+        Op::ResumeSession { .. } => Ok(()),
     }
 }
 
@@ -989,7 +987,7 @@ impl Runner {
         Ok(())
     }
 
-    async fn request_resume(&self, submission_id: Arc<str>, session_id: Arc<str>) -> Result<()> {
+    async fn request_resume(&self, submission_id: Arc<str>, session_id: SessionId) -> Result<()> {
         let result = async {
             let checkpoint = self
                 .config
@@ -1042,7 +1040,7 @@ impl Runner {
                     arguments: &arguments,
                     input: input.as_deref(),
                     target,
-                    session_id: &self.config.session_id,
+                    session_id: &self.runtime.session_id,
                     session_context: &self.config.session_context,
                     checkpoint: &self.state,
                     checkpoints: Arc::clone(&self.config.checkpoints),

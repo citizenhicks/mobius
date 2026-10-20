@@ -7,7 +7,7 @@ use crate::protocol::ModelChoice;
 fn peer_audience_follows_delivery_without_changing_source_authority() {
     for source in [
         MessageSource::Session {
-            session_id: "sender-session".into(),
+            session_id: crate::SessionId::new("sender-session").expect("sender session"),
         },
         MessageSource::External {
             source_id: "webhook".into(),
@@ -192,8 +192,9 @@ async fn credential_deadline_cancels_in_flight_work_and_blocks_reuse() {
     });
     let mut router = ModelRouter::new("included", Arc::<PendingModel>::clone(&model));
     let cancellation = ModelCancellation::default();
+    let session_id = crate::SessionId::new("same-persistent-session").expect("session");
     let request = || ModelRequest {
-        session_id: "same-persistent-session",
+        session_id: Some(&session_id),
         cancellation: Some(&cancellation),
         prompt_cache: None,
         instructions: "",
@@ -293,11 +294,13 @@ async fn image_generation_does_not_replay_ambiguous_failures() {
             true
         }
         fn transport_settings(&self) -> ModelTransportSettings {
-            ModelTransportSettings {
+            crate::backend::model::RawModelTransportSettings {
                 stream_retry_limit: 1,
                 stream_retry_backoff_ms: 1,
-                ..ModelTransportSettings::default()
+                ..Default::default()
             }
+            .try_into()
+            .expect("transport settings")
         }
         fn respond<'a>(
             &'a self,
@@ -416,8 +419,9 @@ async fn fallback_cancellation_does_not_inherit_source_credential_expiry() {
         )
         .unwrap();
     let parent = ModelCancellation::default();
+    let session_id = crate::SessionId::new("fallback").expect("session");
     let request = || ModelRequest {
-        session_id: "fallback",
+        session_id: Some(&session_id),
         cancellation: Some(&parent),
         prompt_cache: None,
         instructions: "",

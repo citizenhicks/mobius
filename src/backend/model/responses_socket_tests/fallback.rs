@@ -8,6 +8,7 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
     use futures_util::SinkExt as _;
     use futures_util::StreamExt as _;
 
+    let session_id = crate::SessionId::new("fallback-session").expect("session");
     let websocket_listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
         .expect("WebSocket listener");
@@ -106,7 +107,7 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
     let socket_url = format!("ws://{websocket_address}/responses");
     let provider = OpenAiSocket::with_authorization(
         Arc::new(ApiKeyAuthorization::new("test-key".into())),
-        &format!("http://{http_address}"),
+        BaseUrl::new(format!("http://{http_address}")).unwrap(),
         &socket_url,
         "gpt-6.1-sol",
         reqwest::Client::new(),
@@ -125,7 +126,7 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
         .expect("PNG");
     let image = files
         .ingest_image(
-            "fallback-session",
+            &session_id,
             "image.png".into(),
             bytes.into_inner(),
             crate::protocol::ImageDetail::High,
@@ -146,7 +147,7 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
         .respond_prepared(
             ModelRequest {
                 cancellation: None,
-                session_id: "fallback-session",
+                session_id: Some(&session_id),
                 prompt_cache: Some(PromptCacheIdentity {
                     key: "hashed-fallback-session",
                     context_epoch: 1,
@@ -175,7 +176,7 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
         .respond_prepared(
             ModelRequest {
                 cancellation: None,
-                session_id: "fallback-session",
+                session_id: Some(&session_id),
                 prompt_cache: Some(PromptCacheIdentity {
                     key: "hashed-fallback-session",
                     context_epoch: 1,
@@ -202,7 +203,7 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
         .respond_prepared(
             ModelRequest {
                 cancellation: None,
-                session_id: "fallback-session",
+                session_id: Some(&session_id),
                 prompt_cache: Some(PromptCacheIdentity {
                     key: "hashed-fallback-session",
                     context_epoch: 1,
@@ -224,7 +225,7 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
         .respond_prepared(
             ModelRequest {
                 cancellation: None,
-                session_id: "fallback-session",
+                session_id: Some(&session_id),
                 prompt_cache: Some(PromptCacheIdentity {
                     key: "hashed-fallback-session",
                     context_epoch: 1,
@@ -246,7 +247,7 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
         .respond_prepared(
             ModelRequest {
                 cancellation: None,
-                session_id: "fallback-session",
+                session_id: Some(&session_id),
                 prompt_cache: Some(PromptCacheIdentity {
                     key: "hashed-fallback-session",
                     context_epoch: 1,

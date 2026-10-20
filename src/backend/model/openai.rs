@@ -1,8 +1,8 @@
 //! Configurable Responses provider registration.
 
 use super::Model;
-use super::provider::{ProviderBuildConfig, ProviderDefinition};
-use crate::{Error, Result};
+use super::provider::{BaseUrl, ProviderBuildConfig, ProviderDefinition};
+use crate::Result;
 
 pub use super::responses::OpenAi;
 
@@ -22,18 +22,18 @@ pub(super) fn generic_provider() -> ProviderDefinition {
     .with_credentialless_endpoints()
 }
 
-fn build_generic(config: ProviderBuildConfig) -> Result<std::sync::Arc<dyn Model>> {
+fn build_generic(
+    config: ProviderBuildConfig,
+    base_url: BaseUrl,
+) -> Result<std::sync::Arc<dyn Model>> {
     let tool_discovery = config.tool_discovery.unwrap_or_else(|| {
-        generic_provider().tool_discovery(&config.model, config.base_url.as_deref())
+        generic_provider().tool_discovery(&config.model, Some(base_url.as_str()))
     });
-    let base_url = config
-        .base_url
-        .ok_or_else(|| Error::Config("Responses provider requires a base URL".into()))?;
     let api_key = config.credential.into_optional_api_key("responses")?;
     let native_voice = config.capability == Some(crate::protocol::ModelCapability::RealtimeVoice)
         || generic_provider().supports_at(
             crate::protocol::ModelCapability::RealtimeVoice,
-            Some(&base_url),
+            Some(base_url.as_str()),
         );
     let provider = OpenAi::with_client(
         api_key,

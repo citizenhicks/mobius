@@ -320,7 +320,7 @@ mod tests {
         impl SandboxBackend for AvailableBrowser {
             fn desktop_browser_page<'a>(
                 &'a self,
-                _: &'a str,
+                _: &'a crate::SessionId,
             ) -> BoxFuture<'a, Result<Option<DesktopBrowserPage>>> {
                 self.requested.fetch_add(1, Ordering::SeqCst);
                 Box::pin(async {
@@ -391,9 +391,13 @@ mod tests {
             ));
             for mode in [SandboxMode::WorkspaceWrite, SandboxMode::DangerFullAccess] {
                 for network in [NetworkAccess::Denied, NetworkAccess::Allowed] {
-                    let permissions =
-                        SandboxPermissions::restore("session", mode, network, ["call".into()])
-                            .for_call("call");
+                    let permissions = SandboxPermissions::restore(
+                        &"session".parse().expect("session ID"),
+                        mode,
+                        network,
+                        ["call".into()],
+                    )
+                    .for_call("call");
                     let before = requested.load(Ordering::SeqCst);
                     let result = tool
                         .call(
@@ -418,7 +422,7 @@ mod tests {
                 }
             }
             sandbox
-                .session_end("session")
+                .session_end(&"session".parse().expect("session ID"))
                 .await
                 .expect("worker cleanup");
         }

@@ -1,5 +1,6 @@
 //! Ephemeral voice calls belong to the authenticated connection that opened them.
 
+use mobius::SessionId;
 use std::future::Future;
 
 use mobius::middleware::voice::VoiceCall;
@@ -13,7 +14,7 @@ use super::{
 };
 
 pub(super) struct ConnectionVoice {
-    pub(super) session_id: Arc<str>,
+    pub(super) session_id: SessionId,
     pub(super) voice_id: Arc<str>,
     updates: mpsc::Receiver<ServerMessage>,
     task: JoinHandle<()>,
@@ -23,10 +24,10 @@ pub(super) struct ConnectionVoice {
 
 impl ConnectionVoice {
     pub(super) fn start(host: HostHandle, request_id: Arc<str>, offer_sdp: String) -> Self {
-        let session_id = Arc::clone(host.session_id());
+        let session_id = host.session_id().share();
         let (updates, receiver) = mpsc::channel(2);
         let id = Arc::clone(&request_id);
-        let session = Arc::clone(&session_id);
+        let session = session_id.share();
         let (stop, mut stopped) = oneshot::channel();
         let (shutdown, shutdown_timeout) = oneshot::channel();
         let task = tokio::spawn(async move {
@@ -48,7 +49,7 @@ impl ConnectionVoice {
                     let Ok(()) = updates
                         .send(ServerMessage::RealtimeVoiceStarted {
                             request_id: Arc::clone(&id),
-                            session_id: Arc::clone(&session),
+                            session_id: session.share(),
                             voice_id: Arc::clone(&id),
                             answer_sdp,
                         })
@@ -173,7 +174,7 @@ pub(super) async fn handle_message(
                     writer,
                     &ServerFrame::new(ServerMessage::RealtimeVoiceFailed {
                         request_id,
-                        session_id: session_id.into(),
+                        session_id: session_id.share(),
                         message: rejection.message,
                     }),
                 )

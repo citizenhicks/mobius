@@ -37,7 +37,7 @@ async fn apply_patch_uses_the_active_sandbox_policy() {
             ToolContext::new(
                 Arc::clone(&sandbox),
                 SandboxPermissions::restore(
-                    "session",
+                    &"session".parse().expect("session ID"),
                     crate::backend::sandbox::SandboxMode::WorkspaceWrite,
                     crate::backend::sandbox::NetworkAccess::Denied,
                     ["patch".into()],
@@ -60,7 +60,7 @@ async fn apply_patch_uses_the_active_sandbox_policy() {
             ToolContext::new(
                 sandbox,
                 SandboxPermissions::restore(
-                    "session",
+                    &"session".parse().expect("session ID"),
                     crate::backend::sandbox::SandboxMode::DangerFullAccess,
                     crate::backend::sandbox::NetworkAccess::Allowed,
                     ["patch".into()],

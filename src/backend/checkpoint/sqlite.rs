@@ -1,5 +1,6 @@
 //! Durable SQLite checkpoint storage.
 
+use crate::SessionId;
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::path::Path;
@@ -56,6 +57,19 @@ use context_store::{
 
 const SCHEMA_VERSION: i64 = 13;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
+impl rusqlite::ToSql for SessionId {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        Ok(self.as_str().into())
+    }
+}
+
+impl rusqlite::types::FromSql for SessionId {
+    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
+        Self::new(value.as_str()?)
+            .map_err(|error| rusqlite::types::FromSqlError::Other(Box::new(error)))
+    }
+}
 
 const SCHEMA: &str = "
 PRAGMA auto_vacuum = INCREMENTAL;
@@ -150,7 +164,7 @@ struct CachedConnection {
     connection: Connection,
     // ponytail: Hints are connection-local; overlapping writers may invalidate them.
     // A serialized write owner is the next step only if connection churn measures hot.
-    context: HashMap<Arc<str>, ContextCache>,
+    context: HashMap<SessionId, ContextCache>,
 }
 
 impl SqliteCheckpoint {
@@ -205,7 +219,7 @@ impl SqliteCheckpoint {
 
     async fn run<T>(
         &self,
-        operation: impl FnOnce(&mut Connection, &mut HashMap<Arc<str>, ContextCache>) -> Result<T>
+        operation: impl FnOnce(&mut Connection, &mut HashMap<SessionId, ContextCache>) -> Result<T>
         + Send
         + 'static,
     ) -> Result<T>
@@ -247,10 +261,10 @@ impl SqliteCheckpoint {
 impl CheckpointStore for SqliteCheckpoint {
     fn message_accepted<'a>(
         &'a self,
-        session_id: &'a str,
+        session_id: &'a SessionId,
         submission_id: &'a str,
     ) -> BoxFuture<'a, Result<bool>> {
-        let session_id = session_id.to_owned();
+        let session_id = session_id.share();
         let submission_id = submission_id.to_owned();
         Box::pin(self.run(move |connection, _cache| {
             Ok(connection.query_row(
@@ -261,8 +275,8 @@ impl CheckpointStore for SqliteCheckpoint {
         }))
     }
 
-    fn load<'a>(&'a self, session_id: &'a str) -> BoxFuture<'a, Result<Option<Checkpoint>>> {
-        let session_id = session_id.to_owned();
+    fn load<'a>(&'a self, session_id: &'a SessionId) -> BoxFuture<'a, Result<Option<Checkpoint>>> {
+        let session_id = session_id.share();
         Box::pin(self.run(move |connection, cache| {
             let transaction = connection.transaction()?;
             let data_version =
@@ -302,8 +316,8 @@ impl CheckpointStore for SqliteCheckpoint {
         }))
     }
 
-    fn delete_sessions<'a>(&'a self, session_ids: &'a [String]) -> BoxFuture<'a, Result<bool>> {
-        let roots = session_ids.to_vec();
+    fn delete_sessions<'a>(&'a self, session_ids: &'a [SessionId]) -> BoxFuture<'a, Result<bool>> {
+        let roots = session_ids.iter().map(SessionId::share).collect::<Vec<_>>();
         Box::pin(self.run(move |connection, cache| {
             if roots.is_empty() {
                 return Ok(true);
@@ -328,13 +342,13 @@ impl CheckpointStore for SqliteCheckpoint {
                     "{session_tree} SELECT session_id FROM session_tree"
                 ))?;
                 statement
-                    .query_map(params_from_iter(&roots), |row| row.get::<_, String>(0))?
+                    .query_map(params_from_iter(&roots), |row| row.get::<_, SessionId>(0))?
                     .collect::<std::result::Result<Vec<_>, _>>()?
             };
-            let requested = roots.iter().map(String::as_str).collect::<BTreeSet<_>>();
+            let requested = roots.iter().map(SessionId::as_str).collect::<BTreeSet<_>>();
             let found = session_ids
                 .iter()
-                .map(String::as_str)
+                .map(SessionId::as_str)
                 .collect::<BTreeSet<_>>();
             if !requested.is_subset(&found) {
                 return Ok(false);
@@ -437,11 +451,11 @@ impl CheckpointStore for SqliteCheckpoint {
 
     fn append_event<'a>(
         &'a self,
-        session_id: &'a str,
+        session_id: &'a SessionId,
         recorded_at_ms: i64,
         event: Event,
     ) -> BoxFuture<'a, Result<JournalEvent>> {
-        let session_id = session_id.to_owned();
+        let session_id = session_id.share();
         let event = TimestampedEvent {
             recorded_at_ms,
             event,
@@ -457,10 +471,10 @@ impl CheckpointStore for SqliteCheckpoint {
 
     fn event_page<'a>(
         &'a self,
-        session_id: &'a str,
+        session_id: &'a SessionId,
         request: EventPageRequest,
     ) -> BoxFuture<'a, Result<EventPage>> {
-        let session_id = session_id.to_owned();
+        let session_id = session_id.share();
         Box::pin(async move {
             if request.limit == 0 {
                 return Err(Error::Checkpoint(
@@ -537,11 +551,11 @@ impl CheckpointStore for SqliteCheckpoint {
 
     fn events_after<'a>(
         &'a self,
-        session_id: &'a str,
+        session_id: &'a SessionId,
         after_sequence: u64,
         limit: usize,
     ) -> BoxFuture<'a, Result<Vec<JournalEvent>>> {
-        let session_id = session_id.to_owned();
+        let session_id = session_id.share();
         Box::pin(async move {
             if limit == 0 {
                 return Err(Error::Checkpoint(
@@ -572,9 +586,9 @@ impl CheckpointStore for SqliteCheckpoint {
 
     fn session_summary<'a>(
         &'a self,
-        session_id: &'a str,
+        session_id: &'a SessionId,
     ) -> BoxFuture<'a, Result<Option<SessionSummary>>> {
-        let session_id = session_id.to_owned();
+        let session_id = session_id.share();
         Box::pin(self.run(move |connection, _cache| {
             connection.query_row(
                 "SELECT session_id, parent_session_id, parent_sequence, latest_sequence,
@@ -673,10 +687,10 @@ impl CheckpointStore for SqliteCheckpoint {
 
     fn transcript_page<'a>(
         &'a self,
-        session_id: &'a str,
+        session_id: &'a SessionId,
         request: TranscriptPageRequest,
     ) -> BoxFuture<'a, Result<TranscriptPage>> {
-        let session_id = session_id.to_owned();
+        let session_id = session_id.share();
         Box::pin(async move {
             if request.max_batches == 0 {
                 return Err(Error::Checkpoint(
@@ -743,10 +757,10 @@ impl CheckpointStore for SqliteCheckpoint {
 
     fn execution_page<'a>(
         &'a self,
-        session_id: &'a str,
+        session_id: &'a SessionId,
         request: ExecutionPageRequest,
     ) -> BoxFuture<'a, Result<ExecutionPage>> {
-        let session_id = session_id.to_owned();
+        let session_id = session_id.share();
         Box::pin(async move {
             if request.limit == 0 {
                 return Err(Error::Checkpoint(
@@ -832,11 +846,11 @@ impl CheckpointStore for SqliteCheckpoint {
 
     fn fork<'a>(
         &'a self,
-        parent_session_id: &'a str,
+        parent_session_id: &'a SessionId,
         parent_sequence: u64,
         checkpoint: Checkpoint,
     ) -> BoxFuture<'a, Result<SessionSummary>> {
-        let parent_session_id = parent_session_id.to_owned();
+        let parent_session_id = parent_session_id.share();
         let parent_sequence = i64::try_from(parent_sequence);
         let sequence = i64::try_from(checkpoint.sequence);
         let clean = checkpoint.sequence == 0
@@ -846,7 +860,7 @@ impl CheckpointStore for SqliteCheckpoint {
         let validation = validate_checkpoint(&checkpoint);
         let catalog_visible = checkpoint.catalog_visible;
         Box::pin(async move {
-            if parent_session_id == *checkpoint.session_id {
+            if parent_session_id == checkpoint.session_id {
                 return Err(Error::Checkpoint("a session cannot fork itself".into()));
             }
             if !clean {
@@ -938,9 +952,9 @@ impl CheckpointStore for SqliteCheckpoint {
 
     fn session_metadata<'a>(
         &'a self,
-        session_id: &'a str,
+        session_id: &'a SessionId,
     ) -> BoxFuture<'a, Result<Option<std::collections::BTreeMap<String, Value>>>> {
-        let session_id = session_id.to_owned();
+        let session_id = session_id.share();
         Box::pin(self.run(move |connection, _cache| {
             let metadata = connection.query_row(
                 "SELECT json_extract(latest_checkpoint_json, '$.metadata') FROM sessions WHERE session_id = ?1",
@@ -1093,8 +1107,8 @@ fn store_checkpoint(
 }
 
 type SessionRow = (
-    String,
-    Option<String>,
+    SessionId,
+    Option<SessionId>,
     Option<i64>,
     i64,
     bool,
@@ -1125,7 +1139,7 @@ fn summary_from_row(row: SessionRow) -> Result<SessionSummary> {
     validate_session_context(&session_context)?;
     let execution_stats: ExecutionStats = serde_json::from_str(&row.7)?;
     Ok(SessionSummary {
-        session_id: row.0.into(),
+        session_id: row.0,
         session_context,
         parent_session_id: row.1,
         parent_sequence: row.2.map(u64::try_from).transpose().map_err(|error| {
@@ -1146,11 +1160,11 @@ fn session_cursor(session: &SessionSummary) -> SessionCursor {
     SessionCursor {
         updated_at: session.updated_at,
         sequence: session.sequence,
-        session_id: Arc::clone(&session.session_id),
+        session_id: session.session_id.share(),
     }
 }
 
-fn decode_checkpoint(session_id: &str, sequence: i64, json: &str) -> Result<Checkpoint> {
+fn decode_checkpoint(session_id: &SessionId, sequence: i64, json: &str) -> Result<Checkpoint> {
     let mut header: Value = serde_json::from_str(json)?;
     let fields = header
         .as_object_mut()
@@ -1166,7 +1180,7 @@ fn decode_checkpoint(session_id: &str, sequence: i64, json: &str) -> Result<Chec
         Error::Checkpoint(format!("checkpoint row has a negative sequence: {error}"))
     })?;
     validate_checkpoint(&checkpoint)?;
-    if *checkpoint.session_id != *session_id || checkpoint.sequence != sequence {
+    if &checkpoint.session_id != session_id || checkpoint.sequence != sequence {
         return Err(Error::Checkpoint(
             "checkpoint row does not match its index".into(),
         ));
@@ -1298,10 +1312,7 @@ fn validate_execution(checkpoint: &Checkpoint, execution: &ExecutionRecord) -> R
 
 fn validate_execution_record(execution: &ExecutionRecord) -> Result<()> {
     crate::protocol::validate_message_content(&execution.author, "execution origin", &[])?;
-    if execution.session_id.trim().is_empty()
-        || execution.submission_id.trim().is_empty()
-        || execution.turn_id.trim().is_empty()
-    {
+    if execution.submission_id.trim().is_empty() || execution.turn_id.trim().is_empty() {
         return Err(Error::Checkpoint(
             "execution record identifiers cannot be empty".into(),
         ));
@@ -1343,7 +1354,7 @@ fn prepare_path(path: &Path) -> Result<()> {
 
 fn decode_journal_event(
     connection: &Connection,
-    session_id: &str,
+    session_id: &SessionId,
     (sequence, recorded_at_ms, json, metrics_json): (i64, i64, String, String),
 ) -> Result<JournalEvent> {
     Ok(JournalEvent {

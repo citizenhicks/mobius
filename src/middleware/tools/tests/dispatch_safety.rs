@@ -137,7 +137,7 @@ async fn approval_required_handler_cannot_run_without_exact_call_authority() {
         crate::backend::sandbox::ApprovalPolicy::Ask,
     ));
     let permissions = SandboxPermissions::restore(
-        "session",
+        &"session".parse().expect("session ID"),
         crate::backend::sandbox::SandboxMode::WorkspaceWrite,
         crate::backend::sandbox::NetworkAccess::Allowed,
         ["different-call".into()],

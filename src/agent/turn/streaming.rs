@@ -251,7 +251,7 @@ impl Runner {
             .then_some(call.call_id.as_ref());
         Ok(
             match self.config.sandbox.authorize(
-                &self.config.session_id,
+                &self.runtime.session_id,
                 std::slice::from_ref(call),
                 mutations,
             )? {

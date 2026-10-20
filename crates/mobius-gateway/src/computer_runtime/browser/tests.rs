@@ -1,7 +1,7 @@
 use super::*;
 
 /// Answers the next page request on `connection` with `endpoint`, returning the chat asked for.
-async fn answer(connection: &mut BrowserConnection, endpoint: Option<&str>) -> String {
+async fn answer(connection: &mut BrowserConnection, endpoint: Option<&str>) -> SessionId {
     let Some(ServerMessage::BrowserPageRequested {
         request_id,
         session_id,
@@ -76,10 +76,17 @@ async fn a_stalled_app_cannot_queue_unbounded_or_unending_page_requests() {
     let mut connection = host.attach();
     // Timeouts leave messages in an unresponsive app's bounded outgoing queue.
     for _ in 0..MAX_PENDING_PAGES {
-        assert_eq!(host.page("chat", false).await, None);
+        assert_eq!(
+            host.page(&SessionId::new("chat").unwrap(), false).await,
+            None
+        );
     }
     assert_eq!(
-        tokio::time::timeout(PAGE_TIMEOUT, host.page("chat", false)).await,
+        tokio::time::timeout(
+            PAGE_TIMEOUT,
+            host.page(&SessionId::new("chat").unwrap(), false)
+        )
+        .await,
         Ok(None),
         "a full app queue must fall back without waiting for capacity"
     );
@@ -87,7 +94,8 @@ async fn a_stalled_app_cannot_queue_unbounded_or_unending_page_requests() {
     while connection.outgoing.try_recv().is_ok() {}
 
     {
-        let cancelled = host.page("cancelled", false);
+        let session = SessionId::new("cancelled").unwrap();
+        let cancelled = host.page(&session, false);
         tokio::pin!(cancelled);
         tokio::select! {
             biased;
@@ -95,7 +103,8 @@ async fn a_stalled_app_cannot_queue_unbounded_or_unending_page_requests() {
             _ = connection.outgoing.recv() => {}
         }
     }
-    let (page, _) = tokio::join!(host.page("next", false), answer(&mut connection, None));
+    let next = SessionId::new("next").unwrap();
+    let (page, _) = tokio::join!(host.page(&next, false), answer(&mut connection, None));
     assert_eq!(page, None);
     assert!(host.app().as_ref().unwrap().pending.is_empty());
 }

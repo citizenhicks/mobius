@@ -10,6 +10,7 @@ async fn assistant_message_compacts_progressive_deltas_and_preserves_citations()
     use crate::protocol::ModelStepContentPhase;
     use crate::protocol::ModelStepStartedEvent;
 
+    let session_id = session("session");
     let workspace = tempfile::tempdir().expect("create workspace");
     let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
         .expect("open checkpoint database");
@@ -24,7 +25,7 @@ async fn assistant_message_compacts_progressive_deltas_and_preserves_citations()
     let events = [
         event(EventMsg::ModelStepStarted(Arc::new(
             ModelStepStartedEvent {
-                session_id: "session".into(),
+                session_id: session_id.share(),
                 turn_id: "turn".into(),
                 model_step_id: "step".into(),
                 step_index: 0,
@@ -33,7 +34,7 @@ async fn assistant_message_compacts_progressive_deltas_and_preserves_citations()
         ))),
         event(EventMsg::AssistantContentDelta(
             AssistantContentDeltaEvent {
-                session_id: "session".into(),
+                session_id: session_id.share(),
                 turn_id: "turn".into(),
                 model_step_id: "step".into(),
                 delta: "Plan".into(),
@@ -42,7 +43,7 @@ async fn assistant_message_compacts_progressive_deltas_and_preserves_citations()
         )),
         event(EventMsg::AssistantContentDelta(
             AssistantContentDeltaEvent {
-                session_id: "session".into(),
+                session_id: session_id.share(),
                 turn_id: "turn".into(),
                 model_step_id: "step".into(),
                 delta: "Done".into(),
@@ -50,7 +51,7 @@ async fn assistant_message_compacts_progressive_deltas_and_preserves_citations()
             },
         )),
         event(EventMsg::ModelStepCompleted(ModelStepCompletedEvent {
-            session_id: "session".into(),
+            session_id: session_id.share(),
             turn_id: "turn".into(),
             model_step_id: "step".into(),
             step_index: 0,
@@ -64,7 +65,7 @@ async fn assistant_message_compacts_progressive_deltas_and_preserves_citations()
             diagnostics: None,
         })),
         event(EventMsg::AssistantMessage(AssistantMessageEvent {
-            session_id: "session".into(),
+            session_id: session_id.share(),
             turn_id: "turn".into(),
             model_step_id: "step".into(),
             content: vec![
@@ -95,7 +96,7 @@ async fn assistant_message_compacts_progressive_deltas_and_preserves_citations()
     for (index, event) in events.into_iter().enumerate() {
         store
             .append_event(
-                "session",
+                &session_id,
                 10 + i64::try_from(index).expect("timestamp"),
                 event,
             )
@@ -105,7 +106,7 @@ async fn assistant_message_compacts_progressive_deltas_and_preserves_citations()
 
     let page = store
         .event_page(
-            "session",
+            &session_id,
             EventPageRequest {
                 before_sequence: None,
                 limit: 10,

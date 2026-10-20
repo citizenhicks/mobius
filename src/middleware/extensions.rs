@@ -5,6 +5,7 @@
 //! hook commands and permission decisions still run every time. Unchanged startup
 //! context is skipped; ordinary message and tool context remains repeatable.
 
+use crate::SessionId;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::env;
@@ -657,13 +658,13 @@ fn installed_skill_roots_from(home: Option<PathBuf>, codex_home: Option<PathBuf>
 }
 
 fn hook_input(
-    session_id: &str,
+    session_id: &SessionId,
     model: &str,
     approval_policy: Option<ApprovalPolicy>,
     turn_id: Option<&str>,
 ) -> serde_json::Map<String, Value> {
     let mut input = serde_json::Map::from_iter([
-        ("session_id".into(), Value::String(session_id.into())),
+        ("session_id".into(), Value::String(session_id.to_string())),
         ("transcript_path".into(), Value::Null),
         ("model".into(), Value::String(model.into())),
     ]);
@@ -1118,7 +1119,7 @@ impl Middleware for Extensions {
                     input.extend([
                         (
                             "agent_id".into(),
-                            Value::String(context.turn.session_id.into()),
+                            Value::String(context.turn.session_id.to_string()),
                         ),
                         ("agent_type".into(), Value::String("subagent".into())),
                         ("agent_transcript_path".into(), Value::Null),
@@ -1385,7 +1386,7 @@ mod tests {
         let mut context = PermissionRequestContext {
             turn: TurnIdentity {
                 author: &crate::protocol::MessageAuthor::User,
-                session_id: "session",
+                session_id: &"session".parse().expect("session ID"),
                 turn_id: "turn",
                 model: "model",
                 approval_policy: ApprovalPolicy::Allow,

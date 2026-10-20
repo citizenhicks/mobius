@@ -3,10 +3,10 @@
 use std::sync::Arc;
 
 use super::Model;
+use super::provider::BaseUrl;
 use super::provider::ProviderBuildConfig;
 use super::provider::ProviderDefinition;
 use super::responses::OpenAi;
-use crate::Error;
 use crate::Result;
 
 pub(super) static MANIFEST: std::sync::LazyLock<super::provider::ProviderMetadata> =
@@ -31,14 +31,11 @@ pub(super) fn provider() -> ProviderDefinition {
     .with_credentialless_endpoints()
 }
 
-fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn Model>> {
+fn build_provider(config: ProviderBuildConfig, base_url: BaseUrl) -> Result<Arc<dyn Model>> {
     let image_input = CATALOG.image_input_models.contains(&config.model);
     let tool_discovery = config
         .tool_discovery
-        .unwrap_or_else(|| provider().tool_discovery(&config.model, config.base_url.as_deref()));
-    let base_url = config
-        .base_url
-        .ok_or_else(|| Error::Config("DeepSeek requires a base URL".into()))?;
+        .unwrap_or_else(|| provider().tool_discovery(&config.model, Some(base_url.as_str())));
     let api_key = config.credential.into_optional_api_key("deepseek")?;
     let provider = OpenAi::with_client(
         api_key,
@@ -79,7 +76,7 @@ mod tests {
                         tool_discovery: None,
                         credential: ProviderCredential::ApiKey("test-key".into()),
                         model: id.into(),
-                        base_url: Some(base_url.into()),
+                        base_url: Some(BaseUrl::new(base_url).expect("endpoint")),
                         reasoning_effort: None,
                         service_tier: None,
                         web_search: HostedWebSearch::Off,

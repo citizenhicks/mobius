@@ -1,5 +1,6 @@
 //! Portable plaintext checkpoints and context resets.
 
+use crate::SessionId;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
@@ -85,10 +86,10 @@ pub struct Compaction {
     allow_model_compaction: bool,
     reserve_tokens: i64,
     checkpoint_percent: i64,
-    counts: Mutex<BTreeMap<Arc<str>, SessionCount>>,
+    counts: Mutex<BTreeMap<SessionId, SessionCount>>,
     /// The last count of each session that unloaded, so an idle chat still reports it.
     // ponytail: one integer per chat this gateway run has unloaded; prune if that ever matters.
-    unloaded: Mutex<BTreeMap<Arc<str>, u64>>,
+    unloaded: Mutex<BTreeMap<SessionId, u64>>,
 }
 
 impl std::fmt::Debug for Compaction {
@@ -237,13 +238,13 @@ impl Compaction {
             .max(1)
     }
 
-    fn counts(&self) -> Result<std::sync::MutexGuard<'_, BTreeMap<Arc<str>, SessionCount>>> {
+    fn counts(&self) -> Result<std::sync::MutexGuard<'_, BTreeMap<SessionId, SessionCount>>> {
         self.counts.lock().map_err(|error| {
             Error::Checkpoint(format!("compaction count lock is poisoned: {error}"))
         })
     }
 
-    fn stage(&self, session_id: &str, epoch: u64) -> Result<()> {
+    fn stage(&self, session_id: &SessionId, epoch: u64) -> Result<()> {
         if let Some(session) = self.counts()?.get_mut(session_id) {
             session.pending_epoch = Some(epoch);
         }
@@ -251,7 +252,7 @@ impl Compaction {
     }
 
     /// Counts a staged compaction once its rewritten context epoch is durable.
-    async fn settle(&self, session_id: &str) -> Result<()> {
+    async fn settle(&self, session_id: &SessionId) -> Result<()> {
         let Some((checkpoints, pending_epoch, count)) =
             self.counts()?.get(session_id).and_then(|session| {
                 session
@@ -334,7 +335,7 @@ impl Middleware for Compaction {
                 .transpose()?
                 .unwrap_or_default();
             self.counts()?.insert(
-                Arc::clone(&runtime.session_id),
+                runtime.session_id.share(),
                 SessionCount {
                     checkpoints: Arc::clone(&runtime.checkpoints),
                     count: state.count,
@@ -355,7 +356,7 @@ impl Middleware for Compaction {
             if let Some(session) = self.counts()?.remove(&runtime.session_id)
                 && let Ok(mut unloaded) = self.unloaded.lock()
             {
-                unloaded.insert(Arc::clone(&runtime.session_id), session.count);
+                unloaded.insert(runtime.session_id.share(), session.count);
             }
             settled
         })
@@ -528,7 +529,11 @@ mod tests {
         let runtime = super::super::tests::lifecycle_runtime(directory.path());
         runtime
             .checkpoints
-            .save_state("session", STATE_KEY, &serde_json::json!({ "count": 3 }))
+            .save_state(
+                &runtime.session_id,
+                STATE_KEY,
+                &serde_json::json!({ "count": 3 }),
+            )
             .await
             .expect("saved count");
         let policy = Arc::new(Compaction::default());
@@ -563,7 +568,7 @@ mod tests {
             let directory = tempfile::tempdir().expect("directory");
             let path = directory.path().join("checkpoints.sqlite3");
             let checkpoints = Arc::new(SqliteCheckpoint::new(&path).expect("store"));
-            let mut checkpoint = Checkpoint::empty("session");
+            let mut checkpoint = Checkpoint::empty("session".parse().expect("session ID"));
             std::sync::Arc::make_mut(&mut checkpoint.session_context).owner_id = "test-bot".into();
             checkpoint.context_epoch = 1;
             checkpoints
@@ -572,14 +577,14 @@ mod tests {
                 .expect("save");
             let policy = Compaction::default();
             policy.counts().expect("counts").insert(
-                "session".into(),
+                checkpoint.session_id.share(),
                 SessionCount {
                     checkpoints: Arc::<SqliteCheckpoint>::clone(&checkpoints),
                     count: 3,
                     pending_epoch: None,
                 },
             );
-            policy.stage("session", 1).expect("stage");
+            policy.stage(&checkpoint.session_id, 1).expect("stage");
             let database = rusqlite::Connection::open(path).expect("database");
             let header: String = database
                 .query_row(
@@ -597,7 +602,7 @@ mod tests {
                 })
                 .expect("inject failure");
 
-            assert!(policy.settle("session").await.is_err());
+            assert!(policy.settle(&checkpoint.session_id).await.is_err());
             {
                 let counts = policy.counts().expect("counts");
                 assert_eq!(counts["session"].count, 3);
@@ -615,8 +620,14 @@ mod tests {
                     .execute_batch("DROP TRIGGER fail_count")
                     .expect("restore writes");
             }
-            policy.settle("session").await.expect("retry settlement");
-            policy.settle("session").await.expect("already settled");
+            policy
+                .settle(&checkpoint.session_id)
+                .await
+                .expect("retry settlement");
+            policy
+                .settle(&checkpoint.session_id)
+                .await
+                .expect("already settled");
             assert_eq!(policy.frontend("session").count, Some(4));
             assert_eq!(
                 checkpoints
@@ -625,8 +636,13 @@ mod tests {
                     .expect("state"),
                 Some(serde_json::json!({ "count": 4 }))
             );
-            policy.stage("session", 2).expect("stage rolled-back epoch");
-            policy.settle("session").await.expect("discard rollback");
+            policy
+                .stage(&checkpoint.session_id, 2)
+                .expect("stage rolled-back epoch");
+            policy
+                .settle(&checkpoint.session_id)
+                .await
+                .expect("discard rollback");
             let counts = policy.counts().expect("counts");
             assert_eq!(counts["session"].count, 4);
             assert_eq!(counts["session"].pending_epoch, None);

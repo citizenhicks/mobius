@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use mobius::backend::model::provider::HostedWebSearch;
+use mobius::backend::model::provider::{BaseUrl, HostedWebSearch};
 use mobius::protocol::{
     FrontendSetting, FrontendSettingKind, FrontendSettingOption, FrontendSymbol, MiddlewareFeature,
     ModelChoice, ToolDiscoveryMode,
@@ -22,7 +22,7 @@ fn status(provider: &str) -> ProviderStatus {
     let (auth, default_base_url, default_api_key_env, models, web_search) = match provider {
         "responses" => (
             ProviderAuthKind::ApiKey,
-            Some("https://api.openai.com/v1".into()),
+            Some(BaseUrl::new("https://api.openai.com/v1").unwrap()),
             None,
             Vec::new(),
             vec![search(HostedWebSearch::Off)],
@@ -36,7 +36,7 @@ fn status(provider: &str) -> ProviderStatus {
         ),
         "openai_socket" => (
             ProviderAuthKind::ApiKey,
-            Some("https://api.openai.com/v1".into()),
+            Some(BaseUrl::new("https://api.openai.com/v1").unwrap()),
             None,
             vec![model("gpt-6-sol", "Sol", Some("medium"))],
             vec![
