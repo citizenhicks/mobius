@@ -298,7 +298,7 @@ pub trait Tool: Send + Sync {
     ///
     /// Returns an error if validation or an operation required by this function fails.
     fn rewrite_hook_input(&self, input: Value) -> Result<Value> {
-        object_hook_input(input)
+        Ok(input)
     }
 
     /// Executes one validated provider call.
@@ -629,29 +629,20 @@ impl Catalog {
         })
     }
 
-    pub(crate) fn bind_prepared(
+    /// Validates and normalizes a call in place; the returned binding executes it later.
+    pub(crate) fn bind_in_place(
         &self,
-        call: ToolCall,
+        call: &mut ToolCall,
         tools: &PreparedToolSet<'_>,
-    ) -> Result<BoundToolCall> {
+    ) -> Result<ToolBinding> {
         tools.require_available(&call.name)?;
-        self.bind_call(call, &tools.materialized, &tools.searchable)
+        self.binding(call, &tools.materialized, &tools.searchable)
     }
 
-    pub(crate) fn validate_prepared(
-        &self,
-        call: &ToolCall,
-        tools: &PreparedToolSet<'_>,
-    ) -> Result<()> {
-        tools.require_available(&call.name)?;
-        self.validate_call(call, &tools.materialized, &tools.searchable)?;
-        Ok(())
-    }
-
-    pub(crate) fn bind_live_batch<'a>(
-        &self,
+    /// Binds each call with `bind`, splitting callable calls from rejected results.
+    pub(crate) fn bind_batch<'a>(
         calls: impl IntoIterator<Item = &'a ToolCall>,
-        tools: &PreparedToolSet<'_>,
+        mut bind: impl FnMut(&mut ToolCall) -> Result<ToolBinding>,
         output_limit: usize,
     ) -> (Vec<BoundToolCall>, Vec<&'a ToolCall>, Vec<ToolResult>) {
         let calls = calls.into_iter();
@@ -659,10 +650,10 @@ impl Catalog {
         let mut callable = Vec::with_capacity(calls.size_hint().0);
         let mut rejected = Vec::new();
         for call in calls {
-            let owned = call.clone(); // rules-allow: the bound call is owned while callers keep the borrowed call
-            match self.bind_prepared(owned, tools) {
-                Ok(bound_call) => {
-                    bound.push(bound_call);
+            let mut owned = call.clone(); // rules-allow: the bound call is owned while callers keep the borrowed call
+            match bind(&mut owned) {
+                Ok(binding) => {
+                    bound.push(binding.bind(owned));
                     callable.push(call);
                 }
                 Err(error) => {
@@ -727,15 +718,24 @@ impl Catalog {
         materialized: &BTreeSet<String>,
         searchable: &BTreeSet<String>,
     ) -> Result<BoundToolCall> {
-        let (tool, materialized) = self.validate_call(&call, materialized, searchable)?;
-        arguments::normalize(&mut call.arguments, &tool.definition.parameters)
+        Ok(self
+            .binding(&mut call, materialized, searchable)?
+            .bind(call))
+    }
+
+    fn binding(
+        &self,
+        call: &mut ToolCall,
+        materialized: &BTreeSet<String>,
+        searchable: &BTreeSet<String>,
+    ) -> Result<ToolBinding> {
+        let tool = self.validate_call(call, materialized, searchable)?;
+        let repaired = arguments::normalize(&mut call.arguments, &tool.definition.parameters)
             .map_err(|error| Error::Tool(format!("tool `{}` arguments: {error}", call.name)))?;
-        let search_scope =
-            matches!(&tool.handler, RegisteredHandler::Search).then(|| searchable.clone()); // rules-allow: the bound search call owns its scope
-        Ok(BoundToolCall {
-            call,
-            materialized,
-            search_scope,
+        Ok(ToolBinding {
+            repaired,
+            search_scope: matches!(&tool.handler, RegisteredHandler::Search)
+                .then(|| searchable.clone()), // rules-allow: the bound search call owns its scope
         })
     }
 
@@ -744,7 +744,7 @@ impl Catalog {
         call: &ToolCall,
         materialized: &BTreeSet<String>,
         searchable: &BTreeSet<String>,
-    ) -> Result<(&RegisteredTool, bool)> {
+    ) -> Result<&RegisteredTool> {
         if !self.finalized {
             return Err(Error::Config(
                 "tool catalog must be finalized before binding calls".into(),
@@ -762,15 +762,15 @@ impl Catalog {
         let Some(tool) = self.get(&call.name) else {
             return Err(Error::Tool(format!("unknown tool `{}`", call.name)));
         };
-        let materialized = match tool.exposure {
-            ToolExposure::Direct => false,
+        match tool.exposure {
+            ToolExposure::Direct => {}
             ToolExposure::Deferred if !searchable.contains(&*call.name) => {
                 return Err(Error::Tool(format!(
                     "tool `{}` is not available for this model step",
                     call.name
                 )));
             }
-            ToolExposure::Deferred if materialized.contains(&*call.name) => true,
+            ToolExposure::Deferred if materialized.contains(&*call.name) => {}
             ToolExposure::Deferred => {
                 return Err(Error::Tool(format!(
                     "tool `{}` was not materialized for this model step",
@@ -783,8 +783,8 @@ impl Catalog {
                     call.name
                 )));
             }
-        };
-        Ok((tool, materialized))
+        }
+        Ok(tool)
     }
 
     /// Returns whether the named tool requires approval.
@@ -858,7 +858,7 @@ impl Catalog {
     pub(crate) fn rewrite_hook_input(&self, name: &str, input: Value) -> Result<Value> {
         match self.get(name).map(|tool| &tool.handler) {
             Some(RegisteredHandler::Tool(handler)) => handler.rewrite_hook_input(input),
-            Some(RegisteredHandler::Search) | None => object_hook_input(input),
+            Some(RegisteredHandler::Search) | None => Ok(input),
         }
     }
 
@@ -1020,15 +1020,31 @@ fn materialization_effects(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoundToolCall {
     call: ToolCall,
-    materialized: bool,
     search_scope: Option<BTreeSet<String>>,
 }
 
 impl BoundToolCall {
-    /// Returns the original provider call for hooks, approvals, and events.
+    /// Returns the normalized call for hooks, approvals, and events.
     #[must_use]
     pub fn as_call(&self) -> &ToolCall {
         &self.call
+    }
+}
+
+/// Proof that a normalized call passed catalog validation for one model step.
+#[derive(Debug)]
+pub(crate) struct ToolBinding {
+    /// Whether normalization changed the call's arguments.
+    pub(crate) repaired: bool,
+    search_scope: Option<BTreeSet<String>>,
+}
+
+impl ToolBinding {
+    pub(crate) fn bind(self, call: ToolCall) -> BoundToolCall {
+        BoundToolCall {
+            call,
+            search_scope: self.search_scope,
+        }
     }
 }
 
@@ -1082,16 +1098,6 @@ pub(crate) fn limit_schema<const N: usize>(
     }
 }
 
-fn object_hook_input(input: Value) -> Result<Value> {
-    if input.is_object() {
-        Ok(input)
-    } else {
-        Err(Error::Config(
-            "hook tool rewrite must be a JSON object".into(),
-        ))
-    }
-}
-
 /// The result returned to the model for one tool call.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolResult {
@@ -1112,13 +1118,29 @@ pub struct ToolResult {
 
 impl ToolResult {
     pub(crate) fn error(call: &ToolCall, output: impl AsRef<str>, output_limit: usize) -> Self {
+        Self::failure(
+            Arc::clone(&call.call_id),
+            Arc::clone(&call.name),
+            output.as_ref(),
+            false,
+            output_limit,
+        )
+    }
+
+    fn failure(
+        call_id: Arc<str>,
+        name: Arc<str>,
+        output: &str,
+        handler_executed: bool,
+        output_limit: usize,
+    ) -> Self {
         Self {
-            call_id: Arc::clone(&call.call_id),
-            name: Arc::clone(&call.name),
-            output: capped(output.as_ref(), output_limit).into(),
+            call_id,
+            name,
+            output: capped(output, output_limit).into(),
             is_error: true,
             usage: None,
-            handler_executed: false,
+            handler_executed,
             additional_input: Vec::new(),
             events: Vec::new(),
             output_limit,
@@ -1207,11 +1229,7 @@ pub(crate) async fn execute_call(
     author: &Arc<crate::protocol::MessageAuthor>,
 ) -> ToolResult {
     let output_limit = sandbox.output_limit();
-    let BoundToolCall {
-        call,
-        materialized,
-        search_scope,
-    } = call;
+    let BoundToolCall { call, search_scope } = call;
     let context = ToolContext::new(
         Arc::clone(sandbox),
         permissions.for_call(&call.call_id),
@@ -1229,27 +1247,6 @@ pub(crate) async fn execute_call(
         Ok(revision) => revision,
         Err(error) => return ToolResult::error(&call, error.to_string(), output_limit),
     };
-    match tool.exposure {
-        ToolExposure::Direct => {}
-        ToolExposure::Deferred if materialized => {}
-        ToolExposure::Deferred => {
-            return ToolResult::error(
-                &call,
-                format!(
-                    "tool `{}` was not materialized for this model step",
-                    call.name
-                ),
-                output_limit,
-            );
-        }
-        ToolExposure::Hidden => {
-            return ToolResult::error(
-                &call,
-                format!("tool `{}` is hidden from the model", call.name),
-                output_limit,
-            );
-        }
-    }
     if tool.approval == ApprovalRequirement::Always && !context.permissions.allows_mutation() {
         return ToolResult::error(
             &call,
@@ -1283,17 +1280,13 @@ pub(crate) async fn execute_call(
             let mut additional_input = match pending_input.take() {
                 Ok(input) => input,
                 Err(error) => {
-                    return ToolResult {
+                    return ToolResult::failure(
                         call_id,
                         name,
-                        output: capped(&error.to_string(), output_limit).into(),
-                        is_error: true,
-                        usage: None,
-                        handler_executed: true,
-                        additional_input: Vec::new(),
-                        events: Vec::new(),
+                        &error.to_string(),
+                        true,
                         output_limit,
-                    }
+                    )
                     .with_usage(&pending_usage, model_route);
                 }
             };
@@ -1312,28 +1305,10 @@ pub(crate) async fn execute_call(
                 output_limit,
             }
         }
-        Ok(Err(error)) => ToolResult {
-            call_id,
-            name,
-            output: capped(&error.to_string(), output_limit).into(),
-            is_error: true,
-            usage: None,
-            handler_executed: true,
-            additional_input: Vec::new(),
-            events: Vec::new(),
-            output_limit,
-        },
-        Err(_) => ToolResult {
-            call_id,
-            name,
-            output: capped("tool panicked", output_limit).into(),
-            is_error: true,
-            usage: None,
-            handler_executed: true,
-            additional_input: Vec::new(),
-            events: Vec::new(),
-            output_limit,
-        },
+        Ok(Err(error)) => {
+            ToolResult::failure(call_id, name, &error.to_string(), true, output_limit)
+        }
+        Err(_) => ToolResult::failure(call_id, name, "tool panicked", true, output_limit),
     }
     .with_usage(&pending_usage, model_route)
 }

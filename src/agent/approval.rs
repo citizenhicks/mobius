@@ -37,7 +37,6 @@ impl Runner {
         request: SandboxApprovalRequest,
         permissions: SandboxPermissions,
     ) -> Result<Option<ToolCompletion>> {
-        validate_approval_selection(&calls, &request.call_ids)?;
         let mut hook_events = Vec::new();
         let hook_decision = {
             let mut context = PermissionRequestContext {
@@ -163,6 +162,7 @@ impl Runner {
                         &pending.submission_id,
                         &pending.turn_id,
                         &pending.calls,
+                        None,
                         permissions,
                     )
                     .await?;
@@ -192,6 +192,7 @@ impl Runner {
                             &pending.submission_id,
                             &pending.turn_id,
                             &allowed_calls,
+                            None,
                             permissions,
                         )
                         .await?;
@@ -262,26 +263,6 @@ fn approval_event(pending: &PendingApproval) -> Event {
         submission_id: Some(Arc::clone(&pending.submission_id)),
         msg: EventMsg::ExecApprovalRequest(pending.request_event()),
     }
-}
-
-fn validate_approval_selection(calls: &[ToolCall], call_ids: &[Arc<str>]) -> Result<()> {
-    let known_call_ids = calls
-        .iter()
-        .map(|call| call.call_id.as_ref())
-        .collect::<BTreeSet<_>>();
-    let selected_call_ids = call_ids
-        .iter()
-        .map(AsRef::as_ref)
-        .collect::<BTreeSet<&str>>();
-    if call_ids.is_empty()
-        || selected_call_ids.len() != call_ids.len()
-        || !selected_call_ids.is_subset(&known_call_ids)
-    {
-        return Err(Error::Config(
-            "sandbox approval policy returned an invalid tool selection".into(),
-        ));
-    }
-    Ok(())
 }
 
 fn denied_results<'a>(

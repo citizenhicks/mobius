@@ -310,6 +310,32 @@ impl SessionFileStore {
         detail: ImageDetail,
     ) -> Result<ImageReference> {
         let bytes = self.read_file(session_id, file).await?;
+        self.inspect_bytes(session_id, file, bytes, detail).await
+    }
+
+    /// Inspects a stored image by its opaque file ID, resolving the reference once.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
+    pub async fn inspect_image_id(
+        &self,
+        session_id: &str,
+        file_id: &str,
+        detail: ImageDetail,
+    ) -> Result<ImageReference> {
+        let (record, path) = self.resolve(session_id, file_id).await?;
+        let bytes = tokio::fs::read(path).await?;
+        self.inspect_bytes(session_id, &record.file, bytes, detail)
+            .await
+    }
+
+    async fn inspect_bytes(
+        &self,
+        session_id: &str,
+        file: &SessionFileReference,
+        bytes: Vec<u8>,
+        detail: ImageDetail,
+    ) -> Result<ImageReference> {
         let (_, media_type, width, height, orientation) =
             validated_image(bytes, &self.state.image_work).await?;
         if file.media_type != media_type {
@@ -752,7 +778,6 @@ fn decode_image(bytes: &[u8]) -> Result<(&'static str, image::DynamicImage, Orie
     let mut decoder = reader.into_decoder().map_err(image_error)?;
     let (width, height) = decoder.dimensions();
     validate_dimensions(width, height)?;
-    decoder.set_limits(decode_limits()).map_err(image_error)?;
     let orientation = decoder.orientation().map_err(image_error)?;
     let decoded = image::DynamicImage::from_decoder(decoder).map_err(image_error)?;
     match format {

@@ -514,7 +514,7 @@ pub(super) async fn submit_operation(
         .send(ClientMessage::Submit {
             session_id: session_id.into(),
             submission: Submission {
-                id: Uuid::new_v4().to_string().into(),
+                id: crate::fresh_id(),
                 op,
             },
         })
@@ -700,7 +700,7 @@ pub(super) async fn confirm_unpair(
     state.error = None;
     sender
         .send(ClientMessage::UnpairClient {
-            request_id: Uuid::new_v4().to_string().into(),
+            request_id: crate::fresh_id(),
             client_id,
         })
         .await
@@ -710,13 +710,13 @@ pub(super) async fn confirm_unpair(
 pub(super) async fn request_snapshot(sender: &GatewaySender) -> Result<()> {
     sender
         .send(ClientMessage::ListClients {
-            request_id: Uuid::new_v4().to_string().into(),
+            request_id: crate::fresh_id(),
         })
         .await
         .map_err(gateway_error)?;
     sender
         .send(ClientMessage::GetProfile {
-            request_id: Uuid::new_v4().to_string().into(),
+            request_id: crate::fresh_id(),
             include_provider_usage: false,
         })
         .await

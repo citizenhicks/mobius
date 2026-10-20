@@ -10,7 +10,6 @@ queue_full = "message queue is full"
 queue_failed = "message could not be queued"
 edit_stale = "message is no longer queued"
 edit_empty = "message edit requires non-empty text"
-edit_too_large = "message exceeds editable size limit"
 edit_peer = "peer messages cannot be edited"
 received_title = "Message received from @{handle}"
 

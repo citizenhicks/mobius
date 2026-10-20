@@ -10,8 +10,8 @@ use crate::backend::checkpoint::{CheckpointStore, EventPageRequest, QueuedMessag
 use crate::backend::model::internal_user_message;
 use crate::protocol::{
     ActiveMessageDelivery, EventMsg, FrontendBlock, FrontendContribution, FrontendEvent,
-    FrontendSettingValue, FrontendSlot, FrontendSymbol, FrontendTone, FrontendWidget,
-    MAX_CAPABILITY_INPUT_BYTES, MessageAuthor, MessageDelivery, MessageEvent, MessageReply, Op,
+    FrontendSlot, FrontendSymbol, FrontendTone, FrontendWidget, MessageAuthor, MessageDelivery,
+    MessageEvent, MessageReply, Op,
 };
 use crate::{BoxFuture, Result};
 
@@ -29,7 +29,6 @@ mod text {
         pub(super) queue_failed: String,
         pub(super) edit_stale: String,
         pub(super) edit_empty: String,
-        pub(super) edit_too_large: String,
         pub(super) edit_peer: String,
         pub(super) received_title: String,
         pub(super) default_enabled: bool,
@@ -56,7 +55,7 @@ fn rejected(message: &str) -> SubmissionResult {
 /// Prepares every conversation message and owns its durable delivery lifecycle.
 #[derive(Debug)]
 pub struct Messages {
-    max_pending: usize,
+    max_pending: std::num::NonZeroUsize,
     delivery: ActiveMessageDelivery,
 }
 
@@ -69,6 +68,8 @@ impl Default for Messages {
         let settings = &text::DEFINITION.settings;
         Self {
             max_pending: usize::try_from(super::manifest::integer_default(settings, MAX_PENDING))
+                .ok()
+                .and_then(std::num::NonZeroUsize::new)
                 .expect("valid embedded max_pending"),
             delivery: super::manifest::string_default(settings, DELIVERY)
                 .parse()
@@ -79,25 +80,12 @@ impl Default for Messages {
 
 impl Messages {
     /// Creates message delivery with a bounded queue and active-turn default.
-    /// # Errors
-    ///
-    /// Returns an error if configuration is invalid or a required resource cannot be initialized.
-    pub fn new(max_pending: usize, delivery: ActiveMessageDelivery) -> Result<Self> {
-        text::DEFINITION
-            .settings
-            .iter()
-            .find(|setting| setting.id() == MAX_PENDING)
-            .ok_or_else(|| crate::Error::Config(format!("missing embedded {MAX_PENDING} setting")))?
-            .validate(
-                MANIFEST.id,
-                Some(&FrontendSettingValue::Integer(
-                    i64::try_from(max_pending).unwrap_or(i64::MAX),
-                )),
-            )?;
-        Ok(Self {
+    #[must_use]
+    pub const fn new(max_pending: std::num::NonZeroUsize, delivery: ActiveMessageDelivery) -> Self {
+        Self {
             max_pending,
             delivery,
-        })
+        }
     }
 
     fn remove_widget(&self, id: &str) -> FrontendEvent {
@@ -170,7 +158,7 @@ impl Messages {
             Ok(boundary) => boundary,
             Err(message) => return Ok(SubmissionResult::Rejected(message)),
         };
-        if context.queued_messages.count() >= self.max_pending {
+        if context.queued_messages.count() >= self.max_pending.get() {
             return Ok(rejected(&text::DEFINITION.queue_full));
         }
         let message = &mut *context.message;
@@ -193,7 +181,7 @@ impl Messages {
         let input_changed = matches!(boundary, QueuedMessageBoundary::Steer { .. });
         if !context
             .queued_messages
-            .enqueue(context.submission_id, boundary, event)?
+            .enqueue_validated(context.submission_id, boundary, event)?
         {
             return Ok(rejected(&text::DEFINITION.queue_failed));
         }
@@ -207,9 +195,6 @@ impl Messages {
         let Some(input) = context.input.filter(|input| !input.trim().is_empty()) else {
             return Ok(rejected(&text::DEFINITION.edit_empty));
         };
-        if input.len() > MAX_CAPABILITY_INPUT_BYTES {
-            return Ok(rejected(&text::DEFINITION.edit_too_large));
-        }
         let Some(queued) = context.queued_messages.find(context.arguments) else {
             return Ok(rejected(&text::DEFINITION.edit_stale));
         };
@@ -490,7 +475,7 @@ mod tests {
         });
         let target = MessageTarget {
             checkpoint_sequence: 5,
-            batch_item_count: 2,
+            batch_item_count: std::num::NonZeroUsize::new(2).unwrap(),
         };
         message.reply = Some(MessageReply {
             target,
@@ -579,9 +564,10 @@ mod tests {
 
     #[tokio::test]
     async fn explicitly_steered_source_remains_non_authoritative_input() {
-        let stack = MiddlewareStack::new(vec![Arc::new(
-            Messages::new(4, ActiveMessageDelivery::Queue).expect("messages"),
-        )])
+        let stack = MiddlewareStack::new(vec![Arc::new(Messages::new(
+            std::num::NonZeroUsize::new(4).expect("positive"),
+            ActiveMessageDelivery::Queue,
+        ))])
         .expect("stack");
         let peer = MessageSubmission {
             author: MessageAuthor::Source {
@@ -664,7 +650,7 @@ mod tests {
         }
         let attachment_target = crate::protocol::MessageTarget {
             checkpoint_sequence: 1,
-            batch_item_count: 1,
+            batch_item_count: std::num::NonZeroUsize::MIN,
         };
         store
             .append_event(
@@ -691,7 +677,7 @@ mod tests {
             .expect("append attachment message");
         let assistant_target = crate::protocol::MessageTarget {
             checkpoint_sequence: 1,
-            batch_item_count: 2,
+            batch_item_count: std::num::NonZeroUsize::new(2).unwrap(),
         };
         store
             .append_event(
@@ -727,7 +713,7 @@ mod tests {
             .expect("append assistant message");
         let other_target = crate::protocol::MessageTarget {
             checkpoint_sequence: 2,
-            batch_item_count: 1,
+            batch_item_count: std::num::NonZeroUsize::MIN,
         };
         store
             .append_event(

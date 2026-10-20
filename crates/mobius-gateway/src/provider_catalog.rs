@@ -482,7 +482,6 @@ pub(crate) fn credential_is_configured(
 ) -> Result<bool> {
     let definition = provider(&selection.provider)?;
     if selection.endpoint_auth == ProviderEndpointAuth::Credentialless {
-        definition.validate_credentialless_endpoint(selection.base_url.as_deref())?;
         return Ok(true);
     }
     let base_url = selected_base_url(definition, selection);

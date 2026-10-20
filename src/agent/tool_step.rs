@@ -13,7 +13,7 @@ use crate::Error;
 use crate::Result;
 use crate::backend::model::tool_output;
 use crate::backend::sandbox::SandboxPermissions;
-use crate::middleware::tools::{ToolResult, execute_batch};
+use crate::middleware::tools::{Catalog, ToolBinding, ToolResult, execute_batch};
 use crate::middleware::{PostToolUseContext, PreToolUseContext};
 use crate::protocol::Event;
 use crate::protocol::EventMsg;
@@ -110,14 +110,31 @@ impl Runner {
         submission_id: &Arc<str>,
         turn_id: &Arc<str>,
         calls: &[impl Borrow<ToolCall> + Sync],
+        bindings: Option<Vec<ToolBinding>>,
         permissions: SandboxPermissions,
     ) -> Result<Wait<ToolCompletion>> {
-        let tools = self.live_tools().await?;
-        let (bound_calls, callable, mut unavailable_results) = self.catalog.bind_live_batch(
-            calls.iter().map(Borrow::borrow),
-            &tools,
-            self.config.sandbox.output_limit(),
-        );
+        let output_limit = self.config.sandbox.output_limit();
+        let calls_iter = calls.iter().map(Borrow::borrow);
+        // Calls bound for this step execute directly; after an approval wait they bind again.
+        let (bound_calls, callable, mut unavailable_results) = if let Some(bindings) = bindings {
+            let mut bindings = bindings.into_iter();
+            Catalog::bind_batch(
+                calls_iter,
+                |_| {
+                    bindings
+                        .next()
+                        .ok_or_else(|| Error::Tool("tool call has no binding".into()))
+                },
+                output_limit,
+            )
+        } else {
+            let tools = self.live_tools().await?;
+            Catalog::bind_batch(
+                calls_iter,
+                |call| self.catalog.bind_in_place(call, &tools),
+                output_limit,
+            )
+        };
         for call in &callable {
             self.emit(
                 Arc::clone(submission_id),

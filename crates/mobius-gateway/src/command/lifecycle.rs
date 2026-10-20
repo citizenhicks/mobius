@@ -48,7 +48,7 @@ pub(super) async fn serve(
     }
     #[cfg(unix)]
     ensure_gateway_stopped(&store, &config)?;
-    let auth = AuthStore::open(store.auth_path(), config.auth)?;
+    let auth = AuthStore::open_validated(store.auth_path(), config.auth)?;
     if let Some((endpoint, token)) = provision_cloudflare_local_client(&auth, &config)? {
         save_local_client(&endpoint, token)?;
     }
@@ -454,13 +454,7 @@ impl ProcessRecordGuard {
     pub(super) fn create(state_dir: &Path, endpoint: Option<&Endpoint>) -> Result<Self> {
         let state_dir = fs::canonicalize(state_dir)?;
         let path = state_dir.join(PROCESS_FILE);
-        let mut file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(&path)?;
-        file.set_permissions(mobius::owner_only::file())?;
+        let mut file = mobius::owner_only::open(&path)?;
         file.try_lock().map_err(|error| match error {
             TryLockError::WouldBlock => Error::Config("gateway is already running".into()),
             TryLockError::Error(error) => error.into(),
@@ -501,13 +495,7 @@ impl StartupGuard {
     #[cfg(unix)]
     pub(super) fn create(state_dir: &Path) -> Result<Self> {
         let path = fs::canonicalize(state_dir)?.join(STARTUP_FILE);
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(path)?;
-        file.set_permissions(mobius::owner_only::file())?;
+        let file = mobius::owner_only::open(&path)?;
         file.try_lock().map_err(|error| match error {
             TryLockError::WouldBlock => {
                 Error::Config("gateway startup is already in progress".into())

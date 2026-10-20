@@ -652,7 +652,6 @@ fn client(settings: super::ModelTransportSettings) -> Result<Client> {
 }
 
 fn validate_call_id(id: &str) -> Result<()> {
-    validate_text(id, 256, "voice call identity")?;
     if !crate::identifier::valid_ascii_identifier(id, 256, crate::identifier::AsciiCase::Any, b"_-")
     {
         return Err(invalid("invalid provider voice call identity"));
@@ -1097,9 +1096,6 @@ impl VoiceTurns {
         events: &mut Vec<RealtimeVoiceEvent>,
     ) -> Result<()> {
         validate_text(id, 256, "voice transcript identity")?;
-        if text.len() > MAX_TEXT_BYTES || text.contains('\0') {
-            return Err(invalid("voice transcript exceeded its size limit"));
-        }
         let stream = self.streams.entry(id.into()).or_default();
         if stream.complete {
             return Ok(());

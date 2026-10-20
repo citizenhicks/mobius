@@ -215,25 +215,17 @@ impl Sessions {
     /// Creates session middleware with a bounded catalog page size, the durable media
     /// storage a fork is granted its observations from, and, for hosts that have them,
     /// the owner's other open chats that main chats may list and message.
-    /// # Errors
-    ///
-    /// Returns an error if the page size is outside its manifest bounds.
+    #[must_use]
     pub fn new(
-        page_size: usize,
+        page_size: std::num::NonZeroUsize,
         files: Option<Arc<crate::backend::session_files::SessionFileStore>>,
         live_chats: Option<Arc<dyn LiveChats>>,
-    ) -> Result<Self> {
-        let (min, max) = page_size_bounds()?;
-        if !(min..=max).contains(&page_size) {
-            return Err(Error::Config(format!(
-                "chat catalog page size must be between {min} and {max}"
-            )));
-        }
-        Ok(Self {
-            page_size,
+    ) -> Self {
+        Self {
+            page_size: page_size.get(),
             files,
             live_chats,
-        })
+        }
     }
 }
 
@@ -244,30 +236,6 @@ impl std::fmt::Debug for Sessions {
             .field("page_size", &self.page_size)
             .finish_non_exhaustive()
     }
-}
-
-fn page_size_bounds() -> Result<(usize, usize)> {
-    let Some(super::manifest::MiddlewareSettingManifest::Integer {
-        min,
-        max: Some(max),
-        ..
-    }) = text::DEFINITION
-        .settings
-        .iter()
-        .find(|setting| setting.id() == "page_size")
-    else {
-        return Err(Error::Config(
-            "missing embedded integer setting page_size".into(),
-        ));
-    };
-    let bound = |value: i64| {
-        usize::try_from(value).map_err(|error| {
-            Error::Config(format!(
-                "embedded page size bound {value} must fit: {error}"
-            ))
-        })
-    };
-    Ok((bound(*min)?, bound(*max)?))
 }
 
 enum Command {
@@ -821,13 +789,7 @@ impl History {
             .batches
             .first()
             .filter(|batch| batch.sequence == arguments.target.checkpoint_sequence)
-            .and_then(|batch| {
-                arguments
-                    .target
-                    .batch_item_count
-                    .checked_sub(1)
-                    .and_then(|index| batch.items.get(index))
-            })
+            .and_then(|batch| batch.items.get(arguments.target.batch_item_count.get() - 1))
             .and_then(history_text)
             .ok_or_else(|| {
                 Error::Tool("history target is not a readable transcript item".into())
@@ -890,7 +852,7 @@ fn scan_history_batch(
                     session_id: Arc::clone(session_id),
                     target: MessageTarget {
                         checkpoint_sequence: batch.sequence,
-                        batch_item_count: remaining,
+                        batch_item_count: std::num::NonZeroUsize::MIN.saturating_add(remaining - 1),
                     },
                     kind,
                     offset: cursor.offset,
@@ -1478,7 +1440,7 @@ mod tests {
             target,
             MessageTarget {
                 checkpoint_sequence: 1,
-                batch_item_count: 3
+                batch_item_count: std::num::NonZeroUsize::new(3).unwrap()
             }
         );
         let mut restored = String::new();
@@ -1509,7 +1471,7 @@ mod tests {
                     session_id: None,
                     target: MessageTarget {
                         checkpoint_sequence: 1,
-                        batch_item_count: 2,
+                        batch_item_count: std::num::NonZeroUsize::new(2).unwrap(),
                     },
                     offset: 0,
                     max_chars: 4_000,
@@ -1599,7 +1561,7 @@ mod tests {
         }
         let target = MessageTarget {
             checkpoint_sequence: 1,
-            batch_item_count: 1,
+            batch_item_count: std::num::NonZeroUsize::MIN,
         };
         assert!(
             history
@@ -1656,14 +1618,14 @@ mod tests {
             (
                 MessageTarget {
                     checkpoint_sequence: 1,
-                    batch_item_count: 1,
+                    batch_item_count: std::num::NonZeroUsize::MIN,
                 },
                 serde_json::json!({"type": "function_call", "call_id": "call-1", "name": "read"}),
             ),
             (
                 MessageTarget {
                     checkpoint_sequence: 1,
-                    batch_item_count: 2,
+                    batch_item_count: std::num::NonZeroUsize::new(2).unwrap(),
                 },
                 serde_json::json!({"role": "assistant", "content": "Working"}),
             ),

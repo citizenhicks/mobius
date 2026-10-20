@@ -15,6 +15,7 @@ use uuid::Uuid;
 use super::{
     MAX_API_KEY_BYTES, MAX_ENDPOINT_BYTES, MAX_MODEL_IDS_BYTES, MAX_PROVIDER_LABEL_BYTES, SetupMode,
 };
+use crate::frontend::wrap_step;
 
 pub(super) struct ProviderEntry {
     pub(super) status: Arc<ProviderStatus>,
@@ -1211,19 +1212,6 @@ impl SetupState {
             detail: "Open the verification URL and enter this one-time code.".into(),
             verification: Some((verification_url, user_code)),
         });
-    }
-}
-
-/// Moves `index` by `delta` within `0..len`, wrapping at both ends.
-fn wrap_step(index: usize, delta: isize, len: usize) -> usize {
-    let Some(shift) = delta.unsigned_abs().checked_rem(len) else {
-        return index;
-    };
-    let index = index % len;
-    if delta.is_negative() {
-        (index + len - shift) % len
-    } else {
-        (index + shift) % len
     }
 }
 

@@ -298,16 +298,19 @@ pub(crate) fn subagent_limits(
     Ok(ceilings.limits(max_depth, max_concurrency, max_agents)?)
 }
 
-pub(crate) fn usize_setting(
+pub(crate) fn count_setting(
     config: &MiddlewareConfig,
     middleware: &str,
     setting: &str,
-) -> Result<usize> {
-    usize::try_from(integer_setting(config, middleware, setting)?).map_err(|error| {
-        Error::Config(format!(
-            "middleware setting `{middleware}.{setting}` must fit an unsigned integer: {error}"
-        ))
-    })
+) -> Result<std::num::NonZeroUsize> {
+    usize::try_from(integer_setting(config, middleware, setting)?)
+        .ok()
+        .and_then(std::num::NonZeroUsize::new)
+        .ok_or_else(|| {
+            Error::Config(format!(
+                "middleware setting `{middleware}.{setting}` must be a positive count"
+            ))
+        })
 }
 
 pub(crate) fn string_setting<'a>(

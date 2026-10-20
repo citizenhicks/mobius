@@ -1,7 +1,7 @@
 //! Command parsing and execution for the terminal client.
 
 use std::env;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::IsTerminal as _;
 use std::ops::ControlFlow;
 #[cfg(unix)]
@@ -31,7 +31,6 @@ use mobius_gateway::wire::{
 };
 use tokio::io::AsyncReadExt as _;
 use tokio::process::{Child, Command as ProcessCommand};
-use uuid::Uuid;
 
 /// Parsed `mobius` command line.
 #[derive(Debug, Parser)]
@@ -490,14 +489,15 @@ fn lock_local_gateway_startup(state_dir: &Path) -> mobius_gateway::Result<File> 
     {
         std::fs::create_dir_all(parent)?;
     }
-    let file = OpenOptions::new()
+    #[cfg(unix)]
+    let file = mobius::owner_only::open(&path)?;
+    #[cfg(not(unix))]
+    let file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .read(true)
         .write(true)
         .open(path)?;
-    #[cfg(unix)]
-    file.set_permissions(mobius::owner_only::file())?;
     file.lock()?;
     Ok(file)
 }
@@ -779,7 +779,7 @@ async fn open_session(
     gateway: &mut ReadyPayload,
     session_id: Arc<str>,
 ) -> Result<SessionReadyPayload> {
-    let request_id: Arc<str> = Uuid::new_v4().to_string().into();
+    let request_id: Arc<str> = crate::fresh_id();
     sender
         .send(ClientMessage::OpenSession {
             request_id: Arc::clone(&request_id),
@@ -798,7 +798,7 @@ async fn create_session(
     workspace: PathBuf,
     bot_id: Arc<str>,
 ) -> Result<SessionReadyPayload> {
-    let request_id: Arc<str> = Uuid::new_v4().to_string().into();
+    let request_id: Arc<str> = crate::fresh_id();
     sender
         .send(ClientMessage::CreateSession {
             request_id: Arc::clone(&request_id),
@@ -824,7 +824,7 @@ async fn discard_session(
     gateway: &mut ReadyPayload,
     session_id: &str,
 ) -> Result<()> {
-    let request_id: Arc<str> = Uuid::new_v4().to_string().into();
+    let request_id: Arc<str> = crate::fresh_id();
     sender
         .send(ClientMessage::DeleteSessions {
             request_id: Arc::clone(&request_id),
@@ -865,7 +865,7 @@ async fn refresh_sessions(
     events: &mut GatewayEvents,
     gateway: &mut ReadyPayload,
 ) -> Result<()> {
-    let request_id: Arc<str> = Uuid::new_v4().to_string().into();
+    let request_id: Arc<str> = crate::fresh_id();
     sender
         .send(ClientMessage::ListSessions {
             request_id: Arc::clone(&request_id),
@@ -962,12 +962,12 @@ mod tests {
         let state_dir = directory.path().join("gateway");
         let lock_path = directory.path().join("gateway.startup.lock");
         let first = lock_local_gateway_startup(&state_dir).expect("first startup lock");
-        let second = OpenOptions::new()
+        let second = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .open(&lock_path)
             .expect("second contender");
-        let third = OpenOptions::new()
+        let third = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .open(&lock_path)

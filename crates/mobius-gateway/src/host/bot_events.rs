@@ -3,9 +3,9 @@
 use super::{
     Arc, BotStore, CheckpointStore, Error, EventMsg, EventPageRequest, ExecutionOutcome,
     ExecutionRecord, FrontendEvent, GatewayHost, GatewayState, JournalEvent, MessageAuthor,
-    MessageSubmission, Op, Rejection, Result, RoutineRunStatus, ServerFrame, ServerMessage,
-    Submission, Utc, gateway_session_summaries, internal, invalid_bot, invalid_config,
-    invalid_routine, unknown_session, validate_bot_workspace,
+    MessageSubmission, Op, Rejection, Result, RoutineRunStatus, ServerMessage, Submission, Utc,
+    gateway_session_summaries, internal, invalid_bot, invalid_config, invalid_routine,
+    unknown_session, validate_bot_workspace,
 };
 use crate::wire::{BotAction, BotSubscription, HookData, HookEvent, HookSelector, HookSource};
 use mobius::backend::checkpoint::ExecutionPageRequest;
@@ -16,11 +16,12 @@ impl GatewayHost {
         &self,
         subscription: BotSubscription,
     ) -> std::result::Result<(), Rejection> {
+        let source =
+            crate::bots::subscription_source(&subscription.binding).map_err(invalid_config)?;
         let _mutation = self.begin_exclusive_mutation().await?;
         let state = self.state.lock().await;
         state.bots.bot(&subscription.bot_id).map_err(invalid_bot)?;
-        let after =
-            validate_selector(&state, &subscription.bot_id, &subscription.binding.on).await?;
+        let after = validate_source(&state, &subscription.bot_id, source).await?;
         validate_action(&state, &subscription.bot_id, &subscription.binding.action).await?;
         state
             .bots
@@ -239,12 +240,7 @@ impl GatewayHost {
 
         for event in bots.unpublished_events(100).map_err(internal)? {
             let id = Arc::clone(&event.id);
-            if let Err(error) = self
-                .events
-                .send(ServerFrame::new(ServerMessage::HookEvent { event }))
-            {
-                tracing::debug!(%error, "hook event had no subscribers");
-            }
+            super::send_event(&self.events, ServerMessage::HookEvent { event });
             bots.event_published(&id).map_err(internal)?;
         }
         drop(mutation);
@@ -273,15 +269,8 @@ impl GatewayHost {
                         retry.then(|| Utc::now().timestamp() + 15),
                     )
                     .map_err(internal)?;
-                    if !retry
-                        && let Err(error) =
-                            self.events.send(ServerFrame::new(ServerMessage::Error {
-                                code: "hook_action".into(),
-                                message: error.message,
-                                fatal: false,
-                            }))
-                    {
-                        tracing::debug!(%error, "hook action failure had no subscribers");
+                    if !retry {
+                        super::send_warning(&self.events, "hook_action", error.message);
                     }
                 }
             }
@@ -357,14 +346,11 @@ impl GatewayHost {
     }
 }
 
-pub(super) async fn validate_selector(
+pub(super) async fn validate_source(
     state: &GatewayState,
     bot_id: &str,
-    selector: &HookSelector,
+    source: &HookSource,
 ) -> std::result::Result<u64, Rejection> {
-    let HookSelector::Event { source, .. } = selector else {
-        return Err(invalid_config("timer selectors belong to routine bindings"));
-    };
     match source {
         HookSource::Routine { routine_id } => {
             require_routine_owner_local(&state.bots, routine_id, bot_id)?;
@@ -403,12 +389,8 @@ pub(super) async fn validate_selector(
             Ok(0)
         }
         HookSource::Client { client_id } => {
-            let policy = state
-                .config
-                .lock()
-                .map_err(|error| internal(format!("configuration lock poisoned: {error}")))?
-                .auth;
-            if !crate::auth::AuthStore::open(state.store.auth_path(), policy)
+            let policy = state.config()?.auth;
+            if !crate::auth::AuthStore::open_validated(state.store.auth_path(), policy)
                 .map_err(internal)?
                 .clients()
                 .map_err(internal)?
@@ -438,8 +420,8 @@ async fn validate_action(
             if let crate::wire::RoutineAction::Update { definition } = &command.action {
                 validate_bot_workspace(state, bot_id, &definition.workspace)?;
                 for binding in &definition.bindings {
-                    if matches!(binding.on, HookSelector::Event { .. }) {
-                        validate_selector(state, bot_id, &binding.on).await?;
+                    if let HookSelector::Event { source, .. } = &binding.on {
+                        validate_source(state, bot_id, source).await?;
                     }
                 }
             }

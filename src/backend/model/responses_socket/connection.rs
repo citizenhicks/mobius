@@ -259,13 +259,6 @@ async fn socket_pump(
                         }
                     }
                     Some(Ok(message @ (Message::Text(_) | Message::Binary(_)))) if active => {
-                        if message.len() > MAX_SOCKET_MESSAGE_BYTES {
-                            close_reason = Some(ModelCancellationReason::RequestFailed);
-                            notify(&messages, SocketEvent::ProtocolError(
-                                "WebSocket message exceeded size limit",
-                            ));
-                            break;
-                        }
                         stream_events += 1;
                         if stream_events > MAX_STREAM_EVENTS
                             || account_stream_bytes(
@@ -528,7 +521,6 @@ async fn read_exchange_with_timeout(
     let mut reasoning_part = None;
     let mut output = BTreeMap::new();
     let mut next_output_index = 0;
-    let mut stream_bytes = 0;
     let output_delivered = Arc::new(AtomicBool::new(false));
     let tracked_delivery = Arc::clone(&output_delivered);
     let downstream = Arc::clone(events);
@@ -553,12 +545,6 @@ async fn read_exchange_with_timeout(
                 return Ok(Exchange::Reconnect);
             }
         };
-        if message.len() > MAX_SOCKET_MESSAGE_BYTES {
-            return Err(Error::Provider(
-                "WebSocket message exceeded size limit".into(),
-            ));
-        }
-        account_stream_bytes(&mut stream_bytes, message.len(), "WebSocket")?;
         let mut event = match message {
             Message::Text(text) => serde_json::from_str(text.as_ref())?,
             Message::Binary(bytes) => serde_json::from_slice(&bytes)?,

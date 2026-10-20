@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use mobius_gateway::wire::{ClientMessage, ProfileSnapshot, ProviderInstance, ServerMessage};
-use uuid::Uuid;
 
 use super::catalog::GatewayAction;
 use super::provider_instance_label;
@@ -123,12 +122,8 @@ pub(super) fn render_response(
     }
 }
 
-fn request_id() -> Arc<str> {
-    Uuid::new_v4().to_string().into()
-}
-
 fn send(build: impl FnOnce(Arc<str>) -> ClientMessage) -> PreparedAction {
-    Box::new(build(request_id()))
+    Box::new(build(crate::fresh_id()))
 }
 
 fn render_profile(profile: &ProfileSnapshot, provider_instances: &[ProviderInstance]) -> String {

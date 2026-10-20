@@ -61,7 +61,7 @@ impl FileDiff {
             })
             .unwrap_or_else(|| text.lines().next().unwrap_or("Diff"));
         // Keep quoted paths and ambiguous Git headers intact rather than guessing at spaces.
-        let path = terminal_text(path).replace(['\n', '\t'], " ");
+        let path = crate::frontend::terminal::terminal_line(path);
         let status = if metadata
             .iter()
             .any(|line| line.starts_with("new file mode ") || *line == "--- /dev/null")

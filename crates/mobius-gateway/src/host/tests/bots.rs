@@ -21,12 +21,14 @@ pub(super) async fn gateway_with_bot() -> (tempfile::TempDir, GatewayHost, crate
         )
         .expect("provider");
     config.bot_defaults.as_mut().expect("defaults").config = composition.clone();
-    store.save(&config).expect("save config");
+    store
+        .save(&config.clone().validated().expect("valid config"))
+        .expect("save config");
     let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
     bots.seed_default(config.bot_defaults.as_ref().expect("Bot defaults"))
         .expect("seed Mobius Bot");
     let bot = bots
-        .create_bot("reviewer", "Reviewer", composition)
+        .create_bot("reviewer", "Reviewer", composition.into())
         .expect("Bot");
     let credentials =
         Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
@@ -49,7 +51,7 @@ async fn reassigning_chat_preserves_history_and_binds_the_target_bot() {
     config.system_prompt = "Follow the target Bot instructions.".into();
     config.middleware.set_enabled("attachments", false);
     let target = bots
-        .create_bot("Target", "Target description", config)
+        .create_bot("Target", "Target description", config.into())
         .unwrap();
     for stopped in [false, true] {
         let host = gateway.create_session(&workspace, &bot.id).await.unwrap();
@@ -173,7 +175,7 @@ async fn failed_reassignment_restores_the_owner_and_running_chat() {
     let mut config = bot.config.config.clone();
     config.middleware.set_enabled("instructions", true);
     let target = bots
-        .create_bot("Instructions", "Read workspace instructions", config)
+        .create_bot("Instructions", "Read workspace instructions", config.into())
         .unwrap();
     // Only the target Bot loads this file, so assembly fails after ownership is saved.
     std::fs::write(workspace.join("AGENTS.md"), [0xff]).unwrap();
@@ -233,6 +235,7 @@ async fn bot_delete_preflight_preserves_sessions_when_instructions_are_invalid()
                 },
                 None,
             ),
+            crate::config::CanonicalWorkspace::for_test(&workspace),
             None,
         )
         .expect("create routine");
@@ -390,6 +393,7 @@ async fn deleting_a_bot_removes_owned_state() {
                 },
                 None,
             ),
+            crate::config::CanonicalWorkspace::for_test(&workspace),
             None,
         )
         .expect("create routine");

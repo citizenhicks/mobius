@@ -13,7 +13,7 @@ use std::net::SocketAddr;
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use mobius::agent::DEFAULT_MAX_MODEL_STEPS;
@@ -36,7 +36,7 @@ use crate::{Error, Result};
 
 pub use self::runtime::RuntimeConfig;
 pub use self::store::{
-    ConfigStore, CredentialStore, ResolvedCredential, load_secret_file, state_dir,
+    ConfigStore, CredentialStore, ResolvedCredential, load_secret_file, state_dir, unix_day,
 };
 use self::store::{UsageHistory, validate_usage, validate_usage_provider};
 pub use self::validation::validate_agent_composition;
@@ -47,11 +47,11 @@ pub(crate) use self::validation::{
 use self::validation::{
     invalid_cloudflare_hostname, validate_agent_composition_with_ceilings,
     validate_cloudflare_token, validate_configured_provider,
-    validate_configured_provider_selection, validate_custom_model_route_count,
-    validate_provider_config, validate_telemetry,
+    validate_configured_provider_selection, validate_custom_model_route_count, validate_telemetry,
 };
 pub(crate) use self::workspace::{
-    create_workspace_directory, local_user_name, validate_chat_workspace, workspace_id,
+    CanonicalWorkspace, create_workspace_directory, local_user_name, validate_chat_workspace,
+    workspace_id,
 };
 pub use crate::server::ConnectionPolicy;
 
@@ -267,13 +267,39 @@ impl AgentComposition {
     }
 }
 
+/// Locks the configuration shared by the running gateway.
+pub(crate) fn lock(shared: &Mutex<GatewayConfig>) -> Result<MutexGuard<'_, GatewayConfig>> {
+    shared
+        .lock()
+        .map_err(crate::poisoned("gateway configuration"))
+}
+
 impl GatewayConfig {
     /// Builds validated machine-wide settings and Bot-creation defaults.
     /// # Errors
     ///
     /// Returns an error if configuration is invalid or a required resource cannot be initialized.
     pub fn new(listen: SocketAddr, tls: Option<TlsConfig>) -> Result<Self> {
-        let config = Self {
+        Ok(Self::defaults(listen, tls, None).validated()?.into_inner())
+    }
+
+    /// Builds a loopback gateway exposed through Cloudflare Tunnel.
+    /// # Errors
+    ///
+    /// Returns an error if configuration is invalid or a required resource cannot be initialized.
+    pub fn new_cloudflare(listen: SocketAddr, cloudflare: CloudflareConfig) -> Result<Self> {
+        Ok(Self::defaults(listen, None, Some(cloudflare))
+            .validated()?
+            .into_inner())
+    }
+
+    /// Default settings, checked by the caller.
+    fn defaults(
+        listen: SocketAddr,
+        tls: Option<TlsConfig>,
+        cloudflare: Option<CloudflareConfig>,
+    ) -> Self {
+        Self {
             version: CONFIG_VERSION,
             runtime: Default::default(),
             connections: Default::default(),
@@ -284,26 +310,22 @@ impl GatewayConfig {
             telemetry: Default::default(),
             listen,
             tls,
-            cloudflare: None,
+            cloudflare,
             desktop_enabled: false,
             bot_defaults: None,
             configured_providers: BTreeMap::new(),
             installed_extensions: BTreeMap::new(),
             usage: UsageHistory::default(),
-        };
-        config.validate()?;
-        Ok(config)
+        }
     }
 
-    /// Builds a loopback gateway exposed through Cloudflare Tunnel.
+    /// Checks this configuration once so it can be saved.
     /// # Errors
     ///
-    /// Returns an error if configuration is invalid or a required resource cannot be initialized.
-    pub fn new_cloudflare(listen: SocketAddr, cloudflare: CloudflareConfig) -> Result<Self> {
-        let mut config = Self::new(listen, None)?;
-        config.cloudflare = Some(cloudflare);
-        config.validate()?;
-        Ok(config)
+    /// Returns an error if the supplied value is invalid.
+    pub fn validated(self) -> Result<ValidatedGatewayConfig> {
+        self.validate()?;
+        Ok(ValidatedGatewayConfig(self))
     }
 
     /// Registers one configured provider and establishes the first Bot defaults.
@@ -326,6 +348,7 @@ impl GatewayConfig {
             },
             false,
         )
+        .map(ValidatedGatewayConfig::into_inner)
     }
 
     /// Registers one provider setup and establishes the first Bot defaults.
@@ -333,7 +356,7 @@ impl GatewayConfig {
         &self,
         mut configured: ProviderRegistration,
         preserve_selection: bool,
-    ) -> Result<Self> {
+    ) -> Result<ValidatedGatewayConfig> {
         let definition = provider(&configured.selection.provider)?;
         if let Some(current) = self
             .configured_providers
@@ -449,12 +472,11 @@ impl GatewayConfig {
                 config,
             });
         }
-        next.validate()?;
-        Ok(next)
+        next.validated()
     }
 
     /// Removes one non-default provider and lets middleware inherit the primary model.
-    pub(crate) fn removing_provider(&self, instance: &str) -> Result<Self> {
+    pub(crate) fn removing_provider(&self, instance: &str) -> Result<ValidatedGatewayConfig> {
         if !self.configured_providers.contains_key(instance) {
             return Err(Error::Config(format!(
                 "provider instance `{instance}` is not configured"
@@ -480,8 +502,7 @@ impl GatewayConfig {
             }
             next.bot_defaults = Some(default);
         }
-        next.validate()?;
-        Ok(next)
+        next.validated()
     }
 
     /// Replaces only the defaults copied into future chats.
@@ -489,7 +510,7 @@ impl GatewayConfig {
         &self,
         expected_revision: u64,
         composition: AgentComposition,
-    ) -> Result<Self> {
+    ) -> Result<ValidatedGatewayConfig> {
         let current = self
             .bot_defaults
             .as_ref()
@@ -508,19 +529,7 @@ impl GatewayConfig {
                 .ok_or_else(|| Error::Config("configuration revision overflow".into()))?,
             config: composition,
         });
-        next.validate()?;
-        Ok(next)
-    }
-
-    pub(crate) fn validate_provider_selection(&self, selection: &ProviderConfig) -> Result<()> {
-        validate_provider_config(selection)?;
-        let configured = self
-            .configured_providers
-            .get(&selection.instance)
-            .ok_or_else(|| {
-                Error::Config("provider selection must use a configured provider entry".into())
-            })?;
-        validate_configured_provider_selection(configured, selection)
+        next.validated()
     }
 
     /// Records one live token-usage increment and reports whether daily usage changed.
@@ -635,7 +644,14 @@ impl GatewayConfig {
                 &default.config,
                 self.execution.subagent_ceilings,
             )?;
-            self.validate_provider_selection(&default.config.provider)?;
+            let selection = &default.config.provider;
+            let configured = self
+                .configured_providers
+                .get(&selection.instance)
+                .ok_or_else(|| {
+                    Error::Config("provider selection must use a configured provider entry".into())
+                })?;
+            validate_configured_provider_selection(configured, selection)?;
             for (middleware, setting, route) in
                 crate::middleware_manifest::configured_model_routes(&default.config.middleware)
             {
@@ -656,6 +672,26 @@ impl GatewayConfig {
     }
 }
 
+/// A gateway configuration that passed [`GatewayConfig::validate`]; only it can be saved.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ValidatedGatewayConfig(GatewayConfig);
+
+impl ValidatedGatewayConfig {
+    /// Returns the configuration; further edits must be validated again before saving.
+    #[must_use]
+    pub fn into_inner(self) -> GatewayConfig {
+        self.0
+    }
+}
+
+impl std::ops::Deref for ValidatedGatewayConfig {
+    type Target = GatewayConfig;
+
+    fn deref(&self) -> &GatewayConfig {
+        &self.0
+    }
+}
+
 impl ChatSpec {
     pub(crate) fn for_bot(
         workspace: &Path,
@@ -663,15 +699,13 @@ impl ChatSpec {
         state_dir: &Path,
         tls: Option<&TlsConfig>,
     ) -> Result<Self> {
-        let spec = Self {
+        Ok(Self {
             version: CHAT_SPEC_VERSION,
-            workspace: Some(validate_chat_workspace(workspace, state_dir, tls)?),
+            workspace: Some(validate_chat_workspace(workspace, state_dir, tls)?.into_path()),
             attached_folders: Vec::new(),
             bot_id: Arc::clone(&bot.id),
             catalog_visible: true,
-        };
-        spec.validate(state_dir, tls)?;
-        Ok(spec)
+        })
     }
 
     pub(crate) fn from_metadata(
@@ -741,7 +775,7 @@ impl ChatSpec {
         fs::create_dir_all(&root)?;
         #[cfg(unix)]
         fs::set_permissions(&root, mobius::owner_only::dir())?;
-        validate_chat_workspace(&root, state_dir, tls)
+        Ok(validate_chat_workspace(&root, state_dir, tls)?.into_path())
     }
 
     #[must_use]
@@ -763,7 +797,7 @@ impl ChatSpec {
                 "Persistent Chat has no project; open a project chat to attach folders".into(),
             )
         })?;
-        let folder = validate_chat_workspace(folder, state_dir, tls)?;
+        let folder = validate_chat_workspace(folder, state_dir, tls)?.into_path();
         if &folder == workspace || self.attached_folders.contains(&folder) {
             return Ok(None);
         }
@@ -774,7 +808,6 @@ impl ChatSpec {
         }
         let mut next = self.clone(); // rules-allow: staged copy; the caller keeps the current value until the new one is published
         next.attached_folders.push(folder);
-        next.validate(state_dir, tls)?;
         Ok(Some(next))
     }
 
@@ -790,7 +823,7 @@ impl ChatSpec {
         }
         if let Some(path) = &self.workspace {
             let workspace = validate_chat_workspace(path, state_dir, tls)?;
-            if workspace != *path {
+            if *workspace != **path {
                 return Err(Error::Config(
                     "chat workspace must use its canonical path".into(),
                 ));
@@ -808,7 +841,7 @@ impl ChatSpec {
         let mut folders = self.workspace.iter().collect::<BTreeSet<_>>();
         for attached in &self.attached_folders {
             let workspace = validate_chat_workspace(attached, state_dir, tls)?;
-            if workspace != *attached {
+            if *workspace != **attached {
                 return Err(Error::Config(
                     "attached folders must use canonical paths".into(),
                 ));
@@ -858,6 +891,45 @@ impl TlsConfig {
     }
 }
 
+/// A named Cloudflare Tunnel whose hostname and token were checked at input.
+pub struct NamedTunnel {
+    cloudflare: CloudflareConfig,
+    token: String,
+}
+
+impl NamedTunnel {
+    /// Normalizes the hostname and trims the token, rejecting either when invalid.
+    /// # Errors
+    ///
+    /// Returns an error if the hostname or token is invalid.
+    pub fn new(hostname: &str, token: &str) -> Result<Self> {
+        Ok(Self {
+            cloudflare: CloudflareConfig::named(hostname)?,
+            token: validate_cloudflare_token(token)?.into(),
+        })
+    }
+
+    /// Returns the normalized public hostname.
+    #[must_use]
+    pub fn hostname(&self) -> &str {
+        self.cloudflare.hostname().unwrap_or_default()
+    }
+
+    pub(crate) fn into_parts(self) -> (CloudflareConfig, String) {
+        (self.cloudflare, self.token)
+    }
+}
+
+impl std::fmt::Debug for NamedTunnel {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("NamedTunnel")
+            .field("hostname", &self.hostname())
+            .field("token", &"[redacted]")
+            .finish()
+    }
+}
+
 impl CloudflareConfig {
     /// Validates and normalizes a stable public hostname.
     /// # Errors
@@ -883,14 +955,6 @@ impl CloudflareConfig {
             Self::Quick => None,
             Self::Named { hostname } => Some(hostname),
         }
-    }
-
-    /// Validates one tunnel-scoped connector token without retaining it.
-    /// # Errors
-    ///
-    /// Returns an error if the supplied value is invalid.
-    pub fn validate_token(token: &str) -> Result<()> {
-        validate_cloudflare_token(token).map(|_| ())
     }
 
     fn validate(&self) -> Result<()> {

@@ -7,7 +7,6 @@ use mobius::protocol::{
 use mobius::{Error, Result};
 use mobius_gateway::client::{GatewayEvents, GatewaySender};
 use mobius_gateway::wire::{ClientMessage, ServerMessage};
-use uuid::Uuid;
 
 use crate::gateway_error;
 
@@ -21,7 +20,7 @@ pub async fn run(
     session_id: Arc<str>,
     task: String,
 ) -> Result<Option<String>> {
-    let submission_id: Arc<str> = Uuid::new_v4().to_string().into();
+    let submission_id: Arc<str> = crate::fresh_id();
     sender
         .send(ClientMessage::Submit {
             session_id: Arc::clone(&session_id),
@@ -79,7 +78,7 @@ pub async fn run(
                     .send(ClientMessage::Submit {
                         session_id: Arc::clone(&session_id),
                         submission: Submission {
-                            id: Uuid::new_v4().to_string().into(),
+                            id: crate::fresh_id(),
                             op: Op::ExecApproval {
                                 id: request.id,
                                 decision: ReviewDecision::Abort,

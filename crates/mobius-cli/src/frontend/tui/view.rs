@@ -789,7 +789,7 @@ pub(super) fn push_diff_patch(lines: &mut Vec<Line<'static>>, text: &str, width:
         .filter(|path| *path != "/dev/null")
         .or_else(|| patch.original())
         .unwrap_or("file");
-    let path = terminal_text(raw_path).replace(['\n', '\t'], " ");
+    let path = crate::frontend::terminal::terminal_line(raw_path);
     let (added, removed, max_line_number) =
         patch
             .hunks()
@@ -1160,7 +1160,12 @@ fn composer_title(state: &TuiState) -> Line<'static> {
     };
     let elapsed = state
         .turn_started_at
-        .map(|started| format!(" · {}", elapsed_label(started.elapsed())))
+        .map(|started| {
+            format!(
+                " · {}",
+                crate::frontend::terminal::elapsed_label(started.elapsed())
+            )
+        })
         .unwrap_or_default();
     let title = format!(" mobius · {status}{elapsed} ");
     if state.is_working() {
@@ -1219,17 +1224,6 @@ const fn delivery_label(delivery: ActiveMessageDelivery) -> &'static str {
     match delivery {
         ActiveMessageDelivery::Steer => "steer",
         ActiveMessageDelivery::Queue => "queue",
-    }
-}
-
-fn elapsed_label(elapsed: std::time::Duration) -> String {
-    let seconds = elapsed.as_secs();
-    if seconds < 60 {
-        format!("{seconds}s")
-    } else if seconds < 3_600 {
-        format!("{}m {:02}s", seconds / 60, seconds % 60)
-    } else {
-        format!("{}h {:02}m", seconds / 3_600, seconds / 60 % 60)
     }
 }
 

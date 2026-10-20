@@ -5,7 +5,7 @@ use std::io;
 
 use mobius::{Error, Result};
 use mobius_gateway::config::{
-    CloudflareConfig, MAX_CLOUDFLARE_TOKEN_BYTES as MAX_TOKEN_BYTES, MAX_HOSTNAME_BYTES,
+    MAX_CLOUDFLARE_TOKEN_BYTES as MAX_TOKEN_BYTES, MAX_HOSTNAME_BYTES, NamedTunnel,
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -84,22 +84,13 @@ impl State {
         self.error = None;
     }
 
-    fn finish(&mut self) -> Result<CloudflareInit> {
+    fn finish(&self) -> Result<CloudflareInit> {
         if self.field == Field::Quick {
             return Ok(CloudflareInit::Quick);
         }
-        let cloudflare = CloudflareConfig::named(&self.hostname).map_err(configuration_error)?;
-        CloudflareConfig::validate_token(&self.token).map_err(configuration_error)?;
-        let hostname = cloudflare
-            .hostname()
-            .ok_or_else(|| Error::Config("named Cloudflare hostname is missing".into()))?;
-        let start = self.token.len() - self.token.trim_start().len();
-        self.token.truncate(self.token.trim_end().len());
-        self.token.drain(..start);
-        Ok(CloudflareInit::Named {
-            hostname: hostname.to_owned(),
-            token: std::mem::take(&mut self.token),
-        })
+        Ok(CloudflareInit::Named(
+            NamedTunnel::new(&self.hostname, &self.token).map_err(configuration_error)?,
+        ))
     }
 }
 

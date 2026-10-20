@@ -1204,13 +1204,7 @@ fn event_index(event: &Value) -> Result<usize> {
 }
 
 fn required_string<'a>(value: &'a Value, field: &str) -> Result<&'a str> {
-    let value = string_field(value, field)?;
-    if value.is_empty() {
-        return Err(Error::Provider(
-            format!("Anthropic value omitted {field}").into(),
-        ));
-    }
-    Ok(value)
+    super::chat_completions::required_string(value, field, "Anthropic")
 }
 
 fn string_field<'a>(value: &'a Value, field: &str) -> Result<&'a str> {

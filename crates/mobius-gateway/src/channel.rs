@@ -259,7 +259,7 @@ where
             }
         }
         let message = next_binary(websocket).await?.ok_or(Error::Unauthorized)?;
-        if message.len() <= TAG_BYTES || message.len() > limit + 4 + TAG_BYTES {
+        if message.len() <= TAG_BYTES {
             return Err(Error::Unauthorized);
         }
         let mut plaintext = vec![0; message.len() - TAG_BYTES];
@@ -325,9 +325,7 @@ where
         let mut plaintext = vec![0; MAX_PLAINTEXT];
         while let Some(message) = incoming.next().await {
             match message.map_err(websocket_error)? {
-                Message::Binary(ciphertext)
-                    if (TAG_BYTES + 1..=MAX_RECORD).contains(&ciphertext.len()) =>
-                {
+                Message::Binary(ciphertext) if ciphertext.len() > TAG_BYTES => {
                     let length = state
                         .lock()
                         .map_err(rejected("gateway channel state lock is poisoned"))?

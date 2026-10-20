@@ -626,10 +626,8 @@ impl DesktopStream {
         Ok((size != 0).then_some(bytes))
     }
 
+    /// Writes one chunk already bounded by the wire decoder.
     pub(crate) async fn write(&mut self, bytes: &[u8]) -> Result<()> {
-        if bytes.is_empty() || bytes.len() > MAX_DESKTOP_CHUNK_BYTES {
-            return Err(Error::Protocol("invalid desktop data chunk".into()));
-        }
         // ponytail: same-user viewers honor viewOnly; Xvnc globally gates input during agent control.
         tokio::time::timeout(Duration::from_secs(5), self.socket.write_all(bytes))
             .await

@@ -87,9 +87,10 @@ pub(crate) async fn ensure_test_bot(
                 Vec::new(),
                 Vec::new(),
             )
+            .and_then(GatewayConfig::validated)
             .map_err(invalid_config)?;
         state.store.save(&next).map_err(internal)?;
-        *config = next;
+        *config = next.into_inner();
     }
     let composition = config
         .bot_defaults
@@ -100,7 +101,7 @@ pub(crate) async fn ensure_test_bot(
     drop(config);
     state
         .bots
-        .create_bot("Test Bot", "Own gateway test work.", composition)
+        .create_bot("Test Bot", "Own gateway test work.", composition.into())
         .map_err(invalid_bot)
 }
 

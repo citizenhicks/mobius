@@ -295,7 +295,7 @@ impl HostState {
             .batches
             .first()
             .filter(|batch| batch.sequence == target.checkpoint_sequence)
-            .and_then(|batch| batch.items.get(target.batch_item_count - 1))
+            .and_then(|batch| batch.items.get(target.batch_item_count.get() - 1))
             .is_some_and(|item| item.get("role").and_then(Value::as_str) == Some("assistant"));
         if is_assistant {
             Ok(())
@@ -328,23 +328,7 @@ impl HostState {
         let (sessions, approvals) = activity_catalog(&self.checkpoints, &self.activities)
             .await
             .map_err(internal)?;
-        if let Err(error) = self
-            .gateway_events
-            .send(ServerFrame::new(ServerMessage::Sessions {
-                request_id: None,
-                sessions,
-            }))
-        {
-            tracing::debug!(%error, "session list had no subscribers");
-        }
-        if let Err(error) =
-            self.gateway_events
-                .send(ServerFrame::new(ServerMessage::BackgroundApprovals {
-                    approvals,
-                }))
-        {
-            tracing::debug!(%error, "background approvals had no subscribers");
-        }
+        crate::host::send_catalog(&self.gateway_events, sessions, approvals);
         Ok(())
     }
 

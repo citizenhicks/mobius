@@ -26,6 +26,23 @@ pub fn terminal_text(value: &str) -> String {
         .collect()
 }
 
+/// Terminal text flattened onto one line: newlines and tabs become spaces.
+pub(super) fn terminal_line(value: &str) -> String {
+    terminal_text(value).replace(['\n', '\t'], " ")
+}
+
+/// A compact elapsed time: `42s`, `3m 07s` or `2h 05m`.
+pub(super) fn elapsed_label(elapsed: std::time::Duration) -> String {
+    let seconds = elapsed.as_secs();
+    if seconds < 60 {
+        format!("{seconds}s")
+    } else if seconds < 3_600 {
+        format!("{}m {:02}s", seconds / 60, seconds % 60)
+    } else {
+        format!("{}h {:02}m", seconds / 3_600, seconds / 60 % 60)
+    }
+}
+
 pub(super) fn borrow_line<'a>(line: &'a Line<'_>) -> Line<'a> {
     Line {
         style: line.style,

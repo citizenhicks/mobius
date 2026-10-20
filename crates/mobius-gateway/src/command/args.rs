@@ -328,29 +328,12 @@ pub(super) struct InitOptions {
 }
 
 /// Cloudflare exposure selected during gateway initialization.
+#[derive(Debug)]
 pub enum CloudflareInit {
     /// Account-free temporary tunnel.
     Quick,
-    /// Named tunnel with a credential that is redacted in debug output.
-    Named {
-        /// Public tunnel hostname.
-        hostname: String,
-        /// Cloudflare tunnel credential.
-        token: String,
-    },
-}
-
-impl std::fmt::Debug for CloudflareInit {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Quick => formatter.write_str("CloudflareInit::Quick"),
-            Self::Named { hostname, .. } => formatter
-                .debug_struct("CloudflareInit::Named")
-                .field("hostname", hostname)
-                .field("token", &"[redacted]")
-                .finish(),
-        }
-    }
+    /// Named tunnel whose credential is redacted in debug output.
+    Named(crate::config::NamedTunnel),
 }
 
 #[derive(Debug)]
@@ -532,10 +515,9 @@ fn parse_init(state_dir: PathBuf, arguments: InitArgs) -> Result<InitOptions> {
         arguments.cloudflare_hostname,
         arguments.cloudflare_token_file,
     ) {
-        (Some(hostname), Some(path)) => Some(CloudflareInit::Named {
-            hostname,
-            token: load_secret_file(&path)?,
-        }),
+        (Some(hostname), Some(path)) => Some(CloudflareInit::Named(
+            crate::config::NamedTunnel::new(&hostname, &load_secret_file(&path)?)?,
+        )),
         (None, None) => None,
         _ => {
             return Err(Error::Config(

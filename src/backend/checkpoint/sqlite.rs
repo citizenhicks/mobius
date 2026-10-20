@@ -1220,6 +1220,26 @@ fn validate_checkpoint(checkpoint: &Checkpoint) -> Result<()> {
             "pending model or tool work has no active execution".into(),
         ));
     }
+    if let Some(approval) = &checkpoint.pending_approval {
+        let known = approval
+            .calls
+            .iter()
+            .map(|call| call.call_id.as_ref())
+            .collect::<BTreeSet<_>>();
+        let selected = approval
+            .approval_call_ids
+            .iter()
+            .map(AsRef::as_ref)
+            .collect::<BTreeSet<&str>>();
+        if selected.is_empty()
+            || selected.len() != approval.approval_call_ids.len()
+            || !selected.is_subset(&known)
+        {
+            return Err(Error::Checkpoint(
+                "pending approval selects unknown or repeated tool calls".into(),
+            ));
+        }
+    }
     validate_session_context(&checkpoint.session_context)?;
     if let Some(step) = &checkpoint.active_model_step {
         let execution = checkpoint
@@ -1316,18 +1336,7 @@ fn prepare_path(path: &Path) -> Result<()> {
     }
     #[cfg(unix)]
     {
-        use std::fs::OpenOptions;
-        use std::os::unix::fs::OpenOptionsExt;
-        use std::os::unix::fs::PermissionsExt;
-
-        OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(crate::owner_only::file().mode())
-            .open(path)?;
-        fs::set_permissions(path, crate::owner_only::file())?;
+        crate::owner_only::open(path)?;
     }
     Ok(())
 }

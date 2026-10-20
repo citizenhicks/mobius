@@ -18,7 +18,9 @@ async fn capacity_server(
         )
         .expect("register provider");
     config.connections = policy;
-    store.save(&config).expect("save capacity policy");
+    store
+        .save(&config.clone().validated().expect("valid config"))
+        .expect("save capacity policy");
     let (_, grant) =
         AuthStore::initialize(store.auth_path(), config.auth).expect("initialize auth");
     let server = GatewayServer::assemble(store, config, listener)

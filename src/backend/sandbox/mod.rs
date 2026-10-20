@@ -222,13 +222,34 @@ pub fn default_background_command_limit() -> usize {
     text::DEFINITION.defaults_background_commands
 }
 
-fn validate_tool_output_limit(bytes: usize) -> Result<()> {
-    if !(1..=MAX_TOOL_OUTPUT_BYTES).contains(&bytes) {
-        return Err(Error::Config(format!(
-            "tool output limit must be between 1 and {MAX_TOOL_OUTPUT_BYTES} bytes"
-        )));
+/// A retained tool-output budget in UTF-8 bytes, checked against the internal safety bound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutputLimit(usize);
+
+impl OutputLimit {
+    /// Checks a budget once; sandbox setters then take it as is.
+    /// # Errors
+    /// Returns an error for a zero budget or one above the internal safety bound.
+    pub fn new(bytes: usize) -> Result<Self> {
+        if !(1..=MAX_TOOL_OUTPUT_BYTES).contains(&bytes) {
+            return Err(Error::Config(format!(
+                "tool output limit must be between 1 and {MAX_TOOL_OUTPUT_BYTES} bytes"
+            )));
+        }
+        Ok(Self(bytes))
     }
-    Ok(())
+
+    /// Returns the budget in bytes.
+    #[must_use]
+    pub const fn get(self) -> usize {
+        self.0
+    }
+}
+
+impl Default for OutputLimit {
+    fn default() -> Self {
+        Self(default_tool_output_limit())
+    }
 }
 
 /// Deny-by-default macOS Seatbelt prelude shared by first-party sandbox backends.
@@ -532,12 +553,10 @@ impl Sandbox {
     }
 
     /// Sets the retained text budget for tool dispatch.
-    /// # Errors
-    /// Returns an error for a zero budget or one above the internal safety bound.
-    pub fn tool_output_limit(mut self, bytes: usize) -> Result<Self> {
-        validate_tool_output_limit(bytes)?;
-        self.tool_output_limit = bytes;
-        Ok(self)
+    #[must_use]
+    pub const fn tool_output_limit(mut self, limit: OutputLimit) -> Self {
+        self.tool_output_limit = limit.0;
+        self
     }
 
     /// Returns the configured tool text budget in UTF-8 bytes.
@@ -546,17 +565,12 @@ impl Sandbox {
         self.tool_output_limit
     }
 
-    /// Sets the maximum tracked background commands per execution boundary.
-    /// # Errors
-    /// Returns an error outside the supported range.
-    pub fn background_command_limit(mut self, commands: usize) -> Result<Self> {
-        if !(1..=MAX_BACKGROUND_COMMANDS).contains(&commands) {
-            return Err(Error::Config(format!(
-                "background command limit must be between 1 and {MAX_BACKGROUND_COMMANDS}"
-            )));
-        }
-        self.background = BackgroundCommands::new(commands);
-        Ok(self)
+    /// Sets the maximum tracked background commands per execution boundary, capped at the
+    /// supported maximum.
+    #[must_use]
+    pub fn background_command_limit(mut self, commands: std::num::NonZeroUsize) -> Self {
+        self.background = BackgroundCommands::new(commands.get().min(MAX_BACKGROUND_COMMANDS));
+        self
     }
 
     /// Adds the primary workspace and attached folder paths to the model prompt.
@@ -626,43 +640,29 @@ impl Sandbox {
             .read_bytes(path, max_bytes, permissions.sandbox_mode)
     }
 
-    /// Writes a UTF-8 file when this call has mutation authority.
+    /// Writes a UTF-8 file under this call's mutation permit.
     pub fn write<'a>(
         &'a self,
         path: &'a str,
         content: &'a str,
-        permissions: &'a ToolPermissions,
+        permit: MutationPermit<'a>,
     ) -> BoxFuture<'a, Result<()>> {
-        if !permissions.mutation {
-            return Box::pin(async {
-                Err(Error::Sandbox(
-                    "tool call is not authorized to mutate the workspace".into(),
-                ))
-            });
-        }
         if content.len() > MAX_FILE_BYTES {
             return Box::pin(async { Err(Error::Sandbox("file exceeds write limit".into())) });
         }
-        self.backend.write(path, content, permissions.sandbox_mode)
+        self.backend.write(path, content, permit.0.sandbox_mode)
     }
 
-    /// Runs a command when this call has mutation authority.
+    /// Runs a command under this call's mutation permit.
     pub fn execute<'a>(
         &'a self,
         command: &'a str,
-        permissions: &'a ToolPermissions,
+        permit: MutationPermit<'a>,
     ) -> BoxFuture<'a, Result<CommandOutput>> {
-        if !permissions.mutation {
-            return Box::pin(async {
-                Err(Error::Sandbox(
-                    "tool call is not authorized to execute commands".into(),
-                ))
-            });
-        }
         self.backend.execute(
             command,
-            permissions.sandbox_mode,
-            permissions.network_access,
+            permit.0.sandbox_mode,
+            permit.0.network_access,
             CommandMode::Foreground,
             CommandOutputSink::default(),
         )
@@ -675,7 +675,7 @@ impl Sandbox {
     pub async fn evaluate_worker(
         &self,
         command: &WorkerCommand,
-        permissions: &ToolPermissions,
+        permit: MutationPermit<'_>,
         request: &[u8],
         timeout: std::time::Duration,
         reset: bool,
@@ -685,7 +685,7 @@ impl Sandbox {
             .evaluate(
                 self.backend.as_ref(),
                 command,
-                permissions,
+                permit.0,
                 request,
                 timeout,
                 reset,
@@ -701,7 +701,6 @@ impl Sandbox {
         &self,
         permissions: &ToolPermissions,
     ) -> Result<Option<DesktopBrowserPage>> {
-        self.backend.check_execution()?;
         self.backend
             .desktop_browser_page(&permissions.session_id)
             .await
@@ -710,14 +709,10 @@ impl Sandbox {
     pub(crate) async fn run_command(
         &self,
         command: String,
-        permissions: &ToolPermissions,
+        permit: MutationPermit<'_>,
         initial_wait: std::time::Duration,
     ) -> Result<BackgroundCommandPoll> {
-        if !permissions.mutation {
-            return Err(Error::Sandbox(
-                "tool call is not authorized to execute commands".into(),
-            ));
-        }
+        let permissions = permit.0;
         self.background
             .start(
                 &permissions.session_id,
@@ -931,7 +926,24 @@ impl ToolPermissions {
     pub(crate) fn allows_mutation(&self) -> bool {
         self.mutation
     }
+
+    /// Returns the permit sandbox mutations require, when this call has mutation authority.
+    /// # Errors
+    ///
+    /// Returns an error when the call was not authorized to mutate the workspace.
+    pub fn mutation(&self) -> Result<MutationPermit<'_>> {
+        if !self.mutation {
+            return Err(Error::Sandbox(
+                "tool call is not authorized to mutate the workspace".into(),
+            ));
+        }
+        Ok(MutationPermit(self))
+    }
 }
+
+/// Proof that one tool call may mutate the workspace; only [`ToolPermissions::mutation`] makes it.
+#[derive(Debug, Clone, Copy)]
+pub struct MutationPermit<'a>(&'a ToolPermissions);
 
 pub(crate) enum SandboxAuthorization {
     Execute(SandboxPermissions),
@@ -950,28 +962,15 @@ pub(crate) struct SandboxApprovalRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::sandbox::local::LocalSandbox;
 
-    #[tokio::test]
-    async fn mutation_fails_closed_without_per_call_authority() {
-        let workspace = tempfile::tempdir().expect("workspace");
-        let sandbox = Sandbox::new(
-            Arc::new(LocalSandbox::new(workspace.path()).expect("backend")),
-            ApprovalPolicy::Ask,
-        );
+    #[test]
+    fn mutation_permit_requires_per_call_authority() {
         let permissions = SandboxPermissions::new(
             "session",
             SandboxMode::WorkspaceWrite,
             NetworkAccess::Allowed,
             Vec::new(),
         );
-
-        assert!(
-            sandbox
-                .write("blocked.txt", "blocked", &permissions.for_call("call"))
-                .await
-                .is_err()
-        );
-        assert!(!workspace.path().join("blocked.txt").exists());
+        assert!(permissions.for_call("call").mutation().is_err());
     }
 }

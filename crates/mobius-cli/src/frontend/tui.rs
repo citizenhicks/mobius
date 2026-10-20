@@ -963,7 +963,7 @@ fn compact_tool_detail(value: &str) -> String {
 }
 
 fn bounded_title(value: &str) -> String {
-    let mut value = terminal_text(value).replace(['\n', '\t'], " ");
+    let mut value = crate::frontend::terminal::terminal_line(value);
     truncate_bytes(&mut value, MAX_TITLE_BYTES);
     value
 }

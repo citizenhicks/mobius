@@ -269,12 +269,10 @@ impl LocalSandbox {
     }
 
     /// Sets the retained byte budget for each command output stream.
-    /// # Errors
-    /// Returns an error for a zero budget or a budget above the internal safety bound.
-    pub fn command_output_limit(mut self, bytes: usize) -> Result<Self> {
-        super::validate_tool_output_limit(bytes)?;
-        self.command_output_limit = bytes;
-        Ok(self)
+    #[must_use]
+    pub const fn command_output_limit(mut self, limit: super::OutputLimit) -> Self {
+        self.command_output_limit = limit.get();
+        self
     }
 
     /// Selects an absolute POSIX shell executable supporting `-c` command execution.
@@ -542,11 +540,10 @@ impl LocalSandbox {
         }
         let (root, relative) = self.read_target(path)?;
         let requested = path.to_owned();
-        tokio::task::spawn_blocking(move || {
+        blocking_file("file reader", move || {
             read_file_range(root, &relative, &requested, offset, max_bytes)
         })
         .await
-        .map_err(|error| Error::Sandbox(format!("file reader failed: {error}")))?
     }
 
     /// Reads one bounded host file range while preserving denied read paths.
@@ -565,7 +562,7 @@ impl LocalSandbox {
             )));
         }
         let policy = Arc::clone(&self.policy);
-        tokio::task::spawn_blocking(move || {
+        blocking_file("file reader", move || {
             let requested = std::fs::canonicalize(path)?;
             let (root, relative) = full_access_target(&requested, &policy.denied_reads)?;
             read_file_range(
@@ -577,7 +574,6 @@ impl LocalSandbox {
             )
         })
         .await
-        .map_err(|error| Error::Sandbox(format!("file reader failed: {error}")))?
     }
 
     /// Removes one regular file through the pinned writable workspace root.
@@ -586,9 +582,10 @@ impl LocalSandbox {
     pub async fn remove_file(&self, path: &str) -> Result<()> {
         let (root, relative) = self.write_target(path)?;
         let requested = path.to_owned();
-        tokio::task::spawn_blocking(move || files::remove_file(root, &relative, &requested))
-            .await
-            .map_err(|error| Error::Sandbox(format!("file deletion failed: {error}")))?
+        blocking_file("file deletion", move || {
+            files::remove_file(root, &relative, &requested)
+        })
+        .await
     }
 
     /// Runs Git argv with a writable workspace and no network access.
@@ -646,6 +643,29 @@ impl LocalSandbox {
             return Err(Error::Sandbox(path.display().to_string()));
         }
         Ok(path.to_path_buf())
+    }
+
+    /// Resolves `path` for the sandbox mode, then runs `operation` off the executor.
+    async fn file_operation<T: Send + 'static>(
+        &self,
+        path: &str,
+        sandbox_mode: SandboxMode,
+        target: fn(&Self, &str) -> Result<(Dir, PathBuf)>,
+        work: &'static str,
+        operation: impl FnOnce(Dir, &Path, &str) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        let requested = path.to_owned();
+        if sandbox_mode == SandboxMode::DangerFullAccess && Path::new(path).is_absolute() {
+            let policy = Arc::clone(&self.policy);
+            return blocking_file(work, move || {
+                let (root, relative) =
+                    full_access_target(Path::new(&requested), &policy.denied_reads)?;
+                operation(root, &relative, &requested)
+            })
+            .await;
+        }
+        let (root, relative) = target(self, path)?;
+        blocking_file(work, move || operation(root, &relative, &requested)).await
     }
 
     fn read_target(&self, path: &str) -> Result<(Dir, PathBuf)> {
@@ -1015,21 +1035,14 @@ impl SandboxBackend for LocalSandbox {
         sandbox_mode: SandboxMode,
     ) -> BoxFuture<'a, Result<String>> {
         Box::pin(async move {
-            let requested = path.to_owned();
-            if sandbox_mode == SandboxMode::DangerFullAccess && Path::new(path).is_absolute() {
-                let policy = Arc::clone(&self.policy);
-                return tokio::task::spawn_blocking(move || {
-                    let (root, relative) =
-                        full_access_target(Path::new(&requested), &policy.denied_reads)?;
-                    read_file(root, &relative, &requested)
-                })
-                .await
-                .map_err(|error| Error::Sandbox(format!("file reader failed: {error}")))?;
-            }
-            let (root, relative) = self.read_target(path)?;
-            tokio::task::spawn_blocking(move || read_file(root, &relative, &requested))
-                .await
-                .map_err(|error| Error::Sandbox(format!("file reader failed: {error}")))?
+            self.file_operation(
+                path,
+                sandbox_mode,
+                Self::read_target,
+                "file reader",
+                read_file,
+            )
+            .await
         })
     }
 
@@ -1040,28 +1053,16 @@ impl SandboxBackend for LocalSandbox {
         sandbox_mode: SandboxMode,
     ) -> BoxFuture<'a, Result<Vec<u8>>> {
         Box::pin(async move {
-            if max_bytes == 0 || max_bytes > MAX_BINARY_FILE_BYTES {
-                return Err(Error::Sandbox(format!(
-                    "binary file read size must be 1–{MAX_BINARY_FILE_BYTES} bytes"
-                )));
-            }
-            let requested = path.to_owned();
-            if sandbox_mode == SandboxMode::DangerFullAccess && Path::new(path).is_absolute() {
-                let policy = Arc::clone(&self.policy);
-                return tokio::task::spawn_blocking(move || {
-                    let (root, relative) =
-                        full_access_target(Path::new(&requested), &policy.denied_reads)?;
-                    read_binary_file(root, &relative, &requested, max_bytes)
-                })
-                .await
-                .map_err(|error| Error::Sandbox(format!("file reader failed: {error}")))?;
-            }
-            let (root, relative) = self.read_target(path)?;
-            tokio::task::spawn_blocking(move || {
-                read_binary_file(root, &relative, &requested, max_bytes)
-            })
+            self.file_operation(
+                path,
+                sandbox_mode,
+                Self::read_target,
+                "file reader",
+                move |root, relative, requested| {
+                    read_binary_file(root, relative, requested, max_bytes)
+                },
+            )
             .await
-            .map_err(|error| Error::Sandbox(format!("file reader failed: {error}")))?
         })
     }
 
@@ -1072,25 +1073,15 @@ impl SandboxBackend for LocalSandbox {
         sandbox_mode: SandboxMode,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            if content.len() > MAX_FILE_BYTES {
-                return Err(Error::Sandbox("file exceeds write limit".into()));
-            }
-            let requested = path.to_owned();
             let content = content.as_bytes().to_vec();
-            if sandbox_mode == SandboxMode::DangerFullAccess && Path::new(path).is_absolute() {
-                let policy = Arc::clone(&self.policy);
-                return tokio::task::spawn_blocking(move || {
-                    let (root, relative) =
-                        full_access_target(Path::new(&requested), &policy.denied_reads)?;
-                    atomic_write(root, &relative, &content, &requested)
-                })
-                .await
-                .map_err(|error| Error::Sandbox(format!("file writer failed: {error}")))?;
-            }
-            let (root, relative) = self.write_target(path)?;
-            tokio::task::spawn_blocking(move || atomic_write(root, &relative, &content, &requested))
-                .await
-                .map_err(|error| Error::Sandbox(format!("file writer failed: {error}")))?
+            self.file_operation(
+                path,
+                sandbox_mode,
+                Self::write_target,
+                "file writer",
+                move |root, relative, requested| atomic_write(root, relative, &content, requested),
+            )
+            .await
         })
     }
 
@@ -1148,6 +1139,16 @@ impl SandboxBackend for LocalSandbox {
             Some(authorization),
         ))
     }
+}
+
+/// Runs blocking file work off the executor; `work` names it if the task fails.
+async fn blocking_file<T: Send + 'static>(
+    work: &'static str,
+    task: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T> {
+    tokio::task::spawn_blocking(task)
+        .await
+        .map_err(|error| Error::Sandbox(format!("{work} failed: {error}")))?
 }
 
 fn full_access_target(requested: &Path, denied_reads: &[DeniedRead]) -> Result<(Dir, PathBuf)> {

@@ -164,13 +164,17 @@ where
 }
 
 fn encode_frame(value: &impl Serialize) -> Result<Vec<u8>> {
+    encode_bounded_frame(value)?
+        .ok_or_else(|| Error::Protocol(format!("encoded frame must be 1–{MAX_FRAME_BYTES} bytes")))
+}
+
+/// Encodes a length-prefixed frame, or `None` when its payload is empty or over the frame limit.
+pub(crate) fn encode_bounded_frame(value: &impl Serialize) -> Result<Option<Vec<u8>>> {
     let mut encoded = vec![0; 4];
     serde_json::to_writer(&mut encoded, value)?;
     let payload_len = encoded.len() - 4;
     if payload_len == 0 || payload_len > MAX_FRAME_BYTES {
-        return Err(Error::Protocol(format!(
-            "encoded frame must be 1–{MAX_FRAME_BYTES} bytes"
-        )));
+        return Ok(None);
     }
     let length = u32::try_from(payload_len).map_err(|error| {
         Error::Protocol(format!("encoded frame length is unsupported: {error}"))
@@ -178,10 +182,13 @@ fn encode_frame(value: &impl Serialize) -> Result<Vec<u8>> {
     if let Some(prefix) = encoded.first_chunk_mut::<4>() {
         *prefix = length.to_be_bytes();
     }
-    Ok(encoded)
+    Ok(Some(encoded))
 }
 
-async fn write_encoded(writer: &mut (impl AsyncWrite + Unpin), encoded: &[u8]) -> Result<()> {
+pub(crate) async fn write_encoded(
+    writer: &mut (impl AsyncWrite + Unpin),
+    encoded: &[u8],
+) -> Result<()> {
     tokio::time::timeout(WRITE_TIMEOUT, async {
         writer.write_all(encoded).await?;
         writer.flush().await

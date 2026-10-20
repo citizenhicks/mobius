@@ -248,9 +248,7 @@ pub(crate) type HostAccess = Arc<dyn Fn() -> Result<GatewayHost> + Send + Sync>;
 impl GatewayHost {
     pub(crate) async fn pending_upload_capacity(&self) -> Result<usize> {
         let state = self.state.lock().await;
-        let config = state.config.lock().map_err(|error| {
-            Error::Config(format!("gateway configuration lock is poisoned: {error}"))
-        })?;
+        let config = crate::config::lock(&state.config)?;
         Ok(config.connections.pending_uploads)
     }
 
@@ -374,14 +372,8 @@ impl GatewayHost {
         let files = Arc::clone(&host.state.lock().await.session_files);
         let events = host.events.clone(); // rules-allow: the cleanup task owns an event sender
         tokio::spawn(async move {
-            if let Err(error) = files.cleanup_deleted_sessions().await
-                && let Err(send_error) = events.send(ServerFrame::new(ServerMessage::Error {
-                    code: "session_cleanup".into(),
-                    message: error.to_string().into(),
-                    fatal: false,
-                }))
-            {
-                tracing::debug!(error = %send_error, "session cleanup failure had no subscribers");
+            if let Err(error) = files.cleanup_deleted_sessions().await {
+                send_warning(&events, "session_cleanup", error.to_string().into());
             }
         });
         Ok(host)
@@ -613,7 +605,7 @@ impl GatewayHost {
                 )
             })?;
         drop(gateway);
-        validate_bot_config(&state, &config)?;
+        let config = validate_bot_config(&state, config)?;
         let bot = state
             .bots
             .create_bot(name, description, config)
@@ -631,11 +623,11 @@ impl GatewayHost {
         identity: crate::bots::BotIdentity<'_>,
         config: AgentComposition,
     ) -> std::result::Result<Arc<crate::wire::BotRecord>, Rejection> {
-        let (state_dir, runtime_changed) = {
+        let (state_dir, runtime_changed, config) = {
             let _access = self.begin_mutation().await?;
             let state = self.state.lock().await;
             let previous = state.bots.bot(id).map_err(invalid_bot)?;
-            validate_bot_config(&state, &config)?;
+            let config = validate_bot_config(&state, config)?;
             if previous.config.revision != expected_revision {
                 return Err(Rejection::new(
                     "revision_conflict",
@@ -647,7 +639,8 @@ impl GatewayHost {
             }
             (
                 state.store.state_dir().to_path_buf(),
-                *previous.description != *identity.description || previous.config.config != config,
+                *previous.description != *identity.description || previous.config.config != *config,
+                config.into_inner(),
             )
         };
         // Installation can take minutes. Do not hold gateway locks or save the Bot yet.
@@ -663,12 +656,11 @@ impl GatewayHost {
         let _mutation = self.begin_mutation().await?;
         let state = self.state.lock().await;
         let previous = state.bots.bot(id).map_err(invalid_bot)?;
-        validate_bot_config(&state, &config)?;
         let config = Arc::new(VersionedAgentConfig {
             revision: expected_revision
                 .checked_add(1)
                 .ok_or_else(|| invalid_bot("Bot revision overflow"))?,
-            config,
+            config: validate_bot_config(&state, config)?.into_inner(),
         });
         let prepared = if runtime_changed {
             let mut candidate = previous;
@@ -985,11 +977,7 @@ impl GatewayHost {
                 .ok_or_else(unknown_session)?;
             return Ok((AuthorizedChat::Unstarted { bot_id: bot.id }, guard));
         };
-        let tls = config
-            .lock()
-            .map_err(|error| internal(format!("gateway configuration lock is poisoned: {error}")))?
-            .tls
-            .clone(); // rules-allow: blocking resolution owns the TLS settings after the config lock drops
+        let tls = crate::config::lock(&config).map_err(internal)?.tls.clone(); // rules-allow: blocking resolution owns the TLS settings after the config lock drops
         let metadata = checkpoint.metadata;
         let mut spec = tokio::task::spawn_blocking(move || {
             ChatSpec::from_metadata(&metadata, &bots, &state_dir, tls.as_ref())
@@ -1160,37 +1148,50 @@ impl GatewayHost {
         let (sessions, approvals) = gateway_catalog(&checkpoints, &activities)
             .await
             .map_err(internal)?;
-        if let Err(error) = self.events.send(ServerFrame::new(ServerMessage::Sessions {
-            request_id: None,
-            sessions,
-        })) {
-            tracing::debug!(%error, "session catalog had no subscribers");
-        }
-        if let Err(error) = self
-            .events
-            .send(ServerFrame::new(ServerMessage::BackgroundApprovals {
-                approvals,
-            }))
-        {
-            tracing::debug!(%error, "background approvals had no subscribers");
-        }
+        send_catalog(&self.events, sessions, approvals);
         Ok(())
     }
 
     fn broadcast_bots(&self, bots: &[crate::wire::BotRecord]) {
-        if let Err(error) = self.events.send(ServerFrame::new(ServerMessage::Bots {
-            request_id: None,
-            bots: bots.to_vec(),
-        })) {
-            tracing::debug!(%error, "Bot catalog had no subscribers");
-        }
+        send_event(
+            &self.events,
+            ServerMessage::Bots {
+                request_id: None,
+                bots: bots.to_vec(),
+            },
+        );
+    }
+}
+
+/// A Bot composition checked against the gateway's catalog and installed extensions.
+#[derive(Debug)]
+pub(crate) struct ValidatedComposition(AgentComposition);
+
+impl ValidatedComposition {
+    pub(crate) fn into_inner(self) -> AgentComposition {
+        self.0
+    }
+}
+
+impl std::ops::Deref for ValidatedComposition {
+    type Target = AgentComposition;
+
+    fn deref(&self) -> &AgentComposition {
+        &self.0
+    }
+}
+
+#[cfg(test)]
+impl From<AgentComposition> for ValidatedComposition {
+    fn from(config: AgentComposition) -> Self {
+        Self(config)
     }
 }
 
 fn validate_bot_config(
     state: &GatewayState,
-    config: &AgentComposition,
-) -> std::result::Result<(), Rejection> {
+    config: AgentComposition,
+) -> std::result::Result<ValidatedComposition, Rejection> {
     validate_composition(state, &*state.config()?, config)
 }
 
@@ -1198,32 +1199,29 @@ fn validate_bot_config(
 fn validate_composition(
     state: &GatewayState,
     gateway: &GatewayConfig,
-    config: &AgentComposition,
-) -> std::result::Result<(), Rejection> {
+    config: AgentComposition,
+) -> std::result::Result<ValidatedComposition, Rejection> {
     let models =
         configured_model_choices(gateway, &state.store, &state.credentials).map_err(internal)?;
-    crate::config::validate_bot_compatibility(gateway, config, models.catalogs())
+    crate::config::validate_bot_compatibility(gateway, &config, models.catalogs())
         .map_err(invalid_config)?;
     ExtensionStore::new(&state.store)
         .resolve(gateway, &config.extensions)
-        .map(|_| ())
-        .map_err(invalid_config)
+        .map_err(invalid_config)?;
+    Ok(ValidatedComposition(config))
 }
 
 fn validate_bot_workspace(
     state: &GatewayState,
     bot_id: &str,
     workspace: &Path,
-) -> std::result::Result<(), Rejection> {
-    let bot = state.bots.bot(bot_id).map_err(invalid_bot)?;
-    let config = state.config()?;
-    ChatSpec::for_bot(
+) -> std::result::Result<crate::config::CanonicalWorkspace, Rejection> {
+    state.bots.bot(bot_id).map_err(invalid_bot)?;
+    crate::config::validate_chat_workspace(
         workspace,
-        &bot,
         state.store.state_dir(),
-        config.tls.as_ref(),
+        state.config()?.tls.as_ref(),
     )
-    .map(|_| ())
     .map_err(invalid_workspace)
 }
 
@@ -1240,9 +1238,7 @@ impl Drop for SessionStartGuard {
 
 impl GatewayState {
     fn config(&self) -> std::result::Result<std::sync::MutexGuard<'_, GatewayConfig>, Rejection> {
-        self.config
-            .lock()
-            .map_err(|error| internal(format!("gateway configuration lock is poisoned: {error}")))
+        crate::config::lock(&self.config).map_err(internal)
     }
 
     fn ready_snapshot(&self) -> std::result::Result<GatewayReadySnapshot, Rejection> {
@@ -1364,13 +1360,15 @@ fn session_limit(capacity: usize) -> Rejection {
 async fn receive<T>(
     receiver: oneshot::Receiver<std::result::Result<T, Rejection>>,
 ) -> std::result::Result<T, Rejection> {
-    receiver.await.map_err(|error| {
-        Rejection::new(
-            "gateway_stopped",
-            format!("the gateway host stopped: {error}"),
-        )
-        .fatal()
-    })?
+    receiver.await.map_err(stopped_by)?
+}
+
+fn stopped_by(error: impl std::fmt::Display) -> Rejection {
+    Rejection::new(
+        "gateway_stopped",
+        format!("the gateway host stopped: {error}"),
+    )
+    .fatal()
 }
 
 fn stopped() -> Rejection {
@@ -1404,6 +1402,40 @@ pub(crate) fn finish_publication<T>(
 
 fn internal(error: impl std::fmt::Display) -> Rejection {
     Rejection::new("gateway_error", error.to_string())
+}
+
+fn send_event(events: &broadcast::Sender<ServerFrame>, message: ServerMessage) {
+    if let Err(error) = events.send(ServerFrame::new(message)) {
+        tracing::debug!(%error, "gateway event had no subscribers");
+    }
+}
+
+/// Publishes the session list and the background approvals it carries.
+fn send_catalog(
+    events: &broadcast::Sender<ServerFrame>,
+    sessions: Vec<SessionRecord>,
+    approvals: Vec<Arc<crate::wire::BackgroundApproval>>,
+) {
+    send_event(
+        events,
+        ServerMessage::Sessions {
+            request_id: None,
+            sessions,
+        },
+    );
+    send_event(events, ServerMessage::BackgroundApprovals { approvals });
+}
+
+/// Tells clients about a failure that leaves the gateway usable.
+fn send_warning(events: &broadcast::Sender<ServerFrame>, code: &'static str, message: Arc<str>) {
+    send_event(
+        events,
+        ServerMessage::Error {
+            code: code.into(),
+            message,
+            fatal: false,
+        },
+    );
 }
 
 fn invalid_config(error: impl std::fmt::Display) -> Rejection {

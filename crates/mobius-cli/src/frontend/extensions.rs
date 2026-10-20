@@ -17,7 +17,6 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, HighlightSpacing, List, ListState, Paragraph, Wrap};
 use tokio::time::MissedTickBehavior;
-use uuid::Uuid;
 
 use super::terminal::{
     INPUT_POLL, MAX_ENDPOINT_BYTES, MAX_INPUT_BATCH, TerminalGuard, append_text, poll_event,
@@ -109,13 +108,7 @@ impl ExtensionsState {
         if gateway.extensions.is_empty() {
             return;
         }
-        let len = gateway.extensions.len();
-        let step = delta.unsigned_abs() % len;
-        self.selected = if delta >= 0 {
-            (self.selected + step) % len
-        } else {
-            (self.selected + len - step) % len
-        };
+        self.selected = super::wrap_step(self.selected, delta, gateway.extensions.len());
         self.notice = None;
     }
 
@@ -456,7 +449,7 @@ pub(in crate::frontend) async fn run(
 }
 
 fn install_action(source: String) -> ScreenAction {
-    let request_id: Arc<str> = Uuid::new_v4().to_string().into();
+    let request_id: Arc<str> = crate::fresh_id();
     ScreenAction::Send {
         message: Box::new(ClientMessage::InstallExtension {
             request_id: Arc::clone(&request_id),
@@ -470,7 +463,7 @@ fn install_action(source: String) -> ScreenAction {
 }
 
 fn id_action(mutation: Mutation, id: Arc<str>) -> ScreenAction {
-    let request_id: Arc<str> = Uuid::new_v4().to_string().into();
+    let request_id: Arc<str> = crate::fresh_id();
     let (message, label) = match mutation {
         Mutation::Update => (
             ClientMessage::UpdateExtension {

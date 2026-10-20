@@ -524,9 +524,8 @@ impl GatewayClient {
             .await?;
         let frame = client
             .events
-            .next()
-            .await?
-            .ok_or_else(|| Error::Protocol("gateway closed during pairing".into()))?;
+            .handshake("gateway closed during pairing")
+            .await?;
         let paired = match frame.message {
             ServerMessage::Paired { client_id, token } => PairedClient { client_id, token },
             ServerMessage::Error { code, message, .. } => {
@@ -564,9 +563,8 @@ impl GatewayClient {
     async fn expect_authenticated(mut self) -> Result<Self> {
         let frame = self
             .events
-            .next()
-            .await?
-            .ok_or_else(|| Error::Protocol("gateway closed during authentication".into()))?;
+            .handshake("gateway closed during authentication")
+            .await?;
         match frame.message {
             ServerMessage::Authenticated => Ok(self),
             ServerMessage::Error { code, message, .. } => Err(connection_error(&code, &message)),
@@ -625,7 +623,7 @@ impl GatewaySender {
 }
 
 impl GatewayEvents {
-    /// Receives the next version-checked server frame.
+    /// Receives the next server frame; the protocol version is checked once at the handshake.
     /// # Errors
     ///
     /// Returns an error if the transport fails or returns invalid data.
@@ -633,11 +631,17 @@ impl GatewayEvents {
         if let Some(frame) = self.pending.pop_front() {
             return Ok(Some(frame));
         }
-        let Some(frame) = read_frame::<ServerFrame>(&mut self.reader).await? else {
-            return Ok(None);
-        };
+        read_frame::<ServerFrame>(&mut self.reader).await
+    }
+
+    /// Receives a connection-setup frame and checks its protocol version.
+    async fn handshake(&mut self, closed: &str) -> Result<ServerFrame> {
+        let frame = self
+            .next()
+            .await?
+            .ok_or_else(|| Error::Protocol(closed.into()))?;
         validate_version(frame.version)?;
-        Ok(Some(frame))
+        Ok(frame)
     }
 
     /// Starts a focused response wait without consuming unrelated gateway events.
@@ -668,7 +672,6 @@ impl GatewayEventScope<'_> {
     ///
     /// Returns an error if validation or an operation required by this function fails.
     pub fn defer(&mut self, frame: ServerFrame) -> Result<()> {
-        validate_version(frame.version)?;
         if self
             .events
             .pending

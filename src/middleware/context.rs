@@ -273,18 +273,32 @@ impl<'a> MessageQueue<'a> {
     ) -> Result<bool> {
         let owner = self.owner()?;
         let item = DurableQueuedMessage::new(owner, id, boundary, event)?;
-        if self.items.len() >= MAX_QUEUED_MESSAGES {
-            return Ok(false);
-        }
-        if self
-            .items
-            .iter()
-            .any(|item| item.owner() == owner && item.id() == id)
+        Ok(self.push(owner, id, item))
+    }
+
+    /// Appends a message from a submission checked at ingress.
+    pub(crate) fn enqueue_validated(
+        &mut self,
+        id: &str,
+        boundary: QueuedMessageBoundary,
+        event: MessageEvent,
+    ) -> Result<bool> {
+        let owner = self.owner()?;
+        let item = DurableQueuedMessage::from_validated(owner, id, boundary, event)?;
+        Ok(self.push(owner, id, item))
+    }
+
+    fn push(&mut self, owner: &str, id: &str, item: DurableQueuedMessage) -> bool {
+        if self.items.len() >= MAX_QUEUED_MESSAGES
+            || self
+                .items
+                .iter()
+                .any(|item| item.owner() == owner && item.id() == id)
         {
-            return Ok(false);
+            return false;
         }
         self.items.push(item);
-        Ok(true)
+        true
     }
 
     /// Atomically replaces one owned item while preserving its queue position.
@@ -864,7 +878,10 @@ impl ModelContext<'_> {
         self.durable_input.push(Arc::clone(&item));
         self.transcript_delta.push(item);
         *self.checkpoint_changed = true;
-        provisional_message_target(self.checkpoint_sequence, self.transcript_delta.len())
+        provisional_message_target(
+            self.checkpoint_sequence,
+            std::num::NonZeroUsize::MIN.saturating_add(self.transcript_delta.len() - 1),
+        )
     }
 
     /// Estimates visible history, instructions, and tool schemas using the session policy.
@@ -1294,7 +1311,7 @@ fn set_first(target: &mut Option<String>, value: Option<String>) {
 
 pub(super) fn provisional_message_target(
     checkpoint_sequence: u64,
-    batch_item_count: usize,
+    batch_item_count: std::num::NonZeroUsize,
 ) -> Result<MessageTarget> {
     Ok(MessageTarget {
         checkpoint_sequence: checkpoint_sequence

@@ -319,7 +319,7 @@ mod tests {
         let history = [(
             crate::protocol::MessageTarget {
                 checkpoint_sequence: 1,
-                batch_item_count: 1,
+                batch_item_count: std::num::NonZeroUsize::MIN,
             },
             serde_json::json!({"type": "function_call", "call_id": "call", "name": "show_ui", "arguments": raw}),
         )];

@@ -49,19 +49,6 @@ fn request_action(
     }
 }
 
-fn moved(current: usize, length: usize, delta: isize) -> usize {
-    if length == 0 {
-        return 0;
-    }
-    let current = current % length;
-    let step = delta.unsigned_abs() % length;
-    if delta >= 0 {
-        (current + step) % length
-    } else {
-        (current + length - step) % length
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::form::{FormFlow, RoutineForm};

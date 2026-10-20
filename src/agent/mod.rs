@@ -434,6 +434,15 @@ impl ValidatedSubmission {
     pub fn into_submission(self) -> Submission {
         self.0
     }
+
+    /// Asks a checked message to queue behind active work; delivery is not a validated field.
+    #[must_use]
+    pub fn with_queued_delivery(mut self) -> Self {
+        if let Op::Message { message } = &mut self.0.op {
+            message.requested_delivery = Some(crate::protocol::ActiveMessageDelivery::Queue);
+        }
+        self
+    }
 }
 
 impl AgentSender {
@@ -671,7 +680,7 @@ pub fn validate_submission(submission: &Submission) -> Result<()> {
             command,
             arguments,
             input,
-            target,
+            ..
         } => {
             crate::validate_identifier("capability ID", capability, MAX_OPERATION_BYTES)?;
             crate::validate_identifier("command", command, MAX_OPERATION_BYTES)?;
@@ -686,11 +695,6 @@ pub fn validate_submission(submission: &Submission) -> Result<()> {
             {
                 return Err(Error::Config(
                     "middleware command input exceeds size limit".into(),
-                ));
-            }
-            if target.is_some_and(|target| target.batch_item_count == 0) {
-                return Err(Error::Config(
-                    "message target item count must be positive".into(),
                 ));
             }
             Ok(())
@@ -987,9 +991,6 @@ impl Runner {
 
     async fn request_resume(&self, submission_id: Arc<str>, session_id: Arc<str>) -> Result<()> {
         let result = async {
-            if session_id.trim().is_empty() {
-                return Err(Error::Config("session ID cannot be empty".into()));
-            }
             let checkpoint = self
                 .config
                 .checkpoints

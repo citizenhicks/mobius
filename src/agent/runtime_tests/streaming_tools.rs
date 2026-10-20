@@ -12,6 +12,7 @@ enum Terminal {
     Error,
     HttpError,
     Hold,
+    Repaired { streaming: bool },
 }
 
 struct StreamingModel {
@@ -24,19 +25,15 @@ struct StreamingModel {
 }
 
 struct StreamingTool {
-    calls: Arc<AtomicUsize>,
     finished: Arc<AtomicBool>,
     release: Option<Arc<Notify>>,
-    observed: Arc<Notify>,
     started: Arc<Notify>,
     tool_finished: Arc<Notify>,
 }
 
 #[derive(Default)]
 struct StreamingHooks {
-    rewrite_second: bool,
-    post_calls: AtomicUsize,
-    pre_calls: AtomicUsize,
+    rewrite: bool,
 }
 
 struct BarrierStreamingModel {
@@ -192,18 +189,23 @@ impl Model for StreamingModel {
         let tool_started = Arc::clone(&self.tool_started);
         let wait_for_tool_start = self.wait_for_tool_start;
         Box::pin(async move {
-            events(ModelEvent::ToolCallReady(ToolCall {
-                call_id: "stream-call".into(),
-                name: "streaming_tool".into(),
-                arguments: serde_json::json!({"value": "ready"}),
-            }))
-            .await?;
+            if !matches!(terminal, Terminal::Repaired { streaming: false }) {
+                events(ModelEvent::ToolCallReady(ToolCall {
+                    call_id: "stream-call".into(),
+                    name: "streaming_tool".into(),
+                    arguments: serde_json::from_str(streamed_arguments(terminal))?,
+                }))
+                .await?;
+            }
             if wait_for_tool_start {
                 tool_started.notified().await;
             }
             if matches!(
                 terminal,
-                Terminal::Changed | Terminal::Error | Terminal::HttpError
+                Terminal::Changed
+                    | Terminal::Error
+                    | Terminal::HttpError
+                    | Terminal::Repaired { streaming: true }
             ) {
                 tool_finished.notified().await;
             }
@@ -222,6 +224,10 @@ impl Model for StreamingModel {
                     release.notified().await;
                     Ok(streaming_tool_output(false))
                 }
+                Terminal::Repaired { .. } => Ok(streaming_tool_output_with_arguments(
+                    streamed_arguments(terminal),
+                    false,
+                )),
             }
         })
     }
@@ -234,7 +240,9 @@ impl Tool for StreamingTool {
                 std::sync::Arc::new(ToolDefinition {
                     name: "streaming_tool".into(),
                     description: "a deterministic streaming test tool".into(),
-                    parameters: serde_json::json!({"type": "object"}),
+                    parameters: serde_json::json!({"type": "object", "properties": {
+                        "limit": {"type": "integer"}
+                    }}),
                 })
             });
         &DEFINITION
@@ -247,17 +255,17 @@ impl Tool for StreamingTool {
     fn call(
         &self,
         _context: ToolContext,
-        _arguments: Value,
+        arguments: Value,
     ) -> BoxFuture<'_, Result<crate::protocol::ToolResponse>> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(limit) = arguments.get("limit") {
+            assert_eq!(limit, 42);
+        }
         let finished = Arc::clone(&self.finished);
         let release = self.release.clone();
-        let observed = Arc::clone(&self.observed);
         let started = Arc::clone(&self.started);
         let tool_finished = Arc::clone(&self.tool_finished);
         Box::pin(async move {
             started.notify_one();
-            observed.notify_one();
             if let Some(release) = release {
                 release.notified().await;
             }
@@ -265,6 +273,14 @@ impl Tool for StreamingTool {
             tool_finished.notify_one();
             Ok("streamed result".into())
         })
+    }
+}
+
+fn streamed_arguments(terminal: Terminal) -> &'static str {
+    if matches!(terminal, Terminal::Repaired { .. }) {
+        r#"{"value":"ready","limit":"42"}"#
+    } else {
+        r#"{"value":"ready"}"#
     }
 }
 
@@ -278,11 +294,10 @@ impl Middleware for StreamingHooks {
         context: &'a mut PreToolUseContext<'_>,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            self.pre_calls.fetch_add(1, Ordering::SeqCst);
-            if self.rewrite_second && &*context.call().call_id == "parallel-2" {
+            if self.rewrite {
                 context.replace(
-                    "parallel_streaming_tool",
-                    serde_json::json!({"call_id": "parallel-2", "rewritten": true}),
+                    "streaming_tool",
+                    serde_json::json!({"value": "rewritten", "limit": "42"}),
                 )?;
             }
             Ok(())
@@ -294,7 +309,6 @@ impl Middleware for StreamingHooks {
         context: &'a mut PostToolUseContext<'_>,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            self.post_calls.fetch_add(1, Ordering::SeqCst);
             context.deliver_once("after", || {
                 crate::backend::model::internal_user_message("streaming_once_after", "after tools")
             })?;
@@ -329,18 +343,7 @@ fn streaming_config(
     tool: Arc<dyn Tool>,
     hooks: Arc<dyn Middleware>,
 ) -> AgentConfig {
-    AgentConfig::new(
-        Arc::new(ModelRouter::new("streaming-test", model)),
-        Arc::new(Sandbox::new(
-            Arc::new(LocalSandbox::new(workspace).expect("local sandbox")),
-            ApprovalPolicy::Allow,
-        )),
-        checkpoints,
-        test_middleware(vec![Arc::new(Tools::new(vec![tool])), hooks]),
-        "test prompt",
-    )
-    .session_context(test_session_context())
-    .session_id(session_id)
+    streaming_config_with_tools(workspace, checkpoints, session_id, model, vec![tool], hooks)
 }
 
 fn streaming_config_with_tools(
@@ -397,6 +400,64 @@ fn canonical_tool_items(context: &[Arc<Value>]) -> Vec<String> {
 }
 
 #[tokio::test]
+async fn argument_repair_preserves_the_provider_history_prefix() {
+    for (streaming, rewrite) in [(false, false), (true, false), (false, true), (true, true)] {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
+            SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3")).expect("store"),
+        );
+        let finished = Arc::new(Notify::new());
+        let model = Arc::new(StreamingModel {
+            calls: AtomicUsize::new(0),
+            release: Arc::new(Notify::new()),
+            terminal: Terminal::Repaired { streaming },
+            tool_finished: Arc::clone(&finished),
+            tool_started: Arc::new(Notify::new()),
+            wait_for_tool_start: false,
+        });
+        let mut agent = create_agent(streaming_config(
+            workspace.path(),
+            Arc::clone(&checkpoints),
+            "repaired-prefix",
+            model,
+            Arc::new(StreamingTool {
+                finished: Arc::new(AtomicBool::new(false)),
+                release: None,
+                started: Arc::new(Notify::new()),
+                tool_finished: finished,
+            }),
+            Arc::new(StreamingHooks { rewrite }),
+        ))
+        .await
+        .expect("agent");
+        agent
+            .sender()
+            .submit(user_op("repair limit"))
+            .expect("submit");
+        let events = collect_until_turn_end(&mut agent).await;
+        assert!(events.iter().any(|event| matches!(event,
+            EventMsg::ToolCallEnd(result) if &*result.call_id == "stream-call" && !result.is_error
+        )));
+        let saved = checkpoints
+            .load("repaired-prefix")
+            .await
+            .expect("load")
+            .expect("saved");
+        let raw = saved
+            .context
+            .iter()
+            .find(|item| item["type"] == "function_call")
+            .expect("raw call");
+        let expected = if rewrite {
+            serde_json::json!({"value": "rewritten", "limit": 42}).to_string()
+        } else {
+            streamed_arguments(Terminal::Repaired { streaming }).into()
+        };
+        assert_eq!(raw["arguments"], expected);
+    }
+}
+
+#[tokio::test]
 async fn streaming_tool_error_or_mismatch_does_not_retry_and_records_unknown_result() {
     for (session_id, terminal, prompt) in [
         (
@@ -436,10 +497,8 @@ async fn streaming_tool_error_or_mismatch_does_not_retry_and_records_unknown_res
             session_id,
             Arc::<StreamingModel>::clone(&model),
             Arc::new(StreamingTool {
-                calls: Arc::new(AtomicUsize::new(0)),
                 finished: Arc::new(AtomicBool::new(false)),
                 release: None,
-                observed: Arc::new(Notify::new()),
                 started: tool_started,
                 tool_finished,
             }),
@@ -629,11 +688,9 @@ async fn interrupt_drops_a_running_streaming_tool() {
         "streaming-interrupt",
         Arc::<StreamingModel>::clone(&model),
         Arc::new(StreamingTool {
-            calls: Arc::new(AtomicUsize::new(0)),
             finished: Arc::clone(&tool_done),
             release: Some(Arc::clone(&tool_finished)),
-            observed: Arc::clone(&tool_started),
-            started: Arc::new(Notify::new()),
+            started: Arc::clone(&tool_started),
             tool_finished: Arc::new(Notify::new()),
         }),
         Arc::new(StreamingHooks::default()),

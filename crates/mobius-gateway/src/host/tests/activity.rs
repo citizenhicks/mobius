@@ -26,6 +26,7 @@ async fn runtime_activity_tracks_reservations_and_pending_deliveries() {
                 },
                 None,
             ),
+            crate::config::CanonicalWorkspace::for_test(&workspace),
             None,
         )
         .unwrap();

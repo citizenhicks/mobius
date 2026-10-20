@@ -75,7 +75,7 @@ pub(crate) struct PreparedBot {
     extensions: ResolvedExtensions,
     computer_runtime: Option<crate::computer_runtime::PreparedComputer>,
     computer_config: Arc<crate::computer_runtime::ComputerConfig>,
-    subagent_ceilings: mobius::middleware::subagents::SubagentCeilings,
+    subagent_limits: Option<mobius::middleware::subagents::SubagentLimits>,
 }
 
 impl PreparedBot {
@@ -114,8 +114,6 @@ pub(crate) fn prepare_bot<'a>(
     // Resolve configuration while its owner can lend a lock guard; only runtime preparation awaits.
     let prepared = (|| {
         let config = &bot.config.config;
-        let choices = crate::provider_catalog::configured_model_catalog(gateway)?;
-        crate::config::validate_bot_compatibility(gateway, config, choices.catalogs())?;
         let model_providers = configured_model_providers(gateway, store, credentials)?;
         let endpoint = gateway
             .configured_providers
@@ -138,7 +136,17 @@ pub(crate) fn prepare_bot<'a>(
                     .map(|provider| provider.selection.clone()), // rules-allow: the prepared catalog owns its provider selections
             )
             .collect();
-        let subagent_ceilings = gateway.execution.subagent_ceilings;
+        let subagent_limits = (mobius::middleware::subagents::MANIFEST.required
+            || config
+                .middleware
+                .enabled(mobius::middleware::subagents::MANIFEST.id))
+        .then(|| {
+            crate::middleware_manifest::subagent_limits(
+                &config.middleware,
+                gateway.execution.subagent_ceilings,
+            )
+        })
+        .transpose()?;
         Ok::<_, Error>(async move {
             let computer_runtime = crate::computer_runtime::prepare(
                 store.state_dir(),
@@ -159,7 +167,7 @@ pub(crate) fn prepare_bot<'a>(
                 extensions,
                 computer_runtime,
                 computer_config,
-                subagent_ceilings,
+                subagent_limits,
             })
         })
     })();
@@ -197,9 +205,7 @@ pub(crate) async fn assemble(
         validate_session_id(session_id)?;
     }
     let (workspace_path, execution, telemetry, tls, profile_directory) = {
-        let config = gateway.lock().map_err(|error| {
-            Error::Config(format!("gateway configuration lock is poisoned: {error}"))
-        })?;
+        let config = crate::config::lock(&gateway)?;
         // The snapshot outlives the configuration lock.
         (
             chat.execution_root(store.state_dir(), config.tls.as_ref())?,
@@ -215,7 +221,7 @@ pub(crate) async fn assemble(
     let project = chat.workspace.is_some();
     let attached_folders = chat.attached_folders.clone(); // rules-allow: the discovery task owns the chat's folder list
     let state_dir = store.state_dir().to_path_buf();
-    let token_estimate = mobius::middleware::TokenEstimate::new(execution.bytes_per_token)?;
+    let token_estimate = execution.token_estimate;
     let resources = Arc::clone(&prepared);
     let gateway_for_middleware = Arc::clone(&gateway);
     // Hidden routine and channel chats may carry third-party input.
@@ -257,8 +263,10 @@ pub(crate) async fn assemble(
                 &attached_folders,
             )?);
         }
-        let output_bytes =
-            crate::middleware_manifest::usize_setting(settings, "sandbox", "tool_output_bytes")?;
+        let output_bytes = mobius::backend::sandbox::OutputLimit::new(
+            crate::middleware_manifest::count_setting(settings, "sandbox", "tool_output_bytes")?
+                .get(),
+        )?;
         let credential_environment = telemetry
             .sinks
             .iter()
@@ -295,12 +303,12 @@ pub(crate) async fn assemble(
         );
         let backend: Arc<dyn SandboxBackend> = Arc::<GatewaySandbox>::clone(&gateway_sandbox); // rules-allow: the sandbox and the returned agent share the backend
         let sandbox = Sandbox::new(Arc::clone(&backend), approval_policy)
-            .tool_output_limit(output_bytes)?
-            .background_command_limit(crate::middleware_manifest::usize_setting(
+            .tool_output_limit(output_bytes)
+            .background_command_limit(crate::middleware_manifest::count_setting(
                 settings,
                 "sandbox",
                 "background_commands",
-            )?)?;
+            )?);
         let middleware = build_middleware(
             &resources,
             &workspace_path,
@@ -431,9 +439,8 @@ fn persist_usage(
     provider: &str,
     usage: &TokenUsage,
 ) -> mobius::Result<()> {
-    let mut gateway = gateway.lock().map_err(|error| {
-        MobiusError::Config(format!("gateway configuration lock is poisoned: {error}"))
-    })?;
+    let mut gateway =
+        crate::config::lock(gateway).map_err(|error| MobiusError::Config(error.to_string()))?;
     store
         .record_usage(&mut gateway, provider, usage)
         .map_err(|error| MobiusError::Config(error.to_string()))
@@ -446,7 +453,6 @@ fn build_models(
     credentials: &CredentialStore,
     session_files: Arc<SessionFileStore>,
 ) -> Result<(Arc<ModelRouter>, i64)> {
-    gateway.validate_provider_selection(selection)?;
     let definition = provider(&selection.provider)?;
     let configured = gateway
         .configured_providers
@@ -717,7 +723,6 @@ fn unavailable_models(
     );
     let effort = match gateway.configured_providers.get(&selection.instance) {
         Some(configured) => {
-            gateway.validate_provider_selection(selection)?;
             effective_reasoning_effort(definition, configured, selection).map(Arc::from)
         }
         None => selection
@@ -806,7 +811,7 @@ fn build_middleware(
                 Arc::clone(&prepared.models),
                 Arc::clone(session_files),
                 |id| settings.setting(mobius::middleware::image_generation::MANIFEST.id, id),
-            )?),
+            )),
             BuiltinMiddleware::Tools => Arc::new(if project {
                 Tools::coding(Arc::clone(session_files))
             } else {
@@ -827,11 +832,11 @@ fn build_middleware(
             }
             BuiltinMiddleware::Tasks => Arc::new(Tasks),
             BuiltinMiddleware::Subagents => {
-                let middleware = Subagents::new(crate::middleware_manifest::subagent_limits(
-                    settings,
-                    prepared.subagent_ceilings,
-                )?)
-                .session_files(Arc::clone(session_files));
+                let middleware =
+                    Subagents::new(prepared.subagent_limits.ok_or_else(|| {
+                        Error::Config("subagent limits were not prepared".into())
+                    })?)
+                    .session_files(Arc::clone(session_files));
                 let middleware = match crate::middleware_manifest::string_setting(
                     settings,
                     mobius::middleware::subagents::MANIFEST.id,
@@ -843,9 +848,9 @@ fn build_middleware(
                 Arc::new(middleware)
             }
             BuiltinMiddleware::Messages => Arc::new(Messages::new(
-                crate::middleware_manifest::usize_setting(settings, "messages", "max_pending")?,
+                crate::middleware_manifest::count_setting(settings, "messages", "max_pending")?,
                 prepared.active_message_delivery,
-            )?),
+            )),
             BuiltinMiddleware::Voice => Arc::new(mobius::middleware::voice::Voice),
             BuiltinMiddleware::ComputerControl => {
                 let prepared = prepared
@@ -863,10 +868,10 @@ fn build_middleware(
                 )?)
             }
             BuiltinMiddleware::Sessions => Arc::new(Sessions::new(
-                crate::middleware_manifest::usize_setting(settings, "sessions", "page_size")?,
+                crate::middleware_manifest::count_setting(settings, "sessions", "page_size")?,
                 Some(Arc::clone(session_files)),
                 live_chats.take(),
-            )?),
+            )),
         };
         entries.push(middleware);
     }

@@ -42,7 +42,7 @@ pub(super) async fn connect(
     let mut interrupts = signal(SignalKind::interrupt())?;
     let mut terminations = signal(SignalKind::terminate())?;
 
-    let auth = AuthStore::open(store.auth_path(), config.auth)?;
+    let auth = AuthStore::open_validated(store.auth_path(), config.auth)?;
     let grant = auth.create_pairing_code()?;
     let deadline = pairing_deadline(grant.expires_at)?;
     let process = match start_background_gateway(
@@ -55,12 +55,13 @@ pub(super) async fn connect(
     {
         Ok(Some(process)) => process,
         Ok(None) => {
-            AuthStore::open(store.auth_path(), config.auth)?.revoke_pairing_code(&grant.code)?;
+            AuthStore::open_validated(store.auth_path(), config.auth)?
+                .revoke_pairing_code(&grant.code)?;
             return Ok(print_line(format_args!("connection cancelled"))?);
         }
         Err(error) => {
-            if let Err(revoke) =
-                AuthStore::open(store.auth_path(), config.auth)?.revoke_pairing_code(&grant.code)
+            if let Err(revoke) = AuthStore::open_validated(store.auth_path(), config.auth)?
+                .revoke_pairing_code(&grant.code)
             {
                 return Err(Error::Config(format!(
                     "{error}; failed to revoke one-time code: {revoke}"
@@ -127,7 +128,7 @@ pub(super) async fn connect(
             }
         }
 
-        let pairing = match AuthStore::open(store.auth_path(), config.auth)
+        let pairing = match AuthStore::open_validated(store.auth_path(), config.auth)
             .and_then(|auth| auth.pairing_status(&grant.code))
         {
             Ok(pairing) => pairing,
@@ -348,7 +349,7 @@ pub(super) fn cleanup_connect(
     code: &str,
 ) -> Result<()> {
     stop_gateway(store.state_dir(), Some(pid))?;
-    AuthStore::open(store.auth_path(), policy)?.revoke_pairing_code(code)
+    AuthStore::open_validated(store.auth_path(), policy)?.revoke_pairing_code(code)
 }
 
 #[cfg(unix)]

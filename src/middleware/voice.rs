@@ -276,7 +276,7 @@ fn parent_context(
         let positioned = [(
             crate::protocol::MessageTarget {
                 checkpoint_sequence: checkpoint.sequence,
-                batch_item_count: index + 1,
+                batch_item_count: std::num::NonZeroUsize::MIN.saturating_add(index),
             },
             &**item,
         )];

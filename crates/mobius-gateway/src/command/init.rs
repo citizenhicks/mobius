@@ -1,3 +1,5 @@
+use crate::config::NamedTunnel;
+
 use super::{
     AuthStore, CloudflareInit, ConfigStore, DEFAULT_LISTEN, Endpoint, Error, GatewayConfig,
     InitOptions, Path, PathBuf, Result, STARTUP_FILE, STATE_MARKER_FILE, StartupGuard,
@@ -9,13 +11,8 @@ pub(super) fn initialize(options: InitOptions) -> Result<()> {
         Some(CloudflareInit::Quick) => {
             ConfigStore::initialize_quick_cloudflare(options.state_dir, options.listen)?
         }
-        Some(CloudflareInit::Named { hostname, token }) => {
-            ConfigStore::initialize_named_cloudflare(
-                options.state_dir,
-                options.listen,
-                &hostname,
-                &token,
-            )?
+        Some(CloudflareInit::Named(tunnel)) => {
+            ConfigStore::initialize_named_cloudflare(options.state_dir, options.listen, tunnel)?
         }
         None if options.tls.is_none() => {
             ConfigStore::initialize_quick_cloudflare(options.state_dir, options.listen)?
@@ -31,7 +28,7 @@ pub(super) fn initialize(options: InitOptions) -> Result<()> {
 }
 
 pub(super) fn initialize_auth(store: &ConfigStore, policy: crate::auth::AuthConfig) -> Result<()> {
-    if let Err(error) = AuthStore::initialize(store.auth_path(), policy) {
+    if let Err(error) = AuthStore::initialize_validated(store.auth_path(), policy) {
         return cleanup_failed_initialization(store, error);
     }
     Ok(())
@@ -43,7 +40,7 @@ pub(super) fn initialize_bootstrap(
 ) -> Result<()> {
     let (store, config) = ConfigStore::initialize(state_dir, DEFAULT_LISTEN, None)?;
     let initialized =
-        AuthStore::initialize(store.auth_path(), config.auth).and_then(|(auth, _)| {
+        AuthStore::initialize_validated(store.auth_path(), config.auth).and_then(|(auth, _)| {
             let endpoint = direct_loopback_endpoint(&config)?;
             let issued = auth.provision_local_client()?;
             save_local_client(&endpoint, issued.token)
@@ -71,8 +68,7 @@ pub(super) fn reset_bot_defaults(state_dir: PathBuf) -> Result<()> {
         let revision = current.revision;
         // The replaced defaults are discarded, so their provider moves into the new ones.
         std::mem::swap(&mut composition.provider, &mut current.config.provider);
-        let config = config.replacing_bot_defaults(revision, composition)?;
-        store.save(&config)?;
+        store.save(&config.replacing_bot_defaults(revision, composition)?)?;
         Ok(print_line(format_args!(
             "reset möbius gateway Bot defaults"
         ))?)
@@ -89,7 +85,7 @@ pub(super) fn set_desktop(state_dir: PathBuf, enabled: bool) -> Result<()> {
     let _startup = StartupGuard::create(store.state_dir())?;
     ensure_gateway_stopped(&store, &config)?;
     config.desktop_enabled = enabled;
-    store.save(&config)?;
+    store.save(&config.validated()?)?;
     Ok(print_line(format_args!(
         "gateway desktop enabled: {enabled}"
     ))?)
@@ -150,16 +146,12 @@ pub fn initialize_quick_cloudflare(state_dir: PathBuf) -> Result<()> {
 /// # Errors
 ///
 /// Returns an error if configuration is invalid or a required resource cannot be initialized.
-pub fn initialize_named_cloudflare(
-    state_dir: PathBuf,
-    hostname: String,
-    token: String,
-) -> Result<()> {
+pub fn initialize_named_cloudflare(state_dir: PathBuf, tunnel: NamedTunnel) -> Result<()> {
     initialize(InitOptions {
         state_dir,
         listen: DEFAULT_LISTEN,
         tls: None,
-        cloudflare: Some(CloudflareInit::Named { hostname, token }),
+        cloudflare: Some(CloudflareInit::Named(tunnel)),
     })
 }
 

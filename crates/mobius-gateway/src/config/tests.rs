@@ -196,6 +196,31 @@ fn provider_registration_never_silently_changes_existing_defaults() {
 }
 
 #[test]
+fn saved_search_options_do_not_prevent_loading_but_fail_when_built() {
+    let selection = ProviderConfig {
+        instance: "deepseek".into(),
+        provider: "deepseek".into(),
+        model: "deepseek-flash".into(),
+        base_url: None,
+        reasoning_effort: None,
+        web_search: mobius::backend::model::provider::HostedWebSearch::Live,
+        ..AgentComposition::default().provider
+    };
+    validation::validate_provider_config(&selection).expect("saved selection remains readable");
+    assert!(
+        provider(&selection.provider)
+            .unwrap()
+            .build_config_is_valid(
+                &selection.model,
+                selection.base_url.as_deref(),
+                selection.reasoning_effort.as_deref(),
+                selection.web_search,
+            )
+            .is_err()
+    );
+}
+
+#[test]
 fn credentialless_endpoint_requires_https() {
     let selection = ProviderConfig {
         tool_discovery: None,
@@ -432,7 +457,11 @@ fn chat_spec_metadata_round_trips_and_revalidates_tampering() {
     fs::create_dir(&state).expect("state");
     let bots = crate::bots::BotStore::open(&state).expect("Bots");
     let bot = bots
-        .create_bot("Fixture", "Own fixture work.", AgentComposition::default())
+        .create_bot(
+            "Fixture",
+            "Own fixture work.",
+            AgentComposition::default().into(),
+        )
         .expect("Bot");
     let spec = ChatSpec::for_bot(&workspace, &bot, &state, None)
         .expect("chat spec")
@@ -658,8 +687,7 @@ fn cloudflare_token_is_owner_only_and_absent_from_gateway_config() {
     let (store, _) = ConfigStore::initialize_named_cloudflare(
         state.clone(),
         DEFAULT_LISTEN,
-        "mobius.example.com",
-        "secret-tunnel-token",
+        NamedTunnel::new("mobius.example.com", "secret-tunnel-token").expect("tunnel"),
     )
     .expect("initialize Cloudflare config");
 

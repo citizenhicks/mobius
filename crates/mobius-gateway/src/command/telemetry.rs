@@ -97,7 +97,7 @@ pub(super) async fn run(
     config.telemetry.revision = expected_revision
         .checked_add(1)
         .ok_or_else(|| Error::Config("telemetry revision overflow".into()))?;
-    config.validate()?;
+    let config = config.validated()?;
     if running {
         let token = load(&endpoint)?
             .ok_or_else(|| Error::Config("local control credential unavailable".into()))?;
@@ -105,7 +105,7 @@ pub(super) async fn run(
             ClientMessage::ConfigureTelemetry {
                 request_id,
                 expected_revision,
-                sinks: config.telemetry.sinks,
+                sinks: config.into_inner().telemetry.sinks,
                 preserve_auth: Vec::new(),
             }
         })
@@ -115,8 +115,9 @@ pub(super) async fn run(
         let publication = crate::publication::Outcome::applied(store.save(&config))?;
         if let Err(error) = bots.sync_telemetry_cursors(&config.telemetry.sinks) {
             if let Some(previous) = previous {
+                let mut config = config.into_inner();
                 config.telemetry = previous;
-                if let Err(rollback) = store.save(&config) {
+                if let Err(rollback) = store.publish_live(&config) {
                     return Err(crate::publication::applied_error(Error::Config(format!(
                         "{error}; telemetry rollback did not complete: {rollback}"
                     ))));

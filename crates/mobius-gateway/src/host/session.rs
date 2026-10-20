@@ -239,7 +239,7 @@ impl HostHandle {
     pub(crate) async fn bot_id(&self) -> std::result::Result<Arc<str>, Rejection> {
         let (reply, receiver) = oneshot::channel();
         self.send(HostCommand::BotId { reply }).await?;
-        receiver.await.map_err(stopped_by)
+        receiver.await.map_err(super::stopped_by)
     }
 
     pub(super) async fn reassign_bot(
@@ -247,10 +247,8 @@ impl HostHandle {
         bot_id: Arc<str>,
     ) -> std::result::Result<(), Rejection> {
         let _voice = self.claim_realtime_voice()?;
-        let (reply, receiver) = oneshot::channel();
-        self.send(HostCommand::ReassignBot { bot_id, reply })
-            .await?;
-        receive(receiver).await
+        self.request(|reply| HostCommand::ReassignBot { bot_id, reply })
+            .await
     }
 
     #[expect(
@@ -414,16 +412,13 @@ impl HostHandle {
     }
 
     pub(crate) async fn realtime_model(&self) -> std::result::Result<RealtimeModel, Rejection> {
-        let (reply, receiver) = oneshot::channel();
-        self.send(HostCommand::RealtimeModel { reply }).await?;
-        receive(receiver).await
+        self.request(|reply| HostCommand::RealtimeModel { reply })
+            .await
     }
 
     pub(crate) async fn accepts_file_attachments(&self) -> std::result::Result<bool, Rejection> {
-        let (reply, receiver) = oneshot::channel();
-        self.send(HostCommand::AcceptsFileAttachments { reply })
-            .await?;
-        receive(receiver).await
+        self.request(|reply| HostCommand::AcceptsFileAttachments { reply })
+            .await
     }
 
     pub(super) fn is_alive(&self) -> bool {
@@ -445,33 +440,27 @@ impl HostHandle {
         &self,
         last_sequence: Option<u64>,
     ) -> std::result::Result<HostSnapshot, Rejection> {
-        let (reply, receiver) = oneshot::channel();
-        self.send(HostCommand::Snapshot {
+        self.request(|reply| HostCommand::Snapshot {
             last_sequence,
             reply,
         })
-        .await?;
-        receive(receiver).await
+        .await
     }
 
     /// The chat's current state, without replay.
     pub(crate) async fn ready(&self) -> std::result::Result<SessionReadyPayload, Rejection> {
-        let (reply, receiver) = oneshot::channel();
-        self.send(HostCommand::Ready { reply }).await?;
-        receive(receiver).await
+        self.request(|reply| HostCommand::Ready { reply }).await
     }
 
     pub(crate) async fn history_page(
         &self,
         before_sequence: Option<u64>,
     ) -> std::result::Result<SessionHistoryPage, Rejection> {
-        let (reply, receiver) = oneshot::channel();
-        self.send(HostCommand::HistoryPage {
+        self.request(|reply| HostCommand::HistoryPage {
             before_sequence,
             reply,
         })
-        .await?;
-        receive(receiver).await
+        .await
     }
 
     pub(crate) async fn submit(
@@ -489,9 +478,8 @@ impl HostHandle {
         &self,
         submission: ValidatedSubmission,
     ) -> std::result::Result<(), Rejection> {
-        let (reply, receiver) = oneshot::channel();
-        self.send(HostCommand::Submit { submission, reply }).await?;
-        receive(receiver).await
+        self.request(|reply| HostCommand::Submit { submission, reply })
+            .await
     }
 
     /// Delivers a source message only while this chat belongs to `bot_id`, and
@@ -514,24 +502,20 @@ impl HostHandle {
         submission: ValidatedSubmission,
         bot_id: Arc<str>,
     ) -> std::result::Result<(), Rejection> {
-        let (reply, receiver) = oneshot::channel();
-        self.send(HostCommand::DeliverSource {
+        self.request(|reply| HostCommand::DeliverSource {
             submission,
             bot_id,
             reply,
         })
-        .await?;
-        receive(receiver).await
+        .await
     }
 
     pub(crate) async fn attach_folder(
         &self,
         folder: PathBuf,
     ) -> std::result::Result<(), Rejection> {
-        let (reply, receiver) = oneshot::channel();
-        self.send(HostCommand::AttachFolder { folder, reply })
-            .await?;
-        receive(receiver).await
+        self.request(|reply| HostCommand::AttachFolder { folder, reply })
+            .await
     }
 
     pub(crate) async fn set_message_pinned(
@@ -539,14 +523,12 @@ impl HostHandle {
         target: MessageTarget,
         pinned: bool,
     ) -> std::result::Result<(), Rejection> {
-        let (reply, receiver) = oneshot::channel();
-        self.send(HostCommand::SetMessagePinned {
+        self.request(|reply| HostCommand::SetMessagePinned {
             target,
             pinned,
             reply,
         })
-        .await?;
-        receive(receiver).await
+        .await
     }
 
     pub(crate) async fn git_diff(
@@ -568,19 +550,16 @@ impl HostHandle {
     async fn git_workspace(
         &self,
     ) -> std::result::Result<(Arc<GatewaySandbox>, PathBuf), Rejection> {
-        let (reply, receiver) = oneshot::channel();
-        self.send(HostCommand::GitWorkspace { reply }).await?;
-        receive(receiver).await
+        self.request(|reply| HostCommand::GitWorkspace { reply })
+            .await
     }
 
     pub(crate) async fn workspace_files(
         &self,
         scope: WorkspaceFileScope,
     ) -> std::result::Result<WorkspaceFiles, Rejection> {
-        let (reply, receiver) = oneshot::channel();
-        self.send(HostCommand::WorkspaceFiles { scope, reply })
-            .await?;
-        receive(receiver).await
+        self.request(|reply| HostCommand::WorkspaceFiles { scope, reply })
+            .await
     }
 
     pub(crate) async fn read_workspace_file(
@@ -589,25 +568,21 @@ impl HostHandle {
         offset: u64,
         max_bytes: usize,
     ) -> std::result::Result<WorkspaceRead, Rejection> {
-        let (reply, receiver) = oneshot::channel();
-        self.send(HostCommand::ReadWorkspaceFile {
+        self.request(|reply| HostCommand::ReadWorkspaceFile {
             path,
             offset,
             max_bytes,
             reply,
         })
-        .await?;
-        receive(receiver).await
+        .await
     }
 
     pub(crate) async fn delete_workspace_file(
         &self,
         path: String,
     ) -> std::result::Result<(), Rejection> {
-        let (reply, receiver) = oneshot::channel();
-        self.send(HostCommand::DeleteWorkspaceFile { path, reply })
-            .await?;
-        receive(receiver).await
+        self.request(|reply| HostCommand::DeleteWorkspaceFile { path, reply })
+            .await
     }
 
     pub(crate) async fn write_workspace_file(
@@ -615,30 +590,25 @@ impl HostHandle {
         path: String,
         content: String,
     ) -> std::result::Result<(), Rejection> {
-        let (reply, receiver) = oneshot::channel();
-        self.send(HostCommand::WriteWorkspaceFile {
+        self.request(|reply| HostCommand::WriteWorkspaceFile {
             path,
             content,
             reply,
         })
-        .await?;
-        receive(receiver).await
+        .await
     }
 
     pub(crate) async fn switch_git_branch(
         &self,
         branch: String,
     ) -> std::result::Result<(), Rejection> {
-        let (reply, receiver) = oneshot::channel();
-        self.send(HostCommand::SwitchGitBranch { branch, reply })
-            .await?;
-        receive(receiver).await
+        self.request(|reply| HostCommand::SwitchGitBranch { branch, reply })
+            .await
     }
 
     pub(super) async fn runtime_is_idle(&self) -> std::result::Result<bool, Rejection> {
-        let (reply, receiver) = oneshot::channel();
-        self.send(HostCommand::RuntimeIsIdle { reply }).await?;
-        receive(receiver).await
+        self.request(|reply| HostCommand::RuntimeIsIdle { reply })
+            .await
     }
 
     pub(super) async fn provider_cutover_status(
@@ -647,7 +617,7 @@ impl HostHandle {
         let (reply, receiver) = oneshot::channel();
         self.send(HostCommand::ProviderCutoverStatus { reply })
             .await?;
-        receiver.await.map_err(stopped_by)
+        receiver.await.map_err(super::stopped_by)
     }
 
     pub(crate) async fn run_routine(
@@ -724,6 +694,16 @@ impl HostHandle {
         }
     }
 
+    /// Sends the command built around a fresh reply channel and awaits the chat's answer.
+    async fn request<T>(
+        &self,
+        command: impl FnOnce(oneshot::Sender<std::result::Result<T, Rejection>>) -> HostCommand,
+    ) -> std::result::Result<T, Rejection> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(command(reply)).await?;
+        receive(receiver).await
+    }
+
     async fn send(&self, command: HostCommand) -> std::result::Result<(), Rejection> {
         if matches!(
             command,
@@ -732,7 +712,12 @@ impl HostHandle {
                 | HostCommand::StopIfIdle { .. }
                 | HostCommand::ProviderCutoverStatus { .. }
         ) {
-            return self.inner.commands.send(command).await.map_err(stopped_by);
+            return self
+                .inner
+                .commands
+                .send(command)
+                .await
+                .map_err(super::stopped_by);
         }
         self.inner
             .commands
@@ -745,14 +730,6 @@ impl HostHandle {
                 mpsc::error::TrySendError::Closed(_) => stopped(),
             })
     }
-}
-
-fn stopped_by(error: impl std::fmt::Display) -> Rejection {
-    Rejection::new(
-        "gateway_stopped",
-        format!("the gateway host stopped: {error}"),
-    )
-    .fatal()
 }
 
 fn try_begin_session_mutation(
@@ -852,9 +829,7 @@ async fn start_agent(
                 break prepared;
             }
             let preparation = {
-                let config = gateway.lock().map_err(|error| {
-                    Error::Config(format!("gateway configuration lock is poisoned: {error}"))
-                })?;
+                let config = crate::config::lock(&gateway)?;
                 crate::assembly::prepare_bot(
                     &config,
                     Arc::clone(&bot),

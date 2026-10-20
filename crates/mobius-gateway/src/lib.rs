@@ -71,3 +71,8 @@ pub enum Error {
 
 /// Result type shared by gateway modules.
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// Maps a poisoned standard-library lock to an error naming that lock.
+pub(crate) fn poisoned<T>(lock: &'static str) -> impl FnOnce(std::sync::PoisonError<T>) -> Error {
+    move |error| Error::Config(format!("{lock} lock is poisoned: {error}"))
+}

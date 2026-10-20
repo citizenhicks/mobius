@@ -44,6 +44,19 @@ pub async fn run_extensions(
     extensions::standalone(sender, events, gateway).await
 }
 
+/// Moves `index` by `delta` within `0..len`, wrapping at both ends.
+fn wrap_step(index: usize, delta: isize, len: usize) -> usize {
+    let Some(shift) = delta.unsigned_abs().checked_rem(len) else {
+        return index;
+    };
+    let index = index % len;
+    if delta.is_negative() {
+        (index + len - shift) % len
+    } else {
+        (index + shift) % len
+    }
+}
+
 #[expect(
     clippy::expect_used,
     reason = "fmt::Write for String never returns an error"

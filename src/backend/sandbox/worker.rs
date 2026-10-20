@@ -189,17 +189,8 @@ impl Workers {
         timeout: Duration,
         reset: bool,
     ) -> Result<Vec<u8>> {
-        if !permissions.mutation {
-            return Err(Error::Sandbox(
-                "evaluation requires mutation authority".into(),
-            ));
-        }
-        if request.is_empty()
-            || request.len() > MAX_FRAME_BYTES
-            || timeout.is_zero()
-            || timeout > Duration::from_secs(120)
-        {
-            return Err(Error::Sandbox("invalid worker request or timeout".into()));
+        if request.is_empty() || request.len() > MAX_FRAME_BYTES {
+            return Err(Error::Sandbox("invalid worker request".into()));
         }
         let mut entries = self.entries.lock().await;
         if reset {
@@ -376,13 +367,6 @@ while True:
         let sandbox = Sandbox::new(Arc::new(TestBackend), ApprovalPolicy::Ask);
         // Python's cold start on macOS CI can exceed a second; only `wait` tests a deadline.
         let response_timeout = Duration::from_secs(10);
-        let denied = SandboxPermissions::restore(
-            "session",
-            SandboxMode::WorkspaceWrite,
-            NetworkAccess::Denied,
-            [],
-        )
-        .for_call("call");
         let allowed = SandboxPermissions::restore(
             "session",
             SandboxMode::WorkspaceWrite,
@@ -390,22 +374,17 @@ while True:
             ["call".into()],
         )
         .for_call("call");
-        assert!(
-            sandbox
-                .evaluate_worker(&command, &denied, b"run", Duration::from_secs(1), false)
-                .await
-                .is_err()
-        );
+        let allowed = allowed.mutation().expect("mutation permit");
         assert_eq!(
             sandbox
-                .evaluate_worker(&command, &allowed, b"run", response_timeout, false)
+                .evaluate_worker(&command, allowed, b"run", response_timeout, false)
                 .await
                 .expect("first"),
             b"1"
         );
         assert_eq!(
             sandbox
-                .evaluate_worker(&command, &allowed, b"run", response_timeout, false)
+                .evaluate_worker(&command, allowed, b"run", response_timeout, false)
                 .await
                 .expect("second"),
             b"2"
@@ -413,7 +392,7 @@ while True:
         let error = sandbox
             .evaluate_worker(
                 &command,
-                &allowed,
+                allowed,
                 b"wait",
                 Duration::from_millis(100),
                 false,
@@ -429,7 +408,7 @@ while True:
         assert!(error.to_string().contains("outcome unknown"));
         assert!(
             sandbox
-                .evaluate_worker(&command, &allowed, b"wait", Duration::from_secs(1), false)
+                .evaluate_worker(&command, allowed, b"wait", Duration::from_secs(1), false)
                 .await
                 .expect_err("explicit reset required")
                 .to_string()
@@ -442,7 +421,7 @@ while True:
         ));
         assert_eq!(
             sandbox
-                .evaluate_worker(&command, &allowed, b"run", response_timeout, true)
+                .evaluate_worker(&command, allowed, b"run", response_timeout, true)
                 .await
                 .expect("reset"),
             b"1"
@@ -451,14 +430,14 @@ while True:
         assert!(
             tokio::time::timeout(
                 Duration::from_millis(100),
-                sandbox.evaluate_worker(&command, &allowed, b"wait", Duration::from_secs(2), false)
+                sandbox.evaluate_worker(&command, allowed, b"wait", Duration::from_secs(2), false)
             )
             .await
             .is_err()
         );
         assert!(
             sandbox
-                .evaluate_worker(&command, &allowed, b"run", Duration::from_secs(1), false)
+                .evaluate_worker(&command, allowed, b"run", Duration::from_secs(1), false)
                 .await
                 .is_err()
         );

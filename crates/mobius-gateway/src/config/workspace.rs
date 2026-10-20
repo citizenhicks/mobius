@@ -1,10 +1,34 @@
 use super::*;
 
+/// A canonical workspace directory checked against the gateway's private boundaries.
+#[derive(Debug)]
+pub(crate) struct CanonicalWorkspace(PathBuf);
+
+impl CanonicalWorkspace {
+    pub(crate) fn into_path(self) -> PathBuf {
+        self.0
+    }
+
+    /// Canonicalizes a test fixture directory without the gateway boundary check.
+    #[cfg(test)]
+    pub(crate) fn for_test(path: &Path) -> Self {
+        Self(fs::canonicalize(path).expect("test workspace"))
+    }
+}
+
+impl std::ops::Deref for CanonicalWorkspace {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
 pub(crate) fn validate_chat_workspace(
     path: &Path,
     state_dir: &Path,
     tls: Option<&TlsConfig>,
-) -> Result<PathBuf> {
+) -> Result<CanonicalWorkspace> {
     let path = fs::canonicalize(path)?;
     if !path.is_dir() || path.parent().is_none() {
         return Err(Error::Config(
@@ -12,7 +36,7 @@ pub(crate) fn validate_chat_workspace(
         ));
     }
     validate_workspace_boundaries(&path, state_dir, tls)?;
-    Ok(path)
+    Ok(CanonicalWorkspace(path))
 }
 
 pub(crate) fn create_workspace_directory(
@@ -56,7 +80,7 @@ pub(crate) fn create_workspace_directory(
     fs::create_dir(&path)?;
     let created = validate_chat_workspace(&path, state_dir, tls).and_then(|path| {
         initialize_workspace_repository(&path)?;
-        Ok(path)
+        Ok(path.into_path())
     });
     match created {
         Ok(path) => Ok(path),

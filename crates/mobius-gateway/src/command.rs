@@ -205,8 +205,7 @@ pub async fn run_cli(
             if clear_storage_limit {
                 config.runtime.storage_limit_bytes = None;
             }
-            config.validate()?;
-            store.save(&config)
+            store.save(&config.validated()?)
         }
         Command::Init(options) => initialize(options),
         Command::Bootstrap { state_dir } => initialize_bootstrap(state_dir, save_local_client),

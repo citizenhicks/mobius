@@ -980,7 +980,6 @@ impl ProviderDefinition {
                 self.id
             )));
         }
-        self.validate_base_url(base_url)?;
         let base_url = base_url
             .ok_or_else(|| Error::Config("credentialless endpoint requires a base URL".into()))?;
         let endpoint = reqwest::Url::parse(base_url)

@@ -156,10 +156,10 @@ impl Compaction {
     }
 
     /// Builds the policy from this module's declared settings, using embedded defaults for
-    /// unset values.
+    /// unset values. Ranges are the manifest's, checked when the settings were saved.
     /// # Errors
     ///
-    /// Returns an error when a value has the wrong type or is out of range.
+    /// Returns an error when a value has the wrong type.
     pub fn from_settings<'a>(
         setting: impl Fn(&str) -> Option<&'a FrontendSettingValue>,
     ) -> Result<Self> {
@@ -195,10 +195,11 @@ impl Compaction {
         };
         Ok(Self {
             model_route,
+            at_tokens: integer("at_tokens")?,
+            allow_model_compaction: allow,
+            reserve_tokens: integer("reserve_tokens")?,
             checkpoint_percent: integer("checkpoint_percent")?,
-            ..Self::new(integer("at_tokens")?)?
-                .reserve_tokens(integer("reserve_tokens")?)?
-                .allow_model_compaction(allow)
+            ..Self::default()
         })
     }
 

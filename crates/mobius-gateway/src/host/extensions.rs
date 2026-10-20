@@ -1,7 +1,7 @@
 use super::{
     Arc, ConfigStore, Error, GatewayConfig, GatewayHost, GatewayState, Ordering, ReadyPayload,
-    Rejection, ServerFrame, ServerMessage, finish_publication, gateway_ready_after_unlock,
-    internal, invalid_config,
+    Rejection, ServerMessage, finish_publication, gateway_ready_after_unlock, internal,
+    invalid_config,
 };
 use crate::extensions::ExtensionStore;
 
@@ -243,9 +243,10 @@ impl GatewayHost {
         if *current == next {
             return Ok(None);
         }
+        let next = next.validated().map_err(invalid_config)?;
         let publication =
             crate::publication::Outcome::applied(state.store.save(&next)).map_err(internal)?;
-        *current = next;
+        *current = next.into_inner();
         drop(current);
         Ok(Some(publication))
     }
@@ -272,11 +273,12 @@ impl GatewayHost {
         }
         drop(cache);
         let payload = gateway_ready_after_unlock(state).await?;
-        if let Err(error) = self.events.send(ServerFrame::new(ServerMessage::Ready {
-            payload: payload.clone(), // rules-allow: the broadcast and the requester each own the ready payload
-        })) {
-            tracing::debug!(%error, "ready payload had no subscribers");
-        }
+        super::send_event(
+            &self.events,
+            ServerMessage::Ready {
+                payload: payload.clone(), // rules-allow: the broadcast and the requester each own the ready payload
+            },
+        );
         Ok(payload)
     }
 
@@ -361,7 +363,7 @@ mod tests {
                 .insert(EXTENSION_ID.into(), installed_extension());
             state
                 .bots
-                .create_bot("fixture", "Fixture", bot_config)
+                .create_bot("fixture", "Fixture", bot_config.into())
                 .expect("Bot");
         }
         (root, gateway)

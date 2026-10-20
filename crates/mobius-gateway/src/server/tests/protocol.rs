@@ -21,7 +21,11 @@ fn history_frame_bound_rejects_one_oversized_turn() {
         next_before_sequence: None,
     });
 
-    assert!(!encoded_frame_fits(&frame).expect("measure history frame"));
+    assert!(
+        crate::wire::encode_bounded_frame(&frame)
+            .expect("measure history frame")
+            .is_none()
+    );
 }
 
 #[tokio::test]

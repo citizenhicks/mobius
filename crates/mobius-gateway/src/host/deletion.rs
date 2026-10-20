@@ -5,10 +5,9 @@ use mobius::backend::session_files::{SessionFileDeletion, SessionFileSelection};
 
 use super::{
     Arc, Error, GatewayHost, GatewayState, HashMap, MAX_SESSION_DELETE_ROOTS, Rejection, Result,
-    ServerFrame, ServerMessage, Utc, Uuid, bot_delete_rejection, gateway_session_summaries,
-    internal, invalid_bot, invalid_session_id, load_session_metadata, reject_persistent_session,
-    save_session_metadata, session_file_rejection, session_tree_ids, unknown_session,
-    validate_session_id,
+    Utc, Uuid, bot_delete_rejection, gateway_session_summaries, internal, invalid_bot,
+    invalid_session_id, load_session_metadata, reject_persistent_session, save_session_metadata,
+    send_warning, session_file_rejection, session_tree_ids, unknown_session, validate_session_id,
 };
 use crate::wire::{HookData, HookEvent, HookSource};
 
@@ -54,14 +53,8 @@ impl GatewayHost {
         tokio::spawn(async move {
             let result = deletion.delete().await;
             storage_reads.invalidate();
-            if let Err(error) = result
-                && let Err(error) = events.send(ServerFrame::new(ServerMessage::Error {
-                    code: "session_cleanup".into(),
-                    message: error.to_string().into(),
-                    fatal: false,
-                }))
-            {
-                tracing::debug!(%error, "session cleanup failure had no subscribers");
+            if let Err(error) = result {
+                send_warning(&events, "session_cleanup", error.to_string().into());
             }
         });
     }
@@ -126,14 +119,8 @@ impl GatewayHost {
         .await?;
         drop(state);
         self.cleanup_session_files(file_deletion);
-        if let Some(warning) = file_warning
-            && let Err(error) = self.events.send(ServerFrame::new(ServerMessage::Error {
-                code: "session_cleanup".into(),
-                message: warning.message,
-                fatal: false,
-            }))
-        {
-            tracing::debug!(%error, "session cleanup warning had no subscribers");
+        if let Some(warning) = file_warning {
+            send_warning(&self.events, "session_cleanup", warning.message);
         }
         bot_store
             .cleanup_bot_deletion_files(&intent)
@@ -205,13 +192,7 @@ impl GatewayHost {
         }
         self.broadcast_bots(&bots);
         for message in cleanup_errors {
-            if let Err(error) = self.events.send(ServerFrame::new(ServerMessage::Error {
-                code: "bot_cleanup".into(),
-                message,
-                fatal: false,
-            })) {
-                tracing::debug!(%error, "Bot cleanup warning had no subscribers");
-            }
+            send_warning(&self.events, "bot_cleanup", message);
         }
         Ok((bots, session_ids))
     }
@@ -305,23 +286,11 @@ impl GatewayHost {
             remove_session_trees(&mut state, &roots, &deleted, &mut file_deletion, false).await?;
         drop(state);
         self.cleanup_session_files(file_deletion);
-        if let Some(rejection) = cleanup
-            && let Err(error) = self.events.send(ServerFrame::new(ServerMessage::Error {
-                code: "session_cleanup".into(),
-                message: rejection.message,
-                fatal: false,
-            }))
-        {
-            tracing::debug!(%error, "session cleanup warning had no subscribers");
+        if let Some(rejection) = cleanup {
+            send_warning(&self.events, "session_cleanup", rejection.message);
         }
-        if let Err(rejection) = self.broadcast_sessions().await
-            && let Err(error) = self.events.send(ServerFrame::new(ServerMessage::Error {
-                code: "session_catalog".into(),
-                message: rejection.message,
-                fatal: false,
-            }))
-        {
-            tracing::debug!(%error, "session catalog failure had no subscribers");
+        if let Err(rejection) = self.broadcast_sessions().await {
+            send_warning(&self.events, "session_catalog", rejection.message);
         }
         Ok(deleted)
     }

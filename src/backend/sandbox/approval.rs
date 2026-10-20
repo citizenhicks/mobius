@@ -208,20 +208,13 @@ impl Approval {
             .iter()
             .map(|call| (call.call_id.as_ref(), call))
             .collect::<BTreeMap<_, _>>();
-        let approved_calls = approval_call_ids
-            .iter()
-            .map(|call_id| {
-                calls_by_id.get(&**call_id).copied().ok_or_else(|| {
-                    Error::Tool(format!("approval references unknown call `{call_id}`"))
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
         permissions.allow_mutations(approval_call_ids.iter().map(Arc::clone));
         if !matches!(decision, ReviewDecision::ApprovedForSession) {
             return Ok(permissions);
         }
-        let keys = approved_calls
-            .into_iter()
+        let keys = approval_call_ids
+            .iter()
+            .filter_map(|call_id| calls_by_id.get(&**call_id))
             .map(|call| call_key(session_id, call))
             .collect::<Result<Vec<_>>>()?;
         let mut states = self.states.lock().map_err(state_lock_error)?;

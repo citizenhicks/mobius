@@ -34,6 +34,8 @@ pub use self::ui::*;
 
 /// Maximum total UTF-8 bytes accepted in one user-input submission.
 pub const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
+/// Maximum serialized bytes of one message, including its quote and attachments.
+pub(crate) const MAX_SERIALIZED_MESSAGE_BYTES: usize = MAX_MESSAGE_BYTES * 2;
 
 /// Maximum UTF-8 bytes accepted in capability command input or a queued message edit.
 pub const MAX_CAPABILITY_INPUT_BYTES: usize = 64 * 1024;
@@ -446,7 +448,14 @@ impl MessageSubmission {
             }
         }
         validate_message_content(&self.author, &self.text, &self.attachments)?;
-        validate_message_attachments(&self.attachments, limits)
+        validate_message_attachments(&self.attachments, limits)?;
+        // A queued event never serializes larger than its submission, so queueing cannot fail later.
+        if crate::serialized_len(self)? > MAX_SERIALIZED_MESSAGE_BYTES {
+            return Err(crate::Error::Config(
+                "message exceeds serialized size limit".into(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -1062,6 +1071,29 @@ mod tests {
     }
 
     #[test]
+    fn oversized_serialized_message_is_rejected_at_ingress() {
+        let text = "x".repeat(MAX_MESSAGE_BYTES);
+        let submission = MessageSubmission {
+            author: MessageAuthor::User,
+            text: text.clone(),
+            attachments: Vec::new(),
+            reply: Some(MessageReply {
+                target: MessageTarget {
+                    checkpoint_sequence: 1,
+                    batch_item_count: std::num::NonZeroUsize::MIN,
+                },
+                text,
+            }),
+            requested_delivery: None,
+            target_turn_id: None,
+        };
+        let error = submission
+            .validate(crate::backend::session_files::session_file_limits())
+            .expect_err("oversized message");
+        assert!(error.to_string().contains("serialized size limit"));
+    }
+
+    #[test]
     fn message_submission_has_one_typed_payload() {
         let submission = Submission {
             id: "input-1".into(),
@@ -1073,7 +1105,7 @@ mod tests {
                     reply: Some(MessageReply {
                         target: MessageTarget {
                             checkpoint_sequence: 7,
-                            batch_item_count: 2,
+                            batch_item_count: std::num::NonZeroUsize::new(2).unwrap(),
                         },
                         text: "earlier".into(),
                     }),

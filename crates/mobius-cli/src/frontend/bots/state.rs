@@ -8,9 +8,10 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use uuid::Uuid;
 
 use super::form::{BotForm, Form, FormFlow, RoutineForm};
-use super::{Action, FollowUp, moved, request_action};
+use super::{Action, FollowUp, request_action};
 use crate::frontend::setup::SetupMode;
 use crate::frontend::theme::Role;
+use crate::frontend::wrap_step;
 
 #[derive(Clone)]
 pub(super) enum Page {
@@ -175,7 +176,7 @@ impl BotsState {
         if length == 0 {
             return;
         }
-        self.selected = moved(self.selected, length, delta);
+        self.selected = wrap_step(self.selected, delta, length);
         self.notice = None;
     }
 

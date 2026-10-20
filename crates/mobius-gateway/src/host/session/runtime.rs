@@ -483,12 +483,7 @@ impl HostState {
             let submission = if self.running.session_id.as_ref()
                 == crate::bots::conversation_session_id(&self.spec.bot_id)
             {
-                let mut rewritten = submission.into_submission();
-                if let Op::Message { message } = &mut rewritten.op {
-                    message.requested_delivery =
-                        Some(mobius::protocol::ActiveMessageDelivery::Queue);
-                }
-                ValidatedSubmission::new(rewritten).map_err(internal)?
+                submission.with_queued_delivery()
             } else {
                 submission
             };
@@ -757,9 +752,7 @@ impl HostState {
         self.require_idle_runtime().await?;
         let _mutation = self.begin_session_mutation()?;
         let next = {
-            let gateway = self.gateway.lock().map_err(|error| {
-                internal(format!("gateway configuration lock is poisoned: {error}"))
-            })?;
+            let gateway = crate::config::lock(&self.gateway).map_err(internal)?;
             self.spec
                 .with_attached_folder(&folder, self.store.state_dir(), gateway.tls.as_ref())
         };

@@ -369,7 +369,9 @@ async fn set_runtime_preserves_omitted_policy_fields() {
     config.runtime.require_access_lease = true;
     config.runtime.access_grace_seconds = 30;
     config.runtime.storage_limit_bytes = Some(5 * 1024 * 1024 * 1024);
-    store.save(&config).unwrap();
+    store
+        .save(&config.clone().validated().expect("valid config"))
+        .unwrap();
     run(
         vec![
             "--state-dir".into(),

@@ -1,7 +1,7 @@
 use super::{
     Arc, AtomicU64, CheckpointStore, Error, EventMsg, EventPageRequest, ExecutionOutcome,
-    GatewayHost, Mutex, Ordering, Rejection, Result, Utc, gateway_run_stats,
-    gateway_session_summaries, internal, invalid_config, local_machine_name, session_catalog,
+    GatewayHost, Mutex, Ordering, Rejection, Result, gateway_run_stats, gateway_session_summaries,
+    internal, invalid_config, local_machine_name, session_catalog,
 };
 use crate::bots::TelemetryEvent;
 use crate::telemetry::{TelemetrySection, TelemetrySink, TelemetrySinkReport};
@@ -94,10 +94,7 @@ impl GatewayHost {
     ) -> std::result::Result<(), Rejection> {
         let _mutation = self.begin_mutation().await?;
         let state = self.state.lock().await;
-        let mut live = state
-            .config
-            .lock()
-            .map_err(|error| internal(format!("configuration lock poisoned: {error}")))?;
+        let mut live = state.config()?;
         if live.telemetry.revision != expected {
             return Err(invalid_config(
                 "telemetry revision changed; refresh and retry",
@@ -138,7 +135,7 @@ impl GatewayHost {
             let mut previous = std::mem::replace(&mut live.telemetry.sinks, sinks);
             live.telemetry.revision = revision;
             let publication = match crate::publication::Outcome::applied(
-                live.validate().and_then(|()| state.store.save(&live))
+                live.validate().and_then(|()| state.store.publish_live(&live))
             ) {
                     Ok(publication) => publication,
                     Err(error) => {
@@ -150,7 +147,7 @@ impl GatewayHost {
             if let Err(error) = state.bots.sync_telemetry_cursors(&live.telemetry.sinks) {
                 std::mem::swap(&mut live.telemetry.sinks, &mut previous);
                 live.telemetry.revision = expected;
-                match state.store.save(&live) {
+                match state.store.publish_live(&live) {
                     Ok(()) => return Err(error),
                     Err(rollback @ Error::PublicationApplied { .. }) => {
                         return Err(crate::publication::applied_error(Error::Config(format!(
@@ -288,11 +285,8 @@ impl GatewayHost {
         }
         if sections.contains(&TelemetrySection::Usage) {
             let state = self.state.lock().await;
-            let config = state
-                .config
-                .lock()
-                .map_err(|error| Error::Config(format!("configuration lock poisoned: {error}")))?;
-            let cutoff = u64::try_from(Utc::now().timestamp().max(0)).unwrap_or_default() / 86_400;
+            let config = crate::config::lock(&state.config)?;
+            let cutoff = crate::config::unix_day(std::time::SystemTime::now()).unwrap_or_default();
             let usage = config
                 .profile()
                 .daily_usage
@@ -404,14 +398,7 @@ impl GatewayHost {
         revision: u64,
     ) -> Result<()> {
         let state = self.state.lock().await;
-        if state
-            .config
-            .lock()
-            .map_err(|error| Error::Config(format!("configuration lock poisoned: {error}")))?
-            .telemetry
-            .revision
-            != revision
-        {
+        if crate::config::lock(&state.config)?.telemetry.revision != revision {
             return Ok(());
         }
         state.bots.advance_telemetry(id, cursor)
@@ -429,10 +416,7 @@ impl GatewayHost {
                         "storage measurement timed out waiting for gateway state: {error}"
                     ))
                 })?;
-            let config = state
-                .config
-                .lock()
-                .map_err(|error| Error::Config(format!("configuration lock poisoned: {error}")))?;
+            let config = crate::config::lock(&state.config)?;
             (
                 state.store.state_dir().to_path_buf(),
                 Arc::clone(&state.checkpoints),

@@ -321,7 +321,7 @@ impl Telemetry {
         self.config
             .read()
             .map(|config| Arc::clone(&config))
-            .map_err(poisoned("telemetry configuration"))
+            .map_err(crate::poisoned("telemetry configuration"))
     }
 
     fn header(&self, sink: &TelemetrySink, now: i64) -> Value {
@@ -338,8 +338,11 @@ impl Telemetry {
         let mut live = self
             .config
             .write()
-            .map_err(poisoned("telemetry configuration"))?;
-        let mut statuses = self.statuses.lock().map_err(poisoned("telemetry status"))?;
+            .map_err(crate::poisoned("telemetry configuration"))?;
+        let mut statuses = self
+            .statuses
+            .lock()
+            .map_err(crate::poisoned("telemetry status"))?;
         let (config, publication) = operation()?;
         statuses.retain(|id, _| config.sinks.iter().any(|sink| &sink.id == id));
         for sink in &config.sinks {
@@ -366,7 +369,7 @@ impl Telemetry {
         }
         self.manual
             .lock()
-            .map_err(poisoned("telemetry manual request"))?
+            .map_err(crate::poisoned("telemetry manual request"))?
             .insert(id);
         Ok(())
     }
@@ -375,7 +378,7 @@ impl Telemetry {
         Ok(self
             .statuses
             .lock()
-            .map_err(poisoned("telemetry status"))?
+            .map_err(crate::poisoned("telemetry status"))?
             .get(id)
             .cloned() // rules-allow: the report outlives the status lock
             .unwrap_or_default())
@@ -384,7 +387,7 @@ impl Telemetry {
         Ok(self
             .statuses
             .lock()
-            .map_err(poisoned("telemetry status"))?
+            .map_err(crate::poisoned("telemetry status"))?
             .get(id)
             .is_none_or(|status| status.consecutive_failures < 3))
     }
@@ -519,14 +522,14 @@ impl Telemetry {
             .telemetry
             .manual
             .lock()
-            .map_err(poisoned("telemetry manual request"))?
+            .map_err(crate::poisoned("telemetry manual request"))?
             .contains(&sink.id);
         let (snapshot_due, retry_due) = {
             let statuses = host
                 .telemetry
                 .statuses
                 .lock()
-                .map_err(poisoned("telemetry status"))?;
+                .map_err(crate::poisoned("telemetry status"))?;
             let status = statuses.get(&sink.id);
             let in_flight = status.is_some_and(|status| status.in_flight);
             let next_due = status
@@ -597,7 +600,7 @@ impl Telemetry {
                 .telemetry
                 .statuses
                 .lock()
-                .map_err(poisoned("telemetry status"))?;
+                .map_err(crate::poisoned("telemetry status"))?;
             let Some(status) = statuses.get_mut(&sink.id) else {
                 return Ok(());
             };
@@ -613,7 +616,7 @@ impl Telemetry {
             host.telemetry
                 .manual
                 .lock()
-                .map_err(poisoned("telemetry manual request"))?
+                .map_err(crate::poisoned("telemetry manual request"))?
                 .remove(&sink.id);
         }
         let host = host.clone(); // rules-allow: the delivery task owns its host handle
@@ -668,10 +671,6 @@ impl Telemetry {
             }
         }
     }
-}
-
-fn poisoned<T>(lock: &'static str) -> impl FnOnce(std::sync::PoisonError<T>) -> Error {
-    move |error| Error::Config(format!("{lock} lock poisoned: {error}"))
 }
 
 #[derive(Debug, thiserror::Error)]

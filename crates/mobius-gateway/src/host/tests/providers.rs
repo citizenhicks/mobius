@@ -67,7 +67,9 @@ async fn provider_removal_gateway(
             )
         })
         .expect("provider catalog");
-    store.save(&config).expect("save provider catalog");
+    store
+        .save(&config.clone().validated().expect("valid config"))
+        .expect("save provider catalog");
     let credentials =
         Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
     credentials

@@ -187,7 +187,6 @@ impl ExtensionStore {
         config: &GatewayConfig,
         ids: &BTreeSet<String>,
     ) -> Result<ResolvedExtensions> {
-        validate_ids(ids)?;
         let mut resolved = ResolvedExtensions::default();
         for id in ids {
             let (id, installed) = config

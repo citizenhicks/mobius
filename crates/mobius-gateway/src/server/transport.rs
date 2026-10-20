@@ -376,9 +376,10 @@ impl ClientConnections {
         bots: Arc<BotStore>,
     ) -> Result<ClientConnectionGuard> {
         let key = (client_id, kind);
-        let mut entries = self.entries.lock().map_err(|error| {
-            Error::Config(format!("client-connection lock is poisoned: {error}"))
-        })?;
+        let mut entries = self
+            .entries
+            .lock()
+            .map_err(crate::poisoned("client-connection"))?;
         let first_native =
             kind != ClientKind::GatewayDashboard && !native_client_present(&entries, &key.0);
         let connections = entries.entry(key.clone()).or_default(); // rules-allow: the registry and the guard each keep the key
@@ -400,9 +401,10 @@ impl ClientConnections {
     }
 
     pub(super) fn snapshot(&self, paired: Vec<ClientIdentity>) -> Result<Vec<ClientStatus>> {
-        let entries = self.entries.lock().map_err(|error| {
-            Error::Config(format!("client-connection lock is poisoned: {error}"))
-        })?;
+        let entries = self
+            .entries
+            .lock()
+            .map_err(crate::poisoned("client-connection"))?;
         Ok(paired
             .into_iter()
             .map(|identity| {
@@ -848,10 +850,6 @@ async fn dispatch_authenticated_frame(
     writer: &mut (impl AsyncWrite + Unpin),
 ) -> Result<bool> {
     if client.access_lease.is_some_and(AccessLease::expired) {
-        return Ok(false);
-    }
-    if let Err(error) = validate_version(frame.version) {
-        write_server_error(writer, "protocol_version", error.to_string(), true).await?;
         return Ok(false);
     }
     if let Some(message) = handle_profile_message(

@@ -1,8 +1,9 @@
 use super::{
     Arc, AsyncWrite, AuthStore, ClientConnections, ClientView, DirectoryEntry, DirectoryListing,
-    Error, HostHandle, MAX_DIRECTORY_ENTRIES, MAX_FRAME_BYTES, Path, PathBuf, Rejection, Result,
-    SelectedChat, ServerFrame, ServerMessage, SessionHistoryPage, fs, write_frame,
+    Error, HostHandle, MAX_DIRECTORY_ENTRIES, Path, PathBuf, Rejection, Result, SelectedChat,
+    ServerFrame, ServerMessage, SessionHistoryPage, fs, write_frame,
 };
+use crate::wire::{encode_bounded_frame, write_encoded};
 
 pub(super) async fn write_session_history(
     writer: &mut (impl AsyncWrite + Unpin),
@@ -20,8 +21,8 @@ pub(super) async fn write_session_history(
         records: page.records,
         next_before_sequence: page.next_before_sequence,
     });
-    if encoded_frame_fits(&frame)? {
-        return write_frame(writer, &frame).await;
+    if let Some(encoded) = encode_bounded_frame(&frame)? {
+        return write_encoded(writer, &encoded).await;
     }
     write_rejection(
         writer,
@@ -32,10 +33,6 @@ pub(super) async fn write_session_history(
         ),
     )
     .await
-}
-
-pub(super) fn encoded_frame_fits(frame: &ServerFrame) -> Result<bool> {
-    Ok(serde_json::to_vec(frame)?.len() <= MAX_FRAME_BYTES)
 }
 
 pub(super) async fn write_client_inventory(

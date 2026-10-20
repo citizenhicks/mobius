@@ -1,9 +1,11 @@
+use mobius::backend::session_files::SessionFileDeletion;
+
 use super::deletion::{prepare_session_tree_deletion, remove_session_trees, session_trees};
 use super::{
     ActiveRoutineRun, Arc, BeginRun, BotStore, ChatSpec, GatewayHost, GatewayState, HostHandle, Op,
-    Path, PathBuf, Rejection, RoutineRunStatus, ServerFrame, ServerMessage, Submission, Utc,
-    gateway_session_summaries, internal, invalid_bot, invalid_routine, invalid_workspace,
-    session_tree_ids, unknown_session, validate_bot_workspace,
+    Path, PathBuf, Rejection, RoutineRunStatus, Submission, Utc, gateway_session_summaries,
+    internal, invalid_bot, invalid_routine, invalid_workspace, send_warning, session_tree_ids,
+    unknown_session, validate_bot_workspace,
 };
 
 pub(super) async fn accept_routine_while_state_locked(
@@ -17,6 +19,24 @@ pub(super) async fn accept_routine_while_state_locked(
 }
 
 impl GatewayHost {
+    /// Publishes what a routine deletion removed once the state lock is released.
+    async fn finish_routine_deletion(
+        &self,
+        file_deletion: SessionFileDeletion,
+        session_ids: &[String],
+        cleanup: std::result::Result<Option<Rejection>, Rejection>,
+    ) {
+        self.cleanup_session_files(file_deletion);
+        if !session_ids.is_empty()
+            && let Err(rejection) = self.broadcast_sessions().await
+        {
+            tracing::warn!(code = rejection.code, message = %rejection.message, "session list broadcast failed");
+        }
+        if let Some(rejection) = cleanup.unwrap_or_else(Some) {
+            send_warning(&self.events, "routine_cleanup", rejection.message);
+        }
+    }
+
     pub(crate) async fn bot_routine_snapshot(
         &self,
         bot_id: &str,
@@ -48,14 +68,12 @@ impl GatewayHost {
         let _access = self.begin_mutation().await?;
         let state = self.state.lock().await;
         let bot = state.bots.bot(bot_id).map_err(invalid_bot)?;
-        let config = state
-            .config
-            .lock()
-            .map_err(|error| internal(format!("configuration lock poisoned: {error}")))?;
+        let config = state.config()?;
         let tls = config.tls.as_ref();
         let root = match workspace {
             Some(workspace) => {
                 crate::config::validate_chat_workspace(workspace, state.store.state_dir(), tls)
+                    .map(crate::config::CanonicalWorkspace::into_path)
             }
             None => ChatSpec::persistent(&bot).execution_root(state.store.state_dir(), tls),
         };
@@ -72,11 +90,11 @@ impl GatewayHost {
     ) -> std::result::Result<crate::wire::Routine, Rejection> {
         let _mutation = self.begin_mutation().await?;
         let state = self.state.lock().await;
-        validate_bot_workspace(&state, bot_id, &definition.workspace)?;
+        let workspace = validate_bot_workspace(&state, bot_id, &definition.workspace)?;
         validate_routine_bindings(&state, bot_id, &definition.bindings).await?;
         let routine = state
             .bots
-            .create_routine(bot_id, definition, cause)
+            .create_routine(bot_id, definition, workspace, cause)
             .map_err(invalid_routine)?;
         state
             .bots
@@ -176,13 +194,14 @@ impl GatewayHost {
                     .routine(&command.routine_id)
                     .map_err(invalid_routine)?
                     .bot_id;
-                validate_bot_workspace(&state, &bot_id, &definition.workspace)?;
+                let workspace = validate_bot_workspace(&state, &bot_id, &definition.workspace)?;
                 validate_routine_bindings(&state, &bot_id, &definition.bindings).await?;
                 state
                     .bots
                     .update_routine(
                         &command.routine_id,
                         definition,
+                        workspace,
                         cause,
                         cause.map(|_| command_id),
                     )
@@ -261,25 +280,8 @@ impl GatewayHost {
         )
         .await;
         drop(state);
-        self.cleanup_session_files(file_deletion);
-        if !session_ids.is_empty()
-            && let Err(rejection) = self.broadcast_sessions().await
-        {
-            tracing::warn!(code = rejection.code, message = %rejection.message, "session list broadcast failed");
-        }
-        let warning = match cleanup {
-            Ok(warning) => warning,
-            Err(rejection) => Some(rejection),
-        };
-        if let Some(rejection) = warning
-            && let Err(error) = self.events.send(ServerFrame::new(ServerMessage::Error {
-                code: "routine_cleanup".into(),
-                message: rejection.message,
-                fatal: false,
-            }))
-        {
-            tracing::debug!(%error, "routine cleanup warning had no subscribers");
-        }
+        self.finish_routine_deletion(file_deletion, &session_ids, cleanup)
+            .await;
         Ok(())
     }
 
@@ -396,25 +398,8 @@ impl GatewayHost {
             Ok(None)
         };
         drop(state);
-        self.cleanup_session_files(file_deletion);
-        if !session_ids.is_empty()
-            && let Err(rejection) = self.broadcast_sessions().await
-        {
-            tracing::warn!(code = rejection.code, message = %rejection.message, "session list broadcast failed");
-        }
-        let warning = match cleanup {
-            Ok(warning) => warning,
-            Err(rejection) => Some(rejection),
-        };
-        if let Some(rejection) = warning
-            && let Err(error) = self.events.send(ServerFrame::new(ServerMessage::Error {
-                code: "routine_cleanup".into(),
-                message: rejection.message,
-                fatal: false,
-            }))
-        {
-            tracing::debug!(%error, "routine cleanup warning had no subscribers");
-        }
+        self.finish_routine_deletion(file_deletion, &session_ids, cleanup)
+            .await;
         Ok(())
     }
 
@@ -520,8 +505,8 @@ async fn validate_routine_bindings(
     bindings: &[crate::wire::RoutineBinding],
 ) -> std::result::Result<(), Rejection> {
     for binding in bindings {
-        if let crate::wire::HookSelector::Event { .. } = &binding.on {
-            super::bot_events::validate_selector(state, bot_id, &binding.on).await?;
+        if let crate::wire::HookSelector::Event { source, .. } = &binding.on {
+            super::bot_events::validate_source(state, bot_id, source).await?;
         }
     }
     Ok(())

@@ -227,7 +227,8 @@ fn binding_enforces_current_exposure_and_step_materialization() {
         .prepare((&[]).into(), Cow::Owned(BTreeSet::from(["direct".into()])))
         .expect("active tool catalog");
     let calls = [function_call("missing")];
-    let (bound, callable, mut rejected) = catalog.bind_live_batch(&calls, &prepared, 8);
+    let (bound, callable, mut rejected) =
+        Catalog::bind_batch(&calls, |call| catalog.bind_in_place(call, &prepared), 8);
     assert!(bound.is_empty());
     assert!(callable.is_empty());
     assert_eq!(rejected.len(), 1);
@@ -236,54 +237,4 @@ fn binding_enforces_current_exposure_and_step_materialization() {
     assert_eq!(rejected[0].output.text(), "tool err");
     rejected[0].replace("éééééé");
     assert_eq!(rejected[0].output.text(), "éééé");
-}
-
-#[tokio::test]
-async fn dispatch_rechecks_exposure_in_the_current_catalog() {
-    let mut visible = Catalog::default();
-    visible
-        .register(Arc::new(NamedTool::new(
-            "changing",
-            "deferred tool",
-            ToolExposure::Deferred,
-        )))
-        .expect("visible tool");
-    finalize(&mut visible);
-    let bound = visible
-        .bind_call(
-            function_call("changing"),
-            &BTreeSet::from(["changing".to_owned()]),
-            &BTreeSet::from(["changing".to_owned()]),
-        )
-        .expect("bind visible call");
-
-    let mut hidden = Catalog::default();
-    hidden
-        .register(Arc::new(NamedTool::new(
-            "changing",
-            "hidden tool",
-            ToolExposure::Hidden,
-        )))
-        .expect("hidden tool");
-    finalize(&mut hidden);
-
-    let result = execute_batch(
-        &hidden,
-        [bound],
-        test_sandbox(),
-        &test_permissions(&[]),
-        &"turn".into(),
-        &"test".into(),
-        &crate::protocol::MessageAuthor::User.into(),
-    )
-    .await
-    .pop()
-    .expect("dispatch result");
-
-    assert!(result.is_error);
-    assert!(!result.handler_executed);
-    assert_eq!(
-        result.output.text(),
-        "tool `changing` is hidden from the model"
-    );
 }

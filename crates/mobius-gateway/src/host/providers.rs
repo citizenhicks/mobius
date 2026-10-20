@@ -10,13 +10,12 @@ use mobius::backend::model::provider::{
 use uuid::Uuid;
 
 use crate::Error;
-use crate::config::GatewayConfig;
+use crate::config::{GatewayConfig, ValidatedGatewayConfig};
 use crate::provider_catalog::{
     configured_model_choices, credential_is_configured, selected_base_url,
 };
 use crate::wire::{
-    AgentComposition, BotRecord, ProviderConfig, ProviderEndpointAuth, ReadyPayload, ServerFrame,
-    ServerMessage,
+    AgentComposition, BotRecord, ProviderConfig, ProviderEndpointAuth, ReadyPayload, ServerMessage,
 };
 
 use super::session::ProviderRefresh;
@@ -71,20 +70,23 @@ impl GatewayHost {
         let state = self.state.lock().await;
         let publication = {
             let mut current = state.config()?;
-            super::validate_composition(&state, &current, &config)?;
+            let config = super::validate_composition(&state, &current, config)?;
             let next = current
-                .replacing_bot_defaults(expected_revision, config)
+                .replacing_bot_defaults(expected_revision, config.into_inner())
                 .map_err(invalid_config)?;
             let publication =
                 crate::publication::Outcome::applied(state.store.save(&next)).map_err(internal)?;
-            *current = next;
+            *current = next.into_inner();
             publication
         };
         let follow_up = async {
             let payload = gateway_ready_after_unlock(state).await?;
-            self.broadcast(ServerMessage::Ready {
-                payload: payload.clone(), // rules-allow: the broadcast and the requester each own the ready payload
-            });
+            super::send_event(
+                &self.events,
+                ServerMessage::Ready {
+                    payload: payload.clone(), // rules-allow: the broadcast and the requester each own the ready payload
+                },
+            );
             Ok(payload)
         }
         .await;
@@ -318,11 +320,14 @@ impl GatewayHost {
             Ok(true) => {}
             Ok(false) => return,
             Err(rejection) => {
-                self.broadcast(ServerMessage::Error {
-                    code: rejection.code.into(),
-                    message: rejection.message,
-                    fatal: rejection.fatal,
-                });
+                super::send_event(
+                    &self.events,
+                    ServerMessage::Error {
+                        code: rejection.code.into(),
+                        message: rejection.message,
+                        fatal: rejection.fatal,
+                    },
+                );
                 return;
             }
         }
@@ -331,11 +336,14 @@ impl GatewayHost {
                 .refresh_provider_sessions(ProviderRefresh::Provider(&provider))
                 .await
         {
-            self.broadcast(ServerMessage::Error {
-                code: rejection.code.into(),
-                message: rejection.message,
-                fatal: rejection.fatal,
-            });
+            super::send_event(
+                &self.events,
+                ServerMessage::Error {
+                    code: rejection.code.into(),
+                    message: rejection.message,
+                    fatal: rejection.fatal,
+                },
+            );
         }
     }
 
@@ -362,7 +370,7 @@ impl GatewayHost {
         {
             attempt.response = Some(message.clone()); // rules-allow: the attempt keeps the response for retries while it is broadcast
         }
-        self.broadcast(message);
+        super::send_event(&self.events, message);
         drop(logins);
         Ok(true)
     }
@@ -390,12 +398,6 @@ impl GatewayHost {
         drop(cache);
         drop(state);
         Ok(())
-    }
-
-    fn broadcast(&self, message: ServerMessage) {
-        if let Err(error) = self.events.send(ServerFrame::new(message)) {
-            tracing::debug!(%error, "gateway event had no subscribers");
-        }
     }
 
     #[expect(
@@ -458,7 +460,7 @@ impl GatewayHost {
                             || previous.image_model_ids != next.image_model_ids
                     })
                 });
-            if *current == next {
+            if *current == *next {
                 (false, None)
             } else {
                 let target_epoch = catalog_changed
@@ -502,9 +504,12 @@ impl GatewayHost {
                 self.broadcast_bots(&bots);
             }
             let payload = gateway_ready_after_unlock(state).await?;
-            self.broadcast(ServerMessage::Ready {
-                payload: payload.clone(), // rules-allow: the broadcast and the requester each own the ready payload
-            });
+            super::send_event(
+                &self.events,
+                ServerMessage::Ready {
+                    payload: payload.clone(), // rules-allow: the broadcast and the requester each own the ready payload
+                },
+            );
             Ok(payload)
         }
         .await;
@@ -529,19 +534,7 @@ impl GatewayHost {
             let next = current
                 .removing_provider(&instance)
                 .map_err(invalid_config)?;
-            let bots = state.bots.bots().map_err(internal)?;
-            for bot in &bots {
-                if bot_references_removed_provider(bot, &instance, &next).map_err(invalid_config)? {
-                    return Err(Rejection::new(
-                        "provider_in_use",
-                        format!(
-                            "provider `{instance}` is selected by Bot @{}; update that Bot first",
-                            bot.handle
-                        ),
-                    ));
-                }
-            }
-            validate_bot_catalog(&state, &next, &bots)?;
+            validate_bot_catalog(&state, &next, &state.bots.bots().map_err(internal)?)?;
             next
         };
         let target_epoch = state
@@ -555,9 +548,12 @@ impl GatewayHost {
         state.provider_epoch.store(target_epoch, Ordering::Release);
         let follow_up = async {
             let payload = gateway_ready_after_unlock(state).await?;
-            self.broadcast(ServerMessage::Ready {
-                payload: payload.clone(), // rules-allow: the broadcast and the requester each own the ready payload
-            });
+            super::send_event(
+                &self.events,
+                ServerMessage::Ready {
+                    payload: payload.clone(), // rules-allow: the broadcast and the requester each own the ready payload
+                },
+            );
             Ok(payload)
         }
         .await;
@@ -597,22 +593,21 @@ fn validate_browser_endpoint_registration(
 fn commit_provider_registration(
     state: &super::GatewayState,
     mut current: std::sync::MutexGuard<'_, GatewayConfig>,
-    next: GatewayConfig,
+    next: ValidatedGatewayConfig,
 ) -> crate::Result<()> {
     let publication = crate::publication::Outcome::applied(state.store.save(&next))?;
-    *current = next;
+    *current = next.into_inner();
     publication.confirm()
 }
 
 fn commit_provider_removal(
     state: &super::GatewayState,
     instance: &str,
-    next: GatewayConfig,
+    next: ValidatedGatewayConfig,
 ) -> crate::Result<()> {
-    let mut current = state.config.lock().map_err(|error| {
-        Error::Config(format!("gateway configuration lock is poisoned: {error}"))
-    })?;
+    let mut current = crate::config::lock(&state.config)?;
     let publication = crate::publication::Outcome::applied(state.store.save(&next))?;
+    let next = next.into_inner();
     let result = match state.credentials.remove(instance) {
         Ok(_) => {
             *current = next;
@@ -624,7 +619,7 @@ fn commit_provider_removal(
         }
         Err(error) => {
             // Restore memory only if the rollback bytes actually became visible.
-            match state.store.save(&current) {
+            match state.store.publish_live(&current) {
                 Ok(()) => Err(error),
                 Err(rollback @ Error::PublicationApplied { .. }) => {
                     Err(crate::publication::applied_error(Error::Config(format!(
@@ -673,24 +668,6 @@ fn bot_catalog_rejection(bot: &BotRecord, error: impl std::fmt::Display) -> Reje
     )
 }
 
-fn bot_references_removed_provider(
-    bot: &BotRecord,
-    instance: &str,
-    next: &GatewayConfig,
-) -> crate::Result<bool> {
-    if bot.config.config.provider.instance == instance {
-        return Ok(true);
-    }
-    for (_, _, route) in
-        crate::middleware_manifest::configured_model_routes(&bot.config.config.middleware)
-    {
-        if !crate::provider_catalog::configured_route_exists(next, route)? {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
 fn reserve_provider_login(
     logins: &mut ProviderLogins,
     login_id: &str,
@@ -698,7 +675,7 @@ fn reserve_provider_login(
     request_id: &str,
     provider_id: &str,
 ) -> std::result::Result<bool, Rejection> {
-    if request_id.is_empty() || request_id.len() > MAX_LOGIN_REQUEST_ID_BYTES {
+    if request_id.len() > MAX_LOGIN_REQUEST_ID_BYTES {
         return Err(Rejection::new(
             "invalid_provider_login",
             "provider login request IDs must contain 1–128 bytes",

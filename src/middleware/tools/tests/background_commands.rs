@@ -21,8 +21,7 @@ async fn bash_caps_output_and_restricts_poll_and_stop_to_its_owner() {
             Arc::new(crate::backend::sandbox::local::LocalSandbox::new(".").expect("sandbox")),
             crate::backend::sandbox::ApprovalPolicy::Ask,
         )
-        .tool_output_limit(512)
-        .expect("output limit"),
+        .tool_output_limit(crate::backend::sandbox::OutputLimit::new(512).expect("output limit")),
     );
     let response = Bash
         .call(

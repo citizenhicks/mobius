@@ -174,7 +174,7 @@ fn render_form(frame: &mut ratatui::Frame<'_>, area: Rect, form: &Form) {
 
 fn form_line(label: &str, value: &str, focused: bool) -> Line<'static> {
     let role = if focused { Role::Selection } else { Role::Text };
-    let value = terminal_text(value).replace(['\n', '\t'], " ");
+    let value = crate::frontend::terminal::terminal_line(value);
     Line::styled(
         format!("{} {label}: {value}", if focused { "›" } else { " " }),
         current().style(role),

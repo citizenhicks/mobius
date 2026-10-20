@@ -214,7 +214,8 @@ impl Runner {
         })?;
         *target = Some(MessageTarget {
             checkpoint_sequence,
-            batch_item_count: self.transcript_delta.len() + 1,
+            batch_item_count: std::num::NonZeroUsize::MIN
+                .saturating_add(self.transcript_delta.len()),
         });
         events.push(turn_event(&submission_id, message.event));
         // Retain the removed item at its original position until turn-start publication succeeds.

@@ -111,7 +111,9 @@ async fn voice_delegation_preserves_committed_speech_and_delayed_final_transcrip
             Vec::new(),
         )
         .unwrap();
-    store.save(&config).unwrap();
+    store
+        .save(&config.clone().validated().expect("valid config"))
+        .unwrap();
     let checkpoints: Arc<dyn CheckpointStore> =
         Arc::new(SqliteCheckpoint::new(store.checkpoints_path()).unwrap());
     let credentials = Arc::new(CredentialStore::open(store.credentials_path()).unwrap());
@@ -123,7 +125,7 @@ async fn voice_delegation_preserves_committed_speech_and_delayed_final_transcrip
         .create_bot(
             "Builder",
             "Build things.",
-            config.bot_defaults.as_ref().unwrap().config.clone(),
+            config.bot_defaults.as_ref().unwrap().config.clone().into(),
         )
         .unwrap();
     let gateway = GatewayHost::start(store, config, credentials, bots)

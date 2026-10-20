@@ -18,7 +18,7 @@ pub struct ExecutionConfig {
     /// Linux procfs policy; empty procfs requires host-provided PID isolation.
     pub procfs_mode: mobius::backend::sandbox::ProcfsMode,
     /// Configurable fallback estimate when measured token usage is unavailable.
-    pub bytes_per_token: f64,
+    pub token_estimate: mobius::middleware::TokenEstimate,
     /// Host ceilings for each Bot's subagent tree, validated when read.
     pub subagent_ceilings: SubagentCeilings,
 }
@@ -52,7 +52,7 @@ impl TryFrom<ExecutionFile> for ExecutionConfig {
             shell_executable: file.shell_executable,
             bubblewrap_executable: file.bubblewrap_executable,
             procfs_mode: file.procfs_mode,
-            bytes_per_token: file.bytes_per_token,
+            token_estimate: mobius::middleware::TokenEstimate::new(file.bytes_per_token)?,
             subagent_ceilings: SubagentCeilings::new(
                 file.subagent_max_depth,
                 file.subagent_max_concurrency,
@@ -69,7 +69,7 @@ impl From<ExecutionConfig> for ExecutionFile {
             shell_executable: config.shell_executable,
             bubblewrap_executable: config.bubblewrap_executable,
             procfs_mode: config.procfs_mode,
-            bytes_per_token: config.bytes_per_token,
+            bytes_per_token: config.token_estimate.bytes_per_token(),
             subagent_max_depth: config.subagent_ceilings.max_depth(),
             subagent_max_concurrency: config.subagent_ceilings.max_concurrency(),
             subagent_max_agents: config.subagent_ceilings.max_agents(),
@@ -84,7 +84,7 @@ impl Default for ExecutionConfig {
             shell_executable: None,
             bubblewrap_executable: None,
             procfs_mode: mobius::backend::sandbox::ProcfsMode::default(),
-            bytes_per_token: mobius::middleware::TokenEstimate::default().bytes_per_token(),
+            token_estimate: mobius::middleware::TokenEstimate::default(),
             subagent_ceilings: SubagentCeilings::default(),
         }
     }
@@ -109,7 +109,6 @@ impl ExecutionConfig {
                 ));
             }
         }
-        mobius::middleware::TokenEstimate::new(self.bytes_per_token)?;
         Ok(())
     }
 }

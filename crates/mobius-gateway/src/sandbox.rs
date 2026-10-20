@@ -10,7 +10,7 @@ use std::time::Duration;
 use mobius::backend::model::provider::{ProviderAuth, providers};
 use mobius::backend::sandbox::{
     CommandAuthorization, CommandMode, CommandOutput, CommandOutputSink, NetworkAccess,
-    SandboxBackend, SandboxMode, local::LocalSandbox,
+    OutputLimit, SandboxBackend, SandboxMode, local::LocalSandbox,
 };
 use mobius::{BoxFuture, Error, Result};
 
@@ -81,7 +81,7 @@ impl GatewaySandbox {
             tls_key,
             timeout,
             None,
-            mobius::backend::sandbox::default_tool_output_limit(),
+            OutputLimit::default(),
             &[],
         )
     }
@@ -94,12 +94,9 @@ impl GatewaySandbox {
         state_dir: &Path,
         tls_key: Option<&Path>,
         policy: &ExecutionConfig,
-        output_bytes: usize,
+        output_bytes: OutputLimit,
         credential_environment: &[&str],
     ) -> Result<Self> {
-        policy
-            .validate()
-            .map_err(|error| Error::Config(error.to_string()))?;
         Self::build(
             workspace,
             state_dir,
@@ -117,7 +114,7 @@ impl GatewaySandbox {
         tls_key: Option<&Path>,
         timeout: Duration,
         policy: Option<&ExecutionConfig>,
-        output_bytes: usize,
+        output_bytes: OutputLimit,
         credential_environment: &[&str],
     ) -> Result<Self> {
         if timeout.is_zero() {
@@ -365,10 +362,10 @@ impl GatewaySandbox {
 fn configure_execution(
     mut sandbox: LocalSandbox,
     policy: Option<&ExecutionConfig>,
-    output_bytes: usize,
+    output_bytes: OutputLimit,
     credential_environment: &[&str],
 ) -> Result<LocalSandbox> {
-    sandbox = sandbox.command_output_limit(output_bytes)?;
+    sandbox = sandbox.command_output_limit(output_bytes);
     if let Some(policy) = policy {
         #[cfg(target_os = "linux")]
         {

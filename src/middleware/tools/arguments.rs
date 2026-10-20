@@ -10,17 +10,20 @@ use std::fmt::Write as _;
 
 use serde_json::{Map, Number, Value};
 
-/// Repairs `value` in place against `schema`, or names the first field of the wrong type.
-pub(crate) fn normalize(value: &mut Value, schema: &Value) -> Result<(), String> {
+/// Repairs `value` in place against `schema` and reports whether anything changed, or
+/// names the first field of the wrong type.
+pub(crate) fn normalize(value: &mut Value, schema: &Value) -> Result<bool, String> {
     walk(value, schema, &mut String::new())
 }
 
-fn walk(value: &mut Value, schema: &Value, path: &mut String) -> Result<(), String> {
+fn walk(value: &mut Value, schema: &Value, path: &mut String) -> Result<bool, String> {
     let schema = branch(value, schema);
     let types = types(schema);
+    let mut changed = false;
     if !types.is_empty() && !types.iter().any(|kind| matches(value, kind)) {
         if let Some(repaired) = types.iter().find_map(|kind| repair(value, kind)) {
             *value = repaired;
+            changed = true;
         } else {
             let field = if path.is_empty() {
                 "arguments"
@@ -37,18 +40,18 @@ fn walk(value: &mut Value, schema: &Value, path: &mut String) -> Result<(), Stri
     match value {
         Value::Array(items) => {
             let Some(item_schema) = schema.get("items") else {
-                return Ok(());
+                return Ok(changed);
             };
             for (index, item) in items.iter_mut().enumerate() {
                 let length = path.len();
                 write!(path, "[{index}]").map_err(|error| error.to_string())?;
-                walk(item, item_schema, path)?;
+                changed |= walk(item, item_schema, path)?;
                 path.truncate(length);
             }
         }
         Value::Object(fields) => {
             let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
-                return Ok(());
+                return Ok(changed);
             };
             for (name, field) in fields.iter_mut() {
                 let Some(field_schema) = properties.get(name) else {
@@ -59,13 +62,13 @@ fn walk(value: &mut Value, schema: &Value, path: &mut String) -> Result<(), Stri
                     path.push('.');
                 }
                 path.push_str(name);
-                walk(field, field_schema, path)?;
+                changed |= walk(field, field_schema, path)?;
                 path.truncate(length);
             }
         }
         _ => {}
     }
-    Ok(())
+    Ok(changed)
 }
 
 /// The `anyOf`/`oneOf` branch `value` belongs to: the one whose `type` property it names,

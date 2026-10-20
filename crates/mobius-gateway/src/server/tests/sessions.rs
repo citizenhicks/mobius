@@ -153,7 +153,9 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
             Vec::new(),
         )
         .expect("register provider");
-    store.save(&config).expect("save provider");
+    store
+        .save(&config.clone().validated().expect("valid config"))
+        .expect("save provider");
     let (_, grant) =
         AuthStore::initialize(store.auth_path(), config.auth).expect("initialize auth");
     let server = GatewayServer::assemble(store, config, listener)
@@ -689,7 +691,9 @@ async fn shutdown_stops_a_blocked_routine_and_fails_its_durable_run() {
             Vec::new(),
         )
         .expect("register provider");
-    store.save(&config).expect("save provider");
+    store
+        .save(&config.clone().validated().expect("valid config"))
+        .expect("save provider");
     let credentials = CredentialStore::open(store.credentials_path()).expect("credentials");
     credentials
         .set(
@@ -710,7 +714,7 @@ async fn shutdown_stops_a_blocked_routine_and_fails_its_durable_run() {
         .create_bot(
             "Blocked routine bot",
             "A blocked routine test bot.",
-            composition,
+            composition.into(),
         )
         .expect("Bot");
     let now = Utc::now().timestamp();
@@ -728,6 +732,7 @@ async fn shutdown_stops_a_blocked_routine_and_fails_its_durable_run() {
                     time_zone: None,
                 },
             ),
+            crate::config::CanonicalWorkspace::for_test(&workspace),
             None,
         )
         .expect("routine");

@@ -97,9 +97,8 @@ impl Tool for ReadFile {
                         .await?
                 }
                 (None, Some(file_id)) => {
-                    let file = self.store.file_reference(session, &file_id).await?;
                     self.store
-                        .inspect_image(session, &file, ImageDetail::Auto)
+                        .inspect_image_id(session, &file_id, ImageDetail::Auto)
                         .await?
                 }
                 _ => return Err(Error::Tool("provide exactly one of path or file_id".into())),
@@ -160,7 +159,11 @@ impl Tool for WriteFile {
             }
             context
                 .sandbox
-                .write(&arguments.path, &arguments.content, &context.permissions)
+                .write(
+                    &arguments.path,
+                    &arguments.content,
+                    context.permissions.mutation()?,
+                )
                 .await?;
             Ok((format!(
                 "wrote {} bytes to {}",
@@ -276,7 +279,7 @@ impl Tool for ApplyPatch {
             }
             context
                 .sandbox
-                .write(&document.path, &updated, &context.permissions)
+                .write(&document.path, &updated, context.permissions.mutation()?)
                 .await?;
             let mut options = DiffOptions::new();
             options

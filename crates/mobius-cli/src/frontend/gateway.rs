@@ -280,12 +280,7 @@ impl State {
         if rows == 0 {
             return;
         }
-        let step = direction.unsigned_abs() % rows;
-        self.selection = if direction >= 0 {
-            (self.selection + step) % rows
-        } else {
-            (self.selection + rows - step) % rows
-        };
+        self.selection = super::wrap_step(self.selection, direction, rows);
     }
 
     fn account_row_count(&self) -> usize {
@@ -331,13 +326,7 @@ impl State {
 
     fn pairing_request(&self) -> mobius_gateway::Result<(Endpoint, String)> {
         let endpoint = self.endpoint.trim().parse()?;
-        let code = self.pairing_code.trim().to_owned();
-        if code.is_empty() {
-            return Err(mobius_gateway::Error::Config(
-                "enter the one-time code".into(),
-            ));
-        }
-        Ok((endpoint, code))
+        Ok((endpoint, self.pairing_code.trim().to_owned()))
     }
 }
 

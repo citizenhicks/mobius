@@ -43,11 +43,10 @@ async fn initialize_cloudflare(state_dir: PathBuf) -> mobius_gateway::Result<()>
         mobius_cli::frontend::CloudflareInit::Quick => {
             mobius_gateway::command::initialize_quick_cloudflare(state_dir.clone())?; // rules-allow: the gateway API takes an owned PathBuf and state_dir is still needed to connect
         }
-        mobius_cli::frontend::CloudflareInit::Named { hostname, token } => {
+        mobius_cli::frontend::CloudflareInit::Named(tunnel) => {
             mobius_gateway::command::initialize_named_cloudflare(
                 state_dir.clone(), // rules-allow: the gateway API takes an owned PathBuf and state_dir is still needed to connect
-                hostname,
-                token,
+                tunnel,
             )?;
         }
     }

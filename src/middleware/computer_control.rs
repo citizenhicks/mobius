@@ -212,7 +212,7 @@ impl Tool for Evaluate {
                 .sandbox
                 .evaluate_worker(
                     &self.runtime.worker,
-                    &context.permissions,
+                    context.permissions.mutation()?,
                     &request,
                     Duration::from_millis(args.timeout_ms),
                     args.reset,

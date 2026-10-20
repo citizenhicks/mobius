@@ -436,10 +436,10 @@ async fn message_pins_accept_only_assistant_messages_and_survive_reopen() {
         .expect("save transcript");
     let user = mobius::protocol::MessageTarget {
         checkpoint_sequence: checkpoint.sequence,
-        batch_item_count: 1,
+        batch_item_count: std::num::NonZeroUsize::MIN,
     };
     let assistant = mobius::protocol::MessageTarget {
-        batch_item_count: 2,
+        batch_item_count: std::num::NonZeroUsize::new(2).unwrap(),
         ..user
     };
 

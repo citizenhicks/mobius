@@ -75,11 +75,11 @@ impl ConfigStore {
         listen: SocketAddr,
         tls: Option<TlsConfig>,
     ) -> Result<(Self, GatewayConfig)> {
-        let config = GatewayConfig::new(listen, tls)?;
+        let config = GatewayConfig::defaults(listen, tls, None).validated()?;
         let state_dir = prepare_state_dir(state_dir.as_ref())?;
         let store = Self::at(state_dir);
         store.save_with_mode(&config, true)?;
-        Ok((store, config))
+        Ok((store, config.into_inner()))
     }
 
     /// Initializes state for an account-free Cloudflare Quick Tunnel.
@@ -100,15 +100,10 @@ impl ConfigStore {
     pub fn initialize_named_cloudflare(
         state_dir: PathBuf,
         listen: SocketAddr,
-        hostname: &str,
-        token: &str,
+        tunnel: NamedTunnel,
     ) -> Result<(Self, GatewayConfig)> {
-        Self::initialize_cloudflare(
-            state_dir,
-            listen,
-            CloudflareConfig::named(hostname)?,
-            Some(validate_cloudflare_token(token)?),
-        )
+        let (cloudflare, token) = tunnel.into_parts();
+        Self::initialize_cloudflare(state_dir, listen, cloudflare, Some(&token))
     }
 
     fn initialize_cloudflare(
@@ -117,11 +112,13 @@ impl ConfigStore {
         cloudflare: CloudflareConfig,
         token: Option<&str>,
     ) -> Result<(Self, GatewayConfig)> {
-        let config = GatewayConfig::new_cloudflare(listen, cloudflare)?;
+        let config = GatewayConfig::defaults(listen, None, Some(cloudflare)).validated()?;
         let state_dir = prepare_state_dir(state_dir.as_ref())?;
         let store = Self::at(state_dir);
         let result = token
-            .map_or(Ok(()), |token| store.save_cloudflare_token(token))
+            .map_or(Ok(()), |token| {
+                crate::publication::publish(&store.cloudflare_token_path(), token.as_bytes(), true)
+            })
             .and_then(|()| store.save_with_mode(&config, true));
         if let Err(error) = result {
             if matches!(error, Error::PublicationApplied { .. }) {
@@ -135,7 +132,7 @@ impl ConfigStore {
             })?;
             return Err(error);
         }
-        Ok((store, config))
+        Ok((store, config.into_inner()))
     }
 
     /// Opens and validates persisted gateway configuration.
@@ -167,22 +164,30 @@ impl ConfigStore {
         if u64::try_from(contents.len()).unwrap_or(u64::MAX) > MAX_CONFIG_BYTES {
             return Err(Error::Config("gateway configuration is too large".into()));
         }
-        let config = toml::from_slice(&contents).map_err(|error| {
+        let config: GatewayConfig = toml::from_slice(&contents).map_err(|error| {
             Error::Config(format!(
                 "gateway configuration at {} could not be read; preserve the state directory and correct the configuration or follow the release upgrade instructions: {error}",
                 store.path.display()
             ))
         })?;
-        store.validate_config(&config)?;
+        config.validate()?;
+        if matches!(config.cloudflare, Some(CloudflareConfig::Named { .. })) {
+            load_secret_file(&store.cloudflare_token_path())?;
+        }
         Ok((store, config))
     }
 
-    /// Atomically replaces validated persistent configuration.
+    /// Atomically replaces persistent configuration with a validated one.
     /// # Errors
     ///
     /// Returns an error if the value cannot be encoded or persisted.
-    pub fn save(&self, config: &GatewayConfig) -> Result<()> {
+    pub fn save(&self, config: &ValidatedGatewayConfig) -> Result<()> {
         self.save_with_mode(config, false)
+    }
+
+    /// Publishes a live configuration its caller has validated, or one live before a failed change.
+    pub(crate) fn publish_live(&self, config: &GatewayConfig) -> Result<()> {
+        self.publish_config(config, false)
     }
 
     pub(crate) fn record_usage(
@@ -254,8 +259,7 @@ impl ConfigStore {
         }
     }
 
-    fn save_with_mode(&self, config: &GatewayConfig, create_new: bool) -> Result<()> {
-        self.validate_config(config)?;
+    fn save_with_mode(&self, config: &ValidatedGatewayConfig, create_new: bool) -> Result<()> {
         self.publish_config(config, create_new)
     }
 
@@ -268,22 +272,6 @@ impl ConfigStore {
             return Err(Error::Config("gateway configuration is too large".into()));
         }
         crate::publication::publish(&self.path, contents.as_bytes(), create_new)
-    }
-
-    fn validate_config(&self, config: &GatewayConfig) -> Result<()> {
-        config.validate()?;
-        if matches!(
-            config.cloudflare.as_ref(),
-            Some(CloudflareConfig::Named { .. })
-        ) {
-            load_secret_file(&self.cloudflare_token_path())?;
-        }
-        Ok(())
-    }
-
-    fn save_cloudflare_token(&self, token: &str) -> Result<()> {
-        let token = validate_cloudflare_token(token)?;
-        crate::publication::publish(&self.cloudflare_token_path(), token.as_bytes(), true)
     }
 }
 
@@ -351,7 +339,10 @@ impl CredentialStore {
             expires_at,
             revocation: None,
         };
-        let mut values = self.values.lock().map_err(poisoned_credentials())?;
+        let mut values = self
+            .values
+            .lock()
+            .map_err(crate::poisoned("provider credential"))?;
         if let Some(credential) = values.get(instance)
             && credential.provider != provider_id
         {
@@ -394,7 +385,10 @@ impl CredentialStore {
         provider_id: &str,
         base_url: Option<&str>,
     ) -> Result<Option<ResolvedCredential>> {
-        let mut values = self.values.lock().map_err(poisoned_credentials())?;
+        let mut values = self
+            .values
+            .lock()
+            .map_err(crate::poisoned("provider credential"))?;
         let Some(credential) = values.get_mut(instance).filter(|credential| {
             credential.provider == provider_id && credential.base_url.as_deref() == base_url
         }) else {
@@ -424,7 +418,10 @@ impl CredentialStore {
         provider_id: &str,
         base_url: Option<&str>,
     ) -> Result<Option<String>> {
-        let values = self.values.lock().map_err(poisoned_credentials())?;
+        let values = self
+            .values
+            .lock()
+            .map_err(crate::poisoned("provider credential"))?;
         let hint = values
             .get(instance)
             .filter(|credential| {
@@ -444,7 +441,10 @@ impl CredentialStore {
     /// Returns an error if validation or an operation required by this function fails.
     pub fn remove(&self, instance: &str) -> Result<bool> {
         super::validation::validate_instance_id(instance)?;
-        let mut values = self.values.lock().map_err(poisoned_credentials())?;
+        let mut values = self
+            .values
+            .lock()
+            .map_err(crate::poisoned("provider credential"))?;
         let Some((key, previous)) = values.remove_entry(instance) else {
             return Ok(false);
         };
@@ -554,10 +554,6 @@ fn prepare_state_dir(path: &Path) -> Result<PathBuf> {
     #[cfg(unix)]
     fs::set_permissions(&path, mobius::owner_only::dir())?;
     Ok(path)
-}
-
-fn poisoned_credentials<T>() -> impl FnOnce(std::sync::PoisonError<T>) -> Error {
-    |error| Error::Config(format!("provider credential lock is poisoned: {error}"))
 }
 
 fn validate_private_state_dir(path: &Path) -> Result<()> {
@@ -709,7 +705,10 @@ impl UsageUpdate {
     }
 }
 
-pub(super) fn unix_day(now: SystemTime) -> Result<u64> {
+/// The Unix day that keys daily token usage at `now`.
+/// # Errors
+/// Returns an error when `now` predates the Unix epoch.
+pub fn unix_day(now: SystemTime) -> Result<u64> {
     Ok(now
         .duration_since(UNIX_EPOCH)
         .map_err(|error| Error::Config(format!("system clock is before the Unix epoch: {error}")))?
@@ -800,7 +799,9 @@ mod usage_tests {
         let (store, mut config) =
             ConfigStore::initialize(state.clone(), DEFAULT_LISTEN, None).unwrap();
         config.usage = expired_history();
-        store.save(&config).unwrap();
+        store
+            .save(&config.clone().validated().expect("valid config"))
+            .unwrap();
         let before = config.usage.clone();
         crate::publication::fail_next_replacement(&store.path);
         assert!(

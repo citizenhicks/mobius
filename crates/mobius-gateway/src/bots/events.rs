@@ -69,12 +69,6 @@ impl BotStorage {
         after_sequence: u64,
         now: i64,
     ) -> Result<()> {
-        validate_bot_binding(&subscription.binding, Some(super::MAX_SCHEDULE_TIMESTAMP))?;
-        if matches!(subscription.binding.on, HookSelector::Schedule { .. }) {
-            return Err(Error::Config(
-                "timer selectors belong to routine bindings".into(),
-            ));
-        }
         self.transaction(|tx| {
             save_binding(
                 tx,
@@ -321,7 +315,7 @@ pub(crate) fn caused_event(
             .map(Arc::clone)
             .collect()
     });
-    let event = HookEvent {
+    Ok(HookEvent {
         id,
         bot_id,
         source,
@@ -329,9 +323,7 @@ pub(crate) fn caused_event(
         occurred_at: now,
         cause_id: cause.map(|event| Arc::clone(&event.id)),
         ancestry,
-    };
-    validate_event(&event)?;
-    Ok(event)
+    })
 }
 
 fn cursor(connection: &Connection, session_id: &str) -> Result<u64> {
@@ -466,7 +458,6 @@ fn sync_routine_bindings(tx: &Transaction<'_>, routines: &[StoredRoutine], now: 
                     },
                 },
             };
-            validate_bot_binding(&binding, None)?;
             let after_sequence = match &binding.on {
                 HookSelector::Event {
                     source: HookSource::Session { session_id },
@@ -535,8 +526,7 @@ pub(super) fn record_event(
     event: &HookEvent,
     sequence: Option<u64>,
 ) -> Result<bool> {
-    validate_event(event)?;
-    let json = serde_json::to_string(event)?;
+    let json = validate_event(event)?;
     if let Some(previous) = tx
         .query_row(
             "SELECT event_json FROM hook_events WHERE id=?1",
@@ -666,6 +656,16 @@ pub(crate) fn validate_selector(selector: &HookSelector) -> Result<()> {
     }
     Ok(())
 }
+/// Checks a subscription binding's syntax and returns its event source.
+pub(crate) fn subscription_source(binding: &HookBinding<BotAction>) -> Result<&HookSource> {
+    validate_bot_binding(binding, Some(super::MAX_SCHEDULE_TIMESTAMP))?;
+    match &binding.on {
+        HookSelector::Event { source, .. } => Ok(source),
+        HookSelector::Schedule { .. } => Err(Error::Config(
+            "timer selectors belong to routine bindings".into(),
+        )),
+    }
+}
 pub(crate) fn validate_bot_binding(
     binding: &HookBinding<BotAction>,
     timestamp_limit: Option<i64>,
@@ -720,7 +720,8 @@ fn validate_source(source: &HookSource) -> Result<()> {
         HookSource::Gateway => Ok(()),
     }
 }
-fn validate_event(event: &HookEvent) -> Result<()> {
+/// Validates an event and returns its JSON encoding.
+fn validate_event(event: &HookEvent) -> Result<String> {
     validate_id(&event.id)?;
     validate_id(&event.bot_id)?;
     validate_source(&event.source)?;
@@ -743,10 +744,11 @@ fn validate_event(event: &HookEvent) -> Result<()> {
     if let Some(id) = &event.cause_id {
         validate_id(id)?;
     }
-    if serde_json::to_vec(event)?.len() > mobius::protocol::MAX_MESSAGE_BYTES / 2 + 8192 {
+    let json = serde_json::to_string(event)?;
+    if json.len() > mobius::protocol::MAX_MESSAGE_BYTES / 2 + 8192 {
         return Err(Error::Config("hook event is too large".into()));
     }
-    Ok(())
+    Ok(json)
 }
 fn validate_id(id: &str) -> Result<()> {
     if id.trim().is_empty() || id.len() > 256 || id.chars().any(char::is_control) {

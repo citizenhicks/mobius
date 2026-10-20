@@ -4,7 +4,6 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 use serde::Deserialize;
-use serde::Deserializer;
 use serde::Serialize;
 
 use super::EventMsg;
@@ -161,8 +160,7 @@ pub struct MessageTarget {
     /// Durable checkpoint sequence containing the selected message.
     pub checkpoint_sequence: u64,
     /// One-based item count within the checkpoint's transcript batch.
-    #[serde(deserialize_with = "positive_usize")]
-    pub batch_item_count: usize,
+    pub batch_item_count: std::num::NonZeroUsize,
 }
 
 /// Durable message identity and immutable text shown when replying.
@@ -173,19 +171,6 @@ pub struct MessageReply {
     pub target: MessageTarget,
     /// The text.
     pub text: String,
-}
-
-fn positive_usize<'de, D>(deserializer: D) -> std::result::Result<usize, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let value = usize::deserialize(deserializer)?;
-    if value == 0 {
-        return Err(serde::de::Error::custom(
-            "message target item count must be positive",
-        ));
-    }
-    Ok(value)
 }
 
 /// How one accepted message actually entered the conversation.

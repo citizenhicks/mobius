@@ -66,7 +66,7 @@ impl Tool for Bash {
                 .sandbox
                 .run_command(
                     arguments.command,
-                    &context.permissions,
+                    context.permissions.mutation()?,
                     std::time::Duration::from_millis(DEFINITION.initial_wait_ms),
                 )
                 .await?;

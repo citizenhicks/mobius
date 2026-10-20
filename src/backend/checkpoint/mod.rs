@@ -14,7 +14,6 @@ use crate::backend::sandbox::NetworkAccess;
 use crate::backend::sandbox::SandboxMode;
 use crate::protocol::Event;
 use crate::protocol::EventMsg;
-use crate::protocol::MAX_MESSAGE_BYTES;
 use crate::protocol::MessageAuthor;
 use crate::protocol::MessageDelivery;
 use crate::protocol::MessageEvent;
@@ -34,7 +33,6 @@ const TURN_PAGE_BATCH_SIZE: usize = 100;
 const MAX_QUEUED_OWNER_BYTES: usize = 256;
 const MAX_QUEUED_ID_BYTES: usize = 4 * 1024;
 const MAX_QUEUED_TURN_ID_BYTES: usize = 4 * 1024;
-const MAX_QUEUED_MESSAGE_BYTES: usize = MAX_MESSAGE_BYTES * 2;
 
 /// Durable phase of the user turn currently running.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -348,8 +346,31 @@ impl QueuedMessage {
         Self::build(owner, id, boundary, event).map_err(|(error, _boundary)| error)
     }
 
+    /// Queues an event built from a submission already checked at ingress.
+    pub(crate) fn from_validated(
+        owner: &str,
+        id: &str,
+        boundary: QueuedMessageBoundary,
+        event: MessageEvent,
+    ) -> Result<Self> {
+        Self::assemble(owner, id, boundary, event).map_err(|(error, _boundary)| error)
+    }
+
     // A failed build hands the boundary back so a replacement can restore it.
     fn build(
+        owner: &str,
+        id: &str,
+        boundary: QueuedMessageBoundary,
+        event: MessageEvent,
+    ) -> std::result::Result<Self, (Error, QueuedMessageBoundary)> {
+        let queued = Self::assemble(owner, id, boundary, event)?;
+        match validate_queued_message(&queued) {
+            Ok(()) => Ok(queued),
+            Err(error) => Err((error, queued.0.boundary)),
+        }
+    }
+
+    fn assemble(
         owner: &str,
         id: &str,
         boundary: QueuedMessageBoundary,
@@ -361,7 +382,7 @@ impl QueuedMessage {
                 boundary,
             ));
         }
-        let queued = Self(QueuedMessageData {
+        Ok(Self(QueuedMessageData {
             owner: owner.into(),
             id: id.into(),
             boundary,
@@ -369,11 +390,7 @@ impl QueuedMessage {
             message: event.text,
             attachments: event.attachments,
             reply: event.reply,
-        });
-        match validate_queued_message(&queued) {
-            Ok(()) => Ok(queued),
-            Err(error) => Err((error, queued.0.boundary)),
-        }
+        }))
     }
 
     pub(crate) fn owner(&self) -> &str {
@@ -485,7 +502,7 @@ fn validate_queued_message(message: &QueuedMessage) -> Result<()> {
     )?;
     if crate::serialized_len(&message.borrowed_event())
         .ok()
-        .is_none_or(|bytes| bytes > MAX_QUEUED_MESSAGE_BYTES)
+        .is_none_or(|bytes| bytes > crate::protocol::MAX_SERIALIZED_MESSAGE_BYTES)
     {
         return Err(Error::Config("queued message is invalid".into()));
     }
@@ -884,7 +901,7 @@ impl TranscriptPage {
                         (
                             MessageTarget {
                                 checkpoint_sequence: batch.sequence,
-                                batch_item_count: index + 1,
+                                batch_item_count: std::num::NonZeroUsize::MIN.saturating_add(index),
                             },
                             item,
                         )
@@ -1103,7 +1120,7 @@ mod ownership_tests {
             Some(MessageReply {
                 target: MessageTarget {
                     checkpoint_sequence: 1,
-                    batch_item_count: 1,
+                    batch_item_count: std::num::NonZeroUsize::MIN,
                 },
                 text: "quoted \"text\" 🦀".into(),
             }),

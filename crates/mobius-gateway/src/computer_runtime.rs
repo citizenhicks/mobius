@@ -74,7 +74,6 @@ pub(crate) async fn prepare(
     settings: &MiddlewareConfig,
     config: &ComputerConfig,
 ) -> Result<Option<PreparedComputer>> {
-    config.validate()?;
     remote_desktop::prepare_configured_profile(config)?;
     if !settings.enabled(computer_control::MANIFEST.id) {
         return Ok(None);

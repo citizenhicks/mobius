@@ -44,7 +44,6 @@ use mobius_gateway::wire::{
     BotRecord, ClientMessage, GitDiffScope, ReadyPayload, ServerMessage, SessionActivityState,
     SessionReadyPayload, SessionRecord, WorkspaceFileScope, apply_session_changes,
 };
-use uuid::Uuid;
 
 const ELAPSED_INTERVAL: Duration = Duration::from_secs(1);
 const FRAME_INTERVAL: Duration = Duration::from_millis(16);
@@ -349,7 +348,7 @@ async fn request_git_summary(sender: &GatewaySender, session_id: &str, state: &m
         .into_iter()
         .enumerate()
     {
-        let request_id: Arc<str> = Uuid::new_v4().to_string().into();
+        let request_id: Arc<str> = crate::fresh_id();
         if sender
             .send(ClientMessage::GetGitDiffTotals {
                 request_id: Arc::clone(&request_id),
@@ -373,7 +372,7 @@ async fn request_workspace_inventory(
 ) {
     if let Err(error) = sender
         .send(ClientMessage::ListWorkspaceFiles {
-            request_id: Uuid::new_v4().to_string().into(),
+            request_id: crate::fresh_id(),
             session_id: session_id.into(),
             scope: WorkspaceFileScope::All,
         })
@@ -602,7 +601,7 @@ async fn create_session(
     clear: bool,
     state: &mut TuiState,
 ) -> Option<PendingSessionCreation> {
-    let request_id: Arc<str> = Uuid::new_v4().to_string().into();
+    let request_id: Arc<str> = crate::fresh_id();
     let result = sender
         .send(ClientMessage::CreateSession {
             request_id: Arc::clone(&request_id),
@@ -1062,7 +1061,7 @@ async fn send_gateway_action(
 ) {
     match action {
         GatewayAction::DeleteCurrent => {
-            let request_id: Arc<str> = Uuid::new_v4().to_string().into();
+            let request_id: Arc<str> = crate::fresh_id();
             let result = sender
                 .send(ClientMessage::DeleteSessions {
                     request_id: Arc::clone(&request_id),
@@ -1087,7 +1086,7 @@ async fn request_earlier_history(sender: &GatewaySender, session_id: &str, state
     let Some(before_sequence) = state.next_before_sequence else {
         return;
     };
-    let request_id: Arc<str> = Uuid::new_v4().to_string().into();
+    let request_id: Arc<str> = crate::fresh_id();
     match sender
         .send(ClientMessage::GetSessionHistory {
             request_id: Arc::clone(&request_id),
@@ -1128,7 +1127,7 @@ async fn start_file_download(
             return;
         }
     };
-    let request_id: Arc<str> = Uuid::new_v4().to_string().into();
+    let request_id: Arc<str> = crate::fresh_id();
     let request = ClientMessage::ReadSessionFile {
         request_id: Arc::clone(&request_id),
         session_id: session_id.into(),
@@ -1236,7 +1235,7 @@ async fn handle_file_download_message(
                 return true;
             }
             if let Some(offset) = next_offset {
-                let request_id: Arc<str> = Uuid::new_v4().to_string().into();
+                let request_id: Arc<str> = crate::fresh_id();
                 let Some(download) = state.file_download.as_mut() else {
                     return true;
                 };
@@ -1635,7 +1634,7 @@ async fn send_op(
     session_id: &Arc<str>,
     op: Op,
 ) -> Result<Arc<str>> {
-    let id: Arc<str> = Uuid::new_v4().to_string().into();
+    let id: Arc<str> = crate::fresh_id();
     sender
         .send(ClientMessage::Submit {
             session_id: Arc::clone(session_id),

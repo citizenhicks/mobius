@@ -163,7 +163,7 @@ impl BotStorage {
     pub(super) fn lock(&self) -> Result<MutexGuard<'_, Connection>> {
         self.connection
             .lock()
-            .map_err(|error| Error::Config(format!("Bot storage lock is poisoned: {error}")))
+            .map_err(crate::poisoned("Bot storage"))
     }
 
     pub(super) fn load_catalog(&self) -> Result<Option<String>> {
@@ -628,7 +628,6 @@ fn insert_run(transaction: &rusqlite::Transaction<'_>, run: &RoutineRun) -> Resu
 }
 
 fn insert_run_row(transaction: &rusqlite::Transaction<'_>, run: &RoutineRun) -> Result<()> {
-    validate_run(run)?;
     transaction
         .execute(
             "INSERT INTO routine_runs (

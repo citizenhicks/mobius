@@ -4,13 +4,15 @@ mod events;
 mod storage;
 #[cfg(test)]
 pub(crate) use events::event_selector;
-pub(crate) use events::{MAX_HOOK_ANCESTRY, PendingHookAction, TelemetryEvent, report_text};
+pub(crate) use events::{
+    MAX_HOOK_ANCESTRY, PendingHookAction, TelemetryEvent, report_text, subscription_source,
+};
 
 use std::collections::BTreeSet;
-use std::fs::{File, OpenOptions, TryLockError};
+use std::fs::{File, TryLockError};
 use std::io::Read as _;
 #[cfg(unix)]
-use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
+use std::os::unix::fs::MetadataExt as _;
 use std::path::{Component, Path, PathBuf};
 use std::str::FromStr as _;
 use std::sync::Arc;
@@ -23,11 +25,11 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use self::storage::{BotStorage, CatalogStamp};
-use crate::config::validate_agent_composition;
+use crate::config::{CanonicalWorkspace, validate_agent_composition};
 use crate::wire::{
-    AgentComposition, BotRecord, BotShape, HookData, HookEvent, HookSelector, HookSource,
-    ProviderTint, Routine, RoutineAction, RoutineBinding, RoutineDefinition, RoutineRun,
-    RoutineRunStatus, RoutineSchedule, RoutineScheduleKind, VersionedAgentConfig,
+    BotRecord, BotShape, HookData, HookEvent, HookSelector, HookSource, ProviderTint, Routine,
+    RoutineAction, RoutineBinding, RoutineDefinition, RoutineRun, RoutineRunStatus,
+    RoutineSchedule, RoutineScheduleKind, VersionedAgentConfig,
 };
 use crate::{Error, Result};
 
@@ -436,13 +438,11 @@ impl BotStore {
         &self,
         defaults: &VersionedAgentConfig,
     ) -> Result<Option<BotRecord>> {
-        let file_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
-        file_lock.lock()?;
+        let _file_lock = self.lock_state()?;
         if self.storage.load_catalog()?.is_some() {
             return Ok(None);
         }
         let config = defaults.config.clone(); // rules-allow: callers keep their borrowed defaults; the seeded Bot owns its config
-        validate_agent_composition(&config)?;
         let mut state = BotState::default();
         let bot = StoredBot {
             id: Uuid::new_v4().to_string().into(),
@@ -458,7 +458,7 @@ impl BotStore {
         };
         let record = bot.record()?;
         state.bots.push(bot);
-        validate_state(&state, &self.routines_dir)?;
+        validate_state(&state)?;
         self.save(&state)?;
         Ok(Some(record))
     }
@@ -467,11 +467,11 @@ impl BotStore {
         &self,
         name: &str,
         description: &str,
-        config: AgentComposition,
+        config: crate::host::ValidatedComposition,
     ) -> Result<BotRecord> {
         let name = validate_name(name)?;
         let description = validate_description(description)?;
-        validate_agent_composition(&config)?;
+        let config = config.into_inner();
         self.update(|state| {
             let id = Uuid::new_v4().to_string();
             let handle = next_handle(state, &name, &id);
@@ -495,7 +495,8 @@ impl BotStore {
         })
     }
 
-    /// Saves `identity` and `config`, whose revision must directly follow the stored one.
+    /// Saves `identity` and a host-validated `config`, whose revision must directly follow the
+    /// stored one.
     pub(crate) fn update_bot(
         &self,
         id: &str,
@@ -510,7 +511,6 @@ impl BotStore {
         } = identity;
         let name = validate_name(name)?;
         let description = validate_description(description)?;
-        validate_agent_composition(&config.config)?;
         self.update(|state| {
             let handle = next_handle(state, &name, id);
             let bot = find_bot_mut(state, id)?;
@@ -538,8 +538,7 @@ impl BotStore {
         id: &str,
         expected_revision: u64,
     ) -> Result<BotDeletion> {
-        let state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
-        state_lock.lock()?;
+        let state_lock = self.lock_state()?;
         let state = self.fresh_state()?;
         let bot = state
             .bots
@@ -621,7 +620,7 @@ impl BotStore {
             ));
         }
         state.pending_bot_deletion = Some(intent);
-        validate_state(&state, &self.routines_dir)?;
+        validate_state(&state)?;
         self.save(&state)?;
         deletion.release_state_lock();
         state
@@ -638,8 +637,7 @@ impl BotStore {
     }
 
     pub(crate) fn clear_bot_deletion(&self, bot_id: &str) -> Result<()> {
-        let state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
-        state_lock.lock()?;
+        let _state_lock = self.lock_state()?;
         self.update_locked(|state| {
             let pending = state
                 .pending_bot_deletion
@@ -679,9 +677,7 @@ impl BotStore {
         let state_lock = if let Some(state_lock) = state_lock {
             state_lock
         } else {
-            let state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
-            state_lock.lock()?;
-            state_lock
+            self.lock_state()?
         };
         let mut state = self.fresh_state()?;
         let index = {
@@ -738,7 +734,7 @@ impl BotStore {
         };
         let bot = state.bots.remove(index).record()?;
         state.routines.retain(|routine| *routine.bot_id != *bot_id);
-        validate_state(&state, &self.routines_dir)?;
+        validate_state(&state)?;
         let catalog = catalog_json(&state)?;
         self.storage
             .delete_runs_and_save_catalog(&catalog, None, Some(&bot_id), None, None)?;
@@ -779,10 +775,11 @@ impl BotStore {
         &self,
         bot_id: &str,
         definition: &RoutineDefinition,
+        workspace: CanonicalWorkspace,
         cause: Option<&HookEvent>,
     ) -> Result<StoredRoutine> {
         validate_definition(definition, 0, Some(MAX_SCHEDULE_TIMESTAMP))?;
-        let workspace = validate_workspace(&definition.workspace)?;
+        let workspace = workspace.into_path();
         let path = self.new_instruction_path();
         if let Err(error) =
             crate::publication::publish(&path, definition.instructions.trim().as_bytes(), true)
@@ -794,8 +791,7 @@ impl BotStore {
             return Err(error);
         }
         let prepared = (|| {
-            let state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
-            state_lock.lock()?;
+            let state_lock = self.lock_state()?;
             let mut state = self.fresh_state()?;
             reject_bot_mutation_if_deleting(&state)?;
             find_bot_mut(&mut state, bot_id)?;
@@ -821,7 +817,7 @@ impl BotStore {
             enabled: true,
         });
         let committed = (|| {
-            validate_state(&state, &self.routines_dir)?;
+            validate_state(&state)?;
             let event = routine_event(
                 routine_at(&state.routines, index)?,
                 |routine_id| HookData::RoutineCreated { routine_id },
@@ -899,13 +895,13 @@ impl BotStore {
         &self,
         id: &str,
         definition: &RoutineDefinition,
+        workspace: CanonicalWorkspace,
         cause: Option<&HookEvent>,
         accepted_action_id: Option<&str>,
     ) -> Result<StoredRoutine> {
         validate_definition(definition, 0, Some(MAX_SCHEDULE_TIMESTAMP))?;
-        let workspace = validate_workspace(&definition.workspace)?;
-        let state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
-        state_lock.lock()?;
+        let workspace = workspace.into_path();
+        let _state_lock = self.lock_state()?;
         let mut state = self.fresh_state()?;
         reject_bot_mutation_if_deleting(&state)?;
         let index = resolve_routine(&state.routines, id)?;
@@ -967,7 +963,7 @@ impl BotStore {
         stored.workspace = workspace;
         stored.instructions = path;
         let committed = (|| {
-            validate_state(&state, &self.routines_dir)?;
+            validate_state(&state)?;
             let event = routine_event(
                 routine_at(&state.routines, index)?,
                 |routine_id| HookData::RoutineUpdated { routine_id },
@@ -1001,8 +997,7 @@ impl BotStore {
         cause: Option<&HookEvent>,
         accepted_action_id: Option<&str>,
     ) -> Result<StoredRoutine> {
-        let state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
-        state_lock.lock()?;
+        let _state_lock = self.lock_state()?;
         let mut state = self.fresh_state()?;
         reject_bot_mutation_if_deleting(&state)?;
         let index = resolve_routine(&state.routines, id)?;
@@ -1020,7 +1015,7 @@ impl BotStore {
                 binding.reset(now, true)?;
             }
         }
-        validate_state(&state, &self.routines_dir)?;
+        validate_state(&state)?;
         let data: fn(Arc<str>) -> HookData = if enabled {
             |routine_id| HookData::RoutineResumed { routine_id }
         } else {
@@ -1039,8 +1034,7 @@ impl BotStore {
     }
 
     pub(crate) fn prepare_routine_deletion(&self, id: &str) -> Result<RoutineDeletion> {
-        let state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
-        state_lock.lock()?;
+        let state_lock = self.lock_state()?;
         let routine = self.routine(id)?;
         let Some(lock) = self.try_routine_lock(&routine.id)? else {
             return Err(Error::Config(format!(
@@ -1100,7 +1094,7 @@ impl BotStore {
             index
         };
         let deleted = state.routines.remove(index);
-        validate_state(&state, &self.routines_dir)?;
+        validate_state(&state)?;
         let catalog = catalog_json(&state)?;
         let event = routine_event(
             &deleted,
@@ -1183,11 +1177,6 @@ impl BotStore {
         std::io::Read::by_ref(&mut file)
             .take(limit + 1)
             .read_to_end(&mut bytes)?;
-        if bytes.len() > MAX_ROUTINE_INSTRUCTIONS_BYTES {
-            return Err(Error::Config(format!(
-                "routine instructions exceed the {MAX_ROUTINE_INSTRUCTIONS_BYTES}-byte input limit"
-            )));
-        }
         let input = String::from_utf8(bytes).map_err(|error| {
             Error::Config(format!("routine instructions are not valid UTF-8: {error}"))
         })?;
@@ -1197,8 +1186,7 @@ impl BotStore {
 
     /// Commits timer facts and advances dates; only the command handler reserves work.
     pub(crate) fn poll_due(&self, now: i64) -> Result<RoutinePoll> {
-        let state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
-        state_lock.lock()?;
+        let _state_lock = self.lock_state()?;
         let mut state = self.fresh_state()?;
         let active = state
             .routines
@@ -1258,7 +1246,7 @@ impl BotStore {
             }
         }
         if changed {
-            validate_state(&state, &self.routines_dir)?;
+            validate_state(&state)?;
             self.storage.save_catalog_with_hooks(
                 &catalog_json(&state)?,
                 &state.routines,
@@ -1290,8 +1278,7 @@ impl BotStore {
         let resolved = self.stored_routine(id)?;
         after_resolve();
         let lock = self.try_routine_lock(&resolved.id)?;
-        let state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
-        state_lock.lock()?;
+        let _state_lock = self.lock_state()?;
         let state = self.fresh_state()?;
         reject_bot_mutation_if_deleting(&state)?;
         let routine = state
@@ -1364,8 +1351,7 @@ impl BotStore {
                 "a completed routine run cannot remain running".into(),
             ));
         }
-        let state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
-        state_lock.lock()?;
+        let state_lock = self.lock_state()?;
         let finished =
             self.storage
                 .finish_run(&run.run_id, status, Utc::now().timestamp(), message);
@@ -1413,8 +1399,7 @@ impl BotStore {
     }
 
     pub(crate) fn delete_run(&self, id: &str) -> Result<RoutineRun> {
-        let file_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
-        file_lock.lock()?;
+        let _file_lock = self.lock_state()?;
         let state = self.fresh_state()?;
         if state.pending_bot_deletion.is_some() {
             return Err(Error::Config(
@@ -1447,8 +1432,7 @@ impl BotStore {
         self.storage.has_monitored_sessions()
     }
     pub(crate) fn close_session_sources(&self, events: &[HookEvent]) -> Result<()> {
-        let state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
-        state_lock.lock()?;
+        let _state_lock = self.lock_state()?;
         let mut state = self.fresh_state()?;
         let ids = events
             .iter()
@@ -1463,7 +1447,7 @@ impl BotStore {
         for routine in &mut state.routines {
             routine.bindings.retain(|binding| !matches!(&binding.definition.on,HookSelector::Event{source:HookSource::Session{session_id},..} if ids.contains(session_id.as_str())));
         }
-        validate_state(&state, &self.routines_dir)?;
+        validate_state(&state)?;
         self.storage
             .close_session_sources(events, &catalog_json(&state)?)
     }
@@ -1473,8 +1457,7 @@ impl BotStore {
         after_sequence: u64,
         now: i64,
     ) -> Result<()> {
-        let state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
-        state_lock.lock()?;
+        let _state_lock = self.lock_state()?;
         self.bot(&subscription.bot_id)?;
         self.storage
             .set_subscription(subscription, after_sequence, now)
@@ -1541,7 +1524,7 @@ impl BotStore {
     }
 
     fn try_routine_lock(&self, id: &str) -> Result<Option<RoutineLock>> {
-        let file = open_private_lock(self.state_dir.join(format!("routine-{id}.lock")))?;
+        let file = open_private_lock(&self.state_dir.join(format!("routine-{id}.lock")))?;
         match file.try_lock() {
             Ok(()) => Ok(Some(RoutineLock(file))),
             Err(TryLockError::WouldBlock) => Ok(None),
@@ -1555,8 +1538,7 @@ impl BotStore {
     }
 
     fn update<T>(&self, mutate: impl FnOnce(&mut BotState) -> Result<T>) -> Result<T> {
-        let file_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
-        file_lock.lock()?;
+        let _file_lock = self.lock_state()?;
         self.update_locked(|state| {
             if state.pending_bot_deletion.is_some() {
                 return Err(Error::Config(
@@ -1570,7 +1552,7 @@ impl BotStore {
     fn update_locked<T>(&self, mutate: impl FnOnce(&mut BotState) -> Result<T>) -> Result<T> {
         let mut state = self.fresh_state()?;
         let result = mutate(&mut state)?;
-        validate_state(&state, &self.routines_dir)?;
+        validate_state(&state)?;
         self.save(&state)?;
         Ok(result)
     }
@@ -1579,15 +1561,23 @@ impl BotStore {
         self.storage.save_catalog(&catalog_json(state)?)
     }
 
+    /// Holds the cross-process Bot state lock until the returned file drops.
+    fn lock_state(&self) -> Result<File> {
+        let lock = open_private_lock(&self.state_dir.join(STATE_LOCK_FILE))?;
+        lock.lock()?;
+        Ok(lock)
+    }
+
     fn fresh_state(&self) -> Result<BotState> {
         self.parse_state(self.storage.load_catalog()?)
     }
 
     /// The persisted catalog for reads, parsed again only after a commit.
     fn current_state(&self) -> Result<std::sync::Arc<BotState>> {
-        let mut cache = self.cache.lock().map_err(|error| {
-            Error::Config(format!("Bot catalog cache lock is poisoned: {error}"))
-        })?;
+        let mut cache = self
+            .cache
+            .lock()
+            .map_err(crate::poisoned("Bot catalog cache"))?;
         let stamp = cache.as_ref().map(|(stamp, _)| *stamp);
         if let Some((stamp, contents)) = self.storage.catalog_since(stamp)? {
             *cache = Some((stamp, std::sync::Arc::new(self.parse_state(contents)?)));
@@ -1605,7 +1595,7 @@ impl BotStore {
             .map(|contents| serde_json::from_str(&contents))
             .transpose()?
             .unwrap_or_default();
-        validate_state(&state, &self.routines_dir)?;
+        validate_records(&state, &self.routines_dir)?;
         Ok(state)
     }
 }
@@ -1734,16 +1724,6 @@ fn validate_description(description: &str) -> Result<String> {
         )));
     }
     Ok(description.into())
-}
-
-fn validate_workspace(workspace: &Path) -> Result<PathBuf> {
-    let workspace = std::fs::canonicalize(workspace)?;
-    if !workspace.is_dir() {
-        return Err(Error::Config(
-            "routine workspace must be a directory".into(),
-        ));
-    }
-    Ok(workspace)
 }
 
 fn validate_stored_workspace(workspace: &Path) -> Result<()> {
@@ -1921,23 +1901,19 @@ fn validate_schedule(
     Ok(())
 }
 
-fn validate_state(state: &BotState, routines_dir: &Path) -> Result<()> {
+/// Checks each record read from disk; in-process records are built from checked input.
+fn validate_records(state: &BotState, routines_dir: &Path) -> Result<()> {
     if state.version != STATE_VERSION {
         return Err(Error::Config(format!(
             "unsupported Bot state version {}",
             state.version
         )));
     }
-    let mut bot_ids = BTreeSet::new();
-    let mut handles = BTreeSet::new();
     for bot in &state.bots {
         let parsed = Uuid::parse_str(&bot.id)
             .map_err(|error| Error::Config(format!("invalid persisted Bot ID: {error}")))?;
-        if *parsed.to_string() != *bot.id || !bot_ids.insert(&*bot.id) {
-            return Err(Error::Config("duplicate persisted Bot ID".into()));
-        }
-        if !handles.insert(&*bot.handle) {
-            return Err(Error::Config("duplicate persisted Bot handle".into()));
+        if *parsed.to_string() != *bot.id {
+            return Err(Error::Config("invalid persisted Bot ID".into()));
         }
         if *validate_handle(&bot.handle)? != *bot.handle
             || *validate_name(&bot.name)? != *bot.name
@@ -1954,21 +1930,15 @@ fn validate_state(state: &BotState, routines_dir: &Path) -> Result<()> {
         }
         validate_agent_composition(&bot.config.config)?;
     }
-    let mut ids = BTreeSet::new();
-    let mut paths = BTreeSet::new();
     for routine in &state.routines {
         let parsed = Uuid::parse_str(&routine.id)
             .map_err(|error| Error::Config(format!("invalid persisted routine ID: {error}")))?;
-        if *parsed.to_string() != *routine.id || !ids.insert(&*routine.id) {
-            return Err(Error::Config("duplicate persisted routine ID".into()));
-        }
-        if !bot_ids.contains(&*routine.bot_id) {
-            return Err(Error::Config("persisted routine has no Bot".into()));
+        if *parsed.to_string() != *routine.id {
+            return Err(Error::Config("invalid persisted routine ID".into()));
         }
         validate_stored_workspace(&routine.workspace)?;
         if !routine.instructions.is_absolute()
             || routine.instructions.parent() != Some(routines_dir)
-            || !paths.insert(routine.instructions.as_path())
         {
             return Err(Error::Config(
                 "persisted routine path is outside the private gateway routine directory".into(),
@@ -1993,13 +1963,6 @@ fn validate_state(state: &BotState, routines_dir: &Path) -> Result<()> {
         if *parsed.to_string() != *pending.bot_id || pending.expected_revision == 0 {
             return Err(Error::Config("invalid pending Bot deletion".into()));
         }
-        if let Some(bot) = state.bots.iter().find(|bot| *bot.id == *pending.bot_id)
-            && bot.config.revision != pending.expected_revision
-        {
-            return Err(Error::Config(
-                "pending Bot deletion revision changed".into(),
-            ));
-        }
         for session_id in pending.session_roots.iter().chain(&pending.session_ids) {
             validate_session_id(session_id)?;
         }
@@ -2022,6 +1985,44 @@ fn validate_state(state: &BotState, routines_dir: &Path) -> Result<()> {
                     .into(),
             ));
         }
+    }
+    validate_state(state)
+}
+
+/// Checks the rules that span records, before every save.
+fn validate_state(state: &BotState) -> Result<()> {
+    let mut bot_ids = BTreeSet::new();
+    let mut handles = BTreeSet::new();
+    for bot in &state.bots {
+        if !bot_ids.insert(&*bot.id) {
+            return Err(Error::Config("duplicate persisted Bot ID".into()));
+        }
+        if !handles.insert(&*bot.handle) {
+            return Err(Error::Config("duplicate persisted Bot handle".into()));
+        }
+    }
+    let mut ids = BTreeSet::new();
+    let mut paths = BTreeSet::new();
+    for routine in &state.routines {
+        if !ids.insert(&*routine.id) {
+            return Err(Error::Config("duplicate persisted routine ID".into()));
+        }
+        if !bot_ids.contains(&*routine.bot_id) {
+            return Err(Error::Config("persisted routine has no Bot".into()));
+        }
+        if !paths.insert(routine.instructions.as_path()) {
+            return Err(Error::Config(
+                "persisted routine path is outside the private gateway routine directory".into(),
+            ));
+        }
+    }
+    if let Some(pending) = &state.pending_bot_deletion
+        && let Some(bot) = state.bots.iter().find(|bot| *bot.id == *pending.bot_id)
+        && bot.config.revision != pending.expected_revision
+    {
+        return Err(Error::Config(
+            "pending Bot deletion revision changed".into(),
+        ));
     }
     Ok(())
 }
@@ -2112,14 +2113,16 @@ fn find_bot_mut<'a>(state: &'a mut BotState, id: &str) -> Result<&'a mut StoredB
         .ok_or_else(|| Error::Config(format!("unknown Bot `{id}`")))
 }
 
-fn open_private_lock(path: PathBuf) -> Result<File> {
-    let mut options = OpenOptions::new();
-    options.read(true).write(true).create(true).truncate(false);
+fn open_private_lock(path: &Path) -> Result<File> {
     #[cfg(unix)]
-    options.mode(mobius::owner_only::file().mode());
-    let file = options.open(path)?;
-    #[cfg(unix)]
-    file.set_permissions(mobius::owner_only::file())?;
+    let file = mobius::owner_only::open(path)?;
+    #[cfg(not(unix))]
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)?;
     Ok(file)
 }
 

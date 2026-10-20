@@ -10,7 +10,6 @@ use std::io::Read as _;
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -125,6 +124,14 @@ impl AuthStore {
         config: AuthConfig,
     ) -> Result<(Self, PairingGrant)> {
         config.validate()?;
+        Self::initialize_validated(path, config)
+    }
+
+    /// Uses pairing policy already checked with its gateway configuration.
+    pub(crate) fn initialize_validated(
+        path: impl Into<PathBuf>,
+        config: AuthConfig,
+    ) -> Result<(Self, PairingGrant)> {
         let path = path.into();
         fs::create_dir_all(
             path.parent()
@@ -157,6 +164,11 @@ impl AuthStore {
     /// Returns an error for invalid policy, corrupt state, or inaccessible files.
     pub fn open(path: impl Into<PathBuf>, config: AuthConfig) -> Result<Self> {
         config.validate()?;
+        Self::open_validated(path, config)
+    }
+
+    /// Uses pairing policy already checked with its gateway configuration.
+    pub(crate) fn open_validated(path: impl Into<PathBuf>, config: AuthConfig) -> Result<Self> {
         let path = path.into();
         let mut options = fs::OpenOptions::new();
         options.read(true);
@@ -194,7 +206,7 @@ impl AuthStore {
     ///
     /// Returns an error if authentication fails or its stored state is invalid.
     pub fn pair(&self, code: &str, client_label: &str) -> Result<IssuedToken> {
-        self.pair_at(code, client_label, unix_timestamp()?)
+        self.pair_at(code, client_label, chrono::Utc::now().timestamp())
     }
 
     fn pair_at(&self, code: &str, client_label: &str, now: i64) -> Result<IssuedToken> {
@@ -239,7 +251,7 @@ impl AuthStore {
         replacing_token_digest: &[u8; 32],
         client_label: &str,
     ) -> Result<IssuedToken> {
-        let now = unix_timestamp()?;
+        let now = chrono::Utc::now().timestamp();
         validate_client_label(client_label)?;
         let mut state = self.lock_state()?;
         let Some(pending) = &state.pending_pairing else {
@@ -282,7 +294,7 @@ impl AuthStore {
 
     pub(crate) fn provision_local_client(&self) -> Result<IssuedToken> {
         let token = self.channel_identity.credential(&random_secret(2));
-        let now = unix_timestamp()?;
+        let now = chrono::Utc::now().timestamp();
         let mut state = self.lock_state()?;
         if let Some(client) = state
             .clients
@@ -371,10 +383,7 @@ impl AuthStore {
     }
 
     pub(crate) fn unpair_client(&self, actor_id: &str, client_id: &str) -> Result<bool> {
-        if actor_id == client_id
-            || Uuid::parse_str(actor_id).is_err()
-            || Uuid::parse_str(client_id).is_err()
-        {
+        if actor_id == client_id {
             return Ok(false);
         }
         let mut state = self.lock_state()?;
@@ -440,9 +449,9 @@ impl AuthStore {
     }
 
     fn lock_state(&self) -> Result<std::sync::MutexGuard<'_, AuthState>> {
-        self.state.lock().map_err(|error| {
-            Error::Config(format!("authentication state lock is poisoned: {error}"))
-        })
+        self.state
+            .lock()
+            .map_err(crate::poisoned("authentication state"))
     }
 
     pub(crate) fn channel_handshake(&self) -> Result<snow::HandshakeState> {
@@ -523,7 +532,8 @@ fn new_pairing_grant(
 ) -> Result<PairingGrant> {
     Ok(PairingGrant {
         code: identity.credential(&random_secret(1)),
-        expires_at: unix_timestamp()?
+        expires_at: chrono::Utc::now()
+            .timestamp()
             .checked_add(i64::try_from(lifetime_seconds).map_err(|error| {
                 Error::Config(format!("pairing lifetime is too large: {error}"))
             })?)
@@ -535,15 +545,6 @@ fn random_secret(parts: usize) -> String {
     (0..parts)
         .map(|_| Uuid::new_v4().simple().to_string())
         .collect()
-}
-
-fn unix_timestamp() -> Result<i64> {
-    let seconds = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| Error::Config(format!("system clock is before the Unix epoch: {error}")))?
-        .as_secs();
-    i64::try_from(seconds)
-        .map_err(|error| Error::Config(format!("system clock is unsupported: {error}")))
 }
 
 fn save_auth_state(path: &Path, state: &AuthState, create_new: bool) -> Result<()> {
@@ -662,7 +663,14 @@ mod tests {
     fn auth_state_is_owner_only() {
         let directory = tempfile::tempdir().expect("state directory");
         let path = directory.path().join("auth.json");
+        let invalid = AuthConfig {
+            paired_clients: 0,
+            ..AuthConfig::default()
+        };
+        assert!(AuthStore::initialize(&path, invalid).is_err());
+        assert!(!path.exists());
         AuthStore::initialize(&path, AuthConfig::default()).expect("initialize auth");
+        assert!(AuthStore::open(&path, invalid).is_err());
 
         let mode = fs::metadata(path)
             .expect("auth metadata")

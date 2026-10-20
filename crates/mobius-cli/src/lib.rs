@@ -48,6 +48,11 @@ pub fn gateway_error(error: mobius_gateway::Error) -> mobius::Error {
     mobius::Error::Stopped(error.to_string())
 }
 
+/// A fresh random identifier for a request, submission or binding.
+pub(crate) fn fresh_id() -> std::sync::Arc<str> {
+    uuid::Uuid::new_v4().to_string().into()
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

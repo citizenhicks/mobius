@@ -27,7 +27,7 @@ use crate::backend::model::{
     strip_shared_provider_reasoning,
 };
 use crate::backend::sandbox::SandboxAuthorization;
-use crate::middleware::tools::{PreparedToolSet, ToolResult};
+use crate::middleware::tools::{PreparedToolSet, ToolBinding, ToolResult};
 use crate::middleware::{ModelContext, PreparationNotices, StagedInput, StopContext};
 use crate::protocol::{
     AssistantMessageEvent, Event, EventMsg, MessageTarget, ModelEvent, ModelEventTracker,
@@ -99,7 +99,7 @@ struct CompletedModelStep {
 
 struct NormalizedModelStep {
     output: ModelOutput,
-    executable_calls: Vec<usize>,
+    executable_calls: Vec<(usize, ToolBinding)>,
     denied_results: Vec<ToolResult>,
     streamed: StreamedTools,
 }
@@ -184,7 +184,8 @@ impl Runner {
             })?;
             *target = Some(MessageTarget {
                 checkpoint_sequence,
-                batch_item_count: batch_before + transcript.len() + 1,
+                batch_item_count: std::num::NonZeroUsize::MIN
+                    .saturating_add(batch_before + transcript.len()),
             });
             let input = Arc::new(message.input);
             context.push(Arc::clone(&input));
@@ -928,11 +929,10 @@ impl Runner {
         let mut hook_input = std::mem::take(&mut step.streamed.hook_input);
         let mut prepared_calls = std::mem::take(&mut step.streamed.calls).into_iter();
         for (index, call) in step.output.tool_calls.iter_mut().enumerate() {
-            let changed = if let Some(prepared) = prepared_calls.next() {
-                let changed = prepared.is_some();
-                if let Some(prepared) = prepared {
-                    calls_changed |= *call != prepared;
-                    *call = prepared;
+            let binding = if let Some(prepared) = prepared_calls.next() {
+                calls_changed |= prepared.rewritten;
+                if let Some(rewritten) = prepared.call {
+                    *call = rewritten;
                 }
                 if step.streamed.started.contains(&call.call_id)
                     || denied_results
@@ -941,16 +941,19 @@ impl Runner {
                 {
                     continue;
                 }
-                changed
+                prepared.binding
             } else {
-                if let Err(error) = self.catalog.validate_prepared(call, &step.tools) {
-                    denied_results.push(ToolResult::error(
-                        call,
-                        error.to_string(),
-                        self.config.sandbox.output_limit(),
-                    ));
-                    continue;
-                }
+                let binding = match self.catalog.bind_in_place(call, &step.tools) {
+                    Ok(binding) => binding,
+                    Err(error) => {
+                        denied_results.push(ToolResult::error(
+                            call,
+                            error.to_string(),
+                            self.config.sandbox.output_limit(),
+                        ));
+                        continue;
+                    }
+                };
                 let (denial, changed) = match self
                     .prepare_tool_call(turn_id, call, &mut hook_events, &mut hook_input)
                     .await
@@ -967,18 +970,24 @@ impl Runner {
                     denied_results.push(denial);
                     continue;
                 }
-                changed
+                (!changed).then_some(binding)
             };
-            if changed && let Err(error) = self.catalog.validate_prepared(call, &step.tools) {
-                denied_results.push(ToolResult::error(
-                    call,
-                    error.to_string(),
-                    self.config.sandbox.output_limit(),
-                ));
-                continue;
-            }
-            executable_calls.push(index);
+            // A hook rewrite is new input and is bound on its own.
+            let binding =
+                match binding.map_or_else(|| self.catalog.bind_in_place(call, &step.tools), Ok) {
+                    Ok(binding) => binding,
+                    Err(error) => {
+                        denied_results.push(ToolResult::error(
+                            call,
+                            error.to_string(),
+                            self.config.sandbox.output_limit(),
+                        ));
+                        continue;
+                    }
+                };
+            executable_calls.push((index, binding));
         }
+        // Repair execution arguments without changing the provider's cached history prefix.
         if calls_changed && let Err(error) = step.output.sync_tool_calls() {
             return self
                 .fail_completed_model_step(submission_id, step, error)
@@ -1079,7 +1088,8 @@ impl Runner {
                     content: std::mem::take(&mut step.output.content),
                     message_target: message_index.map(|index| MessageTarget {
                         checkpoint_sequence,
-                        batch_item_count: batch_before + index + 1,
+                        batch_item_count: std::num::NonZeroUsize::MIN
+                            .saturating_add(batch_before + index),
                     }),
                 }),
             ));
@@ -1229,30 +1239,8 @@ impl Runner {
         submission_id: &Arc<str>,
         turn_id: &Arc<str>,
         calls: Vec<ToolCall>,
+        bindings: Vec<ToolBinding>,
     ) -> Result<bool> {
-        let live_tools = self.live_tools().await?;
-        let mut calls = calls;
-        let mut unavailable_results = Vec::new();
-        calls.retain(
-            |call| match self.catalog.validate_prepared(call, &live_tools) {
-                Ok(()) => true,
-                Err(error) => {
-                    unavailable_results.push(ToolResult::error(
-                        call,
-                        error.to_string(),
-                        self.config.sandbox.output_limit(),
-                    ));
-                    false
-                }
-            },
-        );
-        if !unavailable_results.is_empty() {
-            self.persist_tool_results(submission_id, turn_id, unavailable_results)
-                .await?;
-        }
-        if calls.is_empty() {
-            return Ok(false);
-        }
         let mutation_call_ids = calls
             .iter()
             .filter(|call| self.catalog.requires_approval(&call.name))
@@ -1264,7 +1252,14 @@ impl Runner {
         let results = match authorization {
             SandboxAuthorization::Execute(permissions) => {
                 let tools = self
-                    .execute_tools(inbox, submission_id, turn_id, &calls, permissions)
+                    .execute_tools(
+                        inbox,
+                        submission_id,
+                        turn_id,
+                        &calls,
+                        Some(bindings),
+                        permissions,
+                    )
                     .await?;
                 let Some(results) = self.ready_or_aborted(tools, turn_id).await? else {
                     return Ok(true);
@@ -1428,20 +1423,16 @@ impl Runner {
             if executable_calls.is_empty() {
                 continue;
             }
-            // Validation records indexes in order; move calls after result hooks finish borrowing them.
+            // Binding records indexes in order; move calls after result hooks finish borrowing them.
+            let (indexes, bindings): (Vec<_>, Vec<_>) = executable_calls.into_iter().unzip();
             let calls = output
                 .tool_calls
                 .into_iter()
                 .enumerate()
-                .filter_map(|(index, call)| {
-                    executable_calls
-                        .binary_search(&index)
-                        .is_ok()
-                        .then_some(call)
-                })
+                .filter_map(|(index, call)| indexes.binary_search(&index).is_ok().then_some(call))
                 .collect();
             if self
-                .authorize_and_execute(inbox, submission_id, turn_id, calls)
+                .authorize_and_execute(inbox, submission_id, turn_id, calls, bindings)
                 .await?
             {
                 return Ok(());

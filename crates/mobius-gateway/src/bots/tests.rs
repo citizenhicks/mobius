@@ -1,3 +1,4 @@
+use crate::wire::AgentComposition;
 use std::sync::Arc;
 
 use super::*;
@@ -28,7 +29,7 @@ fn fixture() -> (tempfile::TempDir, BotStore, PathBuf) {
 
 fn create_bot(store: &BotStore, handle: &str) -> BotRecord {
     store
-        .create_bot(handle, "Own test work.", AgentComposition::default())
+        .create_bot(handle, "Own test work.", AgentComposition::default().into())
         .expect("Bot")
 }
 
@@ -74,6 +75,7 @@ impl BotStore {
         self.create_routine(
             bot_id,
             &scheduled_definition(workspace, instructions, schedule, ends_at),
+            crate::config::CanonicalWorkspace::for_test(workspace),
             None,
         )
     }
@@ -207,7 +209,7 @@ fn concurrent_bot_stores_refresh_the_catalog_before_reads_and_seed() {
     assert_eq!(second.bots().expect("refreshed bots"), [mobius]);
 
     let created = first
-        .create_bot("fresh", "Fresh Bot", AgentComposition::default())
+        .create_bot("fresh", "Fresh Bot", AgentComposition::default().into())
         .expect("create Bot");
     assert!(
         second
@@ -566,7 +568,7 @@ fn persisted_routine_paths_must_stay_in_the_private_directory() {
     });
 
     assert!(
-        validate_state(&state, &store.routines_dir)
+        validate_records(&state, &store.routines_dir)
             .expect_err("outside persisted routine must fail")
             .to_string()
             .contains("private gateway routine directory")

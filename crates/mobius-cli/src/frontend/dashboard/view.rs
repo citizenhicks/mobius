@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
 use mobius::protocol::{
     FrontendActionListItem, FrontendListItemState, FrontendTone, FrontendWidget,
@@ -548,7 +548,7 @@ pub(super) fn render_usage(
     let lines = profile.map_or_else(
         || empty("Loading usage…"),
         |profile| {
-            let today = current_unix_day()
+            let today = mobius_gateway::config::unix_day(SystemTime::now())
                 .map_or(0_i64, |day| token_total_for_day(&profile.daily_usage, day));
             let total = profile.daily_usage.iter().fold(0_i64, |total, entry| {
                 total.saturating_add(entry.usage.total_tokens)
@@ -568,7 +568,12 @@ pub(super) fn render_usage(
                     number(stats.tool_calls),
                     number(stats.failed_tool_calls)
                 )),
-                Line::from(format!(" Run time   {}", elapsed_ms(stats.elapsed_ms))),
+                Line::from(format!(
+                    " Run time   {}",
+                    crate::frontend::terminal::elapsed_label(std::time::Duration::from_millis(
+                        stats.elapsed_ms
+                    ))
+                )),
                 Line::from(format!(" 364 days   {} tokens", number(total))),
             ]
         },
@@ -583,17 +588,6 @@ pub(super) fn token_total_for_day(usage: &[DailyUsage], unix_day: u64) -> i64 {
         .fold(0_i64, |total, entry| {
             total.saturating_add(entry.usage.total_tokens)
         })
-}
-
-pub(super) fn elapsed_ms(milliseconds: u64) -> String {
-    let seconds = milliseconds / 1_000;
-    if seconds < 60 {
-        format!("{seconds}s")
-    } else if seconds < 3_600 {
-        format!("{}m {:02}s", seconds / 60, seconds % 60)
-    } else {
-        format!("{}h {:02}m", seconds / 3_600, seconds / 60 % 60)
-    }
 }
 
 pub(super) fn empty(message: &str) -> Vec<Line<'static>> {
@@ -619,13 +613,6 @@ const fn activity_label(state: SessionActivityState) -> &'static str {
         SessionActivityState::Running => "running",
         SessionActivityState::AwaitingApproval => "approval",
     }
-}
-
-pub(super) fn current_unix_day() -> Option<u64> {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .map(|duration| duration.as_secs() / 86_400)
 }
 
 pub(super) fn number(value: impl ToString + Copy) -> String {

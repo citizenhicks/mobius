@@ -63,7 +63,9 @@ async fn gateway_with_providers(
             )
             .expect("secondary provider");
     }
-    store.save(&config).expect("save config");
+    store
+        .save(&config.clone().validated().expect("valid config"))
+        .expect("save config");
     let credentials =
         Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
     let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
@@ -93,7 +95,9 @@ async fn saved_bot_routes_survive_missing_credentials_without_advertising_unavai
             Vec::new(),
         )
         .expect("provider");
-    store.save(&config).expect("save config");
+    store
+        .save(&config.clone().validated().expect("valid config"))
+        .expect("save config");
     let route = "managed::gpt-6-luna::low";
     let mut composition = config
         .bot_defaults
@@ -118,7 +122,7 @@ async fn saved_bot_routes_survive_missing_credentials_without_advertising_unavai
         .create_bot(
             "Saved route",
             "Keep the selected subagent model.",
-            composition.clone(),
+            composition.clone().into(),
         )
         .expect("save Bot");
     let credentials =
@@ -212,7 +216,7 @@ async fn provider_replacement_rejects_a_bot_reference_without_changing_either_st
         .lock()
         .await
         .bots
-        .create_bot("secondary", "Secondary", composition)
+        .create_bot("secondary", "Secondary", composition.into())
         .expect("Bot");
     let state_dir = root.path().join("state");
     let gateway_path = state_dir.join("gateway.toml");

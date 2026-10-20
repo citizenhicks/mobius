@@ -118,7 +118,7 @@ impl GatewayServer {
         let listen = listener.local_addr()?;
         let (store, config) = ConfigStore::initialize(state_dir, listen, None)?;
         let initialized_state = store.state_dir().to_path_buf();
-        let result = match AuthStore::initialize(store.auth_path(), config.auth) {
+        let result = match AuthStore::initialize_validated(store.auth_path(), config.auth) {
             Ok((_, grant)) => Self::assemble(store, config, listener)
                 .await
                 .map(|server| (server, grant)),
@@ -144,7 +144,7 @@ impl GatewayServer {
         listener: TcpListener,
     ) -> Result<Self> {
         let access_lease = configured_access_lease(&config.runtime)?;
-        let auth = Arc::new(AuthStore::open(store.auth_path(), config.auth)?);
+        let auth = Arc::new(AuthStore::open_validated(store.auth_path(), config.auth)?);
         let credentials = Arc::new(CredentialStore::open(store.credentials_path())?);
         let bots = Arc::new(BotStore::open(store.state_dir())?);
         bots.sync_telemetry_cursors(&config.telemetry.sinks)?;
@@ -249,7 +249,6 @@ impl GatewayServer {
         inactivity_timeout: Duration,
         websocket_host: Option<String>,
     ) -> Result<()> {
-        self.config.validate()?;
         let tls = self.config.tls.as_ref().map(tls_acceptor).transpose()?;
         if tls.is_none() && !self.listener.local_addr()?.ip().is_loopback() {
             return Err(Error::Config(

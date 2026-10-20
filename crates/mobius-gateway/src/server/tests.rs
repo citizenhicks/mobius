@@ -8,7 +8,6 @@ use tokio_tungstenite::tungstenite::protocol::Message;
 use tokio_tungstenite::tungstenite::protocol::Role;
 use uuid::Uuid;
 
-use super::responses::encoded_frame_fits;
 use super::transport::{PreAuthClientFrame, WebSocketUpgradePolicy};
 use crate::client::{Endpoint, GatewayClient, GatewayEvents, GatewaySender};
 use crate::wire::{MAX_PRE_AUTH_FRAME_BYTES, SessionActivity, SessionActivityState};
@@ -49,7 +48,9 @@ async fn configured_test_server(state_dir: PathBuf) -> (GatewayServer, PairingGr
             Vec::new(),
         )
         .expect("register provider");
-    store.save(&config).expect("save provider");
+    store
+        .save(&config.clone().validated().expect("valid config"))
+        .expect("save provider");
     let (_, grant) =
         AuthStore::initialize(store.auth_path(), config.auth).expect("initialize auth");
     let server = GatewayServer::assemble(store, config, listener)

@@ -9,8 +9,9 @@ use mobius_gateway::wire::{
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::{Action, FollowUp, moved, request_action};
+use super::{Action, FollowUp, request_action};
 use crate::frontend::terminal::append_bounded;
+use crate::frontend::wrap_step;
 
 pub(super) enum Form {
     Bot(Box<BotForm>),
@@ -140,7 +141,7 @@ impl RoutineForm {
             ends_at: TextForm::new("", MAX_MESSAGE_BYTES),
             schedule_enabled: true,
             bindings: Vec::new(),
-            timer_binding_id: uuid::Uuid::new_v4().to_string().into(),
+            timer_binding_id: crate::fresh_id(),
             row: 0,
             error: None,
         }
@@ -189,10 +190,7 @@ impl RoutineForm {
             ),
             schedule_enabled: timer.is_some(),
             bindings: routine.bindings.clone(), // rules-allow: owned copy from the borrowed routine
-            timer_binding_id: timer.map_or_else(
-                || uuid::Uuid::new_v4().to_string().into(),
-                |binding| Arc::clone(&binding.id),
-            ),
+            timer_binding_id: timer.map_or_else(crate::fresh_id, |binding| Arc::clone(&binding.id)),
             row: 0,
             error: None,
         }
@@ -244,8 +242,10 @@ impl BotForm {
 
     fn handle_key(&mut self, key: KeyEvent, gateway: &ReadyPayload) -> FormFlow {
         match key.code {
-            KeyCode::Up | KeyCode::BackTab => self.row = moved(self.row, self.save_row() + 1, -1),
-            KeyCode::Down | KeyCode::Tab => self.row = moved(self.row, self.save_row() + 1, 1),
+            KeyCode::Up | KeyCode::BackTab => {
+                self.row = wrap_step(self.row, -1, self.save_row() + 1);
+            }
+            KeyCode::Down | KeyCode::Tab => self.row = wrap_step(self.row, 1, self.save_row() + 1),
             KeyCode::Enter if self.row == 2 && key.modifiers.contains(KeyModifiers::SHIFT) => {
                 if let Some(prompt) = self.prompt.as_mut() {
                     prompt.push("\n");
@@ -285,10 +285,6 @@ impl BotForm {
     pub(super) fn submit(&mut self, gateway: &ReadyPayload) -> FormFlow {
         let name = self.name.value.trim().to_owned();
         let description = self.description.value.trim().to_owned();
-        if name.is_empty() || description.is_empty() {
-            self.error = Some("Bot name and description are required.".into());
-            return FormFlow::Stay;
-        }
         match &self.mode {
             BotFormMode::Create => {
                 FormFlow::Send(request_action("Create Bot", FollowUp::None, |request_id| {
@@ -341,8 +337,8 @@ impl RoutineForm {
 
     fn handle_key(&mut self, key: KeyEvent) -> FormFlow {
         match key.code {
-            KeyCode::Up | KeyCode::BackTab => self.row = moved(self.row, Self::ROW_COUNT, -1),
-            KeyCode::Down | KeyCode::Tab => self.row = moved(self.row, Self::ROW_COUNT, 1),
+            KeyCode::Up | KeyCode::BackTab => self.row = wrap_step(self.row, -1, Self::ROW_COUNT),
+            KeyCode::Down | KeyCode::Tab => self.row = wrap_step(self.row, 1, Self::ROW_COUNT),
             KeyCode::Left if self.row == 2 => self.change_schedule(-1),
             KeyCode::Right | KeyCode::Char(' ') | KeyCode::Enter if self.row == 2 => {
                 self.change_schedule(1);
@@ -418,12 +414,6 @@ impl RoutineForm {
 
     pub(super) fn action(&self) -> std::result::Result<Action, String> {
         let workspace = self.workspace.value.trim();
-        if workspace.is_empty() {
-            return Err("Routine workspace is required.".into());
-        }
-        if self.instructions.value.trim().is_empty() {
-            return Err("Routine instructions are required.".into());
-        }
         let timer = if self.schedule_enabled {
             let schedule = self.schedule()?;
             Some((schedule, optional_i64(&self.ends_at.value, "end time")?))
@@ -500,9 +490,6 @@ impl RoutineForm {
             }
             RoutineScheduleKind::Cron => {
                 let time_zone = self.time_zone.value.trim();
-                if value.is_empty() || time_zone.is_empty() {
-                    return Err("Cron expression and time zone are required.".into());
-                }
                 Ok(RoutineSchedule {
                     kind: self.schedule_kind,
                     at: None,

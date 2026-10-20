@@ -370,7 +370,11 @@ async fn session_closure_keeps_final_fact_and_revokes_old_source_authorization()
         let state = gateway.state.lock().await;
         state
             .bots
-            .create_bot("New owner", "Own this chat.", bot.config.config.clone())
+            .create_bot(
+                "New owner",
+                "Own this chat.",
+                bot.config.config.clone().into(),
+            )
             .unwrap()
     };
     gateway

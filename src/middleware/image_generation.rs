@@ -90,26 +90,19 @@ impl ImageGeneration {
         }
     }
 
-    /// Creates the image capability from its manifest settings, read through `setting`.
-    /// # Errors
-    ///
-    /// Returns an error if the `model` setting is not a string.
+    /// Creates the image capability from its manifest settings, read through `setting`;
+    /// the manifest check at save time guarantees `model` is a string when set.
+    #[must_use]
     pub fn from_settings<'a>(
         models: Arc<ModelRouter>,
         store: impl Into<Arc<SessionFileStore>>,
         setting: impl FnOnce(&str) -> Option<&'a FrontendSettingValue>,
-    ) -> Result<Self> {
+    ) -> Self {
         let route = match setting("model") {
             Some(FrontendSettingValue::String(route)) => Some(Arc::from(route.as_str())),
-            Some(FrontendSettingValue::Integer(_)) => {
-                return Err(Error::Config(format!(
-                    "middleware setting `{}.model` must be string",
-                    MANIFEST.id
-                )));
-            }
-            None => None,
+            _ => None,
         };
-        Ok(Self::new(models, store, route))
+        Self::new(models, store, route)
     }
 }
 

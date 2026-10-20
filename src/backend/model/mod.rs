@@ -390,8 +390,7 @@ impl ModelOutput {
                 ));
             }
             let call = decode_tool_call(item)?;
-            let call_id = required_output_string(item, "call_id", MAX_TOOL_CALL_ID_BYTES)?;
-            if !call_ids.insert(call_id) {
+            if !call_ids.insert(Arc::clone(&call.call_id)) {
                 return Err(Error::Provider(
                     format!("model returned duplicate tool-call ID `{}`", call.call_id).into(),
                 ));
@@ -956,13 +955,11 @@ pub(super) fn decode_tool_call(item: &Value) -> Result<ToolCall> {
         .get("arguments")
         .and_then(Value::as_str)
         .ok_or_else(|| Error::Provider("function call omitted arguments".into()))?;
-    let call = ToolCall {
+    Ok(ToolCall {
         call_id: call_id.into(),
         name: name.into(),
         arguments: decode_tool_arguments(encoded)?,
-    };
-    call.validate()?;
-    Ok(call)
+    })
 }
 
 pub(super) fn decode_tool_arguments(encoded: &str) -> Result<Value> {
