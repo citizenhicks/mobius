@@ -1,5 +1,6 @@
 # Tool schemas, presentation, and defaults owned by commands.
-initial_wait_ms = 1000
+default_timeout_ms = 120000
+max_timeout_ms = 600000
 
 [bash]
 title = "Bash"
@@ -7,7 +8,7 @@ detail = "command"
 
 [bash.tool]
 name = "bash"
-description = "Run a sandboxed command under the active network policy. Returns output and exit status if it finishes quickly, otherwise returns running status, initial output, and a command_id for manage_command. Running does not mean success; poll the same command_id instead of relaunching."
+description = "Run a sandboxed command under the active network policy. Waits up to timeout_ms for it to finish and returns its output and exit status. A command still running then keeps running in the background: the result has status running, the output so far, and a command_id to poll or stop with manage_command. Running does not mean success. A notice arrives when it finishes, so continue other work instead of sleeping or relaunching."
 
 [bash.tool.parameters]
 type = "object"
@@ -19,13 +20,22 @@ additionalProperties = false
 [bash.tool.parameters.properties.command]
 type = "string"
 
+[bash.tool.parameters.properties.timeout_ms]
+type = "integer"
+minimum = 1
+description = "Milliseconds to wait before the command moves to the background. Default 120000, capped at 600000."
+
+[bash.tool.parameters.properties.run_in_background]
+type = "boolean"
+description = "Return a command_id immediately instead of waiting; use for servers and long jobs."
+
 [manage_command]
 title = "Command"
 detail = "action"
 
 [manage_command.tool]
 name = "manage_command"
-description = "Manage a running command returned by bash. Poll reads new output; stop cancels the command. Keep polling until it finishes. Completion or stopping consumes the command ID."
+description = "Manage a running command returned by bash. Poll reads new output, or the final result once its completion notice arrives; stop cancels the command. Completion or stopping consumes the command ID."
 
 [manage_command.tool.parameters]
 type = "object"

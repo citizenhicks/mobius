@@ -315,7 +315,7 @@ pub enum Error {
     #[error("authentication error: {0}")]
     /// Selects the auth case.
     Auth(String),
-    #[error("sandbox rejected path: {0}")]
+    #[error("sandbox: {0}")]
     /// Selects the sandbox case.
     Sandbox(String),
     #[error("tool error: {0}")]

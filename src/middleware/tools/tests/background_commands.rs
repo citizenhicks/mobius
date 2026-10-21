@@ -26,7 +26,7 @@ async fn bash_caps_output_and_restricts_poll_and_stop_to_its_owner() {
     let response = Bash
         .call(
             command_context(&sandbox, "owner", true),
-            serde_json::json!({"command": "printf head; printf error-head >&2; i=0; while [ $i -lt 500 ]; do printf '\\001'; printf '\\001' >&2; i=$((i+1)); done; printf tail; printf error-tail >&2; sleep 60"}),
+            serde_json::json!({"timeout_ms": 1000, "command": "printf head; printf error-head >&2; i=0; while [ $i -lt 500 ]; do printf '\\001'; printf '\\001' >&2; i=$((i+1)); done; printf tail; printf error-tail >&2; sleep 60"}),
         )
         .await
         .expect("bash");

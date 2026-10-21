@@ -88,7 +88,10 @@ fn normalized_output_derives_text_and_validates_tool_calls() {
     )
     .expect("normalized output");
 
-    assert_eq!(output.text(), "Done.");
+    assert_eq!(output.text(), "", "text before a tool call is commentary");
+    assert_eq!(output.output()[0]["phase"], "commentary");
+    assert_eq!(output.content()[0].text, "Done.");
+    assert_eq!(output.content()[0].phase, ModelStepContentPhase::Commentary);
     assert_eq!(
         output.tool_calls(),
         vec![ToolCall {
@@ -127,6 +130,44 @@ fn normalized_output_derives_text_and_validates_tool_calls() {
     }
     assert!(with_arguments(serde_json::json!({})).is_err());
     assert!(with_arguments(serde_json::json!(" ".repeat(MAX_TOOL_ARGUMENT_BYTES + 1))).is_err());
+}
+
+#[test]
+fn tool_call_commentary_preserves_declared_phases_and_later_final_text() {
+    let output = ModelOutput::from_output(
+        vec![
+            serde_json::json!({"type": "message", "role": "assistant", "phase": "commentary", "content": [{"type": "output_text", "text": "Working."}]}),
+            serde_json::json!({"type": "message", "role": "assistant", "phase": "final_answer", "content": [{"type": "output_text", "text": "Declared."}]}),
+            serde_json::json!({"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Reading."}]}),
+            serde_json::json!({"type": "function_call", "call_id": "read-1", "name": "read", "arguments": "{}"}),
+            serde_json::json!({"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Done."}]}),
+        ],
+        true,
+        TokenUsage::default(),
+    )
+    .expect("normalized output");
+
+    assert_eq!(output.text(), "Declared.Done.");
+    assert_eq!(output.output()[0]["phase"], "commentary");
+    assert_eq!(output.output()[1]["phase"], "final_answer");
+    assert_eq!(output.output()[2]["phase"], "commentary");
+    assert!(output.output()[4].get("phase").is_none());
+    assert_eq!(
+        output
+            .content()
+            .iter()
+            .map(|part| part.phase)
+            .collect::<Vec<_>>(),
+        [
+            ModelStepContentPhase::Commentary,
+            ModelStepContentPhase::FinalAnswer,
+            ModelStepContentPhase::Commentary,
+            ModelStepContentPhase::FinalAnswer,
+        ]
+    );
+    let replay = ModelOutput::from_output(output.output().to_vec(), true, TokenUsage::default())
+        .expect("replayed output");
+    assert_eq!(replay.content(), output.content());
 }
 
 #[test]

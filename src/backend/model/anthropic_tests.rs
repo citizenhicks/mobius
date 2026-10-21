@@ -308,7 +308,10 @@ async fn stream_normalizes_deltas_tools_usage_and_errors() {
     }
 
     let output = stream.finish().expect("normalized output");
-    assert_eq!(output.text(), "Reading.");
+    assert_eq!(output.text(), "");
+    assert_eq!(output.content()[0].text, "Reading.");
+    assert_eq!(output.content()[0].phase, ModelStepContentPhase::Commentary);
+    assert_eq!(output.content()[1].phase, ModelStepContentPhase::Reasoning);
     assert_eq!(output.tool_calls()[0].arguments["path"], "README.md");
     assert_eq!(output.usage().input_tokens, 12);
     assert_eq!(output.usage().cached_input_tokens, 4);

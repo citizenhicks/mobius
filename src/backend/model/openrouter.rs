@@ -47,6 +47,8 @@ fn build_provider(config: ProviderBuildConfig, base_url: BaseUrl) -> Result<Arc<
             .ok_or_else(|| Error::Config("OpenRouter web search wire type is required".into()))?,
     )
     .with_service_tier(config.service_tier)
+    .with_max_output_tokens(MANIFEST.max_output_tokens)
+    .with_headers(&MANIFEST.headers)
     .with_image_api(Some(super::image_generation::image_api("openrouter")?));
     let provider = match tool_discovery {
         ToolDiscoveryMode::Native => {

@@ -1,4 +1,7 @@
 # Editable sandbox text and defaults. Isolation invariants remain in Rust.
+background_command_notice = "Background command {id} (`{command}`) {outcome}."
+background_command_exited = "exited with code {exit_code}"
+background_command_failed = "failed: {error}"
 approval_policy_allow_description = "Run approval-required actions without network access"
 approval_policy_allow_label = "Allow · no network"
 approval_policy_allow_network_description = "Run approval-required actions with network access"

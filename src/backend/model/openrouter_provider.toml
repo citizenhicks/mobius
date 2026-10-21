@@ -6,6 +6,14 @@ tool_discovery = "native"
 search = ["off", "live"]
 credential_env = "OPENROUTER_API_KEY"
 native_custom_endpoints = true
+# OpenRouter reserves prompt plus this output ceiling against the key limit before each call.
+max_output_tokens = 32000
 
 tool_search_type = "openrouter:tool_search"
 web_search_type = "openrouter:web_search"
+
+# App attribution for OpenRouter rankings and analytics.
+[headers]
+HTTP-Referer = "https://github.com/citizenhicks/mobius"
+X-OpenRouter-Title = "möbius"
+X-OpenRouter-Categories = "personal-agent"

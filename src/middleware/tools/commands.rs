@@ -14,7 +14,8 @@ use crate::{BoxFuture, Error, Result};
 struct Definition {
     bash: super::ToolSpec,
     manage_command: super::ToolSpec,
-    initial_wait_ms: u64,
+    default_timeout_ms: u64,
+    max_timeout_ms: u64,
 }
 crate::embedded_config! { static DEFINITION: Definition = include_str!("commands.toml"); }
 
@@ -22,6 +23,26 @@ crate::embedded_config! { static DEFINITION: Definition = include_str!("commands
 #[serde(deny_unknown_fields)]
 struct BashArgs {
     command: String,
+    timeout_ms: Option<u64>,
+    #[serde(default)]
+    run_in_background: bool,
+}
+
+impl BashArgs {
+    fn wait(&self) -> Result<std::time::Duration> {
+        if self.timeout_ms == Some(0) {
+            return Err(Error::Tool("timeout_ms must be at least 1".into()));
+        }
+        if self.run_in_background {
+            return Ok(std::time::Duration::ZERO);
+        }
+        Ok(std::time::Duration::from_millis(
+            self.timeout_ms
+                .map_or(DEFINITION.default_timeout_ms, |timeout| {
+                    timeout.min(DEFINITION.max_timeout_ms)
+                }),
+        ))
+    }
 }
 
 pub(super) struct Bash;
@@ -51,7 +72,7 @@ impl Tool for Bash {
     }
 
     fn rewrite_hook_input(&self, input: Value) -> Result<Value> {
-        rewrite_command_input(&input)
+        rewrite_command_input(input)
     }
 
     fn call(
@@ -62,13 +83,10 @@ impl Tool for Bash {
         Box::pin(async move {
             let arguments: BashArgs = serde_json::from_value(arguments)?;
             validate_command(&arguments.command)?;
+            let wait = arguments.wait()?;
             let output = context
                 .sandbox
-                .run_command(
-                    arguments.command,
-                    context.permissions.mutation()?,
-                    std::time::Duration::from_millis(DEFINITION.initial_wait_ms),
-                )
+                .run_command(arguments.command, context.permissions.mutation()?, wait)
                 .await?;
             Ok(background_output(&output, context.sandbox.output_limit()).into())
         })
@@ -143,12 +161,22 @@ fn validate_command(command: &str) -> Result<()> {
     Ok(())
 }
 
-fn rewrite_command_input(input: &Value) -> Result<Value> {
-    let command = input
+fn rewrite_command_input(mut input: Value) -> Result<Value> {
+    hook_command(&input)?;
+    if let Some(arguments) = input.as_object_mut() {
+        arguments.retain(|key, _| {
+            matches!(key.as_str(), "command" | "timeout_ms" | "run_in_background")
+        });
+    }
+    Ok(input)
+}
+
+/// The rewritten `command` a Bash-shaped hook returns for any tool it governs.
+pub(super) fn hook_command(input: &Value) -> Result<&str> {
+    input
         .get("command")
         .and_then(Value::as_str)
-        .ok_or_else(|| Error::Config("hook tool rewrite requires `command`".into()))?;
-    Ok(serde_json::json!({"command": command}))
+        .ok_or_else(|| Error::Config("hook tool rewrite requires `command`".into()))
 }
 
 fn validate_command_id(id: &str) -> Result<()> {
@@ -201,4 +229,37 @@ pub(super) fn background_output(output: &BackgroundCommandPoll, output_limit: us
         "error": "background output exceeded its serialized limit"
     })
     .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bash_wait_bounds_and_hook_options_are_preserved() {
+        for (input, expected) in [
+            (serde_json::json!({"command": "true"}), 120_000),
+            (serde_json::json!({"command": "true", "timeout_ms": 1}), 1),
+            (
+                serde_json::json!({"command": "true", "timeout_ms": 900_000}),
+                600_000,
+            ),
+            (
+                serde_json::json!({"command": "true", "timeout_ms": 1, "run_in_background": true}),
+                0,
+            ),
+        ] {
+            let rewritten = Bash.rewrite_hook_input(input.clone()).expect("hook input");
+            assert_eq!(rewritten, input);
+            let arguments: BashArgs = serde_json::from_value(rewritten).expect("arguments");
+            assert_eq!(arguments.wait().expect("wait").as_millis(), expected);
+        }
+        for run_in_background in [false, true] {
+            let arguments: BashArgs = serde_json::from_value(serde_json::json!({
+                "command": "true", "timeout_ms": 0, "run_in_background": run_in_background,
+            }))
+            .expect("arguments");
+            assert!(arguments.wait().is_err());
+        }
+    }
 }

@@ -247,11 +247,7 @@ impl Tool for ApplyPatch {
     }
 
     fn rewrite_hook_input(&self, input: Value) -> Result<Value> {
-        let command = input
-            .get("command")
-            .and_then(Value::as_str)
-            .ok_or_else(|| Error::Config("hook tool rewrite requires `command`".into()))?;
-        Ok(serde_json::json!({"patch": command}))
+        Ok(serde_json::json!({"patch": super::commands::hook_command(&input)?}))
     }
 
     fn call(

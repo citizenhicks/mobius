@@ -1,6 +1,7 @@
 use super::*;
 use crate::backend::model::PromptCacheIdentity;
 use crate::backend::model::transport::capture_http_request;
+use crate::protocol::ModelStepContentPhase;
 
 fn url(url: &str) -> BaseUrl {
     BaseUrl::new(url).expect("base URL")
@@ -165,6 +166,7 @@ fn compatible_responses_are_implicit_while_first_party_breakpoints_are_explicit(
         .expect("compatible body");
     assert_eq!(compatible_body["prompt_cache_key"], "opaque-cache-key");
     assert!(compatible_body.get("prompt_cache_options").is_none());
+    assert!(compatible_body.get("max_output_tokens").is_none());
     assert_eq!(
         compatible_body["input"][0]["content"][0],
         serde_json::json!({"type": "input_text", "text": "stable prefix"})
@@ -172,7 +174,8 @@ fn compatible_responses_are_implicit_while_first_party_breakpoints_are_explicit(
 
     let first_party = OpenAi::new("test-key", url("https://api.openai.com/v1"), "test-model")
         .expect("first-party provider")
-        .with_explicit_prompt_cache();
+        .with_explicit_prompt_cache()
+        .with_max_output_tokens(Some(32_000));
     let first_party_body = first_party
         .response_body_value(request)
         .expect("first-party body");
@@ -180,6 +183,7 @@ fn compatible_responses_are_implicit_while_first_party_breakpoints_are_explicit(
         first_party_body["prompt_cache_options"],
         serde_json::json!({"mode": "explicit"})
     );
+    assert_eq!(first_party_body["max_output_tokens"], 32_000);
     assert_eq!(
         first_party_body["input"][0]["content"][0],
         serde_json::json!({
@@ -288,7 +292,12 @@ fn responses_decode_normalizes_tool_calls_usage_and_errors() {
     }))
     .expect("decode response");
 
-    assert_eq!(decoded.text(), "Checking.");
+    assert_eq!(decoded.text(), "");
+    assert_eq!(decoded.content()[0].text, "Checking.");
+    assert_eq!(
+        decoded.content()[0].phase,
+        ModelStepContentPhase::Commentary
+    );
     assert_eq!(decoded.tool_calls()[0].arguments["path"], "README.md");
     assert_eq!(decoded.usage().cached_input_tokens, 4);
     assert_eq!(
@@ -605,8 +614,9 @@ async fn http_transport_failure_does_not_replay_accepted_post() {
 #[tokio::test]
 async fn eof_without_response_completed_is_a_retryable_interruption() {
     let (address, server) = capture_http_request().await;
-    let provider =
-        OpenAi::new("test-key", url(&format!("http://{address}")), "test-model").expect("provider");
+    let provider = OpenAi::new("test-key", url(&format!("http://{address}")), "test-model")
+        .expect("provider")
+        .with_headers(&crate::backend::model::openrouter::MANIFEST.headers);
     let error = provider
         .send_response(
             model_request(),
@@ -616,7 +626,10 @@ async fn eof_without_response_completed_is_a_retryable_interruption() {
         .await
         .expect_err("missing completion");
     assert!(matches!(error, Error::Provider(error) if error.is_stream_interrupted()));
-    server.await.expect("HTTP server");
+    let request = server.await.expect("HTTP server").to_lowercase();
+    assert!(request.contains("http-referer: https://github.com/citizenhicks/mobius\r\n"));
+    assert!(request.contains("x-openrouter-title: möbius\r\n"));
+    assert!(request.contains("x-openrouter-categories: personal-agent\r\n"));
 }
 
 #[test]

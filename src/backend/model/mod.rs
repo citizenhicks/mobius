@@ -353,11 +353,23 @@ impl ModelOutput {
     }
 
     pub(super) fn from_output_with_content(
-        output: Vec<Value>,
+        mut output: Vec<Value>,
         end_turn: bool,
         usage: TokenUsage,
-        content: Vec<ModelStepContent>,
+        mut content: Vec<ModelStepContent>,
     ) -> Result<Self> {
+        mark_commentary_before_tool_calls(&mut output);
+        for part in &mut content {
+            if part.phase == ModelStepContentPhase::FinalAnswer
+                && output
+                    .get(part.output_index)
+                    .and_then(|item| item.get("phase"))
+                    .and_then(Value::as_str)
+                    == Some("commentary")
+            {
+                part.phase = ModelStepContentPhase::Commentary;
+            }
+        }
         validate_provider_output(&output)?;
         if output.iter().any(|item| {
             item.get("role").is_some()
@@ -501,6 +513,20 @@ impl ModelOutput {
             self.materialized_tools.insert(name);
         }
         Ok(self)
+    }
+}
+
+// Phase-less text before a tool call continues the turn and must replay as commentary.
+fn mark_commentary_before_tool_calls(output: &mut [Value]) {
+    let mut tool_call_seen = false;
+    for item in output.iter_mut().rev() {
+        match item.get("type").and_then(Value::as_str) {
+            Some("function_call") => tool_call_seen = true,
+            Some("message") if tool_call_seen && item.get("phase").is_none() => {
+                item["phase"] = Value::from("commentary");
+            }
+            _ => {}
+        }
     }
 }
 

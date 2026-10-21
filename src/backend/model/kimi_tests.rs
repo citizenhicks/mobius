@@ -192,7 +192,8 @@ async fn stream_normalizes_deltas_tools_usage_and_errors() {
     stream.apply_data("[DONE]", &events).await.expect("done");
 
     let output = stream.finish().expect("normalized output");
-    assert_eq!(output.text(), "Reading.");
+    assert_eq!(output.text(), "");
+    assert_eq!(output.output()[0]["phase"], "commentary");
     assert_eq!(output.tool_calls()[0].arguments["path"], "README.md");
     assert_eq!(output.usage().cached_input_tokens, 4);
     assert!(matches!(

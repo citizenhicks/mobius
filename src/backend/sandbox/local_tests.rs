@@ -127,7 +127,7 @@ sleep 30"#;
         .await
         .expect("command task")
         .expect_err("foreground deadline");
-    assert!(error.to_string().contains("exceeded"));
+    assert!(error.to_string().contains("timed out"));
     let alive = tokio::task::spawn_blocking(move || {
         for _ in 0..100 {
             let alive = std::process::Command::new("/bin/kill")

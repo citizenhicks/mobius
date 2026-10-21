@@ -1,0 +1,1 @@
+Updates the exact framework and gateway dependencies to 0.16.41. Background shell commands support explicit waits and completion notices, and intermediate model text remains grouped with ongoing work. Protocol 95 and persisted-state formats are unchanged.

@@ -13,6 +13,35 @@ use super::super::MAX_FILE_BYTES;
 use crate::Error;
 use crate::Result;
 
+/// Why a requested path was refused, named so the caller can choose another path.
+#[derive(Clone, Copy)]
+pub(super) enum Rejected {
+    OutsideRoots,
+    NoFileName,
+    NotRegularFile,
+    NotDirectory,
+    Changed,
+    Protected,
+}
+
+impl Rejected {
+    pub(super) fn path(self, path: impl std::fmt::Display) -> Error {
+        let reason = match self {
+            Self::OutsideRoots => {
+                "path is outside the workspace, attached folders and private temporary directory"
+            }
+            Self::NoFileName => "path does not name a file",
+            Self::NotRegularFile => {
+                "not a regular file; directories, symbolic links and devices are refused"
+            }
+            Self::NotDirectory => "a parent of the path is not a directory or is a symbolic link",
+            Self::Changed => "path changed while it was being opened",
+            Self::Protected => "path is protected",
+        };
+        Error::Sandbox(format!("{reason}: {path}"))
+    }
+}
+
 pub(super) fn read_file(root: Dir, relative: &Path, requested: &str) -> Result<String> {
     let file = open_regular_file(root, relative, requested)?;
     let mut bytes = Vec::new();
@@ -64,7 +93,7 @@ pub(super) fn read_file_range(
 fn open_regular_file(root: Dir, relative: &Path, requested: &str) -> Result<cap_std::fs::File> {
     let name = relative
         .file_name()
-        .ok_or_else(|| Error::Sandbox(requested.to_owned()))?;
+        .ok_or_else(|| Rejected::NoFileName.path(requested))?;
     let parent = open_parent(
         root,
         relative.parent().unwrap_or_else(|| Path::new("")),
@@ -74,7 +103,7 @@ fn open_regular_file(root: Dir, relative: &Path, requested: &str) -> Result<cap_
         .symlink_metadata(name)
         .map_err(|error| Error::Sandbox(format!("{requested}: {error}")))?;
     if before.is_symlink() || !before.is_file() {
-        return Err(Error::Sandbox(requested.to_owned()));
+        return Err(Rejected::NotRegularFile.path(requested));
     }
     open_checked_file(&parent, name, &before, requested)
 }
@@ -106,7 +135,7 @@ fn open_checked_file(
         || !same_cap_file(before, &opened)
         || !same_cap_file(&opened, &current)
     {
-        return Err(Error::Sandbox(requested.to_owned()));
+        return Err(Rejected::Changed.path(requested));
     }
     Ok(file)
 }
@@ -114,7 +143,7 @@ fn open_checked_file(
 pub(super) fn remove_file(root: Dir, relative: &Path, requested: &str) -> Result<()> {
     let name = relative
         .file_name()
-        .ok_or_else(|| Error::Sandbox(requested.into()))?;
+        .ok_or_else(|| Rejected::NoFileName.path(requested))?;
     let parent = open_parent(
         root,
         relative.parent().unwrap_or_else(|| Path::new("")),
@@ -143,7 +172,7 @@ pub(super) fn atomic_write(
 ) -> Result<()> {
     let target = relative
         .file_name()
-        .ok_or_else(|| Error::Sandbox(requested.to_owned()))?;
+        .ok_or_else(|| Rejected::NoFileName.path(requested))?;
     let parent = open_parent(
         root,
         relative.parent().unwrap_or_else(|| Path::new("")),
@@ -151,7 +180,7 @@ pub(super) fn atomic_write(
     )?;
     let permissions = match parent.symlink_metadata(target) {
         Ok(metadata) if metadata.is_symlink() || !metadata.is_file() => {
-            return Err(Error::Sandbox(requested.to_owned()));
+            return Err(Rejected::NotRegularFile.path(requested));
         }
         Ok(metadata) => Some(metadata.permissions()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
@@ -193,13 +222,13 @@ fn open_parent(mut parent: Dir, path: &Path, requested: &str) -> Result<Dir> {
             .symlink_metadata(name)
             .map_err(|error| Error::Sandbox(format!("{requested}: {error}")))?;
         if before.is_symlink() || !before.is_dir() {
-            return Err(Error::Sandbox(requested.to_owned()));
+            return Err(Rejected::NotDirectory.path(requested));
         }
         let next = parent
             .open_dir(name)
             .map_err(|error| Error::Sandbox(format!("{requested}: {error}")))?;
         if !same_cap_file(&before, &next.dir_metadata()?) {
-            return Err(Error::Sandbox(requested.to_owned()));
+            return Err(Rejected::Changed.path(requested));
         }
         parent = next;
     }

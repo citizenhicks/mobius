@@ -34,6 +34,7 @@ use crate::Result;
 mod files;
 mod platform;
 
+use self::files::Rejected;
 use self::files::atomic_write;
 use self::files::read_binary_file;
 use self::files::read_file;
@@ -640,7 +641,7 @@ impl LocalSandbox {
                 .components()
                 .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
         {
-            return Err(Error::Sandbox(path.display().to_string()));
+            return Err(Rejected::OutsideRoots.path(path.display()));
         }
         Ok(path.to_path_buf())
     }
@@ -696,7 +697,7 @@ impl LocalSandbox {
             validate_root(path, directory)?;
             return Ok((directory.try_clone()?, relative.to_path_buf()));
         }
-        Err(Error::Sandbox(path.into()))
+        Err(Rejected::OutsideRoots.path(path))
     }
 
     fn write_target(&self, path: &str) -> Result<(Dir, PathBuf)> {
@@ -726,7 +727,7 @@ impl LocalSandbox {
             validate_root(path, directory)?;
             return Ok((directory.try_clone()?, relative.to_path_buf()));
         }
-        Err(Error::Sandbox(path.into()))
+        Err(Rejected::OutsideRoots.path(path))
     }
 
     fn validate_workspace_roots(&self) -> Result<()> {
@@ -952,7 +953,7 @@ impl LocalSandbox {
                             tracing::warn!(%error, "timed-out command could not be killed");
                         }
                         return Err(Error::Sandbox(format!(
-                            "command exceeded {} seconds",
+                            "command timed out after {} seconds and was killed",
                             self.command_timeout.as_secs_f64()
                         )));
                     }
@@ -1154,17 +1155,17 @@ async fn blocking_file<T: Send + 'static>(
 fn full_access_target(requested: &Path, denied_reads: &[DeniedRead]) -> Result<(Dir, PathBuf)> {
     let name = requested
         .file_name()
-        .ok_or_else(|| Error::Sandbox(requested.display().to_string()))?;
+        .ok_or_else(|| Rejected::NoFileName.path(requested.display()))?;
     let parent = std::fs::canonicalize(
         requested
             .parent()
-            .ok_or_else(|| Error::Sandbox(requested.display().to_string()))?,
+            .ok_or_else(|| Rejected::NoFileName.path(requested.display()))?,
     )?;
     let target = parent.join(name);
     if denied_reads.iter().any(|denied| {
         target == denied.path || (denied.directory && target.starts_with(&denied.path))
     }) {
-        return Err(Error::Sandbox(requested.display().to_string()));
+        return Err(Rejected::Protected.path(requested.display()));
     }
     let directory = Dir::open_ambient_dir(&parent, ambient_authority())?;
     validate_root(&parent, &directory)?;

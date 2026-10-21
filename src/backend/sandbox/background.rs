@@ -1,5 +1,6 @@
 use crate::SessionId;
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::oneshot;
@@ -14,6 +15,12 @@ use crate::{Error, Result};
 
 const MAX_POLL_OUTPUT_BYTES: usize = 6_000;
 const MAX_ERROR_BYTES: usize = 512;
+const MAX_NOTICE_COMMAND_BYTES: usize = 200;
+const HELD: u8 = 1;
+const FINISHED: u8 = 2;
+
+/// Receives the command ID and notice of a finished command whose ID the model holds.
+pub(super) type BackgroundListener = Arc<dyn Fn(&str, String) + Send + Sync>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BackgroundCommandStatus {
@@ -46,6 +53,7 @@ pub(crate) struct BackgroundCommandPoll {
 
 pub(super) struct BackgroundCommands {
     limit: usize,
+    listeners: Mutex<BTreeMap<SessionId, BackgroundListener>>,
     entries: Mutex<BTreeMap<Arc<str>, Entry>>,
 }
 
@@ -58,7 +66,8 @@ impl Default for BackgroundCommands {
 struct Entry {
     owner: SessionId,
     started: std::time::Instant,
-    delivered: bool,
+    // Shared with the command task, which notifies only once the model holds the ID.
+    state: Arc<AtomicU8>,
     output: Arc<Mutex<BufferedOutput>>,
     task: JoinHandle<Result<CommandOutput>>,
 }
@@ -110,8 +119,17 @@ impl BackgroundCommands {
     pub(super) fn new(limit: usize) -> Self {
         Self {
             limit,
+            listeners: Mutex::new(BTreeMap::new()),
             entries: Mutex::new(BTreeMap::new()),
         }
+    }
+
+    pub(super) fn listen(&self, owner: &SessionId, listener: BackgroundListener) -> Result<()> {
+        self.listeners
+            .lock()
+            .map_err(state_error)?
+            .insert(owner.share(), listener);
+        Ok(())
     }
 
     pub(super) fn limit(&self) -> usize {
@@ -135,12 +153,20 @@ impl BackgroundCommands {
         sandbox_mode: SandboxMode,
         network_access: NetworkAccess,
     ) -> Result<StartingCommand<'_>> {
+        let listener = self
+            .listeners
+            .lock()
+            .map_err(state_error)?
+            .get(owner)
+            .map(Arc::clone);
         let mut entries = self.entries.lock().map_err(state_error)?;
         if entries.len() >= self.limit {
             // Never evict a result before its initial wait has returned it to the caller.
             let oldest = entries
                 .values()
-                .filter(|entry| entry.delivered && entry.task.is_finished())
+                .filter(|entry| {
+                    entry.state.load(Ordering::Relaxed) & HELD != 0 && entry.task.is_finished()
+                })
                 .map(|entry| entry.started)
                 .min();
             let Some(oldest) = oldest else {
@@ -150,18 +176,20 @@ impl BackgroundCommands {
                     .map(|(id, _)| &**id)
                     .collect::<Vec<_>>();
                 return Err(Error::Sandbox(format!(
-                    "background command limit {} reached; wait for initial results, or poll or stop your commands first: {}",
+                    "background command limit {} reached; stop a command you no longer need, or wait for one to finish, then retry. {}",
                     self.limit,
                     if own.is_empty() {
-                        "none of them are yours".into()
+                        "None of the running commands belong to this chat.".into()
                     } else {
-                        own.join(", ")
+                        format!("Your commands: {}", own.join(", "))
                     }
                 )));
             };
             entries
                 .extract_if(.., |_, entry| {
-                    entry.delivered && entry.started == oldest && entry.task.is_finished()
+                    entry.state.load(Ordering::Relaxed) & HELD != 0
+                        && entry.started == oldest
+                        && entry.task.is_finished()
                 })
                 .next();
         }
@@ -179,6 +207,9 @@ impl BackgroundCommands {
             }
         });
         let (finished, completion) = oneshot::channel();
+        let state = Arc::new(AtomicU8::new(0));
+        let task_state = Arc::clone(&state);
+        let task_id = Arc::clone(&id);
         let task = tokio::spawn(async move {
             let result = backend
                 .execute(
@@ -189,6 +220,13 @@ impl BackgroundCommands {
                     sink,
                 )
                 .await;
+            // One atomic handoff chooses either a final poll result or a later completion notice.
+            let held = task_state.fetch_or(FINISHED, Ordering::Relaxed) & HELD != 0;
+            if let Some(listener) = listener
+                && held
+            {
+                listener(&task_id, completion_notice(&task_id, &command, &result));
+            }
             if finished.send(()).is_err() {
                 tracing::trace!("background command finished after its initial wait ended");
             }
@@ -199,7 +237,7 @@ impl BackgroundCommands {
             Entry {
                 owner: owner.share(),
                 started: std::time::Instant::now(),
-                delivered: false,
+                state,
                 output,
                 task,
             },
@@ -218,10 +256,10 @@ impl BackgroundCommands {
             let mut entries = self.entries.lock().map_err(state_error)?;
             let entry = entries.get_mut(id).ok_or_else(|| unknown(id))?;
             ensure_owner(entry, owner, id)?;
-            if !entry.task.is_finished() {
-                let output = poll_running(id, &entry.output)?;
-                entry.delivered = true;
-                return Ok(output);
+            if !entry.task.is_finished()
+                && entry.state.fetch_or(HELD, Ordering::Relaxed) & FINISHED == 0
+            {
+                return poll_running(id, &entry.output);
             }
             entries.remove(id).ok_or_else(|| unknown(id))?
         };
@@ -247,6 +285,7 @@ impl BackgroundCommands {
     }
 
     pub(super) async fn shutdown(&self, owner: &SessionId) -> Result<()> {
+        self.listeners.lock().map_err(state_error)?.remove(owner);
         let entries = {
             let mut entries = self.entries.lock().map_err(state_error)?;
             entries
@@ -392,6 +431,26 @@ fn finish(
     }
 }
 
+fn completion_notice(id: &str, command: &str, result: &Result<CommandOutput>) -> String {
+    let text = &super::text::DEFINITION;
+    let outcome = match result {
+        Ok(output) => text
+            .background_command_exited
+            .replace("{exit_code}", &output.exit_code.to_string()),
+        Err(error) => text.background_command_failed.replace(
+            "{error}",
+            crate::truncate_utf8(&error.to_string(), MAX_ERROR_BYTES),
+        ),
+    };
+    text.background_command_notice
+        .replace("{id}", id)
+        .replace(
+            "{command}",
+            crate::truncate_utf8(command, MAX_NOTICE_COMMAND_BYTES),
+        )
+        .replace("{outcome}", &outcome)
+}
+
 fn take_output(output: &Arc<Mutex<BufferedOutput>>) -> Result<TakenOutput> {
     Ok(output.lock().map_err(state_error)?.take())
 }
@@ -431,6 +490,7 @@ mod tests {
     struct PendingBackend {
         started: Arc<Notify>,
         cancelled: Arc<AtomicBool>,
+        finish: Option<Arc<Notify>>,
     }
 
     impl SandboxBackend for PendingBackend {
@@ -471,8 +531,22 @@ mod tests {
             Box::pin(async move {
                 let _guard = CancellationGuard(Arc::clone(&self.cancelled));
                 self.started.notify_one();
-                std::future::pending().await
+                match &self.finish {
+                    Some(finish) => finish.notified().await,
+                    None => std::future::pending().await,
+                }
+                Ok(command_output())
             })
+        }
+    }
+
+    fn command_output() -> CommandOutput {
+        CommandOutput {
+            exit_code: 3,
+            stdout: "finished".into(),
+            stderr: String::new(),
+            stdout_truncated: false,
+            stderr_truncated: false,
         }
     }
 
@@ -483,9 +557,19 @@ mod tests {
             crate::backend::sandbox::local::LocalSandbox::new(workspace.path()).expect("sandbox"),
         );
         let commands = BackgroundCommands::new(1);
+        let session: SessionId = "session".parse().expect("session ID");
+        let (notices, mut received) = tokio::sync::mpsc::unbounded_channel();
+        commands
+            .listen(
+                &session,
+                Arc::new(move |_, notice| {
+                    notices.send(notice).expect("notice receiver");
+                }),
+            )
+            .expect("listener");
         let start = || {
             commands.start(
-                &"session".parse().expect("session ID"),
+                &session,
                 Arc::clone(&backend),
                 "printf first".into(),
                 SandboxMode::DangerFullAccess,
@@ -506,15 +590,113 @@ mod tests {
 
         assert!(start().is_err());
         let output = first
-            .wait(
-                &"session".parse().expect("session ID"),
-                std::time::Duration::ZERO,
-            )
+            .wait(&session, std::time::Duration::ZERO)
             .await
             .expect("first result");
         assert_eq!(output.status, BackgroundCommandStatus::Exited);
         assert_eq!(output.stdout, "first");
+        assert!(
+            received.try_recv().is_err(),
+            "collected command sent a notice"
+        );
         start().expect("collected result releases capacity");
+    }
+
+    #[tokio::test]
+    async fn session_listeners_receive_only_their_held_commands() {
+        let commands = BackgroundCommands::default();
+        let (notices, mut received) = tokio::sync::mpsc::unbounded_channel();
+        for name in ["session-a", "session-b"] {
+            let session: SessionId = name.parse().expect("session ID");
+            let notices = notices.clone();
+            commands
+                .listen(
+                    &session,
+                    Arc::new(move |id, notice| {
+                        notices
+                            .send((name, id.to_owned(), notice))
+                            .expect("notice receiver");
+                    }),
+                )
+                .expect("listener");
+        }
+        let mut pending = Vec::new();
+        for name in ["session-a", "session-b"] {
+            let session: SessionId = name.parse().expect("session ID");
+            let finish = Arc::new(Notify::new());
+            let started = Arc::new(Notify::new());
+            let command = commands
+                .start(
+                    &session,
+                    Arc::new(PendingBackend {
+                        started: Arc::clone(&started),
+                        cancelled: Arc::default(),
+                        finish: Some(Arc::clone(&finish)),
+                    }),
+                    name.into(),
+                    SandboxMode::DangerFullAccess,
+                    NetworkAccess::Denied,
+                )
+                .expect("start");
+            started.notified().await;
+            let held = command
+                .wait(&session, std::time::Duration::ZERO)
+                .await
+                .expect("held");
+            assert_eq!(held.status, BackgroundCommandStatus::Running);
+            pending.push((session, held.command_id.expect("command ID"), finish));
+        }
+        for (session, id, finish) in pending {
+            finish.notify_one();
+            let (owner, noticed_id, notice) =
+                tokio::time::timeout(std::time::Duration::from_secs(5), received.recv())
+                    .await
+                    .expect("completion notice")
+                    .expect("notice sender");
+            assert_eq!(owner, session.as_str());
+            assert_eq!(noticed_id, id);
+            assert!(notice.contains("exited with code 3"));
+            commands.shutdown(&session).await.expect("shutdown");
+            assert!(
+                !commands
+                    .listeners
+                    .lock()
+                    .expect("listeners")
+                    .contains_key(&session)
+            );
+        }
+        assert!(received.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn poll_collects_a_finished_result_before_the_task_returns() {
+        let commands = BackgroundCommands::default();
+        let session: SessionId = "session".parse().expect("session ID");
+        let finish = Arc::new(Notify::new());
+        let task_finish = Arc::clone(&finish);
+        commands.entries.lock().expect("entries").insert(
+            "command".into(),
+            Entry {
+                owner: session.share(),
+                started: std::time::Instant::now(),
+                state: Arc::new(AtomicU8::new(FINISHED)),
+                output: Arc::default(),
+                task: tokio::spawn(async move {
+                    task_finish.notified().await;
+                    Ok(command_output())
+                }),
+            },
+        );
+        let mut polling = Box::pin(commands.poll(&session, "command"));
+        tokio::select! {
+            biased;
+            _ = &mut polling => panic!("must await the finished result"),
+            () = tokio::task::yield_now() => {}
+        }
+        finish.notify_one();
+        let output = polling.await.expect("finished result");
+        assert_eq!(output.status, BackgroundCommandStatus::Exited);
+        assert_eq!(output.stdout, "finished");
     }
 
     #[tokio::test]
@@ -528,6 +710,7 @@ mod tests {
                 Arc::new(PendingBackend {
                     started: Arc::clone(&started),
                     cancelled: Arc::clone(&cancelled),
+                    finish: None,
                 }),
                 "command".into(),
                 SandboxMode::WorkspaceWrite,
@@ -556,6 +739,7 @@ mod tests {
                 Arc::new(PendingBackend {
                     started: Arc::clone(&started),
                     cancelled: Arc::clone(&cancelled),
+                    finish: None,
                 }),
                 "command".into(),
                 SandboxMode::WorkspaceWrite,

@@ -80,6 +80,8 @@ pub struct OpenAi {
     model: Arc<str>,
     reasoning_effort: Option<Arc<str>>,
     service_tier: Option<String>,
+    max_output_tokens: Option<u64>,
+    headers: Option<&'static std::collections::BTreeMap<String, String>>,
     reasoning_summary: bool,
     hosted_tools: Vec<Value>,
     image_input: bool,
@@ -184,6 +186,8 @@ impl OpenAi {
             model: Arc::from(model.into()),
             reasoning_effort: None,
             service_tier: None,
+            max_output_tokens: None,
+            headers: None,
             reasoning_summary: false,
             hosted_tools: Vec::new(),
             image_input: true,
@@ -246,6 +250,19 @@ impl OpenAi {
 
     pub(super) fn service_tier(&self) -> Option<&str> {
         self.service_tier.as_deref()
+    }
+
+    pub(super) const fn with_max_output_tokens(mut self, tokens: Option<u64>) -> Self {
+        self.max_output_tokens = tokens;
+        self
+    }
+
+    pub(super) const fn with_headers(
+        mut self,
+        headers: &'static std::collections::BTreeMap<String, String>,
+    ) -> Self {
+        self.headers = Some(headers);
+        self
     }
 
     pub(super) fn with_image_api(mut self, api: Option<&'static ImageApi>) -> Self {
@@ -474,6 +491,7 @@ impl OpenAi {
             self.reasoning_summary,
         );
         metadata.service_tier = self.service_tier();
+        metadata.max_output_tokens = self.max_output_tokens;
         Ok(ResponsesBody {
             metadata,
             tools: self.wire_request_tools(&request),
@@ -559,6 +577,9 @@ impl OpenAi {
     ) -> Result<reqwest::Response> {
         for attempt in 0..2 {
             let mut request = body()?;
+            for (name, value) in self.headers.into_iter().flatten() {
+                request = request.header(name.as_str(), value.as_bytes());
+            }
             let Some(auth) = &self.auth else {
                 return Ok(request.send().await?);
             };

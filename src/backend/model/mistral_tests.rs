@@ -198,7 +198,8 @@ async fn native_stream_round_trip_preserves_thinking_signatures_tools_and_usage(
     );
     let wire_body: Value = serde_json::from_str(wire.split_once("\r\n\r\n").unwrap().1).unwrap();
     assert!(wire_body.get("stream_options").is_none());
-    assert_eq!(output.text(), "Reading. Now.");
+    assert_eq!(output.text(), "");
+    assert_eq!(output.output()[0]["phase"], "commentary");
     assert_eq!(output.usage().total_tokens, 20);
     assert_eq!(output.tool_calls()[0].arguments, json!({"path": "a.rs"}));
     assert!(!output.end_turn());

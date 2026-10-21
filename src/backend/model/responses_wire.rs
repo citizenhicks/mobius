@@ -23,6 +23,8 @@ pub(super) struct ResponsesBody<'a> {
 pub(super) struct RequestMetadata<'a> {
     include: [&'static str; 1],
     instructions: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) max_output_tokens: Option<u64>,
     model: &'a str,
     parallel_tool_calls: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -62,6 +64,7 @@ impl<'a> RequestMetadata<'a> {
         Self {
             include: ["reasoning.encrypted_content"],
             instructions: request.instructions,
+            max_output_tokens: None,
             model,
             parallel_tool_calls: true,
             previous_response_id: None,

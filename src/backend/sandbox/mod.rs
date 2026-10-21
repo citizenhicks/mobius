@@ -49,6 +49,9 @@ mod text {
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     pub(super) struct Definition {
+        pub(super) background_command_notice: String,
+        pub(super) background_command_exited: String,
+        pub(super) background_command_failed: String,
         pub(super) prompt_workspace: String,
         pub(super) prompt_attached_folders: String,
         pub(super) prompt_temporary_directory: String,
@@ -829,6 +832,9 @@ impl Middleware for Sandbox {
             for event in Self::session_start(self, &context.runtime.session_id)? {
                 (context.runtime.frontend)(event)?;
             }
+            let sender = context.runtime.sender.clone(); // rules-allow: the listener owns its weak sender handle
+            self.background
+                .listen(&context.runtime.session_id, background_notices(sender))?;
             Ok(())
         })
     }
@@ -836,6 +842,35 @@ impl Middleware for Sandbox {
     fn session_end<'a>(&'a self, runtime: &'a RuntimeContext) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move { Self::session_end(self, &runtime.session_id).await })
     }
+}
+
+fn background_notices(sender: crate::agent::WeakAgentSender) -> background::BackgroundListener {
+    Arc::new(move |command_id, text| {
+        let Some(sender) = sender.upgrade() else {
+            return;
+        };
+        let notice = crate::protocol::MessageSubmission {
+            author: crate::protocol::MessageAuthor::Source {
+                message_id: uuid::Uuid::new_v4().to_string().into(),
+                source: crate::protocol::MessageSource::External {
+                    source_id: "background-command".into(),
+                    event_id: command_id.into(),
+                },
+                cause_id: None,
+                ancestry: Vec::new(),
+                handle: "background-command".into(),
+                symbol: None,
+            },
+            text,
+            attachments: Vec::new(),
+            reply: None,
+            requested_delivery: Some(crate::protocol::ActiveMessageDelivery::Steer),
+            target_turn_id: None,
+        };
+        if let Err(error) = sender.send(crate::protocol::Submission::message(notice)) {
+            tracing::warn!(%error, command_id, "background command notice was not delivered");
+        }
+    })
 }
 
 /// Batch authority issued by the sandbox approval policy.
