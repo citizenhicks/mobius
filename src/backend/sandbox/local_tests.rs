@@ -5,6 +5,203 @@ use super::*;
 use tokio::process::Command;
 
 #[cfg(target_os = "macos")]
+fn run_with_system_git(name: &str) -> bool {
+    const CHILD: &str = "MOBIUS_SYSTEM_GIT_TEST";
+    if std::env::var(CHILD).as_deref() == Ok(name) {
+        return false;
+    }
+    let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
+        .args([
+            &format!("backend::sandbox::local::tests::{name}"),
+            "--exact",
+            "--nocapture",
+        ])
+        .env(CHILD, name)
+        .env("PATH", "/usr/bin:/bin")
+        .output()
+        .expect("run system Git test");
+    assert!(
+        output.status.success(),
+        "child failed: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    true
+}
+
+#[cfg(target_os = "macos")]
+fn test_git_executable(path: &Path, label: &str) {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    std::fs::create_dir_all(path.parent().expect("Git directory")).expect("Git directory");
+    std::fs::write(path, format!("#!/bin/sh\nprintf '%s\\n' '{label}'\n")).expect("Git script");
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("executable");
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn apple_git_read_operations_share_selection_and_resolve_again_for_the_next_operation() {
+    use std::os::unix::fs::symlink;
+
+    if run_with_system_git(
+        "apple_git_read_operations_share_selection_and_resolve_again_for_the_next_operation",
+    ) {
+        return;
+    }
+    let workspace = tempfile::tempdir().expect("workspace");
+    let tools = tempfile::tempdir().expect("developer tools");
+    let first = tools.path().join("first");
+    let second = tools.path().join("second");
+    let selected = tools.path().join("selected");
+    test_git_executable(&first.join("usr/bin/git"), "first");
+    test_git_executable(&second.join("usr/bin/git"), "second");
+    symlink(&first, &selected).expect("selected developer directory");
+    let environment = [("DEVELOPER_DIR", selected.to_str().expect("developer path"))];
+    // Cargo may supply SDKROOT; this fixture exercises the default developer lookup.
+    let removed_environment = ["SDKROOT", "TOOLCHAINS"];
+    let sandbox = local_sandbox(workspace.path());
+    let operation = sandbox.read_only_command("git", &environment, &removed_environment);
+    let (current, branches) = tokio::join!(
+        operation.execute(&["branch", "--show-current"]),
+        operation.execute(&["for-each-ref"])
+    );
+    for output in [
+        current.expect("current branch"),
+        branches.expect("branches"),
+    ] {
+        assert_eq!(
+            (output.exit_code, output.stdout.as_str()),
+            (0, "first\n"),
+            "{output:?}; selected={:?}",
+            operation.resolved.get()
+        );
+    }
+
+    std::fs::remove_file(&selected).expect("old developer selection");
+    symlink(&second, &selected).expect("new developer selection");
+    assert_eq!(
+        operation
+            .execute(&["--version"])
+            .await
+            .expect("same operation")
+            .stdout,
+        "first\n"
+    );
+    assert_eq!(
+        sandbox
+            .read_only_command("git", &environment, &removed_environment)
+            .execute(&["--version"])
+            .await
+            .expect("new operation")
+            .stdout,
+        "second\n"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn apple_git_read_operations_revalidate_cached_targets_and_preserve_launcher_fallback() {
+    use std::os::unix::fs::symlink;
+
+    if run_with_system_git(
+        "apple_git_read_operations_revalidate_cached_targets_and_preserve_launcher_fallback",
+    ) {
+        return;
+    }
+    let workspace = tempfile::tempdir().expect("workspace");
+    let tools = tempfile::tempdir().expect("tools");
+    let cached = tools.path().join("git");
+    let protected = tools.path().join("protected");
+    test_git_executable(&cached, "cached");
+    test_git_executable(&protected, "protected");
+    let sandbox = local_sandbox(workspace.path())
+        .deny_read(&protected)
+        .expect("protected executable");
+    let environment = [("DEVELOPER_DIR", "/nonexistent-mobius-developer-directory")];
+    let operation = sandbox.read_only_command("git", &environment, &[]);
+    operation
+        .resolved
+        .set(std::fs::canonicalize(&cached).expect("cached path"))
+        .expect("cached selection");
+    assert_eq!(
+        operation
+            .execute(&["--version"])
+            .await
+            .expect("cached tool")
+            .stdout,
+        "cached\n"
+    );
+    std::fs::remove_file(&cached).expect("remove cached executable");
+    symlink(&protected, &cached).expect("retarget cached executable");
+    let actual = operation
+        .execute(&["--version"])
+        .await
+        .expect("launcher fallback");
+    let baseline = sandbox
+        .execute_invocation(
+            Invocation::Argv {
+                executable: Path::new("/usr/bin/git"),
+                arguments: &["--version"],
+                piped_input: false,
+            },
+            CommandIsolation {
+                sandbox_mode: SandboxMode::WorkspaceWrite,
+                network_access: NetworkAccess::Denied,
+                workspace_access: WorkspaceAccess::ReadOnly,
+            },
+            CommandMode::Foreground,
+            CommandOutputSink::default(),
+            (&environment, &[]),
+            None,
+        )
+        .await
+        .expect("original launcher")
+        .expect("launcher output");
+    assert_ne!(actual.exit_code, 0);
+    assert_eq!(
+        (
+            actual.exit_code,
+            actual.stdout,
+            actual.stderr,
+            actual.stdout_truncated,
+            actual.stderr_truncated
+        ),
+        (
+            baseline.exit_code,
+            baseline.stdout,
+            baseline.stderr,
+            baseline.stdout_truncated,
+            baseline.stderr_truncated
+        )
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test(start_paused = true)]
+async fn apple_git_read_operation_timeout_includes_waiting_for_shared_resolution() {
+    if run_with_system_git(
+        "apple_git_read_operation_timeout_includes_waiting_for_shared_resolution",
+    ) {
+        return;
+    }
+    let workspace = tempfile::tempdir().expect("workspace");
+    let sandbox = local_sandbox(workspace.path())
+        .command_timeout(Duration::from_millis(100))
+        .expect("timeout");
+    let operation = sandbox.read_only_command("git", &[], &[]);
+    let initializing = operation
+        .resolved
+        .get_or_try_init(std::future::pending::<Result<PathBuf>>);
+    tokio::pin!(initializing);
+    assert!(futures_util::poll!(initializing.as_mut()).is_pending());
+    let error = operation
+        .execute(&["--version"])
+        .await
+        .expect_err("shared lookup timeout");
+    assert!(error.to_string().contains("timed out"), "{error}");
+}
+
+#[cfg(target_os = "macos")]
 #[tokio::test]
 async fn apple_git_launcher_resolves_to_the_trusted_tool_without_changing_other_executables() {
     let workspace = tempfile::tempdir().expect("workspace");
@@ -105,18 +302,15 @@ async fn apple_git_lookup_uses_command_environment_overrides_and_removals() {
         Path::new("/usr/bin/git")
     );
     let output = sandbox
-        .execute_read_only_with_environment_removals("git", &["--version"], &environment, &[])
+        .read_only_command("git", &environment, &[])
+        .execute(&["--version"])
         .await
         .expect("return Git's unsuccessful command output");
     assert_ne!(output.exit_code, 0);
     assert!(output.stderr.contains("DEVELOPER_DIR"), "{output:?}");
     let output = sandbox
-        .execute_read_only_with_environment_removals(
-            "git",
-            &["--version"],
-            &[("SDKROOT", "nonexistent-mobius-sdk")],
-            &[],
-        )
+        .read_only_command("git", &[("SDKROOT", "nonexistent-mobius-sdk")], &[])
+        .execute(&["--version"])
         .await
         .expect("preserve SDK selection errors");
     assert_ne!(output.exit_code, 0);

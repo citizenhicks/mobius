@@ -10,7 +10,8 @@ use std::time::Duration;
 use mobius::backend::model::provider::{ProviderAuth, providers};
 use mobius::backend::sandbox::{
     CommandAuthorization, CommandMode, CommandOutput, CommandOutputSink, NetworkAccess,
-    OutputLimit, SandboxBackend, SandboxMode, local::LocalSandbox,
+    OutputLimit, SandboxBackend, SandboxMode,
+    local::{LocalSandbox, ReadOnlyCommand},
 };
 use mobius::{BoxFuture, Error, Result, SessionId};
 
@@ -54,6 +55,24 @@ pub struct GatewaySandbox {
     desktop: Option<std::sync::Arc<crate::computer_runtime::desktop::DesktopControl>>,
     remote_desktop: Option<std::sync::Arc<crate::computer_runtime::remote_desktop::RemoteDesktop>>,
     desktop_use: tokio::sync::Mutex<Option<crate::computer_runtime::remote_desktop::DesktopUse>>,
+}
+
+#[derive(Debug)]
+pub(crate) struct GitOperation<'a> {
+    sandbox: &'a GatewaySandbox,
+    command: ReadOnlyCommand<'a>,
+}
+
+impl GitOperation<'_> {
+    pub(crate) async fn execute(&self, args: &[&str]) -> Result<CommandOutput> {
+        let _execution = self.sandbox.execution_lease().await?;
+        let mut arguments = GIT_ARGUMENTS.to_vec();
+        arguments.extend_from_slice(args);
+        tokio::select! {
+            () = self.sandbox.execution_cancelled() => Err(execution_held()),
+            result = self.command.execute(&arguments) => result,
+        }
+    }
 }
 
 impl std::fmt::Debug for GatewaySandbox {
@@ -296,17 +315,17 @@ impl GatewaySandbox {
     }
 
     pub(crate) async fn execute_git(&self, args: &[&str]) -> Result<CommandOutput> {
-        let _execution = self.execution_lease().await?;
-        let mut arguments = GIT_ARGUMENTS.to_vec();
-        arguments.extend_from_slice(args);
-        tokio::select! {
-            () = self.execution_cancelled() => Err(execution_held()),
-            result = self.delegate.execute_read_only_with_environment_removals(
+        self.git_operation().execute(args).await
+    }
+
+    pub(crate) fn git_operation(&self) -> GitOperation<'_> {
+        GitOperation {
+            sandbox: self,
+            command: self.delegate.read_only_command(
                 "git",
-                &arguments,
                 &GIT_ENVIRONMENT,
                 &REPOSITORY_LOCAL_GIT_ENVIRONMENT,
-            ) => result,
+            ),
         }
     }
 

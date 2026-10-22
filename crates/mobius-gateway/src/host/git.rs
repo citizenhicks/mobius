@@ -8,7 +8,7 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::process::Command;
 use url::Url;
 
-use crate::sandbox::GatewaySandbox;
+use crate::sandbox::{GatewaySandbox, GitOperation};
 use crate::wire::{DiffTotals, GitDiffScope, GitStatus, MAX_FRAME_BYTES};
 
 use super::Rejection;
@@ -323,13 +323,15 @@ pub(super) async fn switch_branch(
 }
 
 async fn status_inner(sandbox: &GatewaySandbox) -> std::result::Result<GitStatus, Rejection> {
+    let git = sandbox.git_operation();
     let (current, branches) = tokio::join!(
-        output(sandbox, &["branch", "--show-current"]),
+        output(&git, &["branch", "--show-current"]),
         output(
-            sandbox,
+            &git,
             &["for-each-ref", "--format=%(refname)", "refs/heads/"]
         )
     );
+    drop(git);
     let current = successful_output(current?, "reading the current Git branch failed")?;
     let branches = successful_output(branches?, "listing local Git branches failed")?;
     let mut branches = String::from_utf8_lossy(&branches)
@@ -401,8 +403,9 @@ async fn diff_inner(
 ) -> std::result::Result<Vec<u8>, Rejection> {
     const PATCH: [&str; 3] = ["--no-ext-diff", "--no-color", "--no-textconv"];
     const NUMSTAT: [&str; 4] = ["--numstat", "--no-ext-diff", "--no-color", "--no-textconv"];
+    let git = sandbox.git_operation();
     let flags: &[&str] = if numstat { &NUMSTAT } else { &PATCH };
-    let repository = output(sandbox, &["rev-parse", "--is-inside-work-tree"]).await?;
+    let repository = output(&git, &["rev-parse", "--is-inside-work-tree"]).await?;
     if repository.exit_code != 0 {
         if repository.stderr.contains("not a git repository") {
             return Ok(Vec::new());
@@ -418,21 +421,21 @@ async fn diff_inner(
 
     let mut diff = match scope {
         GitDiffScope::Staged => successful_output(
-            output(sandbox, &[&["diff", "--cached"], flags, &["--"]].concat()).await?,
+            output(&git, &[&["diff", "--cached"], flags, &["--"]].concat()).await?,
             "staged git diff failed",
         )?,
         GitDiffScope::Unstaged => successful_output(
-            output(sandbox, &[&["diff"], flags, &["--"]].concat()).await?,
+            output(&git, &[&["diff"], flags, &["--"]].concat()).await?,
             "unstaged git diff failed",
         )?,
         GitDiffScope::Committed => {
-            let head = output(sandbox, &["rev-parse", "--verify", "--quiet", "HEAD"]).await?;
+            let head = output(&git, &["rev-parse", "--verify", "--quiet", "HEAD"]).await?;
             if head.exit_code != 0 {
                 Vec::new()
             } else {
                 successful_output(
                     output(
-                        sandbox,
+                        &git,
                         &[&["show", "--format="], flags, &["HEAD", "--"]].concat(),
                     )
                     .await?,
@@ -443,13 +446,14 @@ async fn diff_inner(
     };
 
     if scope == GitDiffScope::Unstaged {
-        append_untracked(sandbox, workspace, &mut diff, flags, numstat).await?;
+        append_untracked(&git, workspace, &mut diff, flags, numstat).await?;
     }
+    drop(git);
     Ok(diff)
 }
 
 async fn append_untracked(
-    sandbox: &GatewaySandbox,
+    git: &GitOperation<'_>,
     workspace: &Path,
     diff: &mut Vec<u8>,
     flags: &[&str],
@@ -457,7 +461,7 @@ async fn append_untracked(
 ) -> std::result::Result<(), Rejection> {
     let untracked = successful_output(
         output(
-            sandbox,
+            git,
             &["ls-files", "--others", "--exclude-standard", "-z", "--"],
         )
         .await?,
@@ -489,7 +493,7 @@ async fn append_untracked(
         if !metadata.file_type().is_file() {
             continue;
         }
-        let patch = untracked_diff(sandbox, path, flags).await?;
+        let patch = untracked_diff(git, path, flags).await?;
         if !is_binary_diff(&patch) {
             append_diff(diff, &patch);
         }
@@ -498,19 +502,19 @@ async fn append_untracked(
 }
 
 async fn output(
-    sandbox: &GatewaySandbox,
+    git: &GitOperation<'_>,
     args: &[&str],
 ) -> std::result::Result<CommandOutput, Rejection> {
-    sandbox.execute_git(args).await.map_err(error_rejection)
+    git.execute(args).await.map_err(error_rejection)
 }
 
 async fn untracked_diff(
-    sandbox: &GatewaySandbox,
+    git: &GitOperation<'_>,
     path: &str,
     flags: &[&str],
 ) -> std::result::Result<Vec<u8>, Rejection> {
     let command = [&["diff"], flags, &["--no-index", "--", "/dev/null", path]].concat();
-    let output = output(sandbox, &command).await?;
+    let output = output(git, &command).await?;
     if matches!(output.exit_code, 0 | 1) {
         Ok(output.stdout.into_bytes())
     } else {
@@ -715,6 +719,38 @@ mod tests {
         std::fs::write(workspace.join("tracked.txt"), branch).expect("tracked file");
         run_git(workspace, &["add", "--", "tracked.txt"]);
         run_git(workspace, &["commit", "--quiet", "-m", "initial"]);
+    }
+
+    #[tokio::test]
+    async fn scoped_git_reads_preserve_diff_scopes_and_untracked_totals() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        initialize_repository(workspace.path(), "main");
+        std::fs::write(workspace.path().join("tracked.txt"), "staged\nlines\n")
+            .expect("staged contents");
+        run_git(workspace.path(), &["add", "--", "tracked.txt"]);
+        std::fs::write(
+            workspace.path().join("tracked.txt"),
+            "staged\nlines\nunstaged\n",
+        )
+        .expect("unstaged contents");
+        std::fs::write(workspace.path().join("untracked.txt"), "new\nfile\n")
+            .expect("untracked contents");
+        let (_state, sandbox) = test_sandbox(workspace.path());
+        for (scope, additions, deletions) in [
+            (GitDiffScope::Staged, 2, 1),
+            (GitDiffScope::Unstaged, 3, 0),
+            (GitDiffScope::Committed, 1, 0),
+        ] {
+            let totals = diff_totals(&sandbox, workspace.path(), scope)
+                .await
+                .expect("diff totals");
+            assert_eq!((totals.additions, totals.deletions), (additions, deletions));
+        }
+        let patch = diff(&sandbox, workspace.path(), GitDiffScope::Unstaged)
+            .await
+            .expect("diff preview");
+        assert!(patch.contains("+unstaged\n"), "{patch}");
+        assert!(patch.contains("+new\n+file\n"), "{patch}");
     }
 
     #[cfg(unix)]

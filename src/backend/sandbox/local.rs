@@ -83,6 +83,43 @@ pub struct LocalSandbox {
     procfs_mode: ProcfsMode,
 }
 
+/// Read-only argv calls that share macOS Git tool selection for one logical operation.
+/// A new operation observes developer-tool selection changes.
+pub struct ReadOnlyCommand<'a> {
+    sandbox: &'a LocalSandbox,
+    executable: &'a str,
+    environment: (&'a [(&'a str, &'a str)], &'a [&'a str]),
+    #[cfg(target_os = "macos")]
+    resolved: tokio::sync::OnceCell<PathBuf>,
+}
+
+impl std::fmt::Debug for ReadOnlyCommand<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ReadOnlyCommand")
+            .field("executable", &self.executable)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ReadOnlyCommand<'_> {
+    /// Runs argv with this operation's environment, sandbox and per-command timeout.
+    /// # Errors
+    /// Returns an error if executable validation or sandbox execution fails.
+    pub async fn execute(&self, arguments: &[&str]) -> Result<CommandOutput> {
+        self.sandbox
+            .execute_argv(
+                self.executable,
+                arguments,
+                WorkspaceAccess::ReadOnly,
+                self.environment,
+                #[cfg(target_os = "macos")]
+                Some(&self.resolved),
+            )
+            .await
+    }
+}
+
 struct Temporary {
     directory: tempfile::TempDir,
     root: Dir,
@@ -507,8 +544,28 @@ impl LocalSandbox {
             arguments,
             WorkspaceAccess::ReadOnly,
             (environment, removed_environment),
+            #[cfg(target_os = "macos")]
+            None,
         )
         .await
+    }
+
+    /// Shares validated macOS Git selection across one logical read operation.
+    /// Each call still validates and runs its executable in the sandbox.
+    #[must_use]
+    pub fn read_only_command<'a>(
+        &'a self,
+        executable: &'a str,
+        environment: &'a [(&'a str, &'a str)],
+        removed_environment: &'a [&'a str],
+    ) -> ReadOnlyCommand<'a> {
+        ReadOnlyCommand {
+            sandbox: self,
+            executable,
+            environment: (environment, removed_environment),
+            #[cfg(target_os = "macos")]
+            resolved: tokio::sync::OnceCell::new(),
+        }
     }
 
     /// Reads one bounded binary range through the sandbox's pinned workspace root.
@@ -604,6 +661,8 @@ impl LocalSandbox {
             arguments,
             WorkspaceAccess::Writable,
             (environment, removed_environment),
+            #[cfg(target_os = "macos")]
+            None,
         )
         .await
     }
@@ -728,13 +787,27 @@ impl LocalSandbox {
         arguments: &[&str],
         workspace_access: WorkspaceAccess,
         environment: (&[(&str, &str)], &[&str]),
+        #[cfg(target_os = "macos")] resolved: Option<&tokio::sync::OnceCell<PathBuf>>,
     ) -> Result<CommandOutput> {
         let execute = async {
             let executable = self.find_executable(executable)?;
             #[cfg(target_os = "macos")]
-            let executable = self
-                .resolve_argv_executable(executable, environment)
-                .await?;
+            let executable = if let Some(resolved) = resolved
+                && executable == Path::new("/usr/bin/git")
+            {
+                let selected = resolved
+                    .get_or_try_init(|| self.resolve_argv_executable(executable, environment))
+                    .await?;
+                validated_executable(selected)
+                    .and_then(|path| {
+                        self.validate_trusted_executable(&path)?;
+                        Ok(path)
+                    })
+                    .unwrap_or_else(|_| PathBuf::from("/usr/bin/git"))
+            } else {
+                self.resolve_argv_executable(executable, environment)
+                    .await?
+            };
             self.execute_invocation(
                 Invocation::Argv {
                     executable: &executable,
