@@ -502,26 +502,13 @@ impl LocalSandbox {
         environment: &[(&str, &str)],
         removed_environment: &[&str],
     ) -> Result<CommandOutput> {
-        let executable = self.find_executable(executable)?;
-        self.execute_invocation(
-            Invocation::Argv {
-                executable: &executable,
-                arguments,
-                #[cfg(target_os = "macos")]
-                piped_input: false,
-            },
-            CommandIsolation {
-                sandbox_mode: SandboxMode::WorkspaceWrite,
-                network_access: NetworkAccess::Denied,
-                workspace_access: WorkspaceAccess::ReadOnly,
-            },
-            CommandMode::Foreground,
-            CommandOutputSink::default(),
+        self.execute_argv(
+            executable,
+            arguments,
+            WorkspaceAccess::ReadOnly,
             (environment, removed_environment),
-            None,
         )
-        .await?
-        .ok_or_else(|| Error::Sandbox("command launch was unexpectedly denied".into()))
+        .await
     }
 
     /// Reads one bounded binary range through the sandbox's pinned workspace root.
@@ -612,26 +599,13 @@ impl LocalSandbox {
         environment: &[(&str, &str)],
         removed_environment: &[&str],
     ) -> Result<CommandOutput> {
-        let executable = self.find_executable("git")?;
-        self.execute_invocation(
-            Invocation::Argv {
-                executable: &executable,
-                arguments,
-                #[cfg(target_os = "macos")]
-                piped_input: false,
-            },
-            CommandIsolation {
-                sandbox_mode: SandboxMode::WorkspaceWrite,
-                network_access: NetworkAccess::Denied,
-                workspace_access: WorkspaceAccess::Writable,
-            },
-            CommandMode::Foreground,
-            CommandOutputSink::default(),
+        self.execute_argv(
+            "git",
+            arguments,
+            WorkspaceAccess::Writable,
             (environment, removed_environment),
-            None,
         )
-        .await?
-        .ok_or_else(|| Error::Sandbox("command launch was unexpectedly denied".into()))
+        .await
     }
 
     fn relative(path: &str) -> Result<PathBuf> {
@@ -746,6 +720,100 @@ impl LocalSandbox {
             std::env::var_os("PATH").ok_or_else(|| Error::Sandbox("PATH is unavailable".into()))?;
         find_executable_in(name, &self.root, &self.policy.denied_reads, &path)
             .ok_or_else(|| Error::Sandbox(format!("{name} is unavailable outside protected paths")))
+    }
+
+    async fn execute_argv(
+        &self,
+        executable: &str,
+        arguments: &[&str],
+        workspace_access: WorkspaceAccess,
+        environment: (&[(&str, &str)], &[&str]),
+    ) -> Result<CommandOutput> {
+        let execute = async {
+            let executable = self.find_executable(executable)?;
+            #[cfg(target_os = "macos")]
+            let executable = self
+                .resolve_argv_executable(executable, environment)
+                .await?;
+            self.execute_invocation(
+                Invocation::Argv {
+                    executable: &executable,
+                    arguments,
+                    #[cfg(target_os = "macos")]
+                    piped_input: false,
+                },
+                CommandIsolation {
+                    sandbox_mode: SandboxMode::WorkspaceWrite,
+                    network_access: NetworkAccess::Denied,
+                    workspace_access,
+                },
+                CommandMode::Foreground,
+                CommandOutputSink::default(),
+                environment,
+                None,
+            )
+            .await?
+            .ok_or_else(|| Error::Sandbox("command launch was unexpectedly denied".into()))
+        };
+        #[cfg(target_os = "macos")]
+        {
+            tokio::time::timeout(self.command_timeout, execute)
+                .await
+                .map_err(|_elapsed| {
+                    Error::Sandbox(format!(
+                        "command timed out after {} seconds and was killed",
+                        self.command_timeout.as_secs_f64()
+                    ))
+                })?
+        }
+        #[cfg(not(target_os = "macos"))]
+        execute.await
+    }
+
+    #[cfg(target_os = "macos")]
+    async fn resolve_argv_executable(
+        &self,
+        executable: PathBuf,
+        environment: (&[(&str, &str)], &[&str]),
+    ) -> Result<PathBuf> {
+        if executable != Path::new("/usr/bin/git") {
+            return Ok(executable);
+        }
+        // A fresh xcrun cache is costly; SDK/toolchain overrides still need its lookup rules.
+        let script = r#"if [ -n "${SDKROOT-}${TOOLCHAINS-}" ]; then
+    exec /usr/bin/xcrun --find git
+fi
+developer=$(/usr/bin/xcode-select --print-path) || exit
+printf '%s/usr/bin/git\n' "$developer"
+"#;
+        let output = self
+            .execute_invocation(
+                Invocation::Argv {
+                    executable: Path::new("/bin/sh"),
+                    arguments: &["-c", script],
+                    piped_input: false,
+                },
+                CommandIsolation {
+                    sandbox_mode: SandboxMode::WorkspaceWrite,
+                    network_access: NetworkAccess::Denied,
+                    workspace_access: WorkspaceAccess::ReadOnly,
+                },
+                CommandMode::Foreground,
+                CommandOutputSink::default(),
+                environment,
+                None,
+            )
+            .await?
+            .ok_or_else(|| Error::Sandbox("Git executable lookup was denied".into()))?;
+        if output.exit_code != 0 {
+            return Ok(executable);
+        }
+        let resolved = validated_executable(Path::new(output.stdout.trim_end())).and_then(|path| {
+            self.validate_trusted_executable(&path)?;
+            Ok(path)
+        });
+        // Keep the launcher's diagnostics and alternate tool selection when lookup is unavailable.
+        Ok(resolved.unwrap_or(executable))
     }
 
     fn validate_trusted_executable(&self, executable: &Path) -> Result<()> {

@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::time::Duration;
 
 use reqwest::Client;
@@ -319,12 +320,17 @@ impl SseDecoder {
     }
 }
 
-pub(super) fn frame_data(frame: &str) -> Option<String> {
-    let data = frame
+pub(super) fn frame_data(frame: &str) -> Option<Cow<'_, str>> {
+    let mut data = frame
         .lines()
-        .filter_map(|line| line.strip_prefix("data:").map(str::trim_start))
-        .collect::<Vec<_>>();
-    (!data.is_empty()).then(|| data.join("\n"))
+        .filter_map(|line| line.strip_prefix("data:").map(str::trim_start));
+    let mut payload = Cow::Borrowed(data.next()?);
+    for line in data {
+        let payload = payload.to_mut();
+        payload.push('\n');
+        payload.push_str(line);
+    }
+    Some(payload)
 }
 
 pub(super) async fn read_limited(
@@ -597,6 +603,39 @@ mod tests {
             Some("[DONE]")
         );
         assert!(decoder.next_frame().expect("EOF").is_none());
+    }
+
+    #[test]
+    fn sse_data_borrows_single_lines_and_preserves_multiline_payloads() {
+        for (frame, expected, borrowed) in [
+            (": keepalive\nevent: message", None, false),
+            ("data:", Some(""), true),
+            (
+                "event: message\r\ndata:\t héllo  \r\nid: 4",
+                Some("héllo  "),
+                true,
+            ),
+            ("data: [DONE]\n", Some("[DONE]"), true),
+            (
+                "data: first\r\ndata: second\r\n",
+                Some("first\nsecond"),
+                false,
+            ),
+            ("data:\ndata: second\ndata:", Some("\nsecond\n"), false),
+            (
+                "data: first\nignored\ndata:\u{2003}second",
+                Some("first\nsecond"),
+                false,
+            ),
+        ] {
+            let payload = frame_data(frame);
+            assert_eq!(payload.as_deref(), expected, "{frame:?}");
+            assert_eq!(
+                matches!(payload, Some(Cow::Borrowed(_))),
+                borrowed,
+                "{frame:?}"
+            );
+        }
     }
 
     #[test]

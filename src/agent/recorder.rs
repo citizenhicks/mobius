@@ -214,7 +214,7 @@ impl RecorderIngress {
 }
 
 fn timestamp(event: Event) -> Result<(TimestampedEvent, usize)> {
-    let event_bytes = serde_json::to_vec(&event)?.len();
+    let event_bytes = crate::serialized_len(&event)?;
     Ok((
         TimestampedEvent {
             recorded_at_ms: unix_timestamp_ms()?,
@@ -488,4 +488,65 @@ async fn publish_all(
             .map_err(|error| Error::Stopped(format!("frontend event channel closed: {error}")))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::WarningEvent;
+
+    fn warning(message: String) -> Event {
+        Event {
+            submission_id: Some("submission".into()),
+            msg: EventMsg::Warning(WarningEvent {
+                message: message.into(),
+            }),
+        }
+    }
+
+    #[test]
+    fn accounting_counts_encoded_bytes_without_changing_the_event() {
+        let event = warning("\"\\\n雪".into());
+        let expected = serde_json::to_vec(&event).expect("encoded event");
+        let (recorded, bytes) = timestamp(event).expect("timestamp");
+
+        assert_eq!(bytes, expected.len());
+        assert_eq!(
+            serde_json::to_vec(&recorded.event).expect("event"),
+            expected
+        );
+    }
+
+    #[test]
+    fn byte_budget_admits_its_exact_limit_and_releases_on_drop() {
+        let (commands, mut receiver) = mpsc::channel(2);
+        let ingress = RecorderIngress {
+            commands,
+            event_bytes: Arc::new(Semaphore::new(RECORDER_EVENT_BYTE_BUDGET)),
+        };
+        let overhead = crate::serialized_len(&warning(String::new())).expect("event overhead");
+        ingress
+            .try_record(warning("x".repeat(RECORDER_EVENT_BYTE_BUDGET - overhead)))
+            .expect("exact budget fits");
+        assert_eq!(
+            ingress
+                .try_record(warning(String::new()))
+                .expect_err("byte budget exhausted")
+                .to_string(),
+            queue_full().to_string()
+        );
+        drop(receiver.try_recv().expect("queued event"));
+        ingress
+            .try_record(warning(String::new()))
+            .expect("released byte budget");
+        assert_eq!(
+            ingress
+                .try_record(warning(
+                    "x".repeat(RECORDER_EVENT_BYTE_BUDGET - overhead + 1)
+                ))
+                .expect_err("over budget")
+                .to_string(),
+            queue_full().to_string()
+        );
+    }
 }

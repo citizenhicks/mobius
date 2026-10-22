@@ -4,6 +4,141 @@ use super::*;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use tokio::process::Command;
 
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn apple_git_launcher_resolves_to_the_trusted_tool_without_changing_other_executables() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let sandbox = local_sandbox(workspace.path());
+    let git = sandbox
+        .resolve_argv_executable("/usr/bin/git".into(), (&[], &[]))
+        .await
+        .expect("resolve Apple Git launcher");
+    assert_ne!(git, Path::new("/usr/bin/git"));
+    let expected = Command::new("/usr/bin/xcrun")
+        .args(["--find", "git"])
+        .output()
+        .await
+        .expect("developer Git path");
+    assert!(expected.status.success());
+    let expected = String::from_utf8(expected.stdout).expect("Git path UTF-8");
+    assert_eq!(git, std::fs::canonicalize(expected.trim()).expect("Git"));
+    assert_eq!(
+        sandbox
+            .resolve_argv_executable("/bin/sh".into(), (&[], &[]))
+            .await
+            .expect("preserve selected executable"),
+        Path::new("/bin/sh")
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn apple_git_resolution_does_not_bypass_protected_paths() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let sandbox = local_sandbox(workspace.path());
+    let git = sandbox
+        .resolve_argv_executable("/usr/bin/git".into(), (&[], &[]))
+        .await
+        .expect("developer Git");
+    let sandbox = sandbox.deny_read(&git).expect("protect developer Git");
+    let resolved = sandbox
+        .resolve_argv_executable("/usr/bin/git".into(), (&[], &[]))
+        .await;
+    assert!(!matches!(&resolved, Ok(path) if path == &git));
+    // The first cold lookup can emit timestamped Xcode warnings even on success.
+    let mut baseline = None;
+    for _ in 0..2 {
+        baseline = sandbox
+            .execute_invocation(
+                Invocation::Argv {
+                    executable: Path::new("/usr/bin/git"),
+                    arguments: &["--version"],
+                    piped_input: false,
+                },
+                CommandIsolation {
+                    sandbox_mode: SandboxMode::WorkspaceWrite,
+                    network_access: NetworkAccess::Denied,
+                    workspace_access: WorkspaceAccess::ReadOnly,
+                },
+                CommandMode::Foreground,
+                CommandOutputSink::default(),
+                (&[], &[]),
+                None,
+            )
+            .await
+            .expect("original launcher");
+    }
+    let baseline = baseline.expect("launcher output");
+    let result = sandbox
+        .execute_read_only("git", &["--version"], &[])
+        .await
+        .expect("resolved Git");
+    assert_eq!(
+        (
+            result.exit_code,
+            result.stdout,
+            result.stdout_truncated,
+            result.stderr,
+            result.stderr_truncated,
+        ),
+        (
+            baseline.exit_code,
+            baseline.stdout,
+            baseline.stdout_truncated,
+            baseline.stderr,
+            baseline.stderr_truncated,
+        )
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn apple_git_lookup_uses_command_environment_overrides_and_removals() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let sandbox = local_sandbox(workspace.path());
+    let environment = [("DEVELOPER_DIR", "/nonexistent-mobius-developer-directory")];
+    assert_eq!(
+        sandbox
+            .resolve_argv_executable("/usr/bin/git".into(), (&environment, &[]))
+            .await
+            .expect("preserve launcher diagnostics when lookup fails"),
+        Path::new("/usr/bin/git")
+    );
+    let output = sandbox
+        .execute_read_only_with_environment_removals("git", &["--version"], &environment, &[])
+        .await
+        .expect("return Git's unsuccessful command output");
+    assert_ne!(output.exit_code, 0);
+    assert!(output.stderr.contains("DEVELOPER_DIR"), "{output:?}");
+    let output = sandbox
+        .execute_read_only_with_environment_removals(
+            "git",
+            &["--version"],
+            &[("SDKROOT", "nonexistent-mobius-sdk")],
+            &[],
+        )
+        .await
+        .expect("preserve SDK selection errors");
+    assert_ne!(output.exit_code, 0);
+    assert!(
+        output.stderr.contains("nonexistent-mobius-sdk"),
+        "{output:?}"
+    );
+    assert!(
+        sandbox
+            .resolve_argv_executable("/usr/bin/git".into(), (&environment, &["DEVELOPER_DIR"]),)
+            .await
+            .is_ok()
+    );
+    assert!(
+        sandbox
+            .deny_environment("DEVELOPER_DIR")
+            .resolve_argv_executable("/usr/bin/git".into(), (&environment, &[]))
+            .await
+            .is_ok()
+    );
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn authorization_holds_the_catalog_lock_through_process_spawn() {
