@@ -307,7 +307,7 @@ fn set_credential_field<'a>(
 }
 
 pub(super) async fn status(sandbox: &GatewaySandbox) -> Option<GitStatus> {
-    tokio::time::timeout(GIT_TIMEOUT, status_inner(sandbox))
+    tokio::time::timeout(GIT_TIMEOUT, status_inner(sandbox.git_operation()))
         .await
         .ok()?
         .ok()
@@ -322,8 +322,7 @@ pub(super) async fn switch_branch(
         .map_err(timeout)?
 }
 
-async fn status_inner(sandbox: &GatewaySandbox) -> std::result::Result<GitStatus, Rejection> {
-    let git = sandbox.git_operation();
+async fn status_inner(git: GitOperation<'_>) -> std::result::Result<GitStatus, Rejection> {
     let (current, branches) = tokio::join!(
         output(&git, &["branch", "--show-current"]),
         output(
@@ -331,7 +330,6 @@ async fn status_inner(sandbox: &GatewaySandbox) -> std::result::Result<GitStatus
             &["for-each-ref", "--format=%(refname)", "refs/heads/"]
         )
     );
-    drop(git);
     let current = successful_output(current?, "reading the current Git branch failed")?;
     let branches = successful_output(branches?, "listing local Git branches failed")?;
     let mut branches = String::from_utf8_lossy(&branches)
@@ -351,7 +349,7 @@ async fn switch_branch_inner(
     sandbox: &GatewaySandbox,
     branch: &str,
 ) -> std::result::Result<(), Rejection> {
-    if !status_inner(sandbox)
+    if !status_inner(sandbox.git_operation())
         .await?
         .branches
         .iter()
@@ -375,9 +373,12 @@ pub(super) async fn diff(
     workspace: &Path,
     scope: GitDiffScope,
 ) -> std::result::Result<String, Rejection> {
-    let mut diff = tokio::time::timeout(GIT_TIMEOUT, diff_inner(sandbox, workspace, scope, false))
-        .await
-        .map_err(timeout)??;
+    let mut diff = tokio::time::timeout(
+        GIT_TIMEOUT,
+        diff_inner(sandbox.git_operation(), workspace, scope, false),
+    )
+    .await
+    .map_err(timeout)??;
     truncate_diff(&mut diff, MAX_GIT_DIFF_BYTES);
     Ok(String::from_utf8_lossy_owned(diff))
 }
@@ -388,22 +389,24 @@ pub(super) async fn diff_totals(
     workspace: &Path,
     scope: GitDiffScope,
 ) -> std::result::Result<DiffTotals, Rejection> {
-    let numstat = tokio::time::timeout(GIT_TIMEOUT, diff_inner(sandbox, workspace, scope, true))
-        .await
-        .map_err(timeout)??;
+    let numstat = tokio::time::timeout(
+        GIT_TIMEOUT,
+        diff_inner(sandbox.git_operation(), workspace, scope, true),
+    )
+    .await
+    .map_err(timeout)??;
     Ok(numstat_totals(&numstat))
 }
 
 /// Runs the scope's diff as a patch or, with `numstat`, as per-file line counts.
 async fn diff_inner(
-    sandbox: &GatewaySandbox,
+    git: GitOperation<'_>,
     workspace: &Path,
     scope: GitDiffScope,
     numstat: bool,
 ) -> std::result::Result<Vec<u8>, Rejection> {
     const PATCH: [&str; 3] = ["--no-ext-diff", "--no-color", "--no-textconv"];
     const NUMSTAT: [&str; 4] = ["--numstat", "--no-ext-diff", "--no-color", "--no-textconv"];
-    let git = sandbox.git_operation();
     let flags: &[&str] = if numstat { &NUMSTAT } else { &PATCH };
     let repository = output(&git, &["rev-parse", "--is-inside-work-tree"]).await?;
     if repository.exit_code != 0 {
@@ -448,7 +451,6 @@ async fn diff_inner(
     if scope == GitDiffScope::Unstaged {
         append_untracked(&git, workspace, &mut diff, flags, numstat).await?;
     }
-    drop(git);
     Ok(diff)
 }
 
