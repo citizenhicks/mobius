@@ -15,6 +15,7 @@ use mobius::SessionId;
 use std::collections::VecDeque;
 use std::fs::File;
 use std::pin::Pin;
+use std::sync::OnceLock;
 use std::task::{Context, Poll};
 
 use rustls::pki_types::pem::{self, PemObject as _};
@@ -44,7 +45,8 @@ pub(super) struct ConnectionShared {
     pub(super) client_connections: Arc<ClientConnections>,
     pub(super) client_revocations: broadcast::Sender<String>,
     pub(super) tls: Option<TlsAcceptor>,
-    pub(super) websocket_host: Option<String>,
+    /// The public hostname WebSocket upgrades must name; empty until the tunnel has one.
+    pub(super) websocket_host: Option<Arc<OnceLock<String>>>,
 }
 
 pub(super) struct ConnectionContext {
@@ -239,7 +241,7 @@ impl AsyncWrite for PreAuthWebSocket {
 }
 
 pub(super) struct WebSocketUpgradePolicy<'a> {
-    pub(super) expected_host: Option<&'a str>,
+    pub(super) expected_host: Option<&'a OnceLock<String>>,
 }
 
 pub(super) struct PlaintextHandshake {
@@ -266,7 +268,9 @@ impl Callback for WebSocketUpgradePolicy<'_> {
             return Err(websocket_rejection(StatusCode::FORBIDDEN));
         }
         if let Some(expected) = self.expected_host
-            && !request_host_matches(request, expected)
+            && !expected
+                .get()
+                .is_some_and(|expected| request_host_matches(request, expected))
         {
             return Err(websocket_rejection(StatusCode::FORBIDDEN));
         }

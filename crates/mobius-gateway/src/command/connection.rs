@@ -4,8 +4,8 @@ use super::{
     MAX_PENDING_FRAMES, PROCESS_FILE, PairingGrant, PairingStatus, PathBuf, Result, Serialize,
     ServerMessage, SignalKind, StartupGuard, SystemTime, UNIX_EPOCH, Write,
     direct_loopback_endpoint, loopback_endpoint, new_request_id, print_line, reuse_current_gateway,
-    running_process_pid, running_process_record, shutdown_signal, signal, start_background_gateway,
-    stop_gateway,
+    running_process_pid, running_process_record, runtime_endpoint, shutdown_signal, signal,
+    start_background_gateway, stop_gateway,
 };
 
 #[cfg(unix)]
@@ -24,7 +24,7 @@ pub(super) async fn connect(
     )
     .await?;
     if let Some((local_endpoint, pairing_endpoint)) =
-        running_connection_endpoints(&store, &config, configured_endpoint.as_ref())?
+        running_connection_endpoints(&store, &config, configured_endpoint.as_ref()).await?
     {
         let client_endpoint = local_endpoint.as_ref().unwrap_or(&pairing_endpoint);
         let token = load_local_client(client_endpoint)?.ok_or_else(|| {
@@ -71,7 +71,14 @@ pub(super) async fn connect(
         }
     };
     let pid = process.pid;
-    let endpoint = match process.endpoint().and_then(|runtime| {
+    let runtime = tokio::select! {
+        result = runtime_endpoint(&store, &config, &process) => result,
+        () = shutdown_signal(&mut interrupts, &mut terminations) => {
+            cleanup_connect(&store, config.auth, pid, &grant.code)?;
+            return Ok(print_line(format_args!("connection cancelled"))?);
+        }
+    };
+    let endpoint = match runtime.and_then(|runtime| {
         runtime
             .or(configured_endpoint)
             .ok_or_else(|| Error::Config("gateway did not publish its runtime endpoint".into()))
@@ -181,7 +188,7 @@ pub(super) async fn connect(
 /// Returns the separate local client endpoint of a tunneled gateway, if any, and the
 /// endpoint clients pair with.
 #[cfg(unix)]
-pub(super) fn running_connection_endpoints<'a>(
+pub(super) async fn running_connection_endpoints<'a>(
     store: &ConfigStore,
     config: &GatewayConfig,
     configured_endpoint: Option<&'a Endpoint>,
@@ -189,8 +196,8 @@ pub(super) fn running_connection_endpoints<'a>(
     let Some(process) = running_process_record(&store.state_dir().join(PROCESS_FILE))? else {
         return Ok(None);
     };
-    let pairing_endpoint = process
-        .endpoint()?
+    let pairing_endpoint = runtime_endpoint(store, config, &process)
+        .await?
         .map(std::borrow::Cow::Owned)
         .or_else(|| configured_endpoint.map(std::borrow::Cow::Borrowed))
         .ok_or_else(|| Error::Config("gateway did not publish its runtime endpoint".into()))?;

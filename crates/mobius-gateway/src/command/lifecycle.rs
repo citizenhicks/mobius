@@ -55,13 +55,12 @@ pub(super) async fn serve(
     let mut server = GatewayServer::open(store.state_dir().to_path_buf()).await?;
     let ready = server.notify_ready();
     let mut tunnel = CloudflareTunnel::start(&store, &config)?;
-    let endpoint = match &mut tunnel {
-        Some(tunnel) => Some(tunnel.endpoint().await?),
-        None => None,
-    };
+    // Loopback clients are served at once; the tunnel's hostname arrives when cloudflared
+    // reports it, and WebSocket upgrades wait for it.
+    let websocket_host = tunnel.as_ref().map(|_| Arc::new(OnceLock::new()));
     let serving = async {
-        match &endpoint {
-            Some(endpoint) => server.serve_cloudflare(endpoint.host().to_owned()).await,
+        match &websocket_host {
+            Some(hostname) => server.serve_cloudflare(Arc::clone(hostname)).await,
             None => server.serve().await,
         }
     };
@@ -73,18 +72,33 @@ pub(super) async fn serve(
     }
     // The parent treats this locked record as readiness, so publish it only after
     // the serving loop has completed initialization and can accept connections.
-    let _process_record = ProcessRecordGuard::create(store.state_dir(), endpoint.as_ref())?;
+    let mut process_record = ProcessRecordGuard::create(store.state_dir(), None)?;
     drop(startup);
     print_line(format_args!("gateway serving in foreground"))?;
-    print_listener(&config, endpoint.as_ref())?;
+    let (Some(tunnel), Some(hostname)) = (tunnel.as_mut(), websocket_host.as_deref()) else {
+        print_listener(&config, None)?;
+        return serving.await;
+    };
+    let endpoint = tokio::select! {
+        result = &mut serving => return result,
+        endpoint = tunnel.endpoint() => endpoint?,
+    };
+    if config
+        .cloudflare
+        .as_ref()
+        .and_then(CloudflareConfig::hostname)
+        .is_some_and(|configured| configured != endpoint.host())
+    {
+        return Err(Error::Config(
+            "runtime Cloudflare hostname does not match gateway configuration".into(),
+        ));
+    }
+    hostname.get_or_init(|| endpoint.host().to_owned());
+    process_record.publish(&endpoint)?;
+    print_listener(&config, Some(&endpoint))?;
     tokio::select! {
         result = &mut serving => result,
-        result = async {
-            match &mut tunnel {
-                Some(tunnel) => tunnel.wait().await,
-                None => std::future::pending().await,
-            }
-        } => result,
+        result = tunnel.wait() => result,
     }
 }
 
@@ -292,6 +306,44 @@ pub(super) async fn reuse_current_gateway(
     Ok(None)
 }
 
+/// The running gateway's public endpoint. A Quick Tunnel assigns it after the gateway is
+/// already serving locally, so this waits for `pid` to publish it.
+#[cfg(unix)]
+pub(super) async fn runtime_endpoint(
+    store: &ConfigStore,
+    config: &GatewayConfig,
+    process: &ProcessRecord,
+) -> Result<Option<Endpoint>> {
+    let quick = matches!(config.cloudflare, Some(CloudflareConfig::Quick));
+    let started = Instant::now();
+    let mut latest = None;
+    // The record is rewritten in place when the address arrives, so one read can be torn.
+    let mut unreadable = None;
+    loop {
+        let endpoint = latest.as_ref().unwrap_or(process).endpoint()?;
+        if endpoint.is_some() || !quick {
+            return Ok(endpoint);
+        }
+        if started.elapsed() >= PUBLIC_ENDPOINT_TIMEOUT {
+            let detail = unreadable.map_or_else(String::new, |error| format!(" ({error})"));
+            return Err(Error::Config(format!(
+                "Cloudflare Quick Tunnel did not assign an address within {} seconds{detail}",
+                PUBLIC_ENDPOINT_TIMEOUT.as_secs()
+            )));
+        }
+        tokio::time::sleep(CONNECTION_POLL_INTERVAL).await;
+        match running_process_record(&store.state_dir().join(PROCESS_FILE)) {
+            Ok(Some(current)) if current.pid == process.pid => latest = Some(current),
+            Ok(_) => {
+                return Err(Error::Config(
+                    "gateway stopped before its tunnel assigned an address".into(),
+                ));
+            }
+            Err(error) => unreadable = Some(error),
+        }
+    }
+}
+
 #[cfg(any(unix, test))]
 pub(super) fn gateway_version_is_older(running: &str, starting: &str) -> Result<bool> {
     let parse = |version: &str| {
@@ -454,21 +506,40 @@ impl ProcessRecordGuard {
     pub(super) fn create(state_dir: &Path, endpoint: Option<&Endpoint>) -> Result<Self> {
         let state_dir = fs::canonicalize(state_dir)?;
         let path = state_dir.join(PROCESS_FILE);
-        let mut file = mobius::owner_only::open(&path)?;
+        let file = mobius::owner_only::open(&path)?;
         file.try_lock().map_err(|error| match error {
             TryLockError::WouldBlock => Error::Config("gateway is already running".into()),
             TryLockError::Error(error) => error.into(),
         })?;
-        file.set_len(0)?;
-        file.seek(SeekFrom::Start(0))?;
+        let mut guard = Self { path, file };
+        guard.write(endpoint)?;
+        Ok(guard)
+    }
+
+    /// Adds the tunnel's public endpoint once it is known; the record already stands for
+    /// readiness, so clients that only need loopback never wait for it.
+    #[cfg(unix)]
+    pub(super) fn publish(&mut self, endpoint: &Endpoint) -> Result<()> {
+        self.write(Some(endpoint))
+    }
+
+    #[cfg(not(unix))]
+    pub(super) fn publish(&mut self, _endpoint: &Endpoint) -> Result<()> {
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn write(&mut self, endpoint: Option<&Endpoint>) -> Result<()> {
         let record = ProcessRecord {
             pid: std::process::id(),
             endpoint: endpoint.map(ToString::to_string),
         };
-        serde_json::to_writer(&mut file, &record)?;
-        file.flush()?;
-        file.sync_all()?;
-        Ok(Self { path, file })
+        let contents = serde_json::to_vec(&record)?;
+        self.file.seek(SeekFrom::Start(0))?;
+        self.file.write_all(&contents)?;
+        self.file.set_len(contents.len() as u64)?;
+        self.file.flush()?;
+        Ok(self.file.sync_all()?)
     }
 
     #[cfg(not(unix))]

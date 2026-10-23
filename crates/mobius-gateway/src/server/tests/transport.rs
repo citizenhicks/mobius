@@ -229,6 +229,33 @@ fn websocket_upgrade_rejects_browser_origins() {
     assert_eq!(rejection.status(), StatusCode::FORBIDDEN);
 }
 
+#[test]
+fn websocket_upgrade_waits_for_the_tunnel_hostname() {
+    let request = Request::builder()
+        .uri("/")
+        .header(HOST, "bright-river.trycloudflare.com")
+        .header(SEC_WEBSOCKET_PROTOCOL, crate::channel::SUBPROTOCOL)
+        .body(())
+        .expect("request");
+    let hostname = std::sync::OnceLock::new();
+
+    let rejection = WebSocketUpgradePolicy {
+        expected_host: Some(&hostname),
+    }
+    .on_request(&request, Response::new(()))
+    .expect_err("an upgrade before the tunnel has a hostname must fail");
+    assert_eq!(rejection.status(), StatusCode::FORBIDDEN);
+
+    hostname
+        .set("bright-river.trycloudflare.com".to_owned())
+        .expect("hostname");
+    WebSocketUpgradePolicy {
+        expected_host: Some(&hostname),
+    }
+    .on_request(&request, Response::new(()))
+    .expect("the tunnel hostname is accepted once assigned");
+}
+
 #[tokio::test]
 async fn websocket_preserves_a_pipelined_bulk_frame_across_authentication() {
     use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;

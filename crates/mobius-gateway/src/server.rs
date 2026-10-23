@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use chrono::Utc;
@@ -177,23 +177,13 @@ impl GatewayServer {
         self.serve_with_host(websocket_host).await
     }
 
-    /// Serves Cloudflare WebSockets using the resolved public hostname.
-    pub(crate) async fn serve_cloudflare(self, hostname: String) -> Result<()> {
-        let cloudflare = self.config.cloudflare.as_ref().ok_or_else(|| {
-            Error::Config("a Cloudflare hostname requires tunnel configuration".into())
-        })?;
-        if cloudflare
-            .hostname()
-            .is_some_and(|configured| configured != hostname)
-        {
-            return Err(Error::Config(
-                "runtime Cloudflare hostname does not match gateway configuration".into(),
-            ));
-        }
+    /// Serves loopback clients at once and Cloudflare WebSockets once `hostname` holds the
+    /// tunnel's public hostname; until then WebSocket upgrades are refused.
+    pub(crate) async fn serve_cloudflare(self, hostname: Arc<OnceLock<String>>) -> Result<()> {
         self.serve_with_host(Some(hostname)).await
     }
 
-    async fn serve_with_host(self, websocket_host: Option<String>) -> Result<()> {
+    async fn serve_with_host(self, websocket_host: Option<Arc<OnceLock<String>>>) -> Result<()> {
         let inactivity_timeout = Duration::from_secs(self.config.runtime.idle_exit_seconds);
         #[cfg(unix)]
         {
@@ -247,7 +237,7 @@ impl GatewayServer {
         mut self,
         shutdown: impl Future<Output = ()>,
         inactivity_timeout: Duration,
-        websocket_host: Option<String>,
+        websocket_host: Option<Arc<OnceLock<String>>>,
     ) -> Result<()> {
         let tls = self.config.tls.as_ref().map(tls_acceptor).transpose()?;
         if tls.is_none() && !self.listener.local_addr()?.ip().is_loopback() {
@@ -494,16 +484,19 @@ impl GatewayServer {
         }
     }
 
-    fn configured_websocket_host(&self) -> Result<Option<String>> {
+    fn configured_websocket_host(&self) -> Result<Option<Arc<OnceLock<String>>>> {
         self.config
             .cloudflare
             .as_ref()
             .map(|cloudflare| {
-                cloudflare.hostname().map(str::to_owned).ok_or_else(|| {
-                    Error::Config(
-                        "quick tunnel hostname is unavailable before cloudflared starts".into(),
-                    )
-                })
+                cloudflare
+                    .hostname()
+                    .map(|hostname| Arc::new(OnceLock::from(hostname.to_owned())))
+                    .ok_or_else(|| {
+                        Error::Config(
+                            "quick tunnel hostname is unavailable before cloudflared starts".into(),
+                        )
+                    })
             })
             .transpose()
     }

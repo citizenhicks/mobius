@@ -20,6 +20,7 @@ use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::process::Stdio;
+use std::sync::{Arc, OnceLock};
 #[cfg(unix)]
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -27,7 +28,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::auth::PairingStatus;
 use crate::auth::{AuthStore, PairingGrant};
 use crate::client::{Endpoint, GatewayClient, MAX_PENDING_FRAMES};
-use crate::cloudflare::CloudflareTunnel;
+use crate::cloudflare::{CloudflareTunnel, PUBLIC_ENDPOINT_TIMEOUT};
 use crate::config::{
     CloudflareConfig, ConfigStore, DEFAULT_LISTEN, GatewayConfig, TlsConfig, load_secret_file,
     state_dir,
@@ -62,8 +63,8 @@ pub use self::init::{
 };
 use self::lifecycle::{
     StartupGuard, exit_gateway, print_listener, reuse_current_gateway, running_process_pid,
-    running_process_record, serve, serve_in_background, shutdown_signal, start_background_gateway,
-    stop_gateway,
+    running_process_record, runtime_endpoint, serve, serve_in_background, shutdown_signal,
+    start_background_gateway, stop_gateway,
 };
 pub use self::lifecycle::{ensure_background_gateway, startup_error};
 use self::provider::register_provider_command;

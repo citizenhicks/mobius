@@ -287,7 +287,7 @@ fn startup_cleanup_removes_only_an_unlocked_process_record() {
 #[test]
 fn process_record_lock_tracks_the_gateway_lifetime() {
     let directory = tempfile::tempdir().expect("process record directory");
-    let guard = ProcessRecordGuard::create(directory.path(), None).expect("process record");
+    let mut guard = ProcessRecordGuard::create(directory.path(), None).expect("process record");
     let (_, file) = open_process_record(&guard.path)
         .expect("read process record")
         .expect("process record");
@@ -297,6 +297,18 @@ fn process_record_lock_tracks_the_gateway_lifetime() {
         running_process_pid(&guard.path).expect("running process ID"),
         Some(std::process::id())
     );
+    let endpoint = "wss://bright-river.trycloudflare.com"
+        .parse()
+        .expect("endpoint");
+    guard.publish(&endpoint).expect("publish endpoint");
+    let (published, _) = open_process_record(&guard.path)
+        .expect("read published record")
+        .expect("published record");
+    assert_eq!(
+        published.endpoint().expect("published endpoint"),
+        Some(endpoint)
+    );
+    assert!(process_is_running(&file).expect("record stays locked"));
     drop(guard);
     assert!(!directory.path().join(PROCESS_FILE).exists());
 }

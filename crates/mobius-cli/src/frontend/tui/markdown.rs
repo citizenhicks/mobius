@@ -193,7 +193,9 @@ impl Writer {
         match event {
             Event::Start(tag) => self.start(tag),
             Event::End(tag) => self.end(tag),
-            Event::Text(text) => self.text(&text),
+            Event::Text(text) | Event::InlineMath(text) | Event::DisplayMath(text) => {
+                self.text(&text);
+            }
             Event::Code(code) => self.push_styled(&code, current().style(Role::Code)),
             Event::SoftBreak => self.push(" "),
             Event::HardBreak => self.flush(),
@@ -216,7 +218,7 @@ impl Writer {
                 self.start_block();
                 self.push_style(heading_style(level));
             }
-            Tag::BlockQuote => {
+            Tag::BlockQuote(_) => {
                 self.start_block();
                 self.blockquote_depth += 1;
             }
@@ -283,7 +285,13 @@ impl Writer {
             | Tag::TableCell
             | Tag::FootnoteDefinition(_)
             | Tag::Image { .. }
-            | Tag::MetadataBlock(_) => {}
+            | Tag::MetadataBlock(_)
+            // ponytail: only emitted under parser options this renderer never enables.
+            | Tag::DefinitionList
+            | Tag::DefinitionListTitle
+            | Tag::DefinitionListDefinition
+            | Tag::Superscript
+            | Tag::Subscript => {}
         }
     }
 
@@ -298,7 +306,7 @@ impl Writer {
                 self.flush();
                 self.needs_blank = true;
             }
-            TagEnd::BlockQuote => {
+            TagEnd::BlockQuote(_) => {
                 self.flush();
                 self.blockquote_depth = self.blockquote_depth.saturating_sub(1);
                 self.needs_blank = true;
@@ -346,7 +354,14 @@ impl Writer {
                     table.row.push(std::mem::take(&mut table.cell));
                 }
             }
-            TagEnd::FootnoteDefinition | TagEnd::Image | TagEnd::MetadataBlock(_) => {}
+            TagEnd::FootnoteDefinition
+            | TagEnd::Image
+            | TagEnd::MetadataBlock(_)
+            | TagEnd::DefinitionList
+            | TagEnd::DefinitionListTitle
+            | TagEnd::DefinitionListDefinition
+            | TagEnd::Superscript
+            | TagEnd::Subscript => {}
         }
     }
 

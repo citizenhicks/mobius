@@ -9,14 +9,14 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt as _, AsyncRead, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::oneshot;
-use tokio::time::timeout;
 use url::Url;
 
 use crate::client::Endpoint;
 use crate::config::{CloudflareConfig, ConfigStore, GatewayConfig, load_secret_file};
 use crate::{Error, Result};
 
-const READY_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a pairing waits for a Quick Tunnel's address; local serving never waits.
+pub(crate) const PUBLIC_ENDPOINT_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) struct CloudflareTunnel {
     child: Child,
@@ -71,7 +71,7 @@ impl CloudflareTunnel {
         }))
     }
 
-    /// Hands over the public endpoint once the tunnel has one.
+    /// Hands over the public endpoint once the tunnel has one, however long that takes.
     pub(crate) async fn endpoint(&mut self) -> Result<Endpoint> {
         if let Some(status) = self.child.try_wait()? {
             return Err(Error::Config(format!(
@@ -84,19 +84,11 @@ impl CloudflareTunnel {
         let receiver = self.quick_endpoint.take().ok_or_else(|| {
             Error::Config("Cloudflare Quick Tunnel address is no longer available".into())
         })?;
-        let endpoint = timeout(READY_TIMEOUT, receiver)
-            .await
-            .map_err(|error| {
-                Error::Config(format!(
-                    "Cloudflare Quick Tunnel did not assign an address within {} seconds: {error}",
-                    READY_TIMEOUT.as_secs()
-                ))
-            })?
-            .map_err(|error| {
-                Error::Config(format!(
-                    "cloudflared stopped before assigning an address: {error}"
-                ))
-            })??;
+        let endpoint = receiver.await.map_err(|error| {
+            Error::Config(format!(
+                "cloudflared stopped before assigning an address: {error}"
+            ))
+        })??;
         if let Some(status) = self.child.try_wait()? {
             return Err(Error::Config(format!(
                 "cloudflared stopped during startup with {status}"
@@ -264,7 +256,7 @@ mod tests {
             .await
             .expect("stderr remains drained");
         drop(writer);
-        timeout(Duration::from_secs(1), draining)
+        tokio::time::timeout(Duration::from_secs(1), draining)
             .await
             .expect("drainer completes")
             .expect("drainer task");
