@@ -10,7 +10,10 @@ use mobius::protocol::{
     FrontendTone, FrontendWidget, MessageAuthor, MessageDelivery, MessageEvent, MessageSubmission,
     ModelStepContent, ModelStepContentPhase, RenderedBlock, ReviewDecision,
 };
-use mobius_gateway::wire::{RecordedEvent, RenderedEvent, RenderedPreview};
+use mobius_gateway::wire::{
+    RecordedEvent, RenderedPreview, TranscriptItem, TranscriptItemContent, TranscriptItemState,
+    TranscriptPage,
+};
 
 #[path = "tui_tests/composer.rs"]
 mod composer;

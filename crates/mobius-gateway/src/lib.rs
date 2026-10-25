@@ -27,6 +27,9 @@ pub mod telemetry;
 pub mod wire;
 
 pub use extensions::MAX_EXTENSION_SOURCE_BYTES;
+/// The transcript reducer, for frontends that build pages from scripted events in tests.
+#[cfg(feature = "fixtures")]
+pub use host::TranscriptReducer;
 
 /// Errors returned by the gateway library.
 #[derive(Debug, thiserror::Error)]

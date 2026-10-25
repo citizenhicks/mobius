@@ -45,6 +45,8 @@ mod text {
         pub(super) prompt_handoff: String,
         pub(super) prompt_prepare: String,
         pub(super) prompt_restored: String,
+        pub(super) count_label_one: String,
+        pub(super) count_label_other: String,
         pub(super) render_context_compacted: String,
         pub(super) render_context_compacting: String,
         pub(super) render_compaction_failed: String,
@@ -314,6 +316,10 @@ impl Middleware for Compaction {
         FrontendContribution {
             capability: MANIFEST.id.into(),
             count: count.map(|count| usize::try_from(count).unwrap_or(usize::MAX)),
+            count_label: Some(crate::protocol::FrontendCountLabel {
+                one: text::DEFINITION.count_label_one.as_str().into(),
+                other: text::DEFINITION.count_label_other.as_str().into(),
+            }),
             ..FrontendContribution::default()
         }
     }
@@ -397,7 +403,7 @@ impl Middleware for Compaction {
             role: crate::protocol::FrontendBlockRole::Notice,
             title: text::DEFINITION.render_context_compacted.clone(), // rules-allow: owned frontend record built from static text
             text: String::new(),
-            symbol: None,
+            symbol: Some(crate::protocol::FrontendSymbol::Compaction),
             links: Vec::new(),
             files: Vec::new(),
             content: Default::default(),

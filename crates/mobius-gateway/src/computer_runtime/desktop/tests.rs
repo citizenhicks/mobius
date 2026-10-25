@@ -2,10 +2,19 @@ use super::*;
 use serde_json::json;
 
 #[tokio::test]
-async fn desktop_registration_rejects_remote_and_non_macos_clients() {
-    use crate::wire::{ClientKind, ClientMessage, FrameReader, ServerFrame, read_frame};
+async fn desktop_registration_requires_a_local_desktop_host() {
+    use crate::wire::{ClientMessage, FrameReader, ServerFrame, read_frame};
 
-    for (local, kind) in [(false, ClientKind::Macos), (true, ClientKind::Ios)] {
+    let host = crate::wire::ClientCapabilities {
+        desktop_host: true,
+        ..Default::default()
+    };
+    let renderer = crate::wire::ClientCapabilities {
+        presence: true,
+        browser_renderer: true,
+        ..Default::default()
+    };
+    for (local, client) in [(false, host), (true, renderer)] {
         let control = Arc::new(DesktopControl::default());
         let mut connection = None;
         let (reader, mut writer) = tokio::io::duplex(4096);
@@ -17,7 +26,7 @@ async fn desktop_registration_rejects_remote_and_non_macos_clients() {
             &control,
             &mut connection,
             local,
-            kind,
+            client,
             &mut writer,
         )
         .await

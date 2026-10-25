@@ -4,9 +4,9 @@ use mobius::backend::session_files::SessionFileDeletion;
 use super::deletion::{prepare_session_tree_deletion, remove_session_trees, session_trees};
 use super::{
     ActiveRoutineRun, Arc, BeginRun, BotStore, ChatSpec, GatewayHost, GatewayState, HostHandle, Op,
-    Path, PathBuf, Rejection, RoutineRunStatus, Submission, Utc, gateway_session_summaries,
-    internal, invalid_bot, invalid_routine, invalid_workspace, send_warning, session_tree_ids,
-    unknown_session, validate_bot_workspace,
+    Path, PathBuf, Rejection, RoutineRunStatus, SessionRuntimeState, Submission, Utc,
+    gateway_session_summaries, internal, invalid_bot, invalid_routine, invalid_workspace,
+    send_warning, session_tree_ids, unknown_session, validate_bot_workspace,
 };
 
 pub(super) async fn accept_routine_while_state_locked(
@@ -136,13 +136,11 @@ impl GatewayHost {
                 let session_id = run
                     .session_id
                     .ok_or_else(|| invalid_routine("run has no session"))?;
-                let checkpoint = checkpoints
-                    .load(&session_id)
+                let turn_id = SessionRuntimeState::load(checkpoints.as_ref(), &session_id)
                     .await
                     .map_err(internal)?
-                    .ok_or_else(unknown_session)?;
-                let turn_id = checkpoint
-                    .active_execution
+                    .ok_or_else(unknown_session)?
+                    .active_turn
                     .ok_or_else(|| {
                         Rejection::new(
                             "agent_busy",
@@ -322,7 +320,7 @@ impl GatewayHost {
     pub(crate) async fn routine_run_preview(
         &self,
         run_id: &str,
-        before_sequence: Option<u64>,
+        before: Option<crate::wire::HistoryCursor>,
     ) -> std::result::Result<crate::wire::RoutineRunPreview, Rejection> {
         let mutation = self.begin_mutation().await?;
         let state = self.state.lock().await;
@@ -337,7 +335,7 @@ impl GatewayHost {
         })?;
         drop(mutation);
         let (host, temporary) = self.open_session_with_cache(session_id, false).await?;
-        let page = host.history_page(before_sequence).await;
+        let page = host.history_page(before).await;
         if temporary {
             host.stop_if_idle().await;
         }
@@ -348,8 +346,8 @@ impl GatewayHost {
         Ok(crate::wire::RoutineRunPreview {
             routine,
             run,
-            records: page.records,
-            next_before_sequence: page.next_before_sequence,
+            page: page.page,
+            next: page.next,
         })
     }
 

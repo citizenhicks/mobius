@@ -17,7 +17,11 @@ async fn bot_catalog_broadcasts_do_not_reintroduce_a_deleted_bot() {
         ClientMessage::Pair {
             code: grant.code,
             client_label: "Bot catalog test".into(),
-            client_kind: ClientKind::Ios,
+            client: crate::wire::ClientCapabilities {
+                presence: true,
+                remote_desktop_viewer: true,
+                ..Default::default()
+            },
         },
         ClientMessage::UpdateBot {
             request_id: "rename".into(),

@@ -2,11 +2,11 @@ use super::super::telemetry::cancellation_reason;
 use super::{
     ActiveRoutine, Arc, Error, Event, EventMsg, ExecutionOutcome, FrontendEvent, HashSet,
     HostState, JournalDelivery, JournalEvent, JournalSequence, MessageTarget,
-    ModelStepContentPhase, Rejection, ReplayEntry, Result, RoutineRunStatus, RunStats, ServerFrame,
-    ServerMessage, SessionActivity, SessionActivityState, SessionReadyPayload, SessionWidget,
-    SharedFrame, Utc, active_run_summary, activity_catalog, classify_journal_sequence,
+    ModelStepContentPhase, Rejection, ReplayEntry, Result, RoutineRunStatus, ServerFrame,
+    ServerMessage, SessionActivity, SessionActivityState, SessionReadyPayload, SessionRuntimeState,
+    SessionWidget, SharedFrame, TurnLifecycle, Utc, activity_catalog, classify_journal_sequence,
     compact_replay_deltas, event_sequence, git_status, internal, project_record,
-    publish_ready_and_pending, record_and_publish, switch_workspace_branch,
+    publish_ready_and_pending, record_and_publish, switch_workspace_branch, turn_lifecycle,
     update_session_activity, update_widgets, validate_gateway_event,
 };
 use mobius::backend::checkpoint::TranscriptPageRequest;
@@ -15,7 +15,6 @@ use std::collections::BTreeSet;
 
 impl HostState {
     pub(super) async fn apply_event(&mut self, record: JournalEvent) -> Result<()> {
-        let was_active = self.pending_turns > 0;
         let timestamp_ms = record.recorded_at_ms;
         let Some(frame) = self.project_and_publish(record, JournalDelivery::Live)? else {
             return Ok(());
@@ -43,14 +42,26 @@ impl HostState {
                 reason = cancellation_reason(&turn.reason, self.turn_error.is_some()),
                 "turn aborted"
             ),
+            // Compaction middleware counts a compaction once its turn ends.
+            EventMsg::ContextCompacted => self.compacted_in_turn = true,
+            EventMsg::ModelChanged(changed) => self.broadcast_meta(
+                changed
+                    .model_context_window
+                    .map(|window| self.running.frontend.context_limit(window)),
+            )?,
             _ => {}
         }
         let next_activity = self.activity_for_event(&event.msg).await?;
         account_turn_event(&mut self.pending_turns, &mut self.pending_messages, event);
-        match &event.msg {
-            EventMsg::ExecApprovalRequest(_) => self.approval_active = true,
-            EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_) => self.approval_active = false,
-            _ => {}
+        match turn_lifecycle(&event.msg) {
+            Some(TurnLifecycle::ApprovalRequested { .. }) => self.approval_active = true,
+            Some(TurnLifecycle::Finished { .. }) => {
+                self.approval_active = false;
+                if std::mem::take(&mut self.compacted_in_turn) {
+                    self.broadcast_meta(self.context_limit_tokens())?;
+                }
+            }
+            Some(TurnLifecycle::Started { .. }) | None => {}
         }
         let routine_completion = self.observe_routine_event(event);
         if let Some((active, mut status, message)) = routine_completion {
@@ -68,17 +79,7 @@ impl HostState {
                 .map_err(|rejection| Error::Config(rejection.message.to_string()))?;
         }
 
-        let became_idle = self.pending_turns == 0 && was_active;
-        if self.is_idle() {
-            self.running.gateway_sandbox.release_desktop_use().await;
-        }
-        if became_idle && !self.approval_active && self.active_routine.is_none() {
-            for waiter in self.idle_waiters.drain(..) {
-                if waiter.send(()).is_err() {
-                    tracing::debug!("idle waiter stopped waiting");
-                }
-            }
-        }
+        self.settle_idle().await;
         self.telemetry.notify.notify_one();
         Ok(())
     }
@@ -91,14 +92,23 @@ impl HostState {
         validate_gateway_event(&journal.event.msg)?;
         let sequence_kind = classify_journal_sequence(self.sequence, journal.sequence, delivery)?;
         let sequence = journal.sequence;
+        let (record, blocks) = project_record(&self.running.frontend, journal);
+        let transcript = if sequence_kind == JournalSequence::Next {
+            self.transcript
+                .apply(sequence, record.recorded_at_ms, &record.event, blocks)
+        } else {
+            Vec::new()
+        };
         let frame = ServerFrame::new(ServerMessage::AgentEvent {
             session_id: self.running.session_id.share(),
-            record: project_record(&self.running.frontend, journal),
+            record,
+            transcript,
         });
         let entry = ReplayEntry::new(frame)?;
         let frame = &entry.frame;
         if let ServerMessage::AgentEvent { record, .. } = &frame.message {
             update_widgets(&mut self.widgets, &record.event.msg);
+            super::super::replay::update_token_usage(&mut self.token_usage, &record.event.msg);
             if let EventMsg::TokenCount(count) = &record.event.msg
                 && let Some(usage) = &count.info
             {
@@ -124,11 +134,12 @@ impl HostState {
             delivery != JournalDelivery::Live,
         );
         if truncated {
-            self.next_before_sequence = self
-                .replay
-                .front()
-                .and_then(|entry| event_sequence(&entry.frame))
-                .or_else(|| sequence.checked_add(1));
+            self.transcript.trim_before(
+                self.replay
+                    .front()
+                    .and_then(|entry| event_sequence(&entry.frame))
+                    .unwrap_or_else(|| sequence.saturating_add(1)),
+            );
         }
         self.sequence = sequence;
         Ok(Some(entry.frame))
@@ -139,36 +150,29 @@ impl HostState {
         event: &Event,
     ) -> Option<(ActiveRoutine, RoutineRunStatus, Option<Arc<str>>)> {
         let active = self.active_routine.as_mut()?;
-        let completion = match &event.msg {
-            EventMsg::TurnStarted(turn)
+        if let EventMsg::Error(error) = &event.msg {
+            // Keep the first failure until a later completion event persists the routine result.
+            active
+                .failure
+                .get_or_insert_with(|| Arc::clone(&error.message));
+            return None;
+        }
+        let completion = match turn_lifecycle(&event.msg)? {
+            TurnLifecycle::Started { turn_id }
                 if event.submission_id.as_ref() == Some(&active.submission_id) =>
             {
-                active.turn_id = Some(Arc::clone(&turn.turn_id));
+                active.turn_id = Some(Arc::clone(turn_id));
                 None
             }
-            EventMsg::Error(error) => {
-                // Keep the first failure until a later completion event persists the routine result.
-                active
-                    .failure
-                    .get_or_insert_with(|| Arc::clone(&error.message));
-                None
-            }
-            EventMsg::TurnComplete(turn) if active.turn_id.as_deref() == Some(&*turn.turn_id) => {
-                Some(match active.failure.take() {
-                    Some(message) => (RoutineRunStatus::Failed, Some(message)),
-                    None => (RoutineRunStatus::Succeeded, None),
+            TurnLifecycle::Finished {
+                turn_id,
+                abort_reason,
+            } if active.turn_id.as_ref() == Some(turn_id) => {
+                Some(match (active.failure.take(), abort_reason) {
+                    (Some(message), _) => (RoutineRunStatus::Failed, Some(message)),
+                    (None, Some(reason)) => (RoutineRunStatus::Failed, Some(Arc::clone(reason))),
+                    (None, None) => (RoutineRunStatus::Succeeded, None),
                 })
-            }
-            EventMsg::TurnAborted(turn) if active.turn_id.as_deref() == Some(&*turn.turn_id) => {
-                Some((
-                    RoutineRunStatus::Failed,
-                    Some(
-                        active
-                            .failure
-                            .take()
-                            .unwrap_or_else(|| Arc::clone(&turn.reason)),
-                    ),
-                ))
             }
             _ => None,
         };
@@ -178,40 +182,45 @@ impl HostState {
             .map(|active| (active, status, message))
     }
 
-    pub(super) async fn ready(&self) -> Result<SessionReadyPayload> {
-        let checkpoint = self
-            .checkpoints
-            .load(&self.running.session_id)
-            .await?
-            .ok_or_else(|| Error::Config("the running session has no checkpoint".into()))?;
-        let run_stats = RunStats {
-            completed: checkpoint.execution_stats,
-            active: checkpoint
-                .active_execution
-                .as_ref()
-                .map(|active| active_run_summary(&checkpoint.session_id, active)),
-        };
-        let context_limit_tokens = self
-            .running
+    fn context_limit_tokens(&self) -> Option<i64> {
+        self.running
             .session
             .model
             .model_context_window
-            .map(|window| self.running.frontend.context_limit(window));
+            .map(|window| self.running.frontend.context_limit(window))
+    }
+
+    /// Sends the chat's capability metadata after an event changed it.
+    fn broadcast_meta(&self, context_limit_tokens: Option<i64>) -> Result<()> {
+        self.broadcast(ServerMessage::SessionMetaChanged {
+            session_id: self.running.session_id.share(),
+            contributions: self.running.frontend.contributions()?,
+            context_limit_tokens,
+        });
+        Ok(())
+    }
+
+    pub(super) async fn ready(&self) -> Result<SessionReadyPayload> {
+        let runtime =
+            SessionRuntimeState::load(self.checkpoints.as_ref(), &self.running.session_id)
+                .await?
+                .ok_or_else(|| Error::Config("the running session has no checkpoint".into()))?;
+        let context_limit_tokens = self.context_limit_tokens();
         Ok(SessionReadyPayload {
-            active_turn_ids: checkpoint
-                .active_execution
+            active_turn_ids: runtime
+                .active_turn
                 .map(|active| active.turn_id)
                 .into_iter()
                 .collect(),
-            pending_approvals: checkpoint
-                .pending_approval
-                .as_ref()
-                .filter(|pending| !pending.decision_received)
-                .map(mobius::backend::checkpoint::PendingApproval::request_event)
+            pending_approvals: runtime
+                .undecided_approval
                 .into_iter()
+                .map(|mut request| {
+                    self.running.frontend.preview_approvals(&mut request);
+                    request
+                })
                 .collect(),
             latest_sequence: self.sequence,
-            next_before_sequence: self.next_before_sequence,
             workspace: self.spec.workspace_info(),
             attached_folders: self.spec.attached_folders.clone(), // rules-allow: the ready payload owns a snapshot while the spec stays in state
             git: if self.spec.workspace.is_some() {
@@ -230,8 +239,9 @@ impl HostState {
                 })
                 .collect(),
             context_limit_tokens,
+            token_usage: self.token_usage.as_ref().map(Arc::clone),
             active_message_delivery: self.running.prepared.active_message_delivery,
-            run_stats,
+            run_stats: runtime.stats,
             pinned_messages: self.message_pins().await?,
         })
     }
@@ -470,6 +480,19 @@ impl HostState {
                 "agent_busy",
                 "finish or interrupt the active turn before changing gateway state",
             ))
+        }
+    }
+
+    /// Releases what an idle chat no longer holds: the desktop and its idle waiters.
+    pub(super) async fn settle_idle(&mut self) {
+        if !self.is_idle() {
+            return;
+        }
+        self.running.gateway_sandbox.release_desktop_use().await;
+        for waiter in self.idle_waiters.drain(..) {
+            if waiter.send(()).is_err() {
+                tracing::debug!("idle waiter stopped waiting");
+            }
         }
     }
 

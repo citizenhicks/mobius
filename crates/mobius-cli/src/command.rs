@@ -26,8 +26,8 @@ use mobius_gateway::gateway_accounts::{
     validate_local_gateway_config,
 };
 use mobius_gateway::wire::{
-    BotRecord, ClientKind, ClientMessage, ReadyPayload, ServerMessage, SessionActivityState,
-    SessionReadyPayload, SessionRecord,
+    BotRecord, ClientCapabilities, ClientMessage, ReadyPayload, ServerMessage,
+    SessionActivityState, SessionReadyPayload, SessionRecord,
 };
 use tokio::io::AsyncReadExt as _;
 use tokio::process::{Child, Command as ProcessCommand};
@@ -183,7 +183,7 @@ async fn run_task(bot_handle: &str, task_file: &Path) -> Result<()> {
     else {
         return Ok(());
     };
-    if gateway.models.is_empty() {
+    if gateway.agent_catalog.models.is_empty() {
         if let Some(session_id) = disposable_session.as_ref() {
             discard_session(&sender, &mut events, &mut gateway, session_id).await?;
         }
@@ -241,8 +241,16 @@ async fn pair(endpoint: Endpoint, code: &str) -> std::result::Result<(), mobius_
     let endpoint = crate::authenticated_endpoint(endpoint)?;
     let mut accounts = GatewayAccounts::load()?;
     accounts.prepare()?;
-    let (_client, paired) =
-        GatewayClient::pair(&endpoint, code, "mobius-cli", ClientKind::Cli).await?;
+    let (_client, paired) = GatewayClient::pair(
+        &endpoint,
+        code,
+        "mobius-cli",
+        ClientCapabilities {
+            presence: true,
+            ..ClientCapabilities::default()
+        },
+    )
+    .await?;
     accounts.add(&endpoint, paired.token)?;
     accounts.save()?;
     println!("paired {} · token saved", paired.client_id);
@@ -271,7 +279,7 @@ async fn connect(
         }
         None if local_gateway => {
             if preferred_bot.is_none()
-                && gateway.bot_defaults.is_none()
+                && gateway.agent_catalog.bot_defaults.is_none()
                 && !frontend::run_gateway_login(&sender, &mut events, &mut gateway).await?
             {
                 return Ok(None);
@@ -366,7 +374,17 @@ async fn connect_gateway() -> Result<(GatewaySender, GatewayEvents, ReadyPayload
         }
     } else {
         match token {
-            Some(token) => GatewayClient::connect(&endpoint, &token, ClientKind::Cli).await,
+            Some(token) => {
+                GatewayClient::connect(
+                    &endpoint,
+                    &token,
+                    ClientCapabilities {
+                        presence: true,
+                        ..ClientCapabilities::default()
+                    },
+                )
+                .await
+            }
             None => Err(missing_token(&endpoint)),
         }
     };
@@ -410,7 +428,14 @@ async fn connect_local_once(
 ) -> mobius_gateway::Result<GatewayClient> {
     tokio::time::timeout(
         CONNECT_TIMEOUT,
-        GatewayClient::connect(endpoint, token, ClientKind::Cli),
+        GatewayClient::connect(
+            endpoint,
+            token,
+            ClientCapabilities {
+                presence: true,
+                ..ClientCapabilities::default()
+            },
+        ),
     )
     .await
     .map_err(|elapsed| {

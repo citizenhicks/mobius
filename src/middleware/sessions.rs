@@ -313,6 +313,8 @@ impl Middleware for Sessions {
             .collect(),
             widgets: vec![Arc::new(FrontendWidget {
                 id: Command::Fork.as_str().into(),
+                count: None,
+                priority: crate::protocol::FrontendPriority::Secondary,
                 slot: FrontendSlot::MessageActions,
                 text: text::DEFINITION.widget_fork_chat.clone(), // rules-allow: the widget record owns a copy of the embedded text
                 tone: FrontendTone::Neutral,
@@ -1044,13 +1046,17 @@ async fn fork(
         .await?;
     // A picker here waits for a choice the reader has already made. The fork is listed with
     // every other chat, so a confirmation that scrolls away is enough.
-    Ok(MiddlewareCommandOutput::render(
+    let mut output = MiddlewareCommandOutput::render(
         MANIFEST.id,
         text::DEFINITION
             .message_forked
             .replace("{id}", compact_id(&session_id)),
         FrontendTone::Success,
-    ))
+    );
+    output
+        .events
+        .push(FrontendEvent::OpenSession { session_id });
+    Ok(output)
 }
 
 async fn transcript_items_through(

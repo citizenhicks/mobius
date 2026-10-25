@@ -34,7 +34,7 @@ use crate::config::{
     state_dir,
 };
 use crate::server::GatewayServer;
-use crate::wire::{ClientKind, ClientMessage, ServerMessage};
+use crate::wire::{ClientCapabilities, ClientMessage, ServerMessage};
 use crate::{Error, Result};
 #[cfg(unix)]
 use nix::sys::signal::{Signal, kill};

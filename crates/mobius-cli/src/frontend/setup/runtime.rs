@@ -176,6 +176,7 @@ pub(super) async fn apply_gateway(
     gateway: &mut ReadyPayload,
 ) -> Result<()> {
     let expected_revision = gateway
+        .agent_catalog
         .bot_defaults
         .as_ref()
         .map(|default| default.revision);
@@ -190,6 +191,7 @@ pub(super) async fn apply_gateway(
         gateway.update(register_provider(terminal, state, sender, events, provider).await?);
     }
     let default = gateway
+        .agent_catalog
         .bot_defaults
         .as_ref()
         .ok_or_else(|| Error::Config("configure a provider before saving defaults".into()))?;
@@ -238,6 +240,7 @@ pub(super) async fn register_provider(
             tint: None,
             models,
             image_model_ids: None,
+            operator_managed: false,
         })
         .await
         .map_err(gateway_error)?;

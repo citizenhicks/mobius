@@ -13,7 +13,11 @@ fn test_bot() -> crate::wire::BotRecord {
             revision: 1,
             config: AgentComposition::default(),
         }),
-        accepts_file_attachments: false,
+        capabilities: crate::wire::BotCapabilities {
+            attachments: false,
+            computer: false,
+            voice: crate::wire::VoiceCapability::Off,
+        },
         routine_interaction_policy: RoutineInteractionPolicy::Unattended,
     }
 }
@@ -276,7 +280,11 @@ fn saving_defaults_is_revisioned_and_does_not_change_existing_chat_specs() {
         tint: ProviderTint::default(),
         shape: crate::wire::BotShape::Circle,
         config: Arc::new(registered.bot_defaults.clone().expect("Bot defaults")),
-        accepts_file_attachments: false,
+        capabilities: crate::wire::BotCapabilities {
+            attachments: false,
+            computer: false,
+            voice: crate::wire::VoiceCapability::Off,
+        },
         routine_interaction_policy: RoutineInteractionPolicy::Unattended,
     };
     let chat = ChatSpec::for_bot(workspace.path(), &bot, state.path(), None).expect("chat spec");

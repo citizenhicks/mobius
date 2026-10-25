@@ -1,4 +1,5 @@
 use diffy::{DiffOptions, Line, Patch};
+use std::fmt::Write as _;
 
 use super::{MAX_PATCH_MATCH_WORK, MAX_TOOL_UI_BYTES, capped};
 use crate::{Error, Result};
@@ -6,6 +7,50 @@ use crate::{Error, Result};
 pub(super) struct PatchDocument {
     pub(super) path: String,
     changes: Vec<PatchChange>,
+}
+
+impl PatchDocument {
+    /// The envelope as one unified diff. Its changes carry no line numbers, so each hunk
+    /// is numbered past the previous one with a line between them.
+    pub(super) fn unified_diff(&self) -> std::result::Result<String, std::fmt::Error> {
+        let mut diff = format!("--- {0}\n+++ {0}\n", self.path);
+        let (mut old, mut new) = (1, 1);
+        for change in &self.changes {
+            let mut options = DiffOptions::new();
+            options.set_context_len(
+                change
+                    .before
+                    .lines()
+                    .count()
+                    .max(change.after.lines().count()),
+            );
+            let patch = options.create_patch(&change.before, &change.after);
+            for hunk in patch.hunks() {
+                let (old_len, new_len) = (hunk.old_range().len(), hunk.new_range().len());
+                let anchor = change.anchor.as_deref().unwrap_or_default();
+                let separator = if anchor.is_empty() { "" } else { " " };
+                writeln!(
+                    diff,
+                    "@@ -{old},{old_len} +{new},{new_len} @@{separator}{anchor}"
+                )?;
+                for line in hunk.lines() {
+                    let (sign, text) = match line {
+                        Line::Context(text) => (' ', *text),
+                        Line::Delete(text) => ('-', *text),
+                        Line::Insert(text) => ('+', *text),
+                    };
+                    diff.push(sign);
+                    diff.push_str(text);
+                    if !text.ends_with('\n') {
+                        diff.push('\n');
+                    }
+                }
+                old += old_len + 1;
+                new += new_len + 1;
+            }
+        }
+        Ok(diff)
+    }
 }
 
 #[derive(Default)]

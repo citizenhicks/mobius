@@ -412,6 +412,7 @@ impl Middleware for Scratchpad {
         FrontendContribution {
             capability: self.name().into(),
             count: None,
+            count_label: None,
             commands: vec![FrontendCommand {
                 name: "scratchpad".into(),
                 arguments: text::DEFINITION.command_arguments.clone().into(), // rules-allow: owned frontend record built from static text

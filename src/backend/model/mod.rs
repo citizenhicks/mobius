@@ -1138,7 +1138,7 @@ pub(crate) fn message_input(event: &MessageEvent) -> Result<Value> {
         MessageAuthor::User => user_message_with_attachments(&text, &event.attachments)?,
         MessageAuthor::Source { source, handle, .. } => {
             let instruction = match source {
-                MessageSource::Session { .. } => Cow::Owned(format!(
+                MessageSource::Session { .. } | MessageSource::Call { .. } => Cow::Owned(format!(
                     "{} {}",
                     MESSAGE_TEXT.session,
                     match event.delivery {

@@ -3,6 +3,7 @@ use super::{
     HashSet, ReadyPayload, Rejection, Result, RunStats, RunSummary, SESSION_PAGE_SIZE,
     SessionCatalogMetadata, SessionPageRequest, SessionRunGroup, SessionSummary, Utc,
     configured_model_routes, gateway_catalog, internal, provider_instances, provider_statuses,
+    route_choices,
 };
 use mobius::SessionId;
 use std::collections::{BTreeMap, BTreeSet};
@@ -11,7 +12,7 @@ use mobius::backend::model::provider::{ProviderAuth, provider};
 use mobius::backend::session_files::session_file_limits;
 
 use crate::config::{ConfigStore, GatewayConfig};
-use crate::wire::{ProviderUsage, READY_SECTIONS};
+use crate::wire::{AgentCatalog, ProviderUsage, READY_SECTIONS};
 
 pub(super) async fn gateway_session_summaries(
     checkpoints: &Arc<dyn CheckpointStore>,
@@ -233,8 +234,8 @@ pub(super) fn active_run_summary(session_id: &SessionId, active: &ActiveExecutio
 pub(super) async fn gateway_ready(
     state: GatewayReadySnapshot,
 ) -> std::result::Result<ReadyPayload, Rejection> {
+    let credentials = state.credential_catalog_gate.lock().await;
     let (routes, provider_instances, media) = {
-        let _credentials = state.credential_catalog_gate.lock().await;
         (
             configured_model_routes(
                 &state.configured_providers,
@@ -260,24 +261,9 @@ pub(super) async fn gateway_ready(
         )
     };
     let mut model_providers = BTreeMap::new();
-    let models: Vec<_> = routes
-        .into_iter()
-        .map(|route| {
-            model_providers.insert(Arc::clone(&route.choice.route), route.provider.instance);
-            route.choice
-        })
-        .collect();
-    let mut media_choices = |routes: Vec<crate::provider_catalog::CatalogRoute>| {
-        routes
-            .into_iter()
-            .map(|media| {
-                model_providers.insert(Arc::clone(&media.choice.route), media.provider.instance);
-                media.choice
-            })
-            .collect::<Vec<_>>()
-    };
-    let image_models = media_choices(media.images);
-    let voice_models = media_choices(media.voices);
+    let models = route_choices(routes, &mut model_providers);
+    let image_models = route_choices(media.images, &mut model_providers);
+    let voice_models = route_choices(media.voices, &mut model_providers);
     let subagent_ceilings = state.subagent_ceilings;
     let middleware_features = crate::middleware_manifest::features(
         mobius::middleware::manifest::ModelCatalogs {
@@ -287,16 +273,25 @@ pub(super) async fn gateway_ready(
         },
         subagent_ceilings,
     );
+    let voices = crate::provider_catalog::VoiceRoutes::new(
+        &state.configured_providers,
+        &state.store,
+        &state.credentials,
+    )
+    .map_err(internal)?;
+    let default_capabilities = state
+        .bot_defaults
+        .as_ref()
+        .map(|defaults| crate::assembly::bot_capabilities(&defaults.config, &voices))
+        .transpose()
+        .map_err(internal)?;
+    state.bots.set_voice_routes(voices).map_err(internal)?;
     let bots = state.bots.bots().map_err(internal)?;
+    drop(credentials);
     let extensions = state.extensions;
-    let mut contributions = state.contributions;
-    contributions.push(
-        state
-            .scratchpad
-            .global_contribution()
-            .await
-            .map_err(internal)?,
-    );
+    let contributions = super::with_scratchpad_contribution(&state.scratchpad, state.contributions)
+        .await
+        .map_err(internal)?;
     let (sessions, background_approvals) = gateway_catalog(&state.checkpoints, &state.activities)
         .await
         .map_err(internal)?;
@@ -309,14 +304,17 @@ pub(super) async fn gateway_ready(
         background_approvals,
         providers: provider_statuses(),
         provider_instances,
-        models,
-        model_providers,
-        image_models,
-        voice_models,
-        bot_defaults: state.bot_defaults,
-        middleware_features,
-        extensions,
-        contributions,
+        agent_catalog: AgentCatalog {
+            default_capabilities,
+            bot_defaults: state.bot_defaults,
+            models,
+            model_providers,
+            image_models,
+            voice_models,
+            middleware_features,
+            extensions,
+            contributions,
+        },
         max_active_sessions: state.max_active_sessions,
         session_file_limits: session_file_limits(),
         revisions: BTreeMap::new(),

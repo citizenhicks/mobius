@@ -615,6 +615,10 @@ pub struct ApprovalCall {
     pub name: Arc<str>,
     /// The arguments.
     pub arguments: serde_json::Value,
+    /// The tool's own rendering of this call, filled by the presenting host and never
+    /// journaled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<super::FrontendBlock>,
 }
 
 /// A user's decision for a paused tool batch.

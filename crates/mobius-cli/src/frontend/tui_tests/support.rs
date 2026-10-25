@@ -7,11 +7,7 @@ pub(super) fn rendered(block: FrontendBlock) -> RenderedBlock {
     }
 }
 
-pub(super) fn recorded(
-    event: EventMsg,
-    blocks: Vec<RenderedBlock>,
-    preview: Option<RenderedPreview>,
-) -> RecordedEvent {
+pub(super) fn recorded(event: EventMsg, preview: Option<RenderedPreview>) -> RecordedEvent {
     RecordedEvent {
         sequence: 1,
         recorded_at_ms: 0,
@@ -20,8 +16,46 @@ pub(super) fn recorded(
             msg: event,
         },
         stream_metrics: Vec::new(),
-        blocks,
         preview,
+    }
+}
+
+/// Applies an agent event that carries no transcript ops of its own.
+pub(super) fn gateway_event(state: &mut TuiState, record: RecordedEvent, live: bool) {
+    events::handle_gateway_event(state, record, Vec::new(), live);
+}
+
+/// A page of user messages, as the gateway reduces them.
+pub(super) fn message_page(messages: &[&str]) -> TranscriptPage {
+    TranscriptPage {
+        items: messages
+            .iter()
+            .enumerate()
+            .map(|(index, message)| {
+                Arc::new(TranscriptItem {
+                    id: format!("message:{index}").into(),
+                    turn_id: None,
+                    recorded_at_ms: 0,
+                    state: TranscriptItemState::Complete,
+                    terminal: false,
+                    starts_turn: false,
+                    resumed: false,
+                    inherited: false,
+                    target: None,
+                    content: TranscriptItemContent::Message {
+                        message: MessageEvent {
+                            author: MessageAuthor::User,
+                            delivery: MessageDelivery::Turn,
+                            text: (*message).into(),
+                            attachments: Vec::new(),
+                            reply: None,
+                            message_target: None,
+                        },
+                    },
+                })
+            })
+            .collect(),
+        rows: Vec::new(),
     }
 }
 
@@ -34,8 +68,9 @@ pub(super) fn preview_record(
 ) -> RecordedEvent {
     recorded(
         EventMsg::ContextCompacted,
-        Vec::new(),
         Some(RenderedPreview {
+            kind: mobius::protocol::FrontendPreviewKind::Agent,
+            state: None,
             symbol: None,
             duration_ms: None,
             started_at_ms: None,
@@ -44,22 +79,7 @@ pub(super) fn preview_record(
             subtitle: "complete · kimi/high · Full context".into(),
             page_id: page_id.into(),
             update,
-            events: messages
-                .iter()
-                .map(|message| RenderedEvent {
-                    submission_id: None,
-                    recorded_at_ms: 0,
-                    event: EventMsg::Message(MessageEvent {
-                        author: MessageAuthor::User,
-                        delivery: MessageDelivery::Turn,
-                        text: (*message).into(),
-                        attachments: Vec::new(),
-                        reply: None,
-                        message_target: None,
-                    }),
-                    blocks: Vec::new(),
-                })
-                .collect(),
+            transcript: message_page(messages),
             next,
         }),
     )

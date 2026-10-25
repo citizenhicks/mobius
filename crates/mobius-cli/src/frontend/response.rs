@@ -63,7 +63,7 @@ pub async fn wait_ready(events: &mut GatewayEvents) -> Result<ReadyPayload> {
 mod tests {
     use super::*;
     use mobius_gateway::client::GatewayClient;
-    use mobius_gateway::wire::{ClientFrame, ClientKind, read_frame, write_frame};
+    use mobius_gateway::wire::{ClientCapabilities, ClientFrame, read_frame, write_frame};
 
     #[tokio::test]
     async fn response_wait_preserves_unrelated_frames_and_correlates_rejections() {
@@ -103,9 +103,16 @@ mod tests {
                     .expect("write");
             }
         });
-        let client = GatewayClient::connect(&endpoint, "test", ClientKind::Cli)
-            .await
-            .expect("connect");
+        let client = GatewayClient::connect(
+            &endpoint,
+            "test",
+            ClientCapabilities {
+                presence: true,
+                ..ClientCapabilities::default()
+            },
+        )
+        .await
+        .expect("connect");
         let (_, mut events) = client.into_parts();
         await_response(&mut events, Some("owned"), None, |message| match message {
             ServerMessage::Accepted { request_id } if request_id.as_ref() == "owned" => {

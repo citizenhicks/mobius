@@ -3,6 +3,7 @@
 mod codec;
 mod messages;
 mod records;
+mod transcript;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -11,9 +12,9 @@ use std::time::Duration;
 use mobius::backend::checkpoint::StreamMetrics;
 use mobius::backend::model::provider::{HostedWebSearch, UsageLimit};
 use mobius::protocol::{
-    Event, EventMsg, FrontendContribution, FrontendPreviewUpdate, FrontendSettingOption,
+    Event, FrontendContribution, FrontendPreviewUpdate, FrontendSettingOption,
     FrontendSettingValue, FrontendSymbol, FrontendWidget, MessageTarget, MiddlewareFeature,
-    ModelChoice, Op, RenderedBlock, SessionConfiguredEvent, SessionFileLimits, SessionFileRecord,
+    ModelChoice, Op, SessionConfiguredEvent, SessionFileLimits, SessionFileRecord,
     SessionFileReference, Submission, TokenUsage, ToolDiscoveryMode,
 };
 use serde::de::{DeserializeOwned, Error as _};
@@ -33,6 +34,7 @@ pub use self::messages::{
     ClientFrame, ClientMessage, GatewayResponseError, ServerFrame, ServerMessage,
 };
 pub use self::records::*;
+pub use self::transcript::*;
 
 mod base64_bytes {
     use base64::Engine as _;
@@ -90,7 +92,7 @@ mod desktop_bytes {
 }
 
 /// Current gateway protocol version.
-pub const PROTOCOL_VERSION: u16 = 95;
+pub const PROTOCOL_VERSION: u16 = 96;
 /// Maximum raw RFB payload in one desktop data frame.
 pub const MAX_DESKTOP_CHUNK_BYTES: usize = 16 * 1024;
 /// Maximum encoded JSON payload accepted in one frame.

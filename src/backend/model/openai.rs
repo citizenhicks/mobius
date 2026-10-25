@@ -18,7 +18,10 @@ pub(super) fn generic_provider() -> ProviderDefinition {
     )
     .with_image_input()
     .with_image_generation()
-    .with_voice_models(&super::realtime::OPENAI_MODELS)
+    .with_voice_models(
+        &super::realtime::OPENAI_MODELS,
+        super::realtime::VoiceApi::OpenAi,
+    )
     .with_credentialless_endpoints()
 }
 

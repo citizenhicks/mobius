@@ -16,11 +16,11 @@ fn another_clients_preview_cannot_open_or_replace_the_requested_preview() {
         record.event.submission_id = Some("another-client-request".into());
         record
     };
-    events::handle_gateway_event(&mut state, foreign(), true);
+    gateway_event(&mut state, foreign(), true);
     assert!(state.preview.is_none());
     assert_eq!(state.preview_request_id.as_deref(), Some("preview-request"));
 
-    events::handle_gateway_event(
+    gateway_event(
         &mut state,
         preview_record(
             "ours",
@@ -32,7 +32,7 @@ fn another_clients_preview_cannot_open_or_replace_the_requested_preview() {
         true,
     );
     assert!(state.preview_request_id.is_none());
-    events::handle_gateway_event(&mut state, foreign(), true);
+    gateway_event(&mut state, foreign(), true);
     assert_eq!(snapshot(&state).id, "ours".into());
     assert_eq!(preview_messages(snapshot(&state)), ["› ours"]);
 }
@@ -41,7 +41,7 @@ fn another_clients_preview_cannot_open_or_replace_the_requested_preview() {
 fn snapshot_preview_prepends_an_older_page_without_losing_the_latest_page() {
     let mut state = state();
     state.preview_request_id = Some("preview-request".into());
-    events::handle_gateway_event(
+    gateway_event(
         &mut state,
         preview_record(
             "/root/agent",
@@ -52,7 +52,7 @@ fn snapshot_preview_prepends_an_older_page_without_losing_the_latest_page() {
         ),
         true,
     );
-    events::handle_gateway_event(
+    gateway_event(
         &mut state,
         preview_record(
             "/root/agent",
@@ -80,7 +80,7 @@ fn snapshot_preview_prepends_an_older_page_without_losing_the_latest_page() {
 fn snapshot_preview_does_not_merge_a_page_for_another_preview_id() {
     let mut state = state();
     state.preview_request_id = Some("preview-request".into());
-    events::handle_gateway_event(
+    gateway_event(
         &mut state,
         preview_record(
             "/root/agent",
@@ -91,7 +91,7 @@ fn snapshot_preview_does_not_merge_a_page_for_another_preview_id() {
         ),
         true,
     );
-    events::handle_gateway_event(
+    gateway_event(
         &mut state,
         preview_record(
             "/root/other",

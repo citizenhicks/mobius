@@ -10,10 +10,21 @@ use uuid::Uuid;
 
 use crate::wire::ServerMessage;
 
-#[derive(Default)]
 pub(crate) struct DesktopControl {
     runtime: Mutex<Option<Runtime>>,
     control: Arc<tokio::sync::Mutex<()>>,
+    /// Chats whose computer control found no attached desktop host.
+    host_requests: tokio::sync::broadcast::Sender<SessionId>,
+}
+
+impl Default for DesktopControl {
+    fn default() -> Self {
+        Self {
+            runtime: Mutex::default(),
+            control: Arc::default(),
+            host_requests: tokio::sync::broadcast::channel(4).0,
+        }
+    }
 }
 
 struct Runtime {
@@ -51,6 +62,11 @@ impl DesktopControl {
         })
     }
 
+    /// Chats that asked for a desktop host while none was attached.
+    pub(crate) fn host_requests(&self) -> tokio::sync::broadcast::Receiver<SessionId> {
+        self.host_requests.subscribe()
+    }
+
     pub(crate) fn connect(self: &Arc<Self>, session_id: &SessionId) -> Result<DuplexStream> {
         let lease = Arc::clone(&self.control).try_lock_owned().map_err(|busy| {
             Error::Sandbox(format!(
@@ -59,7 +75,13 @@ impl DesktopControl {
         })?;
         let (runtime_id, outgoing) = {
             let guard = self.runtime.lock().map_err(unavailable_after)?;
-            let runtime = guard.as_ref().ok_or_else(unavailable)?;
+            let Some(runtime) = guard.as_ref() else {
+                drop(guard);
+                if self.host_requests.send(session_id.share()).is_err() {
+                    tracing::debug!("no desktop-host connection can attach for this chat");
+                }
+                return Err(unavailable());
+            };
             let attached = (runtime.id, runtime.outgoing.clone()); // rules-allow: the relay task owns a sender
             drop(guard);
             attached
@@ -205,12 +227,33 @@ fn unavailable_after(error: impl std::fmt::Display) -> Error {
 #[cfg(test)]
 mod tests;
 
+/// The next chat asking a desktop-host connection to attach.
+async fn next_host_request(
+    requests: &mut Option<tokio::sync::broadcast::Receiver<SessionId>>,
+) -> ServerMessage {
+    match requests {
+        Some(requests) => loop {
+            match requests.recv().await {
+                Ok(session_id) => return ServerMessage::DesktopHostRequested { session_id },
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    return std::future::pending().await;
+                }
+            }
+        },
+        None => std::future::pending().await,
+    }
+}
+
+/// The attached runtime's next request, or, while none is attached, the next chat asking a
+/// desktop host to attach.
 pub(crate) async fn next_update(
     connection: &mut Option<DesktopConnection>,
+    host_requests: &mut Option<tokio::sync::broadcast::Receiver<SessionId>>,
 ) -> Option<ServerMessage> {
     match connection {
         Some(connection) => connection.outgoing.recv().await,
-        None => std::future::pending().await,
+        None => Some(next_host_request(host_requests).await),
     }
 }
 
@@ -232,7 +275,7 @@ pub(crate) async fn handle_message(
     control: &Arc<DesktopControl>,
     connection: &mut Option<DesktopConnection>,
     local: bool,
-    client_kind: crate::wire::ClientKind,
+    client: crate::wire::ClientCapabilities,
     writer: &mut (impl tokio::io::AsyncWrite + Unpin),
 ) -> crate::Result<()> {
     use crate::wire::{ClientMessage, ServerFrame, write_frame};
@@ -241,12 +284,9 @@ pub(crate) async fn handle_message(
             request_id,
             enabled,
         } => {
-            let result = if !(cfg!(target_os = "macos")
-                && local
-                && client_kind == crate::wire::ClientKind::Macos)
-            {
+            let result = if !(cfg!(target_os = "macos") && local && client.desktop_host) {
                 Err(Error::Sandbox(
-                    "only the local Mac app can host desktop control".into(),
+                    "only a local desktop host can host desktop control on this gateway".into(),
                 ))
             } else if !enabled {
                 *connection = None;

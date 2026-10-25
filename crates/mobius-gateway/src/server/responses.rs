@@ -3,6 +3,7 @@ use super::{
     Error, HostHandle, MAX_DIRECTORY_ENTRIES, Path, PathBuf, Rejection, Result, SelectedChat,
     ServerFrame, ServerMessage, SessionHistoryPage, fs, write_frame,
 };
+use crate::host::OpenReplay;
 use crate::wire::{encode_bounded_frame, write_encoded};
 use mobius::SessionId;
 
@@ -19,8 +20,8 @@ pub(super) async fn write_session_history(
     let frame = ServerFrame::new(ServerMessage::SessionHistory {
         request_id: Arc::clone(&request_id),
         session_id,
-        records: page.records,
-        next_before_sequence: page.next_before_sequence,
+        page: page.page,
+        next: page.next,
     });
     if let Some(encoded) = encode_bounded_frame(&frame)? {
         return write_encoded(writer, &encoded).await;
@@ -75,8 +76,29 @@ pub(super) async fn open_selected(
         }),
     )
     .await?;
-    for frame in snapshot.replay {
-        frame.write(writer).await?;
+    match snapshot.replay {
+        OpenReplay::Frames(frames) => {
+            for frame in frames {
+                frame.write(writer).await?;
+            }
+        }
+        OpenReplay::Transcript {
+            through_sequence,
+            page,
+            next,
+        } => {
+            write_frame(
+                writer,
+                &ServerFrame::new(ServerMessage::SessionTranscript {
+                    request_id: Arc::clone(&request_id),
+                    session_id: host.session_id().share(),
+                    through_sequence,
+                    page,
+                    next,
+                }),
+            )
+            .await?;
+        }
     }
     write_frame(
         writer,

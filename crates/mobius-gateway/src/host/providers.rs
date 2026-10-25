@@ -164,6 +164,7 @@ impl GatewayHost {
                     tint: None,
                     models: Vec::new(),
                     image_model_ids: None,
+                    operator_managed: false,
                 });
             let publication = crate::publication::Outcome::applied(state.credentials.set(
                 &instance,
@@ -377,7 +378,18 @@ impl GatewayHost {
         &self,
         scope: ProviderRefresh<'_>,
     ) -> std::result::Result<(), Rejection> {
+        let _credentials = self.begin_credential_mutation().await;
         let state = self.state.lock().await;
+        let voices = {
+            let config = state.config()?;
+            crate::provider_catalog::VoiceRoutes::new(
+                &config.configured_providers,
+                &state.store,
+                &state.credentials,
+            )
+            .map_err(internal)?
+        };
+        state.bots.set_voice_routes(voices).map_err(internal)?;
         let cache = state.bots.prepared.lock().await;
         state
             .bots
@@ -409,6 +421,12 @@ impl GatewayHost {
         preserve_selection: bool,
         if_configured: bool,
     ) -> std::result::Result<ReadyPayload, Rejection> {
+        if !operator && registration.operator_managed {
+            return Err(Rejection::new(
+                "operator_required",
+                "operator-managed providers are registered locally by the gateway operator",
+            ));
+        }
         if !operator
             && registration.models.iter().any(|model| {
                 model.label.is_some()
@@ -595,6 +613,13 @@ fn commit_provider_registration(
 ) -> crate::Result<()> {
     let publication = crate::publication::Outcome::applied(state.store.save(&next))?;
     *current = next.into_inner();
+    state
+        .bots
+        .set_voice_routes(crate::provider_catalog::VoiceRoutes::new(
+            &current.configured_providers,
+            &state.store,
+            &state.credentials,
+        )?)?;
     publication.confirm()
 }
 
@@ -633,6 +658,13 @@ fn commit_provider_removal(
             }
         }
     };
+    state
+        .bots
+        .set_voice_routes(crate::provider_catalog::VoiceRoutes::new(
+            &current.configured_providers,
+            &state.store,
+            &state.credentials,
+        )?)?;
     drop(current);
     result
 }

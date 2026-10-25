@@ -1,4 +1,5 @@
-use mobius_gateway::wire::{BotRecord, ReadyPayload, RoutineScheduleKind};
+use mobius::protocol::ModelStepContentPhase;
+use mobius_gateway::wire::{BotRecord, ReadyPayload, RoutineScheduleKind, TranscriptItemContent};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -460,17 +461,24 @@ fn render_run(frame: &mut ratatui::Frame<'_>, area: Rect, state: &BotsState) {
         ),
         Line::from(""),
     ];
-    for record in &preview.records {
-        for rendered in &record.blocks {
-            let text = super::super::block_text(&rendered.block);
-            lines.extend(
-                terminal_text(&text)
-                    .lines()
-                    .map(|line| Line::from(line.to_owned())),
-            );
-        }
+    for item in &preview.page.items {
+        let text: Cow<'_, str> = match &item.content {
+            TranscriptItemContent::Block { block, .. } => super::super::block_text(block).into(),
+            TranscriptItemContent::Message { message } => format!("› {}", message.text).into(),
+            TranscriptItemContent::Assistant {
+                phase: ModelStepContentPhase::FinalAnswer,
+                text,
+                ..
+            } => Cow::Borrowed(text),
+            _ => continue,
+        };
+        lines.extend(
+            terminal_text(&text)
+                .lines()
+                .map(|line| Line::from(line.to_owned())),
+        );
     }
-    if preview.records.is_empty() {
+    if preview.page.items.is_empty() {
         lines.push(Line::styled(
             "No transcript records",
             current().style(Role::Muted),

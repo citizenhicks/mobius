@@ -15,6 +15,10 @@ categories = ["command-line-utilities", "development-tools"]
 name = "mobius_gateway"
 path = "src/lib.rs"
 
+[features]
+# Exposes `TranscriptReducer` so frontend tests build pages from events, not a copy of its rules.
+fixtures = []
+
 [dependencies]
 base64.workspace = true
 chrono.workspace = true

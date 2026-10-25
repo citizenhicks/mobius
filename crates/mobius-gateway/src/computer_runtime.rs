@@ -43,10 +43,11 @@ pub(crate) enum AppUpdate {
 
 pub(crate) async fn next_app_update(
     desktop: &mut Option<desktop::DesktopConnection>,
+    desktop_host_requests: &mut Option<tokio::sync::broadcast::Receiver<mobius::SessionId>>,
     browser: &mut Option<browser::BrowserConnection>,
 ) -> AppUpdate {
     tokio::select! {
-        message = desktop::next_update(desktop) => AppUpdate::Desktop(message),
+        message = desktop::next_update(desktop, desktop_host_requests) => AppUpdate::Desktop(message),
         message = browser::next_update(browser) => AppUpdate::Browser(message),
     }
 }

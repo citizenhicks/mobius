@@ -14,6 +14,7 @@ use mobius::protocol::AssistantMessageEvent;
 use mobius::protocol::EventMsg;
 use mobius::protocol::FrontendEvent;
 use mobius::protocol::FrontendPreviewUpdate;
+use mobius::protocol::FrontendTone;
 use mobius::protocol::MessageAuthor;
 use mobius::protocol::MessageEvent;
 use mobius::protocol::ModelStepCompletedEvent;
@@ -22,8 +23,11 @@ use mobius::protocol::ModelStepOutcome;
 use mobius::protocol::RenderedBlock;
 use mobius::protocol::TokenUsageInfo;
 use mobius_gateway::wire::RecordedEvent;
-use mobius_gateway::wire::RenderedEvent;
 use mobius_gateway::wire::RenderedPreview;
+use mobius_gateway::wire::TranscriptItem;
+use mobius_gateway::wire::TranscriptItemContent;
+use mobius_gateway::wire::TranscriptOp;
+use mobius_gateway::wire::TranscriptPage;
 
 impl TuiState {
     #[cfg(test)]
@@ -199,13 +203,17 @@ impl TuiState {
             }
             MessageAuthor::Source {
                 message_id,
-                source: mobius::protocol::MessageSource::Session { session_id },
+                source:
+                    mobius::protocol::MessageSource::Session {
+                        session_id: source_id,
+                    }
+                    | mobius::protocol::MessageSource::Call { call_id: source_id },
                 handle,
                 ..
             } => (
                 format!("@{handle}\n{}", message.text),
                 TranscriptTone::Neutral,
-                Some(format!("source:{}:{session_id}:{message_id}", session_id.len()).into()),
+                Some(format!("source:{}:{source_id}:{message_id}", source_id.len()).into()),
             ),
             MessageAuthor::Source {
                 source: mobius::protocol::MessageSource::External { .. },
@@ -367,8 +375,11 @@ impl TuiState {
             }
             // The gateway has already projected renders into `blocks`, and preview
             // transcripts arrive as gateway-rendered records; nested previews are control
-            // events, not transcript content.
-            FrontendEvent::Render { .. } | FrontendEvent::Preview { .. } => {}
+            // events, not transcript content. The terminal stays on its chat after a fork; the
+            // fork notice names the new chat.
+            FrontendEvent::Render { .. }
+            | FrontendEvent::Preview { .. }
+            | FrontendEvent::OpenSession { .. } => {}
         }
     }
 }
@@ -415,7 +426,14 @@ impl UsageStatus {
     }
 }
 
-pub(super) fn handle_gateway_event(state: &mut TuiState, record: RecordedEvent, live: bool) {
+/// Applies gateway transcript items and appends under their stable ids, then handles the
+/// event's control state. The terminal draws items in arrival order without row grouping.
+pub(super) fn handle_gateway_event(
+    state: &mut TuiState,
+    record: RecordedEvent,
+    transcript: Vec<TranscriptOp>,
+    live: bool,
+) {
     let requested = record
         .event
         .submission_id
@@ -433,12 +451,58 @@ pub(super) fn handle_gateway_event(state: &mut TuiState, record: RecordedEvent, 
     if let Some(preview) = record.preview {
         apply_preview(state, preview, requested);
     } else {
-        state.handle_event(
-            record.event.msg,
-            record.blocks,
-            record.event.submission_id,
-            live,
-        );
+        let mut blocks = Vec::new();
+        for op in transcript {
+            match op {
+                TranscriptOp::Item { item } => {
+                    let item = Arc::unwrap_or_clone(item);
+                    match item.content {
+                        TranscriptItemContent::Block {
+                            capability, block, ..
+                        } => {
+                            state.remember_block(item.id, &capability, &block);
+                            blocks.push(RenderedBlock {
+                                capability: String::from(&*capability),
+                                block,
+                            });
+                        }
+                        TranscriptItemContent::Message { .. }
+                        | TranscriptItemContent::Assistant { .. } => state.apply_item(item),
+                        _ => {}
+                    }
+                }
+                // Appends extend entries already drawn, so their order among this
+                // event's new blocks does not matter.
+                TranscriptOp::AppendBlock { id, delta } => state.apply_block_delta(&id, delta),
+                TranscriptOp::AppendText { id, text } => {
+                    if let Some(entry) = state
+                        .transcript
+                        .iter_mut()
+                        .find(|entry| entry.id.as_ref().is_some_and(|key| key.value == *id))
+                    {
+                        entry.text.push_str(&terminal_text(&text));
+                        super::view::truncate_display_text(&mut entry.text, MAX_ENTRY_BYTES);
+                        entry.rendered = None;
+                        if matches!(entry.tone, TranscriptTone::Reasoning) {
+                            state.reasoning_title = super::latest_summary_line(&entry.text);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        match record.event.msg {
+            EventMsg::Message(_)
+            | EventMsg::MessageDelta(_)
+            | EventMsg::AssistantContentDelta(_)
+            | EventMsg::AssistantMessage(_)
+            | EventMsg::ModelStepStarted(_) => {
+                for block in blocks {
+                    state.apply_block(block);
+                }
+            }
+            event => state.handle_event(event, blocks, record.event.submission_id, live),
+        }
     }
 }
 
@@ -466,39 +530,12 @@ fn apply_preview(state: &mut TuiState, preview: RenderedPreview, requested: bool
         subtitle,
         page_id,
         update,
-        events,
+        transcript,
         next,
         ..
     } = preview;
-    let steps = events
-        .iter()
-        .filter_map(|rendered| match &rendered.event {
-            EventMsg::AssistantContentDelta(delta) => Some(&*delta.model_step_id),
-            EventMsg::AssistantMessage(message) => Some(&*message.model_step_id),
-            EventMsg::ModelStepCompleted(step) => Some(&*step.model_step_id),
-            _ => None,
-        })
-        .collect::<std::collections::BTreeSet<_>>();
-    // Rows of a replayed model step are replaced from the first such row onward.
-    let first_replayed_step = current.map_or(0, |snapshot| {
-        snapshot
-            .transcript
-            .iter()
-            .position(|entry| {
-                entry.id.as_ref().is_some_and(|id| {
-                    id.value
-                        .split_once('/')
-                        .is_some_and(|(step, _)| steps.contains(step))
-                })
-            })
-            .unwrap_or(snapshot.transcript.len())
-    });
     let mut replay = TuiState::default();
-    for rendered in events {
-        apply_rendered_event(&mut replay, rendered);
-    }
-    replay.commit_reasoning();
-    replay.commit_stream();
+    replay.apply_page(transcript);
 
     match update {
         FrontendPreviewUpdate::Replace if !requested => {
@@ -508,7 +545,7 @@ fn apply_preview(state: &mut TuiState, preview: RenderedPreview, requested: bool
             let PreviewContent::Snapshot(snapshot) = &mut current.content else {
                 return;
             };
-            // Stable message IDs replace live rows while keeping older loaded pages
+            // Stable item IDs replace live rows while keeping older loaded pages
             // and the reader's scroll position intact.
             let updated_ids = replay
                 .transcript
@@ -524,8 +561,7 @@ fn apply_preview(state: &mut TuiState, preview: RenderedPreview, requested: bool
                         !updated_ids.contains(&(&*id.capability, id.value.as_str()))
                     })
                 })
-                .count()
-                .min(first_replayed_step);
+                .count();
             snapshot.transcript.truncate(retained);
             snapshot.transcript.append(&mut replay.transcript);
             if retained == 0 {
@@ -560,15 +596,12 @@ fn apply_preview(state: &mut TuiState, preview: RenderedPreview, requested: bool
     }
 }
 
-pub(super) fn handle_gateway_history(state: &mut TuiState, records: Vec<RecordedEvent>) {
+/// Puts an older page, or a fresh open's whole transcript, above what is shown.
+pub(super) fn handle_gateway_history(state: &mut TuiState, page: TranscriptPage) {
     let reasoning_title = state.reasoning_title.take();
     let mut current = std::mem::take(&mut state.transcript);
     let current_len = current.len();
-    for record in records {
-        handle_gateway_event(state, record, false);
-    }
-    state.commit_reasoning();
-    state.commit_stream();
+    state.apply_page(page);
     while state.transcript.len().saturating_add(current_len) > super::MAX_TRANSCRIPT_ENTRIES {
         state.transcript.pop_front();
     }
@@ -576,53 +609,55 @@ pub(super) fn handle_gateway_history(state: &mut TuiState, records: Vec<Recorded
     state.reasoning_title = reasoning_title;
 }
 
-fn apply_rendered_event(state: &mut TuiState, rendered: RenderedEvent) {
-    match rendered.event {
-        EventMsg::AssistantContentDelta(delta) => {
-            for block in rendered.blocks {
-                state.apply_block(block);
-            }
-            state.upsert_text(
-                narrative_key(&delta.model_step_id, delta.phase),
-                &delta.delta,
-                true,
-                narrative_tone(delta.phase),
-            );
+impl TuiState {
+    /// Draws a gateway transcript page's items in order, ignoring its row grouping.
+    fn apply_page(&mut self, page: TranscriptPage) {
+        for item in page.items {
+            self.apply_item(Arc::unwrap_or_clone(item));
         }
-        EventMsg::AssistantMessage(message) => {
-            for phase in [
-                ModelStepContentPhase::Reasoning,
-                ModelStepContentPhase::Commentary,
-                ModelStepContentPhase::FinalAnswer,
-            ] {
-                let text = message
-                    .content
-                    .iter()
-                    .filter(|part| part.phase == phase)
-                    .map(|part| part.text.as_str())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                let key = narrative_key(&message.model_step_id, phase);
-                if !rendered.blocks.is_empty() || text.is_empty() {
-                    state
-                        .transcript
-                        .retain(|entry| entry.id.as_ref() != Some(&key));
-                } else {
-                    state.upsert_text(key, &text, false, narrative_tone(phase));
-                }
-            }
-            for block in rendered.blocks {
-                state.apply_block(block);
-            }
-        }
-        event => state.handle_event(event, rendered.blocks, rendered.submission_id, false),
+        self.commit_reasoning();
+        self.commit_stream();
     }
-}
 
-fn narrative_key(model_step_id: &str, phase: ModelStepContentPhase) -> BlockKey {
-    BlockKey {
-        capability: "assistant".into(),
-        value: format!("{model_step_id}/{phase:?}"),
+    fn apply_item(&mut self, item: TranscriptItem) {
+        match item.content {
+            TranscriptItemContent::Message { message } => {
+                self.handle_message(message, Some(item.id));
+            }
+            TranscriptItemContent::Assistant { phase, text, .. } => {
+                if phase == ModelStepContentPhase::Reasoning {
+                    self.reasoning_title = super::latest_summary_line(&terminal_text(&text));
+                }
+                self.upsert_text(
+                    BlockKey {
+                        capability: "assistant".into(),
+                        value: item.id.to_string(),
+                    },
+                    &text,
+                    false,
+                    narrative_tone(phase),
+                );
+            }
+            TranscriptItemContent::Block {
+                capability, block, ..
+            } => {
+                self.remember_block(item.id, &capability, &block);
+                self.apply_block(RenderedBlock {
+                    capability: String::from(&*capability),
+                    block,
+                });
+            }
+            TranscriptItemContent::Notice { tone, text } => match tone {
+                FrontendTone::Error => self.push(format!("error: {text}"), TranscriptTone::Error),
+                FrontendTone::Warning => {
+                    self.push(format!("warning: {text}"), TranscriptTone::Warning);
+                }
+                FrontendTone::Neutral | FrontendTone::Success => self.push(text, tone.into()),
+            },
+            TranscriptItemContent::ForkPoint { parent } => {
+                self.push(format!("forked from {parent}"), TranscriptTone::Neutral);
+            }
+        }
     }
 }
 

@@ -6,21 +6,7 @@ fn gateway_history_prepends_earlier_messages() {
     let mut state = state();
     state.push("newest", TranscriptTone::Assistant);
 
-    events::handle_gateway_history(
-        &mut state,
-        vec![recorded(
-            EventMsg::Message(MessageEvent {
-                author: MessageAuthor::User,
-                delivery: MessageDelivery::Turn,
-                text: "oldest".into(),
-                attachments: Vec::new(),
-                reply: None,
-                message_target: None,
-            }),
-            Vec::new(),
-            None,
-        )],
-    );
+    events::handle_gateway_history(&mut state, message_page(&["oldest"]));
 
     assert_eq!(
         state
@@ -226,6 +212,8 @@ fn transcript_viewport_matches_full_paragraph_for_unicode_scroll_and_resize() {
             "test".into(),
             Arc::new(FrontendWidget {
                 id: "tail".into(),
+                count: None,
+                priority: mobius::protocol::FrontendPriority::Primary,
                 slot: FrontendSlot::TranscriptTail,
                 text: "tail λ界".into(),
                 tone: FrontendTone::Warning,
@@ -304,7 +292,7 @@ fn transcript_viewport_matches_full_paragraph_for_unicode_scroll_and_resize() {
         let mut snapshot_reference = state();
         for snapshot in [&mut snapshot_actual, &mut snapshot_reference] {
             snapshot.preview_request_id = Some("preview-request".into());
-            events::handle_gateway_event(
+            gateway_event(
                 snapshot,
                 preview_record(
                     "snapshot",

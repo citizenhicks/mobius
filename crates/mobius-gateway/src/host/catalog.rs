@@ -122,22 +122,21 @@ pub(super) async fn restore_pending_approval_activities(
             })
             .await?;
         for summary in page.sessions {
-            let Some(checkpoint) = checkpoints.load(&summary.session_id).await? else {
+            let Some(runtime) =
+                super::SessionRuntimeState::load(checkpoints.as_ref(), &summary.session_id).await?
+            else {
                 continue;
             };
-            let Some(approval) = checkpoint
-                .pending_approval
-                .filter(|approval| !approval.decision_received)
-            else {
+            let Some(approval) = runtime.undecided_approval else {
                 continue;
             };
             let activity = SessionActivity {
                 state: SessionActivityState::AwaitingApproval,
                 turn_id: Some(approval.turn_id),
-                approval_request_id: Some(approval.request_id),
-                started_at: checkpoint
-                    .active_execution
-                    .map(|execution| execution.started_at_ms.div_euclid(1_000)),
+                approval_request_id: Some(approval.id),
+                started_at: runtime
+                    .active_turn
+                    .map(|active| active.started_at_ms.div_euclid(1_000)),
                 ..SessionActivity::default()
             };
             catalog.update(summary, activity)?;
@@ -246,15 +245,16 @@ async fn filtered_session_catalog(
         let ordinary_count = sessions
             .iter()
             .filter(|session: &&SessionSummary| {
-                *session.session_id
-                    != *crate::bots::conversation_session_id(&session.session_context.owner_id)
+                !crate::bots::is_persistent(&session.session_id, &session.session_context.owner_id)
             })
             .count();
         let mut available = SESSION_PAGE_SIZE.saturating_sub(ordinary_count);
         sessions.extend(page.sessions.into_iter().filter(|session| match filter {
             CatalogFilter::Visible => {
-                let persistent = *session.session_id
-                    == *crate::bots::conversation_session_id(&session.session_context.owner_id);
+                let persistent = crate::bots::is_persistent(
+                    &session.session_id,
+                    &session.session_context.owner_id,
+                );
                 if session.catalog_visible && (persistent || available > 0) {
                     if !persistent {
                         available -= 1;
@@ -372,9 +372,7 @@ pub(super) fn validate_session_title(title: &str) -> std::result::Result<&str, R
 fn retain_catalog_page(sessions: &mut Vec<SessionRecord>) {
     let mut ordinary = 0;
     sessions.retain(|session| {
-        if *session.session_id
-            == *crate::bots::conversation_session_id(&session.session_context.owner_id)
-        {
+        if crate::bots::is_persistent(&session.session_id, &session.session_context.owner_id) {
             return true;
         }
         ordinary += 1;

@@ -6,7 +6,7 @@ use std::io;
 
 use mobius::Result;
 use mobius_gateway::client::{Endpoint, GatewayClient};
-use mobius_gateway::wire::ClientKind;
+use mobius_gateway::wire::ClientCapabilities;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -71,8 +71,16 @@ pub(crate) async fn run(terminal: &mut GatewayTerminal, connected: &str) -> Resu
                     state.pairing = true;
                     state.error = None;
                     draw(terminal, &state)?;
-                    let paired =
-                        GatewayClient::pair(&endpoint, code, "mobius-cli", ClientKind::Cli).await;
+                    let paired = GatewayClient::pair(
+                        &endpoint,
+                        code,
+                        "mobius-cli",
+                        ClientCapabilities {
+                            presence: true,
+                            ..ClientCapabilities::default()
+                        },
+                    )
+                    .await;
                     state.pairing = false;
                     match paired {
                         Ok((_client, paired)) => {

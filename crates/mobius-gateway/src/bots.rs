@@ -83,6 +83,8 @@ pub(crate) struct BotStore {
     pub(crate) preparation_generation: std::sync::atomic::AtomicU64,
     /// The last parsed catalog, reused until any connection commits.
     cache: std::sync::Mutex<Option<(CatalogStamp, Arc<BotState>)>>,
+    /// The gateway's current voice routes, which Bot records resolve their voice against.
+    voices: std::sync::RwLock<Arc<crate::provider_catalog::VoiceRoutes>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -340,8 +342,30 @@ struct BotState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "PersistedBot")]
 struct StoredBot {
+    id: Arc<str>,
+    handle: Arc<str>,
+    name: Arc<str>,
+    description: Arc<str>,
+    tint: ProviderTint,
+    shape: BotShape,
+    config: Arc<VersionedAgentConfig>,
+    /// Parsed once from `config` when it was validated or read from disk.
+    #[serde(skip_serializing)]
+    approval_policy: mobius::backend::sandbox::ApprovalPolicy,
+}
+
+/// A Bot record with the approval policy its stored composition was validated to.
+pub(crate) struct RuntimeBot {
+    pub(crate) record: Arc<BotRecord>,
+    pub(crate) approval_policy: mobius::backend::sandbox::ApprovalPolicy,
+}
+
+/// One Bot as written to disk, before its composition is checked.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PersistedBot {
     id: Arc<str>,
     handle: Arc<str>,
     name: Arc<str>,
@@ -351,10 +375,35 @@ struct StoredBot {
     config: Arc<VersionedAgentConfig>,
 }
 
+impl TryFrom<PersistedBot> for StoredBot {
+    type Error = Error;
+
+    fn try_from(bot: PersistedBot) -> Result<Self> {
+        let PersistedBot {
+            id,
+            handle,
+            name,
+            description,
+            tint,
+            shape,
+            config,
+        } = bot;
+        let approval_policy = validate_agent_composition(&config.config)?;
+        Ok(Self {
+            id,
+            handle,
+            name,
+            description,
+            tint,
+            shape,
+            config,
+            approval_policy,
+        })
+    }
+}
+
 impl StoredBot {
-    fn record(&self) -> Result<BotRecord> {
-        let (accepts_file_attachments, routine_interaction_policy) =
-            crate::assembly::bot_semantics(&self.config.config)?;
+    fn record(&self, voices: &crate::provider_catalog::VoiceRoutes) -> Result<BotRecord> {
         Ok(BotRecord {
             conversation_session_id: SessionId::new(conversation_session_id(&self.id))?,
             id: Arc::clone(&self.id),
@@ -364,8 +413,10 @@ impl StoredBot {
             tint: self.tint,
             shape: self.shape,
             config: Arc::clone(&self.config),
-            accepts_file_attachments,
-            routine_interaction_policy,
+            capabilities: crate::assembly::bot_capabilities(&self.config.config, voices)?,
+            routine_interaction_policy: crate::assembly::routine_interaction_policy(
+                self.approval_policy,
+            ),
         })
     }
 }
@@ -381,6 +432,8 @@ impl From<&BotRecord> for StoredBot {
             tint: bot.tint,
             shape: bot.shape,
             config: Arc::clone(&bot.config),
+            approval_policy: validate_agent_composition(&bot.config.config)
+                .expect("valid test composition"),
         }
     }
 }
@@ -418,6 +471,7 @@ impl BotStore {
             prepared: tokio::sync::Mutex::default(),
             preparation_generation: std::sync::atomic::AtomicU64::default(),
             cache: std::sync::Mutex::default(),
+            voices: std::sync::RwLock::default(),
         };
         let state = store.fresh_state()?;
         if persisted && !state.bots.iter().any(|bot| &*bot.handle == MOBIUS_HANDLE) {
@@ -434,6 +488,27 @@ impl BotStore {
         Ok(store)
     }
 
+    /// Resolves later Bot records against the gateway's current voice routes.
+    pub(crate) fn set_voice_routes(
+        &self,
+        voices: crate::provider_catalog::VoiceRoutes,
+    ) -> Result<()> {
+        *self
+            .voices
+            .write()
+            .map_err(crate::poisoned("Bot voice routes"))? = Arc::new(voices);
+        Ok(())
+    }
+
+    fn voice_routes(&self) -> Result<Arc<crate::provider_catalog::VoiceRoutes>> {
+        Ok(Arc::clone(
+            &*self
+                .voices
+                .read()
+                .map_err(crate::poisoned("Bot voice routes"))?,
+        ))
+    }
+
     /// Creates the ordinary built-in Bot only before Bot state has ever existed.
     pub(crate) fn seed_default(
         &self,
@@ -444,6 +519,7 @@ impl BotStore {
             return Ok(None);
         }
         let config = defaults.config.clone(); // rules-allow: callers keep their borrowed defaults; the seeded Bot owns its config
+        let approval_policy = crate::config::configured_approval_policy(&config.middleware)?;
         let mut state = BotState::default();
         let bot = StoredBot {
             id: Uuid::new_v4().to_string().into(),
@@ -456,8 +532,9 @@ impl BotStore {
                 revision: 1,
                 config,
             }),
+            approval_policy,
         };
-        let record = bot.record()?;
+        let record = bot.record(&*self.voice_routes()?)?;
         state.bots.push(bot);
         validate_state(&state)?;
         self.save(&state)?;
@@ -472,7 +549,9 @@ impl BotStore {
     ) -> Result<BotRecord> {
         let name = validate_name(name)?;
         let description = validate_description(description)?;
+        let approval_policy = config.approval_policy();
         let config = config.into_inner();
+        let voices = self.voice_routes()?;
         self.update(|state| {
             let id = Uuid::new_v4().to_string();
             let handle = next_handle(state, &name, &id);
@@ -489,8 +568,9 @@ impl BotStore {
                     revision: 1,
                     config,
                 }),
+                approval_policy,
             };
-            let record = bot.record()?;
+            let record = bot.record(&voices)?;
             state.bots.push(bot);
             Ok(record)
         })
@@ -503,6 +583,7 @@ impl BotStore {
         id: &str,
         identity: BotIdentity<'_>,
         config: Arc<VersionedAgentConfig>,
+        approval_policy: mobius::backend::sandbox::ApprovalPolicy,
     ) -> Result<BotRecord> {
         let BotIdentity {
             name,
@@ -512,6 +593,7 @@ impl BotStore {
         } = identity;
         let name = validate_name(name)?;
         let description = validate_description(description)?;
+        let voices = self.voice_routes()?;
         self.update(|state| {
             let handle = next_handle(state, &name, id);
             let bot = find_bot_mut(state, id)?;
@@ -530,7 +612,8 @@ impl BotStore {
             bot.tint = tint;
             bot.shape = shape;
             bot.config = config;
-            bot.record()
+            bot.approval_policy = approval_policy;
+            bot.record(&voices)
         })
     }
 
@@ -733,7 +816,7 @@ impl BotStore {
             }
             index
         };
-        let bot = state.bots.remove(index).record()?;
+        let bot = state.bots.remove(index).record(&*self.voice_routes()?)?;
         state.routines.retain(|routine| *routine.bot_id != *bot_id);
         validate_state(&state)?;
         let catalog = catalog_json(&state)?;
@@ -750,10 +833,11 @@ impl BotStore {
     }
 
     pub(crate) fn bots(&self) -> Result<Vec<BotRecord>> {
+        let voices = self.voice_routes()?;
         self.current_state()?
             .bots
             .iter()
-            .map(StoredBot::record)
+            .map(|bot| bot.record(&voices))
             .collect()
     }
 
@@ -763,12 +847,28 @@ impl BotStore {
     }
 
     pub(crate) fn find_bot(&self, id: &str) -> Result<Option<BotRecord>> {
+        let voices = self.voice_routes()?;
         self.current_state()?
             .bots
             .iter()
             .find(|bot| *bot.id == *id)
-            .map(StoredBot::record)
+            .map(|bot| bot.record(&voices))
             .transpose()
+    }
+
+    /// One Bot with the approval policy its runtime enforces.
+    pub(crate) fn runtime_bot(&self, id: &str) -> Result<RuntimeBot> {
+        let voices = self.voice_routes()?;
+        let state = self.current_state()?;
+        let bot = state
+            .bots
+            .iter()
+            .find(|bot| *bot.id == *id)
+            .ok_or_else(|| Error::Config(format!("unknown Bot `{id}`")))?;
+        Ok(RuntimeBot {
+            record: Arc::new(bot.record(&voices)?),
+            approval_policy: bot.approval_policy,
+        })
     }
 
     /// Registers a definition and its consumers in the same durable transaction.
@@ -1922,7 +2022,6 @@ fn validate_records(state: &BotState, routines_dir: &Path) -> Result<()> {
                 "persisted Bot revision must be positive".into(),
             ));
         }
-        validate_agent_composition(&bot.config.config)?;
     }
     for routine in &state.routines {
         let parsed = Uuid::parse_str(&routine.id)
@@ -2152,9 +2251,31 @@ fn same_file(_left: &std::fs::Metadata, _right: &std::fs::Metadata) -> bool {
 #[cfg(test)]
 mod tests;
 
+const CONVERSATION_PREFIX: &str = "persistent-";
+
 /// One stable conversation identity per Bot.
 pub(crate) fn conversation_session_id(bot_id: &str) -> String {
-    format!("persistent-{bot_id}")
+    format!("{CONVERSATION_PREFIX}{bot_id}")
+}
+
+/// The Bot whose permanent conversation `session_id` names.
+pub(crate) fn conversation_owner(session_id: &str) -> Option<&str> {
+    session_id.strip_prefix(CONVERSATION_PREFIX)
+}
+
+/// Whether `session_id` is `owner_id`'s permanent conversation.
+pub(crate) fn is_persistent(session_id: &str, owner_id: &str) -> bool {
+    conversation_owner(session_id) == Some(owner_id)
+}
+
+/// Whether `summary` is one of `bot_id`'s listed top-level chats.
+pub(crate) fn is_listed_root(
+    summary: &mobius::backend::checkpoint::SessionSummary,
+    bot_id: &str,
+) -> bool {
+    *summary.session_context.owner_id == *bot_id
+        && summary.catalog_visible
+        && summary.parent_session_id.is_none()
 }
 
 fn reject_bot_mutation_if_deleting(state: &BotState) -> Result<()> {

@@ -28,12 +28,13 @@ struct Definition {
     prompt: String,
     default_timeout_ms: u64,
     computer_control: ToolSpec,
+    requires: Vec<crate::protocol::FrontendSettingRequirement>,
 }
 crate::embedded_config! { static DEFINITION: Definition = include_str!("computer_control.toml") => limit_schema; }
 
 super::manifest::middleware_manifest! {
 /// Optional computer control; deployment supplies the runtime and its documentation.
-    "computer_control", DEFINITION, required: false, settings: &[]
+    "computer_control", DEFINITION, required: false, settings: &[], requires: &DEFINITION.requires
 }
 
 const MAX_CODE_BYTES: usize = 40_000;

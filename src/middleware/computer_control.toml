@@ -25,3 +25,9 @@ description = "Discard the interpreter before this evaluation. A gateway-owned b
 
 [computer_control.tool.parameters.properties.timeout_ms]
 type = "integer"
+
+[[requires]]
+middleware = "sandbox"
+setting = "approval_policy"
+value = "full_access"
+reason = "Computer control operates the host browser and desktop outside the sandbox, so it needs full access."

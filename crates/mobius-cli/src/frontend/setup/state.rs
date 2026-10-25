@@ -112,17 +112,23 @@ impl SetupState {
         let mut state = Self::from_parts(
             mode,
             provider_rows(&gateway.providers, &gateway.provider_instances),
-            gateway.middleware_features.clone(), // rules-allow: setup edits a snapshot while events update the gateway payload
-            gateway.extensions.clone(), // rules-allow: setup edits a snapshot while events update the gateway payload
+            gateway.agent_catalog.middleware_features.clone(), // rules-allow: setup edits a snapshot while events update the gateway payload
+            gateway.agent_catalog.extensions.clone(), // rules-allow: setup edits a snapshot while events update the gateway payload
             original,
             default_only,
         )?;
-        state.set_original_model_choice(&gateway.models, &gateway.model_providers);
+        state.set_original_model_choice(
+            &gateway.agent_catalog.models,
+            &gateway.agent_catalog.model_providers,
+        );
         if let Some(provider) = preferred_provider {
             state.select_provider(provider)?;
         }
         if mode == SetupMode::BotModel {
-            state.set_bot_model_routes(&gateway.models, &gateway.model_providers)?;
+            state.set_bot_model_routes(
+                &gateway.agent_catalog.models,
+                &gateway.agent_catalog.model_providers,
+            )?;
         }
         Ok(state)
     }

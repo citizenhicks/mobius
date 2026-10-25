@@ -102,3 +102,69 @@ fn apply_patch_rejects_pathological_fuzzy_matching() {
 
     assert!(validate_patch_complexity(&content, &patch, &mut 0).is_err());
 }
+
+#[test]
+fn apply_patch_begin_renders_its_envelope_as_a_linked_unified_diff() {
+    let block = ApplyPatch
+        .render(&EventMsg::ToolCallBegin(crate::protocol::ToolCallBeginEvent {
+            turn_id: "turn".into(),
+            call_id: "patch".into(),
+            name: "apply_patch".into(),
+            arguments: serde_json::json!({
+                "patch": "*** Begin Patch\n*** Update File: src/a b.rs\n@@ fn x\n-a\n+b\n c\n@@\n+d\n*** End Patch"
+            }),
+        }))
+        .expect("patch heading");
+    assert_eq!(
+        block.format,
+        crate::protocol::FrontendBlockFormat::UnifiedDiff
+    );
+    assert_eq!(
+        block.text,
+        "--- src/a b.rs\n+++ src/a b.rs\n@@ -1,2 +1,2 @@ fn x\n-a\n+b\n c\n@@ -4,0 +4,1 @@\n+d\n"
+    );
+    assert_eq!(
+        block.links,
+        [crate::protocol::FrontendLink {
+            label: "a b.rs".into(),
+            href: "src%2Fa%20b.rs".into(),
+        }]
+    );
+    assert!(Patch::from_str(&block.text).is_ok());
+}
+
+#[test]
+fn apply_patch_approval_previews_the_diff_its_tool_renders() {
+    let stack =
+        crate::middleware::MiddlewareStack::new(vec![Arc::new(Tools::new(vec![Arc::new(
+            ApplyPatch,
+        )]))])
+        .expect("middleware stack");
+    let frontend = crate::middleware::FrontendExtensions::new(
+        Arc::new(stack),
+        "session".parse().expect("session ID"),
+    )
+    .expect("frontend");
+    let arguments = serde_json::json!({
+        "patch": "*** Begin Patch\n*** Update File: a.rs\n@@\n-a\n+b\n*** End Patch"
+    });
+    let mut request = crate::protocol::ExecApprovalRequestEvent {
+        id: "request".into(),
+        turn_id: "turn".into(),
+        calls: vec![crate::protocol::ApprovalCall {
+            call_id: "patch".into(),
+            name: "apply_patch".into(),
+            arguments: arguments.clone(),
+            preview: None,
+        }],
+        reason: String::new(),
+    };
+    frontend.preview_approvals(&mut request);
+    let call = &request.calls[0];
+    let preview = call.preview.as_ref().expect("approval preview");
+    assert_eq!(
+        preview.format,
+        crate::protocol::FrontendBlockFormat::UnifiedDiff
+    );
+    assert_eq!(call.arguments, arguments);
+}

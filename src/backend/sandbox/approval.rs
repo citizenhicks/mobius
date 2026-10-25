@@ -106,6 +106,7 @@ impl Approval {
         FrontendContribution {
             capability: CAPABILITY.into(),
             count: None,
+            count_label: None,
             commands: Vec::new(),
             widgets: vec![Arc::new(widget(self.default_policy))],
             references: Vec::new(),
@@ -254,6 +255,8 @@ fn approval_tools(calls: &[crate::protocol::ApprovalCall]) -> String {
 fn widget(policy: ApprovalPolicy) -> FrontendWidget {
     FrontendWidget {
         id: "approval_policy".into(),
+        count: None,
+        priority: crate::protocol::FrontendPriority::Primary,
         slot: FrontendSlot::Header,
         text: match policy {
             ApprovalPolicy::Ask => "approval ASK".into(),

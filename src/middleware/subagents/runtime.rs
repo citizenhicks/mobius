@@ -134,6 +134,7 @@ pub(super) enum AgentStatus {
 }
 
 pub(super) struct PreviewPage {
+    pub(super) state: FrontendListItemState,
     pub(super) subtitle: String,
     pub(super) page_id: String,
     pub(super) events: Vec<FrontendPreviewEvent>,
@@ -153,6 +154,16 @@ impl AgentStatus {
             Self::Interrupted => "interrupted",
             Self::Completed => "completed",
             Self::Errored => "errored",
+        }
+    }
+
+    const fn list_state(self) -> FrontendListItemState {
+        match self {
+            Self::PendingInit => FrontendListItemState::Pending,
+            Self::Running => FrontendListItemState::InProgress,
+            Self::Completed => FrontendListItemState::Completed,
+            Self::Interrupted => FrontendListItemState::Interrupted,
+            Self::Errored => FrontendListItemState::Failed,
         }
     }
 
@@ -492,7 +503,7 @@ impl Shared {
         path: &str,
         before_sequence: Option<u64>,
     ) -> Result<PreviewPage> {
-        let (checkpoints, session_id, subtitle, terminal_error) = {
+        let (checkpoints, session_id, state, subtitle, terminal_error) = {
             let root = self.root(root_id).await?;
             let root = root.state.lock().await;
             let entry = root
@@ -503,6 +514,7 @@ impl Shared {
             (
                 Arc::clone(&root.checkpoints),
                 entry.session_id.share(),
+                entry.status.list_state(),
                 entry.spawn_context.clone(), // rules-allow: the page loads after the state lock is released
                 if before_sequence.is_none() && matches!(&entry.status, AgentStatus::Errored) {
                     entry
@@ -521,15 +533,18 @@ impl Shared {
             .into_chronological()
             .into_iter()
             .map(|record| FrontendPreviewEvent {
+                sequence: record.sequence,
                 submission_id: record.event.submission_id,
                 recorded_at_ms: record.recorded_at_ms,
                 event: record.event.msg,
             })
             .collect::<Vec<_>>();
         if let Some(message) = terminal_error {
+            let last = events.last();
             events.push(FrontendPreviewEvent {
+                sequence: last.map_or(0, |event| event.sequence.saturating_add(1)),
                 submission_id: None,
-                recorded_at_ms: events.last().map_or(0, |event| event.recorded_at_ms),
+                recorded_at_ms: last.map_or(0, |event| event.recorded_at_ms),
                 event: EventMsg::Frontend(subagent_error_notice(message.to_string())),
             });
         }
@@ -539,6 +554,7 @@ impl Shared {
             )));
         }
         Ok(PreviewPage {
+            state,
             subtitle,
             page_id: before_sequence.map_or_else(
                 || format!("{path}:latest"),
@@ -764,10 +780,18 @@ fn status_widget(tree: &Tree) -> FrontendWidget {
         .agents
         .values()
         .any(|agent| matches!(agent.status, AgentStatus::Errored));
+    let count = tree.agents.len();
+    let label = if count == 1 {
+        &super::text::DEFINITION.status_label_one
+    } else {
+        &super::text::DEFINITION.status_label_other
+    };
     FrontendWidget {
         id: "status".into(),
+        count: Some(count),
+        priority: crate::protocol::FrontendPriority::Secondary,
         slot: FrontendSlot::ComposerFooter,
-        text: tree.agents.len().to_string(),
+        text: label.replace("{count}", &count.to_string()),
         tone: if failed {
             FrontendTone::Error
         } else if active > 0 {
@@ -795,13 +819,7 @@ fn agent_items(tree: &Tree) -> Vec<FrontendActionListItem> {
         .map(|(path, entry)| FrontendActionListItem {
             id: path.as_str().into(),
             text: path.rsplit('/').next().unwrap_or(path).into(),
-            state: match entry.status {
-                AgentStatus::PendingInit => FrontendListItemState::Pending,
-                AgentStatus::Running => FrontendListItemState::InProgress,
-                AgentStatus::Completed => FrontendListItemState::Completed,
-                AgentStatus::Interrupted => FrontendListItemState::Plain,
-                AgentStatus::Errored => FrontendListItemState::Failed,
-            },
+            state: entry.status.list_state(),
             actions: vec![FrontendAction {
                 id: super::Command::Open.as_str().into(),
                 label: super::text::DEFINITION.render_open.as_str().into(),

@@ -31,12 +31,25 @@ pub struct FrontendContribution {
     pub capability: Arc<str>,
     /// Optional capability-owned item count for generic summaries.
     pub count: Option<usize>,
+    /// Capability-owned noun for `count`, so frontends can label it without knowing the
+    /// capability.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count_label: Option<FrontendCountLabel>,
     /// The commands.
     pub commands: Vec<FrontendCommand>,
     /// The widgets.
     pub widgets: Vec<Arc<FrontendWidget>>,
     /// The references.
     pub references: Vec<FrontendReference>,
+}
+
+/// Singular and plural nouns for a capability-owned count.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FrontendCountLabel {
+    /// The noun used for exactly one item.
+    pub one: String,
+    /// The noun used for any other count.
+    pub other: String,
 }
 
 /// One middleware entry and its frontend-neutral configuration controls.
@@ -52,6 +65,23 @@ pub struct MiddlewareFeature {
     pub required: bool,
     /// The settings.
     pub settings: Vec<FrontendSetting>,
+    /// Advisory settings this middleware needs to work; frontends display them and do not
+    /// block saving.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires: Vec<FrontendSettingRequirement>,
+}
+
+/// One setting value another middleware needs before it can work.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FrontendSettingRequirement {
+    /// The middleware that owns the setting.
+    pub middleware: String,
+    /// The setting identifier.
+    pub setting: String,
+    /// The required value.
+    pub value: Arc<str>,
+    /// Why the value is required.
+    pub reason: String,
 }
 
 /// One schema-advertised setting rendered by a thin frontend.
@@ -153,6 +183,23 @@ pub struct FrontendWidget {
     pub content: Option<FrontendWidgetContent>,
     /// Optional operation invoked when a frontend activates this widget.
     pub action: Option<Op>,
+    /// Optional item count summarized by `text`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count: Option<usize>,
+    /// The priority.
+    #[serde(default)]
+    pub priority: FrontendPriority,
+}
+
+/// How prominently a frontend shows a widget.
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FrontendPriority {
+    /// Selects the primary case.
+    #[default]
+    Primary,
+    /// Secondary widgets show like primary ones; only compact layouts may hide them.
+    Secondary,
 }
 
 impl FrontendWidget {
@@ -216,12 +263,17 @@ pub enum FrontendSlot {
     Attention,
 }
 
+/// Blocks whose ID starts with this are delivered live and never kept in session history.
+pub(crate) const TRANSIENT_BLOCK_ID_PREFIX: &str = "transient:";
+
 /// Capability-rendered transcript content with frontend-neutral formatting and tone.
 #[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrontendBlock {
     /// The identifier.
     pub id: Option<String>,
-    /// The group.
+    /// Blocks sharing a group belong together, such as a turn's activity or every row
+    /// about one background command (its command ID), so a frontend can join them without
+    /// knowing which tool rendered them. A `None` update keeps the previous group.
     pub group: Option<String>,
     /// The update.
     pub update: FrontendBlockUpdate,
@@ -388,6 +440,8 @@ pub enum FrontendListItemState {
     Completed,
     /// Selects the failed case.
     Failed,
+    /// Selects the interrupted case.
+    Interrupted,
 }
 
 /// One labeled, icon-forward action attached to a list item.
@@ -439,6 +493,9 @@ pub struct FrontendEditor {
 /// One timestamped semantic event shown inside a capability preview.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FrontendPreviewEvent {
+    /// The previewed chat's journal sequence, which orders and identifies its transcript
+    /// entries across preview pages.
+    pub sequence: u64,
     /// Canonical message identity retained from the recorded event.
     pub submission_id: Option<Arc<str>>,
     /// The recorded at milliseconds.
@@ -481,6 +538,11 @@ pub enum FrontendEvent {
     },
     /// Selects the preview case.
     Preview {
+        /// What the preview shows.
+        kind: FrontendPreviewKind,
+        /// The previewed item's state, when it has one.
+        #[serde(default)]
+        state: Option<FrontendListItemState>,
         /// The semantic preview symbol.
         symbol: Option<FrontendSymbol>,
         /// Accumulated duration of completed activity, in milliseconds.
@@ -502,6 +564,21 @@ pub enum FrontendEvent {
         /// The next.
         next: Option<Op>,
     },
+    /// Asks the frontend to open a session the capability just created.
+    OpenSession {
+        /// The session identifier.
+        session_id: crate::SessionId,
+    },
+}
+
+/// What a capability preview shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FrontendPreviewKind {
+    /// A subagent's conversation.
+    Agent,
+    /// A voice call's transcript.
+    Call,
 }
 
 /// How one preview page changes the matching frontend preview.
@@ -727,6 +804,18 @@ pub enum FrontendSymbol {
     Storage,
     /// Selects the task case.
     Task,
+    /// Selects the voice case.
+    Voice,
+    /// Selects the steer case.
+    Steer,
+    /// Selects the queue case.
+    Queue,
+    /// Selects the question case.
+    Question,
+    /// Selects the plus case.
+    Plus,
+    /// Selects the compaction case.
+    Compaction,
     /// A frontend-provided glyph name.
     Custom(String),
 }
@@ -752,6 +841,12 @@ impl FrontendSymbol {
             Self::Sparkle => "sparkle",
             Self::Storage => "storage",
             Self::Task => "task",
+            Self::Voice => "voice",
+            Self::Steer => "steer",
+            Self::Queue => "queue",
+            Self::Question => "question",
+            Self::Plus => "plus",
+            Self::Compaction => "compaction",
             Self::Custom(name) => name,
         }
     }
@@ -777,6 +872,12 @@ impl FrontendSymbol {
             "sparkle" => Self::Sparkle,
             "storage" => Self::Storage,
             "task" => Self::Task,
+            "voice" => Self::Voice,
+            "steer" => Self::Steer,
+            "queue" => Self::Queue,
+            "question" => Self::Question,
+            "plus" => Self::Plus,
+            "compaction" => Self::Compaction,
             other => Self::Custom(other.to_owned()),
         }
     }

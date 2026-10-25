@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use super::args::TelemetryCommand;
 use super::{
-    ClientKind, ClientMessage, ConfigStore, Endpoint, Error, GatewayClient, MAX_PENDING_FRAMES,
-    PROCESS_FILE, PathBuf, Result, ServerMessage, direct_loopback_endpoint, ensure_gateway_stopped,
-    new_request_id, print_line, running_process_record,
+    ClientCapabilities, ClientMessage, ConfigStore, Endpoint, Error, GatewayClient,
+    MAX_PENDING_FRAMES, PROCESS_FILE, PathBuf, Result, ServerMessage, direct_loopback_endpoint,
+    ensure_gateway_stopped, new_request_id, print_line, running_process_record,
 };
 use crate::telemetry::{SinkMethod, TelemetrySink};
 
@@ -143,7 +143,7 @@ async fn request(
             },
             ..Default::default()
         };
-        let client = GatewayClient::connect_with(endpoint, token, ClientKind::GatewayDashboard, &mut options).await?;
+        let client = GatewayClient::connect_with(endpoint, token, ClientCapabilities::default(), &mut options).await?;
         let (sender, mut events) = client.into_parts();
         let mut request_id = [0; uuid::fmt::Hyphenated::LENGTH];
         let request_id = new_request_id(&mut request_id);

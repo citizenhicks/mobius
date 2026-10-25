@@ -1,14 +1,16 @@
+use super::super::OpenReplay;
+use super::super::replay::{fork_origin, inherited_cursor};
 use super::{
     ActiveRoutine, ActiveRoutineRun, Arc, BotStore, ChatSpec, Error, EventPageRequest, HostCommand,
     HostSnapshot, HostState, JournalDelivery, MessageAuthor, MessageSubmission, Op, Ordering, Path,
     PathBuf, ProviderCutoverStatus, RealtimeModel, Rejection, Result, ReviewDecision,
-    RoutineRunStatus, RunningAgent, ServerFrame, ServerMessage, SessionHistoryPage, SharedFrame,
-    SourceAdmission, Submission, Uuid, ValidatedSubmission, delete_workspace_file,
-    durable_history_page, event_sequence, event_turn_page, fail_active_routine, internal,
-    invalid_config, invalid_workspace, list_workspace_files, mpsc, oneshot, project_record,
-    read_workspace_file, replayable, shutdown_agent, start_agent, stopped,
-    try_begin_session_mutation, write_workspace_file,
+    RoutineRunStatus, RunningAgent, ServerMessage, SessionHistoryPage, SessionRuntimeState,
+    SharedFrame, SourceAdmission, Submission, Uuid, ValidatedSubmission, delete_workspace_file,
+    durable_history_page, event_sequence, fail_active_routine, internal, invalid_config,
+    invalid_workspace, list_workspace_files, mpsc, oneshot, read_workspace_file, shutdown_agent,
+    start_agent, stopped, try_begin_session_mutation, write_workspace_file,
 };
+use crate::wire::HistoryCursor;
 use futures_util::StreamExt as _;
 
 impl HostState {
@@ -96,12 +98,7 @@ impl HostState {
                         self.pending_turns = self.pending_turns.saturating_sub(1);
                     }
                     respond(admission.reply, admission.result.map(|_| ()).map_err(source_rejection), "source admission");
-                    if self.is_idle() {
-                        self.running.gateway_sandbox.release_desktop_use().await;
-                        for waiter in self.idle_waiters.drain(..) {
-                            respond(waiter, (), "idle waiter");
-                        }
-                    }
+                    self.settle_idle().await;
                 }
                 command = self.commands.recv() => {
                     let Some(command) = command else { break };
@@ -190,7 +187,7 @@ impl HostState {
                 let result = async {
                     let _mutation = self.begin_session_mutation()?;
                     self.bind_bot().await?;
-                    Ok(self.running.prepared.bot.accepts_file_attachments)
+                    Ok(self.running.prepared.bot.capabilities.attachments)
                 }
                 .await;
                 respond(reply, result, "session command");
@@ -201,20 +198,10 @@ impl HostState {
                     self.bind_bot().await?;
                     let bot = self.bots.bot(&self.spec.bot_id).map_err(internal)?;
                     let router = &self.running.model_router;
-                    let middleware = &self.running.prepared.bot.config.config.middleware;
-                    if !middleware.enabled(mobius::middleware::voice::MANIFEST.id) {
-                        return Err(Rejection::new(
-                            "realtime_voice",
-                            "voice is turned off for this Bot",
-                        ));
-                    }
-                    let selected = crate::middleware_manifest::string_setting(
-                        middleware,
-                        mobius::middleware::voice::MANIFEST.id,
-                        "model",
-                    )
-                    .map_err(internal)?;
-                    let voice = router.voice_choice(selected).map_err(|error| {
+                    let selected = self.running.prepared.voice.as_ref().ok_or_else(|| {
+                        Rejection::new("realtime_voice", "voice is turned off for this Bot")
+                    })?;
+                    let voice = router.voice_choice(selected.as_deref()).map_err(|error| {
                         Rejection::new(
                             "realtime_voice",
                             format!("{error}; select an available voice"),
@@ -249,15 +236,8 @@ impl HostState {
             HostCommand::Ready { reply } => {
                 respond(reply, self.ready().await.map_err(internal), "ready");
             }
-            HostCommand::HistoryPage {
-                before_sequence,
-                reply,
-            } => {
-                respond(
-                    reply,
-                    self.history_page_value(before_sequence).await,
-                    "history page",
-                );
+            HostCommand::HistoryPage { before, reply } => {
+                respond(reply, self.history_page_value(before).await, "history page");
             }
             HostCommand::Submit { submission, reply } => {
                 let result = async {
@@ -376,7 +356,9 @@ impl HostState {
                     self.require_idle()?;
                     let _mutation = self.begin_session_mutation()?;
                     self.project()?;
-                    delete_workspace_file(&self.running.gateway_sandbox, &path).await
+                    delete_workspace_file(&self.running.gateway_sandbox, &path).await?;
+                    self.storage_reads.invalidate();
+                    Ok(())
                 }
                 .await;
                 respond(reply, result, "session command");
@@ -390,7 +372,9 @@ impl HostState {
                     self.require_idle()?;
                     let _mutation = self.begin_session_mutation()?;
                     self.project()?;
-                    write_workspace_file(&self.running.gateway_sandbox, &path, &content).await
+                    write_workspace_file(&self.running.gateway_sandbox, &path, &content).await?;
+                    self.storage_reads.invalidate();
+                    Ok(())
                 }
                 .await;
                 respond(reply, result, "session command");
@@ -480,13 +464,12 @@ impl HostState {
             return;
         }
         let result = async {
-            let submission = if self.running.session_id.as_ref()
-                == crate::bots::conversation_session_id(&self.spec.bot_id)
-            {
-                submission.with_queued_delivery()
-            } else {
-                submission
-            };
+            let submission =
+                if crate::bots::is_persistent(&self.running.session_id, &self.spec.bot_id) {
+                    submission.with_queued_delivery()
+                } else {
+                    submission
+                };
             let _mutation = self.begin_session_mutation()?;
             self.bind_bot().await?;
             if *self.spec.bot_id != *bot_id {
@@ -529,79 +512,68 @@ impl HostState {
         &self,
         last_sequence: Option<u64>,
     ) -> std::result::Result<HostSnapshot, Rejection> {
-        let mut ready = self.ready().await.map_err(internal)?;
-        let replay = if last_sequence.is_some() {
-            self.replay_after(last_sequence)?
-        } else {
-            let page = event_turn_page(self.checkpoints.as_ref(), &self.running.session_id, None)
-                .await
-                .map_err(internal)?;
-            ready.next_before_sequence = page.next_before_sequence;
-            let mut replay = Vec::new();
-            for journal in page.into_chronological() {
-                let frame = ServerFrame::new(ServerMessage::AgentEvent {
-                    session_id: self.running.session_id.share(),
-                    record: project_record(&self.running.frontend, journal),
-                });
-                if replayable(&frame) {
-                    replay.push(SharedFrame::encoded(frame).map_err(internal)?);
-                }
-            }
-            replay
+        let ready = self.ready().await.map_err(internal)?;
+        let replay = match last_sequence.and_then(|last| self.replay_after(last)) {
+            Some(frames) => OpenReplay::Frames(frames),
+            None => OpenReplay::Transcript {
+                through_sequence: self.sequence,
+                page: self.transcript.snapshot(),
+                next: self.transcript_next().await?,
+            },
         };
         Ok(HostSnapshot { ready, replay })
     }
 
+    /// Where history continues before the live transcript: this chat's older turns, or,
+    /// once it holds the chat's first turn, the chat it was forked from.
+    async fn transcript_next(&self) -> std::result::Result<Option<HistoryCursor>, Rejection> {
+        if let Some(before_sequence) = self.transcript.history_before() {
+            return Ok(Some(HistoryCursor {
+                session_id: self.running.session_id.share(),
+                before_sequence,
+            }));
+        }
+        match fork_origin(self.checkpoints.as_ref(), &self.running.session_id).await? {
+            Some((parent, parent_sequence)) => {
+                inherited_cursor(self.checkpoints.as_ref(), parent, parent_sequence).await
+            }
+            None => Ok(None),
+        }
+    }
+
     pub(super) async fn history_page_value(
         &self,
-        before_sequence: Option<u64>,
+        before: Option<HistoryCursor>,
     ) -> std::result::Result<SessionHistoryPage, Rejection> {
         durable_history_page(
             self.checkpoints.as_ref(),
             &self.running.session_id,
             &self.running.frontend,
-            before_sequence,
+            before,
         )
         .await
     }
 
-    pub(super) fn replay_after(
-        &self,
-        last_sequence: Option<u64>,
-    ) -> std::result::Result<Vec<SharedFrame>, Rejection> {
-        let Some(last_sequence) = last_sequence else {
-            return Ok(self
-                .replay
-                .iter()
-                .map(|entry| entry.frame.clone()) // rules-allow: the replay buffer keeps its shared frames
-                .collect());
-        };
-        if last_sequence > self.sequence {
-            return Err(Rejection::new(
-                "replay_unavailable",
-                "the reconnect cursor is ahead of the durable session",
-            ));
-        }
+    /// The replay frames after `last_sequence`, while the window still holds them all.
+    fn replay_after(&self, last_sequence: u64) -> Option<Vec<SharedFrame>> {
         let oldest = self
             .replay
             .front()
             .and_then(|entry| event_sequence(&entry.frame));
-        if last_sequence < self.sequence
-            && oldest.is_none_or(|oldest| last_sequence.saturating_add(1) < oldest)
-        {
-            return Err(Rejection::new(
-                "replay_unavailable",
-                "the reconnect window expired; reload the active session",
-            ));
+        let expired = last_sequence < self.sequence
+            && oldest.is_none_or(|oldest| last_sequence.saturating_add(1) < oldest);
+        if last_sequence > self.sequence || expired {
+            return None;
         }
-        Ok(self
-            .replay
-            .iter()
-            .filter(|entry| {
-                event_sequence(&entry.frame).is_some_and(|sequence| sequence > last_sequence)
-            })
-            .map(|entry| entry.frame.clone()) // rules-allow: the replay buffer keeps its shared frames
-            .collect())
+        Some(
+            self.replay
+                .iter()
+                .filter(|entry| {
+                    event_sequence(&entry.frame).is_some_and(|sequence| sequence > last_sequence)
+                })
+                .map(|entry| entry.frame.clone()) // rules-allow: the replay buffer keeps its shared frames
+                .collect(),
+        )
     }
 
     pub(super) fn run_routine(
@@ -671,15 +643,7 @@ impl HostState {
             .as_ref()
             .ok_or_else(stopped)?
             .send_validated(submission)
-            .map_err(|error| Rejection {
-                code: match error {
-                    mobius::Error::Busy(_) => "agent_busy",
-                    mobius::Error::Stopped(_) => "agent_stopped",
-                    _ => "invalid_submission",
-                },
-                message: error.to_string().into(),
-                fatal: matches!(error, mobius::Error::Stopped(_)),
-            })?;
+            .map_err(agent_rejection)?;
         self.work_activity.mark();
         if let Some(submission_id) = message_submission_id {
             self.pending_turns += 1;
@@ -710,14 +674,10 @@ impl HostState {
     }
 
     async fn runtime_is_idle(&self) -> std::result::Result<bool, Rejection> {
-        if let Some(checkpoint) = self
-            .checkpoints
-            .load(&self.running.session_id)
+        if SessionRuntimeState::load(self.checkpoints.as_ref(), &self.running.session_id)
             .await
             .map_err(internal)?
-            && (checkpoint.active_execution.is_some()
-                || !checkpoint.pending_messages.is_empty()
-                || checkpoint.pending_approval.is_some())
+            .is_some_and(|runtime| !runtime.is_settled())
         {
             return Ok(false);
         }
@@ -760,7 +720,9 @@ impl HostState {
             return Ok(());
         };
         let prepared = Arc::clone(&self.running.prepared);
-        self.replace_running(Some(next), Some(prepared)).await
+        self.replace_running(Some(next), Some(prepared)).await?;
+        self.storage_reads.invalidate();
+        Ok(())
     }
 
     async fn start_replacement(
@@ -887,13 +849,15 @@ pub(in crate::host) fn fail_queued_routine_commands(
     first_error.map(internal)
 }
 
-fn source_rejection(error: mobius::Error) -> Rejection {
+/// Maps an agent ingress or admission failure to the rejection its requester receives.
+fn agent_rejection(error: mobius::Error) -> Rejection {
     let code = match &error {
         mobius::Error::Busy(_) => "agent_busy",
         mobius::Error::Stopped(_) => "agent_stopped",
         mobius::Error::Checkpoint(_) | mobius::Error::Sqlite(_) => "gateway_error",
         _ => "invalid_submission",
     };
+    let fatal = matches!(error, mobius::Error::Stopped(_));
     let message = match error {
         mobius::Error::Config(message) => message.into(),
         error => error.to_string().into(),
@@ -901,7 +865,15 @@ fn source_rejection(error: mobius::Error) -> Rejection {
     Rejection {
         code,
         message,
+        fatal,
+    }
+}
+
+/// A source sender keeps its own connection when the target agent refuses delivery.
+fn source_rejection(error: mobius::Error) -> Rejection {
+    Rejection {
         fatal: false,
+        ..agent_rejection(error)
     }
 }
 

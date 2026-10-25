@@ -305,6 +305,11 @@ pub enum MessageSource {
         /// The immutable event identifier within that source.
         event_id: Arc<str>,
     },
+    /// A request a live voice call relays into the chat it belongs to.
+    Call {
+        /// The voice call's transcript session.
+        call_id: SessionId,
+    },
 }
 
 impl MessageSource {
@@ -314,6 +319,7 @@ impl MessageSource {
         match self {
             Self::Session { session_id } => session_id,
             Self::External { source_id, .. } => source_id,
+            Self::Call { call_id } => call_id,
         }
     }
 }
@@ -359,7 +365,7 @@ impl MessageAuthor {
                 let mut lineage = ancestry.iter().map(Arc::clone).collect::<Vec<_>>();
                 let origin = cause_id.as_ref().or(match source {
                     MessageSource::External { event_id, .. } => Some(event_id),
-                    MessageSource::Session { .. } => None,
+                    MessageSource::Session { .. } | MessageSource::Call { .. } => None,
                 });
                 for id in origin.into_iter().chain(std::iter::once(message_id)) {
                     if !lineage.contains(id) {

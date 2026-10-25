@@ -24,8 +24,6 @@ use crate::{BoxFuture, Error, Result};
 pub use call::{VoiceCall, VoiceCallContext, VoiceWake};
 use transcript::{COMMAND, read_preview};
 
-const SYMBOL: &str = "voice";
-
 mod text {
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
@@ -337,9 +335,9 @@ fn progress_text(event: &EventMsg, voice_session_id: &SessionId) -> Option<Strin
             let author = match &message.author {
                 MessageAuthor::User => text::DEFINITION.voice_user_label.as_str(),
                 MessageAuthor::Source {
-                    source: crate::protocol::MessageSource::Session { session_id },
+                    source: crate::protocol::MessageSource::Call { call_id },
                     ..
-                } if session_id == voice_session_id => {
+                } if call_id == voice_session_id => {
                     return None;
                 }
                 MessageAuthor::Source { handle, .. } => handle,
@@ -458,8 +456,8 @@ impl VoiceConversation {
                 message: MessageSubmission {
                     author: MessageAuthor::Source {
                         message_id: Arc::clone(&submission_id),
-                        source: crate::protocol::MessageSource::Session {
-                            session_id: self.session_id.share(),
+                        source: crate::protocol::MessageSource::Call {
+                            call_id: self.session_id.share(),
                         },
                         cause_id: None,
                         ancestry: Vec::new(),
@@ -467,7 +465,7 @@ impl VoiceConversation {
                             .handoff_handle
                             .replace("{bot}", &self.bot_name)
                             .into(),
-                        symbol: Some(FrontendSymbol::Custom(SYMBOL.into())),
+                        symbol: Some(FrontendSymbol::Voice),
                     },
                     text,
                     attachments: Vec::new(),
@@ -654,8 +652,8 @@ mod tests {
             Some(crate::protocol::ActiveMessageDelivery::Steer)
         );
         assert!(
-            matches!(&message.author, MessageAuthor::Source { source: crate::protocol::MessageSource::Session { session_id }, handle, symbol: Some(FrontendSymbol::Custom(symbol)), .. }
-            if &**session_id == "voice-session" && &**handle == "Builder (voice)" && symbol == "voice")
+            matches!(&message.author, MessageAuthor::Source { source: crate::protocol::MessageSource::Call { call_id }, handle, symbol: Some(FrontendSymbol::Voice), .. }
+            if &**call_id == "voice-session" && &**handle == "Builder (voice)")
         );
         let started = EventMsg::TurnStarted(TurnStartedEvent {
             turn_id: "turn".into(),

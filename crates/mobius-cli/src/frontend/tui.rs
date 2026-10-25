@@ -14,7 +14,7 @@ mod view;
 
 use std::sync::Arc;
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -32,6 +32,7 @@ use mobius::protocol::ActiveMessageDelivery;
 #[cfg(test)]
 use mobius::protocol::EventMsg;
 use mobius::protocol::ExecApprovalRequestEvent;
+use mobius::protocol::FrontendBlock;
 use mobius::protocol::FrontendBlockFormat;
 use mobius::protocol::FrontendBlockRole;
 use mobius::protocol::FrontendBlockState;
@@ -45,6 +46,8 @@ use mobius::protocol::Op;
 use mobius::protocol::RenderedBlock;
 use mobius::protocol::SessionFileReference;
 use mobius::protocol::SessionResumeRequestedEvent;
+use mobius::protocol::ToolContent;
+use mobius_gateway::wire::BlockDelta;
 
 const MAX_ENTRY_BYTES: usize = 40_000;
 const MAX_COMPOSER_HISTORY_ENTRIES: usize = 100;
@@ -413,10 +416,12 @@ struct TuiState {
     capability_overlay: Option<CapabilityOverlay>,
     requested_resume: Option<SessionResumeRequestedEvent>,
     background_approval_count: usize,
-    next_before_sequence: Option<u64>,
+    history_cursor: Option<mobius_gateway::wire::HistoryCursor>,
     history_request_id: Option<Arc<str>>,
     deletion_request_id: Option<Arc<str>>,
     file_download: Option<PendingFileDownload>,
+    /// The entry key of each block item still shown, for the gateway's block appends.
+    block_items: HashMap<Arc<str>, BlockKey>,
 }
 
 impl TuiState {
@@ -482,10 +487,11 @@ impl TuiState {
             capability_overlay: None,
             requested_resume: None,
             background_approval_count: 0,
-            next_before_sequence: None,
+            history_cursor: None,
             history_request_id: None,
             deletion_request_id: None,
             file_download: None,
+            block_items: HashMap::new(),
         }
     }
 
@@ -781,6 +787,97 @@ impl TuiState {
         self.trim_transcript();
     }
 
+    /// Remembers which entry the gateway's block item `item` draws into.
+    fn remember_block(&mut self, item: Arc<str>, capability: &str, block: &FrontendBlock) {
+        if let Some(value) = &block.id {
+            let key = BlockKey {
+                capability: capability.into(),
+                value: value.clone(), // rules-allow: the entry key and the block each own the block id
+            };
+            self.block_items.insert(item, key);
+        }
+    }
+
+    /// Applies a gateway block append to the entry its item draws into.
+    fn apply_block_delta(&mut self, item: &str, delta: BlockDelta) {
+        self.commit_reasoning();
+        let Some(key) = self.block_items.get(item) else {
+            return;
+        };
+        let Some(entry) = self
+            .transcript
+            .iter_mut()
+            .rev()
+            .find(|entry| entry.id.as_ref() == Some(key))
+        else {
+            return;
+        };
+        let BlockDelta {
+            text,
+            files,
+            content,
+            title,
+            state,
+            role,
+            tone,
+            format,
+            group,
+            ..
+        } = delta;
+        let added = bounded_terminal_text(
+            &super::block_text(&FrontendBlock {
+                text,
+                files,
+                content: ToolContent(content),
+                ..FrontendBlock::default()
+            }),
+            MAX_ENTRY_BYTES,
+        );
+        let mut body = entry
+            .detail
+            .take()
+            .unwrap_or_else(|| std::mem::take(&mut entry.text));
+        if body.is_empty() {
+            body.push_str(added.strip_prefix('\n').unwrap_or(&added));
+        } else {
+            body.push_str(&added);
+        }
+        view::truncate_display_text(&mut body, MAX_ENTRY_BYTES);
+        if let Some(title) = title.filter(|title| !title.is_empty()) {
+            entry.title = Some(bounded_title(&title));
+        }
+        if let Some(role) = role {
+            entry.role = Some(role);
+        }
+        if let Some(format) = format {
+            entry.format = format;
+        }
+        if let Some(tone) = tone {
+            entry.tone = tone.into();
+        }
+        if let Some(value) = group {
+            entry.group = Some(BlockKey {
+                capability: Arc::clone(&key.capability),
+                value,
+            });
+        }
+        if let Some(state) = state {
+            entry.pending = state == FrontendBlockState::Pending;
+        }
+        if entry.pending
+            && matches!(
+                entry.role,
+                Some(FrontendBlockRole::Tool | FrontendBlockRole::WebSearch)
+            )
+            && !body.is_empty()
+        {
+            entry.detail = Some(body);
+        } else {
+            entry.text = body;
+        }
+        entry.rendered = None;
+    }
+
     fn remember_streamed_phase(&mut self, model_step_id: Arc<str>, phase: ModelStepContentPhase) {
         self.streamed_step_phases
             .entry(model_step_id)
@@ -877,7 +974,14 @@ impl TuiState {
 
     fn trim_transcript(&mut self) {
         while self.transcript.len() > MAX_TRANSCRIPT_ENTRIES {
-            self.transcript.pop_front();
+            if let Some(TranscriptEntry { id: Some(id), .. }) = self.transcript.pop_front()
+                && !self
+                    .transcript
+                    .iter()
+                    .any(|entry| entry.id.as_ref() == Some(&id))
+            {
+                self.block_items.retain(|_, key| *key != id);
+            }
         }
     }
 

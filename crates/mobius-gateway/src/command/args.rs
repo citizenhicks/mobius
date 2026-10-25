@@ -227,6 +227,10 @@ struct RegisterProviderArgs {
     #[arg(long = "image-model-id", value_name = "ID")]
     image_model_ids: Option<Vec<String>>,
 
+    /// Mark this setup's credential and usage limits as supplied by the gateway operator.
+    #[arg(long)]
+    operator_managed: bool,
+
     /// Tool discovery mode: native or rebuild; omit to preserve the existing override.
     #[arg(long, value_name = "MODE", value_parser = ["native", "rebuild"], hide_possible_values = true)]
     tool_discovery: Option<String>,
@@ -355,6 +359,7 @@ pub(super) struct RegisterProviderOptions {
     pub(super) model_ids: Option<Vec<String>>,
     pub(super) models: Option<Vec<crate::wire::ConfiguredModel>>,
     pub(super) image_model_ids: Option<Vec<String>>,
+    pub(super) operator_managed: bool,
     pub(super) tool_discovery: Option<mobius::protocol::ToolDiscoveryMode>,
     pub(super) web_search: HostedWebSearch,
     pub(super) base_url: Option<mobius::backend::model::provider::BaseUrl>,
@@ -454,6 +459,7 @@ impl GatewayCli {
                         .map(serde_json::from_str)
                         .transpose()?,
                     image_model_ids: arguments.image_model_ids,
+                    operator_managed: arguments.operator_managed,
                     tool_discovery: arguments.tool_discovery.map(|mode| match mode.as_str() {
                         "native" => mobius::protocol::ToolDiscoveryMode::Native,
                         _ => mobius::protocol::ToolDiscoveryMode::Rebuild,

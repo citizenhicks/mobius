@@ -178,6 +178,26 @@ impl FrontendExtensions {
             .collect()
     }
 
+    /// Fills each call's preview with the block its tool renders when the call begins.
+    pub fn preview_approvals(&self, request: &mut crate::protocol::ExecApprovalRequestEvent) {
+        for call in &mut request.calls {
+            let event = EventMsg::ToolCallBegin(crate::protocol::ToolCallBeginEvent {
+                turn_id: Arc::clone(&request.turn_id),
+                call_id: Arc::clone(&call.call_id),
+                name: Arc::clone(&call.name),
+                arguments: std::mem::take(&mut call.arguments),
+            });
+            call.preview = self
+                .render(&event)
+                .into_iter()
+                .map(|rendered| rendered.block)
+                .find(|block| block.role == crate::protocol::FrontendBlockRole::Tool);
+            if let EventMsg::ToolCallBegin(begin) = event {
+                call.arguments = begin.arguments;
+            }
+        }
+    }
+
     /// Reports whether any installed middleware still runs work for this session.
     /// # Errors
     ///

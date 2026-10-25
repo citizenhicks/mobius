@@ -320,7 +320,7 @@ impl TuiState {
                 let rows = self.transcript_viewport.page_height();
                 self.transcript_viewport.scroll_up(rows);
                 if self.transcript_viewport.effective_scroll() == 0
-                    && self.next_before_sequence.is_some()
+                    && self.history_cursor.is_some()
                     && self.history_request_id.is_none()
                 {
                     Some(UiAction::LoadEarlierHistory)

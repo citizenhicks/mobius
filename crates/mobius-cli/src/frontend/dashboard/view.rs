@@ -5,7 +5,7 @@ use mobius::protocol::{
     FrontendActionListItem, FrontendListItemState, FrontendTone, FrontendWidget,
     FrontendWidgetContent,
 };
-use mobius_gateway::wire::{ClientKind, DailyUsage, ProfileSnapshot, SessionActivityState};
+use mobius_gateway::wire::{DailyUsage, ProfileSnapshot, SessionActivityState};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -221,6 +221,7 @@ pub(super) fn render_action_list(
                     theme.style(Role::Muted).add_modifier(Modifier::CROSSED_OUT),
                 ),
                 FrontendListItemState::Failed => ("✕ ", theme.style(Role::Error)),
+                FrontendListItemState::Interrupted => ("◌ ", theme.style(Role::Warning)),
             };
             let actions_width = item
                 .actions
@@ -398,16 +399,6 @@ pub(super) fn render_devices(
                     1 => ("●", "active".into(), Role::Success),
                     connections => ("●", format!("{connections} connections"), Role::Success),
                 };
-                let kinds = if client.kinds.is_empty() {
-                    "paired".into()
-                } else {
-                    client
-                        .kinds
-                        .iter()
-                        .map(|kind| client_kind(*kind))
-                        .collect::<Vec<_>>()
-                        .join(" + ")
-                };
                 let current =
                     if Some(client.client_id.as_str()) == state.current_client_id.as_deref() {
                         " · this device"
@@ -416,7 +407,7 @@ pub(super) fn render_devices(
                     };
                 Line::styled(
                     format!(
-                        " {symbol} {kinds} · {} · {status}{current}",
+                        " {symbol} {} · {status}{current}",
                         terminal_text(&client.label)
                     ),
                     theme.style(role),
@@ -595,16 +586,6 @@ pub(super) fn empty(message: &str) -> Vec<Line<'static>> {
         format!(" {}", terminal_text(message)),
         current().style(Role::Muted),
     )]
-}
-
-const fn client_kind(kind: ClientKind) -> &'static str {
-    match kind {
-        ClientKind::Cli => "CLI",
-        ClientKind::Macos => "macOS",
-        ClientKind::Ios => "iOS",
-        ClientKind::Ipados => "iPadOS",
-        ClientKind::GatewayDashboard => "Dashboard",
-    }
 }
 
 const fn activity_label(state: SessionActivityState) -> &'static str {

@@ -15,12 +15,11 @@ use super::{
     SharedFrame, StdMutex, Submission, Utc, Uuid, ValidatedSubmission, VecDeque, WorkActivity,
     WorkspaceFileScope, WorkspaceFiles, WorkspaceRead, active_run_summary, activity_catalog,
     assemble, broadcast, classify_journal_sequence, compact_replay_deltas, delete_workspace_file,
-    durable_history_page, event_sequence, event_turn_page, git_status, internal, invalid_config,
-    invalid_workspace, list_workspace_files, load_replay, mpsc, oneshot, project_record,
-    publish_ready_and_pending, read_workspace_file, receive, record_and_publish,
-    reject_pending_bot_deletion, replayable, stopped, switch_workspace_branch,
-    update_session_activity, update_widgets, validate_gateway_event, workspace_git_diff,
-    workspace_git_diff_totals, write_workspace_file,
+    durable_history_page, event_sequence, git_status, internal, invalid_config, invalid_workspace,
+    list_workspace_files, load_replay, mpsc, oneshot, project_record, publish_ready_and_pending,
+    read_workspace_file, receive, record_and_publish, reject_pending_bot_deletion, stopped,
+    switch_workspace_branch, update_session_activity, update_widgets, validate_gateway_event,
+    workspace_git_diff, workspace_git_diff_totals, write_workspace_file,
 };
 use mobius::backend::model::provider::provider;
 use mobius::protocol::MessageTarget;
@@ -45,6 +44,7 @@ pub(super) struct HostInner {
 
 struct HostState {
     telemetry: Arc<crate::telemetry::Telemetry>,
+    storage_reads: Arc<super::telemetry::StorageMeasurements>,
     work_activity: Arc<WorkActivity>,
     store: ConfigStore,
     gateway: Arc<StdMutex<GatewayConfig>>,
@@ -72,6 +72,7 @@ struct HostState {
         std::pin::Pin<Box<dyn std::future::Future<Output = SourceAdmission> + Send + Sync>>,
     >,
     approval_active: bool,
+    compacted_in_turn: bool,
     turn_error: Option<Arc<str>>,
     last_assistant_text: Option<String>,
     pending_startup: Vec<SharedFrame>,
@@ -79,8 +80,9 @@ struct HostState {
     sequence: u64,
     pub(super) replay: VecDeque<ReplayEntry>,
     pub(super) replay_bytes: usize,
-    pub(super) next_before_sequence: Option<u64>,
+    pub(super) transcript: super::transcript::TranscriptReducer,
     pub(super) widgets: SessionWidgets,
+    pub(super) token_usage: Option<Arc<mobius::protocol::TokenUsageInfo>>,
     commands: mpsc::Receiver<HostCommand>,
     events: broadcast::Sender<SharedFrame>,
     gateway_events: broadcast::Sender<ServerFrame>,
@@ -91,8 +93,9 @@ pub(super) struct LoadedReplay {
     pub(super) latest_sequence: u64,
     pub(super) replay: VecDeque<ReplayEntry>,
     pub(super) replay_bytes: usize,
-    pub(super) next_before_sequence: Option<u64>,
+    pub(super) transcript: super::transcript::TranscriptReducer,
     pub(super) widgets: SessionWidgets,
+    pub(super) token_usage: Option<Arc<mobius::protocol::TokenUsageInfo>>,
 }
 
 struct SourceAdmission {
@@ -132,6 +135,103 @@ pub(super) struct ActiveRoutine {
     pub(super) failure: Option<Arc<str>>,
 }
 
+/// The run state gateway code reads from a session's durable checkpoint.
+pub(super) struct SessionRuntimeState {
+    pub(super) active_turn: Option<ActiveTurn>,
+    /// An approval is durable, whether or not its decision has arrived.
+    pub(super) approval_pending: bool,
+    pub(super) undecided_approval: Option<mobius::protocol::ExecApprovalRequestEvent>,
+    pub(super) has_pending_messages: bool,
+    pub(super) stats: RunStats,
+}
+
+pub(super) struct ActiveTurn {
+    pub(super) turn_id: Arc<str>,
+    pub(super) submission_id: Arc<str>,
+    pub(super) author: Arc<MessageAuthor>,
+    pub(super) started_at_ms: i64,
+}
+
+impl SessionRuntimeState {
+    pub(super) async fn load(
+        checkpoints: &dyn CheckpointStore,
+        session_id: &SessionId,
+    ) -> Result<Option<Self>> {
+        Ok(checkpoints
+            .load(session_id)
+            .await?
+            .map(Self::from_checkpoint))
+    }
+
+    fn from_checkpoint(checkpoint: mobius::backend::checkpoint::Checkpoint) -> Self {
+        let stats = RunStats {
+            completed: checkpoint.execution_stats,
+            active: checkpoint
+                .active_execution
+                .as_ref()
+                .map(|active| active_run_summary(&checkpoint.session_id, active)),
+        };
+        Self {
+            active_turn: checkpoint.active_execution.map(|active| ActiveTurn {
+                turn_id: active.turn_id,
+                submission_id: active.submission_id,
+                author: active.author,
+                started_at_ms: active.started_at_ms,
+            }),
+            approval_pending: checkpoint.pending_approval.is_some(),
+            undecided_approval: checkpoint
+                .pending_approval
+                .filter(|pending| !pending.decision_received)
+                .as_ref()
+                .map(mobius::backend::checkpoint::PendingApproval::request_event),
+            has_pending_messages: !checkpoint.pending_messages.is_empty(),
+            stats,
+        }
+    }
+
+    /// No turn, approval, or queued message remains in the checkpoint.
+    pub(super) fn is_settled(&self) -> bool {
+        self.active_turn.is_none() && !self.approval_pending && !self.has_pending_messages
+    }
+}
+
+/// The turn boundaries gateway bookkeeping follows in the agent's event stream.
+pub(super) enum TurnLifecycle<'a> {
+    Started {
+        turn_id: &'a Arc<str>,
+    },
+    ApprovalRequested {
+        turn_id: &'a Arc<str>,
+        request_id: &'a Arc<str>,
+    },
+    /// The turn ended; `abort_reason` is set when it was aborted.
+    Finished {
+        turn_id: &'a Arc<str>,
+        abort_reason: Option<&'a Arc<str>>,
+    },
+}
+
+pub(super) fn turn_lifecycle(event: &EventMsg) -> Option<TurnLifecycle<'_>> {
+    match event {
+        EventMsg::TurnStarted(turn) => Some(TurnLifecycle::Started {
+            turn_id: &turn.turn_id,
+        }),
+        EventMsg::ExecApprovalRequest(request) => Some(TurnLifecycle::ApprovalRequested {
+            turn_id: &request.turn_id,
+            request_id: &request.id,
+        }),
+        EventMsg::TurnComplete(turn) => Some(TurnLifecycle::Finished {
+            turn_id: &turn.turn_id,
+            abort_reason: None,
+        }),
+        EventMsg::TurnAborted(turn) => Some(TurnLifecycle::Finished {
+            turn_id: &turn.turn_id,
+            abort_reason: Some(&turn.reason),
+        }),
+        _ => None,
+    }
+}
+
 pub(super) enum HostCommand {
     RuntimeIsIdle {
         reply: oneshot::Sender<std::result::Result<bool, Rejection>>,
@@ -154,7 +254,7 @@ pub(super) enum HostCommand {
         reply: oneshot::Sender<std::result::Result<SessionReadyPayload, Rejection>>,
     },
     HistoryPage {
-        before_sequence: Option<u64>,
+        before: Option<crate::wire::HistoryCursor>,
         reply: oneshot::Sender<std::result::Result<SessionHistoryPage, Rejection>>,
     },
     Submit {
@@ -317,8 +417,10 @@ impl HostHandle {
         activity.attention = super::replay::attention_count(&loaded.widgets);
         let awaiting_approval = activity.state == SessionActivityState::AwaitingApproval;
         drop(guard);
+        let gateway_host = (host_access)()?;
         let mut state = HostState {
-            telemetry: (host_access)()?.telemetry,
+            telemetry: gateway_host.telemetry,
+            storage_reads: gateway_host.storage_reads,
             work_activity,
             store,
             gateway,
@@ -344,6 +446,7 @@ impl HostHandle {
             pending_messages: HashSet::new(),
             admissions: futures_util::stream::FuturesUnordered::new(),
             approval_active: awaiting_approval,
+            compacted_in_turn: false,
             turn_error: None,
             last_assistant_text: None,
             pending_startup: Vec::new(),
@@ -351,16 +454,18 @@ impl HostHandle {
             sequence: loaded.latest_sequence,
             replay: loaded.replay,
             replay_bytes: loaded.replay_bytes,
-            next_before_sequence: loaded.next_before_sequence,
+            transcript: loaded.transcript,
             widgets: loaded.widgets,
+            token_usage: loaded.token_usage,
             commands: receiver,
             events: events.clone(), // rules-allow: the actor publishes on the broadcast sender the handle subscribes to
             gateway_events,
             idle_waiters: Vec::new(),
         };
         if !state.spec.catalog_visible {
-            let checkpoint = state.checkpoints.load(&shared_session_id).await?;
-            if let Some(active) = checkpoint.and_then(|checkpoint| checkpoint.active_execution)
+            let runtime =
+                SessionRuntimeState::load(state.checkpoints.as_ref(), &shared_session_id).await?;
+            if let Some(active) = runtime.and_then(|runtime| runtime.active_turn)
                 && let Some(run) = state.bots.history(None)?.into_iter().find(|run| {
                     run.status == RoutineRunStatus::Running
                         && run.session_id.as_ref() == Some(&shared_session_id)
@@ -455,13 +560,10 @@ impl HostHandle {
 
     pub(crate) async fn history_page(
         &self,
-        before_sequence: Option<u64>,
+        before: Option<crate::wire::HistoryCursor>,
     ) -> std::result::Result<SessionHistoryPage, Rejection> {
-        self.request(|reply| HostCommand::HistoryPage {
-            before_sequence,
-            reply,
-        })
-        .await
+        self.request(|reply| HostCommand::HistoryPage { before, reply })
+            .await
     }
 
     pub(crate) async fn submit(
@@ -817,7 +919,8 @@ async fn start_agent(
     } else {
         loop {
             let generation = bots.preparation_generation.load(Ordering::Acquire);
-            let bot = Arc::new(bots.bot(&spec.bot_id)?);
+            let runtime_bot = bots.runtime_bot(&spec.bot_id)?;
+            let bot = Arc::clone(&runtime_bot.record);
             let epoch = provider_epoch.load(Ordering::Acquire);
             let cached = bots
                 .prepared
@@ -833,7 +936,7 @@ async fn start_agent(
                 let config = crate::config::lock(&gateway)?;
                 crate::assembly::prepare_bot(
                     &config,
-                    Arc::clone(&bot),
+                    runtime_bot,
                     store,
                     &credentials,
                     Arc::clone(&session_files),
@@ -847,8 +950,11 @@ async fn start_agent(
             // A refresh can finish while preparation waits for external resources.
             if generation != bots.preparation_generation.load(Ordering::Acquire)
                 || epoch != provider_epoch.load(Ordering::Acquire)
-                || bot.description != current_bot.description
-                || bot.config.config != current_bot.config.config
+                || !crate::assembly::same_runtime(
+                    &bot,
+                    &current_bot.description,
+                    &current_bot.config.config,
+                )
             {
                 continue;
             }
@@ -865,17 +971,7 @@ async fn start_agent(
             break prepared;
         }
     };
-    if let Some(mut checkpoint) = checkpoints.load(session_id).await?
-        && checkpoint.session_context.owner_id != spec.bot_id
-    {
-        checkpoint.sequence = checkpoint
-            .sequence
-            .checked_add(1)
-            .ok_or_else(|| Error::Config("checkpoint sequence overflow".into()))?;
-        Arc::make_mut(&mut checkpoint.session_context).owner_id = Arc::clone(&spec.bot_id);
-        checkpoint.metadata.extend(spec.metadata()?);
-        checkpoints.save(checkpoint, Vec::new(), None).await?;
-    }
+    adopt_checkpoint_owner(checkpoints.as_ref(), session_id, spec).await?;
     let BuiltAgent {
         agent,
         model_router,
@@ -913,6 +1009,28 @@ async fn start_agent(
         gateway_sandbox,
         prepared,
     })
+}
+
+/// Moves a reassigned chat's durable checkpoint to the Bot that now starts it.
+async fn adopt_checkpoint_owner(
+    checkpoints: &dyn CheckpointStore,
+    session_id: &SessionId,
+    spec: &ChatSpec,
+) -> Result<()> {
+    let Some(mut checkpoint) = checkpoints.load(session_id).await? else {
+        return Ok(());
+    };
+    if checkpoint.session_context.owner_id == spec.bot_id {
+        return Ok(());
+    }
+    checkpoint.sequence = checkpoint
+        .sequence
+        .checked_add(1)
+        .ok_or_else(|| Error::Config("checkpoint sequence overflow".into()))?;
+    Arc::make_mut(&mut checkpoint.session_context).owner_id = Arc::clone(&spec.bot_id);
+    checkpoint.metadata.extend(spec.metadata()?);
+    checkpoints.save(checkpoint, Vec::new(), None).await?;
+    Ok(())
 }
 
 async fn shutdown_agent(agent: RunningAgent) {

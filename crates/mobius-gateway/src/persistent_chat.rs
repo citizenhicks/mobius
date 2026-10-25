@@ -50,6 +50,7 @@ pub(crate) static MANIFEST: std::sync::LazyLock<MiddlewareManifest> =
         required: true,
         default_enabled: false,
         settings: &[],
+        requires: &[],
     });
 
 pub(crate) struct PersistentChat {
@@ -69,7 +70,7 @@ impl Middleware for PersistentChat {
         true
     }
     fn register(&self, catalog: &mut Catalog, runtime: &RuntimeContext) -> Result<()> {
-        if *runtime.session_id != *crate::bots::conversation_session_id(&self.bot_id)
+        if !crate::bots::is_persistent(&runtime.session_id, &self.bot_id)
             || !matches!(runtime.role, mobius::agent::AgentRole::Main)
             || *runtime.session_context.owner_id != *self.bot_id
             || runtime.session_context.workspace_id.is_some()

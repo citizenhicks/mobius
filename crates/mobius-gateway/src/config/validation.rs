@@ -1,12 +1,14 @@
 use super::*;
 
-/// Validates one Bot against its exact selected model route and capabilities.
+/// Validates one Bot against its exact selected model route and capabilities, returning its
+/// approval policy.
 pub(crate) fn validate_bot_compatibility(
     gateway: &GatewayConfig,
     config: &AgentComposition,
     catalogs: mobius::middleware::manifest::ModelCatalogs<'_>,
-) -> Result<()> {
-    validate_agent_composition_with_ceilings(config, gateway.execution.subagent_ceilings)?;
+) -> Result<mobius::backend::sandbox::ApprovalPolicy> {
+    let approval_policy =
+        validate_agent_composition_with_ceilings(config, gateway.execution.subagent_ceilings)?;
     let selection = &config.provider;
     let configured = gateway
         .configured_providers
@@ -14,8 +16,8 @@ pub(crate) fn validate_bot_compatibility(
         .ok_or_else(|| Error::Config("active provider is not in the configured catalog".into()))?;
     validate_configured_provider_selection(configured, selection)?;
     let definition = provider(&selection.provider)?;
-    let effort = effective_reasoning_effort(definition, configured, selection);
-    let route = model_route_id(&selection.instance, &selection.model, effort);
+    let route =
+        crate::provider_catalog::selected_route(definition, Some(configured), selection).route;
     let catalog = crate::provider_catalog::catalog_routes(definition, configured, selection);
     if !catalog
         .iter()
@@ -25,27 +27,31 @@ pub(crate) fn validate_bot_compatibility(
             "active model route is not in the configured catalog".into(),
         ));
     }
-    crate::middleware_manifest::validate_choices(&config.middleware, catalogs)
+    crate::middleware_manifest::validate_choices(&config.middleware, catalogs)?;
+    Ok(approval_policy)
 }
 
 pub(crate) fn configured_approval_policy(
     settings: &crate::wire::MiddlewareConfig,
 ) -> Result<mobius::backend::sandbox::ApprovalPolicy> {
-    crate::middleware_manifest::string_setting(settings, "sandbox", "approval_policy")?
-        .ok_or_else(|| {
-            Error::Config("missing middleware setting `sandbox.approval_policy`".into())
-        })?
-        .parse()
-        .map_err(Error::from)
+    crate::middleware_manifest::string_setting(
+        settings,
+        mobius::backend::sandbox::MANIFEST.id,
+        "approval_policy",
+    )?
+    .ok_or_else(|| Error::Config("missing middleware setting `sandbox.approval_policy`".into()))?
+    .parse()
+    .map_err(Error::from)
 }
 
-fn validate_computer_control_policy(config: &AgentComposition) -> Result<()> {
+fn validate_computer_control_policy(
+    config: &AgentComposition,
+    approval_policy: mobius::backend::sandbox::ApprovalPolicy,
+) -> Result<()> {
     use mobius::middleware::computer_control;
 
     if config.middleware.enabled(computer_control::MANIFEST.id)
-        && !computer_control::supports_approval_policy(configured_approval_policy(
-            &config.middleware,
-        )?)
+        && !computer_control::supports_approval_policy(approval_policy)
     {
         return Err(Error::Config(
             "computer control middleware requires Full access or Allow · no network".into(),
@@ -54,11 +60,14 @@ fn validate_computer_control_policy(config: &AgentComposition) -> Result<()> {
     Ok(())
 }
 
-/// Validates the structural composition without imposing a host's resource policy.
+/// Validates the structural composition without imposing a host's resource policy, returning
+/// its approval policy.
 /// # Errors
 ///
 /// Returns an error if the supplied value is invalid.
-pub fn validate_agent_composition(config: &AgentComposition) -> Result<()> {
+pub fn validate_agent_composition(
+    config: &AgentComposition,
+) -> Result<mobius::backend::sandbox::ApprovalPolicy> {
     let maximum = usize::try_from(i64::MAX).unwrap_or(usize::MAX);
     let ceilings = mobius::middleware::subagents::SubagentCeilings::new(u8::MAX, maximum, maximum)?;
     validate_agent_composition_with_ceilings(config, ceilings)
@@ -67,7 +76,7 @@ pub fn validate_agent_composition(config: &AgentComposition) -> Result<()> {
 pub(crate) fn validate_agent_composition_with_ceilings(
     config: &AgentComposition,
     ceilings: mobius::middleware::subagents::SubagentCeilings,
-) -> Result<()> {
+) -> Result<mobius::backend::sandbox::ApprovalPolicy> {
     if config.max_model_steps == 0 {
         return Err(Error::Config("maximum model steps must be positive".into()));
     }
@@ -81,7 +90,9 @@ pub(crate) fn validate_agent_composition_with_ceilings(
     crate::extensions::validate_ids(&config.extensions)?;
     validate_provider_config(&config.provider)?;
     crate::middleware_manifest::validate(&config.middleware, ceilings)?;
-    validate_computer_control_policy(config)
+    let approval_policy = configured_approval_policy(&config.middleware)?;
+    validate_computer_control_policy(config, approval_policy)?;
+    Ok(approval_policy)
 }
 
 pub(super) fn validate_provider_config(config: &ProviderConfig) -> Result<()> {

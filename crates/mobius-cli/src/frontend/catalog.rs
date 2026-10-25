@@ -699,6 +699,7 @@ mod tests {
         FrontendContribution {
             capability: "test".into(),
             count: None,
+            count_label: None,
             commands: vec![FrontendCommand {
                 name: command.into(),
                 arguments: String::new().into(),

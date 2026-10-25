@@ -159,8 +159,8 @@ pub enum ClientMessage {
         code: String,
         /// The client label.
         client_label: String,
-        /// The client kind.
-        client_kind: ClientKind,
+        /// What this connection does for the gateway.
+        client: ClientCapabilities,
     },
     /// Selects the repair pairing case.
     RepairPairing {
@@ -170,15 +170,15 @@ pub enum ClientMessage {
         replacing_token_digest: [u8; 32],
         /// The client label.
         client_label: String,
-        /// The client kind.
-        client_kind: ClientKind,
+        /// What this connection does for the gateway.
+        client: ClientCapabilities,
     },
     /// Selects the authenticate case.
     Authenticate {
         /// The token.
         token: String,
-        /// The client kind.
-        client_kind: ClientKind,
+        /// What this connection does for the gateway.
+        client: ClientCapabilities,
         /// The catalog this client already holds, or does not need. An empty hint is left
         /// out, so the version check that replaces an older running gateway can reach it.
         #[serde(default, skip_serializing_if = "CatalogHint::is_empty")]
@@ -255,7 +255,9 @@ pub enum ClientMessage {
         /// The name.
         name: String,
     },
-    /// Selects the open session case.
+    /// Opens a chat: `session_opened`, then either the replay frames after
+    /// `last_sequence` when it is still inside the replay window or one
+    /// `session_transcript` snapshot, then `session_replay_complete`.
     OpenSession {
         /// The request identifier.
         request_id: Arc<str>,
@@ -266,15 +268,16 @@ pub enum ClientMessage {
     },
     /// Requests one complete durable turn page of any chat this client could select;
     /// answered by `session_history`. The selected chat answers itself. Any other chat
-    /// is read without selecting, loading or starting it; when it is not running,
-    /// records carry only framework-rendered blocks, not middleware-rendered ones.
+    /// is read without selecting, loading or starting it; when it is not running, the
+    /// page carries only framework-rendered blocks, not middleware-rendered ones.
     GetSessionHistory {
         /// The request identifier.
         request_id: Arc<str>,
         /// The session identifier.
         session_id: SessionId,
-        /// The before sequence.
-        before_sequence: Option<u64>,
+        /// A cursor from an earlier transcript or history page; `None` asks for the
+        /// newest turn.
+        before: Option<HistoryCursor>,
     },
     /// Selects the reassign session case.
     ReassignSession {
@@ -673,6 +676,10 @@ pub enum ClientMessage {
         /// Omission retains live image models; an explicit empty list clears them.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         image_model_ids: Option<Vec<String>>,
+        /// Marks the setup's credential and usage limits as supplied by the gateway operator;
+        /// accepted only from the operator's local connection.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        operator_managed: bool,
     },
     /// Selects the remove provider case.
     RemoveProvider {
@@ -743,8 +750,8 @@ pub enum ClientMessage {
         request_id: Arc<str>,
         /// The identifier.
         id: Arc<str>,
-        /// The before sequence.
-        before_sequence: Option<u64>,
+        /// A cursor from an earlier run page; `None` asks for the newest turn.
+        before: Option<HistoryCursor>,
     },
 }
 
@@ -890,21 +897,49 @@ pub enum ServerMessage {
         /// The session identifier.
         session_id: SessionId,
     },
-    /// Selects the session history case.
+    /// One older history page, to prepend: a turn of the chat itself or, past its first
+    /// turn, of the chat it was forked from.
     SessionHistory {
         /// The request identifier.
         request_id: Arc<str>,
         /// The session identifier.
         session_id: SessionId,
-        /// The records.
-        records: Vec<RecordedEvent>,
-        /// The next before sequence.
-        next_before_sequence: Option<u64>,
+        /// The page.
+        page: TranscriptPage,
+        /// The cursor of the next older page.
+        next: Option<HistoryCursor>,
+    },
+    /// The opened chat's whole live transcript, replacing whatever the client showed.
+    SessionTranscript {
+        /// The request identifier.
+        request_id: Arc<str>,
+        /// The session identifier.
+        session_id: SessionId,
+        /// The last journal sequence the page includes; later agent events apply to it.
+        through_sequence: u64,
+        /// The page.
+        page: TranscriptPage,
+        /// The cursor of the next older page.
+        next: Option<HistoryCursor>,
     },
     /// Selects the session changed case.
     SessionChanged {
         /// The payload.
         payload: SessionReadyPayload,
+    },
+    /// Replaces an opened chat's capability metadata after compaction or a model change.
+    SessionMetaChanged {
+        /// The session identifier.
+        session_id: SessionId,
+        /// The contributions.
+        contributions: Vec<FrontendContribution>,
+        /// The usage-meter denominator.
+        context_limit_tokens: Option<i64>,
+    },
+    /// Computer control in this chat needs a desktop host, and this connection can be one.
+    DesktopHostRequested {
+        /// The session identifier.
+        session_id: SessionId,
     },
     /// Replaces the opened chat's message pins without refreshing its runtime state.
     MessagePinsChanged {
@@ -1034,6 +1069,9 @@ pub enum ServerMessage {
         session_id: SessionId,
         /// The record.
         record: RecordedEvent,
+        /// The transcript changes this event makes, in order.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        transcript: Vec<TranscriptOp>,
     },
     /// Selects the sessions case.
     Sessions {

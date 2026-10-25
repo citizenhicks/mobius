@@ -188,6 +188,9 @@ pub(crate) struct ConfiguredProvider {
     /// Omission uses the provider catalog; an empty list disables live voice.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) voice_models: Option<Vec<mobius::backend::model::provider::MediaModelPreset>>,
+    /// Credential and usage limits are supplied by the gateway operator.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) operator_managed: bool,
 }
 
 pub(crate) struct ProviderRegistration {
@@ -196,6 +199,7 @@ pub(crate) struct ProviderRegistration {
     pub(crate) tint: Option<ProviderTint>,
     pub(crate) models: Vec<ConfiguredModel>,
     pub(crate) image_model_ids: Option<Vec<String>>,
+    pub(crate) operator_managed: bool,
 }
 
 /// Chat ownership and workspace, independent of Bot configuration.
@@ -236,7 +240,7 @@ impl AgentComposition {
         let model = provider.default_model().and_then(|id| provider.model(id));
         let mut middleware = crate::middleware_manifest::default_config(ceilings);
         middleware.set_setting(
-            "sandbox",
+            mobius::backend::sandbox::MANIFEST.id,
             "approval_policy",
             Some(mobius::protocol::FrontendSettingValue::String(
                 "full_access".into(),
@@ -345,6 +349,7 @@ impl GatewayConfig {
                 tint: Some(tint),
                 models,
                 image_model_ids: Some(image_model_ids),
+                operator_managed: false,
             },
             false,
         )
@@ -412,6 +417,11 @@ impl GatewayConfig {
         let voice_models = previous
             .as_mut()
             .and_then(|previous| previous.voice_models.take());
+        let operator_managed = configured.operator_managed
+            || (preserve_selection
+                && previous
+                    .as_ref()
+                    .is_some_and(|previous| previous.operator_managed));
         let selection = &configured.selection;
         if !selection.model.is_empty() {
             definition.build_config_is_valid(
@@ -460,6 +470,7 @@ impl GatewayConfig {
                 image_model_ids,
                 image_models,
                 voice_models,
+                operator_managed,
             },
         );
         if let Some(selection) = default_selection {

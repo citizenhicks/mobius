@@ -21,7 +21,7 @@ async fn register(
     connection: &mut Option<BrowserConnection>,
     enabled: bool,
     local: bool,
-    kind: crate::wire::ClientKind,
+    client: crate::wire::ClientCapabilities,
 ) -> ServerMessage {
     use crate::wire::{ClientMessage, FrameReader, ServerFrame, read_frame};
     let (reader, mut writer) = tokio::io::duplex(4096);
@@ -33,7 +33,7 @@ async fn register(
         host,
         connection,
         local,
-        kind,
+        client,
         true,
         &mut writer,
     )
@@ -47,12 +47,20 @@ async fn register(
 }
 
 #[tokio::test]
-async fn only_the_local_mac_app_lends_its_browser() {
-    use crate::wire::ClientKind;
-    for (local, kind) in [(false, ClientKind::Macos), (true, ClientKind::Ios)] {
+async fn only_a_local_browser_renderer_lends_its_browser() {
+    let renderer = crate::wire::ClientCapabilities {
+        browser_renderer: true,
+        ..Default::default()
+    };
+    let desktop_host = crate::wire::ClientCapabilities {
+        presence: true,
+        desktop_host: true,
+        ..Default::default()
+    };
+    for (local, client) in [(false, renderer), (true, desktop_host)] {
         let host = Arc::new(BrowserHost::default());
         let mut connection = None;
-        let response = register(&host, &mut connection, true, local, kind).await;
+        let response = register(&host, &mut connection, true, local, client).await;
         assert!(
             matches!(response, ServerMessage::Rejected { code, fatal: false, .. } if code == "browser")
         );
@@ -62,10 +70,10 @@ async fn only_the_local_mac_app_lends_its_browser() {
     if cfg!(target_os = "macos") {
         let host = Arc::new(BrowserHost::default());
         let mut connection = None;
-        let response = register(&host, &mut connection, true, true, ClientKind::Macos).await;
+        let response = register(&host, &mut connection, true, true, renderer).await;
         assert!(matches!(response, ServerMessage::Accepted { .. }));
         assert!(host.app().is_some());
-        register(&host, &mut connection, false, true, ClientKind::Macos).await;
+        register(&host, &mut connection, false, true, renderer).await;
         assert!(host.app().is_none(), "withdrawing ends the lending");
     }
 }

@@ -33,7 +33,10 @@ async fn queued_client_requests_do_not_starve_gateway_broadcasts() {
         &mut writer,
         &ClientFrame::new(ClientMessage::Authenticate {
             token: identity.token,
-            client_kind: ClientKind::Cli,
+            client: crate::wire::ClientCapabilities {
+                presence: true,
+                ..Default::default()
+            },
             catalog: Default::default(),
         }),
     )
@@ -125,7 +128,10 @@ async fn non_reading_client_releases_its_authenticated_connection_slot() {
         &mut client,
         &ClientFrame::new(ClientMessage::Authenticate {
             token: identity.token,
-            client_kind: ClientKind::Cli,
+            client: crate::wire::ClientCapabilities {
+                presence: true,
+                ..Default::default()
+            },
             catalog: Default::default(),
         }),
     )
@@ -158,9 +164,18 @@ async fn access_lease_stops_the_server_and_closes_existing_clients() {
     let endpoint = format!("tcp://{listen}")
         .parse::<Endpoint>()
         .expect("endpoint");
-    let (client, _) = GatewayClient::pair(&endpoint, grant.code, "lease test", ClientKind::Ios)
-        .await
-        .expect("pair client");
+    let (client, _) = GatewayClient::pair(
+        &endpoint,
+        grant.code,
+        "lease test",
+        crate::wire::ClientCapabilities {
+            presence: true,
+            remote_desktop_viewer: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("pair client");
     let (_, mut events) = client.into_parts();
     wait_gateway_ready(&mut events).await;
 
@@ -286,7 +301,11 @@ async fn websocket_preserves_a_pipelined_bulk_frame_across_authentication() {
         &ClientFrame::new(ClientMessage::Pair {
             code: grant.code,
             client_label: "WebSocket test".into(),
-            client_kind: ClientKind::Ios,
+            client: crate::wire::ClientCapabilities {
+                presence: true,
+                remote_desktop_viewer: true,
+                ..Default::default()
+            },
         }),
     )
     .await
@@ -446,4 +465,44 @@ async fn websocket_upgrade_and_authentication_share_one_deadline() {
         serving.await.expect("gateway task"),
         Err(Error::Unauthorized)
     ));
+}
+
+#[test]
+fn only_presence_connections_count_and_announce_the_client() {
+    let root = tempfile::tempdir().expect("temporary directory");
+    let bots = Arc::new(BotStore::open(root.path()).expect("Bots"));
+    bots.create_bot(
+        "fixture",
+        "Fixture",
+        crate::wire::AgentComposition::default().into(),
+    )
+    .expect("Bot");
+    let connections = Arc::new(ClientConnections::default());
+    let identity = |id: &str| crate::auth::ClientIdentity {
+        id: id.into(),
+        label: id.into(),
+    };
+
+    let tool = connections
+        .register("tool".into(), false, Arc::clone(&bots))
+        .expect("register tool");
+    assert_eq!(connections.presence_count().expect("count"), 0);
+    assert!(bots.unpublished_events(10).expect("events").is_empty());
+
+    let app = connections
+        .register("app".into(), true, Arc::clone(&bots))
+        .expect("register app");
+    assert_eq!(connections.presence_count().expect("count"), 1);
+    let clients = connections
+        .snapshot(vec![identity("tool"), identity("app")])
+        .expect("snapshot");
+    assert_eq!(clients[0].connections, 0);
+    assert_eq!(clients[1].connections, 1);
+    let events = bots.unpublished_events(10).expect("events");
+    assert!(matches!(
+        &events[..],
+        [crate::wire::HookEvent { data: crate::wire::HookData::ClientConnected { client_id }, .. }]
+            if &**client_id == "app"
+    ));
+    drop((tool, app));
 }

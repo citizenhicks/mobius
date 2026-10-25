@@ -585,6 +585,7 @@ pub struct ProviderDefinition {
     supports_image_generation: bool,
     image_models: &'static [MediaModelPreset],
     voice_models: &'static [MediaModelPreset],
+    voice_waits_for_session_started: bool,
     tool_discovery: ToolDiscoveryMode,
     supported_tool_discovery: &'static [ToolDiscoveryMode],
     custom_endpoint_tool_discovery: Option<ToolDiscoveryMode>,
@@ -634,6 +635,7 @@ impl ProviderDefinition {
             supports_image_generation: false,
             image_models: catalog.map_or(&[], |catalog| catalog.image_models.as_slice()),
             voice_models: &[],
+            voice_waits_for_session_started: false,
             tool_discovery: metadata.tool_discovery,
             supported_tool_discovery: &metadata.supported_tool_discovery,
             custom_endpoint_tool_discovery: metadata.custom_endpoint_tool_discovery,
@@ -658,8 +660,13 @@ impl ProviderDefinition {
         self
     }
 
-    pub(crate) const fn with_voice_models(mut self, models: &'static [MediaModelPreset]) -> Self {
+    pub(super) const fn with_voice_models(
+        mut self,
+        models: &'static [MediaModelPreset],
+        api: super::realtime::VoiceApi,
+    ) -> Self {
         self.voice_models = models;
+        self.voice_waits_for_session_started = api.waits_for_session_started();
         self
     }
 
@@ -715,6 +722,13 @@ impl ProviderDefinition {
     /// Returns the advertised image models; empty when instances list their own.
     pub const fn image_models(&self) -> &'static [MediaModelPreset] {
         self.image_models
+    }
+
+    #[must_use]
+    /// Whether frontends wait for the provider's session-started event before streaming a
+    /// voice call's audio.
+    pub const fn voice_waits_for_session_started(&self) -> bool {
+        self.voice_waits_for_session_started
     }
 
     #[must_use]

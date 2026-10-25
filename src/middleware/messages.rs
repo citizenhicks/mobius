@@ -114,13 +114,15 @@ impl Messages {
             capability: self.name().into(),
             item: Arc::new(FrontendWidget {
                 id: id.into(),
+                count: None,
+                priority: crate::protocol::FrontendPriority::Primary,
                 slot: FrontendSlot::TranscriptTail,
                 text: text.into(),
                 tone: FrontendTone::Neutral,
                 symbol: Some(match delivery {
                     MessageDelivery::Turn => FrontendSymbol::Chat,
-                    MessageDelivery::Steer => FrontendSymbol::Custom("steer".into()),
-                    MessageDelivery::Queue => FrontendSymbol::Custom("queue".into()),
+                    MessageDelivery::Steer => FrontendSymbol::Steer,
+                    MessageDelivery::Queue => FrontendSymbol::Queue,
                 }),
                 icon_only: false,
                 progress: None,
@@ -257,7 +259,11 @@ impl Middleware for Messages {
         else {
             return None;
         };
-        if matches!(source, crate::protocol::MessageSource::Session { .. }) {
+        if matches!(
+            source,
+            crate::protocol::MessageSource::Session { .. }
+                | crate::protocol::MessageSource::Call { .. }
+        ) {
             return None;
         }
         Some(FrontendBlock {

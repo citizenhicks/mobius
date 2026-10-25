@@ -282,6 +282,8 @@ fn widget_event(todos: Vec<Todo>) -> FrontendEvent {
         capability: MANIFEST.id.into(),
         item: Arc::new(FrontendWidget {
             id: "status".into(),
+            count: None,
+            priority: crate::protocol::FrontendPriority::Secondary,
             slot: FrontendSlot::ComposerFooter,
             text: format!("{completed}/{}", todos.len()),
             tone: if completed == todos.len() {

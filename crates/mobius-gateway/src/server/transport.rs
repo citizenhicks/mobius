@@ -1,14 +1,14 @@
 use super::{
     AccessLease, Arc, AsyncRead, AsyncWrite, AuthStore, AuthenticatedClient, BTreeMap, BTreeSet,
-    BotStore, Callback, CatalogHint, CertificateDer, ClientFrame, ClientIdentity, ClientKind,
-    ClientMessage, ClientStatus, ClientView, ConnectionSessionState, Error, ErrorResponse,
-    FrameReader, Future, GatewayHost, GatewayNotification, HOST, Instant, JoinSet, Mutex, ORIGIN,
-    Path, PendingSessionFileWrite, PrivateKeyDer, ProfileSnapshot, Rejection, Request, Response,
-    Result, SEC_WEBSOCKET_PROTOCOL, SelectedChat, ServerConfig, ServerFrame, ServerMessage,
-    SharedFrame, StatusCode, TcpStream, TlsAcceptor, TlsConfig, Utc, Uuid, WEBSOCKET_BRIDGE_BYTES,
-    WebSocketConfig, accept_hdr_async_with_config, broadcast, handle_message, read_frame,
-    read_frame_with_limit, selected_broadcast, validate_version, websocket_error, write_frame,
-    write_rejection, write_server_error,
+    BotStore, Callback, CatalogHint, CertificateDer, ClientCapabilities, ClientFrame,
+    ClientIdentity, ClientMessage, ClientStatus, ClientView, ConnectionSessionState, Error,
+    ErrorResponse, FrameReader, Future, GatewayHost, GatewayNotification, HOST, Instant, JoinSet,
+    Mutex, ORIGIN, Path, PendingSessionFileWrite, PrivateKeyDer, ProfileSnapshot, Rejection,
+    Request, Response, Result, SEC_WEBSOCKET_PROTOCOL, SelectedChat, ServerConfig, ServerFrame,
+    ServerMessage, SharedFrame, StatusCode, TcpStream, TlsAcceptor, TlsConfig, Utc, Uuid,
+    WEBSOCKET_BRIDGE_BYTES, WebSocketConfig, accept_hdr_async_with_config, broadcast,
+    handle_message, read_frame, read_frame_with_limit, selected_broadcast, validate_version,
+    websocket_error, write_frame, write_rejection, write_server_error,
 };
 use mobius::SessionId;
 
@@ -104,17 +104,17 @@ enum PreAuthClientMessage {
     Pair {
         code: String,
         client_label: String,
-        client_kind: ClientKind,
+        client: ClientCapabilities,
     },
     RepairPairing {
         code: String,
         replacing_token_digest: [u8; 32],
         client_label: String,
-        client_kind: ClientKind,
+        client: ClientCapabilities,
     },
     Authenticate {
         token: String,
-        client_kind: ClientKind,
+        client: ClientCapabilities,
         #[serde(default)]
         catalog: CatalogHint,
     },
@@ -309,28 +309,24 @@ pub(super) fn websocket_rejection(status: StatusCode) -> ErrorResponse {
     response
 }
 
+/// Open presence connections per paired client; other connections are not counted.
 #[derive(Default)]
 pub(super) struct ClientConnections {
-    entries: Mutex<BTreeMap<(String, ClientKind), usize>>,
+    presence: Mutex<BTreeMap<String, usize>>,
 }
 
 pub(super) struct ClientConnectionGuard {
     connections: Arc<ClientConnections>,
-    key: (String, ClientKind),
+    client_id: String,
+    presence: bool,
     activity: Option<Arc<GatewayHost>>,
     bots: Arc<BotStore>,
 }
 
 impl ClientConnectionGuard {
     fn client_id(&self) -> &str {
-        &self.key.0
+        &self.client_id
     }
-}
-
-fn native_client_present(entries: &BTreeMap<(String, ClientKind), usize>, client_id: &str) -> bool {
-    entries.iter().any(|((id, kind), count)| {
-        id == client_id && *kind != ClientKind::GatewayDashboard && *count > 0
-    })
 }
 
 fn record_client_presence(bots: &BotStore, client_id: &str, connected: bool) -> Result<()> {
@@ -363,73 +359,55 @@ fn record_client_presence(bots: &BotStore, client_id: &str, connected: bool) -> 
 }
 
 impl ClientConnections {
-    pub(super) fn native_count(&self) -> Result<usize> {
-        let entries = self.entries.try_lock().map_err(|error| {
+    pub(super) fn presence_count(&self) -> Result<usize> {
+        let presence = self.presence.try_lock().map_err(|error| {
             Error::Config(format!("client-connection count is unavailable: {error}"))
         })?;
-        Ok(entries
-            .iter()
-            .filter(|((_, kind), _)| *kind != ClientKind::GatewayDashboard)
-            .map(|(_, count)| count)
-            .sum())
+        Ok(presence.values().sum())
     }
 
     pub(super) fn register(
         self: &Arc<Self>,
         client_id: String,
-        kind: ClientKind,
+        presence: bool,
         bots: Arc<BotStore>,
     ) -> Result<ClientConnectionGuard> {
-        let key = (client_id, kind);
-        let mut entries = self
-            .entries
-            .lock()
-            .map_err(crate::poisoned("client-connection"))?;
-        let first_native =
-            kind != ClientKind::GatewayDashboard && !native_client_present(&entries, &key.0);
-        let connections = entries.entry(key.clone()).or_default(); // rules-allow: the registry and the guard each keep the key
-        *connections = connections
-            .checked_add(1)
-            .ok_or_else(|| Error::Config("client connection count overflow".into()))?;
-        if first_native && let Err(error) = record_client_presence(&bots, &key.0, true) {
-            tracing::warn!(
-                error = %connection_diagnostic(&error), "client lifecycle persistence failed"
-            );
+        if presence {
+            let mut entries = self
+                .presence
+                .lock()
+                .map_err(crate::poisoned("client-connection"))?;
+            let first = !entries.contains_key(&client_id);
+            let connections = entries.entry(client_id.clone()).or_default(); // rules-allow: the registry and the guard each keep the client ID
+            *connections = connections
+                .checked_add(1)
+                .ok_or_else(|| Error::Config("client connection count overflow".into()))?;
+            if first && let Err(error) = record_client_presence(&bots, &client_id, true) {
+                tracing::warn!(
+                    error = %connection_diagnostic(&error), "client lifecycle persistence failed"
+                );
+            }
         }
-        drop(entries);
         Ok(ClientConnectionGuard {
             connections: Arc::clone(self),
-            key,
+            client_id,
+            presence,
             activity: None,
             bots,
         })
     }
 
     pub(super) fn snapshot(&self, paired: Vec<ClientIdentity>) -> Result<Vec<ClientStatus>> {
-        let entries = self
-            .entries
+        let presence = self
+            .presence
             .lock()
             .map_err(crate::poisoned("client-connection"))?;
         Ok(paired
             .into_iter()
-            .map(|identity| {
-                let mut kinds = Vec::new();
-                let mut connections = 0;
-                for ((client_id, kind), count) in &*entries {
-                    if client_id == &identity.id
-                        && *kind != ClientKind::GatewayDashboard
-                        && *count > 0
-                    {
-                        kinds.push(*kind);
-                        connections += *count;
-                    }
-                }
-                ClientStatus {
-                    client_id: identity.id,
-                    label: identity.label,
-                    kinds,
-                    connections,
-                }
+            .map(|identity| ClientStatus {
+                connections: presence.get(&identity.id).copied().unwrap_or_default(),
+                client_id: identity.id,
+                label: identity.label,
             })
             .collect())
     }
@@ -438,26 +416,26 @@ impl ClientConnections {
 impl Drop for ClientConnectionGuard {
     fn drop(&mut self) {
         let close = || {
-            let Ok(mut entries) = self.connections.entries.lock() else {
-                return;
-            };
-            let Some(connections) = entries.get_mut(&self.key) else {
-                return;
-            };
-            if *connections > 1 {
-                *connections -= 1;
-            } else {
-                entries.remove(&self.key);
+            if self.presence {
+                let Ok(mut entries) = self.connections.presence.lock() else {
+                    return;
+                };
+                let Some(connections) = entries.get_mut(&self.client_id) else {
+                    return;
+                };
+                if *connections > 1 {
+                    *connections -= 1;
+                } else {
+                    entries.remove(&self.client_id);
+                    if let Err(error) = record_client_presence(&self.bots, &self.client_id, false) {
+                        tracing::warn!(
+                            error = %connection_diagnostic(&error),
+                            "client lifecycle persistence failed"
+                        );
+                    }
+                }
+                drop(entries);
             }
-            if self.key.1 != ClientKind::GatewayDashboard
-                && !native_client_present(&entries, &self.key.0)
-                && let Err(error) = record_client_presence(&self.bots, &self.key.0, false)
-            {
-                tracing::warn!(
-                    error = %connection_diagnostic(&error), "client lifecycle persistence failed"
-                );
-            }
-            drop(entries);
             if let Some(host) = &self.activity {
                 host.mark_runtime_activity();
                 host.telemetry.notify.notify_one();
@@ -607,14 +585,12 @@ pub(super) async fn serve_websocket(
 async fn register_client_connection(
     connections: &Arc<ClientConnections>,
     id: String,
-    kind: ClientKind,
+    presence: bool,
     host: &Arc<GatewayHost>,
     bots: &Arc<BotStore>,
     writer: &mut (impl AsyncWrite + Unpin),
 ) -> Result<Option<ClientConnectionGuard>> {
-    let admission = if kind == ClientKind::GatewayDashboard {
-        None
-    } else {
+    let admission = if presence {
         match host.begin_access().await {
             Ok(admission) => Some(admission),
             Err(rejection) => {
@@ -622,12 +598,17 @@ async fn register_client_connection(
                 return Ok(None);
             }
         }
+    } else {
+        None
     };
     let connections = Arc::clone(connections);
     let bots = Arc::clone(bots);
-    let mut connection = tokio::task::spawn_blocking(move || connections.register(id, kind, bots))
-        .await
-        .map_err(|error| Error::Config(format!("client registration task failed: {error}")))??;
+    let mut connection =
+        tokio::task::spawn_blocking(move || connections.register(id, presence, bots))
+            .await
+            .map_err(|error| {
+                Error::Config(format!("client registration task failed: {error}"))
+            })??;
     if admission.is_some() {
         host.mark_runtime_activity();
         host.telemetry.notify.notify_one();
@@ -667,7 +648,7 @@ where
     let revocations = client_revocations.subscribe();
     let (reader, mut writer) = tokio::io::split(stream);
     let mut reader = FrameReader::new(reader);
-    let Some((client_id, client_kind, _authenticated_admission, view)) =
+    let Some((client_id, client, _authenticated_admission, view)) =
         authenticate_connection(&mut reader, &mut writer, auth, admission, auth_deadline).await?
     else {
         return Ok(());
@@ -679,7 +660,7 @@ where
     let Some(client_connection) = register_client_connection(
         client_connections,
         client_id,
-        client_kind,
+        client.presence,
         host,
         bots,
         &mut writer,
@@ -704,7 +685,7 @@ where
             desktop_transport,
             connection_id: Uuid::new_v4(),
             access_lease,
-            kind: client_kind,
+            client,
             id: client_connection.client_id(),
             connections: client_connections,
             revocations: client_revocations,
@@ -735,6 +716,7 @@ async fn serve_authenticated_connection(
     let mut desktop_changes = host.remote_desktop.subscribe();
     view.desktop_transport = client.desktop_transport;
     view.local = client.local;
+    view.client = client.client;
     let ready = host
         .ready()
         .await
@@ -750,6 +732,8 @@ async fn serve_authenticated_connection(
     let mut selected: Option<SelectedChat> = None;
     let mut voice = None;
     let mut desktop = None;
+    let mut desktop_host_requests =
+        (client.local && client.client.desktop_host).then(|| host.desktop.host_requests());
     let mut browser = None;
     let mut remote_desktop = None;
     let mut pending_desktop_control = None;
@@ -773,7 +757,7 @@ async fn serve_authenticated_connection(
                 None
             }
             incoming = read_frame::<ClientFrame>(&mut reader) => Some(incoming),
-            outgoing = crate::computer_runtime::next_app_update(&mut desktop, &mut browser) => {
+            outgoing = crate::computer_runtime::next_app_update(&mut desktop, &mut desktop_host_requests, &mut browser) => {
                 crate::computer_runtime::write_app_update(outgoing, &mut desktop, &mut browser, &mut writer).await?;
                 None
             }
@@ -903,7 +887,7 @@ async fn authenticate_connection(
     auth: &AuthStore,
     admission: PreAuthConnectionAdmission,
     auth_deadline: Instant,
-) -> Result<Option<(String, ClientKind, OwnedSemaphorePermit, ClientView)>> {
+) -> Result<Option<(String, ClientCapabilities, OwnedSemaphorePermit, ClientView)>> {
     let mut first = tokio::time::timeout_at(
         auth_deadline,
         read_frame_with_limit::<PreAuthClientFrame>(reader, MAX_PRE_AUTH_FRAME_BYTES),
@@ -929,44 +913,36 @@ async fn authenticate_connection(
         PreAuthClientMessage::Authenticate { catalog, .. } => std::mem::take(catalog),
         _ => CatalogHint::default(),
     });
-    let Some((client_id, client_kind)) = authenticate_client(first.message, auth, writer).await?
-    else {
+    let Some((client_id, client)) = authenticate_client(first.message, auth, writer).await? else {
         return Ok(None);
     };
 
-    Ok(Some((
-        client_id,
-        client_kind,
-        authenticated_admission,
-        view,
-    )))
+    Ok(Some((client_id, client, authenticated_admission, view)))
 }
 
 async fn authenticate_client(
     message: PreAuthClientMessage,
     auth: &AuthStore,
     writer: &mut (impl AsyncWrite + Unpin),
-) -> Result<Option<(String, ClientKind)>> {
-    let (issued, client_kind) = match message {
+) -> Result<Option<(String, ClientCapabilities)>> {
+    let (issued, client) = match message {
         PreAuthClientMessage::Pair {
             code,
             client_label,
-            client_kind,
-        } => (auth.pair(&code, &client_label), client_kind),
+            client,
+        } => (auth.pair(&code, &client_label), client),
         PreAuthClientMessage::RepairPairing {
             code,
             replacing_token_digest,
             client_label,
-            client_kind,
+            client,
         } => (
             auth.repair_pairing(&code, &replacing_token_digest, &client_label),
-            client_kind,
+            client,
         ),
-        PreAuthClientMessage::Authenticate {
-            token, client_kind, ..
-        } => {
+        PreAuthClientMessage::Authenticate { token, client, .. } => {
             return if let Ok(identity) = auth.authenticate(&token) {
-                Ok(Some((identity.id, client_kind)))
+                Ok(Some((identity.id, client)))
             } else {
                 write_server_error(writer, "unauthorized", "authentication failed", true).await?;
                 Ok(None)
@@ -994,7 +970,7 @@ async fn authenticate_client(
                 }),
             )
             .await?;
-            Ok(Some((client_id, client_kind)))
+            Ok(Some((client_id, client)))
         }
         Err(error @ Error::PublicationApplied { .. }) => {
             write_server_error(writer, "publication_uncertain", error.to_string(), true).await?;

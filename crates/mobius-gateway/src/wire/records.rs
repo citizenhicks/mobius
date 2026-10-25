@@ -51,24 +51,8 @@ pub struct ReadyPayload {
     pub providers: Vec<ProviderStatus>,
     /// The provider instances.
     pub provider_instances: Vec<ProviderInstance>,
-    /// The bot defaults.
-    pub bot_defaults: Option<VersionedAgentConfig>,
-    /// The models.
-    pub models: Vec<ModelChoice>,
-    /// The model providers.
-    pub model_providers: BTreeMap<Arc<str>, String>,
-    /// Selectable image model routes, keyed into `model_providers` like `models`.
-    #[serde(default)]
-    pub image_models: Vec<ModelChoice>,
-    /// Selectable voice routes; each route's variant is its voice.
-    #[serde(default)]
-    pub voice_models: Vec<ModelChoice>,
-    /// The middleware features.
-    pub middleware_features: Vec<MiddlewareFeature>,
-    /// The extensions.
-    pub extensions: Vec<ExtensionRecord>,
-    /// The contributions.
-    pub contributions: Vec<FrontendContribution>,
+    /// What Bots can be composed from.
+    pub agent_catalog: AgentCatalog,
     /// The max active sessions.
     pub max_active_sessions: usize,
     /// The session file limits.
@@ -79,6 +63,29 @@ pub struct ReadyPayload {
     pub omitted: BTreeSet<ReadySection>,
 }
 
+/// The models, middleware, extensions and defaults Bots are composed from.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentCatalog {
+    /// The bot defaults.
+    pub bot_defaults: Option<VersionedAgentConfig>,
+    /// What a chat composed from `bot_defaults` can do.
+    pub default_capabilities: Option<BotCapabilities>,
+    /// The models.
+    pub models: Vec<ModelChoice>,
+    /// The model providers.
+    pub model_providers: BTreeMap<Arc<str>, String>,
+    /// Selectable image model routes, keyed into `model_providers` like `models`.
+    pub image_models: Vec<ModelChoice>,
+    /// Selectable voice routes; each route's variant is its voice.
+    pub voice_models: Vec<ModelChoice>,
+    /// The middleware features.
+    pub middleware_features: Vec<MiddlewareFeature>,
+    /// The extensions.
+    pub extensions: Vec<ExtensionRecord>,
+    /// The contributions.
+    pub contributions: Vec<FrontendContribution>,
+}
+
 impl ReadyPayload {
     /// Exchanges one cacheable section with `other`.
     pub fn swap_section(&mut self, other: &mut Self, section: ReadySection) {
@@ -87,17 +94,7 @@ impl ReadyPayload {
             ReadySection::Config => {
                 swap(&mut self.providers, &mut other.providers);
                 swap(&mut self.provider_instances, &mut other.provider_instances);
-                swap(&mut self.bot_defaults, &mut other.bot_defaults);
-                swap(&mut self.models, &mut other.models);
-                swap(&mut self.model_providers, &mut other.model_providers);
-                swap(&mut self.image_models, &mut other.image_models);
-                swap(&mut self.voice_models, &mut other.voice_models);
-                swap(
-                    &mut self.middleware_features,
-                    &mut other.middleware_features,
-                );
-                swap(&mut self.extensions, &mut other.extensions);
-                swap(&mut self.contributions, &mut other.contributions);
+                swap(&mut self.agent_catalog, &mut other.agent_catalog);
             }
             ReadySection::Bots => swap(&mut self.bots, &mut other.bots),
             ReadySection::Sessions => swap(&mut self.sessions, &mut other.sessions),
@@ -124,14 +121,7 @@ impl ReadyPayload {
             ReadySection::Config => content_revision(&(
                 &self.providers,
                 &self.provider_instances,
-                &self.bot_defaults,
-                &self.models,
-                &self.model_providers,
-                &self.image_models,
-                &self.voice_models,
-                &self.middleware_features,
-                &self.extensions,
-                &self.contributions,
+                &self.agent_catalog,
             )),
             ReadySection::Bots => content_revision(&self.bots),
             ReadySection::Sessions => content_revision(&self.sessions),
@@ -149,14 +139,7 @@ impl ReadyPayload {
             background_approvals: Vec::new(),
             providers: Vec::new(),
             provider_instances: Vec::new(),
-            bot_defaults: None,
-            models: Vec::new(),
-            model_providers: BTreeMap::new(),
-            image_models: Vec::new(),
-            voice_models: Vec::new(),
-            middleware_features: Vec::new(),
-            extensions: Vec::new(),
-            contributions: Vec::new(),
+            agent_catalog: AgentCatalog::default(),
             max_active_sessions: self.max_active_sessions,
             session_file_limits: self.session_file_limits,
             revisions: BTreeMap::new(),
@@ -271,8 +254,6 @@ pub struct SessionReadyPayload {
     pub pending_approvals: Vec<mobius::protocol::ExecApprovalRequestEvent>,
     /// The latest sequence.
     pub latest_sequence: u64,
-    /// The next before sequence.
-    pub next_before_sequence: Option<u64>,
     /// The workspace.
     pub workspace: Option<WorkspaceInfo>,
     /// The attached folders.
@@ -285,8 +266,10 @@ pub struct SessionReadyPayload {
     pub contributions: Vec<FrontendContribution>,
     /// The widgets.
     pub widgets: Vec<SessionWidget>,
-    /// The context limit tokens.
+    /// The only denominator for a usage meter; clients do not read `model_context_window`.
     pub context_limit_tokens: Option<i64>,
+    /// The latest token count, which event replay does not deliver to a fresh open.
+    pub token_usage: Option<Arc<mobius::protocol::TokenUsageInfo>>,
     /// The active message delivery.
     pub active_message_delivery: mobius::protocol::ActiveMessageDelivery,
     /// The run stats.
@@ -613,8 +596,6 @@ pub struct ProviderStatus {
     pub auth: ProviderAuthKind,
     /// The default base URL.
     pub default_base_url: Option<BaseUrl>,
-    /// Always true: custom roots keep every native capability. Kept for older clients.
-    pub native_custom_endpoints: bool,
     /// The default API key env.
     pub default_api_key_env: Option<String>,
     /// The models.
@@ -713,22 +694,27 @@ pub struct ProviderInstance {
     /// Image model identifiers listed by this setup.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub image_model_ids: Vec<String>,
+    /// Credential and usage limits are supplied by the gateway operator.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub operator_managed: bool,
 }
 
-/// Frontend type attached to one authenticated connection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ClientKind {
-    /// Selects the CLI case.
-    Cli,
-    /// Selects the macos case.
-    Macos,
-    /// Selects the ios case.
-    Ios,
-    /// Selects the ipados case.
-    Ipados,
-    /// Selects the gateway dashboard case.
-    GatewayDashboard,
+/// What one authenticated connection does for the gateway.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientCapabilities {
+    /// A person's app: presence hooks, access admission, client lists.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub presence: bool,
+    /// Renders gateway-assigned browser pages locally (`SetBrowserRuntime`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub browser_renderer: bool,
+    /// Hosts desktop control for the gateway machine (`SetDesktopRuntime`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub desktop_host: bool,
+    /// Views the gateway's remote desktop stream.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub remote_desktop_viewer: bool,
 }
 
 /// One paired client and its current connection state.
@@ -738,8 +724,6 @@ pub struct ClientStatus {
     pub client_id: String,
     /// The label.
     pub label: String,
-    /// The kinds.
-    pub kinds: Vec<ClientKind>,
     /// The connections.
     pub connections: usize,
 }
@@ -920,8 +904,12 @@ impl MiddlewareConfig {
 }
 
 /// Capability-rendered preview whose inner events remain provider-neutral.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RenderedPreview {
+    /// What the preview shows.
+    pub kind: mobius::protocol::FrontendPreviewKind,
+    /// The previewed item's state, when it has one.
+    pub state: Option<mobius::protocol::FrontendListItemState>,
     /// The semantic preview symbol.
     pub symbol: Option<FrontendSymbol>,
     /// Accumulated completed duration in milliseconds.
@@ -938,23 +926,10 @@ pub struct RenderedPreview {
     pub page_id: Arc<str>,
     /// The update.
     pub update: FrontendPreviewUpdate,
-    /// The events.
-    pub events: Vec<RenderedEvent>,
+    /// The previewed transcript page.
+    pub transcript: TranscriptPage,
     /// The next.
     pub next: Option<Op>,
-}
-
-/// One preview event and its capability-rendered blocks.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RenderedEvent {
-    /// The submission identifier.
-    pub submission_id: Option<Arc<str>>,
-    /// The recorded at milliseconds.
-    pub recorded_at_ms: i64,
-    /// The event.
-    pub event: EventMsg,
-    /// The blocks.
-    pub blocks: Vec<RenderedBlock>,
 }
 
 /// One timestamped semantic event and its deterministic presentation.
@@ -968,8 +943,6 @@ pub struct RecordedEvent {
     pub event: Event,
     /// The stream metrics.
     pub stream_metrics: Vec<StreamMetrics>,
-    /// The blocks.
-    pub blocks: Vec<RenderedBlock>,
     /// The preview.
     pub preview: Option<RenderedPreview>,
 }
@@ -1078,10 +1051,41 @@ pub struct BotRecord {
     pub shape: BotShape,
     /// The config.
     pub config: Arc<VersionedAgentConfig>,
-    /// The accepts file attachments.
-    pub accepts_file_attachments: bool,
+    /// What chats with this Bot can do.
+    pub capabilities: BotCapabilities,
     /// The routine interaction policy.
     pub routine_interaction_policy: RoutineInteractionPolicy,
+}
+
+/// What chats composed from one configuration can do, resolved by the gateway.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BotCapabilities {
+    /// Whether messages may carry file attachments.
+    pub attachments: bool,
+    /// Whether computer control is on.
+    pub computer: bool,
+    /// Whether and how voice calls start.
+    pub voice: VoiceCapability,
+}
+
+/// Voice calls for one configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum VoiceCapability {
+    /// Voice is turned off.
+    Off,
+    /// Voice is on but its route is not offered.
+    Unavailable {
+        /// Why no call can start.
+        reason: Arc<str>,
+    },
+    /// Calls start on `route`.
+    Ready {
+        /// The voice route.
+        route: Arc<str>,
+        /// Whether audio waits for the provider's session-started event.
+        waits_for_session_started: bool,
+    },
 }
 
 /// Whether unattended routine work can stop for a human execution decision.
@@ -1144,16 +1148,16 @@ pub enum RoutineScheduleKind {
 }
 
 /// A read-only page of a Bot routine transcript.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoutineRunPreview {
     /// The routine.
     pub routine: Routine,
     /// The run.
     pub run: RoutineRun,
-    /// The records.
-    pub records: Vec<RecordedEvent>,
-    /// The next before sequence.
-    pub next_before_sequence: Option<u64>,
+    /// The run's transcript page.
+    pub page: TranscriptPage,
+    /// The cursor of the next older page.
+    pub next: Option<HistoryCursor>,
 }
 
 /// One completed or active invocation of a Bot routine.

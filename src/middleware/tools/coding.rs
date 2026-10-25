@@ -193,34 +193,34 @@ impl Tool for ApplyPatch {
     }
 
     fn render(&self, event: &EventMsg) -> Option<FrontendBlock> {
-        let mut block = super::render_tool_event(
-            event,
-            |name| name == DEFINITION.apply_patch.tool.name,
-            |_, arguments| {
-                let detail = arguments
+        let mut block = DEFINITION.apply_patch.render(event)?;
+        match event {
+            EventMsg::ToolCallBegin(call) => {
+                if let Some(document) = call
+                    .arguments
                     .get("patch")
                     .and_then(Value::as_str)
-                    .and_then(|patch| {
-                        patch
-                            .lines()
-                            .find_map(|line| line.strip_prefix("*** Update File: "))
-                    })
-                    .unwrap_or_default()
-                    .into();
-                super::ToolHeading {
-                    title: DEFINITION.apply_patch.title.clone(), // rules-allow: the heading owns its title from static text
-                    detail,
+                    .and_then(|patch| parse_patch_document(patch).ok())
+                    && let Ok(diff) = document.unified_diff()
+                {
+                    block.text = diff;
+                    block.format = FrontendBlockFormat::UnifiedDiff;
+                    block.links.extend(super::file_link(&document.path));
                 }
-            },
-        )?;
-        if let EventMsg::ToolCallEnd(result) = event
-            && !result.is_error
-            && Patch::from_str(&result.output.text()).is_ok()
-        {
-            block.update = FrontendBlockUpdate::Replace;
-            block.title.clone_from(&DEFINITION.apply_patch.title);
-            block.text = result.output.text();
-            block.format = FrontendBlockFormat::UnifiedDiff;
+            }
+            EventMsg::ToolCallEnd(result) if !result.is_error => {
+                let diff = result.output.text();
+                // A Replace sets the links, so the patched file is linked again.
+                if let Ok(patch) = Patch::from_str(&diff) {
+                    block
+                        .links
+                        .extend(patch.modified().and_then(super::file_link));
+                    block.update = FrontendBlockUpdate::Replace;
+                    block.text = diff;
+                    block.format = FrontendBlockFormat::UnifiedDiff;
+                }
+            }
+            _ => {}
         }
         Some(block)
     }

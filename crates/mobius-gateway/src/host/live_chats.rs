@@ -59,8 +59,7 @@ impl GatewayLiveChats {
         let mut metadata = load_session_metadata(&checkpoints)
             .await
             .map_err(|error| mobius::Error::Checkpoint(error.to_string()))?;
-        let summaries = if session_id.as_str()
-            == crate::bots::conversation_session_id(&sender.session_context.owner_id)
+        let summaries = if crate::bots::is_persistent(session_id, &sender.session_context.owner_id)
         {
             super::gateway_session_summaries(&checkpoints)
                 .await
@@ -76,9 +75,7 @@ impl GatewayLiveChats {
         for summary in summaries {
             let entry = metadata.remove(&*summary.session_id);
             if &summary.session_id != session_id
-                && summary.catalog_visible
-                && summary.parent_session_id.is_none()
-                && summary.session_context.owner_id == sender.session_context.owner_id
+                && crate::bots::is_listed_root(&summary, &sender.session_context.owner_id)
             {
                 let host = hosts.remove(&*summary.session_id);
                 siblings.push((summary, entry.and_then(|entry| entry.title), host));

@@ -81,6 +81,8 @@ mod text {
         pub(super) prompt_root: String,
         pub(super) render_open: String,
         pub(super) render_open_empty: String,
+        pub(super) status_label_one: String,
+        pub(super) status_label_other: String,
         pub(super) status_title: String,
     }
     crate::embedded_config! { pub(super) static DEFINITION: Definition = include_str!("subagents.toml") => super::prepare_schema; }
@@ -627,6 +629,8 @@ impl Subagents {
             .transpose()?;
         Ok(MiddlewareCommandOutput::events(vec![
             FrontendEvent::Preview {
+                kind: crate::protocol::FrontendPreviewKind::Agent,
+                state: Some(page.state),
                 symbol: None,
                 duration_ms: None,
                 started_at_ms: None,
@@ -685,6 +689,7 @@ impl Middleware for Subagents {
         FrontendContribution {
             capability: self.name().into(),
             count: None,
+            count_label: None,
             commands: vec![FrontendCommand {
                 name: Command::Open.as_str().into(),
                 arguments: String::new().into(),

@@ -136,7 +136,7 @@ async fn report_gateway_version(
             frame.message,
             ClientMessage::Authenticate {
                 token: "version-check-token".into(),
-                client_kind: ClientKind::GatewayDashboard,
+                client: ClientCapabilities::default(),
                 catalog: Default::default(),
             }
         );

@@ -200,6 +200,14 @@ pub(super) enum VoiceApi {
     Codex,
 }
 
+impl VoiceApi {
+    /// The API-key Live call accepts audio only after its session starts; the device-code
+    /// call is ready once its media connects.
+    pub(super) const fn waits_for_session_started(self) -> bool {
+        matches!(self, Self::OpenAi)
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct RealtimeTransport {
     api: VoiceApi,

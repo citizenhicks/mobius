@@ -265,6 +265,7 @@ impl PendingApproval {
                     call_id: Arc::clone(&call.call_id),
                     name: Arc::clone(&call.name),
                     arguments: call.arguments.clone(), // rules-allow: the pending approval keeps its calls
+                    preview: None,
                 })
                 .collect(),
             reason: self.reason.clone(), // rules-allow: the pending approval stays durable while the event is emitted
@@ -819,6 +820,9 @@ pub async fn event_turn_page(
     let mut events = Vec::new();
     let mut found_start = false;
     let mut has_earlier_turn = false;
+    // Agent starts between the earlier turn and this one: they mark this turn as resumed.
+    let mut starts_before = Vec::new();
+    let mut in_gap = true;
 
     loop {
         let page = checkpoints
@@ -835,9 +839,14 @@ pub async fn event_turn_page(
         }
         for event in page.events {
             if found_start {
-                if matches!(&event.event.msg, EventMsg::TurnStarted(_)) {
-                    has_earlier_turn = true;
-                    break;
+                match &event.event.msg {
+                    EventMsg::TurnStarted(_) => {
+                        has_earlier_turn = true;
+                        break;
+                    }
+                    EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_) => in_gap = false,
+                    EventMsg::SessionConfigured(_) if in_gap => starts_before.push(event),
+                    _ => {}
                 }
             } else {
                 found_start = matches!(&event.event.msg, EventMsg::TurnStarted(_));
@@ -877,7 +886,10 @@ pub async fn event_turn_page(
         })
         .unwrap_or(0);
     let next_before_sequence = has_earlier_turn.then_some(start_sequence);
-    let events = events.drain(page_start..=start_index).collect();
+    let mut events: Vec<_> = events.drain(page_start..=start_index).collect();
+    if has_earlier_turn {
+        events.extend(starts_before);
+    }
 
     Ok(EventPage {
         latest_sequence,

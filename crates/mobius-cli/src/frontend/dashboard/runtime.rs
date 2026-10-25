@@ -9,8 +9,8 @@ use mobius::protocol::{
 use mobius::{Error, Result};
 use mobius_gateway::client::{GatewayClient, GatewayEvents, GatewaySender};
 use mobius_gateway::wire::{
-    ClientKind, ClientMessage, ClientStatus, ServerMessage, SessionActivityState, SessionRecord,
-    apply_session_changes,
+    ClientCapabilities, ClientMessage, ClientStatus, ServerMessage, SessionActivityState,
+    SessionRecord, apply_session_changes,
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -47,7 +47,7 @@ pub(super) async fn connect(
                 "this machine is not paired with {endpoint}; pair it before opening the gateway dashboard"
             ))
         })?;
-    let client = GatewayClient::connect(&endpoint, &token, ClientKind::GatewayDashboard)
+    let client = GatewayClient::connect(&endpoint, &token, ClientCapabilities::default())
         .await
         .map_err(gateway_error)?;
     let (sender, mut events) = client.into_parts();
@@ -771,7 +771,9 @@ pub(super) fn handle_frame(state: &mut DashboardState, message: ServerMessage) -
             }
             state.pending_open = None;
         }
-        ServerMessage::AgentEvent { session_id, record } => {
+        ServerMessage::AgentEvent {
+            session_id, record, ..
+        } => {
             if let Some(overlay) = state
                 .overlay
                 .as_mut()

@@ -30,6 +30,8 @@ fn frontend_widget(
 ) -> FrontendWidget {
     FrontendWidget {
         id: id.into(),
+        count: None,
+        priority: crate::protocol::FrontendPriority::Primary,
         slot,
         text: text.into(),
         tone: FrontendTone::Neutral,
@@ -47,7 +49,7 @@ fn action_list_content(title: &str, entries: &[Entry]) -> FrontendWidgetContent 
         actions: vec![FrontendAction {
             id: "add".into(),
             label: text::DEFINITION.action_add_global.clone(), // rules-allow: owned frontend record built from static text
-            symbol: FrontendSymbol::Custom("plus".into()),
+            symbol: FrontendSymbol::Plus,
             tone: FrontendTone::Neutral,
             op: Op::CapabilityCommand {
                 capability: MANIFEST.id.into(),

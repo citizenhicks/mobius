@@ -1,6 +1,6 @@
 use super::{
-    AuthStore, CONNECTION_POLL_INTERVAL, ClientKind, ClientMessage, CloudflareConfig, ConfigStore,
-    ConnectOptions, Duration, Endpoint, Error, GatewayClient, GatewayConfig, Instant,
+    AuthStore, CONNECTION_POLL_INTERVAL, ClientCapabilities, ClientMessage, CloudflareConfig,
+    ConfigStore, ConnectOptions, Duration, Endpoint, Error, GatewayClient, GatewayConfig, Instant,
     MAX_PENDING_FRAMES, PROCESS_FILE, PairingGrant, PairingStatus, PathBuf, Result, Serialize,
     ServerMessage, SignalKind, StartupGuard, SystemTime, UNIX_EPOCH, Write,
     direct_loopback_endpoint, loopback_endpoint, new_request_id, print_line, reuse_current_gateway,
@@ -214,7 +214,7 @@ pub(super) async fn request_running_pairing_code(
     token: &str,
 ) -> Result<PairingGrant> {
     let client =
-        GatewayClient::connect(client_endpoint, token, ClientKind::GatewayDashboard).await?;
+        GatewayClient::connect(client_endpoint, token, ClientCapabilities::default()).await?;
     let (sender, mut events) = client.into_parts();
     let mut request_id = [0; uuid::fmt::Hyphenated::LENGTH];
     let request_id = new_request_id(&mut request_id);

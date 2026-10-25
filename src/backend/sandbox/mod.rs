@@ -192,6 +192,7 @@ pub static MANIFEST: std::sync::LazyLock<MiddlewareManifest> =
         required: true,
         default_enabled: true,
         settings: &text::DEFINITION.settings,
+        requires: &[],
     });
 
 pub use approval::ApprovalPolicy;

@@ -85,6 +85,7 @@ pub(super) async fn register_provider_with_credential(
         tint: None,
         models,
         image_model_ids: options.image_model_ids,
+        operator_managed: options.operator_managed,
     };
     request_provider_registration(
         &endpoint,
@@ -123,7 +124,7 @@ async fn provider_command_connection(
     endpoint: &Endpoint,
     token: &str,
 ) -> Result<(crate::client::GatewaySender, crate::client::GatewayEvents)> {
-    let client = GatewayClient::connect(endpoint, token, ClientKind::GatewayDashboard).await?;
+    let client = GatewayClient::connect(endpoint, token, ClientCapabilities::default()).await?;
     let (sender, events) = client.into_parts();
     sender
         .send(ClientMessage::SetNotifications {
@@ -214,6 +215,7 @@ async fn request_provider_registration(
             tint: registration.tint,
             models: registration.models,
             image_model_ids: registration.image_model_ids,
+            operator_managed: registration.operator_managed,
         })
         .await?;
     for _ in 0..MAX_PENDING_FRAMES {

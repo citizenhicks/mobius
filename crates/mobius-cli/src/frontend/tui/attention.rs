@@ -67,6 +67,8 @@ impl TuiState {
                 capability: "approval".into(),
                 item: Arc::new(FrontendWidget {
                     id: "pending".into(),
+                    count: None,
+                    priority: mobius::protocol::FrontendPriority::Primary,
                     slot: FrontendSlot::Attention,
                     text: "Approvals".into(),
                     tone: FrontendTone::Warning,

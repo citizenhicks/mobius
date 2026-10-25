@@ -45,7 +45,7 @@ use crate::bots::BotStore;
 use crate::config::{ConfigStore, CredentialStore, GatewayConfig, TlsConfig};
 use crate::host::{GatewayHost, HostHandle, Rejection, SessionHistoryPage};
 use crate::wire::{
-    CatalogHint, ClientFrame, ClientKind, ClientMessage, ClientStatus, DirectoryEntry,
+    CatalogHint, ClientCapabilities, ClientFrame, ClientMessage, ClientStatus, DirectoryEntry,
     DirectoryListing, FrameReader, GatewayNotification, MAX_FRAME_BYTES, ProfileSnapshot,
     ServerFrame, ServerMessage, SharedFrame, read_frame, read_frame_with_limit, validate_version,
     websocket_error, write_frame,
@@ -433,7 +433,7 @@ impl GatewayServer {
         let (result, lease_expired) = {
             // Poll activity alongside the whole loop, including awaits inside
             // dispatch branches. This scope cancels both futures before actor cleanup.
-            let activity = activity_hook.run(&self.host, || client_connections.native_count());
+            let activity = activity_hook.run(&self.host, || client_connections.presence_count());
             tokio::pin!(activity, serving);
             tokio::select! {
                 biased;
@@ -476,7 +476,7 @@ impl GatewayServer {
         trigger: Trigger,
         tasks: &mut JoinSet<()>,
     ) {
-        match connections.native_count() {
+        match connections.presence_count() {
             Ok(clients) => {
                 crate::telemetry::Telemetry::tick(&self.host, clients, trigger, tasks).await;
             }

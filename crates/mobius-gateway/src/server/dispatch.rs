@@ -1,12 +1,12 @@
 use super::{
-    AccessLease, Arc, AsyncWrite, AuthStore, BTreeMap, BTreeSet, BotStore, ClientConnections,
-    ClientKind, ClientMessage, ClientView, Error, GatewayHost, GatewayNotification, HostHandle,
-    JoinSet, Op, PathBuf, PendingSessionFileWrite, Rejection, Result, ServerFrame, ServerMessage,
-    SessionFileStore, SharedFrame, Utc, Uuid, ValidatedSubmission, broadcast, directory_rejection,
-    internal_rejection, list_directories, open_selected, require_selected, require_uploads_enabled,
-    routine_rejection, sequence, session_file_rejection, uploads_disabled_rejection,
-    write_client_inventory, write_frame, write_gateway_result, write_rejection, write_result,
-    write_server_error, write_session_history,
+    AccessLease, Arc, AsyncWrite, AuthStore, BTreeMap, BTreeSet, BotStore, ClientCapabilities,
+    ClientConnections, ClientMessage, ClientView, Error, GatewayHost, GatewayNotification,
+    HostHandle, JoinSet, Op, PathBuf, PendingSessionFileWrite, Rejection, Result, ServerFrame,
+    ServerMessage, SessionFileStore, SharedFrame, Utc, Uuid, ValidatedSubmission, broadcast,
+    directory_rejection, internal_rejection, list_directories, open_selected, require_selected,
+    require_uploads_enabled, routine_rejection, sequence, session_file_rejection,
+    uploads_disabled_rejection, write_client_inventory, write_frame, write_gateway_result,
+    write_rejection, write_result, write_server_error, write_session_history,
 };
 use mobius::SessionId;
 use mobius::backend::session_files::session_file_limits;
@@ -29,7 +29,7 @@ pub(super) struct AuthenticatedClient<'a> {
     pub(super) auth: &'a AuthStore,
     pub(super) desktop_transport: bool,
     pub(super) connection_id: Uuid,
-    pub(super) kind: ClientKind,
+    pub(super) client: ClientCapabilities,
     pub(super) id: &'a str,
     pub(super) connections: &'a ClientConnections,
     pub(super) revocations: &'a broadcast::Sender<String>,
@@ -211,16 +211,10 @@ pub(super) async fn handle_message(
         ClientMessage::GetSessionHistory {
             request_id,
             session_id,
-            before_sequence,
+            before,
         } => {
-            return get_session_history(
-                writer,
-                &mut connection,
-                request_id,
-                session_id,
-                before_sequence,
-            )
-            .await;
+            return get_session_history(writer, &mut connection, request_id, session_id, before)
+                .await;
         }
         ClientMessage::ReassignSession {
             request_id,
@@ -249,7 +243,6 @@ pub(super) async fn handle_message(
             return attach_session_folder(
                 writer,
                 connection.selected.as_ref(),
-                gateway,
                 request_id,
                 session_id,
                 folder,
@@ -557,11 +550,7 @@ pub(super) async fn handle_message(
                 Ok(host) => host,
                 Err(rejection) => return write_rejection(writer, request_id, rejection).await,
             };
-            let result = host.delete_workspace_file(path).await;
-            if result.is_ok() {
-                gateway.invalidate_storage_usage();
-            }
-            return write_result(writer, request_id, result).await;
+            return write_result(writer, request_id, host.delete_workspace_file(path).await).await;
         }
         ClientMessage::WriteWorkspaceFile {
             request_id,
@@ -633,6 +622,7 @@ pub(super) async fn handle_message(
             tint,
             models,
             image_model_ids,
+            operator_managed,
         } => {
             let registered = gateway
                 .register_provider(
@@ -643,6 +633,7 @@ pub(super) async fn handle_message(
                         tint,
                         models,
                         image_model_ids,
+                        operator_managed,
                     },
                     preserve_selection,
                     if_configured,
@@ -706,9 +697,9 @@ pub(super) async fn handle_message(
         ClientMessage::GetRoutineRunPreview {
             request_id,
             id,
-            before_sequence,
+            before,
         } => {
-            get_routine_run_preview(writer, request_id, id, before_sequence, gateway).await?;
+            get_routine_run_preview(writer, request_id, id, before, gateway).await?;
         }
         ClientMessage::SetBrowserRuntime { .. } | ClientMessage::BrowserPageReply { .. } => {
             return crate::computer_runtime::browser::handle_message(
@@ -716,7 +707,7 @@ pub(super) async fn handle_message(
                 &gateway.remote_desktop.browser,
                 connection.browser,
                 client.local,
-                client.kind,
+                client.client,
                 gateway.remote_desktop.browser_available(),
                 writer,
             )
@@ -728,7 +719,7 @@ pub(super) async fn handle_message(
                 &gateway.desktop,
                 connection.desktop,
                 client.local,
-                client.kind,
+                client.client,
                 writer,
             )
             .await;
@@ -935,16 +926,16 @@ async fn get_session_history(
     connection: &mut ConnectionSessionState<'_>,
     request_id: Arc<str>,
     session_id: SessionId,
-    before_sequence: Option<u64>,
+    before: Option<crate::wire::HistoryCursor>,
 ) -> Result<()> {
     let page = match connection.selected {
         Some(selected) if **selected.host.session_id() == *session_id => {
-            selected.host.history_page(before_sequence).await
+            selected.host.history_page(before).await
         }
         _ => {
             connection
                 .gateway
-                .read_session_history(&session_id, before_sequence)
+                .read_session_history(&session_id, before)
                 .await
         }
     };
@@ -969,7 +960,6 @@ async fn rename_session(
 async fn attach_session_folder(
     writer: &mut (impl AsyncWrite + Unpin),
     selected: Option<&SelectedChat>,
-    gateway: &GatewayHost,
     request_id: Arc<str>,
     session_id: SessionId,
     folder: PathBuf,
@@ -978,11 +968,7 @@ async fn attach_session_folder(
         Ok(host) => host,
         Err(rejection) => return write_rejection(writer, request_id, rejection).await,
     };
-    let result = host.attach_folder(folder).await;
-    if result.is_ok() {
-        gateway.invalidate_storage_usage();
-    }
-    write_result(writer, request_id, result).await
+    write_result(writer, request_id, host.attach_folder(folder).await).await
 }
 
 async fn set_session_pinned(
@@ -1361,13 +1347,6 @@ async fn finish_session_file_upload(
     }
 }
 
-fn require_readable_files(
-    selected: Option<&SelectedChat>,
-    session_id: &SessionId,
-) -> std::result::Result<(), Rejection> {
-    require_selected(selected, session_id).map(|_| ())
-}
-
 #[expect(
     clippy::needless_pass_by_ref_mut,
     reason = "a shared borrow would make the future !Send: ConnectionSessionState is not Sync"
@@ -1378,7 +1357,7 @@ async fn list_session_files(
     request_id: Arc<str>,
     session_id: SessionId,
 ) -> Result<()> {
-    if let Err(rejection) = require_readable_files(connection.selected.as_ref(), &session_id) {
+    if let Err(rejection) = require_selected(connection.selected.as_ref(), &session_id) {
         return write_rejection(writer, request_id, rejection).await;
     }
     match connection
@@ -1430,7 +1409,7 @@ async fn read_session_file(
     offset: u64,
     max_bytes: usize,
 ) -> Result<()> {
-    if let Err(rejection) = require_readable_files(connection.selected.as_ref(), &session_id) {
+    if let Err(rejection) = require_selected(connection.selected.as_ref(), &session_id) {
         return write_rejection(writer, request_id, rejection).await;
     }
     match connection
@@ -1717,11 +1696,12 @@ async fn write_workspace_file(
         Ok(host) => host,
         Err(rejection) => return write_rejection(writer, request_id, rejection).await,
     };
-    let result = host.write_workspace_file(path, content).await;
-    if result.is_ok() {
-        connection.gateway.invalidate_storage_usage();
-    }
-    write_result(writer, request_id, result).await
+    write_result(
+        writer,
+        request_id,
+        host.write_workspace_file(path, content).await,
+    )
+    .await
 }
 
 async fn list_directories_response(
@@ -1880,10 +1860,10 @@ async fn get_routine_run_preview(
     writer: &mut (impl AsyncWrite + Unpin),
     request_id: Arc<str>,
     id: Arc<str>,
-    before_sequence: Option<u64>,
+    before: Option<crate::wire::HistoryCursor>,
     gateway: &GatewayHost,
 ) -> Result<()> {
-    match gateway.routine_run_preview(&id, before_sequence).await {
+    match gateway.routine_run_preview(&id, before).await {
         Ok(preview) => {
             write_frame(
                 writer,

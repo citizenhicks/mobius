@@ -41,8 +41,9 @@ use mobius::protocol::{
 use mobius::{Error, Result};
 use mobius_gateway::client::{GatewayEvents, GatewaySender};
 use mobius_gateway::wire::{
-    BotRecord, ClientMessage, GitDiffScope, ReadyPayload, ServerMessage, SessionActivityState,
-    SessionReadyPayload, SessionRecord, WorkspaceFileScope, apply_session_changes,
+    BotRecord, ClientMessage, GitDiffScope, HistoryCursor, ReadyPayload, ServerMessage,
+    SessionActivityState, SessionReadyPayload, SessionRecord, WorkspaceFileScope,
+    apply_session_changes,
 };
 
 const ELAPSED_INTERVAL: Duration = Duration::from_secs(1);
@@ -391,7 +392,7 @@ fn refresh_workspace_inventory(
     session_id: &mobius::SessionId,
     reference_open: bool,
 ) -> bool {
-    matches!(message, ServerMessage::AgentEvent { session_id: actual, record }
+    matches!(message, ServerMessage::AgentEvent { session_id: actual, record, .. }
         if actual == session_id && (matches!(record.event.msg, EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_))
             || reference_open && matches!(record.event.msg, EventMsg::ToolCallEnd(_))))
 }
@@ -710,6 +711,7 @@ fn handle_server_message(
         ServerMessage::AgentEvent {
             session_id: actual,
             mut record,
+            transcript,
         } if &actual == session_id => {
             settle_message_draft(state, &record.event);
             enrich_resume_picker(
@@ -723,29 +725,26 @@ fn handle_server_message(
             );
             // The snapshot already contains current activity through this sequence.
             let live = record.sequence > session.latest_sequence;
-            handle_gateway_event(state, record, live);
+            handle_gateway_event(state, record, transcript, live);
         }
         ServerMessage::SessionHistory {
             request_id,
             session_id: actual,
-            mut records,
-            next_before_sequence,
+            page,
+            next,
         } if &actual == session_id && state.history_request_id.as_deref() == Some(&*request_id) => {
             state.history_request_id = None;
-            state.next_before_sequence = next_before_sequence;
-            session.next_before_sequence = next_before_sequence;
-            for record in &mut records {
-                enrich_resume_picker(
-                    &mut record.event.msg,
-                    &gateway.sessions,
-                    &gateway.bots,
-                    session
-                        .workspace
-                        .as_ref()
-                        .map(|workspace| workspace.id.as_str()),
-                );
-            }
-            handle_gateway_history(state, records);
+            state.history_cursor = next;
+            handle_gateway_history(state, page);
+        }
+        ServerMessage::SessionTranscript {
+            session_id: actual,
+            page,
+            next,
+            ..
+        } if &actual == session_id => {
+            state.history_cursor = next;
+            handle_gateway_history(state, page);
         }
         ServerMessage::SessionOpened { payload, .. } if session_opened => {
             *session = payload;
@@ -1089,15 +1088,19 @@ async fn request_earlier_history(
     session_id: &mobius::SessionId,
     state: &mut TuiState,
 ) {
-    let Some(before_sequence) = state.next_before_sequence else {
+    let Some(cursor) = &state.history_cursor else {
         return;
+    };
+    let before = HistoryCursor {
+        session_id: cursor.session_id.share(),
+        before_sequence: cursor.before_sequence,
     };
     let request_id: Arc<str> = crate::fresh_id();
     match sender
         .send(ClientMessage::GetSessionHistory {
             request_id: Arc::clone(&request_id),
             session_id: session_id.share(),
-            before_sequence: Some(before_sequence),
+            before: Some(before),
         })
         .await
     {
@@ -1448,6 +1451,10 @@ fn sync_session(
     state.approvals.clear();
     state.restore_draft();
     state.turn_started_at = (!state.active_turns.is_empty()).then(Instant::now);
+    // A fresh open replays no token counts; the payload carries the latest one.
+    if let Some(info) = &session.token_usage {
+        state.usage = super::events::usage_status(info, state.context_limit);
+    }
     for request in std::mem::take(&mut session.pending_approvals) {
         state.begin_approval(request);
     }
@@ -1473,7 +1480,6 @@ fn sync_session_info(
     state.context_limit = session.context_limit_tokens;
     state.usage.apply_context_limit(state.context_limit);
     state.background_approval_count = gateway.background_approvals.len();
-    state.next_before_sequence = session.next_before_sequence;
     Ok(())
 }
 
@@ -1582,6 +1588,7 @@ fn agent_summary(gateway: &ReadyPayload, session: &SessionReadyPayload, bot: &Bo
         .collect::<Vec<_>>()
         .join(", ");
     let middleware = gateway
+        .agent_catalog
         .middleware_features
         .iter()
         .filter(|feature| feature.required || bot.config.config.middleware.enabled(&feature.id))
@@ -1594,6 +1601,7 @@ fn agent_summary(gateway: &ReadyPayload, session: &SessionReadyPayload, bot: &Bo
         .filter_map(|contribution| {
             contribution.count.map(|count| {
                 let label = gateway
+                    .agent_catalog
                     .middleware_features
                     .iter()
                     .find(|feature| *feature.id == *contribution.capability)
@@ -1838,7 +1846,6 @@ mod tests {
             active_turn_ids: Vec::new(),
             pending_approvals: Vec::new(),
             latest_sequence: 0,
-            next_before_sequence: None,
             attached_folders: Vec::new(),
             workspace: Some(WorkspaceInfo {
                 id: "workspace".into(),
@@ -1861,6 +1868,7 @@ mod tests {
             contributions: Vec::new(),
             widgets: Vec::new(),
             context_limit_tokens: None,
+            token_usage: None,
             active_message_delivery: ActiveMessageDelivery::Steer,
             run_stats: RunStats::default(),
             pinned_messages: Default::default(),
@@ -1885,19 +1893,18 @@ mod tests {
                     revision: 1,
                     config: Default::default(),
                 }),
-                accepts_file_attachments: false,
+                capabilities: mobius_gateway::wire::BotCapabilities {
+                    attachments: false,
+                    computer: false,
+                    voice: mobius_gateway::wire::VoiceCapability::Off,
+                },
                 routine_interaction_policy: RoutineInteractionPolicy::Unattended,
             }],
             sessions: Vec::new(),
             background_approvals: Vec::new(),
             providers: Vec::new(),
             provider_instances: Vec::new(),
-            bot_defaults: None,
-            models: Vec::new(),
-            model_providers: Default::default(),
-            middleware_features: Vec::new(),
-            extensions: Vec::new(),
-            contributions: Vec::new(),
+            agent_catalog: Default::default(),
             max_active_sessions: 0,
             session_file_limits: SessionFileLimits {
                 max_attachment_references: 1,
@@ -1908,8 +1915,6 @@ mod tests {
             },
             revisions: Default::default(),
             omitted: Default::default(),
-            image_models: Vec::new(),
-            voice_models: Vec::new(),
         }
     }
 }

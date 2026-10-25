@@ -16,6 +16,10 @@ mod routines;
 mod session;
 mod ssh;
 mod telemetry;
+mod transcript;
+
+#[cfg(feature = "fixtures")]
+pub use transcript::TranscriptReducer;
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -34,8 +38,8 @@ use mobius::middleware::FrontendExtensions;
 use mobius::middleware::scratchpad::Scratchpad;
 use mobius::middleware::sessions::LiveChats;
 use mobius::protocol::{
-    Event, EventMsg, FrontendContribution, FrontendEvent, FrontendPreviewEvent, MessageAuthor,
-    MessageSubmission, ModelStepContentPhase, Op, RenderedBlock, ReviewDecision, Submission,
+    Event, EventMsg, FrontendContribution, FrontendEvent, MessageAuthor, MessageSubmission,
+    ModelStepContentPhase, Op, RenderedBlock, ReviewDecision, Submission,
 };
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
@@ -51,15 +55,15 @@ use crate::config::{
 use crate::extensions::ExtensionStore;
 use crate::provider_catalog::{
     configured_model_catalog, configured_model_choices, configured_model_routes,
-    provider_instances, provider_statuses,
+    provider_instances, provider_statuses, route_choices,
 };
 use crate::sandbox::GatewaySandbox;
 use crate::wire::{
     AgentComposition, GitDiffScope, MAX_FRAME_BYTES, ProfileSnapshot, ProviderConfig, ReadyPayload,
-    RecordedEvent, RenderedEvent, RenderedPreview, RoutineRunStatus, RunStats, RunSummary,
-    ServerFrame, ServerMessage, SessionActivity, SessionActivityState, SessionReadyPayload,
-    SessionRecord, SessionRunGroup, SessionWidget, SharedFrame, SshIdentityRecord,
-    VersionedAgentConfig, WorkspaceFileScope,
+    RecordedEvent, RenderedPreview, RoutineRunStatus, RunStats, RunSummary, ServerFrame,
+    ServerMessage, SessionActivity, SessionActivityState, SessionReadyPayload, SessionRecord,
+    SessionRunGroup, SessionWidget, SharedFrame, SshIdentityRecord, VersionedAgentConfig,
+    WorkspaceFileScope,
 };
 use crate::{Error, Result};
 
@@ -84,10 +88,13 @@ use self::profile::{
 use self::replay::{
     FrameworkPresentation, ReplayEntry, classify_journal_sequence, compact_replay_deltas,
     durable_history_page, event_sequence, load_replay, project_record, publish_ready_and_pending,
-    record_and_publish, replayable, update_widgets, validate_gateway_event,
+    record_and_publish, update_widgets, validate_gateway_event,
 };
 pub(crate) use self::session::HostHandle;
-use self::session::{JournalDelivery, JournalSequence, LoadedReplay, SessionWidgets};
+use self::session::{
+    JournalDelivery, JournalSequence, LoadedReplay, SessionRuntimeState, SessionWidgets,
+    TurnLifecycle, turn_lifecycle,
+};
 use self::ssh::{generate as generate_ssh_identity_on_host, identities as ssh_identities_on_host};
 
 const COMMAND_CAPACITY: usize = 128;
@@ -196,12 +203,24 @@ async fn gateway_ready_after_unlock(
 
 pub(crate) struct HostSnapshot {
     pub(crate) ready: SessionReadyPayload,
-    pub(crate) replay: Vec<crate::wire::SharedFrame>,
+    pub(crate) replay: OpenReplay,
+}
+
+/// What an opening client receives after `session_opened`.
+pub(crate) enum OpenReplay {
+    /// The replay frames after the client's resume cursor.
+    Frames(Vec<crate::wire::SharedFrame>),
+    /// The whole live transcript, for a fresh open or a cursor outside the window.
+    Transcript {
+        through_sequence: u64,
+        page: crate::wire::TranscriptPage,
+        next: Option<crate::wire::HistoryCursor>,
+    },
 }
 
 pub(crate) struct SessionHistoryPage {
-    pub(crate) records: Vec<RecordedEvent>,
-    pub(crate) next_before_sequence: Option<u64>,
+    pub(crate) page: crate::wire::TranscriptPage,
+    pub(crate) next: Option<crate::wire::HistoryCursor>,
 }
 
 /// How a chat request is admitted against session mutations.
@@ -287,6 +306,11 @@ impl GatewayHost {
         if let Some(hook) = &config.telemetry.activity_hook {
             hook.validate_roots([store.state_dir()])?;
         }
+        bots.set_voice_routes(crate::provider_catalog::VoiceRoutes::new(
+            &config.configured_providers,
+            &store,
+            &credentials,
+        )?)?;
         if let Some(defaults) = &config.bot_defaults {
             bots.seed_default(defaults)?;
         }
@@ -522,13 +546,10 @@ impl GatewayHost {
         &self,
     ) -> std::result::Result<Vec<FrontendContribution>, Rejection> {
         let _mutation = self.begin_mutation().await?;
-        let (scratchpad, mut contributions) = self.contribution_state().await;
-        let contribution = scratchpad
-            .global_contribution()
+        let (scratchpad, contributions) = self.contribution_state().await;
+        with_scratchpad_contribution(&scratchpad, contributions)
             .await
-            .map_err(scratchpad_error)?;
-        contributions.push(contribution);
-        Ok(contributions)
+            .map_err(scratchpad_error)
     }
 
     pub(crate) async fn submit_contribution(
@@ -640,7 +661,7 @@ impl GatewayHost {
             }
             (
                 state.store.state_dir().to_path_buf(),
-                *previous.description != *identity.description || previous.config.config != *config,
+                !crate::assembly::same_runtime(&previous, identity.description, &config),
                 config.into_inner(),
             )
         };
@@ -657,11 +678,13 @@ impl GatewayHost {
         let _mutation = self.begin_mutation().await?;
         let state = self.state.lock().await;
         let previous = state.bots.bot(id).map_err(invalid_bot)?;
+        let config = validate_bot_config(&state, config)?;
+        let approval_policy = config.approval_policy();
         let config = Arc::new(VersionedAgentConfig {
             revision: expected_revision
                 .checked_add(1)
                 .ok_or_else(|| invalid_bot("Bot revision overflow"))?,
-            config: validate_bot_config(&state, config)?.into_inner(),
+            config: config.into_inner(),
         });
         let prepared = if runtime_changed {
             let mut candidate = previous;
@@ -671,7 +694,10 @@ impl GatewayHost {
                 let gateway = state.config()?;
                 crate::assembly::prepare_bot(
                     &gateway,
-                    Arc::new(candidate),
+                    crate::bots::RuntimeBot {
+                        record: Arc::new(candidate),
+                        approval_policy,
+                    },
                     &state.store,
                     &state.credentials,
                     Arc::clone(&state.session_files),
@@ -686,7 +712,7 @@ impl GatewayHost {
         let bot = Arc::new(
             state
                 .bots
-                .update_bot(id, identity, config)
+                .update_bot(id, identity, config, approval_policy)
                 .map_err(invalid_bot)?,
         );
         if let Some(mut prepared) = prepared {
@@ -966,11 +992,11 @@ impl GatewayHost {
             )
         };
         let Some(checkpoint) = checkpoints.load(session_id).await.map_err(internal)? else {
-            let bot = bots
-                .bots()
+            let bot = crate::bots::conversation_owner(session_id)
+                .map(|bot_id| bots.find_bot(bot_id))
+                .transpose()
                 .map_err(internal)?
-                .into_iter()
-                .find(|bot| &bot.conversation_session_id == session_id)
+                .flatten()
                 .ok_or_else(unknown_session)?;
             return Ok((AuthorizedChat::Unstarted { bot_id: bot.id }, guard));
         };
@@ -1005,19 +1031,19 @@ impl GatewayHost {
     pub(crate) async fn read_session_history(
         &self,
         session_id: &SessionId,
-        before_sequence: Option<u64>,
+        before: Option<crate::wire::HistoryCursor>,
     ) -> std::result::Result<SessionHistoryPage, Rejection> {
         let (chat, access) = self.authorize_chat(session_id, Admission::Observe).await?;
         if let AuthorizedChat::Resident(host) = chat {
             drop(access);
-            return host.history_page(before_sequence).await;
+            return host.history_page(before).await;
         }
         let checkpoints = Arc::clone(&self.state.lock().await.checkpoints);
         durable_history_page(
             checkpoints.as_ref(),
             session_id,
             &FrameworkPresentation,
-            before_sequence,
+            before,
         )
         .await
     }
@@ -1160,13 +1186,21 @@ impl GatewayHost {
     }
 }
 
-/// A Bot composition checked against the gateway's catalog and installed extensions.
+/// A Bot composition checked against the gateway's catalog and installed extensions, with the
+/// approval policy that check parsed.
 #[derive(Debug)]
-pub(crate) struct ValidatedComposition(AgentComposition);
+pub(crate) struct ValidatedComposition {
+    config: AgentComposition,
+    approval_policy: mobius::backend::sandbox::ApprovalPolicy,
+}
 
 impl ValidatedComposition {
     pub(crate) fn into_inner(self) -> AgentComposition {
-        self.0
+        self.config
+    }
+
+    pub(crate) const fn approval_policy(&self) -> mobius::backend::sandbox::ApprovalPolicy {
+        self.approval_policy
     }
 }
 
@@ -1174,14 +1208,19 @@ impl std::ops::Deref for ValidatedComposition {
     type Target = AgentComposition;
 
     fn deref(&self) -> &AgentComposition {
-        &self.0
+        &self.config
     }
 }
 
 #[cfg(test)]
 impl From<AgentComposition> for ValidatedComposition {
     fn from(config: AgentComposition) -> Self {
-        Self(config)
+        let approval_policy =
+            crate::config::validate_agent_composition(&config).expect("valid test composition");
+        Self {
+            config,
+            approval_policy,
+        }
     }
 }
 
@@ -1200,12 +1239,16 @@ fn validate_composition(
 ) -> std::result::Result<ValidatedComposition, Rejection> {
     let models =
         configured_model_choices(gateway, &state.store, &state.credentials).map_err(internal)?;
-    crate::config::validate_bot_compatibility(gateway, &config, models.catalogs())
-        .map_err(invalid_config)?;
+    let approval_policy =
+        crate::config::validate_bot_compatibility(gateway, &config, models.catalogs())
+            .map_err(invalid_config)?;
     ExtensionStore::new(&state.store)
         .resolve(gateway, &config.extensions)
         .map_err(invalid_config)?;
-    Ok(ValidatedComposition(config))
+    Ok(ValidatedComposition {
+        config,
+        approval_policy,
+    })
 }
 
 fn validate_bot_workspace(
@@ -1488,6 +1531,15 @@ fn invalid_routine(error: impl std::fmt::Display) -> Rejection {
     Rejection::new("invalid_routine", error.to_string())
 }
 
+/// The gateway's frontend contributions followed by the scratchpad's current one.
+async fn with_scratchpad_contribution(
+    scratchpad: &Scratchpad,
+    mut contributions: Vec<FrontendContribution>,
+) -> mobius::Result<Vec<FrontendContribution>> {
+    contributions.push(scratchpad.global_contribution().await?);
+    Ok(contributions)
+}
+
 fn scratchpad_error(error: mobius::Error) -> Rejection {
     match error {
         mobius::Error::Tool(message) => Rejection::new("invalid_scratchpad", message),
@@ -1523,9 +1575,7 @@ impl GatewayHost {
 }
 
 fn reject_persistent_session(summary: &SessionSummary) -> std::result::Result<(), Rejection> {
-    if *summary.session_id
-        == *crate::bots::conversation_session_id(&summary.session_context.owner_id)
-    {
+    if crate::bots::is_persistent(&summary.session_id, &summary.session_context.owner_id) {
         return Err(Rejection::new(
             "persistent_chat",
             "this conversation belongs permanently to its Bot",

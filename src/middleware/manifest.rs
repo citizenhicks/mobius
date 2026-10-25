@@ -4,14 +4,20 @@ use std::sync::Arc;
 
 use crate::protocol::ModelChoice;
 use crate::protocol::{
-    FrontendSetting, FrontendSettingKind, FrontendSettingOption, FrontendSettingValue,
-    FrontendSymbol, FrontendTone, MiddlewareFeature,
+    FrontendSetting, FrontendSettingKind, FrontendSettingOption, FrontendSettingRequirement,
+    FrontendSettingValue, FrontendSymbol, FrontendTone, MiddlewareFeature,
 };
 use crate::{Error, Result};
 
 macro_rules! middleware_manifest {
     ($(#[$attr:meta])* $id:literal, $definition:expr, required: $required:expr,
      settings: $settings:expr) => {
+        $crate::middleware::manifest::middleware_manifest! {
+            $(#[$attr])* $id, $definition, required: $required, settings: $settings, requires: &[]
+        }
+    };
+    ($(#[$attr:meta])* $id:literal, $definition:expr, required: $required:expr,
+     settings: $settings:expr, requires: $requires:expr) => {
         $(#[$attr])*
         pub static MANIFEST: std::sync::LazyLock<$crate::middleware::manifest::MiddlewareManifest> =
             std::sync::LazyLock::new(|| $crate::middleware::manifest::MiddlewareManifest {
@@ -21,6 +27,7 @@ macro_rules! middleware_manifest {
                 required: $required,
                 default_enabled: $definition.default_enabled,
                 settings: $settings,
+                requires: $requires,
             });
     };
 }
@@ -52,6 +59,8 @@ pub struct MiddlewareManifest {
     pub default_enabled: bool,
     /// The settings.
     pub settings: &'static [MiddlewareSettingManifest],
+    /// Advisory settings of other middleware this one needs.
+    pub requires: &'static [FrontendSettingRequirement],
 }
 
 impl MiddlewareManifest {
@@ -68,6 +77,7 @@ impl MiddlewareManifest {
                 .iter()
                 .map(|setting| setting.schema(catalogs))
                 .collect(),
+            requires: self.requires.to_vec(),
         }
     }
 }

@@ -489,6 +489,8 @@ fn widget(mut questions: Vec<Question>) -> FrontendWidget {
     });
     FrontendWidget {
         id: "status".into(),
+        count: None,
+        priority: crate::protocol::FrontendPriority::Primary,
         slot: FrontendSlot::Attention,
         text: open.to_string(),
         tone: if open > 0 {
@@ -496,7 +498,7 @@ fn widget(mut questions: Vec<Question>) -> FrontendWidget {
         } else {
             FrontendTone::Neutral
         },
-        symbol: Some(FrontendSymbol::Custom("question".into())),
+        symbol: Some(FrontendSymbol::Question),
         icon_only: false,
         progress: None,
         action: None,
@@ -581,7 +583,7 @@ fn action(
     FrontendAction {
         id,
         label,
-        symbol: FrontendSymbol::Custom("question".into()),
+        symbol: FrontendSymbol::Question,
         tone: FrontendTone::Neutral,
         op: Op::CapabilityCommand {
             capability: MANIFEST.id.into(),

@@ -3,9 +3,9 @@
 use super::{
     Arc, BotStore, CheckpointStore, Error, EventMsg, EventPageRequest, ExecutionOutcome,
     ExecutionRecord, FrontendEvent, GatewayHost, GatewayState, JournalEvent, MessageAuthor,
-    MessageSubmission, Op, Rejection, Result, RoutineRunStatus, ServerMessage, Submission, Utc,
-    gateway_session_summaries, internal, invalid_bot, invalid_config, invalid_routine,
-    unknown_session, validate_bot_workspace,
+    MessageSubmission, Op, Rejection, Result, RoutineRunStatus, ServerMessage, SessionRuntimeState,
+    Submission, TurnLifecycle, Utc, gateway_session_summaries, internal, invalid_bot,
+    invalid_config, invalid_routine, turn_lifecycle, unknown_session, validate_bot_workspace,
 };
 use crate::wire::{BotAction, BotSubscription, HookData, HookEvent, HookSelector, HookSource};
 use mobius::SessionId;
@@ -151,19 +151,17 @@ impl GatewayHost {
             let Some(session_id) = &run.session_id else {
                 continue;
             };
-            let checkpoint = checkpoints.load(session_id).await?;
-            if checkpoint.as_ref().is_some_and(|checkpoint| {
-                checkpoint
-                    .pending_approval
-                    .as_ref()
-                    .is_some_and(|approval| !approval.decision_received)
-            }) {
+            let runtime = SessionRuntimeState::load(checkpoints.as_ref(), session_id).await?;
+            if runtime
+                .as_ref()
+                .is_some_and(|runtime| runtime.undecided_approval.is_some())
+            {
                 self.open_session(session_id)
                     .await
                     .map_err(|error| Error::Config(error.message.to_string()))?;
                 continue;
             }
-            let outcome = if checkpoint.is_some() {
+            let outcome = if runtime.is_some() {
                 checkpoints
                     .execution_page(
                         session_id,
@@ -365,7 +363,7 @@ pub(super) async fn validate_source(
             Ok(0)
         }
         HookSource::Session { session_id } => {
-            if session_id.as_str() == crate::bots::conversation_session_id(bot_id) {
+            if crate::bots::is_persistent(session_id, bot_id) {
                 return Err(invalid_config(
                     "a Bot cannot subscribe to its main conversation",
                 ));
@@ -461,10 +459,8 @@ async fn require_session_target(
         .await
         .map_err(internal)?
         .ok_or_else(unknown_session)?;
-    if *summary.session_context.owner_id != *bot_id
-        || !summary.catalog_visible
-        || summary.parent_session_id.is_some()
-        || session_id.as_str() == crate::bots::conversation_session_id(bot_id)
+    if !crate::bots::is_listed_root(&summary, bot_id)
+        || crate::bots::is_persistent(session_id, bot_id)
     {
         return Err(unknown_session());
     }
@@ -500,59 +496,61 @@ async fn lifecycle_event(
     session_id: &SessionId,
     record: &JournalEvent,
 ) -> Result<Option<HookEvent>> {
-    let (data, turn_id) = match &record.event.msg {
-        EventMsg::SessionConfigured(_) if record.sequence == 1 => (
-            HookData::SessionCreated {
-                session_id: session_id.share(),
-            },
-            None,
-        ),
-        EventMsg::TurnStarted(turn) => (
+    if matches!(record.event.msg, EventMsg::SessionConfigured(_)) && record.sequence == 1 {
+        let data = HookData::SessionCreated {
+            session_id: session_id.share(),
+        };
+        return session_hook(checkpoints, bots, bot_id, session_id, record, data, None)
+            .await
+            .map(Some);
+    }
+    let Some(lifecycle) = turn_lifecycle(&record.event.msg) else {
+        return Ok(None);
+    };
+    let (data, turn_id) = match lifecycle {
+        TurnLifecycle::Started { turn_id } => (
             HookData::SessionTurnStarted {
                 session_id: session_id.share(),
-                turn_id: Arc::clone(&turn.turn_id),
+                turn_id: Arc::clone(turn_id),
             },
-            Some(&*turn.turn_id),
+            turn_id,
         ),
-        EventMsg::ExecApprovalRequest(approval) => (
+        TurnLifecycle::ApprovalRequested {
+            turn_id,
+            request_id,
+        } => (
             HookData::SessionApproval {
                 session_id: session_id.share(),
-                turn_id: Arc::clone(&approval.turn_id),
-                request_id: Arc::clone(&approval.id),
+                turn_id: Arc::clone(turn_id),
+                request_id: Arc::clone(request_id),
             },
-            Some(&*approval.turn_id),
+            turn_id,
         ),
-        EventMsg::TurnComplete(turn) => {
-            let execution = execution_for_turn(checkpoints, session_id, &turn.turn_id)
+        TurnLifecycle::Finished { turn_id, .. } => {
+            let execution = execution_for_turn(checkpoints, session_id, turn_id)
                 .await?
                 .ok_or_else(|| Error::Config("terminal event has no execution record".into()))?;
             (
                 HookData::SessionTurnFinished {
                     session_id: session_id.share(),
-                    turn_id: Arc::clone(&turn.turn_id),
+                    turn_id: Arc::clone(turn_id),
                     outcome: execution.outcome,
                 },
-                Some(&*turn.turn_id),
+                turn_id,
             )
         }
-        EventMsg::TurnAborted(turn) => {
-            let execution = execution_for_turn(checkpoints, session_id, &turn.turn_id)
-                .await?
-                .ok_or_else(|| Error::Config("terminal event has no execution record".into()))?;
-            (
-                HookData::SessionTurnFinished {
-                    session_id: session_id.share(),
-                    turn_id: Arc::clone(&turn.turn_id),
-                    outcome: execution.outcome,
-                },
-                Some(&*turn.turn_id),
-            )
-        }
-        _ => return Ok(None),
     };
-    session_hook(checkpoints, bots, bot_id, session_id, record, data, turn_id)
-        .await
-        .map(Some)
+    session_hook(
+        checkpoints,
+        bots,
+        bot_id,
+        session_id,
+        record,
+        data,
+        Some(&**turn_id),
+    )
+    .await
+    .map(Some)
 }
 
 async fn session_hook(
@@ -567,12 +565,11 @@ async fn session_hook(
     let author = if let Some(turn_id) = turn_id {
         match execution_for_turn(checkpoints, session_id, turn_id).await? {
             Some(execution) => Some(execution.author),
-            None => checkpoints.load(session_id).await?.and_then(|checkpoint| {
-                checkpoint
-                    .active_execution
-                    .filter(|execution| *execution.turn_id == *turn_id)
-                    .map(|execution| execution.author)
-            }),
+            None => SessionRuntimeState::load(checkpoints.as_ref(), session_id)
+                .await?
+                .and_then(|runtime| runtime.active_turn)
+                .filter(|active| *active.turn_id == *turn_id)
+                .map(|active| active.author),
         }
     } else {
         None
@@ -840,6 +837,8 @@ mod tests {
         let bots = BotStore::open(temp.path()).expect("bots");
         let mut widget = FrontendWidget {
             id: "status".into(),
+            count: None,
+            priority: mobius::protocol::FrontendPriority::Primary,
             slot: FrontendSlot::Attention,
             text: "1".into(),
             tone: FrontendTone::Warning,

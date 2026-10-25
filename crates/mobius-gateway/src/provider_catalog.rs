@@ -60,9 +60,51 @@ pub(crate) fn provider_instances(
                 selection: configured.selection.clone(), // rules-allow: provider records are sent to clients
                 models: configured_models(definition, configured),
                 image_model_ids: configured.image_model_ids.clone(), // rules-allow: provider records are sent to clients
+                operator_managed: configured.operator_managed,
             })
         })
         .collect()
+}
+
+/// The configured voice routes in selection order, and whether each call's audio waits for
+/// its provider's session-started event.
+#[derive(Debug, Default)]
+pub(crate) struct VoiceRoutes(Vec<(Arc<str>, bool)>);
+
+impl VoiceRoutes {
+    pub(crate) fn new(
+        configured_providers: &BTreeMap<String, ConfiguredProvider>,
+        store: &ConfigStore,
+        credentials: &CredentialStore,
+    ) -> Result<Self> {
+        media_routes(configured_providers, Some((store, credentials)))?
+            .voices
+            .into_iter()
+            .map(|route| {
+                Ok((
+                    route.choice.route,
+                    provider(&route.provider.provider)?.voice_waits_for_session_started(),
+                ))
+            })
+            .collect::<Result<_>>()
+            .map(Self)
+    }
+
+    /// The route a call uses, by the router's rule: the saved route, or the first voice.
+    pub(crate) fn select(
+        &self,
+        route: Option<&str>,
+    ) -> std::result::Result<(&Arc<str>, bool), &'static str> {
+        match route {
+            Some(route) => self
+                .0
+                .iter()
+                .find(|(candidate, _)| **candidate == *route)
+                .ok_or("the saved voice is no longer offered by a configured provider"),
+            None => self.0.first().ok_or("no voice model is configured"),
+        }
+        .map(|(route, waits)| (route, *waits))
+    }
 }
 
 /// Independent chat, image and voice catalogs.
@@ -131,7 +173,8 @@ pub(crate) fn configured_model_providers(
     store: &ConfigStore,
     credentials: &CredentialStore,
 ) -> Result<BTreeMap<Arc<str>, String>> {
-    let mut providers: BTreeMap<_, _> = configured_model_routes(
+    let mut providers = BTreeMap::new();
+    let routes = configured_model_routes(
         &gateway.configured_providers,
         gateway
             .bot_defaults
@@ -139,19 +182,26 @@ pub(crate) fn configured_model_providers(
             .map(|defaults| defaults.config.provider.instance.as_str()),
         store,
         credentials,
-    )?
-    .into_iter()
-    .map(|route| (route.choice.route, route.provider.instance))
-    .collect();
+    )?;
     let media = media_routes(&gateway.configured_providers, Some((store, credentials)))?;
-    providers.extend(
-        media
-            .images
-            .into_iter()
-            .chain(media.voices)
-            .map(|route| (route.choice.route, route.provider.instance)),
-    );
+    for routes in [routes, media.images, media.voices] {
+        route_choices(routes, &mut providers);
+    }
     Ok(providers)
+}
+
+/// The routes' choices, recording the provider instance that serves each route.
+pub(crate) fn route_choices(
+    routes: Vec<CatalogRoute>,
+    providers: &mut BTreeMap<Arc<str>, String>,
+) -> Vec<ModelChoice> {
+    routes
+        .into_iter()
+        .map(|route| {
+            providers.insert(Arc::clone(&route.choice.route), route.provider.instance);
+            route.choice
+        })
+        .collect()
 }
 
 pub(crate) fn configured_route_exists(gateway: &GatewayConfig, route: &str) -> Result<bool> {
@@ -281,6 +331,50 @@ pub(crate) fn prepare_configured_models(
             model
         })
         .collect()
+}
+
+/// The chat route one provider selection resolves to.
+pub(crate) struct SelectedRoute<'a> {
+    pub(crate) route: String,
+    pub(crate) effort: Option<&'a str>,
+    /// The selected model's preset, when the configured catalog or provider knows it.
+    pub(crate) preset: Option<&'a ModelPreset>,
+    pub(crate) context_window: i64,
+}
+
+/// Resolves a selection against its configured instance, or against the provider's
+/// built-in presets when the instance is no longer configured.
+pub(crate) fn selected_route<'a>(
+    definition: &'a ProviderDefinition,
+    configured: Option<&'a ConfiguredProvider>,
+    selection: &'a ProviderConfig,
+) -> SelectedRoute<'a> {
+    let preset = configured
+        .and_then(|configured| {
+            models(definition, configured)
+                .iter()
+                .find(|model| model.id == selection.model)
+        })
+        .or_else(|| definition.model(&selection.model));
+    let effort = match configured {
+        Some(configured) => {
+            crate::config::effective_reasoning_effort(definition, configured, selection)
+        }
+        None => selection.reasoning_effort.as_deref().or_else(|| {
+            definition
+                .model(&selection.model)
+                .and_then(|preset| preset.default_reasoning.as_deref())
+        }),
+    };
+    SelectedRoute {
+        route: model_route_id(&selection.instance, &selection.model, effort),
+        effort,
+        preset,
+        context_window: preset.map_or_else(
+            || model_context_window(definition, &selection.model),
+            |model| model.context_window,
+        ),
+    }
 }
 
 pub(crate) fn models<'a>(
@@ -563,7 +657,6 @@ fn provider_status(definition: &ProviderDefinition) -> ProviderStatus {
         voice_models: std::borrow::Cow::Borrowed(definition.voice_models()),
         auth,
         default_base_url: definition.default_base_url().map(BaseUrl::share),
-        native_custom_endpoints: definition.native_custom_endpoints(),
         default_api_key_env,
         models: provider_models(definition),
         web_search: definition
@@ -657,6 +750,7 @@ mod tests {
         selection.model = "reasoner".into();
         selection.reasoning_effort = None;
         let mut configured = ConfiguredProvider {
+            operator_managed: false,
             selection,
             label: "Custom".into(),
             tint: Default::default(),

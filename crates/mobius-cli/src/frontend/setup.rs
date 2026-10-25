@@ -102,11 +102,12 @@ pub(crate) async fn run_gateway(
     gateway: &mut ReadyPayload,
 ) -> Result<()> {
     let original = gateway
+        .agent_catalog
         .bot_defaults
         .as_ref()
         .map(|default| default.config.clone()) // rules-allow: setup edits a snapshot while events update the gateway payload
         .unwrap_or_default();
-    if mode == SetupMode::Bot && gateway.bot_defaults.is_none() {
+    if mode == SetupMode::Bot && gateway.agent_catalog.bot_defaults.is_none() {
         return Err(Error::Config(
             "configure a provider before changing the Bot template".into(),
         ));
@@ -140,6 +141,7 @@ pub async fn run_gateway_login(
         None,
         gateway,
         gateway
+            .agent_catalog
             .bot_defaults
             .as_ref()
             .map(|defaults| defaults.config.clone()) // rules-allow: setup edits a snapshot while events update the gateway payload

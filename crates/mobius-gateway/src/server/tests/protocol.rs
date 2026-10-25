@@ -7,20 +7,25 @@ fn history_frame_bound_rejects_one_oversized_turn() {
     let frame = ServerFrame::new(ServerMessage::SessionHistory {
         request_id: "history".into(),
         session_id: SessionId::new("session").unwrap(),
-        records: vec![crate::wire::RecordedEvent {
-            sequence: 1,
-            recorded_at_ms: 1,
-            event: Event {
-                submission_id: None,
-                msg: EventMsg::Warning(mobius::protocol::WarningEvent {
-                    message: "x".repeat(MAX_FRAME_BYTES).into(),
-                }),
-            },
-            stream_metrics: Vec::new(),
-            blocks: Vec::new(),
-            preview: None,
-        }],
-        next_before_sequence: None,
+        page: crate::wire::TranscriptPage {
+            items: vec![Arc::new(crate::wire::TranscriptItem {
+                id: "notice:1:0".into(),
+                turn_id: None,
+                recorded_at_ms: 1,
+                state: crate::wire::TranscriptItemState::Complete,
+                terminal: false,
+                starts_turn: false,
+                resumed: false,
+                inherited: false,
+                target: None,
+                content: crate::wire::TranscriptItemContent::Notice {
+                    tone: mobius::protocol::FrontendTone::Warning,
+                    text: "x".repeat(MAX_FRAME_BYTES).into(),
+                },
+            })],
+            rows: Vec::new(),
+        },
+        next: None,
     });
 
     assert!(

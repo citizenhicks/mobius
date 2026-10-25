@@ -7,6 +7,7 @@ use super::{
 };
 use crate::backend::model::ToolDefinition;
 use crate::backend::sandbox::BackgroundCommandPoll;
+use crate::protocol::{EventMsg, FrontendBlock, ToolContent};
 use crate::{BoxFuture, Error, Result};
 
 #[derive(serde::Deserialize)]
@@ -52,8 +53,23 @@ impl Tool for Bash {
         &DEFINITION.bash.tool
     }
 
-    fn render(&self, event: &crate::protocol::EventMsg) -> Option<crate::protocol::FrontendBlock> {
-        DEFINITION.bash.render(event)
+    fn render(&self, event: &EventMsg) -> Option<FrontendBlock> {
+        let mut block = DEFINITION.bash.render(event)?;
+        match event {
+            EventMsg::ToolCallBegin(call) => {
+                if let Some(command) = call
+                    .arguments
+                    .get("command")
+                    .and_then(Value::as_str)
+                    .filter(|command| !command.is_empty())
+                {
+                    block.title = format!("{} · {}", block.title, command_preview(command));
+                }
+            }
+            EventMsg::ToolCallEnd(result) => end_command_block(&mut block, &result.output),
+            _ => {}
+        }
+        Some(block)
     }
 
     fn exposure(&self) -> ToolExposure {
@@ -114,8 +130,29 @@ impl Tool for ManageCommand {
         &DEFINITION.manage_command.tool
     }
 
-    fn render(&self, event: &crate::protocol::EventMsg) -> Option<crate::protocol::FrontendBlock> {
-        DEFINITION.manage_command.render(event)
+    fn render(&self, event: &EventMsg) -> Option<FrontendBlock> {
+        let mut block = DEFINITION.manage_command.render(event)?;
+        match event {
+            EventMsg::ToolCallBegin(call) => {
+                let command_id = call
+                    .arguments
+                    .get("command_id")
+                    .and_then(Value::as_str)
+                    .and_then(|id| uuid::Uuid::parse_str(id).ok());
+                if let Some(action) = call.arguments.get("action").and_then(Value::as_str) {
+                    block.title = match command_id {
+                        Some(id) => {
+                            format!("{} · {action} · #{:08x}", block.title, id.as_fields().0)
+                        }
+                        None => format!("{} · {action}", block.title),
+                    };
+                }
+                block.group = command_id.map(|id| id.to_string());
+            }
+            EventMsg::ToolCallEnd(result) => end_command_block(&mut block, &result.output),
+            _ => {}
+        }
+        Some(block)
     }
 
     fn exposure(&self) -> ToolExposure {
@@ -147,6 +184,36 @@ impl Tool for ManageCommand {
             Ok(background_output(&output, context.sandbox.output_limit()).into())
         })
     }
+}
+
+/// One line of at most 80 characters; the full command stays in the block text.
+fn command_preview(command: &str) -> String {
+    let mut characters = command.chars();
+    let mut preview: String = characters
+        .by_ref()
+        .take(80)
+        .map(|character| match character {
+            '\r' | '\n' | '\t' => ' ',
+            other => other,
+        })
+        .collect();
+    if characters.next().is_some() {
+        preview.push('…');
+    }
+    preview
+}
+
+/// An empty Append title keeps the heading the begin block gave its command, and the
+/// result envelope's background command ID groups this row with every row about it.
+fn end_command_block(block: &mut FrontendBlock, output: &ToolContent) {
+    #[derive(Deserialize)]
+    struct Envelope {
+        command_id: Option<String>,
+    }
+    block.title.clear();
+    block.group = serde_json::from_str::<Envelope>(&output.text())
+        .ok()
+        .and_then(|envelope| envelope.command_id);
 }
 
 fn validate_command(command: &str) -> Result<()> {
@@ -261,5 +328,50 @@ mod tests {
             .expect("arguments");
             assert!(arguments.wait().is_err());
         }
+    }
+
+    #[test]
+    fn command_rows_carry_their_preview_and_join_by_command_id() {
+        use crate::protocol::{ToolCallBeginEvent, ToolCallEndEvent};
+        let id = "1a2b3c4d-0000-4000-8000-000000000000";
+        let begin = |name: &str, arguments| {
+            EventMsg::ToolCallBegin(ToolCallBeginEvent {
+                turn_id: "turn".into(),
+                call_id: "call".into(),
+                name: name.into(),
+                arguments,
+            })
+        };
+        let end = |name: &str| {
+            EventMsg::ToolCallEnd(ToolCallEndEvent {
+                turn_id: "turn".into(),
+                call_id: "call".into(),
+                name: name.into(),
+                output: format!(r#"{{"command_id":"{id}","status":"running"}}"#).into(),
+                is_error: false,
+            })
+        };
+
+        let command = format!("cargo test\n{}", "x".repeat(80));
+        let bash = Bash
+            .render(&begin("bash", serde_json::json!({ "command": command })))
+            .expect("bash begin");
+        assert_eq!(bash.title, format!("Bash · cargo test {}…", "x".repeat(69)));
+        assert_eq!(bash.text, command);
+        let bash = Bash.render(&end("bash")).expect("bash end");
+        assert_eq!((bash.title.as_str(), bash.group.as_deref()), ("", Some(id)));
+
+        let manage = ManageCommand
+            .render(&begin(
+                "manage_command",
+                serde_json::json!({ "command_id": id, "action": "poll" }),
+            ))
+            .expect("manage begin");
+        assert_eq!(manage.title, "Command · poll · #1a2b3c4d");
+        assert_eq!(manage.group.as_deref(), Some(id));
+        let manage = ManageCommand
+            .render(&end("manage_command"))
+            .expect("manage end");
+        assert_eq!(manage.group.as_deref(), Some(id));
     }
 }

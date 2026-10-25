@@ -69,9 +69,16 @@ async fn configured_authenticated_limit_rejects_excess_clients_and_keeps_the_fir
         stopped.await.ok();
     }));
     ready.await.expect("listener ready");
-    let first = GatewayClient::connect(&endpoint, &identity.token, ClientKind::Cli)
-        .await
-        .expect("first connection");
+    let first = GatewayClient::connect(
+        &endpoint,
+        &identity.token,
+        crate::wire::ClientCapabilities {
+            presence: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("first connection");
     let (sender, mut events) = first.into_parts();
     wait_gateway_ready(&mut events).await;
 
@@ -82,7 +89,10 @@ async fn configured_authenticated_limit_rejects_excess_clients_and_keeps_the_fir
         &mut writer,
         &ClientFrame::new(ClientMessage::Authenticate {
             token: identity.token,
-            client_kind: ClientKind::Cli,
+            client: crate::wire::ClientCapabilities {
+                presence: true,
+                ..Default::default()
+            },
             catalog: Default::default(),
         }),
     )
@@ -151,7 +161,14 @@ async fn configured_pre_authentication_limit_waits_then_releases_after_disconnec
     let stalled = TcpStream::connect(listen)
         .await
         .expect("stalled connection");
-    let waiting = GatewayClient::connect(&endpoint, &identity.token, ClientKind::Cli);
+    let waiting = GatewayClient::connect(
+        &endpoint,
+        &identity.token,
+        crate::wire::ClientCapabilities {
+            presence: true,
+            ..Default::default()
+        },
+    );
     tokio::pin!(waiting);
     assert!(
         tokio::time::timeout(Duration::from_millis(100), &mut waiting)
@@ -228,10 +245,18 @@ async fn configured_pending_upload_limit_is_released_by_cancellation() {
         stopped.await.ok();
     }));
     ready.await.expect("listener ready");
-    let (client, _) =
-        GatewayClient::pair(&endpoint, grant.code, "upload capacity", ClientKind::Ios)
-            .await
-            .expect("pair client");
+    let (client, _) = GatewayClient::pair(
+        &endpoint,
+        grant.code,
+        "upload capacity",
+        crate::wire::ClientCapabilities {
+            presence: true,
+            remote_desktop_viewer: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("pair client");
     let (sender, mut events) = client.into_parts();
     wait_gateway_ready(&mut events).await;
     let mut composition = crate::wire::AgentComposition::default();

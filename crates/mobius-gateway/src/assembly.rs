@@ -29,10 +29,7 @@ use mobius::middleware::tools::Tools;
 use mobius::middleware::{Middleware, MiddlewareStack};
 use mobius::protocol::{ActiveMessageDelivery, ModelChoice, ModelInfo, SessionContext, TokenUsage};
 
-use crate::config::{
-    ChatSpec, ConfigStore, CredentialStore, DEFAULT_CONTEXT_WINDOW, GatewayConfig,
-    configured_approval_policy, effective_reasoning_effort, local_user_name, model_route_id,
-};
+use crate::config::{ChatSpec, ConfigStore, CredentialStore, GatewayConfig, local_user_name};
 use crate::extensions::{ExtensionStore, ResolvedExtensions};
 use crate::middleware_manifest::{BuiltinMiddleware, MIDDLEWARE};
 use crate::provider_catalog::{
@@ -73,6 +70,8 @@ pub(crate) struct PreparedBot {
     model_providers: BTreeMap<Arc<str>, String>,
     approval_policy: ApprovalPolicy,
     pub(crate) active_message_delivery: ActiveMessageDelivery,
+    /// The configured voice route when voice is on; `Some(None)` uses the default voice.
+    pub(crate) voice: Option<Option<Arc<str>>>,
     extensions: ResolvedExtensions,
     computer_runtime: Option<crate::computer_runtime::PreparedComputer>,
     computer_config: Arc<crate::computer_runtime::ComputerConfig>,
@@ -87,25 +86,41 @@ impl PreparedBot {
 
     pub(crate) fn matches_runtime(&self, bot: &crate::wire::BotRecord) -> bool {
         !self.stale.load(std::sync::atomic::Ordering::Acquire)
-            && self.bot.description == bot.description
-            && self.bot.config.config == bot.config.config
+            && same_runtime(&self.bot, &bot.description, &bot.config.config)
     }
 
     pub(crate) fn invalidate(&self) {
         self.stale.store(true, std::sync::atomic::Ordering::Release);
     }
 
+    /// The agent's and voice's system prompt: the Bot's description as its preamble.
     pub(crate) fn instructions(&self) -> String {
-        format!(
-            "{}\n\n{}",
-            self.bot.description, self.bot.config.config.system_prompt
-        )
+        compose_instructions(&self.bot.description, &self.bot.config.config.system_prompt)
     }
+}
+
+fn compose_instructions(description: &str, system_prompt: &str) -> String {
+    match description.trim() {
+        "" => system_prompt.to_owned(),
+        preamble => format!("{preamble}\n\n{system_prompt}"),
+    }
+}
+
+/// Whether `bot` starts the same agent as one with `description` and `config`.
+pub(crate) fn same_runtime(
+    bot: &crate::wire::BotRecord,
+    description: &str,
+    config: &AgentComposition,
+) -> bool {
+    *bot.description == *description && bot.config.config == *config
 }
 
 pub(crate) fn prepare_bot<'a>(
     gateway: &GatewayConfig,
-    bot: Arc<crate::wire::BotRecord>,
+    crate::bots::RuntimeBot {
+        record: bot,
+        approval_policy,
+    }: crate::bots::RuntimeBot,
     store: &'a ConfigStore,
     credentials: &CredentialStore,
     session_files: Arc<SessionFileStore>,
@@ -125,8 +140,16 @@ pub(crate) fn prepare_bot<'a>(
         } else {
             unavailable_models(gateway, &config.provider, store, credentials, session_files)?
         };
-        let approval_policy = configured_approval_policy(&config.middleware)?;
         let active_message_delivery = configured_message_delivery(&config.middleware)?;
+        let voice_id = mobius::middleware::voice::MANIFEST.id;
+        let voice = config
+            .middleware
+            .enabled(voice_id)
+            .then(|| {
+                crate::middleware_manifest::string_setting(&config.middleware, voice_id, "model")
+                    .map(|route| route.map(Arc::from))
+            })
+            .transpose()?;
         let extensions = ExtensionStore::new(store).resolve(gateway, &config.extensions)?;
         let providers = std::iter::once(config.provider.clone()) // rules-allow: the prepared catalog owns its provider selections
             .chain(
@@ -165,6 +188,7 @@ pub(crate) fn prepare_bot<'a>(
                 model_providers,
                 approval_policy,
                 active_message_delivery,
+                voice,
                 extensions,
                 computer_runtime,
                 computer_config,
@@ -262,8 +286,12 @@ pub(crate) async fn assemble(
             )?);
         }
         let output_bytes = mobius::backend::sandbox::OutputLimit::new(
-            crate::middleware_manifest::count_setting(settings, "sandbox", "tool_output_bytes")?
-                .get(),
+            crate::middleware_manifest::count_setting(
+                settings,
+                mobius::backend::sandbox::MANIFEST.id,
+                "tool_output_bytes",
+            )?
+            .get(),
         )?;
         let credential_environment = telemetry
             .sinks
@@ -304,7 +332,7 @@ pub(crate) async fn assemble(
             .tool_output_limit(output_bytes)
             .background_command_limit(crate::middleware_manifest::count_setting(
                 settings,
-                "sandbox",
+                mobius::backend::sandbox::MANIFEST.id,
                 "background_commands",
             )?);
         let middleware = build_middleware(
@@ -456,8 +484,7 @@ fn build_models(
         .configured_providers
         .get(&selection.instance)
         .ok_or_else(|| Error::Config("active provider is not in the configured catalog".into()))?;
-    let effort = effective_reasoning_effort(definition, configured, selection);
-    let selected_route = model_route_id(&selection.instance, &selection.model, effort);
+    let selected = crate::provider_catalog::selected_route(definition, Some(configured), selection);
     let mut catalog = catalog_routes(definition, configured, selection);
     catalog.extend(
         configured_model_routes(
@@ -472,12 +499,8 @@ fn build_models(
         .into_iter()
         .filter(|route| route.provider.instance != selection.instance),
     );
-    catalog.sort_by_key(|route| *route.choice.route != *selected_route);
-    if catalog.first().map(|route| &*route.choice.route) != Some(selected_route.as_str()) {
-        return Err(Error::Config(
-            "active model route is not in the configured gateway catalog".into(),
-        ));
-    }
+    // Validation keeps the selected route in the catalog; it leads the router.
+    catalog.sort_by_key(|route| *route.choice.route != *selected.route);
     let media = crate::provider_catalog::media_routes(
         &gateway.configured_providers,
         Some((store, credentials)),
@@ -488,10 +511,6 @@ fn build_models(
     let first = routes
         .next()
         .ok_or_else(|| Error::Config("provider has no model routes".into()))?;
-    let context_window = first
-        .choice
-        .context_window
-        .unwrap_or(DEFAULT_CONTEXT_WINDOW);
     let mut router =
         ModelRouter::new(Arc::clone(&first.choice.route), first.model).session_files(session_files);
     router.set_credential_lifetime(&first.choice.route, first.lifetime)?;
@@ -500,7 +519,7 @@ fn build_models(
     for route in routes {
         register_route(&mut router, route)?;
     }
-    Ok((Arc::new(router), context_window))
+    Ok((Arc::new(router), selected.context_window))
 }
 
 fn register_route(router: &mut ModelRouter, route: RouteValue) -> Result<()> {
@@ -709,33 +728,13 @@ fn unavailable_models(
 ) -> Result<(Arc<ModelRouter>, i64)> {
     let definition = provider(&selection.provider)?;
     let configured = gateway.configured_providers.get(&selection.instance);
-    let preset = configured
-        .and_then(|configured| {
-            configured
-                .models
-                .iter()
-                .find(|model| model.id == selection.model)
-        })
-        .or_else(|| definition.model(&selection.model));
-    let context_window = preset.map_or_else(
-        || crate::provider_catalog::model_context_window(definition, &selection.model),
-        |model| model.context_window,
-    );
-    let effort = match gateway.configured_providers.get(&selection.instance) {
-        Some(configured) => {
-            effective_reasoning_effort(definition, configured, selection).map(Arc::from)
-        }
-        None => selection
-            .reasoning_effort
-            .as_deref()
-            .or_else(|| {
-                definition
-                    .model(&selection.model)
-                    .and_then(|preset| preset.default_reasoning.as_deref())
-            })
-            .map(Arc::from),
-    };
-    let route = model_route_id(&selection.instance, &selection.model, effort.as_deref());
+    let crate::provider_catalog::SelectedRoute {
+        route,
+        effort,
+        preset,
+        context_window,
+    } = crate::provider_catalog::selected_route(definition, configured, selection);
+    let effort: Option<Arc<str>> = effort.map(Arc::from);
     let route: Arc<str> = route.into();
     let model_id: Arc<str> = selection.model.as_str().into();
     let model: Arc<dyn Model> = Arc::new(UnavailableModel {
@@ -848,7 +847,11 @@ fn build_middleware(
                 Arc::new(middleware)
             }
             BuiltinMiddleware::Messages => Arc::new(Messages::new(
-                crate::middleware_manifest::count_setting(settings, "messages", "max_pending")?,
+                crate::middleware_manifest::count_setting(
+                    settings,
+                    feature.manifest.id,
+                    "max_pending",
+                )?,
                 prepared.active_message_delivery,
             )),
             BuiltinMiddleware::Voice => Arc::new(mobius::middleware::voice::Voice),
@@ -868,7 +871,11 @@ fn build_middleware(
                 )?)
             }
             BuiltinMiddleware::Sessions => Arc::new(Sessions::new(
-                crate::middleware_manifest::count_setting(settings, "sessions", "page_size")?,
+                crate::middleware_manifest::count_setting(
+                    settings,
+                    feature.manifest.id,
+                    "page_size",
+                )?,
                 Some(Arc::clone(session_files)),
                 live_chats.take(),
             )),
@@ -879,23 +886,53 @@ fn build_middleware(
 }
 
 fn configured_message_delivery(settings: &MiddlewareConfig) -> Result<ActiveMessageDelivery> {
-    crate::middleware_manifest::string_setting(settings, "messages", "delivery")?
-        .ok_or_else(|| Error::Config("missing middleware setting `messages.delivery`".into()))?
-        .parse::<ActiveMessageDelivery>()
-        .map_err(Error::from)
+    crate::middleware_manifest::string_setting(
+        settings,
+        mobius::middleware::messages::MANIFEST.id,
+        "delivery",
+    )?
+    .ok_or_else(|| Error::Config("missing middleware setting `messages.delivery`".into()))?
+    .parse::<ActiveMessageDelivery>()
+    .map_err(Error::from)
 }
 
-pub(crate) fn bot_semantics(config: &AgentComposition) -> Result<(bool, RoutineInteractionPolicy)> {
-    let accepts_file_attachments = config
-        .middleware
-        .enabled(mobius::middleware::attachments::MANIFEST.id);
-    let routine_interaction_policy = match configured_approval_policy(&config.middleware)? {
+/// What chats composed from `config` can do, choosing the voice by the router's rule.
+pub(crate) fn bot_capabilities(
+    config: &AgentComposition,
+    voices: &crate::provider_catalog::VoiceRoutes,
+) -> Result<crate::wire::BotCapabilities> {
+    let middleware = &config.middleware;
+    let voice_id = mobius::middleware::voice::MANIFEST.id;
+    let voice = if middleware.enabled(voice_id) {
+        match voices.select(crate::middleware_manifest::string_setting(
+            middleware, voice_id, "model",
+        )?) {
+            Ok((route, waits_for_session_started)) => crate::wire::VoiceCapability::Ready {
+                route: Arc::clone(route),
+                waits_for_session_started,
+            },
+            Err(reason) => crate::wire::VoiceCapability::Unavailable {
+                reason: reason.into(),
+            },
+        }
+    } else {
+        crate::wire::VoiceCapability::Off
+    };
+    Ok(crate::wire::BotCapabilities {
+        attachments: middleware.enabled(mobius::middleware::attachments::MANIFEST.id),
+        computer: middleware.enabled(mobius::middleware::computer_control::MANIFEST.id),
+        voice,
+    })
+}
+
+/// Whether unattended routine work with `policy` can stop for a human decision.
+pub(crate) const fn routine_interaction_policy(policy: ApprovalPolicy) -> RoutineInteractionPolicy {
+    match policy {
         ApprovalPolicy::Ask => RoutineInteractionPolicy::MayPauseForApproval,
         ApprovalPolicy::Allow | ApprovalPolicy::AllowNetwork | ApprovalPolicy::FullAccess => {
             RoutineInteractionPolicy::Unattended
         }
-    };
-    Ok((accepts_file_attachments, routine_interaction_policy))
+    }
 }
 
 #[cfg(test)]

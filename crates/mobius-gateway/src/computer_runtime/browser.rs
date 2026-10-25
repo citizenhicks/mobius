@@ -179,7 +179,7 @@ pub(crate) async fn handle_message(
     host: &Arc<BrowserHost>,
     connection: &mut Option<BrowserConnection>,
     local: bool,
-    client_kind: crate::wire::ClientKind,
+    client: crate::wire::ClientCapabilities,
     available: bool,
     writer: &mut (impl tokio::io::AsyncWrite + Unpin),
 ) -> crate::Result<()> {
@@ -189,18 +189,15 @@ pub(crate) async fn handle_message(
             request_id,
             enabled,
         } => {
-            let result = if available
-                && cfg!(target_os = "macos")
-                && local
-                && client_kind == crate::wire::ClientKind::Macos
-            {
-                *connection = enabled.then(|| host.attach());
-                Ok(())
-            } else {
-                Err(Error::Sandbox(
-                    "only the local Mac app can register its browser renderer".into(),
-                ))
-            };
+            let result =
+                if available && cfg!(target_os = "macos") && local && client.browser_renderer {
+                    *connection = enabled.then(|| host.attach());
+                    Ok(())
+                } else {
+                    Err(Error::Sandbox(
+                        "only a local browser renderer can register on this gateway".into(),
+                    ))
+                };
             (request_id, result)
         }
         ClientMessage::BrowserPageReply {

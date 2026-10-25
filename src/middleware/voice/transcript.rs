@@ -516,10 +516,12 @@ fn widget() -> FrontendEvent {
         capability: super::MANIFEST.id.into(),
         item: Arc::new(FrontendWidget {
             id: "voice".into(),
+            count: None,
+            priority: crate::protocol::FrontendPriority::Primary,
             slot: FrontendSlot::ComposerFooter,
             text: super::text::DEFINITION.widget_text.as_str().into(),
             tone: FrontendTone::Neutral,
-            symbol: Some(FrontendSymbol::Custom(super::SYMBOL.into())),
+            symbol: Some(FrontendSymbol::Voice),
             icon_only: true,
             progress: None,
             content: None,
@@ -594,6 +596,7 @@ async fn preview(
         .into_chronological()
         .into_iter()
         .map(|record| FrontendPreviewEvent {
+            sequence: record.sequence,
             submission_id: record.event.submission_id,
             recorded_at_ms: record.recorded_at_ms,
             event: record.event.msg,
@@ -604,7 +607,9 @@ async fn preview(
     }
     let summary = call_summary(checkpoints, session_id).await?;
     Ok(FrontendEvent::Preview {
-        symbol: Some(FrontendSymbol::Custom(super::SYMBOL.into())),
+        kind: crate::protocol::FrontendPreviewKind::Call,
+        state: None,
+        symbol: Some(FrontendSymbol::Voice),
         duration_ms: (!summary.voice.is_empty()).then_some(summary.duration_ms),
         started_at_ms: summary.started_at_ms,
         id: session_id.as_str().into(),

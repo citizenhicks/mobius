@@ -54,9 +54,17 @@ async fn slow_git_diff_does_not_block_chat_history() {
     let serving = tokio::spawn(server.serve_until(async move {
         signal.await.ok();
     }));
-    let (connection, _) = GatewayClient::pair(&endpoint, grant.code, "Git test", ClientKind::Cli)
-        .await
-        .expect("pair");
+    let (connection, _) = GatewayClient::pair(
+        &endpoint,
+        grant.code,
+        "Git test",
+        crate::wire::ClientCapabilities {
+            presence: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("pair");
     let (sender, mut events) = connection.into_parts();
     wait_gateway_ready(&mut events).await;
     let session_id = create_chat(&sender, &mut events, &workspace).await;
@@ -91,7 +99,7 @@ async fn slow_git_diff_does_not_block_chat_history() {
         .send(ClientMessage::GetSessionHistory {
             request_id: "history".into(),
             session_id: session_id.clone(),
-            before_sequence: None,
+            before: None,
         })
         .await
         .expect("request history");
@@ -171,10 +179,18 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
     let endpoint = format!("tcp://{listen}")
         .parse::<Endpoint>()
         .expect("endpoint");
-    let (connection, _) =
-        GatewayClient::pair(&endpoint, grant.code, "attachment test", ClientKind::Ios)
-            .await
-            .expect("pair frontend");
+    let (connection, _) = GatewayClient::pair(
+        &endpoint,
+        grant.code,
+        "attachment test",
+        crate::wire::ClientCapabilities {
+            presence: true,
+            remote_desktop_viewer: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("pair frontend");
     let (sender, mut events) = connection.into_parts();
     wait_gateway_ready(&mut events).await;
     let mut config = crate::wire::AgentComposition::default();
@@ -558,17 +574,25 @@ async fn assert_unpairing_disconnects(sync_fails: bool) {
         &endpoint,
         grant.code,
         "dashboard",
-        ClientKind::GatewayDashboard,
+        crate::wire::ClientCapabilities::default(),
     )
     .await
     .expect("pair dashboard");
     let (dashboard_sender, mut dashboard_events) = dashboard.into_parts();
     wait_gateway_ready(&mut dashboard_events).await;
     let device_grant = auth.create_pairing_code().expect("device pairing code");
-    let (device, device_identity) =
-        GatewayClient::pair(&endpoint, device_grant.code, "iPhone", ClientKind::Ios)
-            .await
-            .expect("pair device");
+    let (device, device_identity) = GatewayClient::pair(
+        &endpoint,
+        device_grant.code,
+        "iPhone",
+        crate::wire::ClientCapabilities {
+            presence: true,
+            remote_desktop_viewer: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("pair device");
     let (_device_sender, mut device_events) = device.into_parts();
     wait_gateway_ready(&mut device_events).await;
 
@@ -616,8 +640,16 @@ async fn assert_unpairing_disconnects(sync_fails: bool) {
         .expect("device frame")
         .is_some()
     {}
-    let reconnect =
-        GatewayClient::connect(&endpoint, &device_identity.token, ClientKind::Ios).await;
+    let reconnect = GatewayClient::connect(
+        &endpoint,
+        &device_identity.token,
+        crate::wire::ClientCapabilities {
+            presence: true,
+            remote_desktop_viewer: true,
+            ..Default::default()
+        },
+    )
+    .await;
 
     assert_eq!(
         (
@@ -793,13 +825,13 @@ async fn request_history(
     sender: &GatewaySender,
     events: &mut GatewayEvents,
     session_id: &SessionId,
-) -> std::result::Result<Vec<crate::wire::RecordedEvent>, String> {
+) -> std::result::Result<crate::wire::TranscriptPage, String> {
     let request_id = Uuid::new_v4().to_string();
     sender
         .send(ClientMessage::GetSessionHistory {
             request_id: request_id.as_str().into(),
             session_id: session_id.share(),
-            before_sequence: None,
+            before: None,
         })
         .await
         .expect("request history");
@@ -807,9 +839,9 @@ async fn request_history(
         match next_gateway_message(events).await {
             ServerMessage::SessionHistory {
                 request_id: actual,
-                records,
+                page,
                 ..
-            } if actual.as_ref() == request_id => return Ok(records),
+            } if actual.as_ref() == request_id => return Ok(page),
             ServerMessage::Rejected {
                 request_id: actual,
                 code,
@@ -834,9 +866,17 @@ async fn unselected_chat_history_is_read_without_starting_the_chat() {
     let serving = tokio::spawn(server.serve_until(async move {
         signal.await.ok();
     }));
-    let (connection, _) = GatewayClient::pair(&endpoint, grant.code, "Recap test", ClientKind::Cli)
-        .await
-        .expect("pair");
+    let (connection, _) = GatewayClient::pair(
+        &endpoint,
+        grant.code,
+        "Recap test",
+        crate::wire::ClientCapabilities {
+            presence: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("pair");
     let (sender, mut events) = connection.into_parts();
     wait_gateway_ready(&mut events).await;
     let away = create_chat(&sender, &mut events, &workspace).await;
@@ -871,21 +911,14 @@ async fn unselected_chat_history_is_read_without_starting_the_chat() {
             .expect("append journal event");
     }
 
-    let records = request_history(&sender, &mut events, &away)
+    let page = request_history(&sender, &mut events, &away)
         .await
         .expect("unselected history");
-    let warning = records
-        .iter()
-        .find(|record| {
-            matches!(&record.event.msg, EventMsg::Warning(warning) if &*warning.message == "work while away")
-        })
-        .expect("durable warning");
-    assert!(
-        warning
-            .blocks
-            .iter()
-            .any(|block| block.block.title == "Warning")
-    );
+    assert!(page.items.iter().any(|item| matches!(
+        &item.content,
+        crate::wire::TranscriptItemContent::Block { block, .. }
+            if block.title == "Warning" && block.text == "work while away"
+    )));
     assert!(!host.is_resident(&away).await);
 
     request_history(&sender, &mut events, &selected)

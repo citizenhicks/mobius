@@ -669,3 +669,33 @@ fn test_context(
 fn test_shared() -> Shared {
     Shared::new(2, 2)
 }
+
+#[test]
+fn status_widget_counts_agents_and_marks_interrupted_ones() {
+    let agent = |status| AgentRecord {
+        parent: "/root".into(),
+        session_id: "child".parse().expect("session ID"),
+        depth: 1,
+        model: "test".into(),
+        spawn_context: String::new(),
+        active_turn_id: None,
+        status,
+        last_message: None,
+    };
+    let mut tree = Tree::default();
+    tree.agents
+        .insert("/root/a".into(), agent(AgentStatus::Interrupted));
+    tree.agents
+        .insert("/root/b".into(), agent(AgentStatus::Completed));
+    let widget = status_widget(&tree);
+    assert_eq!(widget.count, Some(2));
+    assert_eq!(widget.text, "2 subagents");
+    let Some(FrontendWidgetContent::ActionList { items, .. }) = &widget.content else {
+        panic!("agent list");
+    };
+    assert!(
+        items
+            .iter()
+            .any(|item| item.state == FrontendListItemState::Interrupted)
+    );
+}

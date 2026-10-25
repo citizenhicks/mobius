@@ -87,7 +87,7 @@ async fn saved_bot_routes_survive_missing_credentials_without_advertising_unavai
     .expect("config");
     let mut primary = selection("managed", "openai_socket", "gpt-6-luna");
     primary.endpoint_auth = ProviderEndpointAuth::ProviderDefault;
-    let config = config
+    let mut config = config
         .registering_provider(
             primary.clone(),
             "Managed".into(),
@@ -96,6 +96,13 @@ async fn saved_bot_routes_survive_missing_credentials_without_advertising_unavai
             Vec::new(),
         )
         .expect("provider");
+    config
+        .bot_defaults
+        .as_mut()
+        .expect("defaults")
+        .config
+        .middleware
+        .set_enabled("voice", true);
     store
         .save(&config.clone().validated().expect("valid config"))
         .expect("save config");
@@ -138,7 +145,7 @@ async fn saved_bot_routes_survive_missing_credentials_without_advertising_unavai
     .expect("saved configured route must not require a credential to boot");
     crate::assembly::prepare_bot(
         &config,
-        Arc::new(bots.bot(&saved.id).expect("saved Bot")),
+        bots.runtime_bot(&saved.id).expect("saved Bot"),
         &store,
         &credentials,
         mobius::backend::session_files::SessionFileStore::new(store.state_dir(), None).into(),
@@ -148,9 +155,16 @@ async fn saved_bot_routes_survive_missing_credentials_without_advertising_unavai
     .await
     .expect("saved image route survives unavailable credentials");
     let ready = gateway.ready().await.expect("ready without credentials");
-    assert!(ready.models.is_empty());
+    assert!(ready.agent_catalog.models.is_empty());
     assert!(!ready.provider_instances[0].configured);
-    assert_eq!(bots.bot(&saved.id).expect("unchanged Bot"), saved);
+    assert!(matches!(
+        bots.bot(&saved.id).expect("saved Bot").capabilities.voice,
+        crate::wire::VoiceCapability::Unavailable { .. }
+    ));
+    assert_eq!(
+        bots.bot(&saved.id).expect("unchanged Bot").config,
+        saved.config
+    );
     assert!(
         gateway
             .configure_bot_defaults(1, composition.clone())
@@ -168,11 +182,32 @@ async fn saved_bot_routes_survive_missing_credentials_without_advertising_unavai
         )
         .await
         .expect("install credential");
+    assert!(matches!(
+        bots.bot(&saved.id).expect("saved Bot").capabilities.voice,
+        crate::wire::VoiceCapability::Ready { .. }
+    ));
     let ready = gateway.ready().await.expect("ready with credentials");
+    gateway
+        .clear_credential(primary.instance)
+        .await
+        .expect("clear credential");
+    assert!(matches!(
+        bots.bot(&saved.id).expect("saved Bot").capabilities.voice,
+        crate::wire::VoiceCapability::Unavailable { .. }
+    ));
     drop(gateway);
-    assert!(ready.models.iter().any(|model| *model.route == *route));
+    assert!(
+        ready
+            .agent_catalog
+            .models
+            .iter()
+            .any(|model| *model.route == *route)
+    );
     assert!(ready.provider_instances[0].configured);
-    assert_eq!(bots.bot(&saved.id).expect("unchanged Bot"), saved);
+    assert_eq!(
+        bots.bot(&saved.id).expect("unchanged Bot").config,
+        saved.config
+    );
 
     composition.middleware.set_setting(
         "subagents",
@@ -193,6 +228,7 @@ async fn saved_bot_routes_survive_missing_credentials_without_advertising_unavai
             revision: saved.config.revision + 1,
             config: composition,
         }),
+        mobius::backend::sandbox::ApprovalPolicy::Ask,
     )
     .expect("persist invalid route for startup validation");
     let error = GatewayHost::start(store, config, credentials, bots)
@@ -239,6 +275,7 @@ async fn provider_replacement_rejects_a_bot_reference_without_changing_either_st
                     ..Default::default()
                 }],
                 image_model_ids: Some(Vec::new()),
+                operator_managed: false,
             },
             false,
             false,

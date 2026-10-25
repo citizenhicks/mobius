@@ -54,7 +54,10 @@ async fn shared_frame_writes_preserve_the_wire_payload_for_every_subscriber() {
 async fn framed_json_round_trip_preserves_the_versioned_message() {
     let expected = ClientFrame::new(ClientMessage::Authenticate {
         token: "secret".into(),
-        client_kind: ClientKind::Cli,
+        client: crate::wire::ClientCapabilities {
+            presence: true,
+            ..Default::default()
+        },
         catalog: Default::default(),
     });
     let (mut writer, reader) = duplex(1024);
@@ -265,7 +268,6 @@ fn server_frame_decodes_session_opened_with_a_widget_action_tag() {
             "pending_approvals": [],
             "latest_sequence": 4,
             "attached_folders": [],
-            "next_before_sequence": 2,
             "workspace": { "id": "workspace-a", "path": "/workspace" },
             "git": null,
             "session": {
@@ -342,11 +344,10 @@ fn server_frame_decodes_session_opened_with_a_widget_action_tag() {
         (
             &*request_id,
             &*payload.session.session_id,
-            payload.next_before_sequence,
             payload.context_limit_tokens,
             payload.contributions[0].widgets[0].action.is_some(),
         ),
-        ("request-open", "session-a", Some(2), Some(250_000), true)
+        ("request-open", "session-a", Some(250_000), true)
     );
 }
 
@@ -373,4 +374,137 @@ fn validate_version_requires_the_exact_protocol() {
         let error = validate_version(version).expect_err("incompatible version must fail");
         assert!(matches!(error, Error::Protocol(_)), "{error}");
     }
+}
+
+#[test]
+fn client_capabilities_omit_false_flags_and_reject_unknown_ones() {
+    let capabilities: crate::wire::ClientCapabilities =
+        serde_json::from_value(serde_json::json!({"presence": true})).expect("capabilities");
+    assert_eq!(
+        serde_json::to_value(capabilities).expect("encode"),
+        serde_json::json!({"presence": true})
+    );
+    assert!(
+        serde_json::from_value::<crate::wire::ClientCapabilities>(
+            serde_json::json!({"presence": true, "kind": "macos"})
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn bot_capabilities_tag_voice_by_state() {
+    let capabilities = crate::wire::BotCapabilities {
+        attachments: true,
+        computer: false,
+        voice: crate::wire::VoiceCapability::Ready {
+            route: "voice-route".into(),
+            waits_for_session_started: true,
+        },
+    };
+    let encoded = serde_json::to_value(&capabilities).expect("encode");
+    assert_eq!(
+        encoded,
+        serde_json::json!({
+            "attachments": true,
+            "computer": false,
+            "voice": {"state": "ready", "route": "voice-route", "waits_for_session_started": true},
+        })
+    );
+    assert_eq!(
+        serde_json::from_value::<crate::wire::BotCapabilities>(encoded).expect("decode"),
+        capabilities
+    );
+}
+
+#[test]
+fn named_symbols_keep_their_wire_names() {
+    use mobius::protocol::FrontendSymbol;
+    for (symbol, name) in [
+        (FrontendSymbol::Voice, "voice"),
+        (FrontendSymbol::Steer, "steer"),
+        (FrontendSymbol::Queue, "queue"),
+        (FrontendSymbol::Question, "question"),
+        (FrontendSymbol::Plus, "plus"),
+        (FrontendSymbol::Compaction, "compaction"),
+    ] {
+        assert_eq!(serde_json::to_value(&symbol).expect("encode"), name);
+        assert_eq!(
+            serde_json::from_value::<FrontendSymbol>(name.into()).expect("decode"),
+            symbol
+        );
+    }
+}
+
+#[test]
+fn transcript_ops_use_flat_kind_tagged_items_and_rows() {
+    let ops = serde_json::json!([
+        {
+            "op": "item",
+            "item": {
+                "id": "block:tools:run",
+                "turn_id": "turn",
+                "recorded_at_ms": 5,
+                "state": "pending",
+                "target": null,
+                "kind": "block",
+                "capability": "tools",
+                "group_title": "Bash · make",
+                "block": {
+                    "id": "run", "group": "cmd", "update": "replace", "state": "pending",
+                    "role": "tool", "title": "Command · poll", "text": "", "symbol": null,
+                    "files": [], "content": [], "format": "plain_text", "tone": "neutral"
+                }
+            }
+        },
+        {"op": "append_text", "id": "assistant:step:final_answer", "text": "lo"},
+        {
+            "op": "row",
+            "row": {
+                "id": "worked:turn",
+                "position": {"depth": 0, "sequence": 3, "index": 4},
+                "items": [{"item": "assistant:step:commentary"}, {"row": "activity:block:tools:run"}],
+                "kind": "worked",
+                "counts": {"tool_calls": 1},
+                "started_at_ms": 1
+            }
+        },
+        {"op": "remove_row", "id": "activity:block:tools:run"},
+        {
+            "op": "append_block",
+            "id": "block:tools:run",
+            "delta": {"text": "\nok", "state": "complete", "item_state": "complete"}
+        },
+        {
+            "op": "extend_row",
+            "id": "activity:block:tools:run",
+            "items": [{"item": "block:tools:poll"}],
+            "kind": "activity",
+            "counts": {"tool_calls": 2}
+        },
+        {
+            "op": "extend_row",
+            "id": "worked:turn",
+            "items": [],
+            "kind": "worked",
+            "counts": {"tool_calls": 2},
+            "started_at_ms": 1
+        }
+    ]);
+    let decoded: Vec<TranscriptOp> = serde_json::from_value(ops.clone()).expect("decode ops");
+    let TranscriptOp::Row { row } = &decoded[2] else {
+        panic!("a row op");
+    };
+    assert_eq!(
+        row.kind,
+        TranscriptRowKind::Worked {
+            counts: ActivityCounts {
+                tool_calls: 1,
+                ..ActivityCounts::default()
+            },
+            started_at_ms: 1,
+            duration_ms: None,
+        }
+    );
+    assert_eq!(serde_json::to_value(&decoded).expect("encode ops"), ops);
 }

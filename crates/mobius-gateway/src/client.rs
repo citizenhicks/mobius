@@ -26,8 +26,9 @@ use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 #[cfg(unix)]
 use crate::wire::read_frame_with_limit;
 use crate::wire::{
-    CatalogHint, ClientFrame, ClientKind, ClientMessage, FrameReader, MAX_PRE_AUTH_FRAME_BYTES,
-    ServerFrame, ServerMessage, read_frame, validate_version, websocket_error, write_frame,
+    CatalogHint, ClientCapabilities, ClientFrame, ClientMessage, FrameReader,
+    MAX_PRE_AUTH_FRAME_BYTES, ServerFrame, ServerMessage, read_frame, validate_version,
+    websocket_error, write_frame,
 };
 use crate::{Error, Result};
 
@@ -242,7 +243,7 @@ impl Endpoint {
                     version,
                     message: ClientMessage::Authenticate {
                         token: token.into(),
-                        client_kind: ClientKind::GatewayDashboard,
+                        client: ClientCapabilities::default(),
                         catalog: CatalogHint::default(),
                     },
                 },
@@ -450,9 +451,9 @@ impl GatewayClient {
     pub async fn connect(
         endpoint: &Endpoint,
         token: &str,
-        client_kind: ClientKind,
+        client: ClientCapabilities,
     ) -> Result<Self> {
-        Self::connect_with(endpoint, token, client_kind, &mut ConnectOptions::default()).await
+        Self::connect_with(endpoint, token, client, &mut ConnectOptions::default()).await
     }
 
     /// [`Self::connect`] with a catalog hint and pipelined requests, which `options` holds
@@ -463,7 +464,7 @@ impl GatewayClient {
     pub async fn connect_with(
         endpoint: &Endpoint,
         token: &str,
-        client_kind: ClientKind,
+        capabilities: ClientCapabilities,
         options: &mut ConnectOptions,
     ) -> Result<Self> {
         // A WebSocket's first encrypted record, which may carry both, must stay small.
@@ -481,7 +482,7 @@ impl GatewayClient {
         let authentication = ClientFrame::new(ClientMessage::Authenticate {
             // The owned wire message is the one copy; callers keep their token.
             token: token.to_owned(),
-            client_kind,
+            client: capabilities,
             catalog: std::mem::take(&mut options.catalog),
         });
         let pipelined: Vec<_> = std::mem::take(&mut options.pipelined)
@@ -508,7 +509,7 @@ impl GatewayClient {
         endpoint: &Endpoint,
         code: impl Into<String>,
         client_label: impl Into<String>,
-        client_kind: ClientKind,
+        capabilities: ClientCapabilities,
     ) -> Result<(Self, PairedClient)> {
         let code = code.into();
         let transport = endpoint.connect(&code).await?;
@@ -519,7 +520,7 @@ impl GatewayClient {
             .write(ClientMessage::Pair {
                 code,
                 client_label: client_label.into(),
-                client_kind,
+                client: capabilities,
             })
             .await?;
         let frame = client

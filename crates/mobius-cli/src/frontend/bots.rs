@@ -73,12 +73,7 @@ mod tests {
             background_approvals: Vec::new(),
             providers: Vec::new(),
             provider_instances: Vec::new(),
-            bot_defaults: None,
-            models: Vec::new(),
-            model_providers: Default::default(),
-            middleware_features: Vec::new(),
-            extensions: Vec::new(),
-            contributions: Vec::new(),
+            agent_catalog: Default::default(),
             max_active_sessions: 1,
             session_file_limits: SessionFileLimits {
                 max_attachment_references: 0,
@@ -89,8 +84,6 @@ mod tests {
             },
             revisions: Default::default(),
             omitted: Default::default(),
-            image_models: Vec::new(),
-            voice_models: Vec::new(),
         }
     }
 
@@ -108,7 +101,11 @@ mod tests {
                 revision: 7,
                 config: AgentComposition::default(),
             }),
-            accepts_file_attachments: false,
+            capabilities: mobius_gateway::wire::BotCapabilities {
+                attachments: false,
+                computer: false,
+                voice: mobius_gateway::wire::VoiceCapability::Off,
+            },
             routine_interaction_policy: RoutineInteractionPolicy::Unattended,
         }
     }
@@ -296,7 +293,7 @@ mod tests {
                 ClientMessage::GetRoutineRunPreview {
                     request_id,
                     id: Arc::clone(&run.id),
-                    before_sequence: None,
+                    before: None,
                 }
             })),
             ClientMessage::GetRoutineRunPreview { id, .. } if &*id == "run-a"

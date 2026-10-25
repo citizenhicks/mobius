@@ -193,3 +193,43 @@ with closing(sqlite3.connect(sys.argv[2])) as db, db:
         );
     }
 }
+
+#[tokio::test]
+async fn transient_notices_are_delivered_but_not_kept() {
+    use crate::protocol::{FrontendBlock, FrontendEvent, TRANSIENT_BLOCK_ID_PREFIX};
+
+    let session_id = session("session");
+    let workspace = tempfile::tempdir().unwrap();
+    let store = SqliteCheckpoint::new(workspace.path().join("notice.sqlite3")).unwrap();
+    let event = Event {
+        submission_id: None,
+        msg: EventMsg::Frontend(FrontendEvent::Render {
+            capability: "extensions".into(),
+            block: FrontendBlock {
+                id: Some(format!("{TRANSIENT_BLOCK_ID_PREFIX}hook-notice-0")),
+                title: "PONYTAIL:ULTRA".into(),
+                ..Default::default()
+            },
+        }),
+    };
+    let live = store
+        .save_with_events(
+            Arc::new(checkpoint("session")),
+            Vec::new(),
+            None,
+            vec![TimestampedEvent {
+                recorded_at_ms: 1,
+                event: event.clone(),
+            }],
+        )
+        .await
+        .unwrap();
+    assert_eq!(live[0].event, event);
+    assert!(
+        store
+            .events_after(&session_id, 0, 10)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}

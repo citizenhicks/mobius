@@ -18,6 +18,7 @@ use crate::Result;
 use crate::protocol::FrontendEvent;
 use crate::protocol::ModelStepContentPhase;
 use crate::protocol::TOOL_ERROR_FIELD;
+use crate::protocol::TRANSIENT_BLOCK_ID_PREFIX;
 use crate::protocol::{ContentPart, Event, EventMsg, ToolCallEndEvent};
 
 /// Current SQLite format, distinct from public events. Inline events include synthetic
@@ -312,6 +313,10 @@ fn is_transient_event(event: &EventMsg) -> bool {
                     | FrontendEvent::Widget { .. }
                     | FrontendEvent::RemoveWidget { .. }
             )
+    ) || matches!(
+        event,
+        EventMsg::Frontend(FrontendEvent::Render { block, .. })
+            if block.id.as_deref().is_some_and(|id| id.starts_with(TRANSIENT_BLOCK_ID_PREFIX))
     )
 }
 

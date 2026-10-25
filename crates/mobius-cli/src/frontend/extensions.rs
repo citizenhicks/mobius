@@ -87,7 +87,7 @@ impl ExtensionsState {
             selected: 0,
             mode: Mode::Browse,
             pending: None,
-            notice: gateway.extensions.is_empty().then(|| Notice {
+            notice: gateway.agent_catalog.extensions.is_empty().then(|| Notice {
                 text: "No extensions are installed. Press i to install one.".into(),
                 role: Role::Muted,
             }),
@@ -95,20 +95,21 @@ impl ExtensionsState {
     }
 
     fn selected<'a>(&self, gateway: &'a ReadyPayload) -> Option<&'a ExtensionRecord> {
-        gateway.extensions.get(self.selected)
+        gateway.agent_catalog.extensions.get(self.selected)
     }
 
     fn clamp_selection(&mut self, gateway: &ReadyPayload) {
         self.selected = self
             .selected
-            .min(gateway.extensions.len().saturating_sub(1));
+            .min(gateway.agent_catalog.extensions.len().saturating_sub(1));
     }
 
     fn move_selection(&mut self, gateway: &ReadyPayload, delta: isize) {
-        if gateway.extensions.is_empty() {
+        if gateway.agent_catalog.extensions.is_empty() {
             return;
         }
-        self.selected = super::wrap_step(self.selected, delta, gateway.extensions.len());
+        self.selected =
+            super::wrap_step(self.selected, delta, gateway.agent_catalog.extensions.len());
         self.notice = None;
     }
 
@@ -197,8 +198,8 @@ impl ExtensionsState {
                 self.notice = None;
                 ScreenAction::None
             }
-            KeyCode::End if !gateway.extensions.is_empty() => {
-                self.selected = gateway.extensions.len() - 1;
+            KeyCode::End if !gateway.agent_catalog.extensions.is_empty() => {
+                self.selected = gateway.agent_catalog.extensions.len() - 1;
                 self.notice = None;
                 ScreenAction::None
             }
@@ -563,9 +564,12 @@ fn render_catalog(
 ) {
     let theme = current();
     let block = Block::bordered()
-        .title(format!(" Installed ({}) ", gateway.extensions.len()))
+        .title(format!(
+            " Installed ({}) ",
+            gateway.agent_catalog.extensions.len()
+        ))
         .border_style(theme.style(Role::Border));
-    if gateway.extensions.is_empty() {
+    if gateway.agent_catalog.extensions.is_empty() {
         frame.render_widget(
             Paragraph::new(" No extensions installed")
                 .style(theme.style(Role::Muted))
@@ -574,7 +578,7 @@ fn render_catalog(
         );
         return;
     }
-    let rows = gateway.extensions.iter().map(|extension| {
+    let rows = gateway.agent_catalog.extensions.iter().map(|extension| {
         let version = extension
             .version
             .as_deref()

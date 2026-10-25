@@ -312,3 +312,173 @@ fn selected_trusted_plugin_snapshot_reaches_extensions_assembly_only_when_active
         .remove_snapshot(&digest)
         .expect("remove snapshot");
 }
+
+#[test]
+fn description_is_an_optional_preamble_of_the_system_prompt() {
+    assert_eq!(
+        compose_instructions(" \n ", "Answer briefly."),
+        "Answer briefly."
+    );
+    assert_eq!(
+        compose_instructions("  Reviews pull requests.\n", "Answer briefly."),
+        "Reviews pull requests.\n\nAnswer briefly."
+    );
+}
+
+#[test]
+fn voice_capability_follows_the_router_rule_and_flags_unknown_saved_routes() {
+    let root = tempfile::tempdir().expect("root");
+    let (store, config) = ConfigStore::initialize(
+        root.path().join("state"),
+        "127.0.0.1:8741".parse().expect("listen address"),
+        None,
+    )
+    .expect("config");
+    let config = config
+        .registering_provider(
+            ProviderConfig {
+                tool_discovery: None,
+                instance: "openai_socket".into(),
+                provider: "openai_socket".into(),
+                model: "gpt-6.1-sol".into(),
+                base_url: None,
+                endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
+                reasoning_effort: None,
+                service_tier: None,
+                web_search: HostedWebSearch::Off,
+            },
+            "OpenAI".into(),
+            Default::default(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("provider");
+    let credentials = CredentialStore::open(store.credentials_path()).expect("credentials");
+    credentials
+        .set(
+            "openai_socket",
+            "openai_socket",
+            "test-voice-key",
+            provider("openai_socket")
+                .expect("provider")
+                .default_base_url(),
+            None,
+        )
+        .expect("voice credential");
+    let voices = crate::provider_catalog::VoiceRoutes::new(
+        &config.configured_providers,
+        &store,
+        &credentials,
+    )
+    .expect("voices");
+    let mut composition = AgentComposition::default();
+    let voice = |composition: &AgentComposition| {
+        bot_capabilities(composition, &voices)
+            .expect("capabilities")
+            .voice
+    };
+    composition.middleware.set_enabled("voice", false);
+    assert_eq!(voice(&composition), crate::wire::VoiceCapability::Off);
+    composition.middleware.set_enabled("voice", true);
+    assert!(matches!(
+        voice(&composition),
+        crate::wire::VoiceCapability::Ready {
+            waits_for_session_started: true,
+            ..
+        }
+    ));
+    composition.middleware.set_setting(
+        "voice",
+        "model",
+        Some(mobius::protocol::FrontendSettingValue::String(
+            "removed::voice".into(),
+        )),
+    );
+    assert!(matches!(
+        voice(&composition),
+        crate::wire::VoiceCapability::Unavailable { .. }
+    ));
+}
+
+#[test]
+fn default_voice_capability_matches_the_router_when_an_earlier_provider_has_no_key() {
+    let root = tempfile::tempdir().expect("root");
+    let (store, mut config) = ConfigStore::initialize(
+        root.path().join("state"),
+        "127.0.0.1:8741".parse().expect("listen address"),
+        None,
+    )
+    .expect("config");
+    for instance in ["a-missing", "z-usable"] {
+        config = config
+            .registering_provider(
+                ProviderConfig {
+                    instance: instance.into(),
+                    provider: "openai_socket".into(),
+                    model: "gpt-6.1-sol".into(),
+                    base_url: Some(BaseUrl::new("https://voice.example/v1").expect("endpoint")),
+                    endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
+                    reasoning_effort: None,
+                    service_tier: None,
+                    web_search: HostedWebSearch::Off,
+                    tool_discovery: None,
+                },
+                instance.into(),
+                Default::default(),
+                Vec::new(),
+                Vec::new(),
+            )
+            .expect("provider");
+    }
+    let credentials = CredentialStore::open(store.credentials_path()).expect("credentials");
+    credentials
+        .set(
+            "z-usable",
+            "openai_socket",
+            "test-voice-key",
+            Some(&BaseUrl::new("https://voice.example/v1").expect("endpoint")),
+            None,
+        )
+        .expect("usable voice credential");
+    let mut composition = config
+        .bot_defaults
+        .as_ref()
+        .expect("defaults")
+        .config
+        .clone();
+    composition.middleware.set_enabled("voice", true);
+    let (router, _) = unavailable_models(
+        &config,
+        &composition.provider,
+        &store,
+        &credentials,
+        SessionFileStore::new(store.state_dir(), None).into(),
+    )
+    .expect("runtime model router");
+    assert!(
+        router
+            .voice_choice(None)
+            .expect("usable voice")
+            .route
+            .starts_with("z-usable::")
+    );
+    let voices = crate::provider_catalog::VoiceRoutes::new(
+        &config.configured_providers,
+        &store,
+        &credentials,
+    )
+    .expect("voice capabilities");
+    let crate::wire::VoiceCapability::Ready { route, .. } = bot_capabilities(&composition, &voices)
+        .expect("capabilities")
+        .voice
+    else {
+        panic!("usable voice")
+    };
+    assert_eq!(
+        route,
+        router
+            .voice_choice(None)
+            .expect("runtime default voice")
+            .route
+    );
+}

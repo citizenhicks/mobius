@@ -17,6 +17,8 @@ prompt_child = "You are `{path}`, a child agent.\nCollaborate continuously with 
 prompt_root = "`spawn_agent`: delegate independent work to run in parallel."
 render_open = "Open subagent"
 render_open_empty = "Open subagent · no subagents"
+status_label_one = "{count} subagent"
+status_label_other = "{count} subagents"
 status_title = "Subagents"
 
 [[settings]]

@@ -466,7 +466,7 @@ impl BotsState {
                     ClientMessage::GetRoutineRunPreview {
                         request_id,
                         id: Arc::clone(&run.id),
-                        before_sequence: None,
+                        before: None,
                     }
                 })
             }

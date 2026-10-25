@@ -41,10 +41,12 @@ use crate::backend::sandbox::CommandAuthorization;
 use crate::backend::sandbox::SandboxBackend;
 use crate::protocol::EventMsg;
 use crate::protocol::FrontendContribution;
+use crate::protocol::FrontendEvent;
 use crate::protocol::FrontendReference;
 use crate::protocol::FrontendSlot;
 use crate::protocol::FrontendTone;
 use crate::protocol::FrontendWidget;
+use crate::protocol::TRANSIENT_BLOCK_ID_PREFIX;
 use crate::protocol::WarningEvent;
 use crate::protocol::internal_message_kind;
 use crate::truncate_utf8;
@@ -353,9 +355,12 @@ impl Extensions {
         FrontendContribution {
             capability: MANIFEST.id.into(),
             count: Some(count),
+            count_label: None,
             commands: Vec::new(),
             widgets: vec![Arc::new(FrontendWidget {
                 id: "count".into(),
+                count: None,
+                priority: crate::protocol::FrontendPriority::Primary,
                 slot: FrontendSlot::Header,
                 text: text::DEFINITION
                     .widget_count
@@ -705,12 +710,21 @@ fn push_hook_notices(events: &mut Vec<EventMsg>, outcomes: &[hooks::HookOutcome]
     }));
 }
 
-fn publish_hook_notices(runtime: &RuntimeContext, outcomes: &[hooks::HookOutcome]) -> Result<()> {
-    for message in hook_notices(outcomes) {
-        for event in
+/// Transient notices are shown live but left out of history, so a hook that runs whenever a
+/// chat is reopened does not add a row each time.
+fn publish_hook_notices(
+    runtime: &RuntimeContext,
+    outcomes: &[hooks::HookOutcome],
+    transient: bool,
+) -> Result<()> {
+    for (index, message) in hook_notices(outcomes).into_iter().enumerate() {
+        for mut event in
             super::MiddlewareCommandOutput::render(MANIFEST.id, message, FrontendTone::Warning)
                 .events
         {
+            if transient && let FrontendEvent::Render { block, .. } = &mut event {
+                block.id = Some(format!("{TRANSIENT_BLOCK_ID_PREFIX}hook-notice-{index}"));
+            }
             (runtime.frontend)(event)?;
         }
     }
@@ -808,7 +822,11 @@ impl Middleware for Extensions {
                 }
             };
             let outcomes = self.run_hooks(event, Value::Object(input), &subjects).await;
-            publish_hook_notices(context.runtime, &outcomes)?;
+            publish_hook_notices(
+                context.runtime,
+                &outcomes,
+                context.source() == SessionStartSource::Resume,
+            )?;
             deliver_hook_context(&outcomes, |outcome, additional| {
                 let kind = outcome
                     .session_context_kind
@@ -1178,7 +1196,7 @@ impl Middleware for Extensions {
                         &["other"],
                     )
                     .await;
-                publish_hook_notices(runtime, &outcomes)?;
+                publish_hook_notices(runtime, &outcomes, false)?;
             }
             Ok(())
         })

@@ -37,7 +37,7 @@ fn peer_audience_follows_delivery_without_changing_source_authority() {
             let input = message_input(&event).unwrap();
             let text = input["content"][0]["text"].as_str().unwrap();
             match &source {
-                MessageSource::Session { .. } => {
+                MessageSource::Session { .. } | MessageSource::Call { .. } => {
                     assert!(text.starts_with("Peer reviewer. "));
                     match delivery {
                         crate::protocol::MessageDelivery::Turn

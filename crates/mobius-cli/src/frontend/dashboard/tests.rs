@@ -2,7 +2,6 @@ use mobius::protocol::{
     FrontendActionListItem, FrontendListItemState, FrontendSlot, FrontendTone, FrontendWidget,
     FrontendWidgetContent, Op,
 };
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use mobius::backend::session_files::session_file_limits;
@@ -69,18 +68,11 @@ fn dashboard_state() -> super::state::DashboardState {
             background_approvals: Vec::new(),
             providers: Vec::new(),
             provider_instances: Vec::new(),
-            bot_defaults: None,
-            models: Vec::new(),
-            model_providers: BTreeMap::new(),
-            middleware_features: Vec::new(),
-            extensions: Vec::new(),
-            contributions: Vec::new(),
+            agent_catalog: Default::default(),
             max_active_sessions: 0,
             session_file_limits: session_file_limits(),
             revisions: Default::default(),
             omitted: Default::default(),
-            image_models: Vec::new(),
-            voice_models: Vec::new(),
         },
         clients: Vec::new(),
         current_client_id: None,
@@ -125,6 +117,8 @@ fn capability_op(command: &str, input: Option<&str>) -> Op {
 fn widget(content: FrontendWidgetContent) -> FrontendWidget {
     FrontendWidget {
         id: "view".into(),
+        count: None,
+        priority: mobius::protocol::FrontendPriority::Primary,
         slot: FrontendSlot::Navigation,
         text: "Capability view".into(),
         tone: FrontendTone::Neutral,

@@ -49,7 +49,6 @@ fn status(provider: &str) -> ProviderStatus {
     };
     let model_ids_configurable = provider != "openai_socket";
     ProviderStatus {
-        native_custom_endpoints: provider == "openai_socket",
         provider: provider.into(),
         label: provider.into(),
         symbol: FrontendSymbol::Storage,
@@ -128,6 +127,7 @@ fn state(mode: SetupMode, provider: &str, configured: bool) -> SetupState {
     }
     original.provider.base_url = statuses[0].default_base_url.clone();
     let instances = vec![ProviderInstance {
+        operator_managed: false,
         label: provider.into(),
         tint: Default::default(),
         configured,
@@ -182,6 +182,7 @@ fn features() -> Vec<MiddlewareFeature> {
             description: "Plain optional capability".into(),
             required: false,
             settings: Vec::new(),
+            requires: Vec::new(),
         },
         MiddlewareFeature {
             id: "configured".into(),
@@ -218,6 +219,7 @@ fn features() -> Vec<MiddlewareFeature> {
                     },
                 },
             ],
+            requires: Vec::new(),
         },
         MiddlewareFeature {
             id: "required".into(),
@@ -225,6 +227,7 @@ fn features() -> Vec<MiddlewareFeature> {
             description: "Required capability".into(),
             required: true,
             settings: Vec::new(),
+            requires: Vec::new(),
         },
     ]
 }

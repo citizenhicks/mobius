@@ -46,7 +46,7 @@ async fn session_commands_and_chat_messages_preserve_sender_and_hook_ancestry() 
         .await
         .unwrap();
     target.wait_idle().await;
-    let mut delivered = target.history_page(None).await.unwrap().records;
+    let mut delivered = target.history_page(None).await.unwrap().page.items;
 
     let chats =
         crate::host::live_chats::GatewayLiveChats(Arc::downgrade(&gateway.state), gateway.access());
@@ -71,7 +71,7 @@ async fn session_commands_and_chat_messages_preserve_sender_and_hook_ancestry() 
         .await
         .unwrap();
     target.wait_idle().await;
-    delivered.extend(target.history_page(None).await.unwrap().records);
+    delivered.extend(target.history_page(None).await.unwrap().page.items);
 
     gateway
         .set_bot_subscription(crate::wire::BotSubscription {
@@ -110,7 +110,7 @@ async fn session_commands_and_chat_messages_preserve_sender_and_hook_ancestry() 
     gateway.execute_hook_action(&pending).await.unwrap();
     target.wait_idle().await;
 
-    delivered.extend(target.history_page(None).await.unwrap().records);
+    delivered.extend(target.history_page(None).await.unwrap().page.items);
     for (text, cause, ancestry) in [
         ("Direct test", None, Vec::new()),
         (
@@ -122,8 +122,10 @@ async fn session_commands_and_chat_messages_preserve_sender_and_hook_ancestry() 
     ] {
         let message = delivered
             .iter()
-            .find_map(|record| match &record.event.msg {
-                EventMsg::Message(message) if message.text == text => Some(message),
+            .find_map(|item| match &item.content {
+                crate::wire::TranscriptItemContent::Message { message } if message.text == text => {
+                    Some(message)
+                }
                 _ => None,
             })
             .unwrap();

@@ -75,7 +75,10 @@ pub(super) async fn install_model(
         .unwrap();
     let mut prepared = crate::assembly::prepare_bot(
         &config,
-        Arc::new(bot.clone()),
+        crate::bots::RuntimeBot {
+            record: Arc::new(bot.clone()),
+            approval_policy: crate::config::validate_agent_composition(&bot.config.config).unwrap(),
+        },
         &state.store,
         &state.credentials,
         Arc::clone(&state.session_files),
@@ -280,8 +283,12 @@ async fn canonical_chat_queues_sources_and_deduplicates_delivery_after_ack_gap()
     );
     gateway.dispatch_bot_events().await.unwrap();
     assert!(!bots.action_pending(&pending.id).unwrap());
-    let history = main.history_page(None).await.unwrap();
-    let report_count = history.records.iter().filter(|record| matches!(&record.event.msg, EventMsg::Message(message) if matches!(&message.author, MessageAuthor::Source { message_id, .. } if **message_id == *pending.id))).count();
+    let history =
+        mobius::backend::checkpoint::event_turn_page(checkpoints.as_ref(), main.session_id(), None)
+            .await
+            .unwrap()
+            .into_chronological();
+    let report_count = history.iter().filter(|record| matches!(&record.event.msg, EventMsg::Message(message) if matches!(&message.author, MessageAuthor::Source { message_id, .. } if **message_id == *pending.id))).count();
     assert_eq!(report_count, 1);
     let executions = checkpoints
         .execution_page(
@@ -294,7 +301,7 @@ async fn canonical_chat_queues_sources_and_deduplicates_delivery_after_ack_gap()
         .await
         .unwrap();
     assert!(executions.executions.iter().any(|execution| matches!(&*execution.author, MessageAuthor::Source { cause_id: Some(cause), ancestry, .. } if cause == &event.id && ancestry.as_slice() == std::slice::from_ref(&event.id))));
-    for record in &history.records {
+    for record in &history {
         if let EventMsg::TurnComplete(turn) = &record.event.msg {
             let hook = bots
                 .hook_event(&format!(
