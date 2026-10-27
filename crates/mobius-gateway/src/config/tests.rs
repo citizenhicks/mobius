@@ -9,14 +9,19 @@ fn test_bot() -> crate::wire::BotRecord {
         description: "Own fixture work.".into(),
         tint: ProviderTint::default(),
         shape: crate::wire::BotShape::Circle,
+        harness: crate::wire::HarnessKind::Mobius,
         config: Arc::new(VersionedAgentConfig {
             revision: 1,
-            config: AgentComposition::default(),
+            config: crate::wire::HarnessConfig::Mobius(Arc::new(AgentComposition::default())),
         }),
         capabilities: crate::wire::BotCapabilities {
             attachments: false,
             computer: false,
             voice: crate::wire::VoiceCapability::Off,
+            memory: crate::wire::BotMemory {
+                enabled: false,
+                global: false,
+            },
         },
         routine_interaction_policy: RoutineInteractionPolicy::Unattended,
     }
@@ -188,7 +193,7 @@ fn provider_registration_never_silently_changes_existing_defaults() {
             second.configured_providers["kimi"]
                 .models
                 .iter()
-                .map(crate::provider_catalog::configured_model_input)
+                .map(crate::harness::mobius::provider_catalog::configured_model_input)
                 .collect(),
             Vec::new(),
         )
@@ -279,11 +284,22 @@ fn saving_defaults_is_revisioned_and_does_not_change_existing_chat_specs() {
         description: "Own fixture work.".into(),
         tint: ProviderTint::default(),
         shape: crate::wire::BotShape::Circle,
-        config: Arc::new(registered.bot_defaults.clone().expect("Bot defaults")),
+        harness: crate::wire::HarnessKind::Mobius,
+        config: Arc::new({
+            let defaults = registered.bot_defaults.clone().expect("Bot defaults");
+            VersionedAgentConfig {
+                revision: defaults.revision,
+                config: crate::wire::HarnessConfig::Mobius(Arc::new(defaults.config)),
+            }
+        }),
         capabilities: crate::wire::BotCapabilities {
             attachments: false,
             computer: false,
             voice: crate::wire::VoiceCapability::Off,
+            memory: crate::wire::BotMemory {
+                enabled: false,
+                global: false,
+            },
         },
         routine_interaction_policy: RoutineInteractionPolicy::Unattended,
     };

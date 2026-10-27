@@ -28,7 +28,7 @@ use crate::protocol::ToolCall;
 
 pub mod sqlite;
 
-pub(crate) const CHECKPOINT_VERSION: u32 = 20;
+pub(crate) const CHECKPOINT_VERSION: u32 = 21;
 pub(crate) const MAX_QUEUED_MESSAGES: usize = 1_024;
 const TURN_PAGE_BATCH_SIZE: usize = 100;
 const MAX_QUEUED_OWNER_BYTES: usize = 256;
@@ -158,8 +158,8 @@ pub enum ContextRewriteReason {
     Compaction,
     /// Discards provider-owned reasoning before a different model route replays context.
     ModelChange,
-    /// Selects the scratchpad case.
-    Scratchpad,
+    /// Selects the memory case.
+    Memory,
 }
 
 impl ContextRewriteReason {
@@ -168,7 +168,7 @@ impl ContextRewriteReason {
             Self::Attachments => "attachments",
             Self::Compaction => "compaction",
             Self::ModelChange => "model_change",
-            Self::Scratchpad => "scratchpad",
+            Self::Memory => "memory",
         }
     }
 }
@@ -1120,6 +1120,15 @@ pub trait CheckpointStore: Send + Sync {
         key: &'a str,
         value: &'a Value,
     ) -> BoxFuture<'a, Result<()>>;
+
+    /// Lists every key and value one middleware namespace saved, ordered by key.
+    fn list_state<'a>(&'a self, _scope: &'a str) -> BoxFuture<'a, Result<Vec<(String, Value)>>> {
+        Box::pin(async {
+            Err(Error::Checkpoint(
+                "this checkpoint backend cannot list middleware state".into(),
+            ))
+        })
+    }
 }
 
 #[cfg(test)]

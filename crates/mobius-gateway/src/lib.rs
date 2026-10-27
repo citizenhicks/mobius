@@ -1,6 +1,5 @@
 //! Authenticated, frontend-neutral access to independent möbius chats.
 
-mod assembly;
 pub mod auth;
 pub mod bots;
 mod channel;
@@ -9,16 +8,13 @@ mod cloudflare;
 pub mod command;
 pub mod computer_runtime;
 pub mod config;
-mod extensions;
 /// Shared saved gateway accounts and endpoint selection.
 pub mod gateway_accounts;
 mod git;
+mod harness;
 mod host;
 mod hostnames;
-mod middleware_manifest;
-mod persistent_chat;
 mod process_environment;
-mod provider_catalog;
 mod publication;
 pub mod sandbox;
 pub mod server;
@@ -26,7 +22,7 @@ pub mod storage_usage;
 pub mod telemetry;
 pub mod wire;
 
-pub use extensions::MAX_EXTENSION_SOURCE_BYTES;
+pub use harness::mobius::extensions::MAX_EXTENSION_SOURCE_BYTES;
 /// The transcript reducer, for frontends that build pages from scripted events in tests.
 #[cfg(feature = "fixtures")]
 pub use host::TranscriptReducer;
@@ -48,6 +44,9 @@ pub enum Error {
         /// A single positive delta-seconds Retry-After value, when valid.
         retry_after: Option<std::time::Duration>,
     },
+    #[error("{0}")]
+    /// The Bot's harness cannot start chats on this gateway.
+    HarnessUnavailable(String),
     #[error("gateway authentication failed")]
     /// Selects the unauthorized case.
     Unauthorized,

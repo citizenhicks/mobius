@@ -9,6 +9,7 @@ mod dispatch;
 mod responses;
 mod transport;
 mod view;
+#[path = "harness/mobius/server/voice.rs"]
 mod voice;
 
 use crate::telemetry::{StopCause, Trigger};
@@ -19,8 +20,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::harness::ValidatedSubmission;
 use chrono::Utc;
-use mobius::agent::ValidatedSubmission;
 use mobius::backend::session_files::{PendingSessionFileWrite, SessionFileStore};
 use mobius::protocol::Op;
 use rustls::ServerConfig;

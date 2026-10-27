@@ -3,8 +3,8 @@ use super::{
     ActiveRoutine, Arc, Error, Event, EventMsg, ExecutionOutcome, FrontendEvent, HashSet,
     HostState, JournalDelivery, JournalEvent, JournalSequence, MessageTarget,
     ModelStepContentPhase, Rejection, ReplayEntry, Result, RoutineRunStatus, ServerFrame,
-    ServerMessage, SessionActivity, SessionActivityState, SessionReadyPayload, SessionRuntimeState,
-    SessionWidget, SharedFrame, TurnLifecycle, Utc, activity_catalog, classify_journal_sequence,
+    ServerMessage, SessionActivity, SessionActivityState, SessionReadyPayload, SessionWidget,
+    SharedFrame, TurnLifecycle, Utc, activity_catalog, classify_journal_sequence,
     compact_replay_deltas, event_sequence, git_status, internal, project_record,
     publish_ready_and_pending, record_and_publish, switch_workspace_branch, turn_lifecycle,
     update_session_activity, update_widgets, validate_gateway_event,
@@ -35,7 +35,7 @@ impl HostState {
             EventMsg::TurnAborted(turn) => tracing::info!(
                 event = "turn_aborted",
                 timestamp_ms,
-                session_id = %self.running.session_id,
+                session_id = %self.running.session_id(),
                 bot_id = %self.spec.bot_id,
                 turn_id = %turn.turn_id,
                 submission_id = ?event.submission_id,
@@ -47,7 +47,7 @@ impl HostState {
             EventMsg::ModelChanged(changed) => self.broadcast_meta(
                 changed
                     .model_context_window
-                    .map(|window| self.running.frontend.context_limit(window)),
+                    .map(|window| self.running.context_limit(window)),
             )?,
             _ => {}
         }
@@ -92,7 +92,7 @@ impl HostState {
         validate_gateway_event(&journal.event.msg)?;
         let sequence_kind = classify_journal_sequence(self.sequence, journal.sequence, delivery)?;
         let sequence = journal.sequence;
-        let (record, blocks) = project_record(&self.running.frontend, journal);
+        let (record, blocks) = project_record(&*self.running, journal);
         let transcript = if sequence_kind == JournalSequence::Next {
             self.transcript
                 .apply(sequence, record.recorded_at_ms, &record.event, blocks)
@@ -100,7 +100,7 @@ impl HostState {
             Vec::new()
         };
         let frame = ServerFrame::new(ServerMessage::AgentEvent {
-            session_id: self.running.session_id.share(),
+            session_id: self.running.session_id().share(),
             record,
             transcript,
         });
@@ -112,7 +112,8 @@ impl HostState {
             if let EventMsg::TokenCount(count) = &record.event.msg
                 && let Some(usage) = &count.info
             {
-                self.telemetry.note_context(&self.running.session_id, usage);
+                self.telemetry
+                    .note_context(self.running.session_id(), usage);
             }
             if let EventMsg::AssistantMessage(message) = &record.event.msg {
                 compact_replay_deltas(
@@ -184,27 +185,28 @@ impl HostState {
 
     fn context_limit_tokens(&self) -> Option<i64> {
         self.running
-            .session
+            .session()
             .model
             .model_context_window
-            .map(|window| self.running.frontend.context_limit(window))
+            .map(|window| self.running.context_limit(window))
     }
 
     /// Sends the chat's capability metadata after an event changed it.
     fn broadcast_meta(&self, context_limit_tokens: Option<i64>) -> Result<()> {
         self.broadcast(ServerMessage::SessionMetaChanged {
-            session_id: self.running.session_id.share(),
-            contributions: self.running.frontend.contributions()?,
+            session_id: self.running.session_id().share(),
+            contributions: self.running.contributions()?,
             context_limit_tokens,
         });
         Ok(())
     }
 
     pub(super) async fn ready(&self) -> Result<SessionReadyPayload> {
-        let runtime =
-            SessionRuntimeState::load(self.checkpoints.as_ref(), &self.running.session_id)
-                .await?
-                .ok_or_else(|| Error::Config("the running session has no checkpoint".into()))?;
+        let runtime = self
+            .running
+            .runtime_state()
+            .await?
+            .ok_or_else(|| Error::Config("the running session has no checkpoint".into()))?;
         let context_limit_tokens = self.context_limit_tokens();
         Ok(SessionReadyPayload {
             active_turn_ids: runtime
@@ -216,7 +218,7 @@ impl HostState {
                 .undecided_approval
                 .into_iter()
                 .map(|mut request| {
-                    self.running.frontend.preview_approvals(&mut request);
+                    self.running.preview_approvals(&mut request);
                     request
                 })
                 .collect(),
@@ -224,12 +226,12 @@ impl HostState {
             workspace: self.spec.workspace_info(),
             attached_folders: self.spec.attached_folders.clone(), // rules-allow: the ready payload owns a snapshot while the spec stays in state
             git: if self.spec.workspace.is_some() {
-                git_status(&self.running.gateway_sandbox).await
+                git_status(self.running.sandbox()).await
             } else {
                 None
             },
-            session: Arc::clone(&self.running.session),
-            contributions: self.running.frontend.contributions()?,
+            session: Arc::clone(self.running.session()),
+            contributions: self.running.contributions()?,
             widgets: self
                 .widgets
                 .iter()
@@ -240,16 +242,17 @@ impl HostState {
                 .collect(),
             context_limit_tokens,
             token_usage: self.token_usage.as_ref().map(Arc::clone),
-            active_message_delivery: self.running.prepared.active_message_delivery,
+            active_message_delivery: self.running.active_message_delivery(),
             run_stats: runtime.stats,
             pinned_messages: self.message_pins().await?,
+            memory: self.spec.memory,
         })
     }
 
     async fn message_pins(&self) -> Result<BTreeSet<MessageTarget>> {
         Ok(self
             .checkpoints
-            .load_state(&self.running.session_id, MESSAGE_PINS_KEY)
+            .load_state(self.running.session_id(), MESSAGE_PINS_KEY)
             .await?
             .map(serde_json::from_value)
             .transpose()?
@@ -273,14 +276,14 @@ impl HostState {
         }
         self.checkpoints
             .save_state(
-                &self.running.session_id,
+                self.running.session_id(),
                 MESSAGE_PINS_KEY,
                 &serde_json::to_value(&pins).map_err(internal)?,
             )
             .await
             .map_err(internal)?;
         self.broadcast(ServerMessage::MessagePinsChanged {
-            session_id: self.running.session_id.share(),
+            session_id: self.running.session_id().share(),
             pinned_messages: pins,
         });
         Ok(())
@@ -293,7 +296,7 @@ impl HostState {
         let page = self
             .checkpoints
             .transcript_page(
-                &self.running.session_id,
+                self.running.session_id(),
                 TranscriptPageRequest {
                     before_sequence: target.checkpoint_sequence.checked_add(1),
                     max_batches: 1,
@@ -322,7 +325,7 @@ impl HostState {
         branch: &str,
     ) -> std::result::Result<(), Rejection> {
         self.require_idle()?;
-        switch_workspace_branch(&self.running.gateway_sandbox, branch).await?;
+        switch_workspace_branch(self.running.sandbox(), branch).await?;
         self.broadcast_changed().await
     }
 
@@ -447,7 +450,7 @@ impl HostState {
             .lock()
             .await
             .activities
-            .get(self.running.session_id.as_ref())
+            .get(self.running.session_id().as_ref())
             .cloned() // rules-allow: the activity is read out before the catalog lock is released
             .unwrap_or_default())
     }
@@ -457,7 +460,7 @@ impl HostState {
         update_session_activity(
             &self.checkpoints,
             &self.activities,
-            &self.running.session_id,
+            self.running.session_id(),
             activity,
         )
         .await
@@ -488,7 +491,7 @@ impl HostState {
         if !self.is_idle() {
             return;
         }
-        self.running.gateway_sandbox.release_desktop_use().await;
+        self.running.sandbox().release_desktop_use().await;
         for waiter in self.idle_waiters.drain(..) {
             if waiter.send(()).is_err() {
                 tracing::debug!("idle waiter stopped waiting");

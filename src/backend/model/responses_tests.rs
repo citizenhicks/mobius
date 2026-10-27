@@ -198,7 +198,7 @@ fn compatible_responses_are_implicit_while_first_party_breakpoints_are_explicit(
 fn inline_search_materializes_only_deferred_tools_it_calls() {
     let deferred = [
         tool_definition("notebook_post"),
-        tool_definition("scratchpad_write"),
+        tool_definition("memory_write"),
     ];
     let output = OpenAi::new("test-key", url("https://vendor.example/v1"), "test-model")
         .expect("provider")

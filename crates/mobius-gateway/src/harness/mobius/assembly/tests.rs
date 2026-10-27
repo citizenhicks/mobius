@@ -205,7 +205,7 @@ fn selected_trusted_plugin_snapshot_reaches_extensions_assembly_only_when_active
 
     use mobius::backend::sandbox::local::LocalSandbox;
 
-    use crate::extensions::{ExtensionSource, InstalledExtension};
+    use crate::harness::mobius::extensions::{ExtensionSource, InstalledExtension};
     use crate::wire::{ExtensionHookRecord, ExtensionKind};
 
     let root = tempfile::tempdir().expect("root");
@@ -316,11 +316,11 @@ fn selected_trusted_plugin_snapshot_reaches_extensions_assembly_only_when_active
 #[test]
 fn description_is_an_optional_preamble_of_the_system_prompt() {
     assert_eq!(
-        compose_instructions(" \n ", "Answer briefly."),
+        crate::harness::compose_instructions(" \n ", "Answer briefly."),
         "Answer briefly."
     );
     assert_eq!(
-        compose_instructions("  Reviews pull requests.\n", "Answer briefly."),
+        crate::harness::compose_instructions("  Reviews pull requests.\n", "Answer briefly."),
         "Reviews pull requests.\n\nAnswer briefly."
     );
 }
@@ -365,7 +365,7 @@ fn voice_capability_follows_the_router_rule_and_flags_unknown_saved_routes() {
             None,
         )
         .expect("voice credential");
-    let voices = crate::provider_catalog::VoiceRoutes::new(
+    let voices = crate::harness::mobius::provider_catalog::VoiceRoutes::new(
         &config.configured_providers,
         &store,
         &credentials,
@@ -462,7 +462,7 @@ fn default_voice_capability_matches_the_router_when_an_earlier_provider_has_no_k
             .route
             .starts_with("z-usable::")
     );
-    let voices = crate::provider_catalog::VoiceRoutes::new(
+    let voices = crate::harness::mobius::provider_catalog::VoiceRoutes::new(
         &config.configured_providers,
         &store,
         &credentials,
@@ -481,4 +481,18 @@ fn default_voice_capability_matches_the_router_when_an_earlier_provider_has_no_k
             .expect("runtime default voice")
             .route
     );
+}
+
+#[test]
+fn a_chat_memory_override_wins_over_its_bot_setting() {
+    let memory = MIDDLEWARE
+        .iter()
+        .find(|feature| matches!(feature.kind, BuiltinMiddleware::Memory))
+        .expect("memory middleware");
+    let mut settings = AgentComposition::default().middleware;
+    assert!(installs(memory, &settings, None));
+    assert!(!installs(memory, &settings, Some(false)));
+    settings.set_enabled(mobius::middleware::memory::MANIFEST.id, false);
+    assert!(!installs(memory, &settings, None));
+    assert!(installs(memory, &settings, Some(true)));
 }

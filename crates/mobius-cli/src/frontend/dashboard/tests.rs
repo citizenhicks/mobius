@@ -69,6 +69,7 @@ fn dashboard_state() -> super::state::DashboardState {
             providers: Vec::new(),
             provider_instances: Vec::new(),
             agent_catalog: Default::default(),
+            harnesses: Vec::new(),
             max_active_sessions: 0,
             session_file_limits: session_file_limits(),
             revisions: Default::default(),

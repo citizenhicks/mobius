@@ -326,6 +326,37 @@ pub enum ClientMessage {
         /// The pinned.
         pinned: bool,
     },
+    /// Turns memory on or off for one opened chat, or back to its Bot's setting with `None`.
+    /// Answered with `accepted`; the chat restarts when idle.
+    SetSessionMemory {
+        /// The request identifier.
+        request_id: Arc<str>,
+        /// The session identifier.
+        session_id: SessionId,
+        /// The override.
+        memory: Option<bool>,
+    },
+    /// Lists every harness's memories, answered with `memories`.
+    ListMemories {
+        /// The request identifier.
+        request_id: Arc<str>,
+    },
+    /// Replaces one editable memory's text, answered with `memories`.
+    EditMemory {
+        /// The request identifier.
+        request_id: Arc<str>,
+        /// The memory identifier.
+        id: Arc<str>,
+        /// The new text.
+        text: String,
+    },
+    /// Forgets one editable memory, answered with `memories`.
+    ForgetMemory {
+        /// The request identifier.
+        request_id: Arc<str>,
+        /// The memory identifier.
+        id: Arc<str>,
+    },
     /// Selects the delete sessions case.
     DeleteSessions {
         /// The request identifier.
@@ -426,10 +457,12 @@ pub enum ClientMessage {
         /// The max bytes.
         max_bytes: usize,
     },
-    /// Selects the create bot case.
+    /// Creates a Bot on `harness`, configured from that harness's defaults.
     CreateBot {
         /// The request identifier.
         request_id: Arc<str>,
+        /// The harness the Bot runs on, fixed for its lifetime.
+        harness: HarnessKind,
         /// The name.
         name: String,
         /// The description.
@@ -456,8 +489,8 @@ pub enum ClientMessage {
         tint: ProviderTint,
         /// The face's silhouette.
         shape: BotShape,
-        /// The config.
-        config: AgentComposition,
+        /// The config, on the Bot's own harness.
+        config: HarnessConfig,
     },
     /// Selects the delete bot case.
     DeleteBot {
@@ -476,6 +509,23 @@ pub enum ClientMessage {
         expected_revision: u64,
         /// The config.
         config: AgentComposition,
+    },
+    /// Saves a CLI harness's executable override and new-Bot defaults, then detects it again.
+    /// Answered with `gateway_configured`.
+    ConfigureHarness {
+        /// The request identifier.
+        request_id: Arc<str>,
+        /// The harness.
+        kind: HarnessKind,
+        /// The CLI to use instead of discovering one; `None` discovers it.
+        cli_path: Option<PathBuf>,
+        /// What new Bots on this harness start from.
+        defaults: CliHarnessConfig,
+    },
+    /// Detects every harness's CLI again. Answered with `gateway_configured`.
+    RefreshHarnesses {
+        /// The request identifier.
+        request_id: Arc<str>,
     },
     /// Selects the install extension case.
     InstallExtension {
@@ -983,6 +1033,13 @@ pub enum ServerMessage {
         request_id: Arc<str>,
         /// The payload.
         payload: ReadyPayload,
+    },
+    /// Every harness's memories.
+    Memories {
+        /// The request identifier.
+        request_id: Arc<str>,
+        /// The memories.
+        memories: Vec<MemoryRecord>,
     },
     /// Selects the contributions case.
     Contributions {

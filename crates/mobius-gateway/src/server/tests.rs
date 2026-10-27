@@ -109,12 +109,14 @@ async fn create_bot_chat_with_config(
     workspace: &Path,
     config: crate::wire::AgentComposition,
 ) -> (SessionId, Arc<str>) {
+    let config = crate::wire::HarnessConfig::Mobius(Arc::new(config));
     let token = Uuid::new_v4().simple().to_string();
     let bot_request_id = format!("bot-{token}");
     let bot_name = format!("Test Bot {}", token.get(..12).unwrap());
     sender
         .send(ClientMessage::CreateBot {
             request_id: bot_request_id.as_str().into(),
+            harness: crate::wire::HarnessKind::Mobius,
             name: bot_name.clone(),
             description: "Own this gateway integration test.".into(),
         })

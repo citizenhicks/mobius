@@ -268,8 +268,8 @@ fn bot_details(bot: &BotRecord, state: &BotsState, gateway: &ReadyPayload) -> Ve
         Line::styled(terminal_text(&bot.description), theme.style(Role::Text)),
         Line::styled(
             format!(
-                "model: {}",
-                terminal_text(&bot.config.config.provider.model)
+                "runs on: {}",
+                terminal_text(&super::bot_runtime(bot, gateway))
             ),
             theme.style(Role::Muted),
         ),

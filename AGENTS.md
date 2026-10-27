@@ -96,7 +96,7 @@ Implement `middleware::Middleware` in one vertical module. Register tools in
 `frontend` or `render`. Handle declared commands in `command`.
 
 Only middleware shipped by `mobius-gateway` needs one composition setting and one
-construction branch in `crates/mobius-gateway/src/assembly.rs`. Do not edit the
+construction branch in `crates/mobius-gateway/src/harness/mobius/assembly.rs`. Do not edit the
 agent loop or any frontend for capability-specific behavior.
 
 Approval-required tools are always handled by the sandbox.

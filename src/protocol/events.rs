@@ -742,7 +742,7 @@ pub enum ContextPartKind {
     ToolCalls,
     /// What the tools returned.
     ToolResults,
-    /// Scratchpad, tasks and hook state the gateway adds each step.
+    /// Memory, tasks and hook state the gateway adds each step.
     Memory,
     /// Reasoning carried between steps.
     Reasoning,

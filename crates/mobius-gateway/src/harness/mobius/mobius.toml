@@ -1,0 +1,11 @@
+label = "möbius"
+symbol = "agent"
+
+# What möbius chats can do; each Bot's composition narrows it in `BotRecord.capabilities`.
+[capabilities]
+attachments = true
+steering = true
+approvals = true
+resume = true
+voice = true
+computer = true

@@ -55,7 +55,7 @@ use context_store::{
     sqlite_integer,
 };
 
-const SCHEMA_VERSION: i64 = 13;
+const SCHEMA_VERSION: i64 = 14;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 impl rusqlite::ToSql for SessionId {
@@ -141,7 +141,7 @@ CREATE INDEX IF NOT EXISTS execution_journal_recent_idx
     ON execution_journal(started_at_ms DESC, session_id DESC, sequence DESC);
 CREATE INDEX IF NOT EXISTS event_journal_step_idx
     ON event_journal(session_id, model_step_id, event_kind);
-PRAGMA user_version = 13;
+PRAGMA user_version = 14;
 COMMIT;
 ";
 
@@ -1001,6 +1001,23 @@ impl CheckpointStore for SqliteCheckpoint {
                 params![scope, key, json],
             )?;
             Ok(())
+        }))
+    }
+
+    fn list_state<'a>(&'a self, scope: &'a str) -> BoxFuture<'a, Result<Vec<(String, Value)>>> {
+        let scope = scope.to_owned();
+        Box::pin(self.run(move |connection, _cache| {
+            let mut statement = connection.prepare_cached(
+                "SELECT key, value_json FROM middleware_state WHERE scope = ?1 ORDER BY key",
+            )?;
+            let rows = statement.query_map([scope], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            rows.map(|row| {
+                let (key, json) = row?;
+                Ok((key, serde_json::from_str(&json)?))
+            })
+            .collect()
         }))
     }
 }

@@ -3,8 +3,8 @@
 use mobius::SessionId;
 use std::sync::{Arc, Weak};
 
+use crate::harness::ValidatedSubmission;
 use mobius::BoxFuture;
-use mobius::agent::ValidatedSubmission;
 use mobius::middleware::sessions::{ChatTarget, LiveChat, LiveChats, PeerCommand};
 use mobius::protocol::{MessageAuthor, MessageSubmission, Op, Submission};
 use tokio::sync::Mutex;

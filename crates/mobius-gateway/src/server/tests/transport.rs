@@ -70,7 +70,11 @@ async fn queued_client_requests_do_not_starve_gateway_broadcasts() {
     }
     server
         .host
-        .create_bot("Fairness", "Transport test")
+        .create_bot(
+            crate::wire::HarnessKind::Mobius,
+            "Fairness",
+            "Transport test",
+        )
         .await
         .unwrap();
     tokio::select! {

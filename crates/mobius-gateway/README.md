@@ -11,7 +11,7 @@ conversations or subscribe to the same one.
 Bots store enabled optional middleware IDs and generic scalar settings. The gateway advertises
 the ordered middleware catalog plus integer and select control schemas, so terminal and iOS
 clients render new middleware and settings without capability-specific code. New Bots enable
-attachments, artifacts, compaction, scratchpad, and subagents by default;
+attachments, artifacts, compaction, memory, and subagents by default;
 tasks, workspace instructions, and extensions start disabled. Project chats install
 sandboxing and workspace tools; project-free chats expose file and image reads under the same sandbox policy, including
 skill guides, while commands and file mutations remain unavailable. All chats use turn steering
@@ -31,7 +31,7 @@ compaction** setting also exposes `new_context` for early resets; it defaults to
 Original messages and tool results remain available through `search_history` and `read_history`.
 
 Tasks remain independently optional and restore their durable list across compaction.
-Shared scratchpad notes remain separate from the chat-local handoff checkpoint.
+Memories remain separate from the chat-local handoff checkpoint.
 
 Install the gateway with Homebrew, or install `mobius-cli` for both commands:
 
@@ -294,7 +294,7 @@ restart, and intervals catch up at most one overdue occurrence.
 
 Choose one Bot in New Chat. Each chat has one Bot, one Agent checkpoint, and one
 workspace. See [Bots and context](BOTS.md) for history recovery, routine ownership,
-context boundaries, scratchpad knowledge, task lists, and subagents.
+context boundaries, memory, task lists, and subagents.
 
 ### Storage and telemetry
 

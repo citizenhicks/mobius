@@ -71,7 +71,7 @@ impl Middleware for PersistentChat {
     }
     fn register(&self, catalog: &mut Catalog, runtime: &RuntimeContext) -> Result<()> {
         if !crate::bots::is_persistent(&runtime.session_id, &self.bot_id)
-            || !matches!(runtime.role, mobius::agent::AgentRole::Main)
+            || !matches!(runtime.role, ::mobius::agent::AgentRole::Main)
             || *runtime.session_context.owner_id != *self.bot_id
             || runtime.session_context.workspace_id.is_some()
         {

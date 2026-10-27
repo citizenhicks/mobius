@@ -27,7 +27,7 @@ pub(crate) enum BuiltinMiddleware {
     Voice,
     Compaction,
     ComputerControl,
-    Scratchpad,
+    Memory,
     Sessions,
     PersistentChat,
 }
@@ -111,12 +111,12 @@ pub(crate) static MIDDLEWARE: std::sync::LazyLock<[MiddlewareRegistration; 18]> 
                 manifest: &mobius::middleware::compaction::MANIFEST,
             },
             MiddlewareRegistration {
-                kind: BuiltinMiddleware::Scratchpad,
-                manifest: &mobius::middleware::scratchpad::MANIFEST,
+                kind: BuiltinMiddleware::Memory,
+                manifest: &mobius::middleware::memory::MANIFEST,
             },
             MiddlewareRegistration {
                 kind: BuiltinMiddleware::PersistentChat,
-                manifest: &crate::persistent_chat::MANIFEST,
+                manifest: &crate::harness::mobius::persistent_chat::MANIFEST,
             },
             MiddlewareRegistration {
                 kind: BuiltinMiddleware::Sessions,

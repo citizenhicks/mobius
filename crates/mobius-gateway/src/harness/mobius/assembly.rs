@@ -20,8 +20,8 @@ use mobius::middleware::attachments::Attachments;
 use mobius::middleware::extensions::{Extensions, MANIFEST as EXTENSIONS_MANIFEST};
 use mobius::middleware::image_generation::ImageGeneration;
 use mobius::middleware::instructions::Instructions;
+use mobius::middleware::memory::Memory;
 use mobius::middleware::messages::Messages;
-use mobius::middleware::scratchpad::Scratchpad;
 use mobius::middleware::sessions::{LiveChats, Sessions};
 use mobius::middleware::subagents::Subagents;
 use mobius::middleware::tasks::Tasks;
@@ -30,9 +30,11 @@ use mobius::middleware::{Middleware, MiddlewareStack};
 use mobius::protocol::{ActiveMessageDelivery, ModelChoice, ModelInfo, SessionContext, TokenUsage};
 
 use crate::config::{ChatSpec, ConfigStore, CredentialStore, GatewayConfig, local_user_name};
-use crate::extensions::{ExtensionStore, ResolvedExtensions};
-use crate::middleware_manifest::{BuiltinMiddleware, MIDDLEWARE};
-use crate::provider_catalog::{
+use crate::harness::mobius::extensions::{ExtensionStore, ResolvedExtensions};
+use crate::harness::mobius::middleware_manifest::{
+    BuiltinMiddleware, MIDDLEWARE, MiddlewareRegistration,
+};
+use crate::harness::mobius::provider_catalog::{
     CatalogRoute, catalog_routes, configured_model_providers, configured_model_routes,
     credential_is_configured,
 };
@@ -62,6 +64,8 @@ where
 
 pub(crate) struct PreparedBot {
     pub(crate) bot: Arc<crate::wire::BotRecord>,
+    /// The möbius composition `bot` was prepared from.
+    composition: Arc<AgentComposition>,
     pub(crate) epoch: u64,
     stale: std::sync::atomic::AtomicBool,
     pub(crate) providers: Vec<ProviderConfig>,
@@ -86,7 +90,11 @@ impl PreparedBot {
 
     pub(crate) fn matches_runtime(&self, bot: &crate::wire::BotRecord) -> bool {
         !self.stale.load(std::sync::atomic::Ordering::Acquire)
-            && same_runtime(&self.bot, &bot.description, &bot.config.config)
+            && crate::harness::same_runtime(&self.bot, &bot.description, &bot.config.config)
+    }
+
+    pub(crate) fn uses_extension(&self, id: &str) -> bool {
+        self.composition.extensions.contains(id)
     }
 
     pub(crate) fn invalidate(&self) {
@@ -95,30 +103,15 @@ impl PreparedBot {
 
     /// The agent's and voice's system prompt: the Bot's description as its preamble.
     pub(crate) fn instructions(&self) -> String {
-        compose_instructions(&self.bot.description, &self.bot.config.config.system_prompt)
+        crate::harness::compose_instructions(&self.bot.description, &self.composition.system_prompt)
     }
-}
-
-fn compose_instructions(description: &str, system_prompt: &str) -> String {
-    match description.trim() {
-        "" => system_prompt.to_owned(),
-        preamble => format!("{preamble}\n\n{system_prompt}"),
-    }
-}
-
-/// Whether `bot` starts the same agent as one with `description` and `config`.
-pub(crate) fn same_runtime(
-    bot: &crate::wire::BotRecord,
-    description: &str,
-    config: &AgentComposition,
-) -> bool {
-    *bot.description == *description && bot.config.config == *config
 }
 
 pub(crate) fn prepare_bot<'a>(
     gateway: &GatewayConfig,
     crate::bots::RuntimeBot {
         record: bot,
+        composition,
         approval_policy,
     }: crate::bots::RuntimeBot,
     store: &'a ConfigStore,
@@ -129,7 +122,7 @@ pub(crate) fn prepare_bot<'a>(
 ) -> impl std::future::Future<Output = Result<PreparedBot>> + Send + use<'a> {
     // Resolve configuration while its owner can lend a lock guard; only runtime preparation awaits.
     let prepared = (|| {
-        let config = &bot.config.config;
+        let config = &*composition;
         let model_providers = configured_model_providers(gateway, store, credentials)?;
         let endpoint = gateway
             .configured_providers
@@ -146,8 +139,12 @@ pub(crate) fn prepare_bot<'a>(
             .middleware
             .enabled(voice_id)
             .then(|| {
-                crate::middleware_manifest::string_setting(&config.middleware, voice_id, "model")
-                    .map(|route| route.map(Arc::from))
+                crate::harness::mobius::middleware_manifest::string_setting(
+                    &config.middleware,
+                    voice_id,
+                    "model",
+                )
+                .map(|route| route.map(Arc::from))
             })
             .transpose()?;
         let extensions = ExtensionStore::new(store).resolve(gateway, &config.extensions)?;
@@ -165,7 +162,7 @@ pub(crate) fn prepare_bot<'a>(
                 .middleware
                 .enabled(mobius::middleware::subagents::MANIFEST.id))
         .then(|| {
-            crate::middleware_manifest::subagent_limits(
+            crate::harness::mobius::middleware_manifest::subagent_limits(
                 &config.middleware,
                 gateway.execution.subagent_ceilings,
             )
@@ -174,7 +171,7 @@ pub(crate) fn prepare_bot<'a>(
         Ok::<_, Error>(async move {
             let computer_runtime = crate::computer_runtime::prepare(
                 store.state_dir(),
-                &bot.config.config.middleware,
+                &composition.middleware,
                 &computer_config,
             )
             .await?;
@@ -182,6 +179,7 @@ pub(crate) fn prepare_bot<'a>(
                 stale: std::sync::atomic::AtomicBool::new(false),
                 providers,
                 bot,
+                composition,
                 epoch,
                 models,
                 context_window,
@@ -215,7 +213,7 @@ pub(crate) async fn assemble(
     chat: &ChatSpec,
     store: &ConfigStore,
     checkpoints: Arc<dyn CheckpointStore>,
-    scratchpad: Arc<Scratchpad>,
+    memory: Arc<Memory>,
     session_files: Arc<SessionFileStore>,
     discovery_gate: Arc<tokio::sync::Mutex<()>>,
     desktop: Arc<crate::computer_runtime::desktop::DesktopControl>,
@@ -241,6 +239,7 @@ pub(crate) async fn assemble(
     let context_window = prepared.context_window;
     let approval_policy = prepared.approval_policy;
     let project = chat.workspace.is_some();
+    let memory_override = chat.memory;
     let attached_folders = chat.attached_folders.clone(); // rules-allow: the discovery task owns the chat's folder list
     let state_dir = store.state_dir().to_path_buf();
     let token_estimate = execution.token_estimate;
@@ -249,7 +248,7 @@ pub(crate) async fn assemble(
     // Hidden routine and channel chats may carry third-party input.
     let live_chats = live_chats.filter(|_| chat.catalog_visible);
     let (gateway_sandbox, sandbox, mut entries) = run_discovery(discovery_gate, move || {
-        let settings = &resources.bot.config.config.middleware;
+        let settings = &resources.composition.middleware;
         let computer_runtime = &resources.computer_runtime;
         let tls_key = tls.as_ref().map(|tls| tls.private_key.as_path());
         if let Some(hook) = &telemetry.activity_hook {
@@ -286,7 +285,7 @@ pub(crate) async fn assemble(
             )?);
         }
         let output_bytes = mobius::backend::sandbox::OutputLimit::new(
-            crate::middleware_manifest::count_setting(
+            crate::harness::mobius::middleware_manifest::count_setting(
                 settings,
                 mobius::backend::sandbox::MANIFEST.id,
                 "tool_output_bytes",
@@ -330,7 +329,7 @@ pub(crate) async fn assemble(
         let backend: Arc<dyn SandboxBackend> = Arc::<GatewaySandbox>::clone(&gateway_sandbox); // rules-allow: the sandbox and the returned agent share the backend
         let sandbox = Sandbox::new(Arc::clone(&backend), approval_policy)
             .tool_output_limit(output_bytes)
-            .background_command_limit(crate::middleware_manifest::count_setting(
+            .background_command_limit(crate::harness::mobius::middleware_manifest::count_setting(
                 settings,
                 mobius::backend::sandbox::MANIFEST.id,
                 "background_commands",
@@ -338,7 +337,10 @@ pub(crate) async fn assemble(
         let middleware = build_middleware(
             &resources,
             &workspace_path,
-            &scratchpad,
+            ChatMemory {
+                store: &memory,
+                chat_override: memory_override,
+            },
             &session_files,
             extensions.map(|extensions| (extensions, backend)),
             live_chats,
@@ -368,7 +370,7 @@ pub(crate) async fn assemble(
     let usage_resources = Arc::clone(&prepared);
     let usage_store = Arc::new(store.clone()); // rules-allow: the usage observer outlives this call
     let max_model_steps =
-        usize::try_from(prepared.bot.config.config.max_model_steps).map_err(|error| {
+        usize::try_from(prepared.composition.max_model_steps).map_err(|error| {
             Error::Config(format!(
                 "maximum model steps exceed this platform's supported range: {error}"
             ))
@@ -380,11 +382,13 @@ pub(crate) async fn assemble(
                 "Persistent Chat must be visible and project-free".into(),
             ));
         }
-        entries.push(Arc::new(crate::persistent_chat::PersistentChat::new(
-            Arc::clone(&prepared.bot.id),
-            host_access
-                .ok_or_else(|| Error::Config("Persistent Chat requires the gateway".into()))?,
-        )));
+        entries.push(Arc::new(
+            crate::harness::mobius::persistent_chat::PersistentChat::new(
+                Arc::clone(&prepared.bot.id),
+                host_access
+                    .ok_or_else(|| Error::Config("Persistent Chat requires the gateway".into()))?,
+            ),
+        ));
     }
     let system_prompt = prepared.instructions();
     let mut agent_config = AgentConfig::new(
@@ -484,7 +488,11 @@ fn build_models(
         .configured_providers
         .get(&selection.instance)
         .ok_or_else(|| Error::Config("active provider is not in the configured catalog".into()))?;
-    let selected = crate::provider_catalog::selected_route(definition, Some(configured), selection);
+    let selected = crate::harness::mobius::provider_catalog::selected_route(
+        definition,
+        Some(configured),
+        selection,
+    );
     let mut catalog = catalog_routes(definition, configured, selection);
     catalog.extend(
         configured_model_routes(
@@ -501,7 +509,7 @@ fn build_models(
     );
     // Validation keeps the selected route in the catalog; it leads the router.
     catalog.sort_by_key(|route| *route.choice.route != *selected.route);
-    let media = crate::provider_catalog::media_routes(
+    let media = crate::harness::mobius::provider_catalog::media_routes(
         &gateway.configured_providers,
         Some((store, credentials)),
     )?;
@@ -728,12 +736,12 @@ fn unavailable_models(
 ) -> Result<(Arc<ModelRouter>, i64)> {
     let definition = provider(&selection.provider)?;
     let configured = gateway.configured_providers.get(&selection.instance);
-    let crate::provider_catalog::SelectedRoute {
+    let crate::harness::mobius::provider_catalog::SelectedRoute {
         route,
         effort,
         preset,
         context_window,
-    } = crate::provider_catalog::selected_route(definition, configured, selection);
+    } = crate::harness::mobius::provider_catalog::selected_route(definition, configured, selection);
     let effort: Option<Arc<str>> = effort.map(Arc::from);
     let route: Arc<str> = route.into();
     let model_id: Arc<str> = selection.model.as_str().into();
@@ -758,7 +766,7 @@ fn unavailable_models(
         tool_discovery: configured.zip(preset).map_or_else(
             || definition.tool_discovery(&selection.model, selection.base_url.as_deref()),
             |(configured, model)| {
-                crate::provider_catalog::effective_tool_discovery(
+                crate::harness::mobius::provider_catalog::effective_tool_discovery(
                     definition,
                     &configured.selection,
                     model,
@@ -766,7 +774,7 @@ fn unavailable_models(
             },
         ),
     })?;
-    let media = crate::provider_catalog::media_routes(
+    let media = crate::harness::mobius::provider_catalog::media_routes(
         &gateway.configured_providers,
         Some((store, credentials)),
     )?;
@@ -777,20 +785,39 @@ fn unavailable_models(
     Ok((Arc::new(router), context_window))
 }
 
+/// The memory store and the chat's override of its Bot's memory setting.
+#[derive(Clone, Copy)]
+struct ChatMemory<'a> {
+    store: &'a Memory,
+    chat_override: Option<bool>,
+}
+
+/// Whether a chat installs `feature`: as its Bot sets it, except a chat's memory override.
+fn installs(
+    feature: &MiddlewareRegistration,
+    settings: &MiddlewareConfig,
+    chat_override: Option<bool>,
+) -> bool {
+    match (feature.kind, chat_override) {
+        (BuiltinMiddleware::Memory, Some(memory)) => memory,
+        _ => feature.manifest.required || settings.enabled(feature.manifest.id),
+    }
+}
+
 fn build_middleware(
     prepared: &PreparedBot,
     workspace: &std::path::Path,
-    scratchpad: &Scratchpad,
+    memory: ChatMemory<'_>,
     session_files: &Arc<SessionFileStore>,
     mut extensions: Option<(Extensions, Arc<dyn SandboxBackend>)>,
     mut live_chats: Option<Arc<dyn LiveChats>>,
     project: bool,
 ) -> Result<Vec<Arc<dyn Middleware>>> {
-    let settings = &prepared.bot.config.config.middleware;
+    let settings = &prepared.composition.middleware;
     let mut entries: Vec<Arc<dyn Middleware>> = Vec::new();
     for feature in MIDDLEWARE
         .iter()
-        .filter(|feature| feature.manifest.required || settings.enabled(feature.manifest.id))
+        .filter(|feature| installs(feature, settings, memory.chat_override))
     {
         let middleware: Arc<dyn Middleware> = match feature.kind {
             BuiltinMiddleware::Sandbox | BuiltinMiddleware::PersistentChat => continue,
@@ -819,7 +846,7 @@ fn build_middleware(
             BuiltinMiddleware::Instructions => {
                 Arc::new(Instructions::discover(project.then_some(workspace))?)
             }
-            BuiltinMiddleware::Scratchpad => Arc::new(scratchpad.for_chat()),
+            BuiltinMiddleware::Memory => Arc::new(memory.store.for_chat()),
             BuiltinMiddleware::Extensions => {
                 let (extensions, backend) = extensions
                     .take()
@@ -836,7 +863,7 @@ fn build_middleware(
                         Error::Config("subagent limits were not prepared".into())
                     })?)
                     .session_files(Arc::clone(session_files));
-                let middleware = match crate::middleware_manifest::string_setting(
+                let middleware = match crate::harness::mobius::middleware_manifest::string_setting(
                     settings,
                     mobius::middleware::subagents::MANIFEST.id,
                     "model_route",
@@ -847,7 +874,7 @@ fn build_middleware(
                 Arc::new(middleware)
             }
             BuiltinMiddleware::Messages => Arc::new(Messages::new(
-                crate::middleware_manifest::count_setting(
+                crate::harness::mobius::middleware_manifest::count_setting(
                     settings,
                     feature.manifest.id,
                     "max_pending",
@@ -871,7 +898,7 @@ fn build_middleware(
                 )?)
             }
             BuiltinMiddleware::Sessions => Arc::new(Sessions::new(
-                crate::middleware_manifest::count_setting(
+                crate::harness::mobius::middleware_manifest::count_setting(
                     settings,
                     feature.manifest.id,
                     "page_size",
@@ -886,7 +913,7 @@ fn build_middleware(
 }
 
 fn configured_message_delivery(settings: &MiddlewareConfig) -> Result<ActiveMessageDelivery> {
-    crate::middleware_manifest::string_setting(
+    crate::harness::mobius::middleware_manifest::string_setting(
         settings,
         mobius::middleware::messages::MANIFEST.id,
         "delivery",
@@ -899,12 +926,12 @@ fn configured_message_delivery(settings: &MiddlewareConfig) -> Result<ActiveMess
 /// What chats composed from `config` can do, choosing the voice by the router's rule.
 pub(crate) fn bot_capabilities(
     config: &AgentComposition,
-    voices: &crate::provider_catalog::VoiceRoutes,
+    voices: &crate::harness::mobius::provider_catalog::VoiceRoutes,
 ) -> Result<crate::wire::BotCapabilities> {
     let middleware = &config.middleware;
     let voice_id = mobius::middleware::voice::MANIFEST.id;
     let voice = if middleware.enabled(voice_id) {
-        match voices.select(crate::middleware_manifest::string_setting(
+        match voices.select(crate::harness::mobius::middleware_manifest::string_setting(
             middleware, voice_id, "model",
         )?) {
             Ok((route, waits_for_session_started)) => crate::wire::VoiceCapability::Ready {
@@ -922,6 +949,13 @@ pub(crate) fn bot_capabilities(
         attachments: middleware.enabled(mobius::middleware::attachments::MANIFEST.id),
         computer: middleware.enabled(mobius::middleware::computer_control::MANIFEST.id),
         voice,
+        memory: {
+            let enabled = middleware.enabled(mobius::middleware::memory::MANIFEST.id);
+            crate::wire::BotMemory {
+                enabled,
+                global: enabled,
+            }
+        },
     })
 }
 

@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::Error;
 use crate::config::{GatewayConfig, ValidatedGatewayConfig};
-use crate::provider_catalog::{
+use crate::harness::mobius::provider_catalog::{
     configured_model_choices, credential_is_configured, selected_base_url,
 };
 use crate::wire::{
@@ -382,7 +382,7 @@ impl GatewayHost {
         let state = self.state.lock().await;
         let voices = {
             let config = state.config()?;
-            crate::provider_catalog::VoiceRoutes::new(
+            crate::harness::mobius::provider_catalog::VoiceRoutes::new(
                 &config.configured_providers,
                 &state.store,
                 &state.credentials,
@@ -615,7 +615,7 @@ fn commit_provider_registration(
     *current = next.into_inner();
     state
         .bots
-        .set_voice_routes(crate::provider_catalog::VoiceRoutes::new(
+        .set_voice_routes(crate::harness::mobius::provider_catalog::VoiceRoutes::new(
             &current.configured_providers,
             &state.store,
             &state.credentials,
@@ -660,7 +660,7 @@ fn commit_provider_removal(
     };
     state
         .bots
-        .set_voice_routes(crate::provider_catalog::VoiceRoutes::new(
+        .set_voice_routes(crate::harness::mobius::provider_catalog::VoiceRoutes::new(
             &current.configured_providers,
             &state.store,
             &state.credentials,
@@ -676,12 +676,13 @@ fn validate_bot_catalog(
 ) -> std::result::Result<(), Rejection> {
     let models = configured_model_choices(gateway, &state.store, &state.credentials)
         .map_err(invalid_config)?;
-    for bot in bots {
-        if let Err(error) = crate::config::validate_bot_compatibility(
-            gateway,
-            &bot.config.config,
-            models.catalogs(),
-        ) {
+    for (bot, composition) in bots
+        .iter()
+        .filter_map(|bot| Some((bot, bot.config.config.mobius()?)))
+    {
+        if let Err(error) =
+            crate::config::validate_bot_compatibility(gateway, composition, models.catalogs())
+        {
             return Err(bot_catalog_rejection(bot, error));
         }
     }

@@ -51,8 +51,10 @@ pub struct ReadyPayload {
     pub providers: Vec<ProviderStatus>,
     /// The provider instances.
     pub provider_instances: Vec<ProviderInstance>,
-    /// What Bots can be composed from.
+    /// What möbius Bots can be composed from.
     pub agent_catalog: AgentCatalog,
+    /// Every harness a Bot can run on.
+    pub harnesses: Vec<HarnessDescriptor>,
     /// The max active sessions.
     pub max_active_sessions: usize,
     /// The session file limits.
@@ -66,8 +68,8 @@ pub struct ReadyPayload {
 /// The models, middleware, extensions and defaults Bots are composed from.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentCatalog {
-    /// The bot defaults.
-    pub bot_defaults: Option<VersionedAgentConfig>,
+    /// The möbius composition new möbius Bots start from.
+    pub bot_defaults: Option<VersionedAgentConfig<AgentComposition>>,
     /// What a chat composed from `bot_defaults` can do.
     pub default_capabilities: Option<BotCapabilities>,
     /// The models.
@@ -98,6 +100,7 @@ impl ReadyPayload {
             }
             ReadySection::Bots => swap(&mut self.bots, &mut other.bots),
             ReadySection::Sessions => swap(&mut self.sessions, &mut other.sessions),
+            ReadySection::Harnesses => swap(&mut self.harnesses, &mut other.harnesses),
         }
     }
 
@@ -125,6 +128,7 @@ impl ReadyPayload {
             )),
             ReadySection::Bots => content_revision(&self.bots),
             ReadySection::Sessions => content_revision(&self.sessions),
+            ReadySection::Harnesses => content_revision(&self.harnesses),
         }
     }
 
@@ -140,6 +144,7 @@ impl ReadyPayload {
             providers: Vec::new(),
             provider_instances: Vec::new(),
             agent_catalog: AgentCatalog::default(),
+            harnesses: Vec::new(),
             max_active_sessions: self.max_active_sessions,
             session_file_limits: self.session_file_limits,
             revisions: BTreeMap::new(),
@@ -170,13 +175,16 @@ pub enum ReadySection {
     Bots,
     /// The visible session catalog.
     Sessions,
+    /// The harness descriptors.
+    Harnesses,
 }
 
 /// Every section a Ready payload can omit.
-pub const READY_SECTIONS: [ReadySection; 3] = [
+pub const READY_SECTIONS: [ReadySection; 4] = [
     ReadySection::Config,
     ReadySection::Bots,
     ReadySection::Sessions,
+    ReadySection::Harnesses,
 ];
 
 /// What a client already holds of the Ready catalog, sent with `authenticate`.
@@ -276,6 +284,8 @@ pub struct SessionReadyPayload {
     pub run_stats: RunStats,
     /// Assistant messages the user pinned, in transcript order.
     pub pinned_messages: BTreeSet<MessageTarget>,
+    /// This chat's memory override; `None` follows the Bot's `capabilities.memory.enabled`.
+    pub memory: Option<bool>,
 }
 
 /// One currently mounted capability widget and its owning namespace.
@@ -445,13 +455,14 @@ pub struct DirectoryEntry {
     pub is_directory: bool,
 }
 
-/// A frontend-safe agent composition guarded by an optimistic revision.
+/// A frontend-safe agent configuration guarded by an optimistic revision: a Bot's
+/// [`HarnessConfig`], or the möbius composition of the Bot defaults.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct VersionedAgentConfig {
+pub struct VersionedAgentConfig<C = HarnessConfig> {
     /// The revision.
     pub revision: u64,
     /// The config.
-    pub config: AgentComposition,
+    pub config: C,
 }
 
 /// Runtime settings an authenticated client may read and replace atomically.
@@ -798,7 +809,7 @@ impl From<StoredMiddlewareConfig> for MiddlewareConfig {
             enabled: stored.enabled,
             settings: stored.settings,
         };
-        crate::middleware_manifest::fill_defaults(&mut config);
+        crate::harness::mobius::middleware_manifest::fill_defaults(&mut config);
         config
     }
 }
@@ -1049,6 +1060,8 @@ pub struct BotRecord {
     pub tint: ProviderTint,
     /// The face's silhouette.
     pub shape: BotShape,
+    /// The harness this Bot runs on, the same as its config's tag.
+    pub harness: HarnessKind,
     /// The config.
     pub config: Arc<VersionedAgentConfig>,
     /// What chats with this Bot can do.
@@ -1066,6 +1079,8 @@ pub struct BotCapabilities {
     pub computer: bool,
     /// Whether and how voice calls start.
     pub voice: VoiceCapability,
+    /// What its chats remember.
+    pub memory: BotMemory,
 }
 
 /// Voice calls for one configuration.

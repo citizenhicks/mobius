@@ -37,7 +37,7 @@ thread_local! {
 pub(super) async fn load_replay(
     checkpoints: &dyn CheckpointStore,
     session_id: &SessionId,
-    frontend: &impl RenderEvents,
+    frontend: &dyn RenderEvents,
 ) -> Result<LoadedReplay> {
     let mut latest_sequence = 0;
     let mut before_sequence = None;
@@ -166,7 +166,7 @@ pub(super) async fn load_replay(
 }
 
 /// Renders journal events into the blocks a frontend shows.
-pub(super) trait RenderEvents: Sync {
+pub(crate) trait RenderEvents: Sync {
     fn render(&self, event: &EventMsg) -> Vec<RenderedBlock>;
 
     /// Fills each approval call's preview; framework-only presentation has none.
@@ -198,7 +198,7 @@ impl RenderEvents for FrameworkPresentation {
 pub(super) async fn durable_history_page(
     checkpoints: &dyn CheckpointStore,
     session_id: &SessionId,
-    frontend: &impl RenderEvents,
+    frontend: &dyn RenderEvents,
     before: Option<HistoryCursor>,
 ) -> std::result::Result<SessionHistoryPage, Rejection> {
     let (chat, depth, before_sequence) = match before {
@@ -339,7 +339,7 @@ async fn fork_depth(
 }
 
 /// Renders the preview and reduces its nested events out of the journal event.
-fn take_preview(frontend: &impl RenderEvents, event: &mut EventMsg) -> Option<RenderedPreview> {
+fn take_preview(frontend: &dyn RenderEvents, event: &mut EventMsg) -> Option<RenderedPreview> {
     let EventMsg::Frontend(FrontendEvent::Preview {
         kind,
         state,
@@ -387,7 +387,7 @@ fn take_preview(frontend: &impl RenderEvents, event: &mut EventMsg) -> Option<Re
 /// Renders the record's blocks once, before its preview events move out, and returns
 /// them for the transcript reducer beside the record.
 pub(super) fn project_record(
-    frontend: &impl RenderEvents,
+    frontend: &dyn RenderEvents,
     mut journal: JournalEvent,
 ) -> (RecordedEvent, Vec<RenderedBlock>) {
     let blocks = frontend.render(&journal.event.msg);
@@ -437,7 +437,7 @@ pub(super) fn validate_gateway_event(event: &EventMsg) -> Result<()> {
 
 /// Reduces one preview event, with a session history's nested events in its place.
 fn reduce_preview_event(
-    frontend: &impl RenderEvents,
+    frontend: &dyn RenderEvents,
     transcript: &mut TranscriptReducer,
     sequence: u64,
     recorded_at_ms: i64,

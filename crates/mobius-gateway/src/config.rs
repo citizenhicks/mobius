@@ -16,7 +16,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use mobius::agent::DEFAULT_MAX_MODEL_STEPS;
+use crate::harness::mobius::DEFAULT_MAX_MODEL_STEPS;
 use mobius::backend::model::provider::{
     BaseUrl, ModelPreset, ProviderAuth, ProviderDefinition, default_provider, provider,
 };
@@ -163,10 +163,11 @@ pub struct GatewayConfig {
     /// Own a persistent headed browser and, on Linux, a private virtual desktop.
     #[serde(default)]
     pub desktop_enabled: bool,
-    /// The bot defaults.
-    pub bot_defaults: Option<VersionedAgentConfig>,
+    /// The möbius composition new möbius Bots start from.
+    pub bot_defaults: Option<VersionedAgentConfig<AgentComposition>>,
     pub(crate) configured_providers: BTreeMap<String, ConfiguredProvider>,
-    pub(crate) installed_extensions: BTreeMap<Arc<str>, crate::extensions::InstalledExtension>,
+    pub(crate) installed_extensions:
+        BTreeMap<Arc<str>, crate::harness::mobius::extensions::InstalledExtension>,
     usage: UsageHistory,
 }
 
@@ -209,6 +210,9 @@ pub(crate) struct ChatSpec {
     pub(crate) workspace: Option<PathBuf>,
     pub(crate) attached_folders: Vec<PathBuf>,
     pub(crate) bot_id: Arc<str>,
+    /// Memory for this chat, overriding its Bot's setting; `None` follows the Bot.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) memory: Option<bool>,
     #[serde(skip)]
     pub(crate) catalog_visible: bool,
 }
@@ -220,6 +224,8 @@ struct StoredChatSpec {
     workspace: Option<PathBuf>,
     attached_folders: Vec<PathBuf>,
     bot_id: String,
+    #[serde(default)]
+    memory: Option<bool>,
 }
 
 impl Default for AgentComposition {
@@ -238,7 +244,7 @@ impl AgentComposition {
     ) -> Self {
         let provider = default_provider();
         let model = provider.default_model().and_then(|id| provider.model(id));
-        let mut middleware = crate::middleware_manifest::default_config(ceilings);
+        let mut middleware = crate::harness::mobius::middleware_manifest::default_config(ceilings);
         middleware.set_setting(
             mobius::backend::sandbox::MANIFEST.id,
             "approval_policy",
@@ -441,7 +447,7 @@ impl GatewayConfig {
                     } else if !definition.models().is_empty() {
                         definition.models().to_vec()
                     } else {
-                        crate::provider_catalog::prepare_configured_models(
+                        crate::harness::mobius::provider_catalog::prepare_configured_models(
                             definition,
                             vec![ConfiguredModel {
                                 id: configured.selection.model.clone(), // rules-allow: the catalog entry and the selection each own the model ID
@@ -454,7 +460,7 @@ impl GatewayConfig {
                 |previous| previous.models,
             )
         } else {
-            crate::provider_catalog::prepare_configured_models(
+            crate::harness::mobius::provider_catalog::prepare_configured_models(
                 definition,
                 configured.models,
                 previous.map_or_else(Vec::new, |previous| previous.models),
@@ -642,7 +648,7 @@ impl GatewayConfig {
             }
             validate_configured_provider(configured)?;
         }
-        crate::extensions::validate_installed(&self.installed_extensions)?;
+        crate::harness::mobius::extensions::validate_installed(&self.installed_extensions)?;
         validate_custom_model_route_count(&self.configured_providers)?;
         if let Some(default) = &self.bot_defaults {
             if default.revision == 0 {
@@ -663,9 +669,12 @@ impl GatewayConfig {
                 })?;
             validate_configured_provider_selection(configured, selection)?;
             for (middleware, setting, route) in
-                crate::middleware_manifest::configured_model_routes(&default.config.middleware)
+                crate::harness::mobius::middleware_manifest::configured_model_routes(
+                    &default.config.middleware,
+                )
             {
-                if !crate::provider_catalog::configured_route_exists(self, route)? {
+                if !crate::harness::mobius::provider_catalog::configured_route_exists(self, route)?
+                {
                     return Err(Error::Config(format!(
                         "Bot default middleware setting `{middleware}.{setting}` is not a configured model route"
                     )));
@@ -714,6 +723,7 @@ impl ChatSpec {
             workspace: Some(validate_chat_workspace(workspace, state_dir, tls)?.into_path()),
             attached_folders: Vec::new(),
             bot_id: Arc::clone(&bot.id),
+            memory: None,
             catalog_visible: true,
         })
     }
@@ -749,6 +759,7 @@ impl ChatSpec {
                 .filter(|folder| folder.is_dir())
                 .collect(),
             bot_id: bot.id,
+            memory: stored.memory,
             catalog_visible: true,
         };
         spec.validate(state_dir, tls)?;
@@ -768,6 +779,7 @@ impl ChatSpec {
             workspace: None,
             attached_folders: Vec::new(),
             bot_id: Arc::clone(&bot.id),
+            memory: None,
             catalog_visible: true,
         }
     }
@@ -821,6 +833,14 @@ impl ChatSpec {
         Ok(Some(next))
     }
 
+    /// This chat with `memory` as its override, or `None` when that is already the override.
+    pub(crate) fn with_memory(&self, memory: Option<bool>) -> Option<Self> {
+        (self.memory != memory).then(|| Self {
+            memory,
+            ..self.clone() // rules-allow: staged copy; the caller keeps the current value until the new one is published
+        })
+    }
+
     fn validate(&self, state_dir: &Path, tls: Option<&TlsConfig>) -> Result<()> {
         if self.version != CHAT_SPEC_VERSION {
             return Err(Error::Config(format!(
@@ -870,9 +890,11 @@ fn clear_missing_model_routes(
 ) -> Result<bool> {
     let mut removed = Vec::new();
     for (middleware, setting, route) in
-        crate::middleware_manifest::configured_model_routes(&composition.middleware)
+        crate::harness::mobius::middleware_manifest::configured_model_routes(
+            &composition.middleware,
+        )
     {
-        if !crate::provider_catalog::configured_route_exists(gateway, route)? {
+        if !crate::harness::mobius::provider_catalog::configured_route_exists(gateway, route)? {
             removed.push((middleware.to_owned(), setting.to_owned()));
         }
     }

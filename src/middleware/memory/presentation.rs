@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use super::{Basis, Entry, MANIFEST, text};
+use super::{Basis, MANIFEST, MemoryItem, MemoryOwner, Partition, text};
 use crate::Result;
 use crate::middleware::{FrontendEventSink, MiddlewareCommandOutput};
 use crate::protocol::{
@@ -9,43 +9,25 @@ use crate::protocol::{
     FrontendSlot, FrontendSymbol, FrontendTone, FrontendWidget, FrontendWidgetContent, Op,
 };
 
-pub(super) fn surface_widgets(entries: &[Entry]) -> Vec<Arc<FrontendWidget>> {
-    vec![Arc::new(global_widget(entries))]
-}
-
-fn global_widget(entries: &[Entry]) -> FrontendWidget {
-    frontend_widget(
-        "navigation",
-        FrontendSlot::Navigation,
-        text::DEFINITION.widget_text.as_str(),
-        action_list_content(text::DEFINITION.widget_global_title.as_str(), entries),
-    )
-}
-
-fn frontend_widget(
-    id: &str,
-    slot: FrontendSlot,
-    text: &str,
-    content: FrontendWidgetContent,
-) -> FrontendWidget {
-    FrontendWidget {
-        id: id.into(),
+pub(super) fn surface_widgets(memories: &[MemoryItem]) -> Vec<Arc<FrontendWidget>> {
+    vec![Arc::new(FrontendWidget {
+        id: "navigation".into(),
         count: None,
         priority: crate::protocol::FrontendPriority::Primary,
-        slot,
-        text: text.into(),
+        slot: FrontendSlot::Navigation,
+        text: text::DEFINITION.widget_text.as_str().into(),
         tone: FrontendTone::Neutral,
         symbol: Some(FrontendSymbol::Brain),
         icon_only: false,
         progress: None,
-        content: Some(content),
-        action: Some(Op::command(MANIFEST.id, "scratchpad", "refresh")),
-    }
+        content: Some(action_list_content(memories)),
+        action: Some(Op::command(MANIFEST.id, "memory", "refresh")),
+    })]
 }
 
-fn action_list_content(title: &str, entries: &[Entry]) -> FrontendWidgetContent {
+fn action_list_content(memories: &[MemoryItem]) -> FrontendWidgetContent {
     FrontendWidgetContent::ActionList {
-        title: title.into(),
+        title: text::DEFINITION.widget_global_title.as_str().into(),
         actions: vec![FrontendAction {
             id: "add".into(),
             label: text::DEFINITION.action_add_global.clone(), // rules-allow: owned frontend record built from static text
@@ -53,7 +35,7 @@ fn action_list_content(title: &str, entries: &[Entry]) -> FrontendWidgetContent 
             tone: FrontendTone::Neutral,
             op: Op::CapabilityCommand {
                 capability: MANIFEST.id.into(),
-                command: "scratchpad".into(),
+                command: "memory".into(),
                 arguments: "add".into(),
                 input: Some(String::new()),
                 target: None,
@@ -66,41 +48,41 @@ fn action_list_content(title: &str, entries: &[Entry]) -> FrontendWidgetContent 
                 submit_label: text::DEFINITION.editor_submit.clone(), // rules-allow: owned frontend record built from static text
             }),
         }],
-        items: entries.iter().rev().map(action_list_item).collect(),
+        items: memories.iter().rev().map(action_list_item).collect(),
     }
 }
 
-pub(super) fn action_list_item(entry: &Entry) -> FrontendActionListItem {
+fn action_list_item(memory: &MemoryItem) -> FrontendActionListItem {
     let actions = vec![
         list_action(
-            entry,
+            memory,
             "edit",
             FrontendSymbol::Edit,
             text::DEFINITION.action_edit.as_str(),
             FrontendTone::Neutral,
-            format!("edit {}", entry.id),
-            Some(&entry.note),
+            format!("edit {}", memory.id),
+            Some(&memory.text),
         ),
         list_action(
-            entry,
+            memory,
             "delete",
             FrontendSymbol::Delete,
             text::DEFINITION.action_delete.as_str(),
             FrontendTone::Error,
-            format!("forget {}", entry.id),
+            format!("forget {}", memory.id),
             None,
         ),
     ];
     FrontendActionListItem {
-        id: entry.id.as_str().into(),
-        text: entry.note.clone(), // rules-allow: the owned frontend record copies the borrowed entry
+        id: (*memory.id).into(),
+        text: (*memory.text).into(),
         state: FrontendListItemState::Plain,
         actions,
     }
 }
 
 fn list_action(
-    entry: &Entry,
+    memory: &MemoryItem,
     id: &str,
     symbol: FrontendSymbol,
     label: &str,
@@ -111,13 +93,13 @@ fn list_action(
     FrontendAction {
         input_from_label: false,
         editor: None,
-        id: format!("{id}:{}", entry.id),
+        id: format!("{id}:{}", memory.id),
         label: label.into(),
         symbol,
         tone,
         op: Op::CapabilityCommand {
             capability: MANIFEST.id.into(),
-            command: "scratchpad".into(),
+            command: "memory".into(),
             arguments,
             input: input.map(str::to_owned),
             target: None,
@@ -125,8 +107,8 @@ fn list_action(
     }
 }
 
-pub(super) fn widget_events(entries: &[Entry]) -> Vec<FrontendEvent> {
-    surface_widgets(entries)
+pub(super) fn widget_events(memories: &[MemoryItem]) -> Vec<FrontendEvent> {
+    surface_widgets(memories)
         .into_iter()
         .map(|item| FrontendEvent::Widget {
             capability: MANIFEST.id.into(),
@@ -135,8 +117,8 @@ pub(super) fn widget_events(entries: &[Entry]) -> Vec<FrontendEvent> {
         .collect()
 }
 
-pub(super) fn publish_widgets(frontend: &FrontendEventSink, entries: &[Entry]) -> Result<()> {
-    for event in widget_events(entries) {
+pub(super) fn publish_widgets(frontend: &FrontendEventSink, memories: &[MemoryItem]) -> Result<()> {
+    for event in widget_events(memories) {
         frontend(event)?;
     }
     Ok(())
@@ -150,35 +132,49 @@ pub(super) fn usage() -> MiddlewareCommandOutput {
     )
 }
 
-pub(super) fn format_snapshot(entries: &[Entry]) -> String {
-    format!(
-        "{}\n{}",
-        text::DEFINITION.message_global_heading.as_str(),
-        format_entries(entries)
-    )
-}
-
-fn format_entries(entries: &[Entry]) -> Cow<'_, str> {
-    if entries.is_empty() {
-        return Cow::Borrowed(&text::DEFINITION.message_no_notes);
-    }
-    entries
+pub(super) fn format_snapshot(partitions: &[Partition]) -> String {
+    let sections = partitions
         .iter()
-        .map(|entry| format!("[{}] {}\n  {}", entry.id, entry.note, entry_metadata(entry)))
-        .collect::<Vec<_>>()
-        .join("\n")
-        .into()
+        .filter(|partition| partition.owner.is_none() || !partition.memories.is_empty())
+        .map(|partition| {
+            let heading = partition.owner.as_deref().map_or(
+                Cow::Borrowed(text::DEFINITION.message_global_heading.as_str()),
+                |owner| Cow::Owned(heading(owner)),
+            );
+            if partition.memories.is_empty() {
+                return format!("{heading}\n{}", text::DEFINITION.message_no_memories);
+            }
+            let memories = partition
+                .memories
+                .iter()
+                .map(|entry| {
+                    format!(
+                        "[{}] {}\n  {} · updated at Unix time {}",
+                        entry.id,
+                        entry.text,
+                        basis_label(entry.basis),
+                        entry.updated_at
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!("{heading}\n{memories}")
+        })
+        .collect::<Vec<_>>();
+    sections.join("\n\n")
 }
 
-fn entry_metadata(entry: &Entry) -> String {
-    format!(
-        "{} · created at Unix time {}",
-        basis_label(&entry.basis),
-        entry.created_at
-    )
+fn heading(owner: &MemoryOwner) -> String {
+    let project = owner
+        .project
+        .as_ref()
+        .map_or(text::DEFINITION.message_no_project.as_str(), |project| {
+            project.label.as_deref().unwrap_or(&project.id)
+        });
+    format!("{} · {project}", owner.bot)
 }
 
-fn basis_label(basis: &Basis) -> &'static str {
+fn basis_label(basis: Basis) -> &'static str {
     match basis {
         Basis::AgentObservation => text::DEFINITION.message_agent_observation.as_str(),
         Basis::UserConfirmed => text::DEFINITION.message_user_confirmed.as_str(),

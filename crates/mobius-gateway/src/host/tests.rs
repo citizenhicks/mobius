@@ -8,9 +8,11 @@ use mobius::backend::checkpoint::ExecutionStats;
 
 mod activity;
 mod bots;
+mod harnesses;
 mod hooks;
 mod lifecycle;
 mod live_chats;
+mod memory;
 mod projection;
 mod replay;
 

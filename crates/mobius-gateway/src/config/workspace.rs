@@ -118,7 +118,7 @@ fn validate_workspace_boundaries(
             "gateway state directory and chat workspace must not overlap".into(),
         ));
     }
-    let extensions = crate::extensions::extensions_path(&state_dir);
+    let extensions = crate::harness::mobius::extensions::extensions_path(&state_dir);
     if path.starts_with(&extensions)
         || extensions.starts_with(path)
         || fs::canonicalize(&extensions)

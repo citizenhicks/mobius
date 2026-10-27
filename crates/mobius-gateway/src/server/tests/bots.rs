@@ -6,7 +6,11 @@ async fn bot_catalog_broadcasts_do_not_reintroduce_a_deleted_bot() {
     let (server, grant) = configured_test_server(root.path().join("state")).await;
     let bot = server
         .host
-        .create_bot("Original", "Bot catalog ordering test")
+        .create_bot(
+            crate::wire::HarnessKind::Mobius,
+            "Original",
+            "Bot catalog ordering test",
+        )
         .await
         .expect("create Bot");
     let (client, stream) = tokio::io::duplex(1024 * 1024);

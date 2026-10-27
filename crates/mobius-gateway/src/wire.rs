@@ -1,6 +1,8 @@
 //! Versioned, bounded JSON frames shared by gateway clients and the server.
 
 mod codec;
+mod harness;
+mod memory;
 mod messages;
 mod records;
 mod transcript;
@@ -30,6 +32,8 @@ pub use self::codec::{FrameReader, read_frame, validate_version, write_frame};
 pub(crate) use self::codec::{
     SharedFrame, encode_bounded_frame, read_frame_with_limit, websocket_error, write_encoded,
 };
+pub use self::harness::*;
+pub use self::memory::*;
 pub use self::messages::{
     ClientFrame, ClientMessage, GatewayResponseError, ServerFrame, ServerMessage,
 };
@@ -92,7 +96,7 @@ mod desktop_bytes {
 }
 
 /// Current gateway protocol version.
-pub const PROTOCOL_VERSION: u16 = 96;
+pub const PROTOCOL_VERSION: u16 = 97;
 /// Maximum raw RFB payload in one desktop data frame.
 pub const MAX_DESKTOP_CHUNK_BYTES: usize = 16 * 1024;
 /// Maximum encoded JSON payload accepted in one frame.

@@ -253,7 +253,7 @@ pub(super) async fn gateway_ready(
                 &state.credentials,
             )
             .map_err(internal)?,
-            crate::provider_catalog::media_routes(
+            crate::harness::mobius::provider_catalog::media_routes(
                 &state.configured_providers,
                 Some((&state.store, &state.credentials)),
             )
@@ -265,7 +265,7 @@ pub(super) async fn gateway_ready(
     let image_models = route_choices(media.images, &mut model_providers);
     let voice_models = route_choices(media.voices, &mut model_providers);
     let subagent_ceilings = state.subagent_ceilings;
-    let middleware_features = crate::middleware_manifest::features(
+    let middleware_features = crate::harness::mobius::middleware_manifest::features(
         mobius::middleware::manifest::ModelCatalogs {
             models: &models,
             images: &image_models,
@@ -273,7 +273,7 @@ pub(super) async fn gateway_ready(
         },
         subagent_ceilings,
     );
-    let voices = crate::provider_catalog::VoiceRoutes::new(
+    let voices = crate::harness::mobius::provider_catalog::VoiceRoutes::new(
         &state.configured_providers,
         &state.store,
         &state.credentials,
@@ -282,19 +282,22 @@ pub(super) async fn gateway_ready(
     let default_capabilities = state
         .bot_defaults
         .as_ref()
-        .map(|defaults| crate::assembly::bot_capabilities(&defaults.config, &voices))
+        .map(|defaults| {
+            crate::harness::mobius::assembly::bot_capabilities(&defaults.config, &voices)
+        })
         .transpose()
         .map_err(internal)?;
     state.bots.set_voice_routes(voices).map_err(internal)?;
     let bots = state.bots.bots().map_err(internal)?;
     drop(credentials);
     let extensions = state.extensions;
-    let contributions = super::with_scratchpad_contribution(&state.scratchpad, state.contributions)
+    let contributions = super::with_memory_contribution(&state.memory, state.contributions)
         .await
         .map_err(internal)?;
     let (sessions, background_approvals) = gateway_catalog(&state.checkpoints, &state.activities)
         .await
         .map_err(internal)?;
+    let harnesses = crate::harness::descriptors();
     let mut ready = ReadyPayload {
         gateway_version: env!("CARGO_PKG_VERSION").into(),
         computer_view: state.computer_view,
@@ -315,6 +318,7 @@ pub(super) async fn gateway_ready(
             extensions,
             contributions,
         },
+        harnesses,
         max_active_sessions: state.max_active_sessions,
         session_file_limits: session_file_limits(),
         revisions: BTreeMap::new(),

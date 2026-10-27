@@ -519,7 +519,7 @@ impl TuiState {
                 .map(|bot| super::PickerOption {
                     label: format!("@{}", terminal_text(&bot.handle)),
                     description: terminal_text(&bot.name),
-                    detail: terminal_text(&bot.config.config.provider.model),
+                    detail: terminal_text(crate::frontend::bots::bot_model(bot)),
                     shows_detail: true,
                     action: workspace.map_or_else(
                         || super::PickerAction::Resume(bot.conversation_session_id.share()),
@@ -542,7 +542,7 @@ impl TuiState {
             bots.iter().map(|bot| super::PickerOption {
                 label: format!("@{}", terminal_text(&bot.handle)),
                 description: terminal_text(&bot.name),
-                detail: terminal_text(&bot.config.config.provider.model),
+                detail: terminal_text(crate::frontend::bots::bot_model(bot)),
                 shows_detail: true,
                 action: super::PickerAction::Gateway(GatewayAction::Reassign(Arc::clone(&bot.id))),
                 secondary: None,

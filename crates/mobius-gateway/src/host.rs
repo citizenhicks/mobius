@@ -5,11 +5,16 @@ mod bot_events;
 mod catalog;
 mod deletion;
 mod desktop;
+#[path = "harness/mobius/host/extensions.rs"]
 mod extensions;
 mod files;
 mod git;
+mod harnesses;
+#[path = "harness/mobius/host/live_chats.rs"]
 mod live_chats;
+mod memory;
 mod profile;
+#[path = "harness/mobius/host/providers.rs"]
 mod providers;
 mod replay;
 mod routines;
@@ -27,16 +32,13 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use chrono::Utc;
-use mobius::agent::{AgentSender, ValidatedSubmission};
 use mobius::backend::checkpoint::{
     ActiveExecution, CheckpointStore, EventPageRequest, ExecutionOutcome, ExecutionRecord,
     JournalEvent, SessionPageRequest, SessionSummary, event_turn_page, sqlite::SqliteCheckpoint,
 };
-use mobius::backend::model::ModelRouter;
 use mobius::backend::session_files::SessionFileStore;
 use mobius::middleware::FrontendExtensions;
-use mobius::middleware::scratchpad::Scratchpad;
-use mobius::middleware::sessions::LiveChats;
+use mobius::middleware::memory::Memory;
 use mobius::protocol::{
     Event, EventMsg, FrontendContribution, FrontendEvent, MessageAuthor, MessageSubmission,
     ModelStepContentPhase, Op, RenderedBlock, ReviewDecision, Submission,
@@ -45,25 +47,25 @@ use tokio::sync::{Mutex, RwLock, broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
-use crate::assembly::{BuiltAgent, assemble};
 use crate::bots::{ActiveRoutineRun, BeginRun, BotStore};
 use crate::computer_runtime::{desktop::DesktopControl, remote_desktop::RemoteDesktop};
 use crate::config::{
     ChatSpec, ConfigStore, CredentialStore, GatewayConfig,
     create_workspace_directory as create_workspace_directory_on_disk,
 };
-use crate::extensions::ExtensionStore;
-use crate::provider_catalog::{
+use crate::harness::ValidatedSubmission;
+use crate::harness::mobius::extensions::ExtensionStore;
+use crate::harness::mobius::provider_catalog::{
     configured_model_catalog, configured_model_choices, configured_model_routes,
     provider_instances, provider_statuses, route_choices,
 };
 use crate::sandbox::GatewaySandbox;
 use crate::wire::{
-    AgentComposition, GitDiffScope, MAX_FRAME_BYTES, ProfileSnapshot, ProviderConfig, ReadyPayload,
-    RecordedEvent, RenderedPreview, RoutineRunStatus, RunStats, RunSummary, ServerFrame,
-    ServerMessage, SessionActivity, SessionActivityState, SessionReadyPayload, SessionRecord,
-    SessionRunGroup, SessionWidget, SharedFrame, SshIdentityRecord, VersionedAgentConfig,
-    WorkspaceFileScope,
+    AgentComposition, GitDiffScope, HarnessConfig, MAX_FRAME_BYTES, ProfileSnapshot,
+    ProviderConfig, ReadyPayload, RecordedEvent, RenderedPreview, RoutineRunStatus, RunStats,
+    RunSummary, ServerFrame, ServerMessage, SessionActivity, SessionActivityState,
+    SessionReadyPayload, SessionRecord, SessionRunGroup, SessionWidget, SharedFrame,
+    SshIdentityRecord, VersionedAgentConfig, WorkspaceFileScope,
 };
 use crate::{Error, Result};
 
@@ -85,15 +87,15 @@ use self::profile::{
     active_run_summary, gateway_ready, gateway_run_stats, gateway_session_summaries,
     local_machine_name, provider_usage, recent_run_groups, session_tree_ids,
 };
+pub(crate) use self::replay::RenderEvents;
 use self::replay::{
     FrameworkPresentation, ReplayEntry, classify_journal_sequence, compact_replay_deltas,
     durable_history_page, event_sequence, load_replay, project_record, publish_ready_and_pending,
     record_and_publish, update_widgets, validate_gateway_event,
 };
-pub(crate) use self::session::HostHandle;
+pub(crate) use self::session::{HostHandle, SessionRuntimeState};
 use self::session::{
-    JournalDelivery, JournalSequence, LoadedReplay, SessionRuntimeState, SessionWidgets,
-    TurnLifecycle, turn_lifecycle,
+    JournalDelivery, JournalSequence, LoadedReplay, SessionWidgets, TurnLifecycle, turn_lifecycle,
 };
 use self::ssh::{generate as generate_ssh_identity_on_host, identities as ssh_identities_on_host};
 
@@ -159,7 +161,7 @@ struct GatewayState {
     credentials: Arc<CredentialStore>,
     bots: Arc<BotStore>,
     checkpoints: Arc<dyn CheckpointStore>,
-    scratchpad: Arc<Scratchpad>,
+    memory: Arc<Memory>,
     session_files: Arc<SessionFileStore>,
     contributions: Vec<FrontendContribution>,
     // ponytail: one lock is enough for at most 32 tiny catalog writes.
@@ -179,7 +181,7 @@ struct GatewayState {
 struct GatewayReadySnapshot {
     store: ConfigStore,
     configured_providers: BTreeMap<String, crate::config::ConfiguredProvider>,
-    bot_defaults: Option<crate::wire::VersionedAgentConfig>,
+    bot_defaults: Option<crate::wire::VersionedAgentConfig<AgentComposition>>,
     subagent_ceilings: mobius::middleware::subagents::SubagentCeilings,
     extensions: Vec<crate::wire::ExtensionRecord>,
     computer_view: crate::wire::ComputerView,
@@ -188,7 +190,7 @@ struct GatewayReadySnapshot {
     credential_catalog_gate: Arc<Mutex<()>>,
     bots: Arc<BotStore>,
     checkpoints: Arc<dyn CheckpointStore>,
-    scratchpad: Arc<Scratchpad>,
+    memory: Arc<Memory>,
     contributions: Vec<FrontendContribution>,
     activities: SessionActivities,
 }
@@ -306,7 +308,7 @@ impl GatewayHost {
         if let Some(hook) = &config.telemetry.activity_hook {
             hook.validate_roots([store.state_dir()])?;
         }
-        bots.set_voice_routes(crate::provider_catalog::VoiceRoutes::new(
+        bots.set_voice_routes(crate::harness::mobius::provider_catalog::VoiceRoutes::new(
             &config.configured_providers,
             &store,
             &credentials,
@@ -322,24 +324,21 @@ impl GatewayHost {
         }
         let models = configured_model_catalog(&config)?;
         let records = bots.bots()?;
-        for bot in records {
-            crate::config::validate_bot_compatibility(
-                &config,
-                &bot.config.config,
-                models.catalogs(),
-            )?;
-            extensions.resolve(&config, &bot.config.config.extensions)?;
+        for composition in records.iter().filter_map(|bot| bot.config.config.mobius()) {
+            crate::config::validate_bot_compatibility(&config, composition, models.catalogs())?;
+            extensions.resolve(&config, &composition.extensions)?;
         }
         let discovery_gate = Arc::new(Mutex::new(()));
-        let contributions = crate::assembly::run_discovery(Arc::clone(&discovery_gate), || {
-            Ok(vec![
-                mobius::middleware::extensions::Extensions::installed_contribution()?,
-            ])
-        })
-        .await?;
+        let contributions =
+            crate::harness::mobius::assembly::run_discovery(Arc::clone(&discovery_gate), || {
+                Ok(vec![
+                    mobius::middleware::extensions::Extensions::installed_contribution()?,
+                ])
+            })
+            .await?;
         let checkpoints: Arc<dyn CheckpointStore> =
             Arc::new(SqliteCheckpoint::new(store.checkpoints_path())?);
-        let scratchpad = Arc::new(Scratchpad::new(Arc::clone(&checkpoints)));
+        let memory = Arc::new(Memory::new(Arc::clone(&checkpoints)));
         let session_files = Arc::new(SessionFileStore::new(store.state_dir(), None));
         let remote_desktop = Arc::new(RemoteDesktop::new(
             store.state_dir(),
@@ -365,7 +364,7 @@ impl GatewayHost {
                 credentials,
                 bots,
                 checkpoints,
-                scratchpad,
+                memory,
                 session_files,
                 contributions,
                 catalog_lock: Arc::new(Mutex::new(())),
@@ -546,10 +545,10 @@ impl GatewayHost {
         &self,
     ) -> std::result::Result<Vec<FrontendContribution>, Rejection> {
         let _mutation = self.begin_mutation().await?;
-        let (scratchpad, contributions) = self.contribution_state().await;
-        with_scratchpad_contribution(&scratchpad, contributions)
+        let (memory, contributions) = self.contribution_state().await;
+        with_memory_contribution(&memory, contributions)
             .await
-            .map_err(scratchpad_error)
+            .map_err(memory_error)
     }
 
     pub(crate) async fn submit_contribution(
@@ -557,19 +556,14 @@ impl GatewayHost {
         operation: Op,
     ) -> std::result::Result<Vec<FrontendContribution>, Rejection> {
         let _mutation = self.begin_mutation().await?;
-        let (scratchpad, mut contributions) = self.contribution_state().await;
-        contributions.push(
-            scratchpad
-                .manage(&operation)
-                .await
-                .map_err(scratchpad_error)?,
-        );
+        let (memory, mut contributions) = self.contribution_state().await;
+        contributions.push(memory.manage(&operation).await.map_err(memory_error)?);
         Ok(contributions)
     }
 
-    async fn contribution_state(&self) -> (Arc<Scratchpad>, Vec<FrontendContribution>) {
+    async fn contribution_state(&self) -> (Arc<Memory>, Vec<FrontendContribution>) {
         let state = self.state.lock().await;
-        (Arc::clone(&state.scratchpad), state.contributions.clone()) // rules-allow: the response extends a copy of the gateway contributions
+        (Arc::clone(&state.memory), state.contributions.clone()) // rules-allow: the response extends a copy of the gateway contributions
     }
 
     pub(crate) async fn sessions(&self) -> std::result::Result<Vec<SessionRecord>, Rejection> {
@@ -610,22 +604,28 @@ impl GatewayHost {
 
     pub(crate) async fn create_bot(
         &self,
+        harness: crate::wire::HarnessKind,
         name: &str,
         description: &str,
     ) -> std::result::Result<crate::wire::BotRecord, Rejection> {
         let _mutation = self.begin_mutation().await?;
         let state = self.state.lock().await;
         let gateway = state.config()?;
-        let config = gateway
-            .bot_defaults
-            .as_ref()
-            .map(|defaults| defaults.config.clone()) // rules-allow: the new Bot owns a copy of the configured default composition
-            .ok_or_else(|| {
-                Rejection::new(
-                    "gateway_setup_required",
-                    "configure a provider before creating a Bot",
-                )
-            })?;
+        if harness != crate::wire::HarnessKind::Mobius {
+            return Err(harness_unavailable(crate::harness::unavailable(harness)));
+        }
+        let config = HarnessConfig::Mobius(Arc::new(
+            gateway
+                .bot_defaults
+                .as_ref()
+                .map(|defaults| defaults.config.clone()) // rules-allow: the new Bot owns a copy of the configured default composition
+                .ok_or_else(|| {
+                    Rejection::new(
+                        "gateway_setup_required",
+                        "configure a provider before creating a Bot",
+                    )
+                })?,
+        ));
         drop(gateway);
         let config = validate_bot_config(&state, config)?;
         let bot = state
@@ -643,12 +643,18 @@ impl GatewayHost {
         id: &str,
         expected_revision: u64,
         identity: crate::bots::BotIdentity<'_>,
-        config: AgentComposition,
+        config: HarnessConfig,
     ) -> std::result::Result<Arc<crate::wire::BotRecord>, Rejection> {
         let (state_dir, runtime_changed, config) = {
             let _access = self.begin_mutation().await?;
             let state = self.state.lock().await;
             let previous = state.bots.bot(id).map_err(invalid_bot)?;
+            if previous.harness != config.kind() {
+                return Err(Rejection::new(
+                    "harness_change",
+                    "a Bot keeps the harness it was created on",
+                ));
+            }
             let config = validate_bot_config(&state, config)?;
             if previous.config.revision != expected_revision {
                 return Err(Rejection::new(
@@ -661,15 +667,15 @@ impl GatewayHost {
             }
             (
                 state.store.state_dir().to_path_buf(),
-                !crate::assembly::same_runtime(&previous, identity.description, &config),
-                config.into_inner(),
+                !crate::harness::same_runtime(&previous, identity.description, config.config()),
+                config.into_parts().0,
             )
         };
         // Installation can take minutes. Do not hold gateway locks or save the Bot yet.
-        if runtime_changed {
+        if runtime_changed && let HarnessConfig::Mobius(composition) = &config {
             crate::computer_runtime::prepare(
                 &state_dir,
-                &config.middleware,
+                &composition.middleware,
                 self.remote_desktop.configuration(),
             )
             .await
@@ -678,24 +684,29 @@ impl GatewayHost {
         let _mutation = self.begin_mutation().await?;
         let state = self.state.lock().await;
         let previous = state.bots.bot(id).map_err(invalid_bot)?;
-        let config = validate_bot_config(&state, config)?;
-        let approval_policy = config.approval_policy();
+        let (config, approval) = validate_bot_config(&state, config)?.into_parts();
         let config = Arc::new(VersionedAgentConfig {
             revision: expected_revision
                 .checked_add(1)
                 .ok_or_else(|| invalid_bot("Bot revision overflow"))?,
-            config: config.into_inner(),
+            config,
         });
-        let prepared = if runtime_changed {
+        let prepared = if runtime_changed
+            && let (
+                HarnessConfig::Mobius(composition),
+                crate::harness::ApprovalMode::Mobius(approval_policy),
+            ) = (&config.config, approval)
+        {
             let mut candidate = previous;
             candidate.description = identity.description.into();
             candidate.config = Arc::clone(&config);
             let preparation = {
                 let gateway = state.config()?;
-                crate::assembly::prepare_bot(
+                crate::harness::mobius::assembly::prepare_bot(
                     &gateway,
                     crate::bots::RuntimeBot {
                         record: Arc::new(candidate),
+                        composition: Arc::clone(composition),
                         approval_policy,
                     },
                     &state.store,
@@ -712,7 +723,7 @@ impl GatewayHost {
         let bot = Arc::new(
             state
                 .bots
-                .update_bot(id, identity, config, approval_policy)
+                .update_bot(id, identity, config, approval)
                 .map_err(invalid_bot)?,
         );
         if let Some(mut prepared) = prepared {
@@ -836,34 +847,44 @@ impl GatewayHost {
         cache: bool,
     ) -> std::result::Result<HostHandle, Rejection> {
         self.work_activity.mark();
-        let state = self.state.lock().await;
-        let start = HostHandle::start(
-            state.store.clone(), // rules-allow: the chat actor owns its config store
-            Arc::clone(&state.config),
+        let (harness, session_mutations, activities) = {
+            let state = self.state.lock().await;
+            let harness = Arc::new(crate::harness::HarnessContext {
+                store: state.store.clone(), // rules-allow: the chat actor owns its config store
+                gateway: Arc::clone(&state.config),
+                credentials: Arc::clone(&state.credentials),
+                bots: Arc::clone(&state.bots),
+                checkpoints: Arc::clone(&state.checkpoints),
+                memory: Arc::clone(&state.memory),
+                session_files: Arc::clone(&state.session_files),
+                discovery_gate: Arc::clone(&state.discovery_gate),
+                desktop: Arc::clone(&self.desktop),
+                remote_desktop: Arc::clone(&self.remote_desktop),
+                provider_epoch: Arc::clone(&state.provider_epoch),
+                live_chats: Arc::new(live_chats::GatewayLiveChats(
+                    Arc::downgrade(&self.state),
+                    self.access(),
+                )),
+                host_access: self.access(),
+            });
+            (
+                harness,
+                Arc::clone(&state.session_mutations),
+                Arc::clone(&state.activities),
+            )
+        };
+        let host = HostHandle::start(
+            harness,
             spec,
-            Arc::clone(&state.credentials),
-            Arc::clone(&state.bots),
-            Arc::clone(&state.checkpoints),
-            Arc::clone(&state.scratchpad),
-            Arc::clone(&state.session_files),
-            Arc::clone(&state.session_mutations),
-            Arc::clone(&state.discovery_gate),
-            Arc::clone(&self.desktop),
-            Arc::clone(&self.remote_desktop),
-            Arc::clone(&state.provider_epoch),
-            Arc::clone(&state.activities),
+            session_mutations,
+            activities,
             Arc::clone(&self.work_activity),
             self.events.clone(), // rules-allow: the chat actor owns an event sender
             starting.id.clone(), // rules-allow: the start guard keeps its id until the chat is registered
             origin_label,
-            Arc::new(live_chats::GatewayLiveChats(
-                Arc::downgrade(&self.state),
-                self.access(),
-            )),
-            self.access(),
-        );
-        drop(state);
-        let host = start.await.map_err(internal)?;
+        )
+        .await
+        .map_err(harness_unavailable)?;
         if let Err(error) = self.remote_desktop.check_execution() {
             host.shutdown().await;
             return Err(invalid_config(error));
@@ -1186,21 +1207,15 @@ impl GatewayHost {
     }
 }
 
-/// A Bot composition checked against the gateway's catalog and installed extensions, with the
-/// approval policy that check parsed.
+/// A Bot-defaults composition checked against the gateway's catalog and installed extensions.
 #[derive(Debug)]
 pub(crate) struct ValidatedComposition {
     config: AgentComposition,
-    approval_policy: mobius::backend::sandbox::ApprovalPolicy,
 }
 
 impl ValidatedComposition {
     pub(crate) fn into_inner(self) -> AgentComposition {
         self.config
-    }
-
-    pub(crate) const fn approval_policy(&self) -> mobius::backend::sandbox::ApprovalPolicy {
-        self.approval_policy
     }
 }
 
@@ -1212,23 +1227,22 @@ impl std::ops::Deref for ValidatedComposition {
     }
 }
 
-#[cfg(test)]
-impl From<AgentComposition> for ValidatedComposition {
-    fn from(config: AgentComposition) -> Self {
-        let approval_policy =
-            crate::config::validate_agent_composition(&config).expect("valid test composition");
-        Self {
-            config,
-            approval_policy,
-        }
-    }
-}
-
+/// Checks a Bot configuration: a möbius composition against the gateway, others against
+/// their harness.
 fn validate_bot_config(
     state: &GatewayState,
-    config: AgentComposition,
-) -> std::result::Result<ValidatedComposition, Rejection> {
-    validate_composition(state, &*state.config()?, config)
+    config: HarnessConfig,
+) -> std::result::Result<crate::harness::ValidatedConfig, Rejection> {
+    match config {
+        HarnessConfig::Mobius(composition) => {
+            let approval_policy = check_composition(state, &*state.config()?, &composition)?;
+            Ok(crate::harness::ValidatedConfig::mobius(
+                composition,
+                approval_policy,
+            ))
+        }
+        config => crate::harness::validate_cli(config).map_err(harness_unavailable),
+    }
 }
 
 /// Checks a Bot or Bot-defaults composition against the gateway.
@@ -1237,18 +1251,25 @@ fn validate_composition(
     gateway: &GatewayConfig,
     config: AgentComposition,
 ) -> std::result::Result<ValidatedComposition, Rejection> {
+    check_composition(state, gateway, &config)?;
+    Ok(ValidatedComposition { config })
+}
+
+/// The approval policy of a composition the gateway's catalog and extensions support.
+fn check_composition(
+    state: &GatewayState,
+    gateway: &GatewayConfig,
+    config: &AgentComposition,
+) -> std::result::Result<mobius::backend::sandbox::ApprovalPolicy, Rejection> {
     let models =
         configured_model_choices(gateway, &state.store, &state.credentials).map_err(internal)?;
     let approval_policy =
-        crate::config::validate_bot_compatibility(gateway, &config, models.catalogs())
+        crate::config::validate_bot_compatibility(gateway, config, models.catalogs())
             .map_err(invalid_config)?;
     ExtensionStore::new(&state.store)
         .resolve(gateway, &config.extensions)
         .map_err(invalid_config)?;
-    Ok(ValidatedComposition {
-        config,
-        approval_policy,
-    })
+    Ok(approval_policy)
 }
 
 fn validate_bot_workspace(
@@ -1288,7 +1309,7 @@ impl GatewayState {
             configured_providers: config.configured_providers.clone(), // rules-allow: the ready snapshot outlives the config lock
             bot_defaults: config.bot_defaults.clone(), // rules-allow: the ready snapshot outlives the config lock
             subagent_ceilings: config.execution.subagent_ceilings,
-            extensions: crate::extensions::records(&config),
+            extensions: crate::harness::mobius::extensions::records(&config),
             computer_view: if !config.desktop_enabled {
                 crate::wire::ComputerView::Unavailable
             } else if cfg!(target_os = "linux") {
@@ -1301,7 +1322,7 @@ impl GatewayState {
             credential_catalog_gate: Arc::clone(&self.credential_catalog_gate),
             bots: Arc::clone(&self.bots),
             checkpoints: Arc::clone(&self.checkpoints),
-            scratchpad: Arc::clone(&self.scratchpad),
+            memory: Arc::clone(&self.memory),
             contributions: self.contributions.clone(), // rules-allow: the ready snapshot outlives the state lock
             activities: Arc::clone(&self.activities),
         })
@@ -1478,6 +1499,14 @@ fn send_warning(events: &broadcast::Sender<ServerFrame>, code: &'static str, mes
     );
 }
 
+/// `harness_unavailable` for a harness without an adapter, else an internal error.
+fn harness_unavailable(error: Error) -> Rejection {
+    match error {
+        Error::HarnessUnavailable(message) => Rejection::new("harness_unavailable", message),
+        error => internal(error),
+    }
+}
+
 fn invalid_config(error: impl std::fmt::Display) -> Rejection {
     Rejection::new("invalid_config", error.to_string())
 }
@@ -1531,18 +1560,18 @@ fn invalid_routine(error: impl std::fmt::Display) -> Rejection {
     Rejection::new("invalid_routine", error.to_string())
 }
 
-/// The gateway's frontend contributions followed by the scratchpad's current one.
-async fn with_scratchpad_contribution(
-    scratchpad: &Scratchpad,
+/// The gateway's frontend contributions followed by the memory's current one.
+async fn with_memory_contribution(
+    memory: &Memory,
     mut contributions: Vec<FrontendContribution>,
 ) -> mobius::Result<Vec<FrontendContribution>> {
-    contributions.push(scratchpad.global_contribution().await?);
+    contributions.push(memory.global_contribution().await?);
     Ok(contributions)
 }
 
-fn scratchpad_error(error: mobius::Error) -> Rejection {
+fn memory_error(error: mobius::Error) -> Rejection {
     match error {
-        mobius::Error::Tool(message) => Rejection::new("invalid_scratchpad", message),
+        mobius::Error::Tool(message) => Rejection::new("invalid_memory", message),
         error => internal(error),
     }
 }

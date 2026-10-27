@@ -4,9 +4,11 @@ use super::{
     internal, invalid_config, local_machine_name, session_catalog,
 };
 use crate::bots::TelemetryEvent;
+use crate::harness::mobius::{
+    FRONTEND_DISCONNECTED_REASON, TURN_INTERRUPTED_REASON, TURN_RESTARTED_REASON,
+};
 use crate::telemetry::{TelemetrySection, TelemetrySink, TelemetrySinkReport};
 use crate::wire::{HookData, HookEvent, HookSource};
-use mobius::agent::{FRONTEND_DISCONNECTED_REASON, TURN_INTERRUPTED_REASON, TURN_RESTARTED_REASON};
 use serde_json::{Value, json};
 
 #[derive(Default)]

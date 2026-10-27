@@ -78,7 +78,7 @@ pub(in crate::frontend) async fn run_bot(
         mode,
         preferred_provider,
         gateway,
-        bot.config.config.clone(), // rules-allow: setup edits a snapshot while events update the gateway payload
+        (**runtime::mobius_composition(bot)?).clone(), // rules-allow: setup edits a snapshot while events update the gateway payload
         false,
     )?;
     terminal.clear()?;

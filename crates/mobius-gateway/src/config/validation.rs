@@ -16,9 +16,14 @@ pub(crate) fn validate_bot_compatibility(
         .ok_or_else(|| Error::Config("active provider is not in the configured catalog".into()))?;
     validate_configured_provider_selection(configured, selection)?;
     let definition = provider(&selection.provider)?;
-    let route =
-        crate::provider_catalog::selected_route(definition, Some(configured), selection).route;
-    let catalog = crate::provider_catalog::catalog_routes(definition, configured, selection);
+    let route = crate::harness::mobius::provider_catalog::selected_route(
+        definition,
+        Some(configured),
+        selection,
+    )
+    .route;
+    let catalog =
+        crate::harness::mobius::provider_catalog::catalog_routes(definition, configured, selection);
     if !catalog
         .iter()
         .any(|candidate| *candidate.choice.route == *route)
@@ -27,14 +32,14 @@ pub(crate) fn validate_bot_compatibility(
             "active model route is not in the configured catalog".into(),
         ));
     }
-    crate::middleware_manifest::validate_choices(&config.middleware, catalogs)?;
+    crate::harness::mobius::middleware_manifest::validate_choices(&config.middleware, catalogs)?;
     Ok(approval_policy)
 }
 
 pub(crate) fn configured_approval_policy(
     settings: &crate::wire::MiddlewareConfig,
 ) -> Result<mobius::backend::sandbox::ApprovalPolicy> {
-    crate::middleware_manifest::string_setting(
+    crate::harness::mobius::middleware_manifest::string_setting(
         settings,
         mobius::backend::sandbox::MANIFEST.id,
         "approval_policy",
@@ -87,9 +92,9 @@ pub(crate) fn validate_agent_composition_with_ceilings(
             "system prompt must be 1–{MAX_SYSTEM_PROMPT_BYTES} bytes"
         )));
     }
-    crate::extensions::validate_ids(&config.extensions)?;
+    crate::harness::mobius::extensions::validate_ids(&config.extensions)?;
     validate_provider_config(&config.provider)?;
-    crate::middleware_manifest::validate(&config.middleware, ceilings)?;
+    crate::harness::mobius::middleware_manifest::validate(&config.middleware, ceilings)?;
     let approval_policy = configured_approval_policy(&config.middleware)?;
     validate_computer_control_policy(config, approval_policy)?;
     Ok(approval_policy)
@@ -169,11 +174,13 @@ pub(super) fn validate_configured_provider(configured: &ConfiguredProvider) -> R
                 "reasoning effort",
             )?;
         }
-        definition.validate_tool_discovery(crate::provider_catalog::effective_tool_discovery(
-            definition,
-            &configured.selection,
-            model,
-        ))?;
+        definition.validate_tool_discovery(
+            crate::harness::mobius::provider_catalog::effective_tool_discovery(
+                definition,
+                &configured.selection,
+                model,
+            ),
+        )?;
         if model.context_window <= 0 {
             return Err(Error::Config(format!(
                 "model `{}` requires a positive context window",
@@ -349,15 +356,19 @@ pub(super) fn validate_configured_provider_selection(
         definition.auth(),
         mobius::backend::model::provider::ProviderAuth::Browser(_)
     ) && !mobius::backend::model::provider::uses_default_endpoint(
-        crate::provider_catalog::selected_base_url(definition, &configured.selection)
+        crate::harness::mobius::provider_catalog::selected_base_url(
+            definition,
+            &configured.selection,
+        )
+        .map(BaseUrl::as_str),
+        crate::harness::mobius::provider_catalog::selected_base_url(definition, selection)
             .map(BaseUrl::as_str),
-        crate::provider_catalog::selected_base_url(definition, selection).map(BaseUrl::as_str),
     ) {
         return Err(Error::Config(
             "browser-auth provider selection must use its operator-registered endpoint".into(),
         ));
     }
-    let models = crate::provider_catalog::models(definition, configured);
+    let models = crate::harness::mobius::provider_catalog::models(definition, configured);
     if !models.iter().any(|model| model.id == selection.model) {
         return Err(Error::Config(format!(
             "provider `{}` selection model is not in its configured model catalog",
@@ -501,7 +512,7 @@ pub(crate) fn effective_reasoning_effort<'a>(
     selection: &'a ProviderConfig,
 ) -> Option<&'a str> {
     selection.reasoning_effort.as_deref().or_else(|| {
-        let model = crate::provider_catalog::models(definition, configured)
+        let model = crate::harness::mobius::provider_catalog::models(definition, configured)
             .iter()
             .find(|model| model.id == selection.model);
         model.and_then(|model| model.default_reasoning.as_deref())

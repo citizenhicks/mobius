@@ -4,8 +4,9 @@ use std::sync::Arc;
 use mobius::protocol::MAX_MESSAGE_BYTES;
 use mobius_gateway::bots::{MAX_BOT_DESCRIPTION_BYTES, MAX_BOT_NAME_BYTES};
 use mobius_gateway::wire::{
-    AgentComposition, BotRecord, ClientMessage, HookSelector, ReadyPayload, Routine, RoutineAction,
-    RoutineBinding, RoutineCommand, RoutineDefinition, RoutineSchedule, RoutineScheduleKind,
+    AgentComposition, BotRecord, ClientMessage, HarnessConfig, HarnessKind, HookSelector,
+    ReadyPayload, Routine, RoutineAction, RoutineBinding, RoutineCommand, RoutineDefinition,
+    RoutineSchedule, RoutineScheduleKind,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -95,10 +96,11 @@ impl BotForm {
             },
             name: TextForm::new(&*bot.name, MAX_BOT_NAME_BYTES),
             description: TextForm::new(&*bot.description, MAX_BOT_DESCRIPTION_BYTES),
-            prompt: Some(TextForm::multiline(
-                &bot.config.config.system_prompt,
-                64 * 1024,
-            )),
+            prompt: bot
+                .config
+                .config
+                .mobius()
+                .map(|composition| TextForm::multiline(&composition.system_prompt, 64 * 1024)),
             row: 0,
             error: None,
         }
@@ -290,6 +292,7 @@ impl BotForm {
                 FormFlow::Send(request_action("Create Bot", FollowUp::None, |request_id| {
                     ClientMessage::CreateBot {
                         request_id,
+                        harness: HarnessKind::Mobius,
                         name,
                         description,
                     }
@@ -300,17 +303,21 @@ impl BotForm {
                     self.error = Some("The selected Bot is no longer available.".into());
                     return FormFlow::Stay;
                 };
-                let current = &bot.config.config;
-                let config = AgentComposition {
-                    provider: current.provider.clone(), // rules-allow: owned copy from the gateway catalog
-                    middleware: current.middleware.clone(), // rules-allow: owned copy from the gateway catalog
-                    extensions: current.extensions.clone(), // rules-allow: owned copy from the gateway catalog
-                    system_prompt: self
-                        .prompt
-                        .as_ref()
-                        .map_or(&current.system_prompt, |prompt| &prompt.value)
-                        .clone(), // rules-allow: the prompt or the gateway copy stays in place
-                    max_model_steps: current.max_model_steps,
+                let config = match &bot.config.config {
+                    HarnessConfig::Mobius(current) => {
+                        HarnessConfig::Mobius(Arc::new(AgentComposition {
+                            provider: current.provider.clone(), // rules-allow: owned copy from the gateway catalog
+                            middleware: current.middleware.clone(), // rules-allow: owned copy from the gateway catalog
+                            extensions: current.extensions.clone(), // rules-allow: owned copy from the gateway catalog
+                            system_prompt: self
+                                .prompt
+                                .as_ref()
+                                .map_or(&current.system_prompt, |prompt| &prompt.value)
+                                .clone(), // rules-allow: the prompt or the gateway copy stays in place
+                            max_model_steps: current.max_model_steps,
+                        }))
+                    }
+                    other => other.clone(), // rules-allow: owned copy from the gateway catalog
                 };
                 FormFlow::Send(request_action(
                     "Update Bot identity and prompt",

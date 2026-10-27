@@ -3,7 +3,7 @@ use super::{
     Rejection, ServerMessage, finish_publication, gateway_ready_after_unlock, internal,
     invalid_config,
 };
-use crate::extensions::ExtensionStore;
+use crate::harness::mobius::extensions::ExtensionStore;
 
 impl GatewayHost {
     pub(crate) async fn install_extension(
@@ -154,7 +154,12 @@ impl GatewayHost {
             .bots()
             .map_err(internal)?
             .into_iter()
-            .find(|bot| bot.config.config.extensions.contains(&*id))
+            .find(|bot| {
+                bot.config
+                    .config
+                    .mobius()
+                    .is_some_and(|composition| composition.extensions.contains(&*id))
+            })
             .map(|bot| format!("Bot @{}", bot.handle));
         let next = {
             let current = state.config()?;
@@ -267,7 +272,7 @@ impl GatewayHost {
             .preparation_generation
             .fetch_add(1, Ordering::Release);
         for prepared in cache.values() {
-            if prepared.bot.config.config.extensions.contains(id) {
+            if prepared.uses_extension(id) {
                 prepared.invalidate();
             }
         }
@@ -320,7 +325,7 @@ mod tests {
     use super::*;
     use crate::bots::BotStore;
     use crate::config::{ConfigStore, CredentialStore};
-    use crate::extensions::{ExtensionSource, InstalledExtension};
+    use crate::harness::mobius::extensions::{ExtensionSource, InstalledExtension};
     use crate::wire::AgentComposition;
     use crate::wire::{ExtensionHookRecord, ExtensionKind};
 

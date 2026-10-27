@@ -26,7 +26,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use self::storage::{BotStorage, CatalogStamp};
-use crate::config::{CanonicalWorkspace, validate_agent_composition};
+use crate::config::CanonicalWorkspace;
+use crate::harness::ApprovalMode;
+use crate::wire::{AgentComposition, HarnessConfig};
 use crate::wire::{
     BotRecord, BotShape, HookData, HookEvent, HookSelector, HookSource, ProviderTint, Routine,
     RoutineAction, RoutineBinding, RoutineDefinition, RoutineRun, RoutineRunStatus,
@@ -34,7 +36,7 @@ use crate::wire::{
 };
 use crate::{Error, Result};
 
-const STATE_VERSION: u32 = 9;
+const STATE_VERSION: u32 = 10;
 const STATE_FILE: &str = storage::STATE_FILE;
 const STATE_LOCK_FILE: &str = "bots-state.lock";
 const ROUTINES_DIR: &str = "routines";
@@ -78,13 +80,14 @@ pub(crate) struct BotStore {
     state_dir: PathBuf,
     routines_dir: PathBuf,
     storage: BotStorage,
-    pub(crate) prepared:
-        tokio::sync::Mutex<std::collections::BTreeMap<Arc<str>, Arc<crate::assembly::PreparedBot>>>,
+    pub(crate) prepared: tokio::sync::Mutex<
+        std::collections::BTreeMap<Arc<str>, Arc<crate::harness::mobius::assembly::PreparedBot>>,
+    >,
     pub(crate) preparation_generation: std::sync::atomic::AtomicU64,
     /// The last parsed catalog, reused until any connection commits.
     cache: std::sync::Mutex<Option<(CatalogStamp, Arc<BotState>)>>,
     /// The gateway's current voice routes, which Bot records resolve their voice against.
-    voices: std::sync::RwLock<Arc<crate::provider_catalog::VoiceRoutes>>,
+    voices: std::sync::RwLock<Arc<crate::harness::mobius::provider_catalog::VoiceRoutes>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -353,12 +356,13 @@ struct StoredBot {
     config: Arc<VersionedAgentConfig>,
     /// Parsed once from `config` when it was validated or read from disk.
     #[serde(skip_serializing)]
-    approval_policy: mobius::backend::sandbox::ApprovalPolicy,
+    approval: ApprovalMode,
 }
 
-/// A Bot record with the approval policy its stored composition was validated to.
+/// A möbius Bot record with the composition and approval policy it was validated to.
 pub(crate) struct RuntimeBot {
     pub(crate) record: Arc<BotRecord>,
+    pub(crate) composition: Arc<AgentComposition>,
     pub(crate) approval_policy: mobius::backend::sandbox::ApprovalPolicy,
 }
 
@@ -388,7 +392,7 @@ impl TryFrom<PersistedBot> for StoredBot {
             shape,
             config,
         } = bot;
-        let approval_policy = validate_agent_composition(&config.config)?;
+        let approval = crate::harness::validate_stored(&config.config)?;
         Ok(Self {
             id,
             handle,
@@ -397,13 +401,16 @@ impl TryFrom<PersistedBot> for StoredBot {
             tint,
             shape,
             config,
-            approval_policy,
+            approval,
         })
     }
 }
 
 impl StoredBot {
-    fn record(&self, voices: &crate::provider_catalog::VoiceRoutes) -> Result<BotRecord> {
+    fn record(
+        &self,
+        voices: &crate::harness::mobius::provider_catalog::VoiceRoutes,
+    ) -> Result<BotRecord> {
         Ok(BotRecord {
             conversation_session_id: SessionId::new(conversation_session_id(&self.id))?,
             id: Arc::clone(&self.id),
@@ -412,11 +419,10 @@ impl StoredBot {
             description: Arc::clone(&self.description),
             tint: self.tint,
             shape: self.shape,
+            harness: self.config.config.kind(),
             config: Arc::clone(&self.config),
-            capabilities: crate::assembly::bot_capabilities(&self.config.config, voices)?,
-            routine_interaction_policy: crate::assembly::routine_interaction_policy(
-                self.approval_policy,
-            ),
+            capabilities: crate::harness::bot_capabilities(&self.config.config, voices)?,
+            routine_interaction_policy: self.approval.routine_interaction_policy(),
         })
     }
 }
@@ -432,7 +438,7 @@ impl From<&BotRecord> for StoredBot {
             tint: bot.tint,
             shape: bot.shape,
             config: Arc::clone(&bot.config),
-            approval_policy: validate_agent_composition(&bot.config.config)
+            approval: crate::harness::validate_stored(&bot.config.config)
                 .expect("valid test composition"),
         }
     }
@@ -491,7 +497,7 @@ impl BotStore {
     /// Resolves later Bot records against the gateway's current voice routes.
     pub(crate) fn set_voice_routes(
         &self,
-        voices: crate::provider_catalog::VoiceRoutes,
+        voices: crate::harness::mobius::provider_catalog::VoiceRoutes,
     ) -> Result<()> {
         *self
             .voices
@@ -500,7 +506,7 @@ impl BotStore {
         Ok(())
     }
 
-    fn voice_routes(&self) -> Result<Arc<crate::provider_catalog::VoiceRoutes>> {
+    fn voice_routes(&self) -> Result<Arc<crate::harness::mobius::provider_catalog::VoiceRoutes>> {
         Ok(Arc::clone(
             &*self
                 .voices
@@ -512,14 +518,16 @@ impl BotStore {
     /// Creates the ordinary built-in Bot only before Bot state has ever existed.
     pub(crate) fn seed_default(
         &self,
-        defaults: &VersionedAgentConfig,
+        defaults: &VersionedAgentConfig<AgentComposition>,
     ) -> Result<Option<BotRecord>> {
         let _file_lock = self.lock_state()?;
         if self.storage.load_catalog()?.is_some() {
             return Ok(None);
         }
         let config = defaults.config.clone(); // rules-allow: callers keep their borrowed defaults; the seeded Bot owns its config
-        let approval_policy = crate::config::configured_approval_policy(&config.middleware)?;
+        let approval = ApprovalMode::Mobius(crate::config::configured_approval_policy(
+            &config.middleware,
+        )?);
         let mut state = BotState::default();
         let bot = StoredBot {
             id: Uuid::new_v4().to_string().into(),
@@ -530,9 +538,9 @@ impl BotStore {
             shape: BotShape::Circle,
             config: Arc::new(VersionedAgentConfig {
                 revision: 1,
-                config,
+                config: HarnessConfig::Mobius(Arc::new(config)),
             }),
-            approval_policy,
+            approval,
         };
         let record = bot.record(&*self.voice_routes()?)?;
         state.bots.push(bot);
@@ -545,12 +553,11 @@ impl BotStore {
         &self,
         name: &str,
         description: &str,
-        config: crate::host::ValidatedComposition,
+        config: crate::harness::ValidatedConfig,
     ) -> Result<BotRecord> {
         let name = validate_name(name)?;
         let description = validate_description(description)?;
-        let approval_policy = config.approval_policy();
-        let config = config.into_inner();
+        let (config, approval) = config.into_parts();
         let voices = self.voice_routes()?;
         self.update(|state| {
             let id = Uuid::new_v4().to_string();
@@ -568,7 +575,7 @@ impl BotStore {
                     revision: 1,
                     config,
                 }),
-                approval_policy,
+                approval,
             };
             let record = bot.record(&voices)?;
             state.bots.push(bot);
@@ -583,7 +590,7 @@ impl BotStore {
         id: &str,
         identity: BotIdentity<'_>,
         config: Arc<VersionedAgentConfig>,
-        approval_policy: mobius::backend::sandbox::ApprovalPolicy,
+        approval: ApprovalMode,
     ) -> Result<BotRecord> {
         let BotIdentity {
             name,
@@ -612,7 +619,7 @@ impl BotStore {
             bot.tint = tint;
             bot.shape = shape;
             bot.config = config;
-            bot.approval_policy = approval_policy;
+            bot.approval = approval;
             bot.record(&voices)
         })
     }
@@ -856,7 +863,7 @@ impl BotStore {
             .transpose()
     }
 
-    /// One Bot with the approval policy its runtime enforces.
+    /// One möbius Bot with the composition and approval policy its runtime enforces.
     pub(crate) fn runtime_bot(&self, id: &str) -> Result<RuntimeBot> {
         let voices = self.voice_routes()?;
         let state = self.current_state()?;
@@ -865,9 +872,15 @@ impl BotStore {
             .iter()
             .find(|bot| *bot.id == *id)
             .ok_or_else(|| Error::Config(format!("unknown Bot `{id}`")))?;
+        let (HarnessConfig::Mobius(composition), ApprovalMode::Mobius(approval_policy)) =
+            (&bot.config.config, bot.approval)
+        else {
+            return Err(Error::Config(format!("Bot `{id}` does not run on möbius")));
+        };
         Ok(RuntimeBot {
             record: Arc::new(bot.record(&voices)?),
-            approval_policy: bot.approval_policy,
+            composition: Arc::clone(composition),
+            approval_policy,
         })
     }
 

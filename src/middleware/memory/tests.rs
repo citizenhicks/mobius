@@ -1,29 +1,34 @@
 use super::*;
 use crate::backend::checkpoint::sqlite::SqliteCheckpoint;
+use crate::backend::sandbox::local::LocalSandbox;
+use crate::backend::sandbox::{
+    ApprovalPolicy, NetworkAccess, Sandbox, SandboxMode, SandboxPermissions,
+};
+use crate::middleware::tools::{Tool, ToolContext};
 use crate::protocol::Op;
-
-fn scratchpad(store: &Scratchpad) -> Scratchpad {
-    store.for_chat()
-}
 
 fn management(arguments: impl Into<String>, input: Option<&str>) -> Op {
     Op::CapabilityCommand {
         capability: MANIFEST.id.into(),
-        command: "scratchpad".into(),
+        command: "memory".into(),
         arguments: arguments.into(),
         input: input.map(str::to_owned),
         target: None,
     }
 }
 
-impl Scratchpad {
-    async fn add_global(&self, note: &str) -> Result<FrontendContribution> {
-        self.manage(&management("add", Some(note))).await
+impl Memory {
+    async fn add_global(&self, memory: &str) -> Result<FrontendContribution> {
+        self.manage(&management("add", Some(memory))).await
     }
 
-    async fn edit_global(&self, id: &str, note: &str) -> Result<FrontendContribution> {
-        self.manage(&management(format!("edit {id}"), Some(note)))
+    async fn edit_global(&self, id: &str, memory: &str) -> Result<FrontendContribution> {
+        self.manage(&management(format!("edit {id}"), Some(memory)))
             .await
+    }
+
+    async fn snapshot(&self) -> Result<Vec<Entry>> {
+        Ok(self.store.load(None).await?.memories)
     }
 }
 
@@ -34,21 +39,162 @@ fn session_context() -> crate::protocol::SessionContext {
     }
 }
 
-fn entry(note: impl Into<String>) -> Entry {
+fn owner(bot: &str, project: Option<&str>) -> Arc<MemoryOwner> {
+    Arc::new(MemoryOwner::of(&crate::protocol::SessionContext {
+        owner_id: bot.into(),
+        workspace_id: project.map(str::to_owned),
+        workspace_label: project.map(|project| format!("/projects/{project}")),
+        ..crate::protocol::SessionContext::default()
+    }))
+}
+
+fn entry(memory: impl Into<String>) -> Entry {
     Entry {
         id: Uuid::new_v4().to_string(),
-        note: note.into(),
+        text: memory.into(),
         basis: Basis::AgentObservation,
-        created_at: "1".into(),
+        updated_at: 1,
+        author: None,
     }
 }
 
-fn store() -> (tempfile::TempDir, Scratchpad) {
+fn store() -> (tempfile::TempDir, Memory) {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
         SqliteCheckpoint::new(temporary.path().join("checkpoints.sqlite3")).expect("checkpoints"),
     );
-    (temporary, Scratchpad::new(checkpoints))
+    (temporary, Memory::new(checkpoints))
+}
+
+fn tool_context(path: &std::path::Path) -> ToolContext {
+    let sandbox = Arc::new(Sandbox::new(
+        Arc::new(LocalSandbox::new(path).expect("sandbox")),
+        ApprovalPolicy::Ask,
+    ));
+    let permissions = SandboxPermissions::restore(
+        &"session".parse().expect("session ID"),
+        SandboxMode::WorkspaceWrite,
+        NetworkAccess::Allowed,
+        ["memory-call".into()],
+    );
+    ToolContext::new(sandbox, permissions.for_call("memory-call"), "turn")
+}
+
+fn writer(memory: &Memory, owner: &Arc<MemoryOwner>) -> WriteMemory {
+    WriteMemory {
+        store: Arc::clone(&memory.store),
+        owner: Arc::clone(owner),
+        frontend: Arc::new(|_| Ok(())),
+    }
+}
+
+fn visible_texts(partitions: &[Partition; 2]) -> [Vec<&str>; 2] {
+    partitions.each_ref().map(|partition| {
+        partition
+            .memories
+            .iter()
+            .map(|entry| entry.text.as_str())
+            .collect()
+    })
+}
+
+#[tokio::test]
+async fn a_project_label_change_keeps_the_same_memory_scope() {
+    let (_temporary, memory) = store();
+    let original = owner("alpha", Some("one"));
+    let access = memory.store.access.lock().await;
+    memory
+        .store
+        .write_locked(
+            Some(&original),
+            None,
+            "uses pnpm",
+            Basis::UserConfirmed,
+            &access,
+        )
+        .await
+        .expect("save memory");
+    let mut renamed = (*original).clone();
+    renamed.project.as_mut().unwrap().label = Some("Renamed project".into());
+    let visible = memory
+        .store
+        .visible(&Arc::new(renamed))
+        .await
+        .expect("load the same project by its stable id");
+    assert_eq!(
+        visible_texts(&visible),
+        [Vec::<&str>::new(), vec!["uses pnpm"]]
+    );
+}
+
+#[tokio::test]
+async fn written_memories_stay_with_their_bot_and_project_unless_global() {
+    let (temporary, memory) = store();
+    let (alpha, alpha_elsewhere, beta) = (
+        owner("alpha", Some("one")),
+        owner("alpha", Some("two")),
+        owner("beta", Some("one")),
+    );
+    let write = writer(&memory, &alpha);
+    for arguments in [
+        serde_json::json!({"memory": "alpha prefers tabs"}),
+        serde_json::json!({"memory": "the office is in Tallinn", "global": true}),
+    ] {
+        write
+            .call(tool_context(temporary.path()), arguments)
+            .await
+            .expect("write memory");
+    }
+    let store = &memory.store;
+    assert_eq!(
+        visible_texts(&store.visible(&alpha).await.expect("alpha")),
+        [vec!["the office is in Tallinn"], vec!["alpha prefers tabs"]]
+    );
+    for other in [&alpha_elsewhere, &beta] {
+        let visible = store.visible(other).await.expect("other owner");
+        assert_eq!(
+            visible_texts(&visible),
+            [vec!["the office is in Tallinn"], Vec::<&str>::new()]
+        );
+        let empty: &[Arc<serde_json::Value>] = &[];
+        let projection = next_projection(empty.into(), &visible)
+            .expect("projection")
+            .expect("memory context");
+        let text = projection.to_string();
+        assert!(text.contains("the office is in Tallinn") && !text.contains("alpha prefers tabs"));
+    }
+    let private = &store
+        .load(Some(&alpha))
+        .await
+        .expect("alpha scope")
+        .memories[0]
+        .id;
+    let update = writer(&memory, &beta)
+        .call(
+            tool_context(temporary.path()),
+            serde_json::json!({"memory": "beta took it over", "id": private}),
+        )
+        .await;
+    assert!(update.is_err(), "another Bot cannot reach a scoped memory");
+
+    let listed = memory.list().await.expect("list");
+    let summary = listed
+        .iter()
+        .map(|item| {
+            (
+                &*item.text,
+                item.global,
+                item.owner.as_deref() == Some(&*alpha),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        summary,
+        [
+            ("alpha prefers tabs", false, true),
+            ("the office is in Tallinn", true, true),
+        ]
+    );
 }
 
 #[tokio::test]
@@ -112,12 +258,12 @@ async fn compaction_discards_projections_before_a_post_hook_stops_or_fails() {
 
     for fail in [false, true] {
         let (temporary, store) = store();
-        store.add_global("remember this").await.expect("note");
+        store.add_global("remember this").await.expect("memory");
         let middleware = MiddlewareStack::new(vec![
             Arc::new(Messages::default()),
             Arc::new(Tools::new(Vec::new())),
             Arc::new(StopAfterCompact(fail)),
-            Arc::new(scratchpad(&store)),
+            Arc::new(store.for_chat()),
             Arc::new(Compaction::new(1).expect("compaction")),
         ])
         .expect("middleware");
@@ -184,15 +330,15 @@ async fn compaction_discards_projections_before_a_post_hook_stops_or_fails() {
 }
 
 #[tokio::test]
-async fn shared_scope_budget_rejects_oversized_writes_and_edits_without_changing_state() {
+async fn scope_budget_rejects_oversized_writes_and_edits_without_changing_state() {
     let (_temporary, store) = store();
     for i in 0..3 {
         store
             .add_global(&format!("{i}{}", "x".repeat(499)))
             .await
-            .expect("bounded note");
+            .expect("bounded memory");
     }
-    store.add_global("short").await.expect("small note");
+    store.add_global("short").await.expect("small memory");
     let before = store.snapshot().await.expect("before");
     assert!(store.add_global(&"y".repeat(500)).await.is_err());
     assert!(
@@ -212,13 +358,13 @@ async fn shared_scope_budget_rejects_oversized_writes_and_edits_without_changing
 }
 
 #[tokio::test]
-async fn concurrent_shared_writes_preserve_every_accepted_note_and_the_count_limit() {
+async fn concurrent_writes_preserve_every_accepted_memory_and_the_count_limit() {
     let (_temporary, store) = store();
     let store = Arc::new(store);
-    let writes = (0..MAX_NOTES + 5)
+    let writes = (0..MAX_MEMORIES + 5)
         .map(|i| {
             let store = Arc::clone(&store);
-            tokio::spawn(async move { store.add_global(&format!("note {i}")).await })
+            tokio::spawn(async move { store.add_global(&format!("memory {i}")).await })
         })
         .collect::<Vec<_>>();
     let mut accepted = 0;
@@ -227,6 +373,9 @@ async fn concurrent_shared_writes_preserve_every_accepted_note_and_the_count_lim
             accepted += 1;
         }
     }
-    assert_eq!(accepted, MAX_NOTES);
-    assert_eq!(store.snapshot().await.expect("snapshot").len(), MAX_NOTES);
+    assert_eq!(accepted, MAX_MEMORIES);
+    assert_eq!(
+        store.snapshot().await.expect("snapshot").len(),
+        MAX_MEMORIES
+    );
 }

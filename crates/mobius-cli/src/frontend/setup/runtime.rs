@@ -127,7 +127,7 @@ pub(super) async fn apply(
         .iter()
         .find(|bot| *bot.id == *bot_id)
         .ok_or_else(|| Error::Config("this chat's Bot is not in the gateway catalog".into()))?;
-    let config = state.agent_composition(&bot.config.config)?;
+    let config = state.agent_composition(mobius_composition(bot)?)?;
     let expected_revision = bot.config.revision;
     if state.mode == SetupMode::Login {
         state.set_progress(
@@ -143,7 +143,7 @@ pub(super) async fn apply(
         .iter()
         .find(|bot| *bot.id == *bot_id)
         .ok_or_else(|| Error::Config("this chat's Bot is not in the gateway catalog".into()))?;
-    if config == bot.config.config {
+    if mobius_composition(bot)?.as_ref() == &config {
         return Ok(());
     }
     state.set_progress("Updating Bot", "Applying this profile to the Bot's chats…");
@@ -277,6 +277,13 @@ pub(super) async fn configure_bot_defaults(
     wait_gateway_configured(terminal, state, events, request_id, "saving Bot defaults").await
 }
 
+/// The composition setup edits; only möbius Bots are composed from providers and middleware.
+pub(super) fn mobius_composition(bot: &BotRecord) -> Result<&Arc<AgentComposition>> {
+    bot.config.config.mobius().ok_or_else(|| {
+        Error::Config("this Bot does not run on möbius; configure it in the app".into())
+    })
+}
+
 pub(super) async fn update_bot(
     terminal: &mut SetupTerminal,
     state: &SetupState,
@@ -299,7 +306,7 @@ pub(super) async fn update_bot(
             description: Arc::clone(&bot.description),
             tint: bot.tint,
             shape: bot.shape,
-            config,
+            config: mobius_gateway::wire::HarnessConfig::Mobius(Arc::new(config)),
         })
         .await
         .map_err(gateway_error)?;

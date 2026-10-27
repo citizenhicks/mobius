@@ -75,6 +75,67 @@ pub(super) async fn selected_broadcast(
     }
 }
 
+/// Answers memory page and chat memory requests; passes every other message on.
+async fn handle_memory_message(
+    message: ClientMessage,
+    gateway: &GatewayHost,
+    selected: Option<&SelectedChat>,
+    writer: &mut (impl AsyncWrite + Unpin),
+) -> Result<Option<ClientMessage>> {
+    let (request_id, result) = match message {
+        ClientMessage::SetSessionMemory {
+            request_id,
+            session_id,
+            memory,
+        } => {
+            let result = match require_selected(selected, &session_id) {
+                Ok(host) => host.set_memory(memory).await,
+                Err(rejection) => Err(rejection),
+            };
+            write_result(writer, request_id, result).await?;
+            return Ok(None);
+        }
+        ClientMessage::ListMemories { request_id } => (request_id, gateway.list_memories().await),
+        ClientMessage::EditMemory {
+            request_id,
+            id,
+            text,
+        } => (request_id, gateway.edit_memory(&id, &text).await),
+        ClientMessage::ForgetMemory { request_id, id } => {
+            (request_id, gateway.forget_memory(&id).await)
+        }
+        message => return Ok(Some(message)),
+    };
+    write_memories(writer, request_id, result).await?;
+    Ok(None)
+}
+
+/// Answers harness configuration and refresh requests; passes every other message on.
+async fn handle_harness_message(
+    message: ClientMessage,
+    gateway: &GatewayHost,
+    view: &mut ClientView,
+    writer: &mut (impl AsyncWrite + Unpin),
+) -> Result<Option<ClientMessage>> {
+    match message {
+        ClientMessage::ConfigureHarness {
+            request_id,
+            kind,
+            cli_path,
+            defaults,
+        } => {
+            let configured = gateway.configure_harness(kind, cli_path, defaults).await;
+            write_gateway_result(writer, view, request_id, configured).await?;
+        }
+        ClientMessage::RefreshHarnesses { request_id } => {
+            let refreshed = gateway.refresh_harnesses().await;
+            write_gateway_result(writer, view, request_id, refreshed).await?;
+        }
+        message => return Ok(Some(message)),
+    }
+    Ok(None)
+}
+
 pub(super) async fn handle_message(
     message: ClientMessage,
     auth: &AuthStore,
@@ -97,6 +158,15 @@ pub(super) async fn handle_message(
         return write_server_error(writer, "bot_deletion_recovery", rejection.message, false).await;
     }
     let Some(message) = super::voice::handle_message(message, &mut connection, writer).await?
+    else {
+        return Ok(());
+    };
+    let Some(message) = handle_harness_message(message, gateway, connection.view, writer).await?
+    else {
+        return Ok(());
+    };
+    let Some(message) =
+        handle_memory_message(message, gateway, connection.selected.as_ref(), writer).await?
     else {
         return Ok(());
     };
@@ -376,10 +446,11 @@ pub(super) async fn handle_message(
         }
         ClientMessage::CreateBot {
             request_id,
+            harness,
             name,
             description,
         } => {
-            let created = gateway.create_bot(&name, &description).await;
+            let created = gateway.create_bot(harness, &name, &description).await;
             return write_bot_result(writer, connection.view, request_id, created, gateway).await;
         }
         ClientMessage::ListBots { request_id } => {
@@ -432,6 +503,15 @@ pub(super) async fn handle_message(
                 .configure_bot_defaults(expected_revision, config)
                 .await;
             return write_gateway_result(writer, connection.view, request_id, configured).await;
+        }
+        ClientMessage::ConfigureHarness { .. } | ClientMessage::RefreshHarnesses { .. } => {
+            unreachable!("harness requests were handled above")
+        }
+        ClientMessage::SetSessionMemory { .. }
+        | ClientMessage::ListMemories { .. }
+        | ClientMessage::EditMemory { .. }
+        | ClientMessage::ForgetMemory { .. } => {
+            unreachable!("memory requests were handled above")
         }
         ClientMessage::InstallExtension {
             request_id,
@@ -1175,6 +1255,26 @@ async fn contribution_response(
                 &ServerFrame::new(ServerMessage::Contributions {
                     request_id,
                     contributions,
+                }),
+            )
+            .await
+        }
+        Err(rejection) => write_rejection(writer, request_id, rejection).await,
+    }
+}
+
+async fn write_memories(
+    writer: &mut (impl AsyncWrite + Unpin),
+    request_id: Arc<str>,
+    result: std::result::Result<Vec<crate::wire::MemoryRecord>, Rejection>,
+) -> Result<()> {
+    match result {
+        Ok(memories) => {
+            write_frame(
+                writer,
+                &ServerFrame::new(ServerMessage::Memories {
+                    request_id,
+                    memories,
                 }),
             )
             .await

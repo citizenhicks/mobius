@@ -1591,7 +1591,14 @@ fn agent_summary(gateway: &ReadyPayload, session: &SessionReadyPayload, bot: &Bo
         .agent_catalog
         .middleware_features
         .iter()
-        .filter(|feature| feature.required || bot.config.config.middleware.enabled(&feature.id))
+        .filter(|feature| {
+            feature.required
+                || bot
+                    .config
+                    .config
+                    .mobius()
+                    .is_some_and(|composition| composition.middleware.enabled(&feature.id))
+        })
         .map(|feature| feature.label.as_str())
         .collect::<Vec<_>>()
         .join(", ");
@@ -1872,6 +1879,7 @@ mod tests {
             active_message_delivery: ActiveMessageDelivery::Steer,
             run_stats: RunStats::default(),
             pinned_messages: Default::default(),
+            memory: None,
         }
     }
 
@@ -1889,14 +1897,19 @@ mod tests {
                 description: "".into(),
                 tint: Default::default(),
                 shape: mobius_gateway::wire::BotShape::Circle,
+                harness: mobius_gateway::wire::HarnessKind::Mobius,
                 config: Arc::new(VersionedAgentConfig {
                     revision: 1,
-                    config: Default::default(),
+                    config: mobius_gateway::wire::HarnessConfig::Mobius(Arc::default()),
                 }),
                 capabilities: mobius_gateway::wire::BotCapabilities {
                     attachments: false,
                     computer: false,
                     voice: mobius_gateway::wire::VoiceCapability::Off,
+                    memory: mobius_gateway::wire::BotMemory {
+                        enabled: false,
+                        global: false,
+                    },
                 },
                 routine_interaction_policy: RoutineInteractionPolicy::Unattended,
             }],
@@ -1905,6 +1918,7 @@ mod tests {
             providers: Vec::new(),
             provider_instances: Vec::new(),
             agent_catalog: Default::default(),
+            harnesses: Vec::new(),
             max_active_sessions: 0,
             session_file_limits: SessionFileLimits {
                 max_attachment_references: 1,

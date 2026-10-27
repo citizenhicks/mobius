@@ -61,9 +61,9 @@ report "No compatibility code: no serde aliases." \
 
 report "Provider IDs are matched only in provider code." \
     "$(production_matches '"(claude|kimi|deepseek|mistral|chat_gpt|open_router)"' \
-        '^src/backend/model/|^crates/mobius-gateway/src/assembly[.]rs$')"
+        '^src/backend/model/|^crates/mobius-gateway/src/harness/mobius/assembly[.]rs$')"
 
-middleware='"(artifacts|attachments|compaction|computer_control|extensions|image_generation|instructions|intelligent_ui|questions|scratchpad|subagents|tasks)"'
+middleware='"(artifacts|attachments|compaction|computer_control|extensions|image_generation|instructions|intelligent_ui|memory|questions|subagents|tasks)"'
 report "The terminal frontend renders the catalog and never branches on middleware names." \
     "$(production_matches "$middleware" \
         '^(src|examples|crates/mobius-gateway)/|^crates/mobius-cli/src/[^f]|/frontend/catalog[.]rs$')"

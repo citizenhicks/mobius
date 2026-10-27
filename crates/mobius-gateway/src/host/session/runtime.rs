@@ -3,13 +3,14 @@ use super::super::replay::{fork_origin, inherited_cursor};
 use super::{
     ActiveRoutine, ActiveRoutineRun, Arc, BotStore, ChatSpec, Error, EventPageRequest, HostCommand,
     HostSnapshot, HostState, JournalDelivery, MessageAuthor, MessageSubmission, Op, Ordering, Path,
-    PathBuf, ProviderCutoverStatus, RealtimeModel, Rejection, Result, ReviewDecision,
-    RoutineRunStatus, RunningAgent, ServerMessage, SessionHistoryPage, SessionRuntimeState,
-    SharedFrame, SourceAdmission, Submission, Uuid, ValidatedSubmission, delete_workspace_file,
-    durable_history_page, event_sequence, fail_active_routine, internal, invalid_config,
-    invalid_workspace, list_workspace_files, mpsc, oneshot, read_workspace_file, shutdown_agent,
-    start_agent, stopped, try_begin_session_mutation, write_workspace_file,
+    PathBuf, ProviderCutoverStatus, Rejection, Result, ReviewDecision, RoutineRunStatus,
+    ServerMessage, SessionHistoryPage, SharedFrame, SourceAdmission, Submission, Uuid,
+    ValidatedSubmission, delete_workspace_file, durable_history_page, event_sequence,
+    fail_active_routine, internal, invalid_config, invalid_workspace, list_workspace_files, mpsc,
+    oneshot, read_workspace_file, shutdown_agent, stopped, try_begin_session_mutation,
+    write_workspace_file,
 };
+use crate::harness::{MessageAcceptance, RealtimeCall};
 use crate::wire::HistoryCursor;
 use futures_util::StreamExt as _;
 
@@ -35,7 +36,7 @@ impl HostState {
         let high_water = self
             .checkpoints
             .event_page(
-                &self.running.session_id,
+                self.running.session_id(),
                 EventPageRequest {
                     before_sequence: None,
                     limit: 1,
@@ -56,7 +57,7 @@ impl HostState {
             return Ok(());
         }
         loop {
-            let record = self.running.events.recv().await.ok_or_else(|| {
+            let record = self.running.events().recv().await.ok_or_else(|| {
                 Error::Config("agent stopped before the startup high-water was delivered".into())
             })?;
             let sequence = record.sequence;
@@ -70,7 +71,7 @@ impl HostState {
             }
         }
         loop {
-            match self.running.events.try_recv() {
+            match self.running.events().try_recv() {
                 Ok(record) => {
                     if let Some(frame) = self.project_and_publish(record, delivery)?
                         && delivery == JournalDelivery::ReplacementStartup
@@ -93,7 +94,7 @@ impl HostState {
         loop {
             tokio::select! {
                 Some(admission) = self.admissions.next(), if !self.admissions.is_empty() => {
-                    if !matches!(admission.result, Ok(mobius::agent::MessageAcceptance::Accepted))
+                    if !matches!(admission.result, Ok(MessageAcceptance::Accepted))
                         && admission.reserved && self.pending_messages.remove(&admission.id) {
                         self.pending_turns = self.pending_turns.saturating_sub(1);
                     }
@@ -104,7 +105,7 @@ impl HostState {
                     let Some(command) = command else { break };
                     if !Box::pin(self.handle(command)).await { break; }
                 }
-                event = self.running.events.recv() => if let Some(event) = event {
+                event = self.running.events().recv() => if let Some(event) = event {
                     if let Err(error) = self.apply_event(event).await {
                         let message: Arc<str> = error.to_string().into();
                         self.broadcast(ServerMessage::Error {
@@ -187,7 +188,7 @@ impl HostState {
                 let result = async {
                     let _mutation = self.begin_session_mutation()?;
                     self.bind_bot().await?;
-                    Ok(self.running.prepared.bot.capabilities.attachments)
+                    Ok(self.running.bot().capabilities.attachments)
                 }
                 .await;
                 respond(reply, result, "session command");
@@ -197,32 +198,18 @@ impl HostState {
                     let _mutation = self.begin_session_mutation()?;
                     self.bind_bot().await?;
                     let bot = self.bots.bot(&self.spec.bot_id).map_err(internal)?;
-                    let router = &self.running.model_router;
-                    let selected = self.running.prepared.voice.as_ref().ok_or_else(|| {
-                        Rejection::new("realtime_voice", "voice is turned off for this Bot")
-                    })?;
-                    let voice = router.voice_choice(selected.as_deref()).map_err(|error| {
-                        Rejection::new(
-                            "realtime_voice",
-                            format!("{error}; select an available voice"),
-                        )
-                    })?;
                     let active_turn_id = self.activity().await.map_err(internal)?.turn_id;
-                    let voice = Arc::clone(&voice.route);
-                    Ok(RealtimeModel {
-                        route: router.default_provider().into(),
-                        call: mobius::middleware::voice::VoiceCallContext {
-                            session_id: self.running.session_id.share(),
-                            router: Arc::clone(router),
-                            voice,
-                            bot_name: bot.name,
-                            bot_handle: bot.handle,
-                            bot_instructions: self.running.prepared.instructions(),
+                    self.running
+                        .realtime(RealtimeCall {
+                            bot,
                             active_turn_id,
-                            checkpoints: Arc::clone(&self.checkpoints),
-                            frontend: Arc::clone(&self.running.frontend_sink),
-                        },
-                    })
+                        })
+                        .unwrap_or_else(|| {
+                            Err(Rejection::new(
+                                "realtime_voice",
+                                "this Bot's harness has no voice calls",
+                            ))
+                        })
                 }
                 .await;
                 respond(reply, result, "session command");
@@ -293,11 +280,11 @@ impl HostState {
                     }
                     let mut next = self.spec.clone(); // rules-allow: the current spec stays until the replacement starts
                     let previous_bot_id = std::mem::replace(&mut next.bot_id, bot_id);
-                    self.replace_running(Some(next), None).await?;
+                    self.replace_running(Some(next), false).await?;
                     super::super::bot_events::close_reassigned_source(
                         &self.checkpoints,
                         &self.bots,
-                        &self.running.session_id,
+                        self.running.session_id(),
                         &previous_bot_id,
                     )
                     .await
@@ -310,6 +297,10 @@ impl HostState {
                 let result = self.attach_folder(folder).await;
                 respond(reply, result, "session command");
             }
+            HostCommand::SetMemory { memory, reply } => {
+                let result = self.set_memory(memory).await;
+                respond(reply, result, "session command");
+            }
             HostCommand::SetMessagePinned {
                 target,
                 pinned,
@@ -319,18 +310,15 @@ impl HostState {
                 respond(reply, result, "session command");
             }
             HostCommand::GitWorkspace { reply } => {
-                let result = self.project().map(|workspace| {
-                    (
-                        Arc::clone(&self.running.gateway_sandbox),
-                        workspace.to_owned(),
-                    )
-                });
+                let result = self
+                    .project()
+                    .map(|workspace| (Arc::clone(self.running.sandbox()), workspace.to_owned()));
                 respond(reply, result, "session command");
             }
             HostCommand::WorkspaceFiles { scope, reply } => {
                 let result = async {
                     let workspace = self.project()?;
-                    list_workspace_files(&self.running.gateway_sandbox, workspace, scope).await
+                    list_workspace_files(self.running.sandbox(), workspace, scope).await
                 }
                 .await;
                 respond(reply, result, "session command");
@@ -342,7 +330,7 @@ impl HostState {
                 reply,
             } => {
                 let result = read_workspace_file(
-                    &self.running.gateway_sandbox,
+                    self.running.sandbox(),
                     self.spec.workspace.as_deref(),
                     &path,
                     offset,
@@ -356,7 +344,7 @@ impl HostState {
                     self.require_idle()?;
                     let _mutation = self.begin_session_mutation()?;
                     self.project()?;
-                    delete_workspace_file(&self.running.gateway_sandbox, &path).await?;
+                    delete_workspace_file(self.running.sandbox(), &path).await?;
                     self.storage_reads.invalidate();
                     Ok(())
                 }
@@ -372,7 +360,7 @@ impl HostState {
                     self.require_idle()?;
                     let _mutation = self.begin_session_mutation()?;
                     self.project()?;
-                    write_workspace_file(&self.running.gateway_sandbox, &path, &content).await?;
+                    write_workspace_file(self.running.sandbox(), &path, &content).await?;
                     self.storage_reads.invalidate();
                     Ok(())
                 }
@@ -465,7 +453,7 @@ impl HostState {
         }
         let result = async {
             let submission =
-                if crate::bots::is_persistent(&self.running.session_id, &self.spec.bot_id) {
+                if crate::bots::is_persistent(self.running.session_id(), &self.spec.bot_id) {
                     submission.with_queued_delivery()
                 } else {
                     submission
@@ -480,10 +468,8 @@ impl HostState {
             }
             let id = Arc::clone(&submission.submission().id);
             self.running
-                .sender
-                .as_ref()
+                .admit(submission)
                 .ok_or_else(stopped)?
-                .send_validated_with_admission(submission)
                 .map(|admission| (id, admission))
                 .map_err(internal)
         }
@@ -497,7 +483,7 @@ impl HostState {
                     SourceAdmission {
                         id,
                         reserved,
-                        result: admission.wait().await,
+                        result: admission.await,
                         reply,
                     }
                 }));
@@ -529,11 +515,11 @@ impl HostState {
     async fn transcript_next(&self) -> std::result::Result<Option<HistoryCursor>, Rejection> {
         if let Some(before_sequence) = self.transcript.history_before() {
             return Ok(Some(HistoryCursor {
-                session_id: self.running.session_id.share(),
+                session_id: self.running.session_id().share(),
                 before_sequence,
             }));
         }
-        match fork_origin(self.checkpoints.as_ref(), &self.running.session_id).await? {
+        match fork_origin(self.checkpoints.as_ref(), self.running.session_id()).await? {
             Some((parent, parent_sequence)) => {
                 inherited_cursor(self.checkpoints.as_ref(), parent, parent_sequence).await
             }
@@ -547,8 +533,8 @@ impl HostState {
     ) -> std::result::Result<SessionHistoryPage, Rejection> {
         durable_history_page(
             self.checkpoints.as_ref(),
-            &self.running.session_id,
-            &self.running.frontend,
+            self.running.session_id(),
+            &*self.running,
             before,
         )
         .await
@@ -639,10 +625,8 @@ impl HostState {
             .then(|| Arc::clone(&submission.submission().id));
         let resolves_approval = matches!(submission.submission().op, Op::ExecApproval { .. });
         self.running
-            .sender
-            .as_ref()
+            .submit(submission)
             .ok_or_else(stopped)?
-            .send_validated(submission)
             .map_err(agent_rejection)?;
         self.work_activity.mark();
         if let Some(submission_id) = message_submission_id {
@@ -661,40 +645,27 @@ impl HostState {
         }
         let configuration_changed = !self
             .running
-            .prepared
-            .matches_runtime(&self.bots.bot(&self.spec.bot_id).map_err(internal)?)
-            || self.running.prepared.epoch != self.provider_epoch.load(Ordering::Acquire);
+            .is_current(&self.bots.bot(&self.spec.bot_id).map_err(internal)?);
         if !configuration_changed {
             return Ok(());
         }
         if self.runtime_is_idle().await? {
-            self.replace_running(None, None).await?;
+            self.replace_running(None, false).await?;
         }
         Ok(())
     }
 
     async fn runtime_is_idle(&self) -> std::result::Result<bool, Rejection> {
-        if SessionRuntimeState::load(self.checkpoints.as_ref(), &self.running.session_id)
+        if self
+            .running
+            .runtime_state()
             .await
             .map_err(internal)?
             .is_some_and(|runtime| !runtime.is_settled())
         {
             return Ok(false);
         }
-        if self
-            .running
-            .sandbox
-            .has_background_commands(&self.running.session_id)
-            .map_err(internal)?
-        {
-            return Ok(false);
-        }
-        Ok(!self
-            .running
-            .frontend
-            .has_background_work()
-            .await
-            .map_err(internal)?)
+        self.running.is_idle().await.map_err(internal)
     }
 
     async fn require_idle_runtime(&self) -> std::result::Result<(), Rejection> {
@@ -712,74 +683,59 @@ impl HostState {
         self.require_idle_runtime().await?;
         let _mutation = self.begin_session_mutation()?;
         let next = {
-            let gateway = crate::config::lock(&self.gateway).map_err(internal)?;
-            self.spec
-                .with_attached_folder(&folder, self.store.state_dir(), gateway.tls.as_ref())
+            let gateway = crate::config::lock(&self.harness.gateway).map_err(internal)?;
+            self.spec.with_attached_folder(
+                &folder,
+                self.harness.store.state_dir(),
+                gateway.tls.as_ref(),
+            )
         };
         let Some(next) = next.map_err(invalid_workspace)? else {
             return Ok(());
         };
-        let prepared = Arc::clone(&self.running.prepared);
-        self.replace_running(Some(next), Some(prepared)).await?;
+        self.replace_running(Some(next), true).await?;
         self.storage_reads.invalidate();
         Ok(())
     }
 
-    async fn start_replacement(
-        &self,
-        spec: &ChatSpec,
-        label: &str,
-        prepared: Option<Arc<crate::assembly::PreparedBot>>,
-    ) -> Result<RunningAgent> {
-        start_agent(
-            Arc::clone(&self.gateway),
-            spec,
-            &self.store,
-            Arc::clone(&self.credentials),
-            Arc::clone(&self.bots),
-            Arc::clone(&self.checkpoints),
-            Arc::clone(&self.scratchpad),
-            Arc::clone(&self.session_files),
-            Arc::clone(&self.discovery_gate),
-            Arc::clone(&self.desktop),
-            Arc::clone(&self.remote_desktop),
-            &self.running.session_id,
-            label,
-            prepared,
-            Arc::clone(&self.provider_epoch),
-            Arc::clone(&self.live_chats),
-            Arc::clone(&self.host_access),
-        )
-        .await
+    async fn set_memory(&mut self, memory: Option<bool>) -> std::result::Result<(), Rejection> {
+        self.require_idle_runtime().await?;
+        let _mutation = self.begin_session_mutation()?;
+        let Some(next) = self.spec.with_memory(memory) else {
+            return Ok(());
+        };
+        self.replace_running(Some(next), true).await
     }
 
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the replacement or recovery agent moves into the running slot"
-    )]
+    /// Replaces the drained run with one for `next`, or the current spec. `reuse` restarts the
+    /// running Bot preparation instead of preparing the saved Bot again.
     async fn replace_running(
         &mut self,
         next: Option<ChatSpec>,
-        prepared: Option<Arc<crate::assembly::PreparedBot>>,
+        reuse: bool,
     ) -> std::result::Result<(), Rejection> {
         // Keep replacement and rollback futures off every command handler's stack.
         Box::pin(async {
-            // Failed replacement restarts from the old prepared bot after draining the running agent.
-            let old_prepared = Arc::clone(&self.running.prepared);
+            // Failed replacement restarts from the old preparation after draining the running agent.
             self.stop_and_drain_running().await.map_err(internal)?;
             let spec = next.as_ref().unwrap_or(&self.spec);
-            let replacement = match self
-                .start_replacement(spec, "mobius-gateway", prepared)
+            let replacement = if reuse {
+                self.running.restart(spec, "mobius-gateway").await
+            } else {
+                crate::harness::start(
+                    &self.harness,
+                    spec,
+                    self.running.session_id(),
+                    "mobius-gateway",
+                )
                 .await
-            {
+            };
+            let replacement = match replacement {
                 Ok(replacement) => replacement,
                 Err(primary) => {
                     let recovery = self
-                        .start_replacement(
-                            &self.spec,
-                            "mobius-gateway-rollback",
-                            Some(old_prepared),
-                        )
+                        .running
+                        .restart(&self.spec, "mobius-gateway-rollback")
                         .await;
                     let recovery = match recovery {
                         Ok(recovery) => recovery,
@@ -797,7 +753,7 @@ impl HostState {
                             rollback: Box::new(mobius::Error::Config(rollback.to_string())),
                         }));
                     }
-                    return Err(internal(primary));
+                    return Err(super::super::harness_unavailable(primary));
                 }
             };
             let previous = std::mem::replace(&mut self.running, replacement);
@@ -815,8 +771,8 @@ impl HostState {
     }
 
     pub(super) async fn stop_and_drain_running(&mut self) -> Result<()> {
-        drop(self.running.sender.take());
-        while let Some(record) = self.running.events.recv().await {
+        self.running.shutdown();
+        while let Some(record) = self.running.events().recv().await {
             self.apply_event(record).await?;
         }
         Ok(())

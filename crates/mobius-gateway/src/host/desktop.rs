@@ -57,12 +57,7 @@ impl GatewayHost {
         let bot = bots
             .bot(&summary.session_context.owner_id)
             .map_err(invalid_bot)?;
-        if !bot
-            .config
-            .config
-            .middleware
-            .enabled(mobius::middleware::computer_control::MANIFEST.id)
-        {
+        if !bot.capabilities.computer {
             return Err(invalid_config(
                 "computer control middleware is disabled for this Bot",
             ));

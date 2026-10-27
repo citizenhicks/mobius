@@ -3,24 +3,24 @@ mod events;
 mod runtime;
 
 use super::{
-    ActiveRoutineRun, AgentSender, Arc, AtomicBool, AtomicU64, BROADCAST_CAPACITY, BotStore,
-    BuiltAgent, COMMAND_CAPACITY, ChatSpec, CheckpointStore, ConfigStore, CredentialStore,
-    DesktopControl, Error, Event, EventMsg, EventPageRequest, ExecutionOutcome, FrontendEvent,
-    FrontendExtensions, GatewayConfig, GatewaySandbox, GitDiffScope, HashSet, HostAccess,
-    HostSnapshot, JournalEvent, LiveChats, MessageAuthor, MessageSubmission, ModelRouter,
-    ModelStepContentPhase, Mutex, Op, Ordering, Path, PathBuf, ProviderConfig, Rejection,
-    RemoteDesktop, ReplayEntry, Result, ReviewDecision, RoutineRunStatus, RunStats, RwLock,
-    Scratchpad, ServerFrame, ServerMessage, SessionActivities, SessionActivity,
-    SessionActivityState, SessionFileStore, SessionHistoryPage, SessionReadyPayload, SessionWidget,
-    SharedFrame, StdMutex, Submission, Utc, Uuid, ValidatedSubmission, VecDeque, WorkActivity,
-    WorkspaceFileScope, WorkspaceFiles, WorkspaceRead, active_run_summary, activity_catalog,
-    assemble, broadcast, classify_journal_sequence, compact_replay_deltas, delete_workspace_file,
-    durable_history_page, event_sequence, git_status, internal, invalid_config, invalid_workspace,
-    list_workspace_files, load_replay, mpsc, oneshot, project_record, publish_ready_and_pending,
-    read_workspace_file, receive, record_and_publish, reject_pending_bot_deletion, stopped,
-    switch_workspace_branch, update_session_activity, update_widgets, validate_gateway_event,
-    workspace_git_diff, workspace_git_diff_totals, write_workspace_file,
+    ActiveRoutineRun, Arc, AtomicBool, BROADCAST_CAPACITY, BotStore, COMMAND_CAPACITY, ChatSpec,
+    CheckpointStore, Error, Event, EventMsg, EventPageRequest, ExecutionOutcome, FrontendEvent,
+    GatewaySandbox, GitDiffScope, HashSet, HostSnapshot, JournalEvent, MessageAuthor,
+    MessageSubmission, ModelStepContentPhase, Mutex, Op, Ordering, Path, PathBuf, ProviderConfig,
+    Rejection, ReplayEntry, Result, ReviewDecision, RoutineRunStatus, RunStats, RwLock,
+    ServerFrame, ServerMessage, SessionActivities, SessionActivity, SessionActivityState,
+    SessionHistoryPage, SessionReadyPayload, SessionWidget, SharedFrame, Submission, Utc, Uuid,
+    ValidatedSubmission, VecDeque, WorkActivity, WorkspaceFileScope, WorkspaceFiles, WorkspaceRead,
+    active_run_summary, activity_catalog, broadcast, classify_journal_sequence,
+    compact_replay_deltas, delete_workspace_file, durable_history_page, event_sequence, git_status,
+    internal, invalid_config, invalid_workspace, list_workspace_files, load_replay, mpsc, oneshot,
+    project_record, publish_ready_and_pending, read_workspace_file, receive, record_and_publish,
+    reject_pending_bot_deletion, stopped, switch_workspace_branch, update_session_activity,
+    update_widgets, validate_gateway_event, workspace_git_diff, workspace_git_diff_totals,
+    write_workspace_file,
 };
+use crate::harness::mobius::RealtimeModel;
+use crate::harness::{HarnessContext, HarnessSession};
 use mobius::backend::model::provider::provider;
 use mobius::protocol::MessageTarget;
 
@@ -46,26 +46,16 @@ struct HostState {
     telemetry: Arc<crate::telemetry::Telemetry>,
     storage_reads: Arc<super::telemetry::StorageMeasurements>,
     work_activity: Arc<WorkActivity>,
-    store: ConfigStore,
-    gateway: Arc<StdMutex<GatewayConfig>>,
+    harness: Arc<HarnessContext>,
     spec: ChatSpec,
-    credentials: Arc<CredentialStore>,
     bots: Arc<BotStore>,
     checkpoints: Arc<dyn CheckpointStore>,
-    scratchpad: Arc<Scratchpad>,
-    session_files: Arc<SessionFileStore>,
     alive: Arc<AtomicBool>,
     terminated: Arc<AtomicBool>,
     termination: Arc<tokio::sync::Notify>,
     session_mutations: Arc<RwLock<()>>,
-    discovery_gate: Arc<Mutex<()>>,
-    desktop: Arc<DesktopControl>,
-    remote_desktop: Arc<RemoteDesktop>,
-    live_chats: Arc<dyn LiveChats>,
-    host_access: HostAccess,
-    provider_epoch: Arc<AtomicU64>,
     activities: SessionActivities,
-    running: RunningAgent,
+    running: Box<dyn HarnessSession>,
     pending_turns: usize,
     pending_messages: HashSet<Arc<str>>,
     admissions: futures_util::stream::FuturesUnordered<
@@ -101,31 +91,12 @@ pub(super) struct LoadedReplay {
 struct SourceAdmission {
     id: Arc<str>,
     reserved: bool,
-    result: mobius::Result<mobius::agent::MessageAcceptance>,
+    result: mobius::Result<crate::harness::MessageAcceptance>,
     reply: oneshot::Sender<std::result::Result<(), Rejection>>,
-}
-
-struct RunningAgent {
-    session_id: SessionId,
-    sender: Option<AgentSender>,
-    events: mpsc::Receiver<JournalEvent>,
-    model_router: Arc<ModelRouter>,
-    sandbox: Arc<mobius::backend::sandbox::Sandbox>,
-    frontend: FrontendExtensions,
-    frontend_sink: mobius::middleware::FrontendEventSink,
-    session: Arc<mobius::protocol::SessionConfiguredEvent>,
-    gateway_sandbox: Arc<GatewaySandbox>,
-    prepared: Arc<crate::assembly::PreparedBot>,
 }
 
 pub(super) struct ProviderCutoverStatus {
     pub(super) idle: bool,
-}
-
-pub(crate) struct RealtimeModel {
-    /// The chat route used to prepare this call's instructions.
-    pub(crate) route: String,
-    pub(crate) call: mobius::middleware::voice::VoiceCallContext,
 }
 
 pub(super) struct ActiveRoutine {
@@ -136,24 +107,24 @@ pub(super) struct ActiveRoutine {
 }
 
 /// The run state gateway code reads from a session's durable checkpoint.
-pub(super) struct SessionRuntimeState {
-    pub(super) active_turn: Option<ActiveTurn>,
+pub(crate) struct SessionRuntimeState {
+    pub(crate) active_turn: Option<ActiveTurn>,
     /// An approval is durable, whether or not its decision has arrived.
-    pub(super) approval_pending: bool,
-    pub(super) undecided_approval: Option<mobius::protocol::ExecApprovalRequestEvent>,
-    pub(super) has_pending_messages: bool,
-    pub(super) stats: RunStats,
+    pub(crate) approval_pending: bool,
+    pub(crate) undecided_approval: Option<mobius::protocol::ExecApprovalRequestEvent>,
+    pub(crate) has_pending_messages: bool,
+    pub(crate) stats: RunStats,
 }
 
-pub(super) struct ActiveTurn {
-    pub(super) turn_id: Arc<str>,
-    pub(super) submission_id: Arc<str>,
-    pub(super) author: Arc<MessageAuthor>,
-    pub(super) started_at_ms: i64,
+pub(crate) struct ActiveTurn {
+    pub(crate) turn_id: Arc<str>,
+    pub(crate) submission_id: Arc<str>,
+    pub(crate) author: Arc<MessageAuthor>,
+    pub(crate) started_at_ms: i64,
 }
 
 impl SessionRuntimeState {
-    pub(super) async fn load(
+    pub(crate) async fn load(
         checkpoints: &dyn CheckpointStore,
         session_id: &SessionId,
     ) -> Result<Option<Self>> {
@@ -274,6 +245,10 @@ pub(super) enum HostCommand {
         folder: PathBuf,
         reply: oneshot::Sender<std::result::Result<(), Rejection>>,
     },
+    SetMemory {
+        memory: Option<bool>,
+        reply: oneshot::Sender<std::result::Result<(), Rejection>>,
+    },
     SetMessagePinned {
         target: MessageTarget,
         pinned: bool,
@@ -361,53 +336,22 @@ impl HostHandle {
         reason = "the running agent and host state move into the spawned actor"
     )]
     pub(super) async fn start(
-        store: ConfigStore,
-        gateway: Arc<StdMutex<GatewayConfig>>,
+        harness: Arc<HarnessContext>,
         spec: ChatSpec,
-        credentials: Arc<CredentialStore>,
-        bots: Arc<BotStore>,
-        checkpoints: Arc<dyn CheckpointStore>,
-        scratchpad: Arc<Scratchpad>,
-        session_files: Arc<SessionFileStore>,
         session_mutations: Arc<RwLock<()>>,
-        discovery_gate: Arc<Mutex<()>>,
-        desktop: Arc<DesktopControl>,
-        remote_desktop: Arc<RemoteDesktop>,
-        provider_epoch: Arc<AtomicU64>,
         activities: SessionActivities,
         work_activity: Arc<WorkActivity>,
         gateway_events: broadcast::Sender<ServerFrame>,
         session_id: SessionId,
         origin_label: &str,
-        live_chats: Arc<dyn LiveChats>,
-        host_access: HostAccess,
     ) -> Result<Self> {
-        let running = start_agent(
-            Arc::clone(&gateway),
-            &spec,
-            &store,
-            Arc::clone(&credentials),
-            Arc::clone(&bots),
-            Arc::clone(&checkpoints),
-            Arc::clone(&scratchpad),
-            Arc::clone(&session_files),
-            Arc::clone(&discovery_gate),
-            Arc::clone(&desktop),
-            Arc::clone(&remote_desktop),
-            &session_id,
-            origin_label,
-            None,
-            Arc::clone(&provider_epoch),
-            Arc::clone(&live_chats),
-            Arc::clone(&host_access),
-        )
-        .await?;
+        let running = crate::harness::start(&harness, &spec, &session_id, origin_label).await?;
         let alive = Arc::new(AtomicBool::new(true));
         let terminated = Arc::new(AtomicBool::new(false));
         let termination = Arc::new(tokio::sync::Notify::new());
         let (commands, receiver) = mpsc::channel(COMMAND_CAPACITY);
         let (events, _) = broadcast::channel(BROADCAST_CAPACITY);
-        let loaded = load_replay(checkpoints.as_ref(), &session_id, &running.frontend).await?;
+        let loaded = load_replay(harness.checkpoints.as_ref(), &session_id, &*running).await?;
         let shared_session_id = session_id;
         let mut guard = activities.lock().await;
         let activity = guard
@@ -417,29 +361,19 @@ impl HostHandle {
         activity.attention = super::replay::attention_count(&loaded.widgets);
         let awaiting_approval = activity.state == SessionActivityState::AwaitingApproval;
         drop(guard);
-        let gateway_host = (host_access)()?;
+        let gateway_host = (harness.host_access)()?;
         let mut state = HostState {
             telemetry: gateway_host.telemetry,
             storage_reads: gateway_host.storage_reads,
             work_activity,
-            store,
-            gateway,
+            bots: Arc::clone(&harness.bots),
+            checkpoints: Arc::clone(&harness.checkpoints),
+            harness,
             spec,
-            credentials,
-            bots,
-            checkpoints,
-            scratchpad,
-            session_files,
-            discovery_gate,
-            desktop,
-            remote_desktop,
-            live_chats,
-            host_access,
             alive: Arc::clone(&alive),
             terminated: Arc::clone(&terminated),
             termination: Arc::clone(&termination),
             session_mutations: Arc::clone(&session_mutations),
-            provider_epoch,
             activities,
             running,
             pending_turns: usize::from(awaiting_approval),
@@ -618,6 +552,14 @@ impl HostHandle {
         folder: PathBuf,
     ) -> std::result::Result<(), Rejection> {
         self.request(|reply| HostCommand::AttachFolder { folder, reply })
+            .await
+    }
+
+    pub(crate) async fn set_memory(
+        &self,
+        memory: Option<bool>,
+    ) -> std::result::Result<(), Rejection> {
+        self.request(|reply| HostCommand::SetMemory { memory, reply })
             .await
     }
 
@@ -872,7 +814,7 @@ pub(super) fn provider_refresh_matches(
             }
             let definition = provider(&selection.provider)?;
             let selected_base_url =
-                crate::provider_catalog::selected_base_url(definition, selection);
+                crate::harness::mobius::provider_catalog::selected_base_url(definition, selection);
             Ok(selected_base_url == *base_url)
         }
         ProviderRefresh::Provider(provider) => Ok(selection.provider == *provider),
@@ -891,152 +833,7 @@ pub(super) fn fail_active_routine(
         .map(|_| ())
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "agent assembly keeps chat and gateway dependencies explicit"
-)]
-async fn start_agent(
-    gateway: Arc<StdMutex<GatewayConfig>>,
-    spec: &ChatSpec,
-    store: &ConfigStore,
-    credentials: Arc<CredentialStore>,
-    bots: Arc<BotStore>,
-    checkpoints: Arc<dyn CheckpointStore>,
-    scratchpad: Arc<Scratchpad>,
-    session_files: Arc<SessionFileStore>,
-    discovery_gate: Arc<Mutex<()>>,
-    desktop: Arc<DesktopControl>,
-    remote_desktop: Arc<RemoteDesktop>,
-    session_id: &SessionId,
-    origin_label: &str,
-    prepared: Option<Arc<crate::assembly::PreparedBot>>,
-    provider_epoch: Arc<AtomicU64>,
-    live_chats: Arc<dyn LiveChats>,
-    host_access: HostAccess,
-) -> Result<RunningAgent> {
-    let prepared = if let Some(prepared) = prepared {
-        prepared
-    } else {
-        loop {
-            let generation = bots.preparation_generation.load(Ordering::Acquire);
-            let runtime_bot = bots.runtime_bot(&spec.bot_id)?;
-            let bot = Arc::clone(&runtime_bot.record);
-            let epoch = provider_epoch.load(Ordering::Acquire);
-            let cached = bots
-                .prepared
-                .lock()
-                .await
-                .get(&*bot.id)
-                .filter(|prepared| prepared.matches_runtime(&bot) && prepared.epoch == epoch)
-                .map(Arc::clone);
-            if let Some(prepared) = cached {
-                break prepared;
-            }
-            let preparation = {
-                let config = crate::config::lock(&gateway)?;
-                crate::assembly::prepare_bot(
-                    &config,
-                    runtime_bot,
-                    store,
-                    &credentials,
-                    Arc::clone(&session_files),
-                    epoch,
-                    Arc::clone(remote_desktop.configuration()),
-                )
-            };
-            let prepared = preparation.await;
-            let mut cache = bots.prepared.lock().await;
-            let current_bot = bots.bot(&spec.bot_id)?;
-            // A refresh can finish while preparation waits for external resources.
-            if generation != bots.preparation_generation.load(Ordering::Acquire)
-                || epoch != provider_epoch.load(Ordering::Acquire)
-                || !crate::assembly::same_runtime(
-                    &bot,
-                    &current_bot.description,
-                    &current_bot.config.config,
-                )
-            {
-                continue;
-            }
-            if let Some(cached) = cache
-                .get(&*bot.id)
-                .filter(|cached| cached.matches_runtime(&bot) && cached.epoch == epoch)
-            {
-                break Arc::clone(cached);
-            }
-            let prepared = Arc::new(prepared?);
-            if let Some(previous) = cache.insert(Arc::clone(&bot.id), Arc::clone(&prepared)) {
-                previous.invalidate();
-            }
-            break prepared;
-        }
-    };
-    adopt_checkpoint_owner(checkpoints.as_ref(), session_id, spec).await?;
-    let BuiltAgent {
-        agent,
-        model_router,
-        sandbox,
-        gateway_sandbox,
-    } = assemble(
-        gateway,
-        spec,
-        store,
-        checkpoints,
-        scratchpad,
-        session_files,
-        discovery_gate,
-        desktop,
-        remote_desktop,
-        Some(session_id.share()),
-        origin_label,
-        Arc::clone(&prepared),
-        Some(live_chats),
-        Some(host_access),
-    )
-    .await?;
-    let frontend_sink = agent.frontend_sink();
-    let (sender, events, session, frontend) = agent.into_recorded_parts();
-    let session_id = session.session_id.share();
-    Ok(RunningAgent {
-        session_id,
-        sender: Some(sender),
-        events,
-        model_router,
-        sandbox,
-        frontend,
-        frontend_sink,
-        session,
-        gateway_sandbox,
-        prepared,
-    })
-}
-
-/// Moves a reassigned chat's durable checkpoint to the Bot that now starts it.
-async fn adopt_checkpoint_owner(
-    checkpoints: &dyn CheckpointStore,
-    session_id: &SessionId,
-    spec: &ChatSpec,
-) -> Result<()> {
-    let Some(mut checkpoint) = checkpoints.load(session_id).await? else {
-        return Ok(());
-    };
-    if checkpoint.session_context.owner_id == spec.bot_id {
-        return Ok(());
-    }
-    checkpoint.sequence = checkpoint
-        .sequence
-        .checked_add(1)
-        .ok_or_else(|| Error::Config("checkpoint sequence overflow".into()))?;
-    Arc::make_mut(&mut checkpoint.session_context).owner_id = Arc::clone(&spec.bot_id);
-    checkpoint.metadata.extend(spec.metadata()?);
-    checkpoints.save(checkpoint, Vec::new(), None).await?;
-    Ok(())
-}
-
-async fn shutdown_agent(agent: RunningAgent) {
-    let RunningAgent {
-        sender, mut events, ..
-    } = agent;
-    drop(sender);
-    while events.recv().await.is_some() {}
+async fn shutdown_agent(mut agent: Box<dyn HarnessSession>) {
+    agent.shutdown();
+    while agent.events().recv().await.is_some() {}
 }

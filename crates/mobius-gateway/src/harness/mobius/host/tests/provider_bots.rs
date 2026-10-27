@@ -143,7 +143,7 @@ async fn saved_bot_routes_survive_missing_credentials_without_advertising_unavai
     )
     .await
     .expect("saved configured route must not require a credential to boot");
-    crate::assembly::prepare_bot(
+    crate::harness::mobius::assembly::prepare_bot(
         &config,
         bots.runtime_bot(&saved.id).expect("saved Bot"),
         &store,
@@ -226,9 +226,9 @@ async fn saved_bot_routes_survive_missing_credentials_without_advertising_unavai
         },
         Arc::new(crate::wire::VersionedAgentConfig {
             revision: saved.config.revision + 1,
-            config: composition,
+            config: crate::wire::HarnessConfig::Mobius(Arc::new(composition)),
         }),
-        mobius::backend::sandbox::ApprovalPolicy::Ask,
+        crate::harness::ApprovalMode::Mobius(mobius::backend::sandbox::ApprovalPolicy::Ask),
     )
     .expect("persist invalid route for startup validation");
     let error = GatewayHost::start(store, config, credentials, bots)

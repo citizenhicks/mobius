@@ -514,7 +514,7 @@ pub(super) fn render_bots(frame: &mut ratatui::Frame<'_>, area: Rect, state: &mu
                     " @{} · {} · {}",
                     terminal_text(&bot.handle),
                     terminal_text(&bot.name),
-                    terminal_text(&bot.config.config.provider.model)
+                    terminal_text(&crate::frontend::bots::bot_runtime(bot, &state.gateway))
                 ))
             })
             .collect()

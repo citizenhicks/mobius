@@ -466,7 +466,7 @@ pub(super) fn connection_diagnostic(error: &Error) -> impl std::fmt::Display + '
         Error::Config(_) => formatter.write_str("configuration"),
         Error::Protocol(_) | Error::WebSocketUpgrade { .. } => formatter.write_str("protocol"),
         Error::Unauthorized => formatter.write_str("authentication"),
-        Error::Mobius(_) => formatter.write_str("agent"),
+        Error::Mobius(_) | Error::HarnessUnavailable(_) => formatter.write_str("agent"),
         Error::Sqlite(_) => formatter.write_str("storage"),
         Error::PublicationApplied { .. } => formatter.write_str("storage publication uncertainty"),
     })

@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn open_hard_rejects_previous_schema_generations() {
-    for version in [6, 7, 8, 9, 10, 11, 12] {
+    for version in [6, 7, 8, 9, 10, 11, 12, 13] {
         let workspace = tempfile::tempdir().expect("create workspace");
         let path = workspace.path().join("checkpoints.sqlite3");
         drop(SqliteCheckpoint::new(&path).expect("create current database"));
@@ -18,7 +18,7 @@ fn open_hard_rejects_previous_schema_generations() {
         assert_eq!(
             error.to_string(),
             format!(
-                "checkpoint error: unsupported SQLite schema version {version}; expected 13 \
+                "checkpoint error: unsupported SQLite schema version {version}; expected 14 \
                  (start with a fresh database)"
             )
         );

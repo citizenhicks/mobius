@@ -47,7 +47,7 @@ async fn reassigning_chat_preserves_history_and_binds_the_target_bot() {
         let state = gateway.state.lock().await;
         (Arc::clone(&state.bots), Arc::clone(&state.checkpoints))
     };
-    let mut config = bot.config.config.clone();
+    let mut config = (**bot.config.config.mobius().unwrap()).clone();
     config.system_prompt = "Follow the target Bot instructions.".into();
     config.middleware.set_enabled("attachments", false);
     let target = bots
@@ -172,7 +172,7 @@ async fn failed_reassignment_restores_the_owner_and_running_chat() {
         (Arc::clone(&state.bots), Arc::clone(&state.checkpoints))
     };
     let before = checkpoints.load(host.session_id()).await.unwrap().unwrap();
-    let mut config = bot.config.config.clone();
+    let mut config = (**bot.config.config.mobius().unwrap()).clone();
     config.middleware.set_enabled("instructions", true);
     let target = bots
         .create_bot("Instructions", "Read workspace instructions", config.into())
@@ -352,7 +352,7 @@ async fn deleting_a_bot_removes_owned_state() {
     checkpoints
         .save_state(&chat_id, "tasks.v1", &serde_json::json!([]))
         .await
-        .expect("save chat scratchpad");
+        .expect("save chat state");
     for session_id in [&chat_id, &child_id] {
         session_files
             .publish_artifact(
@@ -462,7 +462,7 @@ async fn deleting_a_bot_removes_owned_state() {
         checkpoints
             .load_state(&chat_id, "tasks.v1")
             .await
-            .expect("load deleted scratchpad")
+            .expect("load deleted chat state")
             .is_none()
     );
     assert!(

@@ -4,7 +4,7 @@ use crate::wire::{
     BotAction, BotSubscription, HookBinding, HookData, HookEvent, HookKind, HookSource,
 };
 use mobius::SessionId;
-use mobius::backend::model::{Model, ModelEventSink, ModelOutput, ModelRequest};
+use mobius::backend::model::{Model, ModelEventSink, ModelOutput, ModelRequest, ModelRouter};
 use mobius::protocol::{ActiveMessageDelivery, MessageSource, ToolDiscoveryMode};
 
 #[derive(Default)]
@@ -62,7 +62,8 @@ pub(super) async fn install_model(
 ) {
     let state = gateway.state.lock().await;
     let config = state.config.lock().unwrap().clone();
-    let selection = &bot.config.config.provider;
+    let composition = bot.config.config.mobius().unwrap();
+    let selection = &composition.provider;
     state
         .credentials
         .set(
@@ -73,11 +74,12 @@ pub(super) async fn install_model(
             None,
         )
         .unwrap();
-    let mut prepared = crate::assembly::prepare_bot(
+    let mut prepared = crate::harness::mobius::assembly::prepare_bot(
         &config,
         crate::bots::RuntimeBot {
             record: Arc::new(bot.clone()),
-            approval_policy: crate::config::validate_agent_composition(&bot.config.config).unwrap(),
+            composition: Arc::clone(composition),
+            approval_policy: crate::config::validate_agent_composition(composition).unwrap(),
         },
         &state.store,
         &state.credentials,
@@ -87,7 +89,7 @@ pub(super) async fn install_model(
     )
     .await
     .unwrap();
-    let route = crate::provider_catalog::configured_model_providers(
+    let route = crate::harness::mobius::provider_catalog::configured_model_providers(
         &config,
         &state.store,
         &state.credentials,

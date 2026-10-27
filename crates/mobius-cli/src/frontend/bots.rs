@@ -49,6 +49,30 @@ fn request_action(
     }
 }
 
+/// The model a Bot listing names: the möbius route's model, or the CLI harness's model.
+pub(super) fn bot_model(bot: &mobius_gateway::wire::BotRecord) -> &str {
+    use mobius_gateway::wire::HarnessConfig;
+    match &bot.config.config {
+        HarnessConfig::Mobius(composition) => &composition.provider.model,
+        HarnessConfig::Codex(options) | HarnessConfig::Claude(options) => {
+            options.model.as_deref().unwrap_or("default model")
+        }
+    }
+}
+
+/// The harness label and model a Bot listing shows.
+pub(super) fn bot_runtime(
+    bot: &mobius_gateway::wire::BotRecord,
+    gateway: &mobius_gateway::wire::ReadyPayload,
+) -> String {
+    let harness = gateway
+        .harnesses
+        .iter()
+        .find(|harness| harness.kind == bot.harness)
+        .map_or("", |harness| harness.label.as_str());
+    format!("{harness} · {}", bot_model(bot))
+}
+
 #[cfg(test)]
 mod tests {
     use super::form::{FormFlow, RoutineForm};
@@ -57,8 +81,8 @@ mod tests {
     use super::*;
     use mobius::protocol::SessionFileLimits;
     use mobius_gateway::wire::{
-        AgentComposition, BotRecord, ProviderTint, ReadyPayload, Routine, RoutineInteractionPolicy,
-        RoutineRun, RoutineRunStatus, RoutineSchedule, RoutineScheduleKind, ServerMessage,
+        BotRecord, ProviderTint, ReadyPayload, Routine, RoutineInteractionPolicy, RoutineRun,
+        RoutineRunStatus, RoutineSchedule, RoutineScheduleKind, ServerMessage,
         VersionedAgentConfig,
     };
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -74,6 +98,7 @@ mod tests {
             providers: Vec::new(),
             provider_instances: Vec::new(),
             agent_catalog: Default::default(),
+            harnesses: Vec::new(),
             max_active_sessions: 1,
             session_file_limits: SessionFileLimits {
                 max_attachment_references: 0,
@@ -97,14 +122,19 @@ mod tests {
             description: "description".into(),
             tint: ProviderTint::Teal,
             shape: mobius_gateway::wire::BotShape::Circle,
+            harness: mobius_gateway::wire::HarnessKind::Mobius,
             config: Arc::new(VersionedAgentConfig {
                 revision: 7,
-                config: AgentComposition::default(),
+                config: mobius_gateway::wire::HarnessConfig::Mobius(Arc::default()),
             }),
             capabilities: mobius_gateway::wire::BotCapabilities {
                 attachments: false,
                 computer: false,
                 voice: mobius_gateway::wire::VoiceCapability::Off,
+                memory: mobius_gateway::wire::BotMemory {
+                    enabled: false,
+                    global: false,
+                },
             },
             routine_interaction_policy: RoutineInteractionPolicy::Unattended,
         }
@@ -197,9 +227,12 @@ mod tests {
         assert_eq!(expected_revision, 7);
         assert_eq!(tint, bot.tint);
         assert_eq!(shape, bot.shape);
-        let mut expected = bot.config.config.clone();
+        let mut expected = (**bot.config.config.mobius().unwrap()).clone();
         expected.system_prompt = "Be concise.\nCheck correctness.\nExplain risks.".into();
-        assert_eq!(config, expected);
+        assert_eq!(
+            config,
+            mobius_gateway::wire::HarnessConfig::Mobius(Arc::new(expected))
+        );
     }
 
     #[test]

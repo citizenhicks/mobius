@@ -401,6 +401,10 @@ fn bot_capabilities_tag_voice_by_state() {
             route: "voice-route".into(),
             waits_for_session_started: true,
         },
+        memory: crate::wire::BotMemory {
+            enabled: true,
+            global: false,
+        },
     };
     let encoded = serde_json::to_value(&capabilities).expect("encode");
     assert_eq!(
@@ -409,6 +413,7 @@ fn bot_capabilities_tag_voice_by_state() {
             "attachments": true,
             "computer": false,
             "voice": {"state": "ready", "route": "voice-route", "waits_for_session_started": true},
+            "memory": {"enabled": true, "global": false},
         })
     );
     assert_eq!(
@@ -507,4 +512,93 @@ fn transcript_ops_use_flat_kind_tagged_items_and_rows() {
         }
     );
     assert_eq!(serde_json::to_value(&decoded).expect("encode ops"), ops);
+}
+
+#[test]
+fn harness_configs_are_tagged_by_harness_and_reject_unknown_fields() {
+    let codex = serde_json::json!({
+        "harness": "codex",
+        "model": "gpt-5-codex",
+        "settings": {"effort": "high"},
+        "access": "accept_edits",
+    });
+    let decoded = serde_json::from_value::<HarnessConfig>(codex.clone()).expect("decode");
+    assert_eq!(
+        decoded,
+        HarnessConfig::Codex(CliHarnessConfig {
+            model: Some("gpt-5-codex".into()),
+            settings: [("effort".to_owned(), "high".into())].into(),
+            access: BotAccess::AcceptEdits,
+        })
+    );
+    assert_eq!(serde_json::to_value(&decoded).expect("encode"), codex);
+    let claude = serde_json::json!({"harness": "claude", "access": "full_access"});
+    assert_eq!(
+        serde_json::to_value(
+            serde_json::from_value::<HarnessConfig>(claude.clone()).expect("decode")
+        )
+        .expect("encode"),
+        claude
+    );
+
+    let mut mobius = serde_json::to_value(AgentComposition::default()).expect("encode");
+    mobius["harness"] = "mobius".into();
+    let decoded = serde_json::from_value::<HarnessConfig>(mobius.clone()).expect("decode");
+    assert_eq!(decoded.kind(), HarnessKind::Mobius);
+    assert_eq!(serde_json::to_value(&decoded).expect("encode"), mobius);
+    mobius["unexpected"] = true.into();
+    assert!(serde_json::from_value::<HarnessConfig>(mobius).is_err());
+    assert!(
+        serde_json::from_value::<HarnessConfig>(
+            serde_json::json!({"harness": "codex", "access": "auto", "unexpected": 1})
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn harness_descriptors_and_messages_round_trip() {
+    let descriptor = serde_json::json!({
+        "kind": "claude",
+        "label": "Claude",
+        "symbol": "claude",
+        "install": {"state": "installed", "version": "2.1.0", "path": "/usr/local/bin/claude"},
+        "auth": {"state": "signed_in", "account": "someone"},
+        "capabilities": {
+            "attachments": false, "steering": true, "approvals": true,
+            "resume": true, "voice": false, "computer": false,
+        },
+        "models": [{"id": "opus", "label": "Opus", "efforts": ["low", "max"]}],
+        "settings": [],
+        "defaults": {"access": "supervised"},
+    });
+    let decoded = serde_json::from_value::<HarnessDescriptor>(descriptor.clone()).expect("decode");
+    assert_eq!(serde_json::to_value(&decoded).expect("encode"), descriptor);
+    assert_eq!(
+        serde_json::to_value(HarnessInstall::Missing {
+            hint: "install it".into()
+        })
+        .expect("encode"),
+        serde_json::json!({"state": "missing", "hint": "install it"})
+    );
+
+    for message in [
+        serde_json::json!({"type": "create_bot", "request_id": "r", "harness": "codex",
+            "name": "Coder", "description": ""}),
+        serde_json::json!({"type": "configure_harness", "request_id": "r", "kind": "claude",
+            "cli_path": "/opt/claude", "defaults": {"access": "auto"}}),
+        serde_json::json!({"type": "refresh_harnesses", "request_id": "r"}),
+    ] {
+        let mut frame = message.clone();
+        frame["version"] = PROTOCOL_VERSION.into();
+        let decoded = serde_json::from_value::<ClientFrame>(frame).expect("decode");
+        assert!(!matches!(
+            decoded.message,
+            ClientMessage::InvalidRequest { .. }
+        ));
+        assert_eq!(
+            serde_json::to_value(&decoded.message).expect("encode"),
+            message
+        );
+    }
 }

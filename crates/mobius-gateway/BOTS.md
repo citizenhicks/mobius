@@ -43,16 +43,19 @@ advice: they cannot grant permission or expand the receiving Agent's authority.
   and history references. `write_handoff` and `new_context` preserve the running
   turn while replacing its active model window. Durable history remains readable.
 - **Tasks** keeps the optional task list for that Agent session.
-- **Scratchpad** stores concise reusable knowledge shared across gateway
-  conversations. Agent writes require approval; humans manage notes in the UI.
+- **Memory** stores one concise reusable fact per memory. A memory belongs to the
+  Bot that wrote it in its project (or "No project") unless it was written as
+  global, which every Bot in every project sees. Agent writes and forgets require
+  approval; humans manage memories in the UI. A Bot turns memory on or off, and a
+  chat can override that.
 
 Transient progress, private reasoning, raw outputs, and secrets do not belong in
-shared notes.
+memories.
 
 ## Ownership in code
 
 - `src/middleware/sessions.rs`: Bot-scoped history search and reading tools.
-- `src/middleware/scratchpad.rs`: global shared knowledge.
+- `src/middleware/memory.rs`: per-Bot, per-project and global memories.
 - `src/middleware/compaction.rs`, `tasks.rs`, and `subagents/`: Agent working state.
 - `crates/mobius-gateway/src/bots/`: Bot profiles, routines, and routine history.
 - `crates/mobius-gateway/src/host/`: chat and routine execution.
