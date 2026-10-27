@@ -25,9 +25,11 @@ impl HostState {
             ));
         };
         let event = &record.event;
+        let promoted_idle_turn = matches!(&event.msg, EventMsg::TurnStarted(turn)
+            if !turn.idle && self.idle_turn.as_ref() == Some(&turn.turn_id));
         match &event.msg {
             EventMsg::TurnStarted(turn) => {
-                self.idle_turn = turn.idle;
+                self.idle_turn = turn.idle.then(|| Arc::clone(&turn.turn_id));
                 if !turn.idle {
                     self.last_assistant_text = None;
                 }
@@ -57,11 +59,14 @@ impl HostState {
             _ => {}
         }
         let next_activity = self.activity_for_event(&event.msg).await?;
-        account_turn_event(&mut self.pending_turns, &mut self.pending_messages, event);
+        // The hidden start already reserved this same turn; its accepted Message releases its own reservation.
+        if !promoted_idle_turn {
+            account_turn_event(&mut self.pending_turns, &mut self.pending_messages, event);
+        }
         match turn_lifecycle(&event.msg) {
             Some(TurnLifecycle::ApprovalRequested { .. }) => self.approval_active = true,
             Some(TurnLifecycle::Finished { .. }) => {
-                self.idle_turn = false;
+                self.idle_turn = None;
                 self.approval_active = false;
                 if std::mem::take(&mut self.compacted_in_turn) {
                     self.broadcast_meta(self.context_limit_tokens())?;
@@ -377,7 +382,7 @@ impl HostState {
                     .or_else(|| Some(Utc::now().timestamp())),
                 ..SessionActivity::default()
             }),
-            EventMsg::Error(error) if self.idle_turn => {
+            EventMsg::Error(error) if self.idle_turn.is_some() => {
                 self.turn_error = Some(Arc::clone(&error.message));
                 None
             }

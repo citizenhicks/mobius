@@ -141,7 +141,7 @@ impl Runner {
         let mut delivered_once = Arc::clone(&self.state.delivered_once);
         let mut transcript = Vec::with_capacity(messages.len());
         let mut events = Vec::new();
-        let mut idle_author = None;
+        let mut idle_origin = None;
         for mut message in messages {
             let mut hook_events = Vec::new();
             let submitted = self
@@ -174,7 +174,7 @@ impl Runner {
                 });
                 continue;
             }
-            if idle_author.is_none()
+            if idle_origin.is_none()
                 && self
                     .state
                     .active_execution
@@ -182,7 +182,8 @@ impl Runner {
                     .is_some_and(|execution| execution.idle)
                 && let EventMsg::Message(event) = &message.event
             {
-                idle_author = Some(Arc::new(event.author.clone())); // rules-allow: the execution keeps the first accepted author while its message moves on
+                let author = Arc::new(event.author.clone()); // rules-allow: the execution keeps the first accepted author while its message moves on
+                idle_origin = Some((author, Arc::clone(&message.submission_id)));
             }
             for item in submitted
                 .input
@@ -220,13 +221,30 @@ impl Runner {
                 .active_execution
                 .as_mut()
                 .is_some_and(|execution| std::mem::take(&mut execution.idle));
-        let previous_author = idle_author.and_then(|author| {
-            self.state
-                .make_mut()
-                .active_execution
-                .as_mut()
-                .map(|execution| std::mem::replace(&mut execution.author, author))
-        });
+        let (previous_author, promoted_submission_id) = match idle_origin {
+            Some((author, submission_id)) => (
+                self.state
+                    .make_mut()
+                    .active_execution
+                    .as_mut()
+                    .map(|execution| std::mem::replace(&mut execution.author, author)),
+                Some(submission_id),
+            ),
+            None => (None, None),
+        };
+        if was_idle && let Some(submission_id) = promoted_submission_id {
+            events.insert(
+                0,
+                turn_event(
+                    &submission_id,
+                    EventMsg::TurnStarted(crate::protocol::TurnStartedEvent {
+                        idle: false,
+                        turn_id: Arc::clone(turn_id),
+                        model_context_window: Some(self.config.context_window),
+                    }),
+                ),
+            );
+        }
         let context_len = self.state.context.len();
         context.commit(&mut self.state.make_mut().context);
         let previous_delivered_once =

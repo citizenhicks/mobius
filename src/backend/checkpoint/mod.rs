@@ -821,9 +821,9 @@ pub async fn event_turn_page(
     let mut cursor = before_sequence;
     let mut latest_sequence = 0;
     let mut events = Vec::new();
-    let mut found_start = false;
+    let mut found_start: Option<Arc<str>> = None;
     let mut has_earlier_turn = false;
-    // Agent starts between the earlier turn and this one: they mark this turn as resumed.
+    // Join records between promotion starts; only agent starts survive an older turn gap.
     let mut starts_before = Vec::new();
     let mut in_gap = true;
 
@@ -841,18 +841,25 @@ pub async fn event_turn_page(
             latest_sequence = page.latest_sequence;
         }
         for event in page.events {
-            if found_start {
+            if let Some(turn_id) = &found_start {
                 match &event.event.msg {
+                    EventMsg::TurnStarted(started) if &started.turn_id == turn_id => {
+                        events.append(&mut starts_before);
+                        events.push(event);
+                        in_gap = true;
+                    }
                     EventMsg::TurnStarted(_) => {
                         has_earlier_turn = true;
                         break;
                     }
                     EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_) => in_gap = false,
-                    EventMsg::SessionConfigured(_) if in_gap => starts_before.push(event),
+                    _ if in_gap => starts_before.push(event),
                     _ => {}
                 }
             } else {
-                found_start = matches!(&event.event.msg, EventMsg::TurnStarted(_));
+                if let EventMsg::TurnStarted(started) = &event.event.msg {
+                    found_start = Some(Arc::clone(&started.turn_id));
+                }
                 events.push(event);
             }
         }
@@ -866,7 +873,7 @@ pub async fn event_turn_page(
     }
 
     let Some((start_index, start_sequence, turn_id)) =
-        events.iter().enumerate().find_map(|(index, event)| {
+        events.iter().enumerate().rev().find_map(|(index, event)| {
             let EventMsg::TurnStarted(started) = &event.event.msg else {
                 return None;
             };
@@ -891,7 +898,11 @@ pub async fn event_turn_page(
     let next_before_sequence = has_earlier_turn.then_some(start_sequence);
     let mut events: Vec<_> = events.drain(page_start..=start_index).collect();
     if has_earlier_turn {
-        events.extend(starts_before);
+        events.extend(
+            starts_before
+                .into_iter()
+                .filter(|event| matches!(event.event.msg, EventMsg::SessionConfigured(_))),
+        );
     }
 
     Ok(EventPage {

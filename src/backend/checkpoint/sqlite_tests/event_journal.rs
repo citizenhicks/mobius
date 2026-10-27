@@ -1,6 +1,82 @@
 use super::*;
 
 #[tokio::test]
+async fn turn_history_keeps_idle_promotion_together_across_storage_pages() {
+    use crate::backend::checkpoint::{TURN_PAGE_BATCH_SIZE, event_turn_page};
+    use crate::protocol::{TurnCompleteEvent, TurnStartedEvent, WarningEvent};
+
+    let directory = tempfile::tempdir().expect("directory");
+    let store = SqliteCheckpoint::new(directory.path().join("promoted-turn.sqlite3"))
+        .expect("checkpoint store");
+    let session_id = session("session");
+    let start = |id: &str, idle| {
+        EventMsg::TurnStarted(TurnStartedEvent {
+            idle,
+            turn_id: id.into(),
+            model_context_window: None,
+        })
+    };
+    let complete = |id: &str| {
+        EventMsg::TurnComplete(TurnCompleteEvent {
+            idle: false,
+            turn_id: id.into(),
+        })
+    };
+    let mut events = vec![
+        start("prior", false),
+        EventMsg::Warning(WarningEvent {
+            message: "prior work".into(),
+        }),
+        complete("prior"),
+        start("idle", true),
+    ];
+    events.extend((0..TURN_PAGE_BATCH_SIZE).map(|_| {
+        EventMsg::Warning(WarningEvent {
+            message: "idle preparation".into(),
+        })
+    }));
+    events.extend([start("idle", false), complete("idle")]);
+    let recorded = store
+        .save_with_events(
+            Arc::new(checkpoint("session")),
+            Vec::new(),
+            None,
+            events
+                .into_iter()
+                .map(|msg| TimestampedEvent {
+                    recorded_at_ms: 1,
+                    event: Event {
+                        submission_id: None,
+                        msg,
+                    },
+                })
+                .collect(),
+        )
+        .await
+        .expect("save events");
+    let page = event_turn_page(&store, &session_id, None)
+        .await
+        .expect("promoted turn");
+    assert_eq!(
+        page.latest_sequence,
+        recorded.last().expect("last event").sequence
+    );
+    assert_eq!(
+        page.events,
+        recorded[3..].iter().rev().cloned().collect::<Vec<_>>()
+    );
+    assert_eq!(page.next_before_sequence, Some(recorded[3].sequence));
+    let prior = event_turn_page(&store, &session_id, page.next_before_sequence)
+        .await
+        .expect("prior turn");
+    assert_eq!(
+        prior.events,
+        recorded[..3].iter().rev().cloned().collect::<Vec<_>>()
+    );
+    assert_eq!(prior.next_before_sequence, None);
+}
+
+#[tokio::test]
 async fn large_tool_output_is_stored_once_and_restored_for_both_event_readers() {
     use crate::protocol::ToolCallEndEvent;
 

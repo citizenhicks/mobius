@@ -228,9 +228,6 @@ impl GatewayHost {
             .await
             .map_err(internal)?
         {
-            if bots.source_cursor(&summary.session_id).map_err(internal)?.0 >= summary.sequence {
-                continue;
-            }
             project_session_journal(
                 &checkpoints,
                 &bots,

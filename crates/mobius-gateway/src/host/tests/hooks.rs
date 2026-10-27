@@ -58,7 +58,7 @@ impl Model for CaptureModel {
 pub(super) async fn install_model(
     gateway: &GatewayHost,
     bot: &crate::wire::BotRecord,
-    model: Arc<CaptureModel>,
+    model: Arc<impl Model + 'static>,
 ) {
     let state = gateway.state.lock().await;
     let config = state.config.lock().unwrap().clone();
@@ -256,6 +256,169 @@ async fn idle_compaction_keeps_the_last_answer_and_emits_no_turn_hooks() {
         assert!(!matches!(&frame.message, ServerMessage::HookEvent { event }
             if matches!(&event.data, HookData::SessionTurnStarted { .. } | HookData::SessionTurnFinished { .. })));
     }
+    gateway.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_steered_idle_turn_publishes_normal_activity_and_hooks_without_an_extra_reservation() {
+    #[derive(Default)]
+    struct PausedCompactor {
+        compacting: tokio::sync::Notify,
+        release_compaction: tokio::sync::Notify,
+        answering: tokio::sync::Notify,
+        release_answer: tokio::sync::Notify,
+        answers: AtomicU64,
+    }
+    impl Model for PausedCompactor {
+        fn respond<'a>(
+            &'a self,
+            request: ModelRequest<'a>,
+            _: ModelEventSink,
+        ) -> mobius::BoxFuture<'a, mobius::Result<ModelOutput>> {
+            Box::pin(async move {
+                if request.tools.len() == 1 && request.tools[0].name == "write_handoff" {
+                    self.compacting.notify_one();
+                    self.release_compaction.notified().await;
+                    return ModelOutput::from_output(
+                        vec![
+                            serde_json::json!({"type":"function_call","call_id":"handoff","name":"write_handoff",
+                            "arguments":r#"{"notes":"Keep the task and latest request."}"#}),
+                        ],
+                        false,
+                        TokenUsage::default(),
+                    );
+                }
+                if self.answers.fetch_add(1, Ordering::Relaxed) > 0 {
+                    self.answering.notify_one();
+                    self.release_answer.notified().await;
+                }
+                ModelOutput::from_output(
+                    vec![
+                        serde_json::json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"Done."}]}),
+                    ],
+                    true,
+                    TokenUsage::default(),
+                )
+            })
+        }
+    }
+
+    let (root, gateway, original) = gateway_with_bot().await;
+    let mut composition = (**original.config.config.mobius().unwrap()).clone();
+    for (setting, value) in [("idle_min_tokens", 1), ("idle_minutes", 1)] {
+        composition.middleware.set_setting(
+            "compaction",
+            setting,
+            Some(mobius::protocol::FrontendSettingValue::Integer(value)),
+        );
+    }
+    let bot = gateway
+        .state
+        .lock()
+        .await
+        .bots
+        .create_bot(
+            "Idle promotion",
+            "Tests promoted idle work.",
+            composition.into(),
+        )
+        .unwrap();
+    let model = Arc::new(PausedCompactor::default());
+    install_model(&gateway, &bot, Arc::clone(&model)).await;
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let host = gateway.create_session(&workspace, &bot.id).await.unwrap();
+    let mut journal = host.subscribe();
+    host.submit(user_submission("initial", "Say done"))
+        .await
+        .unwrap();
+    host.wait_idle().await;
+    gateway.dispatch_bot_events().await.unwrap();
+    let mut catalog = gateway.subscribe();
+    tokio::time::pause();
+    tokio::task::yield_now().await;
+    tokio::time::advance(std::time::Duration::from_secs(61)).await;
+    tokio::time::resume();
+    let idle_turn = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let frame = journal.recv().await.unwrap();
+            if let ServerMessage::AgentEvent { record, .. } = &frame.message
+                && let EventMsg::TurnStarted(turn) = &record.event.msg
+                && turn.idle
+            {
+                break Arc::clone(&turn.turn_id);
+            }
+        }
+    })
+    .await
+    .unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        model.compacting.notified(),
+    )
+    .await
+    .unwrap();
+    host.submit(Submission {
+        id: "steer".into(),
+        op: Op::Message {
+            message: MessageSubmission {
+                author: MessageAuthor::User,
+                text: "Say done again".into(),
+                attachments: Vec::new(),
+                reply: None,
+                requested_delivery: Some(ActiveMessageDelivery::Steer),
+                target_turn_id: Some(idle_turn.to_string()),
+            },
+        },
+    })
+    .await
+    .unwrap();
+    model.release_compaction.notify_one();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        model.answering.notified(),
+    )
+    .await
+    .unwrap();
+    let running = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if let ServerMessage::Sessions { sessions, .. } = catalog.recv().await.unwrap().message
+                && let Some(activity) = sessions
+                    .into_iter()
+                    .find(|session| session.session_id == *host.session_id())
+                    .map(|session| session.activity)
+                && activity.state == crate::wire::SessionActivityState::Running
+            {
+                break activity;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(running.turn_id.as_ref(), Some(&idle_turn));
+    assert!(!host.runtime_is_idle().await.unwrap());
+    assert!(!host.stop_if_idle().await);
+    model.release_answer.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(5), host.wait_idle())
+        .await
+        .unwrap();
+    gateway.dispatch_bot_events().await.unwrap();
+    let mut hooks = Vec::new();
+    while let Ok(frame) = catalog.try_recv() {
+        if let ServerMessage::HookEvent { event } = frame.message {
+            match &event.data {
+                HookData::SessionTurnStarted { turn_id, .. } if turn_id == &idle_turn => {
+                    hooks.push("started");
+                }
+                HookData::SessionTurnFinished { turn_id, .. } if turn_id == &idle_turn => {
+                    hooks.push("finished");
+                }
+                _ => {}
+            }
+        }
+    }
+    assert_eq!(hooks, ["started", "finished"]);
+    assert_eq!(model.answers.load(Ordering::Relaxed), 2);
     gateway.shutdown().await;
 }
 

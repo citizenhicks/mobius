@@ -1,0 +1,3 @@
+# mobius-gateway 0.16.46
+
+Fixes chat activity, completion notifications and turn-start hooks when a message steers into idle compaction. Promoted work becomes Running under its existing turn ID, and the gateway counts it once so it can still settle and shut down. Includes framework 0.16.46. Protocol 97, config 29, Bot catalog 10, checkpoint 21 and SQLite schema 14 are unchanged; no further record conversion is required from 0.16.44 or 0.16.45. History pagination keeps maintenance and promotion starts sharing one ID on the same logical turn page. Hook projection now follows its event-journal cursor without comparing it to the separate checkpoint counter, so committed start and finish events are dispatched promptly.

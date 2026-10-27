@@ -675,10 +675,30 @@ async fn a_message_steered_into_the_idle_turn_is_answered_after_compaction() {
             );
             model.release.notify_one();
             let mut rejected = false;
+            let mut promoted_starts = 0;
+            let mut accepted_message = false;
             loop {
-                match agent.next_event().await.expect("event").msg {
+                let event = agent.next_event().await.expect("event");
+                match event.msg {
+                    EventMsg::TurnStarted(turn) if !turn.idle => {
+                        assert_eq!(turn.turn_id, idle_turn);
+                        assert_eq!(event.submission_id.as_deref(), Some("steer-into-idle"));
+                        assert!(!accepted_message, "promotion precedes the accepted message");
+                        promoted_starts += 1;
+                    }
+                    EventMsg::Message(message)
+                        if message.text == "answer this after idle compaction" =>
+                    {
+                        assert_eq!(message.delivery, MessageDelivery::Steer);
+                        assert_eq!(
+                            promoted_starts, 1,
+                            "the accepted steer promotes its idle turn once"
+                        );
+                        accepted_message = true;
+                    }
                     EventMsg::TurnComplete(turn) => {
                         assert_eq!(turn.turn_id, idle_turn, "the idle turn answers the steer");
+                        assert_eq!(turn.idle, reject);
                         break;
                     }
                     EventMsg::TurnAborted(turn) => panic!("idle turn aborted: {}", turn.reason),
@@ -687,6 +707,8 @@ async fn a_message_steered_into_the_idle_turn_is_answered_after_compaction() {
                 }
             }
             assert_eq!(rejected, reject);
+            assert_eq!(promoted_starts, usize::from(!reject));
+            assert_eq!(accepted_message, !reject);
             assert_eq!(
                 model.responses.load(Ordering::SeqCst),
                 if reject { 1 } else { 2 }
