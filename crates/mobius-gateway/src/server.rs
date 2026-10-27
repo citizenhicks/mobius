@@ -424,6 +424,18 @@ impl GatewayServer {
                                 inactivity.as_mut().reset(Instant::now() + ROUTINE_TICK);
                                 continue;
                             }
+                            // Running turns and armed idle timers (idle compaction) finish first.
+                            let sessions_idle = match self.host.runtime_activity().await {
+                                Ok(activity) => activity.idle,
+                                Err(rejection) => {
+                                    tracing::warn!(error = %rejection.message, "gateway idle check failed");
+                                    false
+                                }
+                            };
+                            if !sessions_idle {
+                                inactivity.as_mut().reset(Instant::now() + inactivity_timeout.min(ROUTINE_TICK));
+                                continue;
+                            }
                             stop_cause = StopCause::Idle;
                             break Ok(());
                         }

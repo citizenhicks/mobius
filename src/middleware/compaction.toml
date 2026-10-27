@@ -68,6 +68,35 @@ min = 1
 step = 5
 type = "integer"
 
+[[settings]]
+choices = { options = [{ description = "Compact only when the token threshold is reached", disables = [], label = "Off", tone = "neutral", value = "off" }, { description = "Also compact a large chat while it sits idle", disables = [], label = "On", tone = "neutral", value = "on" }], source = "static" }
+composer = false
+default = "on"
+description = "Whether a large chat is compacted while it sits idle"
+id = "idle_compaction"
+label = "Idle compaction"
+max_bytes = 3
+type = "select"
+
+[[settings]]
+default = 4
+description = "Compact an idle chat this many minutes after its last turn"
+id = "idle_minutes"
+label = "Idle minutes"
+max = 1440
+min = 1
+step = 1
+type = "integer"
+
+[[settings]]
+default = 100000
+description = "Compact an idle chat only when its context holds at least this many tokens"
+id = "idle_min_tokens"
+label = "Idle compaction from tokens"
+min = 1
+step = 10000
+type = "integer"
+
 [new_context]
 result_title = "new_context"
 title = "new_context"

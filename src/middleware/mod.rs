@@ -436,6 +436,17 @@ pub trait Middleware: Send + Sync {
         Box::pin(async { Ok(()) })
     }
 
+    /// Subscribes to the idle timer: how long after a turn ends `idle` should run.
+    /// The runtime fires it at most once per idle period; `None` arms no timer.
+    fn idle_after(&self, _session_id: &SessionId) -> Option<std::time::Duration> {
+        None
+    }
+
+    /// Runs in a hidden turn once the session stayed idle for `idle_after`; no model step follows.
+    fn idle<'a>(&'a self, _context: &'a mut ModelContext<'_>) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
     /// Keeps this capability out of child agents created from the root's configuration.
     fn main_agent_only(&self) -> bool {
         false
@@ -593,6 +604,14 @@ impl MiddlewareStack {
             .filter_map(|entry| entry.context_limit(context_window))
             .min()
             .unwrap_or(context_window)
+    }
+
+    /// The shortest idle delay any middleware subscribed for this session.
+    pub(crate) fn idle_after(&self, session_id: &SessionId) -> Option<std::time::Duration> {
+        self.entries
+            .iter()
+            .filter_map(|entry| entry.idle_after(session_id))
+            .min()
     }
 
     /// The assembled prompt and the bytes each middleware contributed to it; the base prompt
@@ -870,6 +889,7 @@ impl MiddlewareStack {
     pub(crate) async fn prepare_model(
         &self,
         mut context: ModelContext<'_>,
+        idle: bool,
     ) -> Result<Option<Vec<Value>>> {
         let supports_tool_image_input =
             context.model.supports_tool_image_input(context.provider)?;
@@ -880,6 +900,12 @@ impl MiddlewareStack {
             context.available_tools,
         )
         .await?;
+        if idle {
+            for entry in &self.entries {
+                entry.idle(&mut context).await?;
+            }
+            return Ok(None);
+        }
         for entry in &self.entries {
             entry.pre_model(&mut context).await?;
         }

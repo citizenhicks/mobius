@@ -885,6 +885,7 @@ async fn unselected_chat_history_is_read_without_starting_the_chat() {
     let checkpoints = host.checkpoint_store().await;
     for (recorded_at, msg) in [
         EventMsg::TurnStarted(mobius::protocol::TurnStartedEvent {
+            idle: false,
             turn_id: "away".into(),
             model_context_window: None,
         }),
@@ -892,6 +893,7 @@ async fn unselected_chat_history_is_read_without_starting_the_chat() {
             message: "work while away".into(),
         }),
         EventMsg::TurnComplete(mobius::protocol::TurnCompleteEvent {
+            idle: false,
             turn_id: "away".into(),
         }),
     ]
@@ -963,4 +965,26 @@ async fn unselected_chat_history_is_read_without_starting_the_chat() {
     drop(host);
     shutdown.send(()).expect("shutdown");
     serving.await.expect("server task").expect("server");
+}
+
+#[tokio::test]
+async fn idle_exit_waits_for_a_busy_session() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut server, _) = configured_test_server(root.path().join("state")).await;
+    server.config.runtime.idle_exit_seconds = 1;
+    let busy = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let probe = server.host.busy_session_for_test(Arc::clone(&busy)).await;
+    let serving = tokio::spawn(server.serve_until(std::future::pending()));
+    tokio::time::sleep(std::time::Duration::from_millis(2_500)).await;
+    assert!(
+        !serving.is_finished(),
+        "an armed idle timer or running turn holds the gateway"
+    );
+    busy.store(false, std::sync::atomic::Ordering::Release);
+    tokio::time::timeout(std::time::Duration::from_secs(5), serving)
+        .await
+        .expect("idle gateway exits once the session settles")
+        .unwrap()
+        .unwrap();
+    probe.await.unwrap();
 }

@@ -133,6 +133,9 @@ pub struct SessionConfiguredEvent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 /// Data for turn started event.
 pub struct TurnStartedEvent {
+    /// Whether this turn is background maintenance with no submitted message.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub idle: bool,
     /// The turn identifier.
     pub turn_id: Arc<str>,
     /// The model context window.
@@ -142,6 +145,9 @@ pub struct TurnStartedEvent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 /// Data for turn complete event.
 pub struct TurnCompleteEvent {
+    /// Whether this turn completed without receiving a submitted message.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub idle: bool,
     /// The turn identifier.
     pub turn_id: Arc<str>,
 }
@@ -149,6 +155,9 @@ pub struct TurnCompleteEvent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 /// Data for turn aborted event.
 pub struct TurnAbortedEvent {
+    /// Whether this turn aborted without receiving a submitted message.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub idle: bool,
     /// The turn identifier.
     pub turn_id: Arc<str>,
     /// The reason.

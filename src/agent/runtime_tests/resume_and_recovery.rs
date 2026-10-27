@@ -322,6 +322,7 @@ async fn restart_recovers_streamed_calls_without_reexecuting_them() {
         next_model_step: 0,
         stop_hook_active: false,
         phase: crate::backend::checkpoint::ExecutionPhase::Model,
+        idle: false,
     });
     checkpoint.active_model_step = Some(crate::backend::checkpoint::ActiveModelStep {
         model_step_id: "step-1".into(),

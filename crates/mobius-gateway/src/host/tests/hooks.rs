@@ -179,6 +179,87 @@ fn subscription(bot_id: &str, session_id: &SessionId, kind: HookKind, id: &str) 
 }
 
 #[tokio::test]
+async fn idle_compaction_keeps_the_last_answer_and_emits_no_turn_hooks() {
+    let (root, gateway, original) = gateway_with_bot().await;
+    let mut composition = (**original.config.config.mobius().unwrap()).clone();
+    for (setting, value) in [("idle_min_tokens", 1), ("idle_minutes", 1)] {
+        composition.middleware.set_setting(
+            "compaction",
+            setting,
+            Some(mobius::protocol::FrontendSettingValue::Integer(value)),
+        );
+    }
+    let bot = gateway
+        .state
+        .lock()
+        .await
+        .bots
+        .create_bot("Idle test", "Tests idle compaction.", composition.into())
+        .unwrap();
+    let model = Arc::new(CaptureModel::default());
+    model.release.notify_one();
+    install_model(&gateway, &bot, Arc::clone(&model)).await;
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let host = gateway.create_session(&workspace, &bot.id).await.unwrap();
+    let mut journal = host.subscribe();
+    host.submit(user_submission("user", "Say done"))
+        .await
+        .unwrap();
+    host.wait_idle().await;
+    let previous = gateway
+        .ready()
+        .await
+        .unwrap()
+        .sessions
+        .into_iter()
+        .find(|session| session.session_id == *host.session_id())
+        .unwrap()
+        .activity;
+    assert_eq!(previous.message.as_deref(), Some("Done."));
+    gateway.dispatch_bot_events().await.unwrap();
+    let mut hooks = gateway.subscribe();
+    tokio::time::pause();
+    tokio::task::yield_now().await;
+    tokio::time::advance(std::time::Duration::from_secs(61)).await;
+    tokio::time::resume();
+    // This model does not write handoff notes, so maintenance fails after its provider call.
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let frame = journal.recv().await.unwrap();
+            if matches!(&frame.message, ServerMessage::AgentEvent { record, .. }
+                if matches!(&record.event.msg, EventMsg::TurnAborted(turn) if turn.idle))
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    host.wait_idle().await;
+    let current = gateway
+        .ready()
+        .await
+        .unwrap()
+        .sessions
+        .into_iter()
+        .find(|session| session.session_id == *host.session_id())
+        .unwrap()
+        .activity;
+    assert_eq!(
+        current, previous,
+        "maintenance preserves the completed user turn"
+    );
+    assert!(model.calls.load(Ordering::Relaxed) > 1);
+    gateway.dispatch_bot_events().await.unwrap();
+    while let Ok(frame) = hooks.try_recv() {
+        assert!(!matches!(&frame.message, ServerMessage::HookEvent { event }
+            if matches!(&event.data, HookData::SessionTurnStarted { .. } | HookData::SessionTurnFinished { .. })));
+    }
+    gateway.shutdown().await;
+}
+
+#[tokio::test]
 async fn canonical_chat_queues_sources_and_deduplicates_delivery_after_ack_gap() {
     let (root, gateway, bot) = gateway_with_bot().await;
     let model = Arc::new(CaptureModel::default());

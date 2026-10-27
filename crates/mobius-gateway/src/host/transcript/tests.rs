@@ -221,6 +221,7 @@ impl Chat {
 
 fn started(turn: &str) -> EventMsg {
     EventMsg::TurnStarted(TurnStartedEvent {
+        idle: false,
         turn_id: turn.into(),
         model_context_window: None,
     })
@@ -228,6 +229,7 @@ fn started(turn: &str) -> EventMsg {
 
 fn completed(turn: &str) -> EventMsg {
     EventMsg::TurnComplete(TurnCompleteEvent {
+        idle: false,
         turn_id: turn.into(),
     })
 }
@@ -337,6 +339,7 @@ fn error(message: &str) -> EventMsg {
 
 fn aborted(turn: &str, reason: &str) -> EventMsg {
     EventMsg::TurnAborted(TurnAbortedEvent {
+        idle: false,
         turn_id: turn.into(),
         reason: reason.into(),
     })

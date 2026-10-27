@@ -233,6 +233,10 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
             .is_none_or(|pending| pending.decision_received);
     let interrupted_model_step = state.active_model_step.is_some();
     let interrupted_execution = uncertain_tools || interrupted_model_step;
+    let recovery_idle = state
+        .active_execution
+        .as_ref()
+        .is_some_and(|execution| execution.idle);
     if interrupted_execution && let Some(step) = state.active_model_step.take() {
         let active = state
             .active_execution
@@ -349,6 +353,7 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
                 outcome: ExecutionOutcome::Aborted,
                 queued_messages: &state.pending_messages,
                 owner: None,
+                idle: recovery_idle,
                 events: &mut messages,
             })
             .await
@@ -363,6 +368,7 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
         recovery_events.push(crate::agent::turn::turn_event(
             &execution.submission_id,
             EventMsg::TurnAborted(TurnAbortedEvent {
+                idle: recovery_idle,
                 turn_id: Arc::clone(&execution.turn_id),
                 reason: TURN_RESTARTED_REASON.into(),
             }),
@@ -459,6 +465,7 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
         transcript_delta: Vec::new(),
         pending_session_start_stop,
         turn_end_turn_id: None,
+        idle_spent: false,
         events: event_tx,
     };
     tokio::spawn(async move {

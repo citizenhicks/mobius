@@ -1155,6 +1155,7 @@ mod tests {
     fn conversation_events_use_turn_and_text_wire_names() {
         let events = [
             EventMsg::TurnStarted(TurnStartedEvent {
+                idle: false,
                 turn_id: "turn-1".into(),
                 model_context_window: Some(128_000),
             }),
@@ -1167,6 +1168,7 @@ mod tests {
                 message_target: None,
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
+                idle: false,
                 turn_id: "turn-1".into(),
             }),
         ];

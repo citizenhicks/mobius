@@ -54,6 +54,8 @@ enum PreparedModel {
     Aborted,
     /// Middleware requested normal completion before another model request.
     Stopped(String),
+    /// An idle turn ran its idle hooks and received no message; it completes quietly.
+    Idle,
     /// Middleware queued a message during the phase; re-run it before the model call.
     Repeat(Vec<crate::backend::checkpoint::ContextRewriteReason>),
     /// Proceed to the model request.
@@ -139,6 +141,7 @@ impl Runner {
         let mut delivered_once = Arc::clone(&self.state.delivered_once);
         let mut transcript = Vec::with_capacity(messages.len());
         let mut events = Vec::new();
+        let mut idle_author = None;
         for mut message in messages {
             let mut hook_events = Vec::new();
             let submitted = self
@@ -171,6 +174,16 @@ impl Runner {
                 });
                 continue;
             }
+            if idle_author.is_none()
+                && self
+                    .state
+                    .active_execution
+                    .as_ref()
+                    .is_some_and(|execution| execution.idle)
+                && let EventMsg::Message(event) = &message.event
+            {
+                idle_author = Some(Arc::new(event.author.clone())); // rules-allow: the execution keeps the first accepted author while its message moves on
+            }
             for item in submitted
                 .input
                 .into_iter()
@@ -199,6 +212,21 @@ impl Runner {
             &mut self.state.make_mut().pending_messages,
             pending_messages,
         );
+        // A staged message turns an idle turn into a normal one, durably with the message.
+        let was_idle = !transcript.is_empty()
+            && self
+                .state
+                .make_mut()
+                .active_execution
+                .as_mut()
+                .is_some_and(|execution| std::mem::take(&mut execution.idle));
+        let previous_author = idle_author.and_then(|author| {
+            self.state
+                .make_mut()
+                .active_execution
+                .as_mut()
+                .map(|execution| std::mem::replace(&mut execution.author, author))
+        });
         let context_len = self.state.context.len();
         context.commit(&mut self.state.make_mut().context);
         let previous_delivered_once =
@@ -207,10 +235,19 @@ impl Runner {
         self.transcript_delta.extend(transcript);
         if let Err(error) = self.persist_with_events(events, None).await {
             self.state.make_mut().pending_messages = previous_pending_messages;
+            if was_idle && let Some(execution) = self.state.make_mut().active_execution.as_mut() {
+                execution.idle = true;
+                if let Some(author) = previous_author {
+                    execution.author = author;
+                }
+            }
             Arc::make_mut(&mut self.state.make_mut().context).truncate(context_len);
             self.state.make_mut().delivered_once = previous_delivered_once;
             self.transcript_delta.truncate(transcript_len);
             return Err(error);
+        }
+        if was_idle {
+            self.idle_spent = false;
         }
         Ok(())
     }
@@ -264,6 +301,12 @@ impl Runner {
         model_step: usize,
     ) -> Result<PreparedModel> {
         self.stage_message_input(turn_id).await?;
+        let idle = model_step == 0
+            && self
+                .state
+                .active_execution
+                .as_ref()
+                .is_some_and(|execution| execution.idle);
         let mut middleware_events = Vec::new();
         let mut middleware_usage = Vec::new();
         let provisional_target_sequence = self
@@ -297,39 +340,42 @@ impl Runner {
         let mut preparation_notices = PreparationNotices::new(&runtime.frontend);
         let cancellation = ModelCancellation::default();
         let control = {
-            let prepare_model = middleware.prepare_model(ModelContext {
-                token_estimate: self.config.token_estimate,
-                author: &author,
-                model: &model,
-                provider: &provider,
-                context_provider: context_provider.as_deref().unwrap_or(&provider),
-                session_id: &session_id,
-                cancellation: Some(&cancellation),
-                session_context: &runtime.session_context,
-                metadata: &runtime.metadata,
-                turn_id,
-                model_step,
-                context_window: self.config.context_window,
-                instructions: &instructions,
-                checkpoint_sequence: self.state.sequence,
-                available_tools: &mut available_tools,
-                allow_hosted_tools: &mut allow_hosted_tools,
-                durable_input: &mut durable_input,
-                delivered_once: &mut delivered_once,
-                transcript_delta: &mut transcript_delta,
-                context_epoch: &mut context_epoch,
-                rewrite_reasons: &mut rewrite_reasons,
-                turn_stop: &mut turn_stop,
-                queued_messages,
-                last_usage: last_usage.as_ref(),
-                tools: &catalog,
-                events: &mut middleware_events,
-                usage: &mut middleware_usage,
-                checkpoint_changed: &mut checkpoint_changed,
-                runtime: &runtime,
-                hooks: &middleware,
-                preparation_notices: &mut preparation_notices.notices,
-            });
+            let prepare_model = middleware.prepare_model(
+                ModelContext {
+                    token_estimate: self.config.token_estimate,
+                    author: &author,
+                    model: &model,
+                    provider: &provider,
+                    context_provider: context_provider.as_deref().unwrap_or(&provider),
+                    session_id: &session_id,
+                    cancellation: Some(&cancellation),
+                    session_context: &runtime.session_context,
+                    metadata: &runtime.metadata,
+                    turn_id,
+                    model_step,
+                    context_window: self.config.context_window,
+                    instructions: &instructions,
+                    checkpoint_sequence: self.state.sequence,
+                    available_tools: &mut available_tools,
+                    allow_hosted_tools: &mut allow_hosted_tools,
+                    durable_input: &mut durable_input,
+                    delivered_once: &mut delivered_once,
+                    transcript_delta: &mut transcript_delta,
+                    context_epoch: &mut context_epoch,
+                    rewrite_reasons: &mut rewrite_reasons,
+                    turn_stop: &mut turn_stop,
+                    queued_messages,
+                    last_usage: last_usage.as_ref(),
+                    tools: &catalog,
+                    events: &mut middleware_events,
+                    usage: &mut middleware_usage,
+                    checkpoint_changed: &mut checkpoint_changed,
+                    runtime: &runtime,
+                    hooks: &middleware,
+                    preparation_notices: &mut preparation_notices.notices,
+                },
+                idle,
+            );
             // Keep preparation alive until cancellation is recorded for its provider drop guards.
             tokio::pin!(prepare_model);
             let control = self
@@ -450,6 +496,9 @@ impl Runner {
         let request_input = request_input?;
         if messages_ready {
             return Ok(PreparedModel::Repeat(rewrite_reasons));
+        }
+        if idle {
+            return Ok(PreparedModel::Idle);
         }
         if let Some(reason) = turn_stop {
             return Ok(PreparedModel::Stopped(reason));
@@ -1344,6 +1393,11 @@ impl Runner {
                     .await?
                 {
                     PreparedModel::Aborted => return Ok(()),
+                    PreparedModel::Idle => {
+                        self.complete_turn(submission_id, turn_id, Vec::new())
+                            .await?;
+                        return Ok(());
+                    }
                     PreparedModel::Stopped(reason) => {
                         self.complete_turn(
                             submission_id,

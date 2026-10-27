@@ -846,6 +846,7 @@ struct Runner {
     transcript_delta: Vec<Arc<Value>>,
     pending_session_start_stop: Option<String>,
     turn_end_turn_id: Option<Arc<str>>,
+    idle_spent: bool,
     events: EventRecorder,
 }
 
@@ -890,17 +891,30 @@ impl Runner {
                 .middleware
                 .next_turn(&mut self.state.make_mut().pending_messages)?
             {
+                self.idle_spent = false;
                 let submission_id = Arc::clone(&message.submission_id);
                 if let Err(error) = self.start_message_turn(&mut inbox, message).await {
                     self.fail_turn(&submission_id, error).await?;
                 }
                 continue;
             }
-            let submission = {
-                let Some(submission) = inbox.recv().await else {
-                    return Ok(());
-                };
-                submission
+            let idle_at = (!self.idle_spent)
+                .then(|| self.config.middleware.idle_after(&self.runtime.session_id))
+                .flatten()
+                .map(|after| tokio::time::Instant::now() + after);
+            let submission = tokio::select! {
+                biased;
+                submission = inbox.recv() => {
+                    let Some(submission) = submission else {
+                        return Ok(());
+                    };
+                    submission
+                }
+                () = idle_deadline(idle_at) => {
+                    self.idle_spent = true;
+                    self.run_idle_turn(&mut inbox).await?;
+                    continue;
+                }
             };
             let ReceivedSubmission {
                 submission,
@@ -1214,6 +1228,15 @@ impl Runner {
             },
         )
         .await
+    }
+}
+
+/// Resolves at `at`, or never. One parked timer-wheel entry: no polling, no thread, and
+/// dropping it when a submission wins the select unlinks it in constant time.
+async fn idle_deadline(at: Option<tokio::time::Instant>) {
+    match at {
+        Some(at) => tokio::time::sleep_until(at).await,
+        None => std::future::pending().await,
     }
 }
 

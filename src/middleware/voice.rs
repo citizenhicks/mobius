@@ -656,6 +656,7 @@ mod tests {
             if &**call_id == "voice-session" && &**handle == "Builder (voice)")
         );
         let started = EventMsg::TurnStarted(TurnStartedEvent {
+            idle: false,
             turn_id: "turn".into(),
             model_context_window: None,
         });
@@ -682,6 +683,7 @@ mod tests {
         let complete = event(
             &submission.id,
             EventMsg::TurnComplete(TurnCompleteEvent {
+                idle: false,
                 turn_id: "turn".into(),
             }),
         );

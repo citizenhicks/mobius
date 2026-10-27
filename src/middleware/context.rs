@@ -1415,11 +1415,18 @@ pub struct TurnEndContext<'a> {
     pub(crate) outcome: ExecutionOutcome,
     pub(crate) queued_messages: &'a [DurableQueuedMessage],
     pub(crate) owner: Option<&'static str>,
+    pub(crate) idle: bool,
     /// The events.
     pub events: &'a mut Vec<EventMsg>,
 }
 
 impl TurnEndContext<'_> {
+    /// Whether this was a hidden turn started by the idle timer.
+    #[must_use]
+    pub const fn is_idle(&self) -> bool {
+        self.idle
+    }
+
     #[must_use]
     /// Returns the turn outcome.
     pub fn outcome(&self) -> ExecutionOutcome {

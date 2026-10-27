@@ -212,7 +212,7 @@ impl TranscriptReducer {
             }
         }
         // Whatever arrives between turns belongs to neither.
-        if let EventMsg::TurnComplete(mobius::protocol::TurnCompleteEvent { turn_id })
+        if let EventMsg::TurnComplete(mobius::protocol::TurnCompleteEvent { turn_id, .. })
         | EventMsg::TurnAborted(mobius::protocol::TurnAbortedEvent { turn_id, .. }) = &event.msg
             && self.current_turn.as_ref() == Some(turn_id)
         {

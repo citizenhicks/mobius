@@ -26,7 +26,12 @@ impl HostState {
         };
         let event = &record.event;
         match &event.msg {
-            EventMsg::TurnStarted(_) => self.last_assistant_text = None,
+            EventMsg::TurnStarted(turn) => {
+                self.idle_turn = turn.idle;
+                if !turn.idle {
+                    self.last_assistant_text = None;
+                }
+            }
             EventMsg::AssistantMessage(message) => {
                 if let Some(text) = assistant_text(message) {
                     self.last_assistant_text = Some(text);
@@ -56,6 +61,7 @@ impl HostState {
         match turn_lifecycle(&event.msg) {
             Some(TurnLifecycle::ApprovalRequested { .. }) => self.approval_active = true,
             Some(TurnLifecycle::Finished { .. }) => {
+                self.idle_turn = false;
                 self.approval_active = false;
                 if std::mem::take(&mut self.compacted_in_turn) {
                     self.broadcast_meta(self.context_limit_tokens())?;
@@ -350,6 +356,7 @@ impl HostState {
         event: &EventMsg,
     ) -> Result<Option<SessionActivity>> {
         let next = match event {
+            EventMsg::TurnStarted(turn) if turn.idle => None,
             EventMsg::TurnStarted(turn) => {
                 self.turn_error = None;
                 Some(SessionActivity {
@@ -370,6 +377,10 @@ impl HostState {
                     .or_else(|| Some(Utc::now().timestamp())),
                 ..SessionActivity::default()
             }),
+            EventMsg::Error(error) if self.idle_turn => {
+                self.turn_error = Some(Arc::clone(&error.message));
+                None
+            }
             EventMsg::Error(error)
                 if self.activity().await?.state == SessionActivityState::Idle =>
             {
@@ -384,10 +395,18 @@ impl HostState {
                 self.turn_error = Some(Arc::clone(&error.message));
                 None
             }
+            EventMsg::TurnComplete(turn) if turn.idle => {
+                self.turn_error = None;
+                None
+            }
             EventMsg::TurnComplete(_) => Some(completed_activity(
                 self.turn_error.take(),
                 self.last_assistant_text.as_deref(),
             )),
+            EventMsg::TurnAborted(turn) if turn.idle => {
+                self.turn_error = None;
+                None
+            }
             EventMsg::TurnAborted(turn) => {
                 let error = self.turn_error.take();
                 Some(SessionActivity {
@@ -617,12 +636,14 @@ mod accounting_tests {
             event(
                 "active",
                 EventMsg::TurnComplete(TurnCompleteEvent {
+                    idle: false,
                     turn_id: "active".into(),
                 }),
             ),
             event(
                 "queued",
                 EventMsg::TurnStarted(TurnStartedEvent {
+                    idle: false,
                     turn_id: "next".into(),
                     model_context_window: None,
                 }),
@@ -640,6 +661,7 @@ mod accounting_tests {
             &event(
                 "queued",
                 EventMsg::TurnComplete(TurnCompleteEvent {
+                    idle: false,
                     turn_id: "next".into(),
                 }),
             ),

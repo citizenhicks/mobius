@@ -143,6 +143,7 @@ async fn durable_event_journal_restores_complete_turn_pages() {
     let mut latest_start = 0;
     for (index, event) in [
         EventMsg::TurnStarted(mobius::protocol::TurnStartedEvent {
+            idle: false,
             turn_id: "older".into(),
             model_context_window: None,
         }),
@@ -150,9 +151,11 @@ async fn durable_event_journal_restores_complete_turn_pages() {
             message: "older work".into(),
         }),
         EventMsg::TurnComplete(mobius::protocol::TurnCompleteEvent {
+            idle: false,
             turn_id: "older".into(),
         }),
         EventMsg::TurnStarted(mobius::protocol::TurnStartedEvent {
+            idle: false,
             turn_id: "latest".into(),
             model_context_window: None,
         }),
@@ -160,6 +163,7 @@ async fn durable_event_journal_restores_complete_turn_pages() {
             message: "latest work".into(),
         }),
         EventMsg::TurnComplete(mobius::protocol::TurnCompleteEvent {
+            idle: false,
             turn_id: "latest".into(),
         }),
     ]
@@ -539,6 +543,7 @@ async fn fork_history_continues_into_the_parent_above_the_fork_point() {
             (
                 None,
                 EventMsg::TurnStarted(mobius::protocol::TurnStartedEvent {
+                    idle: false,
                     turn_id: turn.into(),
                     model_context_window: None,
                 }),
@@ -573,6 +578,7 @@ async fn fork_history_continues_into_the_parent_above_the_fork_point() {
             (
                 None,
                 EventMsg::TurnComplete(mobius::protocol::TurnCompleteEvent {
+                    idle: false,
                     turn_id: turn.into(),
                 }),
             ),
@@ -710,6 +716,7 @@ async fn history_and_a_cut_replay_mark_only_the_turn_after_an_agent_restart_resu
             (
                 None,
                 EventMsg::TurnStarted(mobius::protocol::TurnStartedEvent {
+                    idle: false,
                     turn_id: turn.into(),
                     model_context_window: None,
                 }),
@@ -728,6 +735,7 @@ async fn history_and_a_cut_replay_mark_only_the_turn_after_an_agent_restart_resu
             (
                 None,
                 EventMsg::TurnComplete(mobius::protocol::TurnCompleteEvent {
+                    idle: false,
                     turn_id: turn.into(),
                 }),
             ),

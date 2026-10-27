@@ -113,17 +113,15 @@ pub(super) fn post_tool(context: &mut PostToolUseContext<'_>) -> Result<()> {
     Ok(())
 }
 
-pub(super) async fn prepare(context: &mut ModelContext<'_>, policy: &Compaction) -> Result<()> {
+/// Compacts past the token threshold or on a model request; returns the input tokens left.
+pub(super) async fn prepare(context: &mut ModelContext<'_>, policy: &Compaction) -> Result<i64> {
     if !policy.allow_model_compaction {
         context.available_tools.remove("new_context");
         context.available_tools.remove("write_handoff");
     }
     // Requests belong to their originating turn; a failed reset must not replay on later turns.
     let requested = policy.allow_model_compaction && requested_in_active_turn(context.input());
-    let estimated = context.estimated_input_tokens();
-    let switching = !context
-        .model
-        .same_context_model(context.context_provider, context.provider);
+    let switching = switching(context);
     let threshold = if switching {
         context
             .context_window
@@ -132,14 +130,42 @@ pub(super) async fn prepare(context: &mut ModelContext<'_>, policy: &Compaction)
     } else {
         policy.trigger_tokens(context.context_window)
     };
-    let observed = estimated.max(if switching {
+    let observed = observed_tokens(context, switching);
+    if !requested && observed < threshold {
+        return Ok(observed);
+    }
+    compact(context, policy, switching).await?;
+    Ok(context.estimated_input_tokens())
+}
+
+/// Compacts a chat that sat idle, when it still holds enough context to be worth it.
+pub(super) async fn idle(context: &mut ModelContext<'_>, policy: &Compaction) -> Result<()> {
+    let switching = switching(context);
+    if observed_tokens(context, switching) < policy.idle_min_tokens {
+        return Ok(());
+    }
+    compact(context, policy, switching).await
+}
+
+fn switching(context: &ModelContext<'_>) -> bool {
+    !context
+        .model
+        .same_context_model(context.context_provider, context.provider)
+}
+
+fn observed_tokens(context: &ModelContext<'_>, switching: bool) -> i64 {
+    context.estimated_input_tokens().max(if switching {
         0
     } else {
         context.last_usage.map_or(0, |usage| usage.input_tokens)
-    });
-    if !requested && observed < threshold {
-        return Ok(());
-    }
+    })
+}
+
+async fn compact(
+    context: &mut ModelContext<'_>,
+    policy: &Compaction,
+    switching: bool,
+) -> Result<()> {
     context.pre_compact().await?;
     if context.turn_stopped() {
         return Ok(());

@@ -17,6 +17,44 @@ mod projection;
 mod replay;
 
 impl GatewayHost {
+    /// A resident session that reports busy while `busy` holds, like one with an armed idle timer.
+    pub(crate) async fn busy_session_for_test(&self, busy: Arc<AtomicBool>) -> JoinHandle<()> {
+        let (commands, mut receiver) = mpsc::channel(2);
+        let (events, _) = broadcast::channel(1);
+        let terminated = Arc::new(AtomicBool::new(false));
+        let termination = Arc::new(tokio::sync::Notify::new());
+        self.state.lock().await.sessions.insert(
+            SessionId::new("busy-probe").unwrap(),
+            HostHandle {
+                inner: Arc::new(HostInner {
+                    session_id: SessionId::new("busy-probe").unwrap(),
+                    commands,
+                    events,
+                    alive: Arc::new(AtomicBool::new(true)),
+                    terminated: Arc::clone(&terminated),
+                    termination: Arc::clone(&termination),
+                    session_mutations: Arc::new(RwLock::new(())),
+                    realtime_voice: Arc::new(Mutex::new(())),
+                }),
+            },
+        );
+        tokio::spawn(async move {
+            loop {
+                match receiver.recv().await {
+                    Some(HostCommand::RuntimeIsIdle { reply }) => {
+                        if reply.send(Ok(!busy.load(Ordering::Acquire))).is_err() {
+                            tracing::debug!("busy probe requester stopped waiting");
+                        }
+                    }
+                    Some(HostCommand::Shutdown) | None => break,
+                    Some(_) => {}
+                }
+            }
+            terminated.store(true, Ordering::Release);
+            termination.notify_waiters();
+        })
+    }
+
     pub(crate) async fn pause_activity_reply_for_test(
         &self,
     ) -> (oneshot::Receiver<()>, oneshot::Sender<()>, JoinHandle<()>) {

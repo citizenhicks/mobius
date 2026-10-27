@@ -468,3 +468,346 @@ async fn failing_usage_observer_aborts_before_checkpoint_usage_is_committed() {
     assert_eq!(execution.model_calls, 1);
     assert_eq!(execution.usage, TokenUsage::default());
 }
+
+#[tokio::test]
+async fn idle_compaction_runs_once_without_a_model_reply() {
+    for (min_tokens, compacts) in [(1_000, true), (10_000_000, false)] {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let checkpoints = Arc::new(
+            SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
+                .expect("checkpoint store"),
+        );
+        let mut checkpoint = Checkpoint::empty("idle".parse().expect("session ID"));
+        checkpoint.model_route = Some("main".into());
+        checkpoint.session_context = test_session_context().into();
+        checkpoint.context = Arc::new(vec![Arc::new(crate::backend::model::user_message(
+            &"prior history ".repeat(1_000),
+        ))]);
+        checkpoints
+            .save(checkpoint.clone(), checkpoint.context.to_vec(), None)
+            .await
+            .expect("seed checkpoint");
+        let model = Arc::new(HandoffModel::default());
+        let compaction = Compaction::new(10_000_000)
+            .expect("compaction middleware")
+            .idle_compaction(Some(std::time::Duration::from_millis(50)), min_tokens)
+            .expect("idle compaction");
+        let mut agent = create_agent(
+            AgentConfig::new(
+                Arc::new(ModelRouter::new("main", Arc::<HandoffModel>::clone(&model))),
+                Arc::new(Sandbox::new(
+                    Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
+                    ApprovalPolicy::Ask,
+                )),
+                Arc::<SqliteCheckpoint>::clone(&checkpoints),
+                test_middleware(vec![Arc::new(compaction)]),
+                "test prompt",
+            )
+            .session_context(test_session_context())
+            .session_id("idle".parse().expect("session ID")),
+        )
+        .await
+        .expect("create agent");
+        agent.sender().submit(user_op("hello")).expect("submit");
+        while !matches!(
+            agent.next_event().await.expect("event").msg,
+            EventMsg::TurnComplete(_)
+        ) {}
+        let quiet = std::time::Duration::from_millis(500);
+        if compacts {
+            let mut compacted = false;
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    match agent.next_event().await.expect("event").msg {
+                        EventMsg::Frontend(FrontendEvent::Render { capability, block })
+                            if capability == "compaction"
+                                && block.state == crate::protocol::FrontendBlockState::Complete =>
+                        {
+                            assert_eq!(block.title, "Context compacted");
+                            compacted = true;
+                        }
+                        EventMsg::TurnComplete(_) => break,
+                        EventMsg::TurnAborted(turn) => panic!("idle turn aborted: {}", turn.reason),
+                        _ => {}
+                    }
+                }
+            })
+            .await
+            .expect("idle turn completed");
+            assert!(compacted);
+            assert_eq!(compaction_count(checkpoints.as_ref(), "idle").await, 1);
+        }
+        assert!(
+            tokio::time::timeout(quiet, agent.next_event())
+                .await
+                .is_err(),
+            "the idle timer fires at most once per idle period"
+        );
+        assert_eq!(model.responses.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            model.compactions.load(Ordering::SeqCst),
+            usize::from(compacts)
+        );
+        let saved = checkpoints
+            .load(&"idle".parse().expect("session ID"))
+            .await
+            .expect("load")
+            .expect("checkpoint");
+        assert!(saved.active_execution.is_none());
+    }
+}
+
+#[tokio::test]
+async fn a_message_steered_into_the_idle_turn_is_answered_after_compaction() {
+    use tokio::sync::Notify;
+
+    struct RejectSteer(bool);
+
+    impl Middleware for RejectSteer {
+        fn name(&self) -> &'static str {
+            "reject_idle_steer"
+        }
+
+        fn message_submit<'a>(
+            &'a self,
+            context: &'a mut MessageSubmitContext<'_>,
+        ) -> BoxFuture<'a, Result<()>> {
+            Box::pin(async move {
+                if self.0 && context.message == "answer this after idle compaction" {
+                    context.reject("steer rejected by policy")?;
+                }
+                Ok(())
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct PausedIdleCompaction {
+        entered: Notify,
+        release: Notify,
+        responses: AtomicUsize,
+    }
+
+    impl Model for PausedIdleCompaction {
+        fn respond<'a>(
+            &'a self,
+            request: ModelRequest<'a>,
+            _: ModelEventSink,
+        ) -> BoxFuture<'a, Result<ModelOutput>> {
+            Box::pin(async move {
+                if request.tools.len() != 1 || request.tools[0].name != "write_handoff" {
+                    self.responses.fetch_add(1, Ordering::SeqCst);
+                    return Ok(scripted_message("done"));
+                }
+                self.entered.notify_one();
+                self.release.notified().await;
+                Ok(scripted_handoff("idle-checkpoint"))
+            })
+        }
+    }
+
+    for reject in [false, true] {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let workspace = tempfile::tempdir().expect("workspace");
+            let checkpoints = Arc::new(
+                SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
+                    .expect("checkpoint store"),
+            );
+            let mut checkpoint = Checkpoint::empty("idle-steer".parse().expect("session ID"));
+            checkpoint.model_route = Some("main".into());
+            checkpoint.session_context = test_session_context().into();
+            checkpoint.context = Arc::new(vec![Arc::new(crate::backend::model::user_message(
+                &"prior history ".repeat(1_000),
+            ))]);
+            checkpoints
+                .save(checkpoint.clone(), checkpoint.context.to_vec(), None)
+                .await
+                .expect("seed checkpoint");
+            let model = Arc::new(PausedIdleCompaction::default());
+            let compaction = Compaction::new(10_000_000)
+                .expect("compaction middleware")
+                .idle_compaction(Some(std::time::Duration::from_millis(50)), 1)
+                .expect("idle compaction");
+            let mut agent = create_agent(
+                AgentConfig::new(
+                    Arc::new(ModelRouter::new(
+                        "main",
+                        Arc::<PausedIdleCompaction>::clone(&model),
+                    )),
+                    Arc::new(Sandbox::new(
+                        Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
+                        ApprovalPolicy::Ask,
+                    )),
+                    Arc::<SqliteCheckpoint>::clone(&checkpoints),
+                    test_middleware(vec![Arc::new(compaction), Arc::new(RejectSteer(reject))]),
+                    "test prompt",
+                )
+                .session_context(test_session_context())
+                .session_id("idle-steer".parse().expect("session ID")),
+            )
+            .await
+            .expect("create agent");
+            agent.sender().submit(user_op("hello")).expect("submit");
+            while !matches!(
+                agent.next_event().await.expect("event").msg,
+                EventMsg::TurnComplete(_)
+            ) {}
+            let idle_turn = loop {
+                if let EventMsg::TurnStarted(turn) = agent.next_event().await.expect("event").msg {
+                    break turn.turn_id;
+                }
+            };
+            model.entered.notified().await;
+            let admission = agent
+                .sender()
+                .send_with_admission(crate::protocol::Submission {
+                    id: "steer-into-idle".into(),
+                    op: active_user_op(
+                        "answer this after idle compaction",
+                        idle_turn.as_ref(),
+                        ActiveMessageDelivery::Steer,
+                    ),
+                })
+                .expect("steer");
+            assert_eq!(
+                admission.wait().await.expect("admission"),
+                super::super::MessageAcceptance::Accepted
+            );
+            model.release.notify_one();
+            let mut rejected = false;
+            loop {
+                match agent.next_event().await.expect("event").msg {
+                    EventMsg::TurnComplete(turn) => {
+                        assert_eq!(turn.turn_id, idle_turn, "the idle turn answers the steer");
+                        break;
+                    }
+                    EventMsg::TurnAborted(turn) => panic!("idle turn aborted: {}", turn.reason),
+                    EventMsg::SubmissionRejected(_) => rejected = true,
+                    _ => {}
+                }
+            }
+            assert_eq!(rejected, reject);
+            assert_eq!(
+                model.responses.load(Ordering::SeqCst),
+                if reject { 1 } else { 2 }
+            );
+            assert_eq!(
+                compaction_count(checkpoints.as_ref(), "idle-steer").await,
+                1
+            );
+            let saved = checkpoints
+                .load(&"idle-steer".parse().expect("session ID"))
+                .await
+                .expect("load")
+                .expect("checkpoint");
+            assert!(saved.active_execution.is_none());
+            assert!(saved.pending_messages.is_empty());
+            assert_eq!(
+                saved.context.iter().any(|item| {
+                    item.to_string()
+                        .contains("answer this after idle compaction")
+                }),
+                !reject
+            );
+            if !reject {
+                model.entered.notified().await;
+                model.release.notify_one();
+                loop {
+                    match agent.next_event().await.expect("event").msg {
+                        EventMsg::TurnComplete(_) => break,
+                        EventMsg::TurnAborted(turn) => panic!("idle turn aborted: {}", turn.reason),
+                        _ => {}
+                    }
+                }
+                assert_eq!(
+                    compaction_count(checkpoints.as_ref(), "idle-steer").await,
+                    2
+                );
+                assert_eq!(model.responses.load(Ordering::SeqCst), 2);
+            }
+            assert!(!agent.frontend().has_background_work().await.expect("idle"));
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(250), agent.next_event())
+                    .await
+                    .is_err(),
+                "the new idle period also fires once"
+            );
+        })
+        .await
+        .expect("steered idle turn completed");
+    }
+}
+
+#[tokio::test]
+async fn failed_idle_compaction_disarms_without_losing_the_chat() {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let checkpoints = Arc::new(
+            SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
+                .expect("checkpoint store"),
+        );
+        let model = Arc::new(ScriptedModel {
+            outputs: Mutex::new(VecDeque::from([scripted_message("done")])),
+            tool_counts: Mutex::default(),
+            inputs: Mutex::default(),
+        });
+        let compaction = Compaction::new(10_000_000)
+            .expect("compaction middleware")
+            .idle_compaction(Some(std::time::Duration::from_millis(50)), 1)
+            .expect("idle compaction");
+        let mut agent = create_agent(
+            AgentConfig::new(
+                Arc::new(ModelRouter::new(
+                    "main",
+                    Arc::<ScriptedModel>::clone(&model),
+                )),
+                Arc::new(Sandbox::new(
+                    Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
+                    ApprovalPolicy::Ask,
+                )),
+                Arc::<SqliteCheckpoint>::clone(&checkpoints),
+                test_middleware(vec![Arc::new(compaction)]),
+                "test prompt",
+            )
+            .session_context(test_session_context())
+            .session_id("idle-failure".parse().expect("session ID")),
+        )
+        .await
+        .expect("create agent");
+        agent
+            .sender()
+            .submit(user_op("keep this request"))
+            .expect("submit");
+        while !matches!(
+            agent.next_event().await.expect("event").msg,
+            EventMsg::TurnComplete(_)
+        ) {}
+        let before = checkpoints
+            .load(&"idle-failure".parse().expect("session ID"))
+            .await
+            .expect("load")
+            .expect("checkpoint");
+        while !matches!(
+            agent.next_event().await.expect("event").msg,
+            EventMsg::TurnAborted(_)
+        ) {}
+        let saved = checkpoints
+            .load(&"idle-failure".parse().expect("session ID"))
+            .await
+            .expect("load")
+            .expect("checkpoint");
+        assert_eq!(saved.context, before.context);
+        assert_eq!(saved.context_epoch, before.context_epoch);
+        assert!(saved.active_execution.is_none());
+        assert!(!agent.frontend().has_background_work().await.expect("idle"));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(250), agent.next_event())
+                .await
+                .is_err(),
+            "a failed idle compaction must not retry forever"
+        );
+        assert_eq!(model.inputs.lock().expect("inputs").len(), 2);
+    })
+    .await
+    .expect("failed idle turn completed");
+}

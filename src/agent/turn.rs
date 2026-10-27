@@ -149,6 +149,7 @@ impl Runner {
             let mut events = vec![turn_event(
                 &submission_id,
                 EventMsg::TurnStarted(TurnStartedEvent {
+                    idle: false,
                     turn_id: Arc::clone(&turn_id),
                     model_context_window: Some(self.config.context_window),
                 }),
@@ -194,6 +195,7 @@ impl Runner {
         let mut events = vec![turn_event(
             &submission_id,
             EventMsg::TurnStarted(TurnStartedEvent {
+                idle: false,
                 turn_id: Arc::clone(&turn_id),
                 model_context_window: Some(self.config.context_window),
             }),
@@ -269,6 +271,37 @@ impl Runner {
         self.continue_turn(inbox, &submission_id, &turn_id).await
     }
 
+    /// Starts a hidden turn for idle-timer subscribers. A message staged into it makes it a
+    /// normal turn; otherwise it completes after the idle hooks without a model step.
+    pub(super) async fn run_idle_turn(&mut self, inbox: &mut SubmissionInbox) -> Result<()> {
+        let submission_id: Arc<str> = Uuid::new_v4().to_string().into();
+        let turn_id: Arc<str> = Uuid::new_v4().to_string().into();
+        self.begin_turn(
+            &submission_id,
+            Arc::clone(&turn_id),
+            Arc::new(MessageAuthor::User),
+        )?;
+        if let Some(execution) = self.state.make_mut().active_execution.as_mut() {
+            execution.idle = true;
+        }
+        let started = turn_event(
+            &submission_id,
+            EventMsg::TurnStarted(TurnStartedEvent {
+                idle: true,
+                turn_id: Arc::clone(&turn_id),
+                model_context_window: Some(self.config.context_window),
+            }),
+        );
+        if let Err(error) = self.persist_with_events(vec![started], None).await {
+            self.state.make_mut().active_execution = None;
+            return Err(error);
+        }
+        if let Err(error) = self.continue_turn(inbox, &submission_id, &turn_id).await {
+            self.fail_turn(&submission_id, error).await?;
+        }
+        Ok(())
+    }
+
     fn begin_turn(
         &mut self,
         submission_id: &Arc<str>,
@@ -292,6 +325,7 @@ impl Runner {
             next_model_step: 0,
             stop_hook_active: false,
             phase: ExecutionPhase::Model,
+            idle: false,
         });
         Ok(())
     }
@@ -371,6 +405,11 @@ impl Runner {
             turn_id,
             ExecutionOutcome::Completed,
             EventMsg::TurnComplete(TurnCompleteEvent {
+                idle: self
+                    .state
+                    .active_execution
+                    .as_ref()
+                    .is_some_and(|execution| execution.idle),
                 turn_id: Arc::clone(turn_id),
             }),
             events,
@@ -411,6 +450,11 @@ impl Runner {
                 turn_id,
                 outcome,
                 EventMsg::TurnAborted(TurnAbortedEvent {
+                    idle: self
+                        .state
+                        .active_execution
+                        .as_ref()
+                        .is_some_and(|execution| execution.idle),
                     turn_id: Arc::clone(turn_id),
                     reason: reason.into(),
                 }),
@@ -467,6 +511,11 @@ impl Runner {
                 outcome,
                 queued_messages: &self.state.pending_messages,
                 owner: None,
+                idle: self
+                    .state
+                    .active_execution
+                    .as_ref()
+                    .is_some_and(|execution| execution.idle),
                 events: &mut messages,
             })
             .await?;

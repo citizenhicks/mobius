@@ -496,6 +496,12 @@ async fn lifecycle_event(
     session_id: &SessionId,
     record: &JournalEvent,
 ) -> Result<Option<HookEvent>> {
+    if matches!(&record.event.msg, EventMsg::TurnStarted(turn) if turn.idle)
+        || matches!(&record.event.msg, EventMsg::TurnComplete(turn) if turn.idle)
+        || matches!(&record.event.msg, EventMsg::TurnAborted(turn) if turn.idle)
+    {
+        return Ok(None);
+    }
     if matches!(record.event.msg, EventMsg::SessionConfigured(_)) && record.sequence == 1 {
         let data = HookData::SessionCreated {
             session_id: session_id.share(),

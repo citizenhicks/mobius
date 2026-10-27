@@ -3,6 +3,7 @@
 use crate::SessionId;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use super::Middleware;
 use super::ModelContext;
@@ -79,6 +80,10 @@ struct SessionCount {
     checkpoints: Arc<dyn CheckpointStore>,
     count: u64,
     pending_epoch: Option<u64>,
+    /// Input tokens the last model preparation saw, after any compaction it ran.
+    observed: i64,
+    /// Whether the idle timer should fire for this chat; also holds the gateway awake.
+    idle_armed: bool,
 }
 
 /// Compacts visible context after a configurable token threshold.
@@ -88,6 +93,8 @@ pub struct Compaction {
     allow_model_compaction: bool,
     reserve_tokens: i64,
     checkpoint_percent: i64,
+    idle_after: Option<Duration>,
+    idle_min_tokens: i64,
     counts: Mutex<BTreeMap<SessionId, SessionCount>>,
     /// The last count of each session that unloaded, so an idle chat still reports it.
     // ponytail: one integer per chat this gateway run has unloaded; prune if that ever matters.
@@ -103,6 +110,8 @@ impl std::fmt::Debug for Compaction {
             .field("allow_model_compaction", &self.allow_model_compaction)
             .field("reserve_tokens", &self.reserve_tokens)
             .field("checkpoint_percent", &self.checkpoint_percent)
+            .field("idle_after", &self.idle_after)
+            .field("idle_min_tokens", &self.idle_min_tokens)
             .finish_non_exhaustive()
     }
 }
@@ -123,6 +132,15 @@ impl Default for Compaction {
             checkpoint_percent: super::manifest::integer_default(
                 &text::DEFINITION.settings,
                 "checkpoint_percent",
+            ),
+            idle_after: idle_after(
+                super::manifest::string_default(&text::DEFINITION.settings, "idle_compaction")
+                    == "on",
+                super::manifest::integer_default(&text::DEFINITION.settings, "idle_minutes"),
+            ),
+            idle_min_tokens: super::manifest::integer_default(
+                &text::DEFINITION.settings,
+                "idle_min_tokens",
             ),
             counts: Mutex::default(),
             unloaded: Mutex::default(),
@@ -187,6 +205,16 @@ impl Compaction {
                 ));
             }
         };
+        let idle = match setting("idle_compaction") {
+            None => Self::default().idle_after.is_some(),
+            Some(FrontendSettingValue::String(value)) if value == "on" => true,
+            Some(FrontendSettingValue::String(value)) if value == "off" => false,
+            Some(_) => {
+                return Err(Error::Config(
+                    "compaction.idle_compaction must be on or off".into(),
+                ));
+            }
+        };
         let model_route = match setting("model_route") {
             None => None,
             Some(FrontendSettingValue::String(route)) => Some(route.to_owned()),
@@ -202,6 +230,8 @@ impl Compaction {
             allow_model_compaction: allow,
             reserve_tokens: integer("reserve_tokens")?,
             checkpoint_percent: integer("checkpoint_percent")?,
+            idle_after: idle_after(idle, integer("idle_minutes")?),
+            idle_min_tokens: integer("idle_min_tokens")?,
             ..Self::default()
         })
     }
@@ -218,6 +248,25 @@ impl Compaction {
     pub fn allow_model_compaction(mut self, allow: bool) -> Self {
         self.allow_model_compaction = allow;
         self
+    }
+
+    /// Compacts a chat of at least `min_tokens` once it sat idle for `after`; `None` disables it.
+    /// # Errors
+    /// Returns an error unless the token minimum and enabled delay are positive and the
+    /// delay fits the platform's monotonic clock.
+    pub fn idle_compaction(mut self, after: Option<Duration>, min_tokens: i64) -> Result<Self> {
+        if min_tokens <= 0
+            || after.is_some_and(|delay| {
+                delay.is_zero() || std::time::Instant::now().checked_add(delay).is_none()
+            })
+        {
+            return Err(Error::Config(
+                "idle compaction requires a positive token minimum and valid positive delay".into(),
+            ));
+        }
+        self.idle_after = after;
+        self.idle_min_tokens = min_tokens;
+        Ok(self)
     }
 
     /// Token target for checkpoint notes: a share of the summarizing model's window.
@@ -244,6 +293,30 @@ impl Compaction {
         self.counts.lock().map_err(|error| {
             Error::Checkpoint(format!("compaction count lock is poisoned: {error}"))
         })
+    }
+
+    fn observe(&self, session_id: &SessionId, tokens: i64) -> Result<()> {
+        if let Some(session) = self.counts()?.get_mut(session_id) {
+            session.observed = tokens;
+        }
+        Ok(())
+    }
+
+    /// Arms the idle timer after a normal turn on a chat large enough to compact; an idle
+    /// turn never re-arms it, so one failed idle compaction cannot hold the gateway awake.
+    fn arm_idle(&self, session_id: &SessionId, idle_turn: bool) -> Result<()> {
+        if let Some(session) = self.counts()?.get_mut(session_id) {
+            session.idle_armed =
+                !idle_turn && self.idle_after.is_some() && session.observed >= self.idle_min_tokens;
+        }
+        Ok(())
+    }
+
+    fn disarm_idle(&self, session_id: &SessionId) -> Result<bool> {
+        Ok(self
+            .counts()?
+            .get_mut(session_id)
+            .is_some_and(|session| std::mem::take(&mut session.idle_armed)))
     }
 
     fn stage(&self, session_id: &SessionId, epoch: u64) -> Result<()> {
@@ -346,6 +419,8 @@ impl Middleware for Compaction {
                     checkpoints: Arc::clone(&runtime.checkpoints),
                     count: state.count,
                     pending_epoch: None,
+                    observed: 0,
+                    idle_armed: false,
                 },
             );
             Ok(())
@@ -353,7 +428,39 @@ impl Middleware for Compaction {
     }
 
     fn turn_end<'a>(&'a self, context: &'a mut TurnEndContext<'_>) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move { self.settle(context.session_id).await })
+        Box::pin(async move {
+            let settled = self.settle(context.session_id).await;
+            self.arm_idle(context.session_id, context.is_idle())?;
+            settled
+        })
+    }
+
+    fn idle_after(&self, session_id: &SessionId) -> Option<Duration> {
+        let armed = self
+            .counts
+            .lock()
+            .ok()?
+            .get(session_id)
+            .is_some_and(|session| session.idle_armed);
+        armed.then_some(self.idle_after).flatten()
+    }
+
+    fn idle<'a>(&'a self, context: &'a mut ModelContext<'_>) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            if self.disarm_idle(context.session_id)? {
+                handoff::idle(context, self).await?;
+            }
+            Ok(())
+        })
+    }
+
+    fn has_background_work<'a>(&'a self, session_id: &'a SessionId) -> BoxFuture<'a, Result<bool>> {
+        Box::pin(async move {
+            Ok(self
+                .counts()?
+                .get(session_id)
+                .is_some_and(|session| session.idle_armed))
+        })
     }
 
     fn session_end<'a>(&'a self, runtime: &'a RuntimeContext) -> BoxFuture<'a, Result<()>> {
@@ -414,8 +521,15 @@ impl Middleware for Compaction {
     }
 
     fn pre_model<'a>(&'a self, context: &'a mut ModelContext<'_>) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move { handoff::prepare(context, self).await })
+        Box::pin(async move {
+            let tokens = handoff::prepare(context, self).await?;
+            self.observe(context.session_id, tokens)
+        })
     }
+}
+
+fn idle_after(enabled: bool, minutes: i64) -> Option<Duration> {
+    enabled.then(|| Duration::from_secs(u64::try_from(minutes).unwrap_or(1).saturating_mul(60)))
 }
 
 fn start_notice(context: &mut ModelContext<'_>) -> Result<()> {
@@ -519,6 +633,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn idle_policy_rejects_invalid_thresholds_and_clock_overflow() {
+        for (after, minimum) in [
+            (Some(Duration::ZERO), 1),
+            (Some(Duration::MAX), 1),
+            (Some(Duration::from_secs(1)), 0),
+            (None, -1),
+        ] {
+            assert!(
+                Compaction::default()
+                    .idle_compaction(after, minimum)
+                    .is_err()
+            );
+        }
+        assert!(Compaction::default().idle_compaction(None, 1).is_ok());
+    }
+
+    #[test]
     fn checkpoint_target_is_a_share_of_the_window() {
         let policy = Compaction::default();
         assert_eq!(policy.checkpoint_tokens(400_000), 80_000);
@@ -527,6 +658,38 @@ mod tests {
         })
         .expect("valid settings");
         assert_eq!(small.checkpoint_tokens(128_000), 12_800);
+    }
+
+    #[tokio::test]
+    async fn an_armed_idle_timer_holds_the_session_until_an_idle_turn_ends() {
+        let directory = tempfile::tempdir().expect("directory");
+        let runtime = super::super::tests::lifecycle_runtime(directory.path());
+        let after = Duration::from_secs(240);
+        let policy = Compaction::default()
+            .idle_compaction(Some(after), 100)
+            .expect("idle compaction");
+        policy.counts().expect("counts").insert(
+            runtime.session_id.share(),
+            SessionCount {
+                checkpoints: Arc::clone(&runtime.checkpoints),
+                count: 0,
+                pending_epoch: None,
+                observed: 0,
+                idle_armed: false,
+            },
+        );
+        let session = &runtime.session_id;
+        for (observed, idle_turn, armed) in
+            [(99, false, false), (100, false, true), (100, true, false)]
+        {
+            policy.observe(session, observed).expect("observe");
+            policy.arm_idle(session, idle_turn).expect("arm");
+            assert_eq!(policy.idle_after(session), armed.then_some(after));
+            assert_eq!(
+                policy.has_background_work(session).await.expect("work"),
+                armed
+            );
+        }
     }
 
     #[tokio::test]
@@ -588,6 +751,8 @@ mod tests {
                     checkpoints: Arc::<SqliteCheckpoint>::clone(&checkpoints),
                     count: 3,
                     pending_epoch: None,
+                    observed: 0,
+                    idle_armed: false,
                 },
             );
             policy.stage(&checkpoint.session_id, 1).expect("stage");

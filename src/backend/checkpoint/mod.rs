@@ -73,6 +73,9 @@ pub struct ActiveExecution {
     pub stop_hook_active: bool,
     /// The phase.
     pub phase: ExecutionPhase,
+    /// A hidden turn started by the idle timer; it runs idle hooks instead of a model step.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub idle: bool,
 }
 
 /// The model step currently in flight for an active execution.
