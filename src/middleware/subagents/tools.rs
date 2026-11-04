@@ -335,6 +335,10 @@ impl Tool for WaitAgent {
         &text::DEFINITION.wait_agent.tool
     }
 
+    fn polls(&self) -> bool {
+        true
+    }
+
     fn cancel_on_input(&self) -> bool {
         true
     }

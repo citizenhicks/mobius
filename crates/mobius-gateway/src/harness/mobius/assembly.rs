@@ -838,11 +838,24 @@ fn build_middleware(
                 Arc::clone(session_files),
                 |id| settings.setting(mobius::middleware::image_generation::MANIFEST.id, id),
             )),
-            BuiltinMiddleware::Tools => Arc::new(if project {
-                Tools::coding(Arc::clone(session_files))
-            } else {
-                Tools::reading(Arc::clone(session_files))
-            }),
+            BuiltinMiddleware::Tools => {
+                let tools = if project {
+                    Tools::coding(Arc::clone(session_files))
+                } else {
+                    Tools::reading(Arc::clone(session_files))
+                };
+                let count = |id| {
+                    crate::harness::mobius::middleware_manifest::count_setting(
+                        settings,
+                        feature.manifest.id,
+                        id,
+                    )
+                };
+                Arc::new(
+                    tools
+                        .repeat_limits(count("repeat_warning_calls")?, count("repeat_stop_calls")?),
+                )
+            }
             BuiltinMiddleware::Instructions => {
                 Arc::new(Instructions::discover(project.then_some(workspace))?)
             }

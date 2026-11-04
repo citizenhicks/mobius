@@ -130,6 +130,10 @@ impl Tool for ManageCommand {
         &DEFINITION.manage_command.tool
     }
 
+    fn polls(&self) -> bool {
+        true
+    }
+
     fn render(&self, event: &EventMsg) -> Option<FrontendBlock> {
         let mut block = DEFINITION.manage_command.render(event)?;
         match event {
@@ -301,6 +305,16 @@ pub(super) fn background_output(output: &BackgroundCommandPoll, output_limit: us
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn advertised_size_limits_match_the_enforced_limits() {
+        assert!(
+            include_str!("commands.toml").contains(&format!("at most {MAX_COMMAND_BYTES} bytes"))
+        );
+        let coding = include_str!("coding.toml");
+        let mutation = format!("at most {} bytes", super::super::MAX_MUTATION_BYTES);
+        assert_eq!(coding.matches(&mutation).count(), 2);
+    }
 
     #[test]
     fn bash_wait_bounds_and_hook_options_are_preserved() {

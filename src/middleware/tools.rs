@@ -43,7 +43,12 @@ mod text {
         pub(super) manifest_description: String,
         pub(super) manifest_label: String,
         pub(super) prompt_safety: String,
+        pub(super) prompt_turns: String,
         pub(super) render_load: String,
+        pub(super) repeat_notice: String,
+        pub(super) repeat_stop: String,
+        #[serde(deserialize_with = "crate::middleware::manifest::deserialize_settings")]
+        pub(super) settings: Vec<crate::middleware::manifest::MiddlewareSettingManifest>,
         pub(super) search: std::sync::Arc<crate::backend::model::ToolDefinition>,
     }
     crate::embedded_config! { pub(super) static DEFINITION: Definition = include_str!("tools.toml") => super::limit_search; }
@@ -52,6 +57,7 @@ pub(super) mod arguments;
 mod coding;
 mod commands;
 mod patch;
+mod repeats;
 
 use coding::{ApplyPatch, ReadFile, WriteFile};
 use commands::{Bash, ManageCommand};
@@ -62,13 +68,15 @@ const MAX_TOOL_UI_BYTES: usize = 512;
 const MAX_TOOL_UI_LINES: usize = 5;
 const MAX_TOOL_SEARCH_QUERY_BYTES: usize = 512;
 const MAX_TOOL_SEARCH_RESULTS: usize = 8;
-const MAX_MUTATION_BYTES: usize = 40_000;
-const MAX_COMMAND_BYTES: usize = 8_000;
+const MAX_MUTATION_BYTES: usize = 128_000;
+const MAX_COMMAND_BYTES: usize = 64_000;
+// Commands run as one `sh -c` argument, which Linux caps at 128 KiB (MAX_ARG_STRLEN).
+const _: () = assert!(MAX_COMMAND_BYTES < 128 * 1024);
 const MAX_PATCH_MATCH_WORK: usize = 32 * 1024 * 1024;
 
 super::manifest::middleware_manifest! {
 /// Configuration and presentation metadata for workspace tools.
-    "tools", text::DEFINITION, required: true, settings: &[]
+    "tools", text::DEFINITION, required: true, settings: &text::DEFINITION.settings
 }
 
 /// Whether a tool can overlap other calls in its model-produced batch.
@@ -282,6 +290,11 @@ pub trait Tool: Send + Sync {
         false
     }
 
+    /// Declares that calls check on outside work, so identical results are expected.
+    fn polls(&self) -> bool {
+        false
+    }
+
     /// Declares an external hook alias and matcher subjects.
     fn hook_identity(&self) -> Option<HookIdentity> {
         None
@@ -323,6 +336,7 @@ struct RegisteredTool {
     approval: ApprovalRequirement,
     cancel_on_input: bool,
     read_only: bool,
+    polls: bool,
     handler: RegisteredHandler,
 }
 
@@ -482,6 +496,7 @@ impl Catalog {
             approval: tool.approval(),
             cancel_on_input: tool.cancel_on_input(),
             read_only: tool.read_only(),
+            polls: tool.polls(),
             handler: RegisteredHandler::Tool(tool),
         };
         self.insert(entry)
@@ -500,6 +515,7 @@ impl Catalog {
             approval: ApprovalRequirement::Never,
             cancel_on_input: false,
             read_only: true,
+            polls: false,
             handler: RegisteredHandler::Search,
         })
     }
@@ -799,6 +815,10 @@ impl Catalog {
     #[must_use]
     pub fn is_read_only(&self, name: &str) -> bool {
         self.get(name).is_some_and(|tool| tool.read_only)
+    }
+
+    fn polls(&self, name: &str) -> bool {
+        self.get(name).is_some_and(|tool| tool.polls)
     }
 
     pub(crate) fn cancels_on_input<'a>(
@@ -1447,6 +1467,7 @@ fn compact_output(output: &str) -> String {
 /// Middleware that contributes an explicit list of tools.
 pub struct Tools {
     tools: Vec<Arc<dyn Tool>>,
+    repeats: repeats::RepeatGuard,
 }
 
 impl std::fmt::Debug for Tools {
@@ -1459,7 +1480,31 @@ impl Tools {
     /// Creates a tool middleware from explicit handlers.
     #[must_use]
     pub fn new(tools: Vec<Arc<dyn Tool>>) -> Self {
-        Self { tools }
+        let default = |id| {
+            usize::try_from(super::manifest::integer_default(
+                &text::DEFINITION.settings,
+                id,
+            ))
+            .unwrap_or(usize::MAX)
+        };
+        Self {
+            tools,
+            repeats: repeats::RepeatGuard::new(
+                default("repeat_warning_calls"),
+                default("repeat_stop_calls"),
+            ),
+        }
+    }
+
+    /// Sets how many identical calls with identical results warn the model and stop the turn.
+    #[must_use]
+    pub fn repeat_limits(
+        mut self,
+        warning_at: std::num::NonZeroUsize,
+        stop_at: std::num::NonZeroUsize,
+    ) -> Self {
+        self.repeats = repeats::RepeatGuard::new(warning_at.get(), stop_at.get());
+        self
     }
 
     /// Creates the ordinary read-only file and image tools.
@@ -1485,7 +1530,10 @@ impl Tools {
     }
 
     fn section(&self) -> PromptSection {
-        let mut sections = vec![text::DEFINITION.prompt_safety.as_str()];
+        let mut sections = vec![
+            text::DEFINITION.prompt_safety.as_str(),
+            text::DEFINITION.prompt_turns.as_str(),
+        ];
         sections.extend(self.tools.iter().filter_map(|tool| tool.prompt_section()));
         PromptSection::new(sections.join(" "))
     }
@@ -1517,6 +1565,62 @@ impl Middleware for Tools {
             }
             Ok(())
         })
+    }
+
+    fn pre_model<'a>(
+        &'a self,
+        context: &'a mut super::ModelContext<'_>,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            if context.turn_stop.is_none()
+                && self
+                    .repeats
+                    .should_stop(context.session_id, context.turn_id)?
+            {
+                *context.turn_stop = Some(text::DEFINITION.repeat_stop.as_str().to_owned());
+            }
+            Ok(())
+        })
+    }
+
+    fn post_tool_use<'a>(
+        &'a self,
+        context: &'a mut super::PostToolUseContext<'_>,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            if !context.tools.polls(&context.call.name)
+                && self.repeats.observe(
+                    context.turn.session_id,
+                    context.turn.turn_id,
+                    &context.call.name,
+                    &context.call.arguments,
+                    &context.result.output,
+                )?
+            {
+                context
+                    .result
+                    .additional_input
+                    .push(crate::backend::model::internal_user_message(
+                        "tool_repeat",
+                        &text::DEFINITION.repeat_notice,
+                    ));
+            }
+            Ok(())
+        })
+    }
+
+    fn turn_end<'a>(
+        &'a self,
+        context: &'a mut super::TurnEndContext<'_>,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            self.repeats
+                .finish_turn(context.session_id, context.turn_id)
+        })
+    }
+
+    fn session_end<'a>(&'a self, runtime: &'a super::RuntimeContext) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move { self.repeats.finish_session(&runtime.session_id) })
     }
 
     fn frontend(&self, _session_id: &str) -> FrontendContribution {

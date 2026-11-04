@@ -19,6 +19,7 @@ additionalProperties = false
 
 [bash.tool.parameters.properties.command]
 type = "string"
+description = "Shell command, at most 64000 bytes. Write longer scripts to a file first."
 
 [bash.tool.parameters.properties.timeout_ms]
 type = "integer"

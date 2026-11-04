@@ -74,7 +74,9 @@ existing identities and blocks new pairing beyond that limit.
 
 Bot middleware settings expose `sandbox.tool_output_bytes` (40000; maximum 1048576)
 and `sandbox.background_commands` (4; maximum 256). Command capture and final tool
-rendering share the output budget. Compaction exposes `at_tokens` (250000),
+rendering share the output budget. Tools expose `repeat_warning_calls` (12) and
+`repeat_stop_calls` (21): identical calls with identical results in one turn first warn
+the model, then stop the turn with a warning. Polling tools are not counted. Compaction exposes `at_tokens` (250000),
 `reserve_tokens` (16384), and `allow_model_compaction` (`off` or `on`, default `off`).
 Automatic compaction saves a plaintext checkpoint and resets context when the
 token threshold or destination model budget requires it. Enabling

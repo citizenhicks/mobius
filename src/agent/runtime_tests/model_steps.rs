@@ -204,3 +204,116 @@ async fn interrupt_during_stream_retry_backoff_cancels_the_retry() {
     .expect("backoff cancellation");
     assert_eq!(model.calls.load(Ordering::SeqCst), 1);
 }
+
+struct RepeatedTool {
+    polls: bool,
+}
+
+impl crate::middleware::tools::Tool for RepeatedTool {
+    fn definition(&self) -> &Arc<ToolDefinition> {
+        static DEFINITION: std::sync::LazyLock<Arc<ToolDefinition>> =
+            std::sync::LazyLock::new(|| {
+                Arc::new(ToolDefinition {
+                    name: "repeated".into(),
+                    description: "returns the same result".into(),
+                    parameters: serde_json::json!({"type": "object", "properties": {}}),
+                })
+            });
+        &DEFINITION
+    }
+
+    fn exposure(&self) -> crate::middleware::tools::ToolExposure {
+        crate::middleware::tools::ToolExposure::Direct
+    }
+
+    fn polls(&self) -> bool {
+        self.polls
+    }
+
+    fn call(
+        &self,
+        _context: crate::middleware::tools::ToolContext,
+        _arguments: Value,
+    ) -> BoxFuture<'_, Result<crate::protocol::ToolResponse>> {
+        Box::pin(async { Ok("same".to_owned().into()) })
+    }
+}
+
+/// Runs a turn whose model calls the tool `calls` times, then answers.
+async fn run_repeated_tool(polls: bool, calls: usize) -> (Arc<ScriptedModel>, usize, Vec<String>) {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
+        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
+            .expect("checkpoint store"),
+    );
+    let mut outputs: VecDeque<ModelOutput> = (0..calls)
+        .map(|index| {
+            ModelOutput::from_output(
+                vec![serde_json::json!({
+                    "type": "function_call",
+                    "call_id": format!("call-{index}"),
+                    "name": "repeated",
+                    "arguments": "{}"
+                })],
+                false,
+                scripted_usage(),
+            )
+            .expect("tool output")
+        })
+        .collect();
+    outputs.push_back(scripted_message("done"));
+    let model = Arc::new(ScriptedModel {
+        outputs: Mutex::new(outputs),
+        tool_counts: Mutex::new(Vec::new()),
+        inputs: Mutex::new(Vec::new()),
+    });
+    let limit = |count| std::num::NonZeroUsize::new(count).expect("positive limit");
+    let tools = crate::middleware::tools::Tools::new(vec![Arc::new(RepeatedTool { polls })])
+        .repeat_limits(limit(2), limit(3));
+    let mut config = config_with_model(
+        workspace.path(),
+        checkpoints,
+        "repeated-tool",
+        "test",
+        Arc::<ScriptedModel>::clone(&model),
+    );
+    config.middleware = Arc::new(test_middleware(vec![Arc::new(tools)]));
+    let mut agent = create_agent(config).await.expect("create agent");
+    agent.sender().submit(user_op("go")).expect("submit input");
+    let mut begins = 0;
+    let mut warnings = Vec::new();
+    while let Some(event) = agent.next_event().await {
+        match event.msg {
+            EventMsg::ToolCallBegin(_) => begins += 1,
+            EventMsg::Warning(warning) => warnings.push(warning.message.to_string()),
+            EventMsg::TurnComplete(_) => break,
+            _ => {}
+        }
+    }
+    (model, begins, warnings)
+}
+
+#[tokio::test]
+async fn repeated_tool_results_warn_the_model_then_stop_the_turn() {
+    let (model, begins, warnings) = run_repeated_tool(false, 10).await;
+    assert_eq!(begins, 3);
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].contains("kept repeating"));
+    let inputs = std::mem::take(&mut *model.inputs.lock().expect("input lock"));
+    assert_eq!(inputs.len(), 3);
+    let warned = |input: &Vec<Value>| {
+        input
+            .iter()
+            .any(|item| item.to_string().contains("not making progress"))
+    };
+    assert!(!warned(&inputs[1]));
+    assert!(warned(&inputs[2]));
+}
+
+#[tokio::test]
+async fn polling_tools_may_repeat_without_stopping_the_turn() {
+    let (model, begins, warnings) = run_repeated_tool(true, 10).await;
+    assert_eq!(begins, 10);
+    assert!(warnings.is_empty());
+    assert_eq!(model.inputs.lock().expect("input lock").len(), 11);
+}
