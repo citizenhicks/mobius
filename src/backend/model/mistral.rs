@@ -131,23 +131,17 @@ impl Mistral {
         events: ModelEventSink,
         media: Option<super::MediaPreparation<'_>>,
     ) -> Result<ModelOutput> {
-        let body = super::media::encode_request(self, request, media, true, |input| {
-            Ok(serde_json::to_vec(
-                &self.request_body(ModelRequest { input, ..request })?,
-            )?)
-        })
-        .await?;
-        let response = super::chat_completions::post(
-            &self.config.client,
-            self.config.base_url.root(),
-            self.config.api_key.as_deref(),
-            body,
+        super::chat_completions::respond::<StreamState>(
+            self,
+            &self.config,
             "Mistral",
+            request,
+            events,
+            media,
+            |request| Ok(serde_json::to_vec(&self.request_body(request)?)?),
         )
-        .await?;
-        let mut stream = StreamState::default();
-        super::transport::read_sse(response, "Mistral", &events, &mut stream).await?;
-        stream.finish()
+        .await?
+        .finish()
     }
 }
 

@@ -38,7 +38,7 @@ async fn turn_history_keeps_idle_promotion_together_across_storage_pages() {
     events.extend([start("idle", false), complete("idle")]);
     let recorded = store
         .save_with_events(
-            Arc::new(checkpoint("session")),
+            ValidatedCheckpoint::new(Arc::new(checkpoint("session"))).unwrap(),
             Vec::new(),
             None,
             events
@@ -103,7 +103,7 @@ async fn large_tool_output_is_stored_once_and_restored_for_both_event_readers() 
     ));
     let live = store
         .save_with_events(
-            Arc::new(state),
+            ValidatedCheckpoint::new(Arc::new(state)).unwrap(),
             vec![item],
             None,
             vec![TimestampedEvent {
@@ -290,7 +290,7 @@ async fn transient_notices_are_delivered_but_not_kept() {
     };
     let live = store
         .save_with_events(
-            Arc::new(checkpoint("session")),
+            ValidatedCheckpoint::new(Arc::new(checkpoint("session"))).unwrap(),
             Vec::new(),
             None,
             vec![TimestampedEvent {

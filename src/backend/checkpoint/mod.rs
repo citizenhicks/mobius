@@ -306,9 +306,11 @@ impl QueuedMessageBoundary {
 }
 
 /// One typed conversation message waiting for its delivery boundary.
+///
+/// Cloning shares the payload, so a staged queue snapshot costs one handle per message.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(transparent)]
-pub struct QueuedMessage(QueuedMessageData);
+pub struct QueuedMessage(Arc<QueuedMessageData>);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct QueuedMessageData {
@@ -319,6 +321,19 @@ struct QueuedMessageData {
     message: String,
     attachments: Vec<SessionFileReference>,
     reply: Option<MessageReply>,
+}
+
+impl QueuedMessageData {
+    fn borrowed_event(&self) -> QueuedMessageEvent<'_> {
+        QueuedMessageEvent {
+            author: &self.author,
+            delivery: self.boundary.delivery(),
+            text: &self.message,
+            attachments: &self.attachments,
+            reply: self.reply.as_ref(),
+            message_target: None,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -335,9 +350,9 @@ impl<'de> Deserialize<'de> for QueuedMessage {
     fn deserialize<D: serde::Deserializer<'de>>(
         deserializer: D,
     ) -> std::result::Result<Self, D::Error> {
-        let queued = Self(QueuedMessageData::deserialize(deserializer)?);
+        let queued = QueuedMessageData::deserialize(deserializer)?;
         validate_queued_message(&queued).map_err(serde::de::Error::custom)?;
-        Ok(queued)
+        Ok(Self(Arc::new(queued)))
     }
 }
 
@@ -348,7 +363,9 @@ impl QueuedMessage {
         boundary: QueuedMessageBoundary,
         event: MessageEvent,
     ) -> Result<Self> {
-        Self::build(owner, id, boundary, event).map_err(|(error, _boundary)| error)
+        let queued = Self::assemble(owner, id, boundary, event)?;
+        validate_queued_message(&queued)?;
+        Ok(Self(Arc::new(queued)))
     }
 
     /// Queues an event built from a submission already checked at ingress.
@@ -358,21 +375,7 @@ impl QueuedMessage {
         boundary: QueuedMessageBoundary,
         event: MessageEvent,
     ) -> Result<Self> {
-        Self::assemble(owner, id, boundary, event).map_err(|(error, _boundary)| error)
-    }
-
-    // A failed build hands the boundary back so a replacement can restore it.
-    fn build(
-        owner: &str,
-        id: &str,
-        boundary: QueuedMessageBoundary,
-        event: MessageEvent,
-    ) -> std::result::Result<Self, (Error, QueuedMessageBoundary)> {
-        let queued = Self::assemble(owner, id, boundary, event)?;
-        match validate_queued_message(&queued) {
-            Ok(()) => Ok(queued),
-            Err(error) => Err((error, queued.0.boundary)),
-        }
+        Self::assemble(owner, id, boundary, event).map(|queued| Self(Arc::new(queued)))
     }
 
     fn assemble(
@@ -380,14 +383,11 @@ impl QueuedMessage {
         id: &str,
         boundary: QueuedMessageBoundary,
         event: MessageEvent,
-    ) -> std::result::Result<Self, (Error, QueuedMessageBoundary)> {
+    ) -> Result<QueuedMessageData> {
         if event.delivery != boundary.delivery() || event.message_target.is_some() {
-            return Err((
-                Error::Config("queued message event is inconsistent".into()),
-                boundary,
-            ));
+            return Err(Error::Config("queued message event is inconsistent".into()));
         }
-        Ok(Self(QueuedMessageData {
+        Ok(QueuedMessageData {
             owner: owner.into(),
             id: id.into(),
             boundary,
@@ -395,7 +395,7 @@ impl QueuedMessage {
             message: event.text,
             attachments: event.attachments,
             reply: event.reply,
-        }))
+        })
     }
 
     pub(crate) fn owner(&self) -> &str {
@@ -428,17 +428,6 @@ impl QueuedMessage {
         self.0.reply.as_ref()
     }
 
-    fn borrowed_event(&self) -> QueuedMessageEvent<'_> {
-        QueuedMessageEvent {
-            author: &self.0.author,
-            delivery: self.0.boundary.delivery(),
-            text: &self.0.message,
-            attachments: &self.0.attachments,
-            reply: self.0.reply.as_ref(),
-            message_target: None,
-        }
-    }
-
     pub(crate) fn event(&self) -> MessageEvent {
         MessageEvent {
             author: self.0.author.clone(), // rules-allow: the queued message stays queued while its event is emitted
@@ -451,22 +440,13 @@ impl QueuedMessage {
     }
 
     pub(crate) fn replace(&mut self, id: &str, event: MessageEvent) -> Result<()> {
-        // Validation may fail; keep the original delivery boundary intact until replacement succeeds.
-        let boundary = std::mem::replace(&mut self.0.boundary, QueuedMessageBoundary::Queue);
-        match Self::build(&self.0.owner, id, boundary, event) {
-            Ok(replacement) => {
-                *self = replacement;
-                Ok(())
-            }
-            Err((error, boundary)) => {
-                self.0.boundary = boundary;
-                Err(error)
-            }
-        }
+        let boundary = self.0.boundary.clone(); // rules-allow: other queue snapshots still share this message, so its replacement owns the small boundary
+        *self = Self::new(&self.0.owner, id, boundary, event)?;
+        Ok(())
     }
 
     pub(crate) fn promote_to_next_turn(&mut self) {
-        self.0.boundary = QueuedMessageBoundary::Queue;
+        Arc::make_mut(&mut self.0).boundary = QueuedMessageBoundary::Queue;
     }
 
     pub(crate) fn submission_id(&self) -> &Arc<str> {
@@ -474,36 +454,37 @@ impl QueuedMessage {
     }
 
     pub(crate) fn into_parts(self) -> (Arc<str>, MessageEvent) {
+        let message = Arc::unwrap_or_clone(self.0);
         let event = MessageEvent {
-            author: self.0.author,
-            delivery: self.0.boundary.delivery(),
-            text: self.0.message,
-            attachments: self.0.attachments,
-            reply: self.0.reply,
+            author: message.author,
+            delivery: message.boundary.delivery(),
+            text: message.message,
+            attachments: message.attachments,
+            reply: message.reply,
             message_target: None,
         };
-        (self.0.id, event)
+        (message.id, event)
     }
 }
 
-fn validate_queued_message(message: &QueuedMessage) -> Result<()> {
-    if message.0.owner.trim().is_empty() || message.0.owner.len() > MAX_QUEUED_OWNER_BYTES {
+fn validate_queued_message(message: &QueuedMessageData) -> Result<()> {
+    if message.owner.trim().is_empty() || message.owner.len() > MAX_QUEUED_OWNER_BYTES {
         return Err(Error::Config("queued message owner is invalid".into()));
     }
-    if message.0.id.trim().is_empty() || message.0.id.len() > MAX_QUEUED_ID_BYTES {
+    if message.id.trim().is_empty() || message.id.len() > MAX_QUEUED_ID_BYTES {
         return Err(Error::Config("queued message ID is invalid".into()));
     }
     if matches!(
-        &message.0.boundary,
+        &message.boundary,
         QueuedMessageBoundary::Steer { turn_id }
             if turn_id.trim().is_empty() || turn_id.len() > MAX_QUEUED_TURN_ID_BYTES
     ) {
         return Err(Error::Config("queued message turn ID is invalid".into()));
     }
     crate::protocol::validate_message_content(
-        &message.0.author,
-        &message.0.message,
-        &message.0.attachments,
+        &message.author,
+        &message.message,
+        &message.attachments,
     )?;
     if crate::serialized_len(&message.borrowed_event())
         .ok()
@@ -512,6 +493,13 @@ fn validate_queued_message(message: &QueuedMessage) -> Result<()> {
         return Err(Error::Config("queued message is invalid".into()));
     }
     Ok(())
+}
+
+fn validate_session_context(context: &SessionContext) -> Result<()> {
+    context.validate().map_err(|error| match error {
+        Error::Config(message) => Error::Checkpoint(message),
+        error => error,
+    })
 }
 
 /// Versioned state persisted at each durable loop boundary.
@@ -590,6 +578,101 @@ impl Checkpoint {
             pending_tools: Vec::new(),
             pending_approval: None,
         }
+    }
+
+    /// Checks the rules every durable checkpoint obeys, whichever store holds it.
+    pub(crate) fn validate(&self) -> Result<()> {
+        if self.version != CHECKPOINT_VERSION {
+            return Err(Error::Checkpoint(format!(
+                "unsupported checkpoint version {}",
+                self.version
+            )));
+        }
+        if let Some(active) = &self.active_execution {
+            if active.submission_id.trim().is_empty() || active.turn_id.trim().is_empty() {
+                return Err(Error::Checkpoint(
+                    "active execution identifiers cannot be empty".into(),
+                ));
+            }
+            if active.started_at_ms < 0 {
+                return Err(Error::Checkpoint(
+                    "active execution start time cannot be negative".into(),
+                ));
+            }
+            if active.failed_tool_calls > active.tool_calls {
+                return Err(Error::Checkpoint(
+                    "active execution failed-tool count exceeds tool count".into(),
+                ));
+            }
+            if matches!(&active.phase, ExecutionPhase::Completion { .. })
+                && (self.active_model_step.is_some()
+                    || !self.pending_tools.is_empty()
+                    || self.pending_approval.is_some())
+            {
+                return Err(Error::Checkpoint(
+                    "turn completion conflicts with pending model or tool work".into(),
+                ));
+            }
+        } else if self.active_model_step.is_some()
+            || !self.pending_tools.is_empty()
+            || self.pending_approval.is_some()
+        {
+            return Err(Error::Checkpoint(
+                "pending model or tool work has no active execution".into(),
+            ));
+        }
+        if let Some(approval) = &self.pending_approval {
+            let known = approval
+                .calls
+                .iter()
+                .map(|call| call.call_id.as_ref())
+                .collect::<BTreeSet<_>>();
+            let selected = approval
+                .approval_call_ids
+                .iter()
+                .map(AsRef::as_ref)
+                .collect::<BTreeSet<&str>>();
+            if selected.is_empty()
+                || selected.len() != approval.approval_call_ids.len()
+                || !selected.is_subset(&known)
+            {
+                return Err(Error::Checkpoint(
+                    "pending approval selects unknown or repeated tool calls".into(),
+                ));
+            }
+        }
+        validate_session_context(&self.session_context)?;
+        if let Some(step) = &self.active_model_step {
+            let execution = self.active_execution.as_ref().ok_or_else(|| {
+                Error::Checkpoint("active model step has no active execution".into())
+            })?;
+            if step.model_step_id.trim().is_empty() {
+                return Err(Error::Checkpoint(
+                    "active model-step identifier cannot be empty".into(),
+                ));
+            }
+            if step.started_at_ms < execution.started_at_ms {
+                return Err(Error::Checkpoint(
+                    "active model step predates its execution".into(),
+                ));
+            }
+        }
+        if self.pending_messages.len() > MAX_QUEUED_MESSAGES {
+            return Err(Error::Checkpoint(
+                "queued messages exceed the durable item limit".into(),
+            ));
+        }
+        let mut pending_ids = BTreeSet::new();
+        for message in &self.pending_messages {
+            if !pending_ids.insert((message.owner(), message.id())) {
+                return Err(Error::Checkpoint(format!(
+                    "duplicate queued message `{}/{}`",
+                    message.owner(),
+                    message.id(),
+                )));
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn finish_execution(
@@ -938,6 +1021,29 @@ impl TranscriptPage {
     }
 }
 
+/// One immutable checkpoint that passed validation, the only form a store's batched save takes.
+#[derive(Debug)]
+pub struct ValidatedCheckpoint(Arc<Checkpoint>);
+
+impl ValidatedCheckpoint {
+    /// Validates a snapshot for saving.
+    /// # Errors
+    ///
+    /// Returns an error if the checkpoint could not be read back after saving.
+    pub fn new(checkpoint: Arc<Checkpoint>) -> Result<Self> {
+        checkpoint.validate()?;
+        Ok(Self(checkpoint))
+    }
+}
+
+impl std::ops::Deref for ValidatedCheckpoint {
+    type Target = Checkpoint;
+
+    fn deref(&self) -> &Checkpoint {
+        &self.0
+    }
+}
+
 /// Stores durable session checkpoints and middleware state.
 ///
 /// Atomic operations must not expose a partially committed logical update.
@@ -978,7 +1084,7 @@ pub trait CheckpointStore: Send + Sync {
     ) -> BoxFuture<'_, Result<()>> {
         Box::pin(async move {
             self.save_with_events(
-                Arc::new(checkpoint),
+                ValidatedCheckpoint::new(Arc::new(checkpoint))?,
                 transcript_delta,
                 execution,
                 Vec::new(),
@@ -991,6 +1097,7 @@ pub trait CheckpointStore: Send + Sync {
     /// Atomically saves one immutable checkpoint snapshot and its normalized event batch.
     ///
     /// Shared ownership lets storage transfer the snapshot without copying its payload.
+    /// The snapshot's type proves it passed validation, so a store does not check it again.
     ///
     /// The checkpoint, transcript delta, optional execution record, and journal
     /// events form one commit boundary. Return the durably assigned event
@@ -998,7 +1105,7 @@ pub trait CheckpointStore: Send + Sync {
     /// requirements of [`Self::save`] also apply.
     fn save_with_events(
         &self,
-        checkpoint: Arc<Checkpoint>,
+        checkpoint: ValidatedCheckpoint,
         transcript_delta: Vec<std::sync::Arc<Value>>,
         execution: Option<ExecutionRecord>,
         events: Vec<TimestampedEvent>,
@@ -1188,11 +1295,11 @@ mod ownership_tests {
             assert!(serde_json::from_value::<QueuedMessage>(invalid).is_err());
             let owned = serde_json::to_vec(&queued.event()).expect("event");
             assert_eq!(
-                serde_json::to_vec(&queued.borrowed_event()).expect("borrowed"),
+                serde_json::to_vec(&queued.0.borrowed_event()).expect("borrowed"),
                 owned
             );
             assert_eq!(
-                crate::serialized_len(&queued.borrowed_event()).expect("serialized length"),
+                crate::serialized_len(&queued.0.borrowed_event()).expect("serialized length"),
                 owned.len()
             );
         }

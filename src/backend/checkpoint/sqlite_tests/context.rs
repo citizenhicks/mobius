@@ -177,7 +177,7 @@ async fn failed_event_rolls_back_context_header_receipt_and_transcript_together(
     );
     let result = store
         .save_with_events(
-            Arc::new(next.clone()),
+            ValidatedCheckpoint::new(Arc::new(next.clone())).unwrap(),
             vec![Arc::new(json!("transcript addition"))],
             None,
             vec![TimestampedEvent {
@@ -219,6 +219,50 @@ async fn failed_event_rolls_back_context_header_receipt_and_transcript_together(
 }
 
 #[tokio::test]
+async fn overlapping_saves_queue_for_the_connection_that_holds_the_context_hint() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Arc::new(SqliteCheckpoint::new(directory.path().join("context.sqlite3")).unwrap());
+    let mut state = with_context("session", &[json!("first")]);
+    store.save(state.clone(), Vec::new(), None).await.unwrap();
+    state.sequence += 1;
+    let (held_tx, held_rx) = oneshot::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    // Rewrites the stored prefix without moving this connection's data_version, so only a
+    // save that skips the prefix query through the warm hint can still succeed.
+    let holder = tokio::spawn({
+        let store = Arc::clone(&store);
+        async move {
+            store
+                .run(move |connection, _cache| {
+                    connection.execute("UPDATE context_items SET item_json = '\"edited\"'", [])?;
+                    held_tx.send(()).expect("signal held connection");
+                    release_rx.recv().expect("release held connection");
+                    Ok(())
+                })
+                .await
+        }
+    });
+    held_rx.await.unwrap();
+    let mut saving = tokio::spawn({
+        let store = Arc::clone(&store);
+        let state = state.clone();
+        async move { store.save(state, Vec::new(), None).await }
+    });
+    assert!(
+        timeout(Duration::from_millis(200), &mut saving)
+            .await
+            .is_err(),
+        "the second writer waits instead of opening a cold connection"
+    );
+    release_tx.send(()).unwrap();
+    holder.await.unwrap().unwrap();
+    saving
+        .await
+        .unwrap()
+        .expect("warm hint skips the prefix query");
+}
+
+#[tokio::test]
 async fn cancelled_save_caller_does_not_interrupt_the_started_atomic_worker() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("context.sqlite3");
@@ -236,7 +280,7 @@ async fn cancelled_save_caller_does_not_interrupt_the_started_atomic_worker() {
     };
     timeout(Duration::from_secs(2), async {
         loop {
-            let worker_started = store.idle_connection.lock().unwrap().is_none();
+            let worker_started = store.connection.try_lock().is_err();
             if worker_started {
                 break;
             }

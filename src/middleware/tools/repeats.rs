@@ -33,20 +33,24 @@ impl RepeatGuard {
         }
     }
 
+    /// Hashes a call before its handler takes the arguments.
+    pub(super) fn call_identity(name: &str, arguments: &Value) -> DefaultHasher {
+        let mut hasher = DefaultHasher::new();
+        name.hash(&mut hasher);
+        arguments.hash(&mut hasher);
+        hasher
+    }
+
     /// Counts one executed call across the whole turn, because real work may sit between
     /// repeats. Returns whether this call reached the warning threshold.
     pub(super) fn observe(
         &self,
         session_id: &SessionId,
         turn_id: &str,
-        name: &str,
-        arguments: &Value,
+        mut call: DefaultHasher,
         output: &ToolContent,
     ) -> Result<bool> {
-        let mut hasher = DefaultHasher::new();
-        name.hash(&mut hasher);
-        arguments.to_string().hash(&mut hasher);
-        serde_json::to_vec(output)?.hash(&mut hasher);
+        output.hash(&mut call);
         let mut sessions = self.lock()?;
         let turn = sessions.entry(session_id.share()).or_default();
         if turn.turn_id != turn_id {
@@ -55,7 +59,7 @@ impl RepeatGuard {
                 ..TurnRepeats::default()
             };
         }
-        let count = turn.counts.entry(hasher.finish()).or_default();
+        let count = turn.counts.entry(call.finish()).or_default();
         *count += 1;
         let count = *count;
         turn.stop |= count >= self.stop_at;
@@ -100,6 +104,10 @@ mod tests {
 
     use super::*;
 
+    fn identity(name: &str, arguments: &Value) -> DefaultHasher {
+        RepeatGuard::call_identity(name, arguments)
+    }
+
     #[test]
     fn repeats_warn_once_then_stop_and_reset_with_the_turn() {
         let guard = RepeatGuard::new(2, 3);
@@ -108,7 +116,7 @@ mod tests {
         let output = ToolContent::default();
         let call = |turn| {
             guard
-                .observe(&session, turn, "bash", &same, &output)
+                .observe(&session, turn, identity("bash", &same), &output)
                 .unwrap()
         };
 
@@ -116,7 +124,12 @@ mod tests {
         // Real work between repeats does not reset the count.
         assert!(
             !guard
-                .observe(&session, "a", "bash", &json!({"command": "ls"}), &output)
+                .observe(
+                    &session,
+                    "a",
+                    identity("bash", &json!({"command": "ls"})),
+                    &output
+                )
                 .unwrap()
         );
         assert!(call("a"));
@@ -142,7 +155,12 @@ mod tests {
         let output = ToolContent::default();
         let call = |session: &SessionId| {
             guard
-                .observe(session, session.as_str(), "bash", &arguments, &output)
+                .observe(
+                    session,
+                    session.as_str(),
+                    identity("bash", &arguments),
+                    &output,
+                )
                 .unwrap()
         };
 
@@ -171,13 +189,18 @@ mod tests {
         let arguments = json!({"command": "date"});
         assert!(
             guard
-                .observe(&session, "a", "bash", &arguments, &ToolContent::default())
+                .observe(
+                    &session,
+                    "a",
+                    identity("bash", &arguments),
+                    &ToolContent::default()
+                )
                 .unwrap()
         );
         let changed: ToolContent = "later".to_owned().into();
         assert!(
             guard
-                .observe(&session, "a", "bash", &arguments, &changed)
+                .observe(&session, "a", identity("bash", &arguments), &changed)
                 .unwrap()
         );
     }

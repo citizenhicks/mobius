@@ -55,7 +55,7 @@ impl CheckpointStore for BlockingRetryStore {
 
     fn save_with_events(
         &self,
-        checkpoint: Arc<Checkpoint>,
+        checkpoint: crate::backend::checkpoint::ValidatedCheckpoint,
         _transcript_delta: Vec<Arc<Value>>,
         _execution: Option<ExecutionRecord>,
         events: Vec<TimestampedEvent>,
@@ -145,7 +145,7 @@ impl CheckpointStore for FailOnceStore {
 
     fn save_with_events(
         &self,
-        checkpoint: Arc<Checkpoint>,
+        checkpoint: crate::backend::checkpoint::ValidatedCheckpoint,
         _transcript_delta: Vec<Arc<Value>>,
         _execution: Option<ExecutionRecord>,
         events: Vec<TimestampedEvent>,

@@ -1,8 +1,10 @@
 use std::path::{Component, Path};
+use std::pin::pin;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures_util::{StreamExt as _, TryStreamExt as _, stream};
 use mobius::backend::sandbox::CommandOutput;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::process::Command;
@@ -15,6 +17,7 @@ use super::Rejection;
 
 // JSON can expand control bytes sixfold; one eighth leaves room for frame metadata.
 const MAX_GIT_DIFF_BYTES: usize = MAX_FRAME_BYTES / 8;
+const UNTRACKED_TOTALS_CONCURRENCY: usize = 8;
 const TRUNCATION_NOTE: &[u8] = b"[diff truncated]\n";
 const GIT_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CREDENTIAL_TARGET_BYTES: usize = 2 * 1024;
@@ -469,38 +472,63 @@ async fn append_untracked(
         .await?,
         "listing untracked files failed",
     )?;
-    for path in untracked
+    // Only the display patch has a budget, so it starts each file only after checking it.
+    // Counts must cover every file, so they may run ahead; patches still arrive in order.
+    let concurrency = if numstat {
+        UNTRACKED_TOTALS_CONCURRENCY
+    } else {
+        1
+    };
+    // Owned paths keep this future `Send`; a borrowing closure argument defeats inference.
+    let paths = untracked
         .split(|byte| *byte == 0)
         .filter(|path| !path.is_empty())
-    {
-        // Only the display patch has a budget; counts must cover every file.
-        if !numstat && diff.len() >= MAX_GIT_DIFF_BYTES {
+        .map(<[u8]>::to_vec)
+        .collect::<Vec<_>>();
+    let mut patches = pin!(
+        stream::iter(paths)
+            .map(|path| async move { untracked_patch(git, workspace, &path, flags).await })
+            .buffered(concurrency)
+    );
+    while numstat || diff.len() < MAX_GIT_DIFF_BYTES {
+        let Some(patch) = patches.try_next().await? else {
             break;
-        }
-        let path = std::str::from_utf8(path).map_err(|error| {
-            Rejection::new(
-                "git_error",
-                format!("Git returned an invalid untracked path: {error}"),
-            )
-        })?;
-        let relative = Path::new(path);
-        if !safe_path(relative) {
-            return Err(invalid_path());
-        }
-        let metadata = match tokio::fs::symlink_metadata(workspace.join(relative)).await {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(error_rejection(error)),
         };
-        if !metadata.file_type().is_file() {
-            continue;
-        }
-        let patch = untracked_diff(git, path, flags).await?;
-        if !is_binary_diff(&patch) {
+        if let Some(patch) = patch
+            && !is_binary_diff(&patch)
+        {
             append_diff(diff, &patch);
         }
     }
     Ok(())
+}
+
+/// Diffs one untracked path, or returns `None` when it is gone or not a regular file.
+async fn untracked_patch(
+    git: &GitOperation<'_>,
+    workspace: &Path,
+    path: &[u8],
+    flags: &[&str],
+) -> std::result::Result<Option<Vec<u8>>, Rejection> {
+    let path = std::str::from_utf8(path).map_err(|error| {
+        Rejection::new(
+            "git_error",
+            format!("Git returned an invalid untracked path: {error}"),
+        )
+    })?;
+    let relative = Path::new(path);
+    if !safe_path(relative) {
+        return Err(invalid_path());
+    }
+    let metadata = match tokio::fs::symlink_metadata(workspace.join(relative)).await {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error_rejection(error)),
+    };
+    if !metadata.file_type().is_file() {
+        return Ok(None);
+    }
+    untracked_diff(git, path, flags).await.map(Some)
 }
 
 async fn output(

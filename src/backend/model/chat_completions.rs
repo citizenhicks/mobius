@@ -8,7 +8,11 @@ use serde::Serialize;
 use serde::ser::SerializeSeq as _;
 use serde_json::Value;
 
-use super::{ImageDataUrl, MAX_TOOL_CALLS, ToolDefinition, image_input, usage_i64};
+use super::transport::{ApiKeyModel, SseHandler};
+use super::{
+    ImageDataUrl, MAX_TOOL_CALLS, MediaPreparation, Model, ModelEventSink, ModelRequest,
+    ToolDefinition, image_input, usage_i64,
+};
 use crate::protocol::TokenUsage;
 use crate::{Error, Result};
 
@@ -475,6 +479,33 @@ pub(super) async fn post(
         return Err(super::transport::status_error(response, provider).await);
     }
     Ok(response)
+}
+
+/// Runs one streamed request: admits and encodes the body, posts it, and reads the stream.
+pub(super) async fn respond<H: SseHandler + Default>(
+    model: &(impl Model + ?Sized),
+    config: &ApiKeyModel,
+    provider: &str,
+    request: ModelRequest<'_>,
+    events: ModelEventSink,
+    media: Option<MediaPreparation<'_>>,
+    encode: impl Fn(ModelRequest<'_>) -> Result<Vec<u8>> + Send + Sync,
+) -> Result<H> {
+    let body = super::media::encode_request(model, request, media, true, |input| {
+        encode(ModelRequest { input, ..request })
+    })
+    .await?;
+    let response = post(
+        &config.client,
+        config.base_url.root(),
+        config.api_key.as_deref(),
+        body,
+        provider,
+    )
+    .await?;
+    let mut stream = H::default();
+    super::transport::read_sse(response, provider, &events, &mut stream).await?;
+    Ok(stream)
 }
 
 pub(super) fn tool_text(output: &Value) -> Result<Cow<'_, str>> {

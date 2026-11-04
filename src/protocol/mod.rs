@@ -47,7 +47,7 @@ pub(crate) const TOOL_LOAD_MARKER: &str = "tool_load";
 /// One immutable, session-bound file addressed by an opaque reference.
 ///
 /// Only upload-origin references are valid in `MessageSubmission::attachments`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionFileReference {
     /// The identifier.

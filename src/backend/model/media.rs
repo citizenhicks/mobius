@@ -65,17 +65,30 @@ impl MediaPreparation<'_> {
         let session_id = session_id.ok_or_else(|| {
             Error::Provider("image observations require a session identity".into())
         })?;
-        let historical_end = if replay {
-            input
+        // Two boundaries, deliberately. Everything before the last model output may tolerate a
+        // deleted file, even an answered newest batch: refusing it would strand the session.
+        // Only images before the newest batch may yield their pixels to the request budget;
+        // that start never passes the historical end.
+        let (historical_end, omittable_end) = if replay {
+            let historical_end = input
                 .iter()
                 .rposition(observation_boundary)
-                .map_or(0, |index| index + 1)
+                .map_or(0, |index| index + 1);
+            (historical_end, newest_observation_start(input))
         } else {
-            0
+            (0, 0)
         };
-        hydrate(self.files, session_id, input, model, historical_end)
-            .await
-            .map(Some)
+        hydrate(
+            self.files,
+            session_id,
+            input,
+            model,
+            historical_end,
+            omittable_end,
+            self.limits.max_images,
+        )
+        .await
+        .map(Some)
     }
 }
 
@@ -164,10 +177,7 @@ pub(super) fn bound_request(
             .and_then(|item| content_parts_mut(Arc::make_mut(item)))
             .and_then(|parts| parts.get_mut(part_index))
             .ok_or_else(|| Error::Provider("missing prepared observation".into()))?;
-        replace_image(
-            part,
-            serde_json::json!({"type":"input_text", "text":format!("[Historical image omitted to fit the request. Reopen the original session file: {file}]")}),
-        );
+        replace_image(part, historical_image_omitted(file));
         images -= 1;
         request_bytes = request_bytes.saturating_sub(bytes);
         if images <= limits.max_images && request_bytes <= max_request_bytes {
@@ -178,6 +188,10 @@ pub(super) fn bound_request(
         return Err(Error::Provider("the newest observation batch and retained text exceed the model request budget; use fewer or smaller images, or reduce the text before retrying".into()));
     }
     Ok(())
+}
+
+fn historical_image_omitted(file: &Value) -> Value {
+    serde_json::json!({"type":"input_text", "text":format!("[Historical image omitted to fit the request. Reopen the original session file: {file}]")})
 }
 
 fn newest_observation_start(input: ModelInput<'_>) -> usize {
@@ -219,6 +233,8 @@ pub(super) async fn hydrate<M: super::Model + ?Sized>(
     input: ModelInput<'_>,
     model: &M,
     historical_end: usize,
+    omittable_end: usize,
+    max_images: usize,
 ) -> Result<Vec<Arc<Value>>> {
     let mut prepared = input
         .iter()
@@ -229,7 +245,10 @@ pub(super) async fn hydrate<M: super::Model + ?Sized>(
                 .map_or_else(|| Arc::new(item.clone()), Arc::clone) // rules-allow: hydration rewrites items, so borrowed values become owned and durable ones share their handle
         })
         .collect::<Vec<_>>();
-    for (item_index, item) in prepared.iter_mut().enumerate() {
+    // Newest first, so the images past the cap are the ones `bound_request` would drop,
+    // found before their pixels are read. Unreadable images never spend the cap.
+    let mut read = 0;
+    for (item_index, item) in prepared.iter_mut().enumerate().rev() {
         let tool_result = item.get("type").and_then(Value::as_str) == Some("function_call_output");
         if !content_parts(item).is_some_and(|parts| {
             parts
@@ -242,7 +261,7 @@ pub(super) async fn hydrate<M: super::Model + ?Sized>(
         let Some(parts) = content_parts_mut(Arc::make_mut(item)) else {
             continue;
         };
-        for part in parts {
+        for part in parts.iter_mut().rev() {
             if part.get("type").and_then(Value::as_str) != Some("input_image") {
                 continue;
             }
@@ -256,6 +275,12 @@ pub(super) async fn hydrate<M: super::Model + ?Sized>(
                     part,
                     serde_json::json!({"type":"input_text", "text":format!("[Image omitted because the selected model cannot read images here. Session file: {}]", image.file.id)}),
                 );
+                continue;
+            }
+            if read >= max_images && item_index < omittable_end {
+                let omitted =
+                    historical_image_omitted(part.pointer("/image/file").unwrap_or(&Value::Null));
+                replace_image(part, omitted);
                 continue;
             }
             let files = files.ok_or_else(|| {
@@ -276,7 +301,10 @@ pub(super) async fn hydrate<M: super::Model + ?Sized>(
             }
             .await;
             let replacement = match replacement {
-                Ok(part) => part,
+                Ok(part) => {
+                    read += 1;
+                    part
+                }
                 Err(Error::Io(error))
                     if item_index < historical_end
                         && error.kind() == std::io::ErrorKind::NotFound =>
@@ -471,9 +499,17 @@ mod tests {
             limits: ImageInputLimits::default(),
         };
         for model in [Vision::None, Vision::User] {
-            let prepared = hydrate(None, &history, (&input[2..3]).into(), &model, 0)
-                .await
-                .expect("unsupported tool images do not require stored pixels");
+            let prepared = hydrate(
+                None,
+                &history,
+                (&input[2..3]).into(),
+                &model,
+                0,
+                0,
+                usize::MAX,
+            )
+            .await
+            .expect("unsupported tool images do not require stored pixels");
             assert!(
                 prepared[0]["output"][1]["text"]
                     .as_str()
@@ -555,6 +591,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn images_past_the_cap_are_omitted_before_any_read_and_the_newest_batch_is_kept() {
+        let session = crate::SessionId::new("capped").expect("session");
+        let state = tempfile::tempdir().expect("state");
+        let store = SessionFileStore::new(state.path(), None);
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(8, 8)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .expect("PNG");
+        let bytes = bytes.into_inner();
+        let ingest = async |name: &str| {
+            store
+                .ingest_image(&session, name.into(), bytes.clone(), ImageDetail::High)
+                .await
+                .expect("image")
+        };
+        let user_image = |image: &ImageReference| serde_json::json!({"role":"user","content":[{"type":"input_image","image":image}]});
+        // A purged file reports "unavailable" only if something tried to read it.
+        let purged = ingest("purged.png").await;
+        store.delete_session(&session).await.expect("purge");
+        let kept = ingest("kept.png").await;
+        let answer = serde_json::json!({"role":"assistant","content":"seen"});
+        let mut input = Vec::new();
+        for image in std::iter::repeat_n(&purged, 36).chain(std::iter::repeat_n(&kept, 64)) {
+            input.extend([user_image(image), answer.clone()]);
+        }
+        let media = MediaPreparation {
+            files: Some(&store),
+            limits: ImageInputLimits::default(),
+        };
+        let replay = async |input: &Vec<Value>, media: MediaPreparation<'_>| {
+            media
+                .prepare(Some(&session), input.into(), &Vision::All, true)
+                .await
+                .expect("replay")
+                .expect("images")
+        };
+        let prepared = replay(&input, media).await;
+        for item in prepared[..72].iter().step_by(2) {
+            let omitted = item["content"][0]["text"].as_str().expect("omission");
+            assert!(omitted.contains("omitted"), "{omitted}");
+        }
+        for item in prepared[72..].iter().step_by(2) {
+            assert_eq!(item["content"][0]["type"], "input_image");
+        }
+
+        // An answered newest batch stays whole; only the older image yields.
+        let input = vec![
+            user_image(&kept),
+            serde_json::json!({"type":"function_call","call_id":"capture"}),
+            serde_json::json!({"type":"function_call_output","call_id":"capture","output":[
+                {"type":"input_image","image":kept},{"type":"input_image","image":kept}]}),
+            answer,
+        ];
+        let media = MediaPreparation {
+            limits: ImageInputLimits {
+                max_images: 1,
+                ..ImageInputLimits::default()
+            },
+            ..media
+        };
+        let prepared = replay(&input, media).await;
+        assert_eq!(prepared[0]["content"][0]["type"], "input_text");
+        assert_eq!(prepared[2]["output"][0]["type"], "input_image");
+        assert_eq!(prepared[2]["output"][1]["type"], "input_image");
+    }
+
+    #[tokio::test]
     async fn large_native_observations_keep_exact_prefix_and_durable_file_references() {
         use image::ImageEncoder as _;
         let parent = crate::SessionId::new("parent").expect("session");
@@ -598,9 +701,17 @@ mod tests {
         super::super::reset_prompt_cache_breakpoint(&mut input);
         input.push(super::super::user_message("retained text beside the image"));
         let mut input = input.into_iter().map(Arc::new).collect::<Vec<_>>();
-        let prepared = hydrate(Some(&store), &parent, (&input).into(), &Vision::All, 0)
-            .await
-            .expect("large images admitted");
+        let prepared = hydrate(
+            Some(&store),
+            &parent,
+            (&input).into(),
+            &Vision::All,
+            0,
+            0,
+            usize::MAX,
+        )
+        .await
+        .expect("large images admitted");
         assert!(Arc::ptr_eq(&prepared[1], &input[1]));
         assert!(!Arc::ptr_eq(&prepared[0], &input[0]));
         assert!(input[0]["output"][1].get("image").is_some());
@@ -636,14 +747,30 @@ mod tests {
             }]),
             false,
         )));
-        let appended = hydrate(Some(&store), &parent, (&input).into(), &Vision::All, 0)
-            .await
-            .expect("append");
+        let appended = hydrate(
+            Some(&store),
+            &parent,
+            (&input).into(),
+            &Vision::All,
+            0,
+            0,
+            usize::MAX,
+        )
+        .await
+        .expect("append");
         assert_eq!(prepared, appended[..2]);
         assert!(
-            hydrate(Some(&store), &other, (&input).into(), &Vision::All, 0)
-                .await
-                .is_err()
+            hydrate(
+                Some(&store),
+                &other,
+                (&input).into(),
+                &Vision::All,
+                0,
+                0,
+                usize::MAX
+            )
+            .await
+            .is_err()
         );
         crate::backend::session_files::grant_context(Some(&store), &parent, &child, &input)
             .await
@@ -664,9 +791,17 @@ mod tests {
         );
         store.delete_session(&parent).await.expect("delete parent");
         assert_eq!(
-            hydrate(Some(&store), &child, (&input).into(), &Vision::All, 0)
-                .await
-                .expect("fork retains blobs"),
+            hydrate(
+                Some(&store),
+                &child,
+                (&input).into(),
+                &Vision::All,
+                0,
+                0,
+                usize::MAX
+            )
+            .await
+            .expect("fork retains blobs"),
             appended
         );
     }

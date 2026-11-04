@@ -122,23 +122,29 @@ async fn list_inner(
             "--",
         ],
     };
-    let mut output = sandbox.execute_git(args).await.map_err(error_rejection)?;
+    let (output, staged) = if scope == WorkspaceFileScope::Modified {
+        let (output, staged) = tokio::join!(
+            sandbox.execute_git(args),
+            sandbox.execute_git(&[
+                "diff",
+                "--cached",
+                "--name-only",
+                "-z",
+                "--relative",
+                "--no-ext-diff",
+                "--no-renames",
+                "--",
+            ])
+        );
+        (output, Some(staged))
+    } else {
+        (sandbox.execute_git(args).await, None)
+    };
+    let mut output = output.map_err(error_rejection)?;
     if output.exit_code == 0 {
         let mut truncated = retain_complete_git_paths(&mut output.stdout, output.stdout_truncated)?;
-        if scope == WorkspaceFileScope::Modified {
-            let mut staged = sandbox
-                .execute_git(&[
-                    "diff",
-                    "--cached",
-                    "--name-only",
-                    "-z",
-                    "--relative",
-                    "--no-ext-diff",
-                    "--no-renames",
-                    "--",
-                ])
-                .await
-                .map_err(error_rejection)?;
+        if let Some(staged) = staged {
+            let mut staged = staged.map_err(error_rejection)?;
             if staged.exit_code != 0 {
                 return Err(error_rejection(format!(
                     "listing staged workspace files failed: {}",

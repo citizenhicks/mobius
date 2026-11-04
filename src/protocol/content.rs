@@ -6,7 +6,7 @@ use serde_json::Value;
 use super::SessionFileReference;
 
 /// Model presentation chosen when an image is admitted to durable history.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ImageDetail {
     #[default]
@@ -19,7 +19,7 @@ pub enum ImageDetail {
 }
 
 /// One validated immutable image. Dimensions describe the stored pixels.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ImageReference {
     /// The file.
@@ -36,7 +36,7 @@ pub struct ImageReference {
 }
 
 /// Prepared model pixels stored under the same session authorization as the original.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ImageRendition {
     /// Prepared immutable file.
@@ -48,7 +48,7 @@ pub struct ImageRendition {
 }
 
 /// One ordered observation. Files are references, not implicit model attachments.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "type", deny_unknown_fields)]
 pub enum ContentPart {
     #[serde(rename = "input_text")]
@@ -72,7 +72,7 @@ pub enum ContentPart {
 }
 
 /// Authoritative ordered content; text previews are explicitly lossy.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ToolContent(pub Vec<ContentPart>);
 

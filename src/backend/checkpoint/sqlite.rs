@@ -6,7 +6,7 @@ use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard, TryLockError};
 use std::time::Duration;
 
 use rusqlite::Connection;
@@ -17,14 +17,12 @@ use rusqlite::TransactionBehavior;
 use rusqlite::{params, params_from_iter};
 use serde_json::Value;
 
-use super::CHECKPOINT_VERSION;
 use super::Checkpoint;
 use super::CheckpointStore;
 use super::EventPage;
 use super::EventPageRequest;
 use super::ExecutionPage;
 use super::ExecutionPageRequest;
-use super::ExecutionPhase;
 use super::ExecutionRecord;
 use super::ExecutionStats;
 use super::JournalEvent;
@@ -36,6 +34,8 @@ use super::TimestampedEvent;
 use super::TranscriptBatch;
 use super::TranscriptPage;
 use super::TranscriptPageRequest;
+use super::ValidatedCheckpoint;
+use super::validate_session_context;
 use crate::BoxFuture;
 use crate::Error;
 use crate::Result;
@@ -148,7 +148,7 @@ COMMIT;
 /// Stores latest checkpoints, transcripts, and middleware state in SQLite.
 pub struct SqliteCheckpoint {
     path: Arc<Path>,
-    idle_connection: Arc<Mutex<Option<CachedConnection>>>,
+    connection: Arc<Mutex<CachedConnection>>,
 }
 
 impl std::fmt::Debug for SqliteCheckpoint {
@@ -160,11 +160,34 @@ impl std::fmt::Debug for SqliteCheckpoint {
     }
 }
 
+/// The store's one warm connection. Writers queue for it, since SQLite admits one writer
+/// anyway and only this connection holds the context hints; readers never wait for it.
 struct CachedConnection {
     connection: Connection,
-    // ponytail: Hints are connection-local; overlapping writers may invalidate them.
-    // A serialized write owner is the next step only if connection churn measures hot.
     context: HashMap<SessionId, ContextCache>,
+}
+
+/// Locks the warm connection, or returns `None` when a reader must not wait for it.
+fn warm_connection(
+    connection: &Mutex<CachedConnection>,
+    wait: bool,
+) -> Option<MutexGuard<'_, CachedConnection>> {
+    let locked = if wait {
+        connection.lock().map_err(TryLockError::Poisoned)
+    } else {
+        connection.try_lock()
+    };
+    match locked {
+        Ok(cached) => Some(cached),
+        Err(TryLockError::WouldBlock) => None,
+        Err(TryLockError::Poisoned(poisoned)) => {
+            // Unwinding rolled the panicked operation's transaction back; only its hints are suspect.
+            connection.clear_poison();
+            let mut cached = poisoned.into_inner();
+            cached.context.clear();
+            Some(cached)
+        }
+    }
 }
 
 impl SqliteCheckpoint {
@@ -210,13 +233,14 @@ impl SqliteCheckpoint {
         }
         Ok(Self {
             path: path.into(),
-            idle_connection: Arc::new(Mutex::new(Some(CachedConnection {
+            connection: Arc::new(Mutex::new(CachedConnection {
                 connection,
                 context: HashMap::new(),
-            }))),
+            })),
         })
     }
 
+    /// Reads on the warm connection, or on a fresh one while the warm one is busy.
     async fn run<T>(
         &self,
         operation: impl FnOnce(&mut Connection, &mut HashMap<SessionId, ContextCache>) -> Result<T>
@@ -226,32 +250,44 @@ impl SqliteCheckpoint {
     where
         T: Send + 'static,
     {
+        self.on_worker(false, operation).await
+    }
+
+    /// Writes on the warm connection, waiting on a blocking worker until it is free.
+    /// The caller's cancellation does not interrupt a worker that already started.
+    async fn write<T>(
+        &self,
+        operation: impl FnOnce(&mut Connection, &mut HashMap<SessionId, ContextCache>) -> Result<T>
+        + Send
+        + 'static,
+    ) -> Result<T>
+    where
+        T: Send + 'static,
+    {
+        self.on_worker(true, operation).await
+    }
+
+    async fn on_worker<T>(
+        &self,
+        wait: bool,
+        operation: impl FnOnce(&mut Connection, &mut HashMap<SessionId, ContextCache>) -> Result<T>
+        + Send
+        + 'static,
+    ) -> Result<T>
+    where
+        T: Send + 'static,
+    {
         let path = Arc::clone(&self.path);
-        let idle_connection = Arc::clone(&self.idle_connection);
-        tokio::task::spawn_blocking(move || {
-            let cached = {
-                let mut idle = idle_connection.lock().map_err(|error| {
-                    Error::Checkpoint(format!("SQLite connection cache lock poisoned: {error}"))
-                })?;
-                idle.take()
-            };
-            let mut cached = match cached {
-                Some(cached) => cached,
-                None => CachedConnection {
-                    connection: open_existing_connection(&path)?,
-                    context: HashMap::new(),
-                },
-            };
-            let result = operation(&mut cached.connection, &mut cached.context);
-            let mut idle = idle_connection.lock().map_err(|error| {
-                Error::Checkpoint(format!("SQLite connection cache lock poisoned: {error}"))
-            })?;
-            // One idle connection stays warm by design; a pool is only justified if
-            // connection-open churn is ever measured.
-            if idle.is_none() {
-                *idle = Some(cached);
+        let connection = Arc::clone(&self.connection);
+        tokio::task::spawn_blocking(move || match warm_connection(&connection, wait) {
+            Some(mut cached) => {
+                let CachedConnection {
+                    connection,
+                    context,
+                } = &mut *cached;
+                operation(connection, context)
             }
-            result
+            None => operation(&mut open_existing_connection(&path)?, &mut HashMap::new()),
         })
         .await
         .map_err(|error| Error::Checkpoint(format!("SQLite worker failed: {error}")))?
@@ -318,7 +354,7 @@ impl CheckpointStore for SqliteCheckpoint {
 
     fn delete_sessions<'a>(&'a self, session_ids: &'a [SessionId]) -> BoxFuture<'a, Result<bool>> {
         let roots = session_ids.iter().map(SessionId::share).collect::<Vec<_>>();
-        Box::pin(self.run(move |connection, cache| {
+        Box::pin(self.write(move |connection, cache| {
             if roots.is_empty() {
                 return Ok(true);
             }
@@ -381,13 +417,12 @@ impl CheckpointStore for SqliteCheckpoint {
 
     fn save_with_events(
         &self,
-        checkpoint: Arc<Checkpoint>,
+        checkpoint: ValidatedCheckpoint,
         transcript_delta: Vec<Arc<Value>>,
         execution: Option<ExecutionRecord>,
         events: Vec<TimestampedEvent>,
     ) -> BoxFuture<'_, Result<Vec<JournalEvent>>> {
-        Box::pin(self.run(move |connection, cache| {
-            validate_checkpoint(&checkpoint)?;
+        Box::pin(self.write(move |connection, cache| {
             if let Some(execution) = &execution {
                 validate_execution(&checkpoint, execution)?;
             }
@@ -460,7 +495,7 @@ impl CheckpointStore for SqliteCheckpoint {
             recorded_at_ms,
             event,
         };
-        Box::pin(self.run(move |connection, _cache| {
+        Box::pin(self.write(move |connection, _cache| {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let record = store_event(&transaction, &session_id, event, None)?;
@@ -857,7 +892,7 @@ impl CheckpointStore for SqliteCheckpoint {
             && checkpoint.active_execution.is_none()
             && checkpoint.pending_approval.is_none()
             && checkpoint.pending_messages.is_empty();
-        let validation = validate_checkpoint(&checkpoint);
+        let validation = checkpoint.validate();
         let catalog_visible = checkpoint.catalog_visible;
         Box::pin(async move {
             if parent_session_id == checkpoint.session_id {
@@ -877,7 +912,7 @@ impl CheckpointStore for SqliteCheckpoint {
                 ))
             })?;
             validation?;
-            self.run(move |connection, cache| {
+            self.write(move |connection, cache| {
                 let session_id = &checkpoint.session_id;
                 let checkpoint_json = serde_json::to_string(&Header(&checkpoint))?;
                 let session_context_json = serde_json::to_string(&checkpoint.session_context)?;
@@ -992,7 +1027,7 @@ impl CheckpointStore for SqliteCheckpoint {
         let scope = scope.to_owned();
         let key = key.to_owned();
         let json = serde_json::to_string(value);
-        Box::pin(self.run(move |connection, _cache| {
+        Box::pin(self.write(move |connection, _cache| {
             let json = json?;
             connection.execute(
                 "INSERT INTO middleware_state (scope, key, value_json)
@@ -1196,7 +1231,7 @@ fn decode_checkpoint(session_id: &SessionId, sequence: i64, json: &str) -> Resul
     let sequence = u64::try_from(sequence).map_err(|error| {
         Error::Checkpoint(format!("checkpoint row has a negative sequence: {error}"))
     })?;
-    validate_checkpoint(&checkpoint)?;
+    checkpoint.validate()?;
     if &checkpoint.session_id != session_id || checkpoint.sequence != sequence {
         return Err(Error::Checkpoint(
             "checkpoint row does not match its index".into(),
@@ -1209,108 +1244,6 @@ fn decode_execution(json: &str) -> Result<ExecutionRecord> {
     let execution: ExecutionRecord = serde_json::from_str(json)?;
     validate_execution_record(&execution)?;
     Ok(execution)
-}
-
-fn validate_checkpoint(checkpoint: &Checkpoint) -> Result<()> {
-    if checkpoint.version != CHECKPOINT_VERSION {
-        return Err(Error::Checkpoint(format!(
-            "unsupported checkpoint version {}",
-            checkpoint.version
-        )));
-    }
-    if let Some(active) = &checkpoint.active_execution {
-        if active.submission_id.trim().is_empty() || active.turn_id.trim().is_empty() {
-            return Err(Error::Checkpoint(
-                "active execution identifiers cannot be empty".into(),
-            ));
-        }
-        if active.started_at_ms < 0 {
-            return Err(Error::Checkpoint(
-                "active execution start time cannot be negative".into(),
-            ));
-        }
-        if active.failed_tool_calls > active.tool_calls {
-            return Err(Error::Checkpoint(
-                "active execution failed-tool count exceeds tool count".into(),
-            ));
-        }
-        if matches!(&active.phase, ExecutionPhase::Completion { .. })
-            && (checkpoint.active_model_step.is_some()
-                || !checkpoint.pending_tools.is_empty()
-                || checkpoint.pending_approval.is_some())
-        {
-            return Err(Error::Checkpoint(
-                "turn completion conflicts with pending model or tool work".into(),
-            ));
-        }
-    } else if checkpoint.active_model_step.is_some()
-        || !checkpoint.pending_tools.is_empty()
-        || checkpoint.pending_approval.is_some()
-    {
-        return Err(Error::Checkpoint(
-            "pending model or tool work has no active execution".into(),
-        ));
-    }
-    if let Some(approval) = &checkpoint.pending_approval {
-        let known = approval
-            .calls
-            .iter()
-            .map(|call| call.call_id.as_ref())
-            .collect::<BTreeSet<_>>();
-        let selected = approval
-            .approval_call_ids
-            .iter()
-            .map(AsRef::as_ref)
-            .collect::<BTreeSet<&str>>();
-        if selected.is_empty()
-            || selected.len() != approval.approval_call_ids.len()
-            || !selected.is_subset(&known)
-        {
-            return Err(Error::Checkpoint(
-                "pending approval selects unknown or repeated tool calls".into(),
-            ));
-        }
-    }
-    validate_session_context(&checkpoint.session_context)?;
-    if let Some(step) = &checkpoint.active_model_step {
-        let execution = checkpoint
-            .active_execution
-            .as_ref()
-            .ok_or_else(|| Error::Checkpoint("active model step has no active execution".into()))?;
-        if step.model_step_id.trim().is_empty() {
-            return Err(Error::Checkpoint(
-                "active model-step identifier cannot be empty".into(),
-            ));
-        }
-        if step.started_at_ms < execution.started_at_ms {
-            return Err(Error::Checkpoint(
-                "active model step predates its execution".into(),
-            ));
-        }
-    }
-    if checkpoint.pending_messages.len() > super::MAX_QUEUED_MESSAGES {
-        return Err(Error::Checkpoint(
-            "queued messages exceed the durable item limit".into(),
-        ));
-    }
-    let mut pending_ids = BTreeSet::new();
-    for message in &checkpoint.pending_messages {
-        if !pending_ids.insert((message.owner(), message.id())) {
-            return Err(Error::Checkpoint(format!(
-                "duplicate queued message `{}/{}`",
-                message.owner(),
-                message.id(),
-            )));
-        }
-    }
-    Ok(())
-}
-
-fn validate_session_context(context: &SessionContext) -> Result<()> {
-    context.validate().map_err(|error| match error {
-        Error::Config(message) => Error::Checkpoint(message),
-        error => error,
-    })
 }
 
 fn validate_execution(checkpoint: &Checkpoint, execution: &ExecutionRecord) -> Result<()> {

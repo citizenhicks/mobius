@@ -7,6 +7,7 @@ use std::sync::Mutex as StdMutex;
 use base64::Engine as _;
 use cap_std::ambient_authority;
 use cap_std::fs::Dir;
+use futures_util::{StreamExt as _, TryStreamExt as _, stream};
 use sha2::{Digest as _, Sha256};
 use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
 use uuid::Uuid;
@@ -18,6 +19,9 @@ use super::{
 };
 use crate::protocol::SessionFileReference;
 use crate::{Error, Result};
+
+// Enough to overlap disk latency without exhausting the blocking pool on one listing.
+const LIST_VALIDATION_CONCURRENCY: usize = 8;
 
 pub(super) async fn read_resolved_chunk(
     file: SessionFileReference,
@@ -106,7 +110,7 @@ pub(super) async fn list_completed(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(error.into()),
     }
-    let mut records = Vec::new();
+    let mut candidates = Vec::new();
     let mut entries = tokio::fs::read_dir(session_dir).await?;
     while let Some(entry) = entries.next_entry().await? {
         let file_type = entry.file_type().await?;
@@ -114,23 +118,26 @@ pub(super) async fn list_completed(
             continue;
         }
         let id = entry.file_name();
-        let Some(id) = id.to_str() else {
-            continue;
-        };
-        if validate_file_id(id).is_err() {
-            continue;
+        if id.to_str().is_some_and(|id| validate_file_id(id).is_ok()) {
+            candidates.push((id, entry.path()));
         }
-        let record = load_metadata(&entry.path().join(METADATA_FILE)).await?;
-        validate_stored_file(&record)?;
-        if record.file.id != id {
-            return Err(Error::Tool(
-                "session file directory and metadata IDs differ".into(),
-            ));
-        }
-        let path = blob_root.join(&record.content_hash);
-        validate_content_blob_metadata(&path, record.file.size).await?;
-        records.push(record);
     }
+    let mut records: Vec<_> = stream::iter(candidates)
+        .map(|(id, directory)| async move {
+            let record = load_metadata(&directory.join(METADATA_FILE)).await?;
+            validate_stored_file(&record)?;
+            if id.to_str() != Some(record.file.id.as_str()) {
+                return Err(Error::Tool(
+                    "session file directory and metadata IDs differ".into(),
+                ));
+            }
+            let path = blob_root.join(&record.content_hash);
+            validate_content_blob_metadata(&path, record.file.size).await?;
+            Ok(record)
+        })
+        .buffer_unordered(LIST_VALIDATION_CONCURRENCY)
+        .try_collect()
+        .await?;
     records.sort_by(|left, right| {
         left.file
             .name

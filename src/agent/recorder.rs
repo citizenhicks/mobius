@@ -17,6 +17,7 @@ use crate::backend::checkpoint::CheckpointStore;
 use crate::backend::checkpoint::ExecutionRecord;
 use crate::backend::checkpoint::JournalEvent;
 use crate::backend::checkpoint::TimestampedEvent;
+use crate::backend::checkpoint::ValidatedCheckpoint;
 use crate::protocol::{Event, EventMsg, ModelStepContentPhase};
 
 pub(super) type EventRecorder = Arc<RecorderIngress>;
@@ -39,7 +40,7 @@ struct AppendCommand {
 }
 
 struct SaveCommand {
-    checkpoint: Arc<Checkpoint>,
+    checkpoint: ValidatedCheckpoint,
     transcript_delta: Vec<Arc<Value>>,
     execution: Option<ExecutionRecord>,
     events: Vec<TimestampedEvent>,
@@ -160,6 +161,7 @@ impl RecorderIngress {
         execution: Option<ExecutionRecord>,
         events: Vec<Event>,
     ) -> Result<()> {
+        let checkpoint = ValidatedCheckpoint::new(checkpoint)?;
         let mut event_bytes = 0_usize;
         let events = events
             .into_iter()
@@ -493,7 +495,8 @@ async fn publish_all(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::WarningEvent;
+    use crate::protocol::{ToolCall, WarningEvent};
+    use futures_util::FutureExt as _;
 
     fn warning(message: String) -> Event {
         Event {
@@ -502,6 +505,28 @@ mod tests {
                 message: message.into(),
             }),
         }
+    }
+
+    #[tokio::test]
+    async fn invalid_checkpoint_is_rejected_before_it_reaches_the_store() {
+        let (commands, mut receiver) = mpsc::channel(1);
+        let mut checkpoint = Checkpoint::empty("session".parse().expect("session ID"));
+        Arc::make_mut(&mut checkpoint.session_context).owner_id = "test-bot".into();
+        checkpoint.pending_tools.push(ToolCall {
+            call_id: "call".into(),
+            name: "tool".into(),
+            arguments: serde_json::json!({}),
+        });
+        let error = RecorderIngress {
+            commands,
+            event_bytes: Arc::new(Semaphore::new(RECORDER_EVENT_BYTE_BUDGET)),
+        }
+        .save(Arc::new(checkpoint), &[], None, Vec::new())
+        .now_or_never()
+        .expect("rejected without waiting for the recorder")
+        .expect_err("pending tool without an execution");
+        assert!(error.to_string().contains("no active execution"), "{error}");
+        assert!(receiver.try_recv().is_err());
     }
 
     #[test]

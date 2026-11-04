@@ -32,6 +32,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use chrono::Utc;
+use futures_util::future::{OptionFuture, try_join_all};
 use mobius::backend::checkpoint::{
     ActiveExecution, CheckpointStore, EventPageRequest, ExecutionOutcome, ExecutionRecord,
     JournalEvent, SessionPageRequest, SessionSummary, event_turn_page, sqlite::SqliteCheckpoint,
@@ -107,6 +108,7 @@ const MAX_REPLAY_BYTES: usize = MAX_FRAME_BYTES;
 const SESSION_PAGE_SIZE: usize = 100;
 const MAX_SESSION_DELETE_ROOTS: usize = 1_024;
 const RECENT_RUN_LIMIT: usize = 30;
+const IDLE_QUERY_BATCH: usize = 4;
 
 type SessionActivities = Arc<Mutex<catalog::SessionCatalog>>;
 
@@ -441,13 +443,19 @@ impl GatewayHost {
         let mut idle = !starting
             && !state.bots.has_running_routines().map_err(internal)?
             && !state.bots.has_pending_deliveries().map_err(internal)?;
+        let resident: Vec<_> = state
+            .sessions
+            .values()
+            .filter(|session| session.inner.alive.load(Ordering::Acquire))
+            .collect();
         let mut active_sessions = 0;
-        for session in state.sessions.values() {
-            if session.inner.alive.load(Ordering::Acquire) && !session.runtime_is_idle().await? {
-                idle = false;
-                active_sessions += 1;
-            }
+        // Each overlapping query past the first opens its own SQLite connection, so the overlap stays small.
+        for batch in resident.chunks(IDLE_QUERY_BATCH) {
+            let settled =
+                try_join_all(batch.iter().map(|session| session.runtime_is_idle())).await?;
+            active_sessions += settled.iter().filter(|idle| !**idle).count();
         }
+        idle &= active_sessions == 0;
         // Routine reservations happen outside the registry lock; observe them
         // again and reject an idle result if any work changed during this query.
         let running_routines = state.bots.running_routine_count().map_err(internal)?;
@@ -1160,22 +1168,29 @@ impl GatewayHost {
             )
         };
         drop(access);
-        let sessions = gateway_session_summaries(&checkpoints)
-            .await
-            .map_err(internal)?;
-        profile.run_stats = gateway_run_stats(&sessions).map_err(internal)?;
-        let recent_runs = checkpoints
-            .recent_executions(RECENT_RUN_LIMIT)
-            .await
-            .map_err(internal)?;
-        if !recent_runs.is_empty() {
-            let metadata = load_session_metadata(&checkpoints)
+        let local = async {
+            let sessions = gateway_session_summaries(&checkpoints)
                 .await
                 .map_err(internal)?;
-            profile.recent_run_groups = recent_run_groups(recent_runs, &sessions, &metadata);
-        }
-        if let Some(usage_request) = usage_request {
-            profile.provider_usage = usage_request.await.map_err(internal)?;
+            profile.run_stats = gateway_run_stats(&sessions).map_err(internal)?;
+            let recent_runs = checkpoints
+                .recent_executions(RECENT_RUN_LIMIT)
+                .await
+                .map_err(internal)?;
+            if !recent_runs.is_empty() {
+                let metadata = load_session_metadata(&checkpoints)
+                    .await
+                    .map_err(internal)?;
+                profile.recent_run_groups = recent_run_groups(recent_runs, &sessions, &metadata);
+            }
+            Ok(())
+        };
+        // A local failure still wins at once and abandons the provider request; a provider
+        // failure surfaces only after the local reads succeed.
+        let usage = async { Ok(OptionFuture::from(usage_request).await) };
+        let ((), usage) = tokio::try_join!(local, usage)?;
+        if let Some(usage) = usage {
+            profile.provider_usage = usage.map_err(internal)?;
         }
         Ok(profile)
     }

@@ -46,6 +46,7 @@ mod text {
         pub(super) prompt_turns: String,
         pub(super) render_load: String,
         pub(super) repeat_notice: String,
+        pub(super) repeat_skipped: String,
         pub(super) repeat_stop: String,
         #[serde(deserialize_with = "crate::middleware::manifest::deserialize_settings")]
         pub(super) settings: Vec<crate::middleware::manifest::MiddlewareSettingManifest>,
@@ -380,6 +381,7 @@ pub struct Catalog {
     deferred_definitions: Arc<[Arc<ToolDefinition>]>,
     revision: String,
     finalized: bool,
+    repeats: Option<(Arc<repeats::RepeatGuard>, crate::SessionId)>,
 }
 
 /// One catalog snapshot resolved for a model boundary.
@@ -1239,7 +1241,66 @@ fn is_parallel(catalog: &Catalog, call: &BoundToolCall) -> bool {
     catalog.execution_mode(&call.as_call().name) == ExecutionMode::Parallel
 }
 
+/// Runs one call unless an earlier call this turn hit the repeat limit. Calls that already
+/// started finish and count; a skipped call still returns a result, in its place.
 pub(crate) async fn execute_call(
+    catalog: &Catalog,
+    call: BoundToolCall,
+    sandbox: &Arc<Sandbox>,
+    permissions: &SandboxPermissions,
+    turn_id: &Arc<str>,
+    model_route: &Arc<str>,
+    author: &Arc<crate::protocol::MessageAuthor>,
+) -> ToolResult {
+    let output_limit = sandbox.output_limit();
+    let Some((repeats, session_id)) = &catalog.repeats else {
+        return run_call(
+            catalog,
+            call,
+            sandbox,
+            permissions,
+            turn_id,
+            model_route,
+            author,
+        )
+        .await;
+    };
+    let tool_call = call.as_call();
+    match repeats.should_stop(session_id, turn_id) {
+        Ok(false) => {}
+        Ok(true) => {
+            return ToolResult::error(tool_call, &text::DEFINITION.repeat_skipped, output_limit);
+        }
+        Err(error) => return ToolResult::error(tool_call, error.to_string(), output_limit),
+    }
+    let identity = (!catalog.polls(&tool_call.name))
+        .then(|| repeats::RepeatGuard::call_identity(&tool_call.name, &tool_call.arguments));
+    let mut result = run_call(
+        catalog,
+        call,
+        sandbox,
+        permissions,
+        turn_id,
+        model_route,
+        author,
+    )
+    .await;
+    if let Some(identity) = identity.filter(|_| result.handler_executed) {
+        match repeats.observe(session_id, turn_id, identity, &result.output) {
+            Ok(false) => {}
+            Ok(true) => result
+                .additional_input
+                .push(crate::backend::model::internal_user_message(
+                    "tool_repeat",
+                    &text::DEFINITION.repeat_notice,
+                )),
+            Err(error) => tracing::warn!(%error, "repeat guard could not count a tool call"),
+        }
+    }
+    result
+}
+
+async fn run_call(
     catalog: &Catalog,
     call: BoundToolCall,
     sandbox: &Arc<Sandbox>,
@@ -1467,7 +1528,7 @@ fn compact_output(output: &str) -> String {
 /// Middleware that contributes an explicit list of tools.
 pub struct Tools {
     tools: Vec<Arc<dyn Tool>>,
-    repeats: repeats::RepeatGuard,
+    repeats: Arc<repeats::RepeatGuard>,
 }
 
 impl std::fmt::Debug for Tools {
@@ -1489,10 +1550,10 @@ impl Tools {
         };
         Self {
             tools,
-            repeats: repeats::RepeatGuard::new(
+            repeats: Arc::new(repeats::RepeatGuard::new(
                 default("repeat_warning_calls"),
                 default("repeat_stop_calls"),
-            ),
+            )),
         }
     }
 
@@ -1503,7 +1564,7 @@ impl Tools {
         warning_at: std::num::NonZeroUsize,
         stop_at: std::num::NonZeroUsize,
     ) -> Self {
-        self.repeats = repeats::RepeatGuard::new(warning_at.get(), stop_at.get());
+        self.repeats = Arc::new(repeats::RepeatGuard::new(warning_at.get(), stop_at.get()));
         self
     }
 
@@ -1544,10 +1605,11 @@ impl Middleware for Tools {
         MANIFEST.id
     }
 
-    fn register(&self, catalog: &mut Catalog, _runtime: &super::RuntimeContext) -> Result<()> {
+    fn register(&self, catalog: &mut Catalog, runtime: &super::RuntimeContext) -> Result<()> {
         for tool in &self.tools {
             catalog.register(Arc::clone(tool))?;
         }
+        catalog.repeats = Some((Arc::clone(&self.repeats), runtime.session_id.share()));
         catalog.register_search()
     }
 
@@ -1578,32 +1640,6 @@ impl Middleware for Tools {
                     .should_stop(context.session_id, context.turn_id)?
             {
                 *context.turn_stop = Some(text::DEFINITION.repeat_stop.as_str().to_owned());
-            }
-            Ok(())
-        })
-    }
-
-    fn post_tool_use<'a>(
-        &'a self,
-        context: &'a mut super::PostToolUseContext<'_>,
-    ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            if !context.tools.polls(&context.call.name)
-                && self.repeats.observe(
-                    context.turn.session_id,
-                    context.turn.turn_id,
-                    &context.call.name,
-                    &context.call.arguments,
-                    &context.result.output,
-                )?
-            {
-                context
-                    .result
-                    .additional_input
-                    .push(crate::backend::model::internal_user_message(
-                        "tool_repeat",
-                        &text::DEFINITION.repeat_notice,
-                    ));
             }
             Ok(())
         })

@@ -158,3 +158,65 @@ Release automation belongs in `.github/workflows/`; do not mix it into capabilit
 code.
 
 Preserve `LICENSE` and `NOTICE` in crate and binary packages.
+
+## Contribution review contract
+
+This contract takes precedence over older repository design and review guidance.
+Identify and resolve conflicting guidance instead of silently following old rules.
+
+- Implement each behavior once. Search real callers before editing; consolidate
+  duplicate or substantially similar functions (roughly 60% similarity is a review
+  trigger) behind one shared API owned by the relevant capability. Generalize the
+  shared behavior without erasing different validation, errors, or domain meaning.
+- Apply the installed `rust-skills` skill: all 265 rules across its 26 categories.
+  Read its `SKILL.md` and applicable rule files; explain any inapplicable rule or
+  conflict rather than claiming blanket compliance from compilation or Clippy.
+- For Rust and Swift, prioritize CPU, GPU, memory, disk I/O, and network efficiency.
+  Review hot paths, allocations/copies, rendering, persistence, concurrency, and
+  round trips. Measure relevant workloads; do not invent performance gains.
+- Do not defer a necessary broad refactor because its immediate saving is small or
+  its implementation cost is high. Even a byte or CPU cycle can justify repairing
+  the architecture now; preserve correctness, security, and accessibility, and
+  substantiate the improvement. Review-only requests do not authorize refactoring.
+- Treat implicit coupling, layer-first folders, duplication, representable illegal
+  states, god files, shotgun surgery, layering violations, pass-through wrappers,
+  and validation/errors away from the input boundary as review findings. Organize
+  by capability; keep one authoritative owner and validate external input there.
+- Keep the agent loop simple and minimize model/tool/network round trips. Count
+  calls and loop iterations for representative tasks; preserve required approvals,
+  validation, cancellation, and error handling.
+- Aim to reduce test count and test code while retaining coverage of meaningful
+  behavior. Consolidate redundant tests; retain tests that catch real failures.
+  Report before/after counts, lines, and available coverage evidence. Never remove
+  useful coverage merely to meet a deletion target.
+
+### UI and UX
+
+- Use centrally owned tokens and components for animations, corner radii, fonts,
+  font sizes, colors, shapes, dimensions, placement, transparency, shadows, and
+  spacing between text, objects, and buttons, including button sizes and styles.
+- iOS buttons use icons only, with accessible names; macOS buttons preferably use
+  icons with text. Preserve accessible targets, keyboard use, and platform behavior.
+- Treat decorative tags, italicized UI words, Instrument Serif, negative kerning,
+  excessive detail, dividers, multiple color shades/opacities, bordered containers,
+  diagrams (especially detailed ones), code breadcrumbs, and section numbering as
+  low-quality UI indicators. Remove unnecessary decoration and centralize the
+  remaining visual rules. This concerns product UI, not required code semantics or
+  user-authored content. Mark UI evidence N/A for changes without a visual surface.
+
+### Commit and pull request evidence
+
+Every commit message and PR description must include this checklist. Check an item
+only when evidence is supplied; otherwise state N/A with a reason or explicitly
+record what remains unverified. Never fabricate numbers, coverage, screenshots, or
+GIFs. Do not create commits or PRs unless the user requests them.
+
+- [ ] Performance: before/after CPU, GPU, memory, disk I/O, and network measurements,
+      with workload, environment, source revisions, method, and units; explain N/A.
+- [ ] Agent loop: before/after model/tool calls, loop iterations, and network round
+      trips for the same task; explain every required extra call or mark N/A.
+- [ ] Tests: before/after test counts and test-code lines, redundant tests removed
+      or consolidated, checks run, and evidence meaningful coverage is retained.
+- [ ] UI/UX: shared tokens/components, animation, typography, color, shape, layout,
+      transparency, shadow, spacing, button size/style, and platform conformance;
+      attach before/after screenshots or GIFs for visual/interaction changes.

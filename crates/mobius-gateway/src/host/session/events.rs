@@ -213,11 +213,24 @@ impl HostState {
     }
 
     pub(super) async fn ready(&self) -> Result<SessionReadyPayload> {
-        let runtime = self
-            .running
-            .runtime_state()
-            .await?
-            .ok_or_else(|| Error::Config("the running session has no checkpoint".into()))?;
+        // Checkpoint reads stay in sequence on one SQLite lane; only Git overlaps them. A runtime
+        // failure still wins at once; a pin failure keeps its place after the contributions below.
+        let checkpoint = async {
+            let runtime = self
+                .running
+                .runtime_state()
+                .await?
+                .ok_or_else(|| Error::Config("the running session has no checkpoint".into()))?;
+            Ok::<_, Error>((runtime, self.message_pins().await))
+        };
+        let git = async {
+            Ok(if self.spec.workspace.is_some() {
+                git_status(self.running.sandbox()).await
+            } else {
+                None
+            })
+        };
+        let ((runtime, pinned_messages), git) = tokio::try_join!(checkpoint, git)?;
         let context_limit_tokens = self.context_limit_tokens();
         Ok(SessionReadyPayload {
             active_turn_ids: runtime
@@ -236,11 +249,7 @@ impl HostState {
             latest_sequence: self.sequence,
             workspace: self.spec.workspace_info(),
             attached_folders: self.spec.attached_folders.clone(), // rules-allow: the ready payload owns a snapshot while the spec stays in state
-            git: if self.spec.workspace.is_some() {
-                git_status(self.running.sandbox()).await
-            } else {
-                None
-            },
+            git,
             session: Arc::clone(self.running.session()),
             contributions: self.running.contributions()?,
             widgets: self
@@ -255,7 +264,7 @@ impl HostState {
             token_usage: self.token_usage.as_ref().map(Arc::clone),
             active_message_delivery: self.running.active_message_delivery(),
             run_stats: runtime.stats,
-            pinned_messages: self.message_pins().await?,
+            pinned_messages: pinned_messages?,
             memory: self.spec.memory,
         })
     }

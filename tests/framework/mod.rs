@@ -220,7 +220,7 @@ impl CheckpointStore for MemoryCheckpoints {
 
     fn save_with_events(
         &self,
-        checkpoint: Arc<Checkpoint>,
+        checkpoint: mobius::backend::checkpoint::ValidatedCheckpoint,
         _transcript_delta: Vec<Arc<Value>>,
         _execution: Option<ExecutionRecord>,
         events: Vec<TimestampedEvent>,
