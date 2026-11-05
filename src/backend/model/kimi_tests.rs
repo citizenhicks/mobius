@@ -35,10 +35,14 @@ async fn credentialless_post_uses_custom_path_and_omits_authorization() {
 
 #[test]
 fn responses_history_becomes_kimi_messages_and_tools() {
-    let provider = Kimi::new("test-key", MANIFEST.base_url.share(), "kimi-k3")
-        .expect("provider")
-        .with_reasoning_effort("high")
-        .expect("reasoning");
+    let provider = Kimi::new(
+        "test-key",
+        MANIFEST.base_url.share(),
+        CATALOG.default_model.as_deref().expect("default model"),
+    )
+    .expect("provider")
+    .with_reasoning_effort("high")
+    .expect("reasoning");
     let input = vec![
         user_message("Inspect both files."),
         json!({
@@ -89,7 +93,7 @@ fn responses_history_becomes_kimi_messages_and_tools() {
 
     let body = provider.request_body_value(&request).expect("request body");
 
-    assert_eq!(body["model"], "kimi-k3");
+    assert_eq!(body["model"], "kimi-k3.1-pro");
     assert_eq!(body["reasoning_effort"], "high");
     assert_eq!(body["prompt_cache_key"], "hashed-session-7");
     assert_eq!(body["stream_options"], json!({"include_usage": true}));

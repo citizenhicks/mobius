@@ -1,9 +1,9 @@
 # Provider-owned model catalog.
-default_model = "kimi-k3"
+default_model = "kimi-k3.1-pro"
 
 [[models]]
-id = "kimi-k3"
-label = "Kimi K3"
+id = "kimi-k3.1-pro"
+label = "Kimi K3.1 Pro"
 description = "Moonshot's agentic coding model"
 default_reasoning = "max"
 context_window = 1048576
@@ -22,7 +22,7 @@ description = "Use deeper reasoning"
 [[models.reasoning]]
 id = "max"
 label = "Maximum"
-description = "Use K3's maximum reasoning effort"
+description = "Use K3.1 Pro's maximum reasoning effort"
 
 [[models]]
 id = "kimi-k2.7-code"

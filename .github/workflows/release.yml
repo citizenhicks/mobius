@@ -12,7 +12,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  CLOUDFLARED_VERSION: 2026.7.3
+  CLOUDFLARED_VERSION: 2026.10.7
 
 jobs:
   verify:
@@ -168,19 +168,19 @@ jobs:
           case "$host" in
             x86_64-unknown-linux-gnu)
               asset="cloudflared-linux-amd64"
-              checksum="9d71c677db00134c1bd4144b7783486b654ad281b1ea62b4972098d19f770f17"
+              checksum="1f99fb518b83dec2ba8d870a7cc991d82a77e6196295a3d2754ba17ab9f91872"
               ;;
             aarch64-unknown-linux-gnu)
               asset="cloudflared-linux-arm64"
-              checksum="65259e652a7bea08bf5df603233ab22b8bf3116af8df9f9206209af6a1b955c0"
+              checksum="3df43aedc9ff291d1735b5cb576cb97e0b157488796db2e32b28aecabb445775"
               ;;
             x86_64-apple-darwin)
               asset="cloudflared-darwin-amd64.tgz"
-              checksum="70d1c8684fa6d14b5843787ec8d1ea8e18b23650e424f4ea43d849a506487c3b"
+              checksum="02f3edfd87684dd5b705607688e4eb4b323f6e777b81e7b3a85af556aa356848"
               ;;
             aarch64-apple-darwin)
               asset="cloudflared-darwin-arm64.tgz"
-              checksum="90c5a4f914d705fd70c135dba6d80b1791d254b08d6d4136301941f88330dd09"
+              checksum="3586ccf397e98e5f437e60e7c307ca6ac463e110580503af8bb8e6f9ebf831bd"
               ;;
             *) exit 1 ;;
           esac
@@ -214,7 +214,7 @@ jobs:
             mobius-gateway cloudflared cloudflared-LICENSE LICENSE NOTICE share/man/man1
           cd dist
           shasum -a 256 "$archive" > "$archive.sha256"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: gateway-binary-${{ runner.os }}
           path: dist/*
@@ -252,19 +252,19 @@ jobs:
           case "$host" in
             x86_64-unknown-linux-gnu)
               asset="cloudflared-linux-amd64"
-              checksum="9d71c677db00134c1bd4144b7783486b654ad281b1ea62b4972098d19f770f17"
+              checksum="1f99fb518b83dec2ba8d870a7cc991d82a77e6196295a3d2754ba17ab9f91872"
               ;;
             aarch64-unknown-linux-gnu)
               asset="cloudflared-linux-arm64"
-              checksum="65259e652a7bea08bf5df603233ab22b8bf3116af8df9f9206209af6a1b955c0"
+              checksum="3df43aedc9ff291d1735b5cb576cb97e0b157488796db2e32b28aecabb445775"
               ;;
             x86_64-apple-darwin)
               asset="cloudflared-darwin-amd64.tgz"
-              checksum="70d1c8684fa6d14b5843787ec8d1ea8e18b23650e424f4ea43d849a506487c3b"
+              checksum="02f3edfd87684dd5b705607688e4eb4b323f6e777b81e7b3a85af556aa356848"
               ;;
             aarch64-apple-darwin)
               asset="cloudflared-darwin-arm64.tgz"
-              checksum="90c5a4f914d705fd70c135dba6d80b1791d254b08d6d4136301941f88330dd09"
+              checksum="3586ccf397e98e5f437e60e7c307ca6ac463e110580503af8bb8e6f9ebf831bd"
               ;;
             *) exit 1 ;;
           esac
@@ -298,7 +298,7 @@ jobs:
             mobius mobius-gateway cloudflared cloudflared-LICENSE LICENSE NOTICE share/man/man1
           cd dist
           shasum -a 256 "$archive" > "$archive.sha256"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: binary-${{ runner.os }}
           path: dist/*
@@ -335,7 +335,7 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: dist
           merge-multiple: true
@@ -361,7 +361,7 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: dist
           merge-multiple: true

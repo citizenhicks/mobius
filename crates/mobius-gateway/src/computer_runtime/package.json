@@ -2,6 +2,6 @@
   "name": "mobius-computer",
   "private": true,
   "dependencies": {
-    "playwright": "1.63.0-alpha-2026-08-31"
+    "playwright": "1.64.1"
   }
 }

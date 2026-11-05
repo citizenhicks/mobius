@@ -122,7 +122,7 @@ async fn saved_bot_routes_survive_missing_credentials_without_advertising_unavai
         "image_generation",
         "model",
         Some(mobius::protocol::FrontendSettingValue::String(
-            "managed::gpt-image-2.5-sunburst::high".into(),
+            "managed::gpt-image-2.6-sunburst::high".into(),
         )),
     );
     let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));

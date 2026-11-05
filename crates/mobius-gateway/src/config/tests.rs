@@ -96,7 +96,7 @@ fn provider_registration_never_silently_changes_existing_defaults() {
         tool_discovery: None,
         instance: "kimi".into(),
         provider: "kimi".into(),
-        model: "kimi-k3".into(),
+        model: "kimi-k3.1-pro".into(),
         base_url: Some(BaseUrl::new("https://api.moonshot.ai/v1").unwrap()),
         endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
         reasoning_effort: Some("max".into()),

@@ -39,7 +39,7 @@ async fn provider_removal_gateway(
         tool_discovery: None,
         instance: "kimi-unused".into(),
         provider: "kimi".into(),
-        model: "kimi-k3".into(),
+        model: "kimi-k3.1-pro".into(),
         base_url: Some(BaseUrl::new("https://api.moonshot.ai/v1").unwrap()),
         endpoint_auth: ProviderEndpointAuth::ProviderDefault,
         reasoning_effort: Some("max".into()),
