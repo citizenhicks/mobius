@@ -42,14 +42,13 @@ async fn queued_client_requests_do_not_starve_gateway_broadcasts() {
     )
     .await
     .unwrap();
-    let serving = serve_connection(
+    let mut serving = Box::pin(serve_connection(
         stream,
         connection,
         Instant::now()
             + Duration::from_secs(ConnectionPolicy::default().authentication_timeout_seconds),
         None,
-    );
-    tokio::pin!(serving);
+    ));
     tokio::select! {
         result = &mut serving => panic!("connection stopped: {result:?}"),
         () = async {
@@ -91,6 +90,7 @@ async fn queued_client_requests_do_not_starve_gateway_broadcasts() {
             }
         } => {}
     }
+    drop(serving);
     server.host.shutdown().await;
 }
 

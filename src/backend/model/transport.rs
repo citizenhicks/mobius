@@ -222,9 +222,23 @@ fn streaming_client_with_idle_timeout(idle_timeout: Duration) -> Result<Client> 
 }
 
 #[cfg(test)]
+async fn read_http_request_headers(stream: &mut tokio::net::TcpStream) -> Vec<u8> {
+    use tokio::io::AsyncReadExt as _;
+
+    let mut request = Vec::new();
+    while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+        let mut chunk = [0; 1_024];
+        let count = stream.read(&mut chunk).await.expect("HTTP request");
+        assert_ne!(count, 0, "request ended before its headers");
+        request.extend_from_slice(&chunk[..count]);
+    }
+    request
+}
+
+#[cfg(test)]
 pub(super) async fn capture_http_request() -> (std::net::SocketAddr, tokio::task::JoinHandle<String>)
 {
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio::io::AsyncWriteExt as _;
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
@@ -232,13 +246,7 @@ pub(super) async fn capture_http_request() -> (std::net::SocketAddr, tokio::task
     let address = listener.local_addr().expect("HTTP address");
     let server = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.expect("HTTP connection");
-        let mut request = Vec::new();
-        while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
-            let mut chunk = [0; 1_024];
-            let count = stream.read(&mut chunk).await.expect("HTTP request");
-            assert_ne!(count, 0, "request ended before its headers");
-            request.extend_from_slice(&chunk[..count]);
-        }
+        let request = read_http_request_headers(&mut stream).await;
         stream
             .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
             .await
@@ -830,6 +838,7 @@ mod tests {
         let address = listener.local_addr().expect("listener address");
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.expect("test connection");
+            read_http_request_headers(&mut stream).await;
             stream
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\n")
                 .await
@@ -859,7 +868,7 @@ mod settings_tests {
 
     #[tokio::test]
     async fn authenticated_streaming_clients_do_not_follow_redirects() {
-        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        use tokio::io::AsyncWriteExt as _;
         let destination = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("destination");
@@ -870,13 +879,7 @@ mod settings_tests {
         let address = source.local_addr().expect("source address");
         let server = tokio::spawn(async move {
             let (mut stream, _) = source.accept().await.expect("source connection");
-            let mut request = Vec::new();
-            while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
-                let mut bytes = [0; 1_024];
-                let count = stream.read(&mut bytes).await.expect("request headers");
-                assert_ne!(count, 0, "request ended before its headers");
-                request.extend_from_slice(&bytes[..count]);
-            }
+            read_http_request_headers(&mut stream).await;
             stream.write_all(format!("HTTP/1.1 302 Found\r\nLocation: http://{target}/secret\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.expect("redirect response");
         });
         let response = streaming_client()
