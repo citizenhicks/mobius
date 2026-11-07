@@ -474,7 +474,8 @@ pub(super) async fn post(
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .body(body)
         .send()
-        .await?;
+        .await
+        .map_err(|error| super::transport::request_error(error, provider))?;
     if !response.status().is_success() {
         return Err(super::transport::status_error(response, provider).await);
     }

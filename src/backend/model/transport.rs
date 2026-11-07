@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::error::Error as _;
 use std::time::Duration;
 
 use reqwest::Client;
@@ -350,6 +351,38 @@ pub(super) async fn read_limited(
     Ok(bytes)
 }
 
+pub(super) fn request_error(error: reqwest::Error, provider: &str) -> Error {
+    if error.is_timeout() {
+        return ProviderError::retryable(format!("{provider} request timed out")).into();
+    }
+    let mut source = error.source();
+    while let Some(cause) = source {
+        if let Some(io) = cause.downcast_ref::<std::io::Error>()
+            && matches!(
+                io.kind(),
+                std::io::ErrorKind::ConnectionRefused
+                    | std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::NotConnected
+                    | std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::UnexpectedEof
+                    | std::io::ErrorKind::NetworkDown
+                    | std::io::ErrorKind::NetworkUnreachable
+                    | std::io::ErrorKind::HostUnreachable
+            )
+        {
+            return ProviderError::retryable(format!(
+                "{provider} request connection failed: {}",
+                io.kind()
+            ))
+            .into();
+        }
+        source = cause.source();
+    }
+    // ponytail: disconnects without an I/O cause stay terminal; add typed protocol checks if needed.
+    Error::Http(error.without_url())
+}
+
 pub(super) async fn status_error(mut response: Response, provider: &str) -> Error {
     let status = response.status();
     let retry_after = response
@@ -526,8 +559,124 @@ pub(super) async fn read_sse(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::io::AsyncWriteExt;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt};
     use tokio::net::TcpListener;
+
+    #[tokio::test]
+    async fn model_transports_classify_send_failures_before_and_after_authorization() {
+        use crate::backend::model::{Model, ModelRequest, anthropic::Anthropic, responses::OpenAi};
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+        let address = listener.local_addr().expect("address");
+        drop(listener);
+        let base_url = || BaseUrl::new(format!("http://{address}/private-endpoint")).expect("URL");
+        let models: [Box<dyn Model>; 3] = [
+            Box::new(
+                Anthropic::new("private-test-key", base_url(), "test-model").expect("Anthropic"),
+            ),
+            Box::new(OpenAi::new("private-test-key", base_url(), "test-model").expect("OpenAI")),
+            Box::new(
+                OpenAi::with_client(
+                    None,
+                    base_url(),
+                    "test-model",
+                    streaming_client().expect("client"),
+                    ModelTransportSettings::default(),
+                )
+                .expect("credentialless Responses"),
+            ),
+        ];
+        let input = vec![crate::backend::model::user_message("hello")];
+        let request = ModelRequest {
+            session_id: None,
+            cancellation: None,
+            prompt_cache: None,
+            instructions: "",
+            input: (&input).into(),
+            catalog_revision: "test",
+            tools: &[],
+            deferred_tools: &[],
+            allow_hosted_tools: false,
+            allow_continuation: false,
+        };
+        for model in models {
+            let error = model
+                .respond(request, Arc::new(|_| Box::pin(async { Ok(()) })))
+                .await
+                .expect_err("connection refused");
+            let event = crate::protocol::ErrorEvent::from_error(&error);
+            assert!(matches!(error, Error::Provider(error) if error.is_retryable()));
+            assert_eq!(event.status, None);
+            assert_eq!(event.retry_after, None);
+            assert!(
+                event
+                    .message
+                    .contains("request connection failed: connection refused")
+            );
+            assert!(!event.message.contains("private-endpoint"));
+            assert!(!event.message.contains("private-test-key"));
+        }
+    }
+
+    #[tokio::test]
+    async fn request_errors_retry_refused_connections_but_not_invalid_configuration() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+        let address = listener.local_addr().expect("address");
+        drop(listener);
+        let client = streaming_client().expect("client");
+        let error = client
+            .post(format!("http://{address}/private?key=sensitive"))
+            .send()
+            .await
+            .expect_err("connection refused");
+        let error = request_error(error, "test");
+        let event = crate::protocol::ErrorEvent::from_error(&error);
+        assert!(event.retryable);
+        assert_eq!(event.status, None);
+        assert_eq!(event.retry_after, None);
+        assert_eq!(
+            &*event.message,
+            "provider error: test request connection failed: connection refused"
+        );
+
+        let error = client
+            .post("http://127.0.0.1/private?key=sensitive")
+            .bearer_auth("invalid\ncredential")
+            .send()
+            .await
+            .expect_err("invalid authorization header");
+        assert!(error.is_builder());
+        let error = request_error(error, "test");
+        assert!(!crate::protocol::ErrorEvent::from_error(&error).retryable);
+        assert!(matches!(&error, Error::Http(error) if error.url().is_none()));
+    }
+
+    #[tokio::test]
+    async fn tls_protocol_errors_remain_terminal() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+        let address = listener.local_addr().expect("address");
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("connection");
+            let mut bytes = [0; 1_024];
+            assert_ne!(stream.read(&mut bytes).await.expect("TLS client hello"), 0);
+            stream
+                .write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n")
+                .await
+                .expect("invalid TLS response");
+            std::future::pending::<()>().await;
+        });
+        let error = streaming_client()
+            .expect("client")
+            .post(format!("https://{address}/private?key=sensitive"))
+            .send()
+            .await
+            .expect_err("invalid TLS protocol");
+        server.abort();
+        assert!(error.is_connect());
+        let error = request_error(error, "test");
+        assert!(!crate::protocol::ErrorEvent::from_error(&error).retryable);
+        assert!(matches!(&error, Error::Http(error) if error.url().is_none()));
+    }
 
     #[test]
     fn transport_settings_validate_once_on_construction_and_decoding() {

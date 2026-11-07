@@ -508,6 +508,8 @@ fn config_with_model(
 
 #[path = "runtime_tests/admission.rs"]
 mod admission;
+#[path = "runtime_tests/chat_transport.rs"]
+mod chat_transport;
 #[path = "runtime_tests/configuration.rs"]
 mod configuration;
 #[path = "runtime_tests/input_validation.rs"]

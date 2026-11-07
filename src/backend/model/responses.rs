@@ -581,14 +581,20 @@ impl OpenAi {
                 request = request.header(name.as_str(), value.as_bytes());
             }
             let Some(auth) = &self.auth else {
-                return Ok(request.send().await?);
+                return request
+                    .send()
+                    .await
+                    .map_err(|error| super::transport::request_error(error, "OpenAI"));
             };
             let authorization = auth.authorize_http(streaming, session_id).await?;
             request = request.bearer_auth(&authorization.token);
             for (name, value) in authorization.headers {
                 request = request.header(name, value.as_ref());
             }
-            let response = request.send().await?;
+            let response = request
+                .send()
+                .await
+                .map_err(|error| super::transport::request_error(error, "OpenAI"))?;
             if response.status() != reqwest::StatusCode::UNAUTHORIZED || attempt == 1 {
                 return Ok(response);
             }

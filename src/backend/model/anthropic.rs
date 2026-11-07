@@ -271,7 +271,8 @@ impl Anthropic {
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(body)
             .send()
-            .await?;
+            .await
+            .map_err(|error| super::transport::request_error(error, "Anthropic"))?;
         if response.status().is_success() {
             Ok(response)
         } else {
