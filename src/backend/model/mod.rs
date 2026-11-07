@@ -326,6 +326,11 @@ pub fn prompt_cache_key(session_id: &crate::SessionId) -> String {
 /// dropping events. An agent-provided sink has bounded ingress and closes when
 /// [`Model::respond`] completes or is canceled; retaining it does not extend
 /// the response lifetime.
+/// Hosted tools report actual starts and completions with
+/// [`crate::protocol::ModelEvent::HostedToolStarted`] and
+/// [`crate::protocol::ModelEvent::HostedToolCompleted`] so the shared execution
+/// policy can stop them and prevent unsafe request replay. Frontend web activity
+/// and inferred citations alone are not execution evidence.
 pub type ModelEventSink =
     Arc<dyn Fn(crate::protocol::ModelEvent) -> BoxFuture<'static, Result<()>> + Send + Sync>;
 
@@ -989,6 +994,12 @@ pub(super) fn decode_tool_call(item: &Value) -> Result<ToolCall> {
         name: name.into(),
         arguments: decode_tool_arguments(encoded)?,
     })
+}
+
+/// Copies hosted-tool inputs a provider disclosed into the execution record it reports.
+/// The provider keeps its own block for replay, so the record needs an owned copy.
+pub(super) fn disclosed(value: &Value) -> Value {
+    value.clone() // rules-allow: a hosted execution record owns the inputs the provider disclosed
 }
 
 pub(super) fn decode_tool_arguments(encoded: &str) -> Result<Value> {

@@ -811,6 +811,93 @@ impl EventMsg {
     }
 }
 
+/// Provider call identity for one hosted execution, bounded when constructed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostedCallId(Arc<str>);
+
+impl HostedCallId {
+    /// Validates a provider-supplied call ID at the provider boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the ID is blank or exceeds the identifier size limit.
+    pub fn new(call_id: &str) -> crate::Result<Self> {
+        if call_id.trim().is_empty() || call_id.len() > crate::MAX_IDENTIFIER_BYTES {
+            return Err(crate::Error::Provider(
+                "hosted tool-call ID is empty or exceeds its size limit".into(),
+            ));
+        }
+        Ok(Self(call_id.into()))
+    }
+
+    /// Returns the provider call ID.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub(crate) fn share(&self) -> Arc<str> {
+        Arc::clone(&self.0)
+    }
+}
+
+pub(crate) const MAX_HOSTED_TOOL_NAME_BYTES: usize = 256;
+const MAX_HOSTED_SOURCE_BYTES: usize = 2_048;
+const MAX_HOSTED_SOURCES: usize = 32;
+
+/// One actual provider-hosted execution, separate from frontend activity records.
+///
+/// Built only through [`HostedToolExecution::new`], so repeat policy and progress history
+/// trust its fields without checking them again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostedToolExecution {
+    /// Provider call identity, scoped to one model request attempt.
+    pub(crate) call_id: HostedCallId,
+    /// Provider-neutral operation name, such as `web_search` or `open_page`.
+    pub(crate) name: Arc<str>,
+    /// Actual inputs, or `None` when the provider does not disclose them.
+    pub(crate) arguments: Option<serde_json::Value>,
+    /// Comparable evidence identity, or `None` when results are opaque.
+    pub(crate) result_fingerprint: Option<u64>,
+    /// Bounded source URLs disclosed by this execution; empty when none are available.
+    pub(crate) sources: Vec<String>,
+}
+
+impl HostedToolExecution {
+    /// Validates one hosted execution reported by a provider.
+    ///
+    /// Source URLs that are empty or oversized are skipped, and at most a fixed number are kept.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation name is blank or exceeds its size limit.
+    pub fn new<'a>(
+        call_id: HostedCallId,
+        name: &str,
+        arguments: Option<serde_json::Value>,
+        result_fingerprint: Option<u64>,
+        sources: impl IntoIterator<Item = &'a str>,
+    ) -> crate::Result<Self> {
+        if name.trim().is_empty() || name.len() > MAX_HOSTED_TOOL_NAME_BYTES {
+            return Err(crate::Error::Provider(
+                "hosted tool name is empty or exceeds its size limit".into(),
+            ));
+        }
+        Ok(Self {
+            call_id,
+            name: name.into(),
+            arguments,
+            result_fingerprint,
+            sources: sources
+                .into_iter()
+                .filter(|url| !url.is_empty() && url.len() <= MAX_HOSTED_SOURCE_BYTES)
+                .take(MAX_HOSTED_SOURCES)
+                .map(str::to_owned)
+                .collect(),
+        })
+    }
+}
+
 /// Provider-neutral streaming output before submission correlation is attached.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelEvent {
@@ -826,6 +913,13 @@ pub enum ModelEvent {
     /// agent may begin execution immediately; the final `ModelOutput` must contain
     /// the same call and order.
     ToolCallReady(ToolCall),
+    /// A real hosted execution may have begun; presentation-only events must not emit this.
+    HostedToolStarted {
+        /// Provider call identity, scoped to one model request attempt.
+        call_id: HostedCallId,
+    },
+    /// An executed hosted tool. Producers must propagate sink errors to stop the response.
+    HostedToolCompleted(HostedToolExecution),
     /// Selects the web search started case.
     WebSearchStarted {
         /// The call identifier.
@@ -844,6 +938,7 @@ pub enum ModelEvent {
 #[derive(Default)]
 pub(crate) struct ModelEventTracker {
     pending_web_searches: std::sync::Mutex<std::collections::BTreeSet<Arc<str>>>,
+    hosted_tools_executed: std::sync::atomic::AtomicBool,
 }
 
 impl ModelEventTracker {
@@ -858,6 +953,10 @@ impl ModelEventTracker {
             ModelEvent::WebSearchCompleted { call_id, .. } => {
                 pending.remove(call_id);
             }
+            ModelEvent::HostedToolStarted { .. } | ModelEvent::HostedToolCompleted(_) => {
+                self.hosted_tools_executed
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            }
             ModelEvent::TextDelta(_)
             | ModelEvent::CommentaryDelta(_)
             | ModelEvent::ReasoningDelta(_)
@@ -865,6 +964,11 @@ impl ModelEventTracker {
         }
         drop(pending);
         Ok(())
+    }
+
+    pub(crate) fn hosted_tools_executed(&self) -> bool {
+        self.hosted_tools_executed
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub(crate) fn interrupted(&self) -> crate::Result<Vec<ModelEvent>> {
@@ -921,7 +1025,9 @@ impl ModelEvent {
         model_step_id: Arc<str>,
     ) -> Option<EventMsg> {
         Some(match self {
-            Self::ToolCallReady(_) => return None,
+            Self::ToolCallReady(_)
+            | Self::HostedToolStarted { .. }
+            | Self::HostedToolCompleted(_) => return None,
             Self::TextDelta(delta) => EventMsg::AssistantContentDelta(AssistantContentDeltaEvent {
                 session_id,
                 turn_id,
@@ -971,6 +1077,29 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn hosted_executions_are_bounded_once_at_construction() {
+        assert!(HostedCallId::new(" ").is_err());
+        assert!(HostedCallId::new(&"x".repeat(crate::MAX_IDENTIFIER_BYTES + 1)).is_err());
+        let call_id = HostedCallId::new("call").expect("call ID");
+        assert!(HostedToolExecution::new(call_id.clone(), "", None, None, []).is_err());
+        let oversized = "u".repeat(MAX_HOSTED_SOURCE_BYTES + 1);
+        let execution = HostedToolExecution::new(
+            call_id,
+            "web_search",
+            None,
+            None,
+            std::iter::once(oversized.as_str())
+                .chain(std::iter::once(""))
+                .chain(std::iter::repeat_n(
+                    "https://example.com",
+                    MAX_HOSTED_SOURCES + 1,
+                )),
+        )
+        .expect("execution");
+        assert_eq!(execution.sources.len(), MAX_HOSTED_SOURCES);
+    }
 
     #[test]
     fn model_events_keep_typed_correlation_and_web_search_fields() {

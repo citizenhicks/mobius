@@ -323,7 +323,7 @@ async fn repeated_tool_results_warn_the_model_then_stop_the_turn() {
     let warned = |input: &Vec<Value>| {
         input
             .iter()
-            .any(|item| item.to_string().contains("not making progress"))
+            .any(|item| crate::protocol::internal_message_kind(item) == Some("tool_repeat"))
     };
     assert!(!warned(&inputs[1]));
     assert!(warned(&inputs[2]));

@@ -859,7 +859,7 @@ mod settings_tests {
 
     #[tokio::test]
     async fn authenticated_streaming_clients_do_not_follow_redirects() {
-        use tokio::io::AsyncWriteExt as _;
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
         let destination = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("destination");
@@ -870,6 +870,13 @@ mod settings_tests {
         let address = source.local_addr().expect("source address");
         let server = tokio::spawn(async move {
             let (mut stream, _) = source.accept().await.expect("source connection");
+            let mut request = Vec::new();
+            while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                let mut bytes = [0; 1_024];
+                let count = stream.read(&mut bytes).await.expect("request headers");
+                assert_ne!(count, 0, "request ended before its headers");
+                request.extend_from_slice(&bytes[..count]);
+            }
             stream.write_all(format!("HTTP/1.1 302 Found\r\nLocation: http://{target}/secret\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.expect("redirect response");
         });
         let response = streaming_client()

@@ -512,6 +512,8 @@ mod admission;
 mod chat_transport;
 #[path = "runtime_tests/configuration.rs"]
 mod configuration;
+#[path = "runtime_tests/hosted_tools.rs"]
+mod hosted_tools;
 #[path = "runtime_tests/input_validation.rs"]
 mod input_validation;
 #[path = "runtime_tests/message_delivery.rs"]

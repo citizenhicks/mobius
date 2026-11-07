@@ -27,6 +27,7 @@ use crate::backend::model::{
     strip_shared_provider_reasoning,
 };
 use crate::backend::sandbox::SandboxAuthorization;
+use crate::middleware::tools::progress::HostedObserver;
 use crate::middleware::tools::{PreparedToolSet, ToolBinding, ToolResult};
 use crate::middleware::{ModelContext, PreparationNotices, StagedInput, StopContext};
 use crate::protocol::{
@@ -319,6 +320,9 @@ impl Runner {
         model_step: usize,
     ) -> Result<PreparedModel> {
         self.stage_message_input(turn_id).await?;
+        if let Some(reason) = self.catalog.repeat_stop(turn_id)? {
+            return Ok(PreparedModel::Stopped(reason.to_owned()));
+        }
         let idle = model_step == 0
             && self
                 .state
@@ -687,6 +691,11 @@ impl Runner {
         )?;
         self.context_estimate = Some(context);
         let mut stream_retries = 0;
+        let hosted = Arc::new(HostedObserver::new(
+            Arc::clone(&self.catalog),
+            Arc::clone(turn_id),
+            request_input,
+        )?);
         loop {
             let started = Arc::new(ModelStepStartedEvent {
                 session_id: model_session_id.share(),
@@ -721,6 +730,7 @@ impl Runner {
             let (ready_calls_tx, ready_calls) = tokio::sync::mpsc::channel(MAX_TOOL_CALLS);
             let ready_calls_tx = Arc::new(ready_calls_tx);
             let call_validation = Arc::new(Mutex::new(StreamingToolCalls::default()));
+            let event_hosted = Arc::clone(&hosted);
             let stream: ModelEventSink = Arc::new(move |event| {
                 let mut response_closed = response_closed.clone(); // rules-allow: each streamed event future owns its handles
                 let call_validation = Arc::clone(&call_validation);
@@ -732,8 +742,13 @@ impl Runner {
                 let event_turn_id = Arc::clone(&event_turn_id);
                 let event_session_id = event_session_id.share();
                 let event_model_step_id = Arc::clone(&event_model_step_id);
+                let hosted = Arc::clone(&event_hosted);
                 Box::pin(async move {
                     let record = async {
+                        streamed_events.observe(&event)?;
+                        let Some(event) = hosted.observe(&event_model_step_id, event)? else {
+                            return Ok(());
+                        };
                         if let ModelEvent::ToolCallReady(call) = event {
                             call_validation
                                 .lock()
@@ -752,7 +767,6 @@ impl Runner {
                                 Error::Stopped(format!("streamed tool queue unavailable: {error}"))
                             });
                         }
-                        streamed_events.observe(&event)?;
                         let Some(msg) =
                             event.into_event(event_session_id, event_turn_id, event_model_step_id)
                         else {
@@ -817,6 +831,9 @@ impl Runner {
                 Ok(()) => response,
                 Err(error) => Err(error),
             };
+            for item in hosted.take_input()? {
+                self.push_context(item);
+            }
             if !matches!(&response, Ok(Wait::Ready { value: Ok(_), .. })) {
                 streamed.cancel();
             }
@@ -836,7 +853,8 @@ impl Runner {
                     value: Err(Error::Provider(error)),
                     input_changed,
                 }) if (error.is_stream_interrupted() || error.is_retryable())
-                    && streamed.originals.is_empty() =>
+                    && streamed.originals.is_empty()
+                    && !model_events.hosted_tools_executed() =>
                 {
                     let transport = model.transport_settings_for(&provider)?;
                     let retry_limit =

@@ -989,10 +989,11 @@ impl MiddlewareStack {
         &self,
         original: crate::backend::model::ModelInput<'_>,
         compacted: &mut Vec<Arc<Value>>,
-    ) {
+    ) -> Result<()> {
         for entry in &self.entries {
             entry.prepare_compacted_input(original, compacted);
         }
+        tools::progress::preserve(original, compacted)
     }
 
     pub(crate) async fn post_compact(

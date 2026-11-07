@@ -569,7 +569,7 @@ async fn apply_compaction(
     let mut compacted = output;
     context
         .hooks
-        .prepare_compacted_input(context.input(), &mut compacted);
+        .prepare_compacted_input(context.input(), &mut compacted)?;
     validate_active_message_metadata(compacted.as_slice().into(), active_message_metadata)?;
     if let Some(tool_load) = tool_load {
         compacted.push(Arc::new(tool_load));

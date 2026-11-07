@@ -41,6 +41,7 @@ use crate::protocol::ModelStepAnnotation;
 use crate::protocol::TokenUsage;
 use crate::protocol::ToolDiscoveryMode;
 use crate::protocol::WebSearchAction;
+use crate::protocol::{HostedCallId, HostedToolExecution};
 
 const MAX_IMAGE_RESPONSE_BYTES: usize = 65 * 1024 * 1024;
 const MAX_STREAM_OUTPUT_ITEMS: usize = 1_024;
@@ -848,25 +849,170 @@ pub(super) async fn emit_web_event(
     events: &ModelEventSink,
     kind: &str,
 ) -> Result<bool> {
-    let Some(item) = web_search_item(event, kind) else {
-        return Ok(false);
+    if event.get("type").and_then(Value::as_str) == Some("response.output_item.added")
+        && let Some(item) = event.get("item")
+        && item
+            .get("type")
+            .and_then(Value::as_str)
+            .filter(|kind| !matches!(*kind, "program_output" | "shell_call_output"))
+            .and_then(|item_kind| hosted_fields(item_kind, kind))
+            .is_some()
+    {
+        events(ModelEvent::HostedToolStarted {
+            call_id: HostedCallId::new(hosted_call_id(item)?)?,
+        })
+        .await?;
+    }
+    let handled = if let Some(item) = web_search_item(event, kind) {
+        let call_id = required_string(item, "id")?;
+        if !seen.contains(call_id) {
+            seen.insert(call_id.to_owned());
+            events(ModelEvent::WebSearchStarted {
+                call_id: call_id.into(),
+            })
+            .await?;
+        }
+        if event.get("type").and_then(Value::as_str) == Some("response.output_item.done") {
+            events(ModelEvent::WebSearchCompleted {
+                call_id: call_id.into(),
+                action: decode_web_action(item),
+            })
+            .await?;
+        }
+        true
+    } else {
+        false
     };
-    let call_id = required_string(item, "id")?;
-    if !seen.contains(call_id) {
-        seen.insert(call_id.to_owned());
-        events(ModelEvent::WebSearchStarted {
-            call_id: call_id.into(),
-        })
-        .await?;
+    if event.get("type").and_then(Value::as_str) == Some("response.output_item.done")
+        && event.pointer("/item/type").and_then(Value::as_str) != Some("program")
+        && let Some(execution) = hosted_execution(event.get("item"), kind)?
+    {
+        events(ModelEvent::HostedToolCompleted(execution)).await?;
     }
-    if event.get("type").and_then(Value::as_str) == Some("response.output_item.done") {
-        events(ModelEvent::WebSearchCompleted {
-            call_id: call_id.into(),
-            action: decode_web_action(item),
-        })
-        .await?;
+    Ok(handled)
+}
+
+fn hosted_fields(kind: &str, web_kind: &str) -> Option<(&'static str, &'static str)> {
+    if kind == web_kind {
+        return Some(("web_search", "action"));
     }
-    Ok(true)
+    match kind {
+        "tool_search_call" => Some((super::TOOLS_SEARCH_NAME, "arguments")),
+        "file_search_call" => Some(("file_search", "queries")),
+        "code_interpreter_call" => Some(("code_interpreter", "code")),
+        "image_generation_call" => Some(("image_generation", "prompt")),
+        "mcp_call" => Some(("mcp", "arguments")),
+        "mcp_list_tools" => Some(("mcp_list_tools", "server_label")),
+        "program" => Some(("programmatic_tool_calling", "code")),
+        "program_output" => Some(("programmatic_tool_calling", "result")),
+        "shell_call_output" => Some(("shell", "output")),
+        _ => None,
+    }
+}
+
+fn hosted_call_id(item: &Value) -> Result<&str> {
+    item.get("call_id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .map_or_else(|| required_string(item, "id"), Ok)
+}
+
+fn hosted_execution(item: Option<&Value>, web_kind: &str) -> Result<Option<HostedToolExecution>> {
+    let Some(item) = item else {
+        return Ok(None);
+    };
+    let Some(kind) = item.get("type").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    let Some((hosted_name, field)) = hosted_fields(kind, web_kind) else {
+        return Ok(None);
+    };
+    // Output-only items prove execution but do not disclose its original inputs.
+    let (name, arguments) = if matches!(kind, "program_output" | "shell_call_output") {
+        (hosted_name, None)
+    } else if kind == web_kind {
+        let action = item.get("action");
+        let operation = action
+            .and_then(|action| action.get("type"))
+            .and_then(Value::as_str);
+        let name = match operation {
+            Some("open_page") => "open_page",
+            Some("find_in_page") => "find_in_page",
+            _ => "web_search",
+        };
+        let known_input = match operation {
+            Some("search") => action.is_some_and(|action| {
+                action
+                    .get("query")
+                    .and_then(Value::as_str)
+                    .is_some_and(|query| !query.is_empty())
+                    || action
+                        .get("queries")
+                        .and_then(Value::as_array)
+                        .is_some_and(|queries| {
+                            !queries.is_empty()
+                                && queries.iter().all(|query| {
+                                    query.as_str().is_some_and(|query| !query.is_empty())
+                                })
+                        })
+            }),
+            Some("open_page") => {
+                action.is_some_and(|action| action.get("url").and_then(Value::as_str).is_some())
+            }
+            Some("find_in_page") => action.is_some_and(|action| {
+                action.get("url").and_then(Value::as_str).is_some()
+                    && action.get("pattern").and_then(Value::as_str).is_some()
+            }),
+            _ => false,
+        };
+        // Copy only the disclosed inputs; `sources` can be large and is reported separately.
+        let arguments = action
+            .and_then(Value::as_object)
+            .filter(|_| known_input)
+            .map(|action| {
+                action
+                    .iter()
+                    .filter(|(key, _)| !matches!(key.as_str(), "type" | "sources"))
+                    .map(|(key, value)| (key.to_owned(), super::disclosed(value)))
+                    .collect()
+            });
+        (name, arguments)
+    } else {
+        let arguments = item
+            .get(field)
+            .filter(|input| !input.is_null())
+            .map(|input| {
+                if kind == "tool_search_call" {
+                    return super::disclosed(input);
+                }
+                std::iter::once(field)
+                    .chain(
+                        ["container_id", "server_label", "name"]
+                            .into_iter()
+                            .filter(|metadata| *metadata != field),
+                    )
+                    .filter_map(|key| {
+                        item.get(key)
+                            .map(|value| (key.to_owned(), super::disclosed(value)))
+                    })
+                    .collect()
+            });
+        (hosted_name, arguments)
+    };
+    let sources = item
+        .pointer("/action/sources")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|source| source.get("url").and_then(Value::as_str));
+    HostedToolExecution::new(
+        HostedCallId::new(hosted_call_id(item)?)?,
+        name,
+        arguments,
+        None,
+        sources,
+    )
+    .map(Some)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

@@ -48,6 +48,7 @@ mod text {
         pub(super) repeat_notice: String,
         pub(super) repeat_skipped: String,
         pub(super) repeat_stop: String,
+        pub(super) prompt_tool_progress: String,
         #[serde(deserialize_with = "crate::middleware::manifest::deserialize_settings")]
         pub(super) settings: Vec<crate::middleware::manifest::MiddlewareSettingManifest>,
         pub(super) search: std::sync::Arc<crate::backend::model::ToolDefinition>,
@@ -58,7 +59,9 @@ pub(super) mod arguments;
 mod coding;
 mod commands;
 mod patch;
+pub(crate) mod progress;
 mod repeats;
+use repeats::RepeatDecision;
 
 use coding::{ApplyPatch, ReadFile, WriteFile};
 use commands::{Bash, ManageCommand};
@@ -381,7 +384,7 @@ pub struct Catalog {
     deferred_definitions: Arc<[Arc<ToolDefinition>]>,
     revision: String,
     finalized: bool,
-    repeats: Option<(Arc<repeats::RepeatGuard>, crate::SessionId)>,
+    repeats: Arc<repeats::RepeatGuard>,
 }
 
 /// One catalog snapshot resolved for a model boundary.
@@ -399,6 +402,10 @@ pub(crate) struct PreparedToolSet<'a> {
 pub(crate) struct ToolEffects {
     pub(crate) input: Vec<Value>,
     pub(crate) events: Vec<EventMsg>,
+}
+
+fn repeat_notice() -> Value {
+    crate::backend::model::internal_user_message("tool_repeat", &text::DEFINITION.repeat_notice)
 }
 
 impl PreparedToolSet<'_> {
@@ -476,6 +483,36 @@ impl std::fmt::Debug for Catalog {
 }
 
 impl Catalog {
+    fn observe_hosted(
+        &self,
+        turn_id: &str,
+        model_step_id: &str,
+        execution: &crate::protocol::HostedToolExecution,
+    ) -> Result<RepeatDecision> {
+        let identity = repeats::RepeatGuard::hosted_identity(
+            &execution.name,
+            execution.arguments.as_ref(),
+            execution.result_fingerprint,
+        );
+        self.repeats.observe(
+            turn_id,
+            identity,
+            execution.result_fingerprint,
+            Some((model_step_id, execution.call_id.as_str())),
+        )
+    }
+
+    pub(crate) fn repeat_stop(&self, turn_id: &str) -> Result<Option<&'static str>> {
+        Ok(self
+            .repeats
+            .should_stop(turn_id)?
+            .then_some(text::DEFINITION.repeat_stop.as_str()))
+    }
+
+    pub(crate) fn finish_tool_turn(&self, turn_id: &str) -> Result<()> {
+        self.repeats.finish_turn(turn_id)
+    }
+
     /// Registers one tool and rejects invalid definitions or duplicate names.
     /// # Errors
     ///
@@ -1253,20 +1290,9 @@ pub(crate) async fn execute_call(
     author: &Arc<crate::protocol::MessageAuthor>,
 ) -> ToolResult {
     let output_limit = sandbox.output_limit();
-    let Some((repeats, session_id)) = &catalog.repeats else {
-        return run_call(
-            catalog,
-            call,
-            sandbox,
-            permissions,
-            turn_id,
-            model_route,
-            author,
-        )
-        .await;
-    };
+    let repeats = &catalog.repeats;
     let tool_call = call.as_call();
-    match repeats.should_stop(session_id, turn_id) {
+    match repeats.should_stop(turn_id) {
         Ok(false) => {}
         Ok(true) => {
             return ToolResult::error(tool_call, &text::DEFINITION.repeat_skipped, output_limit);
@@ -1286,14 +1312,14 @@ pub(crate) async fn execute_call(
     )
     .await;
     if let Some(identity) = identity.filter(|_| result.handler_executed) {
-        match repeats.observe(session_id, turn_id, identity, &result.output) {
-            Ok(false) => {}
-            Ok(true) => result
-                .additional_input
-                .push(crate::backend::model::internal_user_message(
-                    "tool_repeat",
-                    &text::DEFINITION.repeat_notice,
-                )),
+        match repeats.observe(
+            turn_id,
+            Some(identity),
+            Some(repeats::RepeatGuard::result_fingerprint(&result.output)),
+            None,
+        ) {
+            Ok(RepeatDecision::Continue | RepeatDecision::Duplicate | RepeatDecision::Stop) => {}
+            Ok(RepeatDecision::Warn) => result.additional_input.push(repeat_notice()),
             Err(error) => tracing::warn!(%error, "repeat guard could not count a tool call"),
         }
     }
@@ -1528,7 +1554,8 @@ fn compact_output(output: &str) -> String {
 /// Middleware that contributes an explicit list of tools.
 pub struct Tools {
     tools: Vec<Arc<dyn Tool>>,
-    repeats: Arc<repeats::RepeatGuard>,
+    repeat_warning_calls: usize,
+    repeat_stop_calls: usize,
 }
 
 impl std::fmt::Debug for Tools {
@@ -1541,30 +1568,23 @@ impl Tools {
     /// Creates a tool middleware from explicit handlers.
     #[must_use]
     pub fn new(tools: Vec<Arc<dyn Tool>>) -> Self {
-        let default = |id| {
-            usize::try_from(super::manifest::integer_default(
-                &text::DEFINITION.settings,
-                id,
-            ))
-            .unwrap_or(usize::MAX)
-        };
+        let (repeat_warning_calls, repeat_stop_calls) = repeats::RepeatGuard::default_limits();
         Self {
             tools,
-            repeats: Arc::new(repeats::RepeatGuard::new(
-                default("repeat_warning_calls"),
-                default("repeat_stop_calls"),
-            )),
+            repeat_warning_calls,
+            repeat_stop_calls,
         }
     }
 
-    /// Sets how many identical calls with identical results warn the model and stop the turn.
+    /// Sets warning and stop thresholds for repeated executions without observable progress.
     #[must_use]
     pub fn repeat_limits(
         mut self,
         warning_at: std::num::NonZeroUsize,
         stop_at: std::num::NonZeroUsize,
     ) -> Self {
-        self.repeats = Arc::new(repeats::RepeatGuard::new(warning_at.get(), stop_at.get()));
+        self.repeat_warning_calls = warning_at.get();
+        self.repeat_stop_calls = stop_at.get();
         self
     }
 
@@ -1605,11 +1625,14 @@ impl Middleware for Tools {
         MANIFEST.id
     }
 
-    fn register(&self, catalog: &mut Catalog, runtime: &super::RuntimeContext) -> Result<()> {
+    fn register(&self, catalog: &mut Catalog, _runtime: &super::RuntimeContext) -> Result<()> {
         for tool in &self.tools {
             catalog.register(Arc::clone(tool))?;
         }
-        catalog.repeats = Some((Arc::clone(&self.repeats), runtime.session_id.share()));
+        catalog.repeats = Arc::new(repeats::RepeatGuard::new(
+            self.repeat_warning_calls,
+            self.repeat_stop_calls,
+        ));
         catalog.register_search()
     }
 
@@ -1627,36 +1650,6 @@ impl Middleware for Tools {
             }
             Ok(())
         })
-    }
-
-    fn pre_model<'a>(
-        &'a self,
-        context: &'a mut super::ModelContext<'_>,
-    ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            if context.turn_stop.is_none()
-                && self
-                    .repeats
-                    .should_stop(context.session_id, context.turn_id)?
-            {
-                *context.turn_stop = Some(text::DEFINITION.repeat_stop.as_str().to_owned());
-            }
-            Ok(())
-        })
-    }
-
-    fn turn_end<'a>(
-        &'a self,
-        context: &'a mut super::TurnEndContext<'_>,
-    ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            self.repeats
-                .finish_turn(context.session_id, context.turn_id)
-        })
-    }
-
-    fn session_end<'a>(&'a self, runtime: &'a super::RuntimeContext) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move { self.repeats.finish_session(&runtime.session_id) })
     }
 
     fn frontend(&self, _session_id: &str) -> FrontendContribution {

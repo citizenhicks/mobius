@@ -3,6 +3,198 @@ use crate::backend::model::PromptCacheIdentity;
 use crate::backend::model::transport::capture_http_request;
 use crate::protocol::ModelStepContentPhase;
 
+#[tokio::test]
+async fn actual_hosted_completions_are_distinct_from_local_calls_and_citation_activity() {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let captured = Arc::clone(&seen);
+    let sink: ModelEventSink = Arc::new(move |event| {
+        captured.lock().expect("events").push(event);
+        Box::pin(async { Ok(()) })
+    });
+    let mut searches = BTreeSet::new();
+    for (id, action, name) in [
+        (
+            "search",
+            serde_json::json!({"type":"search","query":"mobius","filters":{"allowed_domains":["example.com"]},"sources":[{"url":"https://example.com"}]}),
+            "web_search",
+        ),
+        (
+            "open",
+            serde_json::json!({"type":"open_page","url":"https://example.com"}),
+            "open_page",
+        ),
+        (
+            "find",
+            serde_json::json!({"type":"find_in_page","url":"https://example.com","pattern":"answer"}),
+            "find_in_page",
+        ),
+    ] {
+        let event = serde_json::json!({"type":"response.output_item.done","item":{"type":"web_search_call","id":id,"action":action}});
+        let added = serde_json::json!({"type":"response.output_item.added","item":{"type":"web_search_call","id":id}});
+        emit_web_event(&added, &mut searches, &sink, "web_search_call")
+            .await
+            .expect("hosted start");
+        emit_web_event(&event, &mut searches, &sink, "web_search_call")
+            .await
+            .expect("hosted completion");
+        let mut expected = action;
+        expected.as_object_mut().unwrap().remove("type");
+        expected.as_object_mut().unwrap().remove("sources");
+        let events = seen.lock().expect("events");
+        let execution = events
+            .iter()
+            .rev()
+            .find_map(|event| match event {
+                ModelEvent::HostedToolCompleted(execution) => Some(execution),
+                _ => None,
+            })
+            .expect("actual execution");
+        assert_eq!(&*execution.name, name);
+        assert_eq!(execution.arguments, Some(expected));
+        assert_eq!(execution.result_fingerprint, None);
+        drop(events);
+    }
+    for kind in [
+        "function_call",
+        "custom_tool_call",
+        "computer_call",
+        "mcp_approval_request",
+        "shell_call",
+        "message",
+    ] {
+        for phase in ["response.output_item.added", "response.output_item.done"] {
+            emit_web_event(
+                &serde_json::json!({"type":phase,"item":{"type":kind,"id":"local"}}),
+                &mut searches,
+                &sink,
+                "web_search_call",
+            )
+            .await
+            .expect("local item");
+        }
+    }
+    for item in [
+        serde_json::json!({"type":"tool_search_call","id":"discovery","arguments":{"query":"read"}}),
+        serde_json::json!({"type":"file_search_call","id":"files","queries":["release notes"]}),
+        serde_json::json!({"type":"mcp_list_tools","id":"listing","server_label":"docs"}),
+        serde_json::json!({"type":"program","id":"program-item","call_id":"program-call","code":"text(1)"}),
+        serde_json::json!({"type":"program_output","id":"program-result","call_id":"program-call","result":"1","status":"completed"}),
+        serde_json::json!({"type":"shell_call_output","id":"shell-result","call_id":"shell-call","output":[{"stdout":"ok","stderr":"","outcome":{"type":"exit","exit_code":0}}]}),
+    ] {
+        for phase in ["response.output_item.added", "response.output_item.done"] {
+            emit_web_event(
+                &serde_json::json!({"type":phase,"item":item}),
+                &mut searches,
+                &sink,
+                "web_search_call",
+            )
+            .await
+            .expect("native execution");
+        }
+    }
+    let executions = seen
+        .lock()
+        .expect("events")
+        .iter()
+        .filter_map(|event| match event {
+            ModelEvent::HostedToolCompleted(execution) => Some(execution.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(executions.len(), 8);
+    assert_eq!(executions[0].sources, ["https://example.com"]);
+    assert_eq!(&*executions[3].name, super::super::TOOLS_SEARCH_NAME);
+    assert_eq!(&*executions[4].name, "file_search");
+    assert_eq!(
+        executions[4].arguments,
+        Some(serde_json::json!({"queries":["release notes"]}))
+    );
+    assert_eq!(&*executions[5].name, "mcp_list_tools");
+    assert_eq!(
+        executions[5].arguments,
+        Some(serde_json::json!({"server_label":"docs"}))
+    );
+    assert_eq!(&*executions[6].name, "programmatic_tool_calling");
+    assert_eq!(executions[6].call_id.as_str(), "program-call");
+    assert_eq!(executions[6].arguments, None);
+    assert_eq!(&*executions[7].name, "shell");
+    assert_eq!(executions[7].call_id.as_str(), "shell-call");
+    assert_eq!(executions[7].arguments, None);
+    for kind in ["file_search_call", "mcp_list_tools"] {
+        assert_eq!(
+            hosted_execution(
+                Some(&serde_json::json!({"type":kind,"id":"undisclosed"})),
+                "web_search_call"
+            )
+            .unwrap()
+            .unwrap()
+            .arguments,
+            None
+        );
+    }
+    assert_eq!(
+        hosted_execution(
+            Some(
+                &serde_json::json!({"type":"image_generation_call","id":"image","result":"opaque"})
+            ),
+            "web_search_call"
+        )
+        .unwrap()
+        .unwrap()
+        .arguments,
+        None
+    );
+
+    let cited = ModelOutput::from_output(vec![serde_json::json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer","annotations":[{"type":"url_citation","url":"https://example.com","title":"source","start_index":0,"end_index":6}]}]})], true, TokenUsage::default()).expect("cited output");
+    emit_citation_web_search(&cited, &BTreeSet::new(), &sink)
+        .await
+        .expect("inferred activity");
+    assert_eq!(
+        seen.lock()
+            .expect("events")
+            .iter()
+            .filter(|event| matches!(event, ModelEvent::HostedToolCompleted(_)))
+            .count(),
+        8
+    );
+    assert_eq!(
+        seen.lock()
+            .expect("events")
+            .iter()
+            .filter(|event| matches!(event, ModelEvent::HostedToolStarted { .. }))
+            .count(),
+        7
+    );
+    let completed_before_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let captured_completion = Arc::clone(&completed_before_stop);
+    let blocked: ModelEventSink = Arc::new(move |event| {
+        let result = match event {
+            ModelEvent::WebSearchCompleted { .. } => {
+                captured_completion.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            }
+            ModelEvent::HostedToolCompleted(_) => Err(Error::Stopped(
+                "shared tool policy stopped execution".into(),
+            )),
+            _ => Ok(()),
+        };
+        Box::pin(async move { result })
+    });
+    assert!(matches!(emit_web_event(
+        &serde_json::json!({"type":"response.output_item.done","item":{"type":"tool_search_call","id":"blocked","arguments":{"query":"read"}}}),
+        &mut searches,
+        &blocked,
+        "web_search_call",
+    ).await, Err(Error::Stopped(_))));
+    assert!(matches!(emit_web_event(
+        &serde_json::json!({"type":"response.output_item.done","item":{"type":"web_search_call","id":"blocked-search","action":{"type":"search","query":"mobius"}}}),
+        &mut searches,
+        &blocked,
+        "web_search_call",
+    ).await, Err(Error::Stopped(_))));
+    assert!(completed_before_stop.load(std::sync::atomic::Ordering::SeqCst));
+}
+
 fn url(url: &str) -> BaseUrl {
     BaseUrl::new(url).expect("base URL")
 }

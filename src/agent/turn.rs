@@ -519,6 +519,7 @@ impl Runner {
                 events: &mut messages,
             })
             .await?;
+        self.catalog.finish_tool_turn(turn_id)?;
         Ok(messages
             .into_iter()
             .map(|message| turn_event(submission_id, message))

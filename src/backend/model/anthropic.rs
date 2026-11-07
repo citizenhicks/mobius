@@ -3,6 +3,7 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
 use super::transport::ApiKeyModel;
@@ -41,6 +42,7 @@ use crate::protocol::TokenUsage;
 use crate::protocol::ToolDiscoveryMode;
 use crate::protocol::ToolLoad;
 use crate::protocol::WebSearchAction;
+use crate::protocol::{HostedCallId, HostedToolExecution};
 
 pub(super) static MANIFEST: std::sync::LazyLock<super::provider::ProviderMetadata> =
     std::sync::LazyLock::new(|| crate::config::embedded(include_str!("anthropic_provider.toml")));
@@ -186,7 +188,7 @@ impl Anthropic {
         })
         .await?;
         let response = self.post(body).await?;
-        let mut stream = StreamState::default();
+        let mut stream = StreamState::new(request.input);
         super::transport::read_sse(response, "Anthropic", &events, &mut stream).await?;
         if !stream.stopped {
             return Err(Error::Provider(
@@ -336,24 +338,53 @@ impl Model for Anthropic {
 }
 
 #[derive(Default)]
-struct StreamState {
+struct StreamState<'a> {
     blocks: BTreeMap<usize, Value>,
     partial_json: BTreeMap<usize, String>,
     completed_blocks: BTreeSet<usize>,
     next_completed_block: usize,
-    web_queries: BTreeMap<Arc<str>, Option<String>>,
+    server_tools: BTreeMap<Arc<str>, usize>,
+    pending_server_tools: BTreeMap<&'a str, &'a Value>,
     usage: Usage,
     stop_reason: Option<String>,
     stopped: bool,
 }
 
-impl super::transport::SseHandler for StreamState {
+impl super::transport::SseHandler for StreamState<'_> {
     async fn apply_data(&mut self, data: &str, events: &ModelEventSink) -> Result<()> {
         self.apply(serde_json::from_str(data)?, events).await
     }
 }
 
-impl StreamState {
+impl<'a> StreamState<'a> {
+    fn new(input: ModelInput<'a>) -> Self {
+        let mut pending_server_tools = BTreeMap::new();
+        for block in input
+            .iter()
+            .filter(|item| item.get("role").and_then(Value::as_str) == Some("assistant"))
+            .filter_map(|item| item.get(RAW_CONTENT).and_then(Value::as_array))
+            .flatten()
+        {
+            match block.get("type").and_then(Value::as_str) {
+                Some("server_tool_use") => {
+                    if let Some(id) = block.get("id").and_then(Value::as_str) {
+                        pending_server_tools.insert(id, block);
+                    }
+                }
+                Some(kind) if kind.ends_with("_tool_result") => {
+                    if let Some(id) = block.get("tool_use_id").and_then(Value::as_str) {
+                        pending_server_tools.remove(id);
+                    }
+                }
+                _ => {}
+            }
+        }
+        Self {
+            pending_server_tools,
+            ..Self::default()
+        }
+    }
+
     async fn apply(&mut self, event: Value, events: &ModelEventSink) -> Result<()> {
         match event.get("type").and_then(Value::as_str) {
             Some("message_start") => self.usage.update(event.pointer("/message/usage"))?,
@@ -396,28 +427,32 @@ impl StreamState {
             .get_mut("content_block")
             .map(Value::take)
             .ok_or_else(|| Error::Provider("Anthropic content block omitted value".into()))?;
-        if block.get("type").and_then(Value::as_str) == Some("server_tool_use")
-            && block.get("name").and_then(Value::as_str) == Some("web_search")
+        if block.get("type").and_then(Value::as_str) == Some("server_tool_use") {
+            let call_id = HostedCallId::new(required_string(&block, "id")?)?;
+            let id = call_id.share();
+            if self.server_tools.insert(Arc::clone(&id), index).is_some() {
+                return Err(Error::Provider(
+                    "Anthropic repeated hosted tool-call ID".into(),
+                ));
+            }
+            events(ModelEvent::HostedToolStarted { call_id }).await?;
+            if block.get("name").and_then(Value::as_str) == Some("web_search") {
+                events(ModelEvent::WebSearchStarted { call_id: id }).await?;
+            }
+        } else if block
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| kind.ends_with("_tool_result"))
+            && let Some(id) = block.get("tool_use_id").and_then(Value::as_str)
+            && let Some(call) = self.pending_server_tools.get(id)
         {
-            let id: Arc<str> = required_string(&block, "id")?.into();
-            let query = block
-                .pointer("/input/query")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
-            self.web_queries.insert(Arc::clone(&id), query);
-            events(ModelEvent::WebSearchStarted { call_id: id }).await?;
-        }
-        if block.get("type").and_then(Value::as_str) == Some("web_search_tool_result") {
-            let call_id: Arc<str> = required_string(&block, "tool_use_id")?.into();
-            let action = self
-                .web_queries
-                .get(&call_id)
-                .and_then(Option::as_deref)
-                .filter(|query| !query.is_empty())
-                .map_or(WebSearchAction::Other, |query| WebSearchAction::Search {
-                    queries: vec![query.to_owned()], // rules-allow: the completed event owns a copy of the remembered query
-                });
-            events(ModelEvent::WebSearchCompleted { call_id, action }).await?;
+            // A result can begin the response after a pending call was replayed.
+            let call_id = HostedCallId::new(id)?;
+            let id = call_id.share();
+            events(ModelEvent::HostedToolStarted { call_id }).await?;
+            if call.get("name").and_then(Value::as_str) == Some("web_search") {
+                events(ModelEvent::WebSearchStarted { call_id: id }).await?;
+            }
         }
         self.blocks.insert(index, block);
         Ok(())
@@ -505,16 +540,6 @@ impl StreamState {
             } else {
                 serde_json::from_str(&partial)?
             };
-            if block.get("type").and_then(Value::as_str) == Some("server_tool_use")
-                && block.get("name").and_then(Value::as_str) == Some("web_search")
-            {
-                let id = required_string(block, "id")?.into();
-                let query = block
-                    .pointer("/input/query")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned);
-                self.web_queries.insert(id, query);
-            }
         }
         if tool_use && block.get("input").is_some_and(|input| !input.is_object()) {
             // Native replay uses this block instead of the normalized function-call item.
@@ -522,7 +547,58 @@ impl StreamState {
                 super::decode_tool_arguments(&serde_json::to_string(&block["input"])?)?;
         }
         self.completed_blocks.insert(index);
+        self.emit_hosted_completion(index, events).await?;
         self.emit_ready_tool_calls(events).await
+    }
+
+    async fn emit_hosted_completion(&self, index: usize, events: &ModelEventSink) -> Result<()> {
+        let Some(result) = self.blocks.get(&index).filter(|block| {
+            block
+                .get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| kind.ends_with("_tool_result"))
+        }) else {
+            return Ok(());
+        };
+        let call_id = required_string(result, "tool_use_id")?;
+        let call = self
+            .server_tools
+            .get(call_id)
+            .and_then(|index| self.blocks.get(index))
+            .or_else(|| self.pending_server_tools.get(call_id).copied())
+            .ok_or_else(|| {
+                Error::Provider("Anthropic hosted tool result referenced unknown call".into())
+            })?;
+        let name = required_string(call, "name")?;
+        let content = result.get("content");
+        let sources = content
+            .filter(|_| name == "web_search")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|source| source.get("url").and_then(Value::as_str));
+        let execution = HostedToolExecution::new(
+            HostedCallId::new(call_id)?,
+            name,
+            call.get("input").map(super::disclosed),
+            content.and_then(|content| hosted_result_fingerprint(name, content)),
+            sources,
+        )?;
+        if name == "web_search" {
+            let action = call
+                .pointer("/input/query")
+                .and_then(Value::as_str)
+                .filter(|query| !query.is_empty())
+                .map_or(WebSearchAction::Other, |query| WebSearchAction::Search {
+                    queries: vec![query.to_owned()],
+                });
+            events(ModelEvent::WebSearchCompleted {
+                call_id: call_id.into(),
+                action,
+            })
+            .await?;
+        }
+        events(ModelEvent::HostedToolCompleted(execution)).await
     }
 
     async fn emit_ready_tool_calls(&mut self, events: &ModelEventSink) -> Result<()> {
@@ -613,6 +689,59 @@ impl StreamState {
             self.usage.finish()?,
             step_content,
         )
+    }
+}
+
+fn hosted_result_fingerprint(name: &str, content: &Value) -> Option<u64> {
+    let mut fingerprint = DefaultHasher::new();
+    if name == "web_search"
+        && let Some(results) = content.as_array()
+    {
+        let mut evidence = results
+            .iter()
+            .map(|result| {
+                let fields = ["url", "title", "content", "snippet", "cited_text"];
+                if ["content", "snippet", "cited_text"]
+                    .iter()
+                    .all(|field| result.get(field).is_none())
+                    || fields
+                        .iter()
+                        .filter_map(|field| result.get(field))
+                        .any(opaque_result)
+                {
+                    return None;
+                }
+                let mut evidence = DefaultHasher::new();
+                for field in fields {
+                    result.get(field).hash(&mut evidence);
+                }
+                Some(evidence.finish())
+            })
+            .collect::<Option<Vec<_>>>()?;
+        evidence.sort_unstable();
+        evidence.dedup();
+        evidence.len().hash(&mut fingerprint);
+        for item in evidence {
+            item.hash(&mut fingerprint);
+        }
+    } else {
+        if opaque_result(content) {
+            return None;
+        }
+        content.hash(&mut fingerprint);
+    }
+    Some(fingerprint.finish())
+}
+
+fn opaque_result(value: &Value) -> bool {
+    match value {
+        Value::Object(fields) => {
+            fields.contains_key("encrypted_content")
+                || fields.contains_key("encrypted_index")
+                || fields.values().any(opaque_result)
+        }
+        Value::Array(values) => values.iter().any(opaque_result),
+        _ => false,
     }
 }
 
