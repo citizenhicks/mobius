@@ -157,17 +157,21 @@ pub(super) fn apply_patch_document(content: &str, document: &PatchDocument) -> R
     let mut updated = content.to_owned();
     let mut cursor = 0;
     let mut match_work = 0;
+    let mut added_lines = 0_usize;
+    let mut removed_lines = 0_usize;
     let line_ending = if content.contains("\r\n") {
         "\r\n"
     } else {
         "\n"
     };
-    for change in &document.changes {
+    let changes = document.changes.len();
+    for (index, change) in document.changes.iter().enumerate() {
+        let number = index + 1;
         if let Some(anchor) = &change.anchor {
             cursor +=
                 find_patch_anchor(patch_tail(&updated, cursor)?, anchor).ok_or_else(|| {
                     Error::Tool(format!(
-                        "Patch rejected: context {:?} was not found after the previous change.",
+                        "Patch rejected: change {number} of {changes}: context {:?} was not found after the previous change. No changes were written.",
                         capped(anchor, MAX_TOOL_UI_BYTES)
                     ))
                 })?;
@@ -194,9 +198,9 @@ pub(super) fn apply_patch_document(content: &str, document: &PatchDocument) -> R
         if change.end_of_file {
             let start = updated.len().saturating_sub(before.len());
             if start < cursor || !updated.ends_with(&before) {
-                return Err(Error::Tool(
-                    "Patch rejected: the end-of-file change did not match the file.".into(),
-                ));
+                return Err(Error::Tool(format!(
+                    "Patch rejected: change {number} of {changes}: the end-of-file change did not match the file. No changes were written."
+                )));
             }
             cursor = start;
         }
@@ -217,10 +221,15 @@ pub(super) fn apply_patch_document(content: &str, document: &PatchDocument) -> R
             validate_patch_complexity(suffix, &patch, &mut match_work)?;
         }
         let Some(match_start) = find_patch_fragment(suffix, &before) else {
-            if let Err(error) = diffy::apply(suffix, &patch) {
-                return Err(unmatched_patch_error(suffix, &patch, &error));
-            }
-            return Err(Error::Tool("patch rejected: context was not found".into()));
+            return Err(unmatched_change_error(
+                &updated,
+                cursor,
+                &before,
+                number,
+                changes,
+                added_lines,
+                removed_lines,
+            ));
         };
         cursor += match_start;
         if patch.hunks().is_empty() {
@@ -229,9 +238,11 @@ pub(super) fn apply_patch_document(content: &str, document: &PatchDocument) -> R
         }
         let suffix = patch_tail(&updated, cursor)?;
         let patched = diffy::apply(suffix, &patch)
-            .map_err(|error| unmatched_patch_error(suffix, &patch, &error))?;
+            .map_err(|error| Error::Tool(format!("Patch rejected: {error}.")))?;
         updated.replace_range(cursor.., &patched);
         cursor += after.len();
+        added_lines += after.matches('\n').count();
+        removed_lines += before.matches('\n').count();
     }
     Ok(updated)
 }
@@ -269,56 +280,67 @@ fn find_patch_fragment(content: &str, fragment: &str) -> Option<usize> {
     }
 }
 
-fn unmatched_patch_error(
+/// Names the failed change and the first line where its closest positional match diverges,
+/// numbered from the start of the file. The caller has already charged this scan's work.
+fn unmatched_change_error(
     content: &str,
-    patch: &Patch<'_, str>,
-    error: &diffy::ApplyError,
+    cursor: usize,
+    before: &str,
+    number: usize,
+    changes: usize,
+    added_lines: usize,
+    removed_lines: usize,
 ) -> Error {
-    let message = error.to_string();
-    let Some(hunk_number) = message
-        .strip_prefix("error applying hunk #")
-        .and_then(|number| number.parse::<usize>().ok())
-        .filter(|number| *number > 0 && *number <= patch.hunks().len())
-    else {
-        return Error::Tool(format!(
-            "Patch rejected: a hunk did not match the file.\nReason: {message}."
-        ));
-    };
-    let rejection = if patch.hunks().len() == 1 {
-        "Patch rejected: no hunks matched the file.".into()
-    } else {
-        format!("Patch rejected: hunk #{hunk_number} did not match the file.")
-    };
-    let Some(hunk) = patch.hunks().get(hunk_number - 1) else {
-        return Error::Tool(format!(
-            "Patch rejected: a hunk did not match the file.\nReason: {message}."
-        ));
-    };
-    let Some((heading, context)) = hunk.lines().iter().find_map(|line| match line {
-        Line::Context(value) if !value.trim().is_empty() => {
-            Some(("Failed hunk starts with context:", *value))
-        }
-        Line::Delete(value) if !value.trim().is_empty() => {
-            Some(("Failed hunk starts with deletion:", *value))
-        }
-        Line::Insert(_) | Line::Context(_) | Line::Delete(_) => None,
-    }) else {
-        return Error::Tool(format!(
-            "{rejection}\nThe failed hunk has no usable context lines."
-        ));
-    };
-    let nearest = content
-        .split_inclusive('\n')
-        .enumerate()
-        .filter(|(_, line)| *line == context)
-        .map(|(index, _)| index + 1)
-        .min_by_key(|line| line.abs_diff(hunk.new_range().start()));
-    let location = nearest.map_or_else(
-        || "No matching context line was found.".into(),
-        |line| format!("The nearest match is at line {line}."),
+    let base = content
+        .get(..cursor)
+        .unwrap_or_default()
+        .matches('\n')
+        .count()
+        .saturating_add(removed_lines)
+        .saturating_sub(added_lines);
+    let file = content
+        .get(cursor..)
+        .unwrap_or_default()
+        .lines()
+        .collect::<Vec<_>>();
+    let expected = before.lines().collect::<Vec<_>>();
+    // ponytail: positional line overlap picks the window; reordered or edited lines still score.
+    let window = |start: usize| file.get(start..).unwrap_or_default().iter().zip(&expected);
+    let start = (0..file.len())
+        .max_by_key(|&start| {
+            let score = window(start).filter(|(line, want)| line == want).count();
+            (score, std::cmp::Reverse(start))
+        })
+        .unwrap_or_default();
+    let matched = window(start)
+        .take_while(|(line, want)| line == want)
+        .count();
+    let head = format!(
+        "Patch rejected: change {number} of {changes} did not match the file. No changes were written; earlier changes must be resent."
     );
-    let context = capped(context.trim_end_matches(['\r', '\n']), MAX_TOOL_UI_BYTES);
-    Error::Tool(format!("{rejection}\n{heading}\n{context:?}\n{location}"))
+    let show = |line: &str| capped(line, MAX_TOOL_UI_BYTES);
+    if window(start).all(|(line, want)| line != want) {
+        return Error::Tool(format!(
+            "{head}\nNo similar section was found for {:?}.",
+            show(expected.first().copied().unwrap_or_default())
+        ));
+    }
+    let Some(want) = expected.get(matched) else {
+        return Error::Tool(format!(
+            "{head}\nNo matching section was found for {:?}.",
+            show(expected.first().copied().unwrap_or_default())
+        ));
+    };
+    let line = base + start + matched + 1;
+    let found = file.get(start + matched).map_or_else(
+        || "end of file".to_owned(),
+        |found| format!("{:?}", show(found)),
+    );
+    Error::Tool(format!(
+        "{head}\nClosest match: first {matched} line(s) match from line {}; line {line} should be {:?} but the file has {found}.",
+        base + start + 1,
+        show(want)
+    ))
 }
 
 pub(super) fn validate_patch_complexity(

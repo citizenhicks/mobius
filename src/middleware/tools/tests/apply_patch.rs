@@ -80,6 +80,53 @@ async fn apply_patch_uses_the_active_sandbox_policy() {
 }
 
 #[test]
+fn apply_patch_reports_the_failed_change_and_its_divergent_file_line() {
+    let patch = parse_patch_document(
+        "*** Begin Patch\n*** Update File: a.py\n@@\n-x = 1\n+x = 2\n@@\n elif co:\n     # second\n     # first\n-    y = 1\n+    y = 2\n*** End Patch\n",
+    )
+    .expect("patch document");
+    let content = "x = 1\nelif co:\npad\nelif co:\n    # first\n    # second\n    y = 1\n";
+
+    let error = apply_patch_document(content, &patch)
+        .expect_err("mismatch")
+        .to_string();
+
+    assert!(error.contains("change 2 of 2"), "{error}");
+    assert!(error.contains("No changes were written"), "{error}");
+    assert!(
+        error.contains("line 5 should be \"    # second\""),
+        "{error}"
+    );
+    assert!(error.contains("the file has \"    # first\""), "{error}");
+}
+
+#[test]
+fn apply_patch_reports_original_line_after_an_earlier_insertion() {
+    let patch = parse_patch_document(
+        "*** Begin Patch\n*** Update File: a.py\n@@\n first\n+inserted\n@@\n second\n-wrong\n+replacement\n*** End Patch\n",
+    )
+    .expect("patch document");
+    let error = apply_patch_document("first\nsecond\nactual\n", &patch)
+        .expect_err("mismatch")
+        .to_string();
+    assert!(error.contains("line 3 should be \"wrong\""), "{error}");
+    assert!(error.contains("the file has \"actual\""), "{error}");
+}
+
+#[test]
+fn apply_patch_reports_a_mismatch_at_the_start_of_a_close_match() {
+    let patch = parse_patch_document(
+        "*** Begin Patch\n*** Update File: a.py\n@@\n expected\n same\n-old\n+new\n*** End Patch\n",
+    )
+    .expect("patch document");
+    let error = apply_patch_document("actual\nsame\nold\n", &patch)
+        .expect_err("mismatch")
+        .to_string();
+    assert!(error.contains("line 1 should be \"expected\""), "{error}");
+    assert!(error.contains("the file has \"actual\""), "{error}");
+}
+
+#[test]
 fn apply_patch_end_of_file_changes_the_final_duplicate() {
     let patch = parse_patch_document(
         "*** Begin Patch\n*** Update File: note.txt\n@@\n-old\n+new\n*** End of File\n\n*** End Patch\n",
