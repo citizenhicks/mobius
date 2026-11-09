@@ -27,7 +27,7 @@ those Bots across devices, schedule recurring jobs, or delegate focused subagent
 Your **gateway** runs the agents and keeps their workspaces and saved conversations together.
 
 This repository contains the Rust framework, gateway, and terminal client. The native
-macOS desktop and SwiftUI iPhone and iPad apps are maintained in separate private repositories.
+macOS desktop app and the iPhone and iPad apps are maintained in separate private repositories.
 You can also embed the Rust framework in your own software.
 
 ## What you can do
