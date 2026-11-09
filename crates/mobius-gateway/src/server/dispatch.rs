@@ -99,8 +99,12 @@ async fn handle_memory_message(
         ClientMessage::EditMemory {
             request_id,
             id,
+            description,
             text,
-        } => (request_id, gateway.edit_memory(&id, &text).await),
+        } => (
+            request_id,
+            gateway.edit_memory(&id, &description, &text).await,
+        ),
         ClientMessage::ForgetMemory { request_id, id } => {
             (request_id, gateway.forget_memory(&id).await)
         }

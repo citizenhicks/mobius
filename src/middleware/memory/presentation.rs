@@ -1,7 +1,8 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use super::{Basis, MANIFEST, MemoryItem, MemoryOwner, Partition, text};
+use super::pages::Scope;
+use super::{Basis, MANIFEST, MemoryItem, MemoryOwner, text};
 use crate::Result;
 use crate::middleware::{FrontendEventSink, MiddlewareCommandOutput};
 use crate::protocol::{
@@ -61,7 +62,7 @@ fn action_list_item(memory: &MemoryItem) -> FrontendActionListItem {
             text::DEFINITION.action_edit.as_str(),
             FrontendTone::Neutral,
             format!("edit {}", memory.id),
-            Some(&memory.text),
+            Some(&memory.body),
         ),
         list_action(
             memory,
@@ -75,7 +76,7 @@ fn action_list_item(memory: &MemoryItem) -> FrontendActionListItem {
     ];
     FrontendActionListItem {
         id: (*memory.id).into(),
-        text: (*memory.text).into(),
+        text: format!("{} — {}", memory.name, memory.description),
         state: FrontendListItemState::Plain,
         actions,
     }
@@ -132,36 +133,42 @@ pub(super) fn usage() -> MiddlewareCommandOutput {
     )
 }
 
-pub(super) fn format_snapshot(partitions: &[Partition]) -> String {
-    let sections = partitions
+pub(super) fn format_snapshot(scopes: &[Scope]) -> Result<String> {
+    let mut sections = Vec::new();
+    for scope in scopes
         .iter()
-        .filter(|partition| partition.owner.is_none() || !partition.memories.is_empty())
-        .map(|partition| {
-            let heading = partition.owner.as_deref().map_or(
-                Cow::Borrowed(text::DEFINITION.message_global_heading.as_str()),
-                |owner| Cow::Owned(heading(owner)),
-            );
-            if partition.memories.is_empty() {
-                return format!("{heading}\n{}", text::DEFINITION.message_no_memories);
-            }
-            let memories = partition
-                .memories
-                .iter()
-                .map(|entry| {
-                    format!(
-                        "[{}] {}\n  {} · updated at Unix time {}",
-                        entry.id,
-                        entry.text,
-                        basis_label(entry.basis),
-                        entry.updated_at
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            format!("{heading}\n{memories}")
-        })
-        .collect::<Vec<_>>();
-    sections.join("\n\n")
+        .filter(|scope| scope.owner.is_none() || !scope.pages.is_empty())
+    {
+        let heading = scope.owner.as_deref().map_or(
+            Cow::Borrowed(text::DEFINITION.message_global_heading.as_str()),
+            |owner| Cow::Owned(heading(owner)),
+        );
+        if scope.pages.is_empty() {
+            sections.push(format!(
+                "{heading}\n{}",
+                text::DEFINITION.message_no_memories
+            ));
+            continue;
+        }
+        let dir = scope.dir_name()?;
+        let pages = scope
+            .pages
+            .iter()
+            .map(|page| {
+                format!(
+                    "[{dir}/{}] {}\n  {} · updated at Unix time {}\n{}",
+                    page.name,
+                    page.description,
+                    basis_label(page.basis),
+                    page.updated_at,
+                    page.body
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        sections.push(format!("{heading}\n{pages}"));
+    }
+    Ok(sections.join("\n\n"))
 }
 
 fn heading(owner: &MemoryOwner) -> String {

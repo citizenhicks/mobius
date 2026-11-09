@@ -341,13 +341,15 @@ pub enum ClientMessage {
         /// The request identifier.
         request_id: Arc<str>,
     },
-    /// Replaces one editable memory's text, answered with `memories`.
+    /// Replaces one editable memory page's description and body, answered with `memories`.
     EditMemory {
         /// The request identifier.
         request_id: Arc<str>,
         /// The memory identifier.
         id: Arc<str>,
-        /// The new text.
+        /// The new one-line description.
+        description: String,
+        /// The new Markdown body.
         text: String,
     },
     /// Forgets one editable memory, answered with `memories`.

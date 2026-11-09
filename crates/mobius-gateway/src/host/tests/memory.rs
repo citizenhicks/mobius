@@ -1,49 +1,54 @@
+use sha2::Digest;
+
 use super::bots::gateway_with_bot;
 use super::*;
 use crate::wire::{HarnessKind, MemoryRecord, WorkspaceInfo};
 
+fn write_page(dir: &std::path::Path, name: &str, frontmatter: &str, body: &str) {
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(
+        dir.join(format!("{name}.md")),
+        format!("---\n{frontmatter}---\n{body}\n"),
+    )
+    .unwrap();
+}
+
 #[tokio::test]
-async fn memories_list_with_their_project_bot_and_exposure_and_edit_by_id() {
+async fn memory_pages_list_with_their_project_bot_links_and_edit_by_id() {
     let (_root, gateway, bot) = gateway_with_bot().await;
-    let (checkpoints, memory) = {
+    let (root, memory) = {
         let state = gateway.state.lock().await;
-        (Arc::clone(&state.checkpoints), Arc::clone(&state.memory))
+        (
+            state.store.state_dir().join("memory"),
+            Arc::clone(&state.memory),
+        )
     };
-    let scoped = "8f1e5c1a-7f43-4f7e-9a39-0c6c2f6d7f10";
-    checkpoints
-        .save_state(
-            "memory",
-            &serde_json::to_string(&(&*bot.id, "project-1")).unwrap(),
-            &serde_json::json!({
-                "owner": {"bot": &*bot.id, "project": {"id": "project-1", "label": "/work/one"}},
-                "memories": [{
-                    "id": scoped,
-                    "text": "uses pnpm",
-                    "basis": {"type": "agent_observation"},
-                    "updated_at": 5
-                }]
-            }),
-        )
-        .await
-        .unwrap();
-    let authored = "2b7d0c8e-51a4-4c0e-8d61-6f4f3e0a9b21";
-    checkpoints
-        .save_state(
-            "memory",
-            "global",
-            &serde_json::json!({
-                "owner": null,
-                "memories": [{
-                    "id": authored,
-                    "text": "prefers metric units",
-                    "basis": {"type": "agent_observation"},
-                    "updated_at": 6,
-                    "author": {"bot": &*bot.id, "project": {"id": "project-1", "label": "/work/one"}}
-                }]
-            }),
-        )
-        .await
-        .unwrap();
+    let owner =
+        serde_json::json!({"bot": &*bot.id, "project": {"id": "project-1", "label": "/work/one"}});
+    // The on-disk layout is the store's contract with people who edit pages by hand.
+    let digest = sha2::Sha256::digest(
+        serde_json::to_string(&(&*bot.id, "project-1"))
+            .unwrap()
+            .as_bytes(),
+    );
+    let scope = format!(
+        "s-{}",
+        format!("{digest:x}").chars().take(32).collect::<String>()
+    );
+    std::fs::create_dir_all(root.join(&scope)).unwrap();
+    std::fs::write(root.join(&scope).join("_scope.json"), owner.to_string()).unwrap();
+    write_page(
+        &root.join(&scope),
+        "uses-pnpm",
+        "description: Package manager\nbasis: agent_observation\nupdated_at: 5\n",
+        "Install with pnpm; see [[metric-units]].",
+    );
+    write_page(
+        &root.join("global"),
+        "metric-units",
+        &format!("description: Units\nbasis: agent_observation\nupdated_at: 6\nauthor: {owner}\n"),
+        "Prefers metric units.",
+    );
     memory
         .manage(&Op::CapabilityCommand {
             capability: mobius::middleware::memory::MANIFEST.id.into(),
@@ -58,7 +63,7 @@ async fn memories_list_with_their_project_bot_and_exposure_and_edit_by_id() {
     let listed = gateway.list_memories().await.unwrap();
     let written = listed
         .iter()
-        .find(|memory| &*memory.id == authored)
+        .find(|memory| &*memory.name == "metric-units")
         .unwrap();
     assert_eq!(
         (
@@ -67,24 +72,24 @@ async fn memories_list_with_their_project_bot_and_exposure_and_edit_by_id() {
             written.bot_id.as_deref()
         ),
         (true, None, Some(&*bot.id)),
-        "a global memory keeps its writer but is in no project"
+        "a global page keeps its writer but is in no project"
     );
     let global = listed
         .iter()
         .find(|memory| memory.global && memory.bot_id.is_none())
         .unwrap();
-    assert_eq!(
-        (
-            global.project.as_ref(),
-            global.bot_id.as_deref(),
-            &*global.text
-        ),
-        (None, None, "the user is in Tallinn")
-    );
+    assert_eq!(&*global.text, "the user is in Tallinn");
+    let scoped_id = format!("{scope}/uses-pnpm");
     assert_eq!(
         listed.iter().find(|memory| !memory.global),
         Some(&MemoryRecord {
-            id: scoped.into(),
+            id: scoped_id.as_str().into(),
+            name: "uses-pnpm".into(),
+            description: "Package manager".into(),
+            links: vec![crate::wire::MemoryLink {
+                name: "metric-units".into(),
+                target: Some("global/metric-units".into())
+            }],
             harness: HarnessKind::Mobius,
             project: Some(WorkspaceInfo {
                 id: "project-1".into(),
@@ -92,18 +97,18 @@ async fn memories_list_with_their_project_bot_and_exposure_and_edit_by_id() {
             }),
             bot_id: Some(Arc::clone(&bot.id)),
             global: false,
-            text: "uses pnpm".into(),
+            text: "Install with pnpm; see [[metric-units]].".into(),
             updated_at: 5,
             editable: true,
         })
     );
 
-    let edited = gateway.edit_memory(scoped, "uses pnpm 10").await.unwrap();
-    assert!(
-        edited
-            .iter()
-            .any(|memory| &*memory.text == "uses pnpm 10" && !memory.global)
-    );
+    let edited = gateway
+        .edit_memory(&scoped_id, "Package manager and version", "uses pnpm 10")
+        .await
+        .unwrap();
+    assert!(edited.iter().any(|memory| &*memory.text == "uses pnpm 10"
+        && &*memory.description == "Package manager and version"));
     let remaining = gateway.forget_memory(&global.id).await.unwrap();
     assert_eq!(remaining.len(), 2);
     assert_eq!(

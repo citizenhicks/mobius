@@ -465,7 +465,7 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
         transcript_delta: Vec::new(),
         pending_session_start_stop,
         turn_end_turn_id: None,
-        idle_spent: false,
+        idle: crate::middleware::IdleSchedule::default(),
         events: event_tx,
     };
     tokio::spawn(async move {

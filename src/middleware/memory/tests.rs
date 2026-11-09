@@ -1,61 +1,27 @@
 use super::*;
+use crate::agent::{AgentConfig, create_agent};
 use crate::backend::checkpoint::sqlite::SqliteCheckpoint;
-use crate::backend::sandbox::local::LocalSandbox;
-use crate::backend::sandbox::{
-    ApprovalPolicy, NetworkAccess, Sandbox, SandboxMode, SandboxPermissions,
+use crate::backend::model::{Model, ModelEventSink, ModelOutput, ModelRequest, ModelRouter};
+use crate::backend::sandbox::{ApprovalPolicy, Sandbox, local::LocalSandbox};
+use crate::middleware::{
+    CompactContext, MiddlewareStack, compaction::Compaction, messages::Messages, tools::Tools,
 };
-use crate::middleware::tools::{Tool, ToolContext};
-use crate::protocol::Op;
+use crate::protocol::{MessageSubmission, Op as ClientOp};
 
-fn management(arguments: impl Into<String>, input: Option<&str>) -> Op {
-    Op::CapabilityCommand {
-        capability: MANIFEST.id.into(),
-        command: "memory".into(),
-        arguments: arguments.into(),
-        input: input.map(str::to_owned),
-        target: None,
-    }
-}
-
-impl Memory {
-    async fn add_global(&self, memory: &str) -> Result<FrontendContribution> {
-        self.manage(&management("add", Some(memory))).await
-    }
-
-    async fn edit_global(&self, id: &str, memory: &str) -> Result<FrontendContribution> {
-        self.manage(&management(format!("edit {id}"), Some(memory)))
-            .await
-    }
-
-    async fn snapshot(&self) -> Result<Vec<Entry>> {
-        Ok(self.store.load(None).await?.memories)
-    }
-}
-
-fn session_context() -> crate::protocol::SessionContext {
-    crate::protocol::SessionContext {
+fn session_context() -> SessionContext {
+    SessionContext {
         owner_id: "test-bot".into(),
-        ..crate::protocol::SessionContext::default()
+        ..SessionContext::default()
     }
 }
 
 fn owner(bot: &str, project: Option<&str>) -> Arc<MemoryOwner> {
-    Arc::new(MemoryOwner::of(&crate::protocol::SessionContext {
+    Arc::new(MemoryOwner::of(&SessionContext {
         owner_id: bot.into(),
         workspace_id: project.map(str::to_owned),
         workspace_label: project.map(|project| format!("/projects/{project}")),
-        ..crate::protocol::SessionContext::default()
+        ..SessionContext::default()
     }))
-}
-
-fn entry(memory: impl Into<String>) -> Entry {
-    Entry {
-        id: Uuid::new_v4().to_string(),
-        text: memory.into(),
-        basis: Basis::AgentObservation,
-        updated_at: 1,
-        author: None,
-    }
 }
 
 fn store() -> (tempfile::TempDir, Memory) {
@@ -63,150 +29,470 @@ fn store() -> (tempfile::TempDir, Memory) {
     let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
         SqliteCheckpoint::new(temporary.path().join("checkpoints.sqlite3")).expect("checkpoints"),
     );
-    (temporary, Memory::new(checkpoints))
+    let memory = Memory::new(checkpoints, temporary.path().join("memory"));
+    (temporary, memory)
 }
 
-fn tool_context(path: &std::path::Path) -> ToolContext {
-    let sandbox = Arc::new(Sandbox::new(
-        Arc::new(LocalSandbox::new(path).expect("sandbox")),
-        ApprovalPolicy::Ask,
-    ));
-    let permissions = SandboxPermissions::restore(
-        &"session".parse().expect("session ID"),
-        SandboxMode::WorkspaceWrite,
-        NetworkAccess::Allowed,
-        ["memory-call".into()],
-    );
-    ToolContext::new(sandbox, permissions.for_call("memory-call"), "turn")
+fn chat(memory: &Memory) -> Memory {
+    memory
+        .for_chat(|id| (id == "dream_minutes").then_some(&FrontendSettingValue::Integer(1)))
+        .expect("chat memory")
 }
 
-fn writer(memory: &Memory, owner: &Arc<MemoryOwner>) -> WriteMemory {
-    WriteMemory {
-        store: Arc::clone(&memory.store),
-        owner: Arc::clone(owner),
-        frontend: Arc::new(|_| Ok(())),
+fn set(page: &str, global: bool, body: &str, base: Option<u64>) -> Op {
+    Op {
+        page: page.into(),
+        global,
+        change: Change::Set {
+            description: format!("about {page}"),
+            body: body.into(),
+        },
+        base_updated_at: base,
     }
 }
 
-fn visible_texts(partitions: &[Partition; 2]) -> [Vec<&str>; 2] {
-    partitions.each_ref().map(|partition| {
-        partition
-            .memories
-            .iter()
-            .map(|entry| entry.text.as_str())
-            .collect()
-    })
-}
-
-#[tokio::test]
-async fn a_project_label_change_keeps_the_same_memory_scope() {
-    let (_temporary, memory) = store();
-    let original = owner("alpha", Some("one"));
+async fn apply(
+    memory: &Memory,
+    owner: &Arc<MemoryOwner>,
+    ops: Vec<Op>,
+    writer: Writer<'_>,
+) -> Vec<String> {
     let access = memory.store.access.lock().await;
     memory
         .store
-        .write_locked(
-            Some(&original),
-            None,
-            "uses pnpm",
-            Basis::UserConfirmed,
-            &access,
-        )
+        .apply_locked(owner, ops, Basis::AgentObservation, writer, &access)
         .await
-        .expect("save memory");
-    let mut renamed = (*original).clone();
-    renamed.project.as_mut().unwrap().label = Some("Renamed project".into());
-    let visible = memory
-        .store
-        .visible(&Arc::new(renamed))
-        .await
-        .expect("load the same project by its stable id");
+        .expect("apply")
+}
+
+fn names(scopes: &[Scope; 2]) -> [Vec<&str>; 2] {
+    scopes
+        .each_ref()
+        .map(|scope| scope.pages.iter().map(|page| page.name.as_str()).collect())
+}
+
+#[tokio::test]
+async fn pages_stay_with_their_bot_and_project_unless_global() {
+    let (_temporary, memory) = store();
+    let alpha = owner("alpha", Some("one"));
+    apply(
+        &memory,
+        &alpha,
+        vec![
+            set(
+                "uses-pnpm",
+                false,
+                "Install with pnpm; see [[office]].",
+                None,
+            ),
+            set("office", true, "The office is in Tallinn.", None),
+        ],
+        Writer::Chat,
+    )
+    .await;
+    let mut renamed = (*alpha).clone();
+    renamed.project.as_mut().expect("project").label = Some("Renamed".into());
+    for (reader, visible) in [
+        (alpha, [vec!["office"], vec!["uses-pnpm"]]),
+        (Arc::new(renamed), [vec!["office"], vec!["uses-pnpm"]]),
+        (owner("alpha", Some("two")), [vec!["office"], vec![]]),
+        (owner("beta", Some("one")), [vec!["office"], vec![]]),
+    ] {
+        assert_eq!(
+            names(&memory.store.visible(&reader).await.expect("visible")),
+            visible
+        );
+    }
+    let listed = memory.list().await.expect("list");
+    let page = listed
+        .iter()
+        .find(|item| &*item.name == "uses-pnpm")
+        .expect("page");
     assert_eq!(
-        visible_texts(&visible),
-        [Vec::<&str>::new(), vec!["uses pnpm"]]
+        page.links,
+        vec![MemoryLink {
+            name: "office".into(),
+            target: Some("global/office".into())
+        }]
+    );
+    let office = listed
+        .iter()
+        .find(|item| &*item.name == "office")
+        .expect("global");
+    assert!(office.global);
+    assert_eq!(
+        office.owner.as_deref().map(|owner| &*owner.bot),
+        Some("alpha")
     );
 }
 
 #[tokio::test]
-async fn written_memories_stay_with_their_bot_and_project_unless_global() {
+async fn patches_apply_only_against_the_version_they_read() {
     let (temporary, memory) = store();
-    let (alpha, alpha_elsewhere, beta) = (
-        owner("alpha", Some("one")),
-        owner("alpha", Some("two")),
-        owner("beta", Some("one")),
-    );
-    let write = writer(&memory, &alpha);
-    for arguments in [
-        serde_json::json!({"memory": "alpha prefers tabs"}),
-        serde_json::json!({"memory": "the office is in Tallinn", "global": true}),
-    ] {
-        write
-            .call(tool_context(temporary.path()), arguments)
-            .await
-            .expect("write memory");
-    }
-    let store = &memory.store;
-    assert_eq!(
-        visible_texts(&store.visible(&alpha).await.expect("alpha")),
-        [vec!["the office is in Tallinn"], vec!["alpha prefers tabs"]]
-    );
-    for other in [&alpha_elsewhere, &beta] {
-        let visible = store.visible(other).await.expect("other owner");
-        assert_eq!(
-            visible_texts(&visible),
-            [vec!["the office is in Tallinn"], Vec::<&str>::new()]
-        );
-        let empty: &[Arc<serde_json::Value>] = &[];
-        let projection = next_projection(empty.into(), &visible)
-            .expect("projection")
-            .expect("memory context");
-        let text = projection.to_string();
-        assert!(text.contains("the office is in Tallinn") && !text.contains("alpha prefers tabs"));
-    }
-    let private = &store
+    let alpha = owner("alpha", None);
+    let session: SessionId = "session".parse().expect("session ID");
+    let created = apply(
+        &memory,
+        &alpha,
+        vec![set("deploy", false, "make ship", Some(0))],
+        Writer::Chat,
+    )
+    .await;
+    assert!(created[0].starts_with("deploy: applied"), "{created:?}");
+    let version = memory
+        .store
+        .pages
         .load(Some(&alpha))
         .await
-        .expect("alpha scope")
-        .memories[0]
-        .id;
-    let update = writer(&memory, &beta)
-        .call(
-            tool_context(temporary.path()),
-            serde_json::json!({"memory": "beta took it over", "id": private}),
-        )
-        .await;
-    assert!(update.is_err(), "another Bot cannot reach a scoped memory");
-
-    let listed = memory.list().await.expect("list");
-    let summary = listed
-        .iter()
-        .map(|item| {
-            (
-                &*item.text,
-                item.global,
-                item.owner.as_deref() == Some(&*alpha),
-            )
-        })
-        .collect::<Vec<_>>();
+        .expect("load")
+        .pages[0]
+        .updated_at;
+    for op in [
+        set("deploy", false, "again", Some(0)),
+        set("deploy", false, "stale", Some(version - 1)),
+        set("deploy", false, "unversioned", None),
+    ] {
+        let access = memory.store.access.lock().await;
+        assert!(
+            memory
+                .store
+                .apply_locked(
+                    &alpha,
+                    vec![op],
+                    Basis::AgentObservation,
+                    Writer::Dream(&session),
+                    &access
+                )
+                .await
+                .is_err()
+        );
+    }
+    apply(
+        &memory,
+        &alpha,
+        vec![set("deploy", false, "make ship --prod", Some(version))],
+        Writer::Dream(&session),
+    )
+    .await;
+    let page = memory
+        .store
+        .pages
+        .load(Some(&alpha))
+        .await
+        .expect("load")
+        .pages
+        .remove(0);
     assert_eq!(
-        summary,
-        [
-            ("alpha prefers tabs", false, true),
-            ("the office is in Tallinn", true, true),
-        ]
+        (page.body.as_str(), page.updated_at > version),
+        ("make ship --prod", true)
     );
+    let delete = Op {
+        page: "deploy".into(),
+        global: false,
+        change: Change::Delete,
+        base_updated_at: None,
+    };
+    apply(&memory, &alpha, vec![delete], Writer::Chat).await;
+    assert!(
+        memory
+            .store
+            .pages
+            .load(Some(&alpha))
+            .await
+            .expect("load")
+            .pages
+            .is_empty()
+    );
+    let scope = temporary.path().join("memory").join(pages_dir(&alpha));
+    assert_eq!(
+        std::fs::read_dir(scope.join(".trash"))
+            .expect("trash")
+            .count(),
+        2
+    );
+    assert_eq!(
+        std::fs::read_to_string(scope.join("_log.md"))
+            .expect("log")
+            .lines()
+            .count(),
+        3
+    );
+}
+
+fn pages_dir(owner: &MemoryOwner) -> String {
+    Scope {
+        owner: Some(Arc::new(owner.clone())),
+        pages: Vec::new(),
+    }
+    .dir_name()
+    .expect("dir")
+}
+
+#[tokio::test]
+async fn failed_replacement_preserves_the_live_page_and_delete_creates_trash() {
+    let (temporary, memory) = store();
+    let alpha = owner("alpha", None);
+    apply(
+        &memory,
+        &alpha,
+        vec![set("fact", true, "original", None)],
+        Writer::Chat,
+    )
+    .await;
+    let dir = temporary.path().join("memory/global");
+    std::fs::create_dir(dir.join(".fact.md.tmp")).unwrap();
+    assert!(
+        memory
+            .edit("global/fact", "new", "replacement")
+            .await
+            .is_err()
+    );
+    assert_eq!(&*memory.list().await.unwrap()[0].body, "original");
+    assert_eq!(std::fs::read_dir(dir.join(".trash")).unwrap().count(), 0);
+    std::fs::remove_dir(dir.join(".trash")).unwrap();
+    memory.forget("global/fact").await.unwrap();
+    assert!(memory.list().await.unwrap().is_empty());
+    let archived = std::fs::read_dir(dir.join(".trash"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap();
+    assert!(
+        std::fs::read_to_string(archived.path())
+            .unwrap()
+            .contains("original")
+    );
+}
+
+#[tokio::test]
+async fn a_merge_keeps_its_source_until_every_replacement_succeeds() {
+    let (temporary, memory) = store();
+    let alpha = owner("alpha", None);
+    apply(
+        &memory,
+        &alpha,
+        vec![
+            set("keep", true, "old", None),
+            set("source", true, "unique", None),
+        ],
+        Writer::Chat,
+    )
+    .await;
+    let pages = memory.list().await.unwrap();
+    let keep_version = pages
+        .iter()
+        .find(|page| &*page.name == "keep")
+        .unwrap()
+        .updated_at;
+    let source_version = pages
+        .iter()
+        .find(|page| &*page.name == "source")
+        .unwrap()
+        .updated_at;
+    let patch = |base| {
+        vec![
+            Op {
+                page: "source".into(),
+                global: true,
+                change: Change::Delete,
+                base_updated_at: Some(source_version),
+            },
+            set("keep", true, "old and unique", Some(base)),
+        ]
+    };
+    let session: SessionId = "dream".parse().unwrap();
+    let access = memory.store.access.lock().await;
+    assert!(
+        memory
+            .store
+            .apply_locked(
+                &alpha,
+                patch(keep_version - 1),
+                Basis::AgentObservation,
+                Writer::Dream(&session),
+                &access
+            )
+            .await
+            .is_err()
+    );
+    let blocked = temporary.path().join("memory/global/.keep.md.tmp");
+    std::fs::create_dir(&blocked).unwrap();
+    assert!(
+        memory
+            .store
+            .apply_locked(
+                &alpha,
+                patch(keep_version),
+                Basis::AgentObservation,
+                Writer::Dream(&session),
+                &access
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(memory.store.pages.load(None).await.unwrap().pages.len(), 2);
+    std::fs::remove_dir(blocked).unwrap();
+    memory
+        .store
+        .apply_locked(
+            &alpha,
+            patch(keep_version),
+            Basis::AgentObservation,
+            Writer::Dream(&session),
+            &access,
+        )
+        .await
+        .unwrap();
+    let pages = memory.store.pages.load(None).await.unwrap().pages;
+    assert_eq!(pages.len(), 1);
+    assert_eq!(pages[0].body, "old and unique");
+}
+
+#[tokio::test]
+async fn links_and_backlinks_share_scope_resolution_and_keep_dangling_names() {
+    let (_temporary, memory) = store();
+    let alpha = owner("alpha", Some("one"));
+    apply(
+        &memory,
+        &alpha,
+        vec![
+            set("deploy", true, "global", None),
+            set("deploy", false, "project", None),
+            set("guide", false, "[[deploy]] [[deploy]] [[missing]]", None),
+            set("guide", true, "[[deploy]]", None),
+        ],
+        Writer::Chat,
+    )
+    .await;
+    let pages = memory.pages();
+    let scoped: serde_json::Value =
+        serde_json::from_str(&pages.read(&alpha, "deploy", false).await.unwrap()).unwrap();
+    let global: serde_json::Value =
+        serde_json::from_str(&pages.read(&alpha, "deploy", true).await.unwrap()).unwrap();
+    assert_eq!(
+        scoped["backlinks"],
+        serde_json::json!([{"page":"guide", "global":false}])
+    );
+    assert_eq!(
+        global["backlinks"],
+        serde_json::json!([{"page":"guide", "global":true}])
+    );
+    let guide: serde_json::Value =
+        serde_json::from_str(&pages.read(&alpha, "guide", false).await.unwrap()).unwrap();
+    assert_eq!(
+        guide["links"],
+        serde_json::json!([
+            {"name":"deploy", "target":format!("{}/deploy", pages_dir(&alpha))},
+            {"name":"missing", "target":null}
+        ])
+    );
+    let other = pages.documents(&owner("beta", Some("one"))).await.unwrap();
+    assert!(other.iter().all(|page| page.global));
+}
+
+#[tokio::test]
+async fn concurrent_batches_cannot_overfill_a_scope_but_merges_can_reuse_a_slot() {
+    let (temporary, memory) = store();
+    let alpha = owner("alpha", None);
+    let dir = temporary.path().join("memory/global");
+    std::fs::create_dir_all(&dir).unwrap();
+    for index in 0..pages::MAX_PAGES - 1 {
+        std::fs::write(
+            dir.join(format!("page-{index}.md")),
+            "---\ndescription: fact\nbasis: agent_observation\nupdated_at: 1\n---\nbody\n",
+        )
+        .unwrap();
+    }
+    let patch = |name| {
+        let memory = &memory;
+        let alpha = &alpha;
+        async move {
+            let access = memory.store.access.lock().await;
+            memory
+                .store
+                .apply_locked(
+                    alpha,
+                    vec![set(name, true, "new", Some(0))],
+                    Basis::AgentObservation,
+                    Writer::Chat,
+                    &access,
+                )
+                .await
+        }
+    };
+    let (first, second) = tokio::join!(patch("first"), patch("second"));
+    assert_ne!(first.is_ok(), second.is_ok());
+    assert_eq!(memory.list().await.unwrap().len(), pages::MAX_PAGES);
+    apply(
+        &memory,
+        &alpha,
+        vec![
+            set("merged", true, "body and new", Some(0)),
+            Op {
+                page: "page-0".into(),
+                global: true,
+                change: Change::Delete,
+                base_updated_at: Some(1),
+            },
+        ],
+        Writer::Chat,
+    )
+    .await;
+    let pages = memory.list().await.unwrap();
+    assert_eq!(pages.len(), pages::MAX_PAGES);
+    assert!(pages.iter().any(|page| &*page.name == "merged"));
+    assert!(!pages.iter().any(|page| &*page.name == "page-0"));
+}
+
+#[test]
+fn patch_ops_must_set_both_fields_or_delete_alone() {
+    for invalid in [
+        serde_json::json!({"ops": []}),
+        serde_json::json!({"ops": [{"page": "Bad Name", "description": "d", "body": "b"}]}),
+        serde_json::json!({"ops": [{"page": "a", "description": "d"}]}),
+        serde_json::json!({"ops": [{"page": "a", "delete": true, "body": "b"}]}),
+        serde_json::json!({"ops": [{"page": "a", "description": "two\nlines", "body": "b"}]}),
+    ] {
+        assert!(tools::parse_ops(invalid).is_err());
+    }
+    assert_eq!(
+        tools::parse_ops(serde_json::json!({"ops": [{"page": "a-1", "delete": true}]}))
+            .expect("ops"),
+        [Op {
+            page: "a-1".into(),
+            global: false,
+            change: Change::Delete,
+            base_updated_at: None
+        }]
+    );
+}
+
+fn message(text: &str) -> ClientOp {
+    ClientOp::Message {
+        message: MessageSubmission {
+            author: crate::protocol::MessageAuthor::User,
+            text: text.into(),
+            attachments: Vec::new(),
+            reply: None,
+            requested_delivery: None,
+            target_turn_id: None,
+        },
+    }
+}
+
+async fn until_turn_ends(agent: &mut crate::agent::Agent) {
+    loop {
+        if matches!(
+            agent.next_event().await.expect("event").msg,
+            EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)
+        ) {
+            break;
+        }
+    }
 }
 
 #[tokio::test]
 async fn compaction_discards_projections_before_a_post_hook_stops_or_fails() {
-    use crate::agent::{AgentConfig, create_agent};
-    use crate::backend::model::{Model, ModelEventSink, ModelOutput, ModelRequest, ModelRouter};
-    use crate::backend::sandbox::{ApprovalPolicy, Sandbox, local::LocalSandbox};
-    use crate::middleware::{
-        CompactContext, MiddlewareStack, compaction::Compaction, messages::Messages, tools::Tools,
-    };
-    use crate::protocol::MessageSubmission;
-
     struct CheckpointWriter(std::sync::atomic::AtomicBool);
     impl Model for CheckpointWriter {
         fn respond<'a>(
@@ -258,12 +544,21 @@ async fn compaction_discards_projections_before_a_post_hook_stops_or_fails() {
 
     for fail in [false, true] {
         let (temporary, store) = store();
-        store.add_global("remember this").await.expect("memory");
+        store
+            .manage(&ClientOp::CapabilityCommand {
+                capability: MANIFEST.id.into(),
+                command: "memory".into(),
+                arguments: "add".into(),
+                input: Some("remember this".into()),
+                target: None,
+            })
+            .await
+            .expect("memory");
         let middleware = MiddlewareStack::new(vec![
             Arc::new(Messages::default()),
             Arc::new(Tools::new(Vec::new())),
             Arc::new(StopAfterCompact(fail)),
-            Arc::new(store.for_chat()),
+            Arc::new(chat(&store)),
             Arc::new(Compaction::new(1).expect("compaction")),
         ])
         .expect("middleware");
@@ -286,31 +581,10 @@ async fn compaction_discards_projections_before_a_post_hook_stops_or_fails() {
         )
         .await
         .expect("agent");
-        agent
-            .sender()
-            .submit(Op::Message {
-                message: MessageSubmission {
-                    author: crate::protocol::MessageAuthor::User,
-                    text: "hello".into(),
-                    attachments: Vec::new(),
-                    reply: None,
-                    requested_delivery: None,
-                    target_turn_id: None,
-                },
-            })
-            .expect("submit");
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            loop {
-                if matches!(
-                    agent.next_event().await.expect("event").msg,
-                    EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)
-                ) {
-                    break;
-                }
-            }
-        })
-        .await
-        .expect("terminal event");
+        agent.sender().submit(message("hello")).expect("submit");
+        tokio::time::timeout(Duration::from_secs(5), until_turn_ends(&mut agent))
+            .await
+            .expect("terminal event");
         let checkpoint = store
             .store
             .checkpoints
@@ -329,53 +603,109 @@ async fn compaction_discards_projections_before_a_post_hook_stops_or_fails() {
     }
 }
 
-#[tokio::test]
-async fn scope_budget_rejects_oversized_writes_and_edits_without_changing_state() {
-    let (_temporary, store) = store();
-    for i in 0..3 {
-        store
-            .add_global(&format!("{i}{}", "x".repeat(499)))
-            .await
-            .expect("bounded memory");
+#[tokio::test(start_paused = true)]
+async fn an_idle_chat_dreams_its_new_transcript_into_pages_once() {
+    struct Dreamer {
+        calls: std::sync::atomic::AtomicUsize,
+        start: std::sync::Mutex<Option<tokio::time::Instant>>,
     }
-    store.add_global("short").await.expect("small memory");
-    let before = store.snapshot().await.expect("before");
-    assert!(store.add_global(&"y".repeat(500)).await.is_err());
-    assert!(
-        store
-            .edit_global(&before[3].id, &"z".repeat(500))
-            .await
-            .is_err()
-    );
-    assert_eq!(store.snapshot().await.expect("unchanged"), before);
-    assert!(store.add_global("").await.is_err());
-    assert!(store.add_global(&"é".repeat(251)).await.is_err());
-    let escaped = vec![entry(format!("a{}b", "\u{0001}".repeat(400)))];
-    assert!(
-        validate_scope_budget(&escaped).is_err(),
-        "JSON escaping counts toward the visible budget"
-    );
-}
-
-#[tokio::test]
-async fn concurrent_writes_preserve_every_accepted_memory_and_the_count_limit() {
-    let (_temporary, store) = store();
-    let store = Arc::new(store);
-    let writes = (0..MAX_MEMORIES + 5)
-        .map(|i| {
-            let store = Arc::clone(&store);
-            tokio::spawn(async move { store.add_global(&format!("memory {i}")).await })
-        })
-        .collect::<Vec<_>>();
-    let mut accepted = 0;
-    for write in writes {
-        if write.await.expect("write task").is_ok() {
-            accepted += 1;
+    struct EarlierTimer(std::sync::atomic::AtomicUsize);
+    impl Middleware for EarlierTimer {
+        fn name(&self) -> &'static str {
+            "earlier_timer"
+        }
+        fn idle_after(&self, _: &SessionId) -> Option<Duration> {
+            Some(Duration::from_secs(10))
+        }
+        fn idle<'a>(&'a self, _: &'a mut ModelContext<'_>) -> BoxFuture<'a, Result<()>> {
+            Box::pin(async move {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok(())
+            })
         }
     }
-    assert_eq!(accepted, MAX_MEMORIES);
-    assert_eq!(
-        store.snapshot().await.expect("snapshot").len(),
-        MAX_MEMORIES
-    );
+    impl Model for Dreamer {
+        fn respond<'a>(
+            &'a self,
+            request: ModelRequest<'a>,
+            _events: ModelEventSink,
+        ) -> BoxFuture<'a, Result<ModelOutput>> {
+            Box::pin(async move {
+                if request.instructions != text::DEFINITION.prompt_dream {
+                    *self.start.lock().unwrap() = Some(tokio::time::Instant::now());
+                    return ModelOutput::from_output(Vec::new(), true, Default::default());
+                }
+                assert!(self.start.lock().unwrap().unwrap().elapsed() >= Duration::from_secs(60));
+                self.calls
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                assert!(matches!(request.tools, [tool] if tool.name == "patch_memory"));
+                let prompt = request.input.iter().next().expect("prompt").to_string();
+                assert!(prompt.contains("we deploy with make ship"), "{prompt}");
+                ModelOutput::from_output(
+                    vec![serde_json::json!({
+                        "type": "function_call",
+                        "call_id": "dream",
+                        "name": "patch_memory",
+                        "arguments": serde_json::json!({"ops": [{
+                            "page": "deploy", "description": "How this project deploys",
+                            "body": "Run `make ship`.", "base_updated_at": 0
+                        }]}).to_string()
+                    })],
+                    false,
+                    Default::default(),
+                )
+            })
+        }
+    }
+
+    let (temporary, store) = store();
+    let model = Arc::new(Dreamer {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        start: std::sync::Mutex::new(None),
+    });
+    let earlier = Arc::new(EarlierTimer(std::sync::atomic::AtomicUsize::new(0)));
+    let middleware = MiddlewareStack::new(vec![
+        Arc::new(Messages::default()),
+        Arc::new(Tools::new(Vec::new())),
+        Arc::new(chat(&store)),
+        Arc::clone(&earlier) as Arc<dyn Middleware>,
+    ])
+    .expect("middleware");
+    let mut agent = create_agent(
+        AgentConfig::new(
+            Arc::new(ModelRouter::new(
+                "model",
+                Arc::clone(&model) as Arc<dyn Model>,
+            )),
+            Arc::new(Sandbox::new(
+                Arc::new(LocalSandbox::new(temporary.path()).expect("sandbox")),
+                ApprovalPolicy::Ask,
+            )),
+            Arc::clone(&store.store.checkpoints),
+            middleware,
+            "test",
+        )
+        .session_id("session".parse().expect("session ID"))
+        .session_context(session_context()),
+    )
+    .await
+    .expect("agent");
+    agent
+        .sender()
+        .submit(message("we deploy with make ship"))
+        .expect("submit");
+    // Each subscriber runs once at its own deadline, without another user turn.
+    for _ in 0..3 {
+        tokio::time::timeout(Duration::from_secs(3600), until_turn_ends(&mut agent))
+            .await
+            .expect("turn");
+    }
+    let pages = store
+        .store
+        .visible(&owner("test-bot", None))
+        .await
+        .expect("visible");
+    assert_eq!(pages[1].pages[0].body, "Run `make ship`.");
+    assert_eq!(model.calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+    assert_eq!(earlier.0.load(std::sync::atomic::Ordering::Relaxed), 1);
 }

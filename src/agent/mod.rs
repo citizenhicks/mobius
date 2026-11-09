@@ -846,7 +846,7 @@ struct Runner {
     transcript_delta: Vec<Arc<Value>>,
     pending_session_start_stop: Option<String>,
     turn_end_turn_id: Option<Arc<str>>,
-    idle_spent: bool,
+    idle: crate::middleware::IdleSchedule,
     events: EventRecorder,
 }
 
@@ -891,17 +891,15 @@ impl Runner {
                 .middleware
                 .next_turn(&mut self.state.make_mut().pending_messages)?
             {
-                self.idle_spent = false;
                 let submission_id = Arc::clone(&message.submission_id);
                 if let Err(error) = self.start_message_turn(&mut inbox, message).await {
                     self.fail_turn(&submission_id, error).await?;
                 }
                 continue;
             }
-            let idle_at = (!self.idle_spent)
-                .then(|| self.config.middleware.idle_after(&self.runtime.session_id))
-                .flatten()
-                .map(|after| tokio::time::Instant::now() + after);
+            let idle_at = self
+                .idle
+                .deadline(&self.config.middleware, &self.runtime.session_id);
             let submission = tokio::select! {
                 biased;
                 submission = inbox.recv() => {
@@ -911,7 +909,6 @@ impl Runner {
                     submission
                 }
                 () = idle_deadline(idle_at) => {
-                    self.idle_spent = true;
                     self.run_idle_turn(&mut inbox).await?;
                     continue;
                 }

@@ -288,6 +288,9 @@ async fn a_steered_idle_turn_publishes_normal_activity_and_hooks_without_an_extr
                         TokenUsage::default(),
                     );
                 }
+                if request.tools.iter().any(|tool| tool.name == "patch_memory") {
+                    return ModelOutput::from_output(Vec::new(), true, TokenUsage::default());
+                }
                 if self.answers.fetch_add(1, Ordering::Relaxed) > 0 {
                     self.answering.notify_one();
                     self.release_answer.notified().await;

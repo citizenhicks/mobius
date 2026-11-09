@@ -21,10 +21,9 @@ mobius-gateway --state-dir /srv/agent/state serve
 `print-default-config` prints complete default TOML without creating state or exposing
 credentials. Optional paths are omitted until configured. New operator sections use
 Serde defaults allow omitted operator sections to use their documented defaults.
-Unknown fields fail, so typos cannot silently select defaults. Configuration version
-28 stores complete model records per editable provider setup. Upgrade version 26 or 27 offline
-with the [portable upgrade tool](../../scripts/README-portable-upgrade.md) before
-starting this gateway; incompatible files are rejected without rewriting them.
+Unknown fields fail, so typos cannot silently select defaults. The current configuration
+version is 29. The gateway does not migrate older files: it rejects them without rewriting
+them.
 
 ## Execution and capacity
 

@@ -11,6 +11,7 @@ use super::Middleware;
 use super::MiddlewareCommandContext;
 use super::MiddlewareCommandOutput;
 use super::RuntimeContext;
+use super::memory::{MemoryOwner, MemoryPages};
 use super::tools::{Catalog, ExecutionMode, Tool, ToolContext, rank_bm25};
 use crate::BoxFuture;
 use crate::Error;
@@ -41,8 +42,8 @@ mod text {
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     pub(super) struct Definition {
-        pub(super) read_history: crate::middleware::tools::ToolSpec,
-        pub(super) search_history: crate::middleware::tools::ToolSpec,
+        pub(super) read_memory: crate::middleware::tools::ToolSpec,
+        pub(super) search_memory: crate::middleware::tools::ToolSpec,
         pub(super) message_chat: crate::middleware::tools::ToolSpec,
         pub(super) list_chats: crate::middleware::tools::ToolSpec,
         #[serde(deserialize_with = "crate::middleware::manifest::deserialize_settings")]
@@ -80,10 +81,11 @@ const MAX_HISTORY_SCAN_CHARS: usize = 64_000;
 const HISTORY_CHUNK_CHARS: usize = 8_000;
 const HISTORY_EXCERPT_CHARS: usize = 600;
 const MAX_HISTORY_READ_CHARS: usize = 4_000;
+const MAX_PAGE_RESULTS: usize = 4;
 
 fn limit_schema(definition: &mut text::Definition) {
     super::tools::limit_schema(
-        &mut definition.search_history.tool,
+        &mut definition.search_memory.tool,
         [
             (
                 "/properties/query",
@@ -98,7 +100,7 @@ fn limit_schema(definition: &mut text::Definition) {
         ],
     );
     super::tools::limit_schema(
-        &mut definition.read_history.tool,
+        &mut definition.read_memory.tool,
         [(
             "/properties/max_chars",
             "maximum",
@@ -209,6 +211,7 @@ pub struct Sessions {
     page_size: usize,
     files: Option<Arc<crate::backend::session_files::SessionFileStore>>,
     live_chats: Option<Arc<dyn LiveChats>>,
+    pages: Option<MemoryPages>,
 }
 
 impl Sessions {
@@ -225,7 +228,15 @@ impl Sessions {
             page_size: page_size.get(),
             files,
             live_chats,
+            pages: None,
         }
+    }
+
+    /// Lets `search_memory` and `read_memory` reach the chat's visible memory pages too.
+    #[must_use]
+    pub fn memory_pages(mut self, pages: MemoryPages) -> Self {
+        self.pages = Some(pages);
+        self
     }
 }
 
@@ -269,9 +280,15 @@ impl Middleware for Sessions {
             checkpoints: Arc::clone(&runtime.checkpoints),
             session_id: runtime.session_id.share(),
             owner_id: Arc::clone(&runtime.session_context.owner_id),
+            pages: self.pages.as_ref().map(|pages| {
+                (
+                    pages.share(),
+                    Arc::new(MemoryOwner::of(&runtime.session_context)),
+                )
+            }),
         });
-        catalog.register(Arc::new(SearchHistory(Arc::clone(&history))))?;
-        catalog.register(Arc::new(ReadHistory(Arc::clone(&history))))?;
+        catalog.register(Arc::new(SearchMemory(Arc::clone(&history))))?;
+        catalog.register(Arc::new(ReadMemory(Arc::clone(&history))))?;
         let (Some(chats), crate::agent::AgentRole::Main) = (&self.live_chats, &runtime.role) else {
             return Ok(());
         };
@@ -334,8 +351,8 @@ impl Middleware for Sessions {
 
     fn render(&self, event: &EventMsg, _session_id: &str) -> Option<FrontendBlock> {
         [
-            &text::DEFINITION.read_history,
-            &text::DEFINITION.search_history,
+            &text::DEFINITION.read_memory,
+            &text::DEFINITION.search_memory,
             &text::DEFINITION.message_chat,
             &text::DEFINITION.list_chats,
         ]
@@ -359,8 +376,11 @@ impl Middleware for Sessions {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum HistoryScope {
+    /// Memory pages, then every chat of this owner, newest first.
     #[default]
-    Current,
+    All,
+    Pages,
+    ThisChat,
     OtherChats,
 }
 
@@ -376,8 +396,11 @@ struct SearchHistoryArgs {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ReadHistoryArgs {
+    page: Option<String>,
+    #[serde(default)]
+    global: bool,
     session_id: Option<SessionId>,
-    target: MessageTarget,
+    target: Option<MessageTarget>,
     #[serde(default)]
     offset: usize,
     #[serde(default = "default_read_chars")]
@@ -421,10 +444,11 @@ struct History {
     checkpoints: Arc<dyn crate::backend::checkpoint::CheckpointStore>,
     session_id: SessionId,
     owner_id: Arc<str>,
+    pages: Option<(MemoryPages, Arc<MemoryOwner>)>,
 }
 
-struct SearchHistory(Arc<History>);
-struct ReadHistory(Arc<History>);
+struct SearchMemory(Arc<History>);
+struct ReadMemory(Arc<History>);
 
 struct OpenChats {
     history: Arc<History>,
@@ -542,9 +566,9 @@ impl Tool for MessageChat {
     }
 }
 
-impl Tool for SearchHistory {
+impl Tool for SearchMemory {
     fn definition(&self) -> &Arc<ToolDefinition> {
-        &text::DEFINITION.search_history.tool
+        &text::DEFINITION.search_memory.tool
     }
 
     fn read_only(&self) -> bool {
@@ -569,9 +593,9 @@ impl Tool for SearchHistory {
     }
 }
 
-impl Tool for ReadHistory {
+impl Tool for ReadMemory {
     fn definition(&self) -> &Arc<ToolDefinition> {
-        &text::DEFINITION.read_history.tool
+        &text::DEFINITION.read_memory.tool
     }
 
     fn read_only(&self) -> bool {
@@ -635,13 +659,16 @@ impl History {
                 scope: arguments.scope,
                 query: query.into(),
                 catalog: None,
-                session_id: (arguments.scope == HistoryScope::Current)
+                session_id: (arguments.scope == HistoryScope::ThisChat)
                     .then(|| self.session_id.share()),
                 before_sequence: None,
                 remaining_items: None,
                 offset: 0,
             });
         };
+        if arguments.scope == HistoryScope::Pages {
+            return Err(Error::Tool("page results have no cursor".into()));
+        }
         if value.len() > MAX_HISTORY_CURSOR_BYTES {
             return Err(Error::Tool("history cursor is too large".into()));
         }
@@ -651,7 +678,7 @@ impl History {
             || cursor.remaining_items == Some(0)
             || (cursor.remaining_items.is_some() && cursor.before_sequence.is_none())
             || (cursor.remaining_items.is_none() && cursor.offset != 0)
-            || (cursor.scope == HistoryScope::Current
+            || (cursor.scope == HistoryScope::ThisChat
                 && (cursor.session_id.as_ref() != Some(&self.session_id)
                     || cursor.catalog.is_some()))
             || (cursor.scope == HistoryScope::OtherChats
@@ -670,8 +697,46 @@ impl History {
         Ok(cursor)
     }
 
+    /// The best visible memory pages for `query`; they rank above every chat hit.
+    async fn search_pages(&self, query: &str) -> Result<Vec<Value>> {
+        let Some((pages, owner)) = &self.pages else {
+            return Ok(Vec::new());
+        };
+        let documents = pages.documents(owner).await?;
+        let searchable = documents.iter().map(|document| {
+            format!(
+                "{} {} {}",
+                document.name.replace('-', " "),
+                document.description,
+                document.body
+            )
+        });
+        Ok(rank_bm25(searchable, query, MAX_PAGE_RESULTS)
+            .into_iter()
+            .filter_map(|index| documents.get(index))
+            .map(|document| {
+                serde_json::json!({
+                    "page": document.name, "global": document.global,
+                    "description": document.description, "updated_at": document.updated_at,
+                    "excerpt": history_excerpt(&document.body, query).1, "links": document.links,
+                })
+            })
+            .collect())
+    }
+
     async fn search(&self, arguments: SearchHistoryArgs) -> Result<String> {
+        let first = arguments.cursor.is_none();
         let mut cursor = self.cursor(arguments)?;
+        let pages = if first && matches!(cursor.scope, HistoryScope::All | HistoryScope::Pages) {
+            self.search_pages(&cursor.query).await?
+        } else {
+            Vec::new()
+        };
+        if cursor.scope == HistoryScope::Pages {
+            return Ok(serde_json::to_string(&serde_json::json!({
+                "pages": pages, "hits": [], "next_cursor": null,
+            }))?);
+        }
         if let Some(session_id) = &cursor.session_id {
             self.authorize(session_id).await?;
         }
@@ -694,7 +759,7 @@ impl History {
             let session_id = session_id.share();
             let page = self.page(&session_id, cursor.before_sequence).await?;
             let Some(batch) = page.batches.into_iter().next() else {
-                if cursor.scope == HistoryScope::Current {
+                if cursor.scope == HistoryScope::ThisChat {
                     complete = true;
                     break;
                 }
@@ -737,7 +802,7 @@ impl History {
             .then(|| serde_json::to_string(&cursor))
             .transpose()?;
         Ok(serde_json::to_string(&serde_json::json!({
-            "hits": hits, "next_cursor": next_cursor,
+            "pages": pages, "hits": hits, "next_cursor": next_cursor,
             "scanned_items": scanned_items, "scanned_chars": scanned_chars,
         }))?)
     }
@@ -764,13 +829,27 @@ impl History {
             sequence: summary.sequence,
             session_id: summary.session_id.share(),
         });
-        if summary.session_id != self.session_id {
+        if cursor.scope == HistoryScope::All || summary.session_id != self.session_id {
             cursor.session_id = Some(summary.session_id);
         }
         Ok(true)
     }
 
     async fn read(&self, arguments: ReadHistoryArgs) -> Result<String> {
+        let target = match (arguments.page.as_deref(), arguments.target) {
+            (Some(page), None) if arguments.session_id.is_none() => {
+                let Some((pages, owner)) = &self.pages else {
+                    return Err(Error::Tool("memory pages are off for this chat".into()));
+                };
+                return pages.read(owner, page, arguments.global).await;
+            }
+            (None, Some(target)) => target,
+            _ => {
+                return Err(Error::Tool(
+                    "read either a page, or a history target from search_memory".into(),
+                ));
+            }
+        };
         if arguments.max_chars == 0 || arguments.max_chars > MAX_HISTORY_READ_CHARS {
             return Err(Error::Tool(format!(
                 "max_chars must be 1–{MAX_HISTORY_READ_CHARS}"
@@ -778,8 +857,7 @@ impl History {
         }
         let session_id = arguments.session_id.as_ref().unwrap_or(&self.session_id);
         self.authorize(session_id).await?;
-        let before_sequence = arguments
-            .target
+        let before_sequence = target
             .checkpoint_sequence
             .checked_add(1)
             .ok_or_else(|| Error::Tool("history target sequence is too large".into()))?;
@@ -788,15 +866,15 @@ impl History {
         let item = page
             .batches
             .first()
-            .filter(|batch| batch.sequence == arguments.target.checkpoint_sequence)
-            .and_then(|batch| batch.items.get(arguments.target.batch_item_count.get() - 1))
+            .filter(|batch| batch.sequence == target.checkpoint_sequence)
+            .and_then(|batch| batch.items.get(target.batch_item_count.get() - 1))
             .and_then(history_text)
             .ok_or_else(|| {
                 Error::Tool("history target is not a readable transcript item".into())
             })?;
         let (content, next_offset) = history_chunk(&item.1, arguments.offset, arguments.max_chars)?;
         Ok(serde_json::to_string(&serde_json::json!({
-            "session_id": session_id, "target": arguments.target, "kind": item.0,
+            "session_id": session_id, "target": target, "kind": item.0,
             "offset": arguments.offset, "text": content, "next_offset": next_offset,
         }))?)
     }
@@ -872,7 +950,7 @@ fn scan_history_batch(
     Ok(())
 }
 
-fn history_text(item: &Value) -> Option<(&'static str, Cow<'_, str>)> {
+pub(crate) fn history_text(item: &Value) -> Option<(&'static str, Cow<'_, str>)> {
     if let Some(message) = crate::protocol::message_metadata(item) {
         return Some(match message.author {
             crate::protocol::MessageAuthor::User => {
@@ -1358,6 +1436,7 @@ mod tests {
             ),
             session_id: "current".parse().expect("session ID"),
             owner_id: "researcher".into(),
+            pages: None,
         }
     }
 
@@ -1403,7 +1482,7 @@ mod tests {
         let hit = loop {
             let page: Value = serde_json::from_str(
                 &history
-                    .search(search_args("needle", HistoryScope::Current, cursor))
+                    .search(search_args("needle", HistoryScope::ThisChat, cursor))
                     .await
                     .expect("search"),
             )
@@ -1443,8 +1522,10 @@ mod tests {
             let page: Value = serde_json::from_str(
                 &history
                     .read(ReadHistoryArgs {
+                        page: None,
+                        global: false,
                         session_id: None,
-                        target,
+                        target: Some(target),
                         offset,
                         max_chars: 4_000,
                     })
@@ -1462,11 +1543,13 @@ mod tests {
         let calls: Value = serde_json::from_str(
             &history
                 .read(ReadHistoryArgs {
+                    page: None,
+                    global: false,
                     session_id: None,
-                    target: MessageTarget {
+                    target: Some(MessageTarget {
                         checkpoint_sequence: 1,
                         batch_item_count: std::num::NonZeroUsize::new(2).unwrap(),
-                    },
+                    }),
                     offset: 0,
                     max_chars: 4_000,
                 })
@@ -1493,7 +1576,7 @@ mod tests {
         .await;
         let first: Value = serde_json::from_str(
             &history
-                .search(search_args("needle", HistoryScope::Current, None))
+                .search(search_args("needle", HistoryScope::ThisChat, None))
                 .await
                 .expect("first page"),
         )
@@ -1504,7 +1587,7 @@ mod tests {
             &history
                 .search(search_args(
                     "needle",
-                    HistoryScope::Current,
+                    HistoryScope::ThisChat,
                     Some(first["next_cursor"].as_str().expect("cursor").into()),
                 ))
                 .await
@@ -1517,6 +1600,64 @@ mod tests {
                 .expect("late match")
                 .contains("needle after the scan limit")
         );
+    }
+
+    #[tokio::test]
+    async fn search_memory_ranks_pages_above_every_chat_hit_and_reads_a_page() {
+        let state = tempfile::tempdir().expect("state");
+        let mut history = history_store(&state.path().join("history.sqlite3"));
+        let memory = super::super::memory::Memory::new(
+            Arc::clone(&history.checkpoints),
+            state.path().join("memory"),
+        );
+        memory
+            .manage(&Op::CapabilityCommand {
+                capability: super::super::memory::MANIFEST.id.into(),
+                command: "memory".into(),
+                arguments: "add".into(),
+                input: Some("Deploy needle: run make ship".into()),
+                target: None,
+            })
+            .await
+            .expect("page");
+        history.pages = Some((
+            memory.pages(),
+            Arc::new(MemoryOwner {
+                bot: "researcher".into(),
+                project: None,
+            }),
+        ));
+        save_history(
+            history.checkpoints.as_ref(),
+            "current",
+            "researcher",
+            vec![crate::backend::model::user_message("needle in this chat")],
+        )
+        .await;
+        let result: Value = serde_json::from_str(
+            &history
+                .search(search_args("needle", HistoryScope::All, None))
+                .await
+                .expect("search"),
+        )
+        .expect("result");
+        assert_eq!(result["pages"][0]["page"], "deploy-needle-run-make-ship");
+        assert_eq!(result["hits"][0]["session_id"], "current");
+        let page: Value = serde_json::from_str(
+            &history
+                .read(ReadHistoryArgs {
+                    page: Some("deploy-needle-run-make-ship".into()),
+                    global: true,
+                    session_id: None,
+                    target: None,
+                    offset: 0,
+                    max_chars: 100,
+                })
+                .await
+                .expect("read page"),
+        )
+        .expect("page");
+        assert_eq!(page["body"], "Deploy needle: run make ship");
     }
 
     #[tokio::test]
@@ -1540,7 +1681,7 @@ mod tests {
             .await;
         }
         for (scope, expected) in [
-            (HistoryScope::Current, "current"),
+            (HistoryScope::ThisChat, "current"),
             (HistoryScope::OtherChats, prior.as_str()),
         ] {
             let result: Value = serde_json::from_str(
@@ -1561,8 +1702,10 @@ mod tests {
         assert!(
             history
                 .read(ReadHistoryArgs {
+                    page: None,
+                    global: false,
                     session_id: Some(prior.parse().expect("session ID")),
-                    target,
+                    target: Some(target),
                     offset: 0,
                     max_chars: 100
                 })
@@ -1572,8 +1715,10 @@ mod tests {
         assert!(
             history
                 .read(ReadHistoryArgs {
+                    page: None,
+                    global: false,
                     session_id: Some("private".parse().expect("session ID")),
-                    target,
+                    target: Some(target),
                     offset: 0,
                     max_chars: 100
                 })
@@ -1599,7 +1744,7 @@ mod tests {
             history
                 .search(search_args(
                     "needle",
-                    HistoryScope::Current,
+                    HistoryScope::ThisChat,
                     Some(serde_json::to_string(&forged).expect("cursor json"))
                 ))
                 .await

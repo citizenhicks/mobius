@@ -1,36 +1,43 @@
-//! Durable memories: one concise fact each, owned by the Bot that wrote it in one project, or
-//! global for every Bot in every project.
+//! Durable memory: a small wiki of linked Markdown pages, owned by the Bot that wrote it in one
+//! project, or global for every Bot in every project. Chats see each scope's index; page bodies
+//! are read on demand. While a chat sits idle, memory "dreams": it distills the chat's new
+//! transcript into pages and tidies them, the way compaction runs on the same idle timer.
 
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
-use uuid::Uuid;
 
 use super::tools::Catalog;
 use super::{
     ActiveCommandContext, Middleware, MiddlewareCommandContext, MiddlewareCommandOutput,
     ModelContext, PromptSection, RuntimeContext, SessionStartContext, SessionStartSource,
-    SubmissionResult,
+    SubmissionResult, TurnEndContext,
 };
 use crate::backend::checkpoint::CheckpointStore;
 use crate::protocol::{
-    EventMsg, FrontendBlock, FrontendCommand, FrontendContribution, FrontendTone, SessionContext,
+    EventMsg, FrontendBlock, FrontendCommand, FrontendContribution, FrontendSettingValue,
+    FrontendTone, SessionContext,
 };
-use crate::{BoxFuture, Error, Result};
+use crate::{BoxFuture, Error, Result, SessionId};
 
 mod text {
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     pub(super) struct Definition {
-        pub(super) write_memory: crate::middleware::tools::ToolSpec,
-        pub(super) forget_memory: crate::middleware::tools::ToolSpec,
+        pub(super) patch_memory: crate::middleware::tools::ToolSpec,
+        #[serde(deserialize_with = "crate::middleware::manifest::deserialize_settings")]
+        pub(super) settings: Vec<crate::middleware::manifest::MiddlewareSettingManifest>,
         pub(super) prompt_projection_header: String,
         pub(super) prompt_projection_global: String,
         pub(super) prompt_projection_owner: String,
         pub(super) prompt_projection_empty: String,
+        pub(super) prompt_projection_more: String,
         pub(super) prompt_projection_footer: String,
+        pub(super) prompt_dream: String,
         pub(super) default_enabled: bool,
         pub(super) action_add_global: String,
         pub(super) action_delete: String,
@@ -42,22 +49,19 @@ mod text {
         pub(super) editor_global_title: String,
         pub(super) editor_label: String,
         pub(super) editor_submit: String,
-        pub(super) error_duplicate: String,
-        pub(super) error_global_update: String,
+        pub(super) error_exists: String,
         pub(super) error_management: String,
         pub(super) error_missing: String,
-        pub(super) error_memory_count: String,
-        pub(super) error_memory_length: String,
-        pub(super) error_scope_budget: String,
+        pub(super) error_page_count: String,
         pub(super) manifest_description: String,
         pub(super) manifest_label: String,
         pub(super) message_added: String,
         pub(super) message_agent_observation: String,
-        pub(super) message_existing: String,
         pub(super) message_forgot: String,
         pub(super) message_global_heading: String,
         pub(super) message_no_project: String,
         pub(super) message_no_memories: String,
+        pub(super) message_patched: String,
         pub(super) message_updated: String,
         pub(super) message_user_confirmed: String,
         pub(super) prompt_main: String,
@@ -66,34 +70,49 @@ mod text {
     }
     crate::embedded_config! { pub(super) static DEFINITION: Definition = include_str!("memory.toml") => super::limit_schema; }
 }
+mod dream;
+mod pages;
 mod presentation;
 mod projection;
 mod tools;
 
+use pages::{Page, Pages, Scope};
 use presentation::{format_snapshot, publish_widgets, surface_widgets, usage, widget_events};
-use projection::is_projection_item;
-use projection::next_projection;
-use tools::{ForgetMemory, WriteMemory};
+use projection::{is_projection_item, next_projection};
+use tools::PatchMemory;
 
-const SCOPE: &str = "memory";
+const GLOBAL_DIR: &str = "global";
 const GLOBAL_KEY: &str = "global";
-const MAX_MEMORIES: usize = 20;
-const MAX_MEMORY_BYTES: usize = 500;
+const PROJECTION_KIND: &str = "memory";
+const MAX_OPS: usize = 32;
 
 fn limit_schema(definition: &mut text::Definition) {
     super::tools::limit_schema(
-        &mut definition.write_memory.tool,
-        [("/properties/memory", "maxLength", MAX_MEMORY_BYTES.into())],
+        &mut definition.patch_memory.tool,
+        [
+            ("/properties/ops", "maxItems", MAX_OPS.into()),
+            (
+                "/properties/ops/items/properties/page",
+                "maxLength",
+                pages::MAX_NAME_BYTES.into(),
+            ),
+            (
+                "/properties/ops/items/properties/description",
+                "maxLength",
+                pages::MAX_DESCRIPTION_BYTES.into(),
+            ),
+            (
+                "/properties/ops/items/properties/body",
+                "maxLength",
+                pages::MAX_BODY_BYTES.into(),
+            ),
+        ],
     );
 }
-// Two full scopes with their ids, plus the headers.
-const MAX_INJECTION_BYTES: usize = 8 * 1024;
-const MAX_SCOPE_BYTES: usize = 1_900;
-const PROJECTION_KIND: &str = "memory";
 
 super::manifest::middleware_manifest! {
-/// Configuration and presentation metadata for durable memories.
-    "memory", text::DEFINITION, required: false, settings: &[]
+/// Configuration and presentation metadata for durable memory.
+    "memory", text::DEFINITION, required: false, settings: &text::DEFINITION.settings
 }
 
 /// The project a memory belongs to: the workspace of the chat that wrote it.
@@ -130,59 +149,56 @@ impl MemoryOwner {
     }
 }
 
-/// One saved memory, as a host lists it.
+/// A wiki link resolved by memory's scope rules, shared by tools and frontends.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryLink {
+    /// The name written inside `[[name]]`.
+    pub name: Arc<str>,
+    /// The target page id, or `None` when no visible page has that name.
+    pub target: Option<Arc<str>>,
+}
+
+/// One saved page, as a host lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryItem {
-    /// The identifier.
+    /// The identifier, `<scope>/<name>`, unique across every scope.
     pub id: Arc<str>,
-    /// The memory.
-    pub text: Arc<str>,
+    /// The page name other pages link to with `[[name]]`.
+    pub name: Arc<str>,
+    /// One line on what the page covers.
+    pub description: Arc<str>,
+    /// The Markdown body.
+    pub body: Arc<str>,
+    /// Links resolved within this page's scope, then the global scope.
+    pub links: Vec<MemoryLink>,
     /// Visible to every Bot in every project rather than only to `owner`.
     pub global: bool,
-    /// The Bot and project that own it; a global memory's writer, when a chat wrote it.
+    /// The Bot and project that own it; a global page's writer, when a chat wrote it.
     pub owner: Option<Arc<MemoryOwner>>,
     /// Unix seconds of the last write.
     pub updated_at: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Entry {
-    id: String,
-    text: String,
-    basis: Basis,
-    updated_at: u64,
-    // The chat that wrote a global memory; scoped memories belong to their scope's owner.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    author: Option<Arc<MemoryOwner>>,
-}
-
-// Declaration order is strength order: a stronger basis replaces a weaker one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+// Declaration order is strength order: a stronger basis survives a weaker rewrite.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Basis {
     AgentObservation,
     UserConfirmed,
 }
 
-/// One stored scope: every memory of one owner, or the global memories.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Partition {
-    owner: Option<Arc<MemoryOwner>>,
-    memories: Vec<Entry>,
-}
-
-impl Partition {
-    const fn empty(owner: Option<Arc<MemoryOwner>>) -> Self {
-        Self {
-            owner,
-            memories: Vec::new(),
+impl Basis {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::AgentObservation => "agent_observation",
+            Self::UserConfirmed => "user_confirmed",
         }
     }
 
-    fn key(&self) -> Result<String> {
-        key(self.owner.as_deref())
+    fn parse(value: &str) -> Option<Self> {
+        [Self::AgentObservation, Self::UserConfirmed]
+            .into_iter()
+            .find(|basis| basis.as_str() == value)
     }
 }
 
@@ -196,253 +212,427 @@ fn key(owner: Option<&MemoryOwner>) -> Result<String> {
     })
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WriteOutcome {
-    Added,
-    Updated,
-    Existing,
+/// One change `patch_memory` or a dream applies, validated at the tool boundary.
+#[derive(Debug, PartialEq, Eq)]
+struct Op {
+    page: String,
+    global: bool,
+    change: Change,
+    /// When set, the op applies only while the page is still at this version (0 = absent).
+    base_updated_at: Option<u64>,
 }
 
-/// Which saved memories an operation may find by id.
+#[derive(Debug, PartialEq, Eq)]
+enum Change {
+    Set { description: String, body: String },
+    Delete,
+}
+
+/// Who an applied patch is recorded as.
 #[derive(Clone, Copy)]
-enum Reach<'a> {
-    /// The global memories and this owner's.
-    Visible(&'a Arc<MemoryOwner>),
-    /// Every memory, for the host's management surface.
-    All,
-}
-
-enum MemoryCommand<'a> {
-    Read,
-    Refresh,
-    Add(&'a str),
-    Edit(&'a str, &'a str),
-    Forget(&'a str),
-}
-
-fn parse_command<'a>(
-    command: &str,
-    arguments: &'a str,
-    input: Option<&'a str>,
-) -> Result<Option<MemoryCommand<'a>>> {
-    if command != "memory" {
-        return Err(Error::Unknown(format!("memory command `{command}`")));
-    }
-    let mut arguments = arguments.split_whitespace();
-    let operation = arguments.next().unwrap_or("read");
-    let id = arguments.next();
-    if arguments.next().is_some() {
-        return Ok(None);
-    }
-    Ok(match (operation, id, input) {
-        ("read", None, None) => Some(MemoryCommand::Read),
-        ("refresh", None, None) => Some(MemoryCommand::Refresh),
-        ("add", None, Some(memory)) => Some(MemoryCommand::Add(memory)),
-        ("edit", Some(id), Some(memory)) => Some(MemoryCommand::Edit(id, memory)),
-        ("forget", Some(id), None) => Some(MemoryCommand::Forget(id)),
-        _ => None,
-    })
+enum Writer<'a> {
+    /// A chat's own `patch_memory` call.
+    Chat,
+    /// The chat's idle dream.
+    Dream(&'a SessionId),
 }
 
 type Access<'a> = tokio::sync::MutexGuard<'a, ()>;
 
 struct MemoryStore {
+    pages: Pages,
     checkpoints: Arc<dyn CheckpointStore>,
-    // Serializes whole-value updates across every scope.
+    // Serializes read-modify-write across every scope.
     access: Mutex<()>,
 }
 
 impl MemoryStore {
-    /// Saves `memory` in `owner`'s scope, or in the global scope as written by `author`.
-    async fn write_locked(
+    /// The global scope and `owner`'s, in that order.
+    async fn visible(&self, owner: &Arc<MemoryOwner>) -> Result<[Scope; 2]> {
+        Ok([
+            self.pages.load(None).await?,
+            self.pages.load(Some(owner)).await?,
+        ])
+    }
+
+    /// Rejects conflicting batches before writing; saves replacements before deleting sources.
+    async fn apply_locked(
+        &self,
+        owner: &Arc<MemoryOwner>,
+        mut ops: Vec<Op>,
+        basis: Basis,
+        writer: Writer<'_>,
+        _access: &Access<'_>,
+    ) -> Result<Vec<String>> {
+        let scopes = self.visible(owner).await?;
+        validate_patch(&scopes, &ops, writer)?;
+        ops.sort_by_key(|op| matches!(op.change, Change::Delete));
+        let mut results = Vec::with_capacity(ops.len());
+        let (mut global_changes, mut scoped_changes) = (Vec::new(), Vec::new());
+        for op in ops {
+            let scope_owner = (!op.global).then_some(owner);
+            let [global_scope, owner_scope] = &scopes;
+            let scope = if op.global { global_scope } else { owner_scope };
+            let changes = if op.global {
+                &mut global_changes
+            } else {
+                &mut scoped_changes
+            };
+            match op.change {
+                Change::Delete => {
+                    self.pages.remove(scope_owner, &op.page).await?;
+                    results.push(format!("{}: deleted", op.page));
+                    changes.push(format!("-{}", op.page));
+                }
+                Change::Set { description, body } => {
+                    let existing = scope.get(&op.page);
+                    let page = Page {
+                        updated_at: next_version(existing),
+                        basis: existing.map_or(basis, |page| page.basis.max(basis)),
+                        author: op.global.then(|| Arc::clone(owner)),
+                        name: op.page,
+                        description,
+                        body,
+                    };
+                    self.pages.put(scope_owner, &page).await?;
+                    results.push(format!(
+                        "{}: applied (updated_at {})",
+                        page.name, page.updated_at
+                    ));
+                    changes.push(page.name);
+                }
+            }
+        }
+        let source = match writer {
+            Writer::Chat => "patch".to_owned(),
+            Writer::Dream(session) => format!("dream from chat {session}"),
+        };
+        let when = chrono::Utc::now().format("%Y-%m-%d %H:%M");
+        for (global, names) in [(true, &global_changes), (false, &scoped_changes)] {
+            if !names.is_empty() {
+                self.pages
+                    .log(
+                        (!global).then_some(owner),
+                        &format!("{when} {source}: {}", names.join(", ")),
+                    )
+                    .await?;
+            }
+        }
+        Ok(results)
+    }
+
+    /// Sets or deletes one page a host addresses by id, as the user confirmed it.
+    async fn host_locked(
+        &self,
+        id: &str,
+        change: Option<(Option<&str>, &str)>,
+        _access: &Access<'_>,
+    ) -> Result<()> {
+        let (scope, name) = self.pages.locate(id).await?;
+        let existing = scope.get(&name).ok_or_else(missing)?;
+        let owner = scope.owner.as_ref();
+        let Some((description, body)) = change else {
+            return self.pages.remove(owner, &name).await;
+        };
+        let page = Page {
+            description: match description {
+                Some(description) => {
+                    pages::validate_description(description).map_err(Error::Tool)?
+                }
+                None => existing.description.clone(), // rules-allow: the rewritten page keeps its description
+            },
+            body: pages::canonical_body(body).map_err(Error::Tool)?,
+            basis: Basis::UserConfirmed,
+            updated_at: next_version(Some(existing)),
+            author: existing.author.as_ref().map(Arc::clone),
+            name,
+        };
+        self.pages.put(owner, &page).await
+    }
+
+    /// Adds a page the user typed, named from its first words.
+    async fn add_locked(
         &self,
         owner: Option<&Arc<MemoryOwner>>,
         author: Option<&Arc<MemoryOwner>>,
-        memory: &str,
-        basis: Basis,
+        text: &str,
         _access: &Access<'_>,
-    ) -> Result<WriteOutcome> {
-        let memory = canonical_memory(memory).map_err(Error::Tool)?;
-        let mut partition = self.load(owner).await?;
-        let author = author.filter(|_| owner.is_none()).map(Arc::clone);
-        let outcome = insert(&mut partition.memories, memory, basis, author)?;
-        if outcome != WriteOutcome::Existing {
-            validate_scope_budget(&partition.memories).map_err(Error::Tool)?;
-            self.save(&partition).await?;
-        }
-        Ok(outcome)
-    }
-
-    async fn forget_locked(&self, reach: Reach<'_>, id: &str, access: &Access<'_>) -> Result<()> {
-        let mut partition = self.find_locked(reach, id, access).await?;
-        partition.memories.retain(|entry| entry.id != id);
-        self.save(&partition).await
-    }
-
-    async fn edit_locked(
-        &self,
-        reach: Reach<'_>,
-        id: &str,
-        memory: &str,
-        basis: Basis,
-        access: &Access<'_>,
     ) -> Result<()> {
-        let memory = canonical_memory(memory).map_err(Error::Tool)?;
-        let mut partition = self.find_locked(reach, id, access).await?;
-        let entries = &mut partition.memories;
-        if entries
-            .iter()
-            .any(|entry| entry.id != id && entry.text == memory)
-        {
+        let body = pages::canonical_body(text).map_err(Error::Tool)?;
+        let first = body.lines().next().unwrap_or_default();
+        let mut description = first.trim_start_matches(['#', ' ']).to_owned();
+        description.truncate(description.floor_char_boundary(pages::MAX_DESCRIPTION_BYTES));
+        let name = slug(&description);
+        let scope = self.pages.load(owner).await?;
+        if scope.get(&name).is_some() {
             return Err(Error::Tool(
-                text::DEFINITION.error_duplicate.as_str().into(),
+                text::DEFINITION.error_exists.replace("{page}", &name),
             ));
         }
-        let previous_bytes = scope_bytes(entries).map_err(Error::Tool)?;
-        let entry = entries
-            .iter_mut()
-            .find(|entry| entry.id == id)
-            .ok_or_else(missing)?;
-        entry.text = memory;
-        entry.basis = entry.basis.max(basis);
-        entry.updated_at = now();
-        if scope_bytes(entries).map_err(Error::Tool)? > previous_bytes {
-            validate_scope_budget(entries).map_err(Error::Tool)?;
+        if scope.pages.len() >= pages::MAX_PAGES {
+            return Err(Error::Tool(
+                text::DEFINITION
+                    .error_page_count
+                    .replace("{max}", &pages::MAX_PAGES.to_string()),
+            ));
         }
-        self.save(&partition).await
+        let page = Page {
+            name,
+            description: pages::validate_description(&description).map_err(Error::Tool)?,
+            body,
+            basis: Basis::UserConfirmed,
+            updated_at: next_version(None),
+            author: owner.is_none().then_some(author).flatten().map(Arc::clone),
+        };
+        self.pages.put(owner, &page).await
+    }
+}
+
+/// Checks the freshly read snapshot once, including the resulting scope sizes.
+fn validate_patch(scopes: &[Scope; 2], ops: &[Op], writer: Writer<'_>) -> Result<()> {
+    let [global_scope, owner_scope] = scopes;
+    let (mut global_count, mut owner_count) = (global_scope.pages.len(), owner_scope.pages.len());
+    let mut names = BTreeSet::new();
+    for op in ops {
+        let (scope, count) = if op.global {
+            (global_scope, &mut global_count)
+        } else {
+            (owner_scope, &mut owner_count)
+        };
+        let existing = scope.get(&op.page);
+        if !names.insert((op.global, &op.page)) {
+            return Err(Error::Tool("a batch can change each page only once".into()));
+        }
+        let reason = match (op.base_updated_at, existing) {
+            (None, _) if matches!(writer, Writer::Dream(_)) => Some("base_updated_at is required"),
+            (Some(0), Some(_)) => Some("the page already exists"),
+            (Some(base), Some(page)) if page.updated_at != base => {
+                Some("the page changed since it was read")
+            }
+            (Some(1..), None) => Some("the page no longer exists"),
+            _ => None,
+        };
+        if let Some(reason) = reason {
+            return Err(Error::Tool(format!(
+                "{}: batch rejected, {reason}",
+                op.page
+            )));
+        }
+        match (&op.change, existing) {
+            (Change::Delete, None) => return Err(missing()),
+            (Change::Delete, Some(_)) => *count -= 1,
+            (Change::Set { .. }, None) => *count += 1,
+            (Change::Set { .. }, Some(_)) => {}
+        }
+    }
+    if [global_count, owner_count]
+        .into_iter()
+        .any(|count| count > pages::MAX_PAGES)
+    {
+        return Err(Error::Tool(
+            text::DEFINITION
+                .error_page_count
+                .replace("{max}", &pages::MAX_PAGES.to_string()),
+        ));
+    }
+    Ok(())
+}
+
+/// A strictly increasing version, so `base_updated_at` detects every rewrite.
+fn next_version(existing: Option<&Page>) -> u64 {
+    now().max(existing.map_or(0, |page| page.updated_at + 1))
+}
+
+fn slug(text: &str) -> String {
+    let words = text
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .take(6)
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>()
+        .join("-");
+    let mut name = if words.is_empty() {
+        "note".to_owned()
+    } else {
+        words
+    };
+    name.truncate(pages::MAX_NAME_BYTES);
+    name.trim_end_matches('-').to_owned()
+}
+
+/// Read access to the pages a chat can see, for `search_memory` and `read_memory`.
+pub struct MemoryPages {
+    store: Arc<MemoryStore>,
+}
+
+impl std::fmt::Debug for MemoryPages {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MemoryPages")
+            .finish_non_exhaustive()
+    }
+}
+
+impl MemoryPages {
+    /// Another handle on the same store.
+    #[must_use]
+    pub fn share(&self) -> Self {
+        Self {
+            store: Arc::clone(&self.store),
+        }
     }
 
-    /// The scope within `reach` that holds `id`.
-    async fn find_locked(
+    /// Every page `owner`'s chats can see, global first, each scope newest first.
+    pub(crate) async fn documents(&self, owner: &Arc<MemoryOwner>) -> Result<Vec<MemoryItem>> {
+        let visible = {
+            let _access = self.store.access.lock().await;
+            self.store.visible(owner).await?
+        };
+        items(&visible)
+    }
+
+    pub(crate) async fn read(
         &self,
-        reach: Reach<'_>,
-        id: &str,
-        _access: &Access<'_>,
-    ) -> Result<Partition> {
-        validate_id(id).map_err(Error::Tool)?;
-        let candidates = match reach {
-            Reach::Visible(owner) => Vec::from(self.visible(owner).await?),
-            Reach::All => self.all().await?,
-        };
-        candidates
-            .into_iter()
-            .find(|partition| partition.memories.iter().any(|entry| entry.id == id))
-            .ok_or_else(missing)
-    }
-
-    /// The global scope and `owner`'s, in that order.
-    async fn visible(&self, owner: &Arc<MemoryOwner>) -> Result<[Partition; 2]> {
-        Ok([self.load(None).await?, self.load(Some(owner)).await?])
-    }
-
-    async fn load(&self, owner: Option<&Arc<MemoryOwner>>) -> Result<Partition> {
-        let key = key(owner.map(AsRef::as_ref))?;
-        let Some(value) = self.checkpoints.load_state(SCOPE, &key).await? else {
-            return Ok(Partition::empty(owner.map(Arc::clone)));
-        };
-        parse_partition(&key, value)
-    }
-
-    async fn all(&self) -> Result<Vec<Partition>> {
-        self.checkpoints
-            .list_state(SCOPE)
-            .await?
-            .into_iter()
-            .map(|(key, value)| parse_partition(&key, value))
-            .collect()
-    }
-
-    async fn save(&self, partition: &Partition) -> Result<()> {
-        self.checkpoints
-            .save_state(SCOPE, &partition.key()?, &serde_json::to_value(partition)?)
-            .await
+        owner: &Arc<MemoryOwner>,
+        name: &str,
+        global: bool,
+    ) -> Result<String> {
+        let documents = self.documents(owner).await?;
+        let page = documents
+            .iter()
+            .find(|document| &*document.name == name && document.global == global)
+            .ok_or_else(|| Error::Tool(format!("no memory page `{name}` in that scope")))?;
+        let backlinks = documents
+            .iter()
+            .filter(|document| {
+                document
+                    .links
+                    .iter()
+                    .any(|link| link.target.as_ref() == Some(&page.id))
+            })
+            .map(|document| serde_json::json!({"page": document.name, "global": document.global}))
+            .collect::<Vec<_>>();
+        Ok(serde_json::json!({
+            "page": page.name, "global": page.global, "description": page.description,
+            "updated_at": page.updated_at, "body": page.body, "links": page.links,
+            "backlinks": backlinks,
+        })
+        .to_string())
     }
 }
 
-fn parse_partition(key: &str, value: serde_json::Value) -> Result<Partition> {
-    let partition: Partition =
-        serde_json::from_value(value).map_err(|error| invalid_state(&error.to_string()))?;
-    if partition.key()? != key {
-        return Err(invalid_state("stored owner does not match its key"));
-    }
-    validate_entries(&partition.memories).map_err(|error| invalid_state(&error))?;
-    Ok(partition)
-}
-
-fn invalid_state(error: &str) -> Error {
-    Error::Checkpoint(format!("invalid memory state: {error}"))
-}
-
-/// Bounded durable memories, without exposing persistence details to the agent loop.
+/// Durable memory pages, without exposing persistence details to the agent loop.
 ///
 /// [`Memory::new`] is the host's handle on the store; [`Memory::for_chat`] is the middleware
 /// one chat installs. A chat's owner (Bot and project) comes from its session context.
 pub struct Memory {
     store: Arc<MemoryStore>,
     owner: OnceLock<Arc<MemoryOwner>>,
+    dream_after: Option<Duration>,
+    // Chats with a normal turn since their last dream.
+    dreamable: std::sync::Mutex<BTreeSet<SessionId>>,
 }
 
 impl std::fmt::Debug for Memory {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("Memory").finish_non_exhaustive()
+        formatter
+            .debug_struct("Memory")
+            .field("dream_after", &self.dream_after)
+            .finish_non_exhaustive()
     }
 }
 
 impl Memory {
-    /// Creates the memory store backed by one tenant-scoped checkpoint store.
+    /// Creates the store: pages under `root`, dream progress in `checkpoints`.
     #[must_use]
-    pub fn new(checkpoints: Arc<dyn CheckpointStore>) -> Self {
+    pub fn new(checkpoints: Arc<dyn CheckpointStore>, root: PathBuf) -> Self {
         Self {
             store: Arc::new(MemoryStore {
+                pages: Pages::new(root),
                 checkpoints,
                 access: Mutex::new(()),
             }),
             owner: OnceLock::new(),
+            dream_after: None,
+            dreamable: std::sync::Mutex::default(),
         }
     }
 
-    /// Returns a chat's memory middleware sharing this store.
-    #[must_use]
-    pub fn for_chat(&self) -> Self {
-        Self {
+    /// Returns a chat's memory middleware sharing this store, configured from this module's
+    /// declared settings with embedded defaults for unset values.
+    /// # Errors
+    ///
+    /// Returns an error when a setting has the wrong type.
+    pub fn for_chat<'a>(
+        &self,
+        setting: impl Fn(&str) -> Option<&'a FrontendSettingValue>,
+    ) -> Result<Self> {
+        let dreaming = match setting("dreaming") {
+            None => super::manifest::string_default(&text::DEFINITION.settings, "dreaming") == "on",
+            Some(FrontendSettingValue::String(value)) if value == "on" => true,
+            Some(FrontendSettingValue::String(value)) if value == "off" => false,
+            Some(_) => return Err(Error::Config("memory.dreaming must be on or off".into())),
+        };
+        let minutes = match setting("dream_minutes") {
+            None => super::manifest::integer_default(&text::DEFINITION.settings, "dream_minutes"),
+            Some(FrontendSettingValue::Integer(minutes)) => *minutes,
+            Some(_) => {
+                return Err(Error::Config(
+                    "memory.dream_minutes must be an integer".into(),
+                ));
+            }
+        };
+        Ok(Self {
             store: Arc::clone(&self.store),
             owner: OnceLock::new(),
+            dream_after: dreaming.then(|| {
+                Duration::from_secs(u64::try_from(minutes).unwrap_or(1).saturating_mul(60))
+            }),
+            dreamable: std::sync::Mutex::default(),
+        })
+    }
+
+    /// Read access to visible pages for the chat history tools.
+    #[must_use]
+    pub fn pages(&self) -> MemoryPages {
+        MemoryPages {
+            store: Arc::clone(&self.store),
         }
     }
 
-    /// Every saved memory, scope by scope.
+    /// Every saved page, scope by scope.
     /// # Errors
     ///
-    /// Returns an error if the saved memories cannot be loaded.
+    /// Returns an error if the saved pages cannot be loaded.
     pub async fn list(&self) -> Result<Vec<MemoryItem>> {
         let _access = self.store.access.lock().await;
-        Ok(items(self.store.all().await?))
+        items(&self.store.pages.all().await?)
     }
 
-    /// Replaces the text of the memory `id`, as the user confirmed it.
+    /// Replaces the description and body of the page `id`, as the user confirmed them.
     /// # Errors
     ///
-    /// Returns [`Error::Tool`] for an unknown id or a rejected text.
-    pub async fn edit(&self, id: &str, memory: &str) -> Result<()> {
+    /// Returns [`Error::Tool`] for an unknown id or rejected text.
+    pub async fn edit(&self, id: &str, description: &str, body: &str) -> Result<()> {
         let access = self.store.access.lock().await;
         self.store
-            .edit_locked(Reach::All, id, memory, Basis::UserConfirmed, &access)
+            .host_locked(id, Some((Some(description), body)), &access)
             .await
     }
 
-    /// Forgets the memory `id`.
+    /// Deletes the page `id` into its scope's trash.
     /// # Errors
     ///
     /// Returns [`Error::Tool`] for an unknown id.
     pub async fn forget(&self, id: &str) -> Result<()> {
         let access = self.store.access.lock().await;
-        self.store.forget_locked(Reach::All, id, &access).await
+        self.store.host_locked(id, None, &access).await
     }
 
     /// Returns the host's memory management surface.
     /// # Errors
     ///
-    /// Returns an error if the saved memories cannot be loaded.
+    /// Returns an error if the saved pages cannot be loaded.
     pub async fn global_contribution(&self) -> Result<FrontendContribution> {
         let access = self.store.access.lock().await;
         self.global_contribution_locked(&access).await
@@ -479,7 +669,7 @@ impl Memory {
         &self,
         _access: &Access<'_>,
     ) -> Result<FrontendContribution> {
-        let all = items(self.store.all().await?);
+        let all = items(&self.store.pages.all().await?)?;
         Ok(FrontendContribution {
             capability: MANIFEST.id.into(),
             widgets: surface_widgets(&all),
@@ -491,6 +681,12 @@ impl Memory {
         self.owner
             .get()
             .ok_or_else(|| Error::Config("memory is not registered for a chat".into()))
+    }
+
+    fn dreamable(&self) -> Result<std::sync::MutexGuard<'_, BTreeSet<SessionId>>> {
+        self.dreamable
+            .lock()
+            .map_err(|_poisoned| Error::Config("memory dream state is poisoned".into()))
     }
 
     async fn command_locked(
@@ -516,12 +712,11 @@ impl Memory {
         owner: Option<&Arc<MemoryOwner>>,
         access: &Access<'_>,
     ) -> Result<MiddlewareCommandOutput> {
-        let reach = owner.map_or(Reach::All, Reach::Visible);
         match command {
             MemoryCommand::Read => {
                 let text = match owner {
-                    Some(owner) => format_snapshot(&self.store.visible(owner).await?),
-                    None => format_snapshot(&self.store.all().await?),
+                    Some(owner) => format_snapshot(&self.store.visible(owner).await?)?,
+                    None => format_snapshot(&self.store.pages.all().await?)?,
                 };
                 Ok(MiddlewareCommandOutput::render(
                     self.name(),
@@ -530,41 +725,80 @@ impl Memory {
                 ))
             }
             MemoryCommand::Refresh => Ok(MiddlewareCommandOutput::events(widget_events(&items(
-                self.store.all().await?,
-            )))),
-            MemoryCommand::Add(memory) => {
-                let message = match self
-                    .store
-                    .write_locked(owner, None, memory, Basis::UserConfirmed, access)
-                    .await?
-                {
-                    WriteOutcome::Added => &text::DEFINITION.message_added,
-                    WriteOutcome::Updated => &text::DEFINITION.message_updated,
-                    WriteOutcome::Existing => &text::DEFINITION.message_existing,
-                };
-                self.command_updated(message).await
+                &self.store.pages.all().await?,
+            )?))),
+            MemoryCommand::Add(text) => {
+                self.store.add_locked(owner, owner, text, access).await?;
+                self.command_updated(&text::DEFINITION.message_added).await
             }
-            MemoryCommand::Edit(id, memory) => {
+            MemoryCommand::Edit(id, body) => {
+                self.visible_id(owner, id).await?;
                 self.store
-                    .edit_locked(reach, id, memory, Basis::UserConfirmed, access)
+                    .host_locked(id, Some((None, body)), access)
                     .await?;
                 self.command_updated(&text::DEFINITION.message_updated)
                     .await
             }
             MemoryCommand::Forget(id) => {
-                self.store.forget_locked(reach, id, access).await?;
+                self.visible_id(owner, id).await?;
+                self.store.host_locked(id, None, access).await?;
                 self.command_updated(&text::DEFINITION.message_forgot).await
             }
         }
     }
 
+    /// A chat's command reaches only the pages that chat can see; the host reaches all.
+    async fn visible_id(&self, owner: Option<&Arc<MemoryOwner>>, id: &str) -> Result<()> {
+        let Some(owner) = owner else {
+            return Ok(());
+        };
+        let (scope, _) = self.store.pages.locate(id).await?;
+        let visible = match &scope.owner {
+            None => true,
+            Some(scope) => key(Some(scope))? == key(Some(owner))?,
+        };
+        visible.then_some(()).ok_or_else(missing)
+    }
+
     async fn command_updated(&self, message: &str) -> Result<MiddlewareCommandOutput> {
-        let mut events = widget_events(&items(self.store.all().await?));
+        let mut events = widget_events(&items(&self.store.pages.all().await?)?);
         events.extend(
             MiddlewareCommandOutput::render(self.name(), message, FrontendTone::Success).events,
         );
         Ok(MiddlewareCommandOutput::events(events))
     }
+}
+
+enum MemoryCommand<'a> {
+    Read,
+    Refresh,
+    Add(&'a str),
+    Edit(&'a str, &'a str),
+    Forget(&'a str),
+}
+
+fn parse_command<'a>(
+    command: &str,
+    arguments: &'a str,
+    input: Option<&'a str>,
+) -> Result<Option<MemoryCommand<'a>>> {
+    if command != "memory" {
+        return Err(Error::Unknown(format!("memory command `{command}`")));
+    }
+    let mut arguments = arguments.split_whitespace();
+    let operation = arguments.next().unwrap_or("read");
+    let id = arguments.next();
+    if arguments.next().is_some() {
+        return Ok(None);
+    }
+    Ok(match (operation, id, input) {
+        ("read", None, None) => Some(MemoryCommand::Read),
+        ("refresh", None, None) => Some(MemoryCommand::Refresh),
+        ("add", None, Some(text)) => Some(MemoryCommand::Add(text)),
+        ("edit", Some(id), Some(body)) => Some(MemoryCommand::Edit(id, body)),
+        ("forget", Some(id), None) => Some(MemoryCommand::Forget(id)),
+        _ => None,
+    })
 }
 
 impl Middleware for Memory {
@@ -581,15 +815,9 @@ impl Middleware for Memory {
                 "one memory middleware serves one Bot and project".into(),
             ));
         }
-        let owner = self.owner()?;
-        catalog.register(Arc::new(WriteMemory {
+        catalog.register(Arc::new(PatchMemory {
             store: Arc::clone(&self.store),
-            owner: Arc::clone(owner),
-            frontend: Arc::clone(&runtime.frontend),
-        }))?;
-        catalog.register(Arc::new(ForgetMemory {
-            store: Arc::clone(&self.store),
-            owner: Arc::clone(owner),
+            owner: Arc::clone(self.owner()?),
             frontend: Arc::clone(&runtime.frontend),
         }))
     }
@@ -617,12 +845,7 @@ impl Middleware for Memory {
     }
 
     fn render(&self, event: &EventMsg, _session_id: &str) -> Option<FrontendBlock> {
-        [
-            &text::DEFINITION.write_memory,
-            &text::DEFINITION.forget_memory,
-        ]
-        .into_iter()
-        .find_map(|spec| spec.render(event))
+        text::DEFINITION.patch_memory.render(event)
     }
 
     fn prepare_compacted_input(
@@ -642,18 +865,18 @@ impl Middleware for Memory {
                 let _access = self.store.access.lock().await;
                 (
                     self.store.visible(self.owner()?).await?,
-                    self.store.all().await?,
+                    self.store.pages.all().await?,
                 )
             };
             if matches!(
                 context.source(),
                 SessionStartSource::Startup | SessionStartSource::Compact
-            ) && let Some(item) = next_projection(context.input.as_slice().into(), &visible)?
+            ) && let Some(item) = next_projection(context.input.as_slice().into(), &visible)
             {
                 context.push_input(item);
             }
             if context.source() != SessionStartSource::Compact {
-                publish_widgets(&context.runtime.frontend, &items(all))?;
+                publish_widgets(&context.runtime.frontend, &items(&all)?)?;
             }
             Ok(())
         })
@@ -694,124 +917,99 @@ impl Middleware for Memory {
                 let _access = self.store.access.lock().await;
                 self.store.visible(self.owner()?).await?
             };
-            if let Some(item) = next_projection(context.input(), &visible)? {
+            if let Some(item) = next_projection(context.input(), &visible) {
                 context.append_model_input(item);
             }
             Ok(())
         })
     }
+
+    fn turn_end<'a>(&'a self, context: &'a mut TurnEndContext<'_>) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            if self.dream_after.is_some() && !context.is_idle() {
+                self.dreamable()?.insert(context.session_id.share());
+            }
+            Ok(())
+        })
+    }
+
+    // No `has_background_work`: a pending dream must not hold the chat busy or the gateway
+    // awake. If the chat unloads first, the watermark lets the next dream catch up.
+    fn idle_after(&self, session_id: &SessionId) -> Option<Duration> {
+        let dreamable = self.dreamable.lock().ok()?.contains(session_id);
+        dreamable.then_some(self.dream_after).flatten()
+    }
+
+    fn idle<'a>(&'a self, context: &'a mut ModelContext<'_>) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            // The stack calls every middleware's idle hook; dream only when this chat is due.
+            if self.dreamable()?.remove(context.session_id) {
+                dream::run(self, context).await;
+            }
+            Ok(())
+        })
+    }
+
+    fn session_end<'a>(&'a self, runtime: &'a RuntimeContext) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            self.dreamable()?.remove(&runtime.session_id);
+            Ok(())
+        })
+    }
 }
 
-fn items(partitions: Vec<Partition>) -> Vec<MemoryItem> {
-    partitions
-        .into_iter()
-        .flat_map(|partition| {
-            let owner = partition.owner;
-            partition.memories.into_iter().map(move |entry| MemoryItem {
-                id: entry.id.into(),
-                text: entry.text.into(),
-                global: owner.is_none(),
-                owner: owner.as_ref().map(Arc::clone).or(entry.author),
-                updated_at: entry.updated_at,
-            })
-        })
-        .collect()
+fn items(scopes: &[Scope]) -> Result<Vec<MemoryItem>> {
+    let directories = scopes
+        .iter()
+        .map(Scope::dir_name)
+        .collect::<Result<Vec<_>>>()?;
+    let global = scopes
+        .iter()
+        .zip(&directories)
+        .find(|(scope, _)| scope.owner.is_none());
+    let mut items = Vec::new();
+    for (scope, directory) in scopes.iter().zip(&directories) {
+        for page in &scope.pages {
+            let mut links = Vec::<MemoryLink>::new();
+            for name in page.links() {
+                if links.iter().any(|link| &*link.name == name) {
+                    continue;
+                }
+                let target = [Some((scope, directory)), global]
+                    .into_iter()
+                    .flatten()
+                    .find(|(scope, _)| scope.get(name).is_some())
+                    .map(|(_, directory)| format!("{directory}/{name}").into());
+                links.push(MemoryLink {
+                    name: name.into(),
+                    target,
+                });
+            }
+            items.push(MemoryItem {
+                id: format!("{directory}/{}", page.name).into(),
+                links,
+                name: page.name.as_str().into(),
+                description: page.description.as_str().into(),
+                body: page.body.as_str().into(),
+                global: scope.owner.is_none(),
+                owner: scope
+                    .owner
+                    .as_ref()
+                    .or(page.author.as_ref())
+                    .map(Arc::clone),
+                updated_at: page.updated_at,
+            });
+        }
+    }
+    Ok(items)
 }
 
 fn now() -> u64 {
     u64::try_from(chrono::Utc::now().timestamp()).unwrap_or_default()
 }
 
-fn insert(
-    entries: &mut Vec<Entry>,
-    memory: String,
-    basis: Basis,
-    author: Option<Arc<MemoryOwner>>,
-) -> Result<WriteOutcome> {
-    if let Some(entry) = entries.iter_mut().find(|entry| entry.text == memory) {
-        if basis > entry.basis {
-            entry.basis = basis;
-            entry.updated_at = now();
-            return Ok(WriteOutcome::Updated);
-        }
-        return Ok(WriteOutcome::Existing);
-    }
-    if entries.len() >= MAX_MEMORIES {
-        return Err(Error::Tool(
-            text::DEFINITION
-                .error_memory_count
-                .replace("{max}", &MAX_MEMORIES.to_string()),
-        ));
-    }
-    entries.push(Entry {
-        id: Uuid::new_v4().to_string(),
-        text: memory,
-        basis,
-        updated_at: now(),
-        author,
-    });
-    Ok(WriteOutcome::Added)
-}
-
-fn validate_entries(entries: &[Entry]) -> std::result::Result<(), String> {
-    if entries.len() > MAX_MEMORIES {
-        return Err(format!("memory count exceeds {MAX_MEMORIES}"));
-    }
-    let mut ids = BTreeSet::new();
-    let mut texts = BTreeSet::new();
-    for entry in entries {
-        validate_id(&entry.id)?;
-        if canonical_memory(&entry.text)? != entry.text {
-            return Err("stored memory is not canonical".into());
-        }
-        if !ids.insert(entry.id.as_str()) {
-            return Err("duplicate memory ID".into());
-        }
-        if !texts.insert(entry.text.as_str()) {
-            return Err("duplicate memory content".into());
-        }
-    }
-    Ok(())
-}
-
-fn validate_scope_budget(entries: &[Entry]) -> std::result::Result<(), String> {
-    let bytes = scope_bytes(entries)?;
-    if bytes > MAX_SCOPE_BYTES {
-        return Err(text::DEFINITION
-            .error_scope_budget
-            .replace("{max}", &MAX_SCOPE_BYTES.to_string()));
-    }
-    Ok(())
-}
-
-fn scope_bytes(entries: &[Entry]) -> std::result::Result<usize, String> {
-    entries
-        .iter()
-        .try_fold(0, |bytes, entry| {
-            serde_json::to_string(&entry.text).map(|text| bytes + text.len() + 3)
-        })
-        .map_err(|error| error.to_string())
-}
-
 fn missing() -> Error {
     Error::Tool(text::DEFINITION.error_missing.as_str().into())
-}
-
-fn validate_id(id: &str) -> std::result::Result<(), String> {
-    Uuid::parse_str(id)
-        .map(|_| ())
-        .map_err(|error| format!("invalid memory ID: {error}"))
-}
-
-fn canonical_memory(memory: &str) -> std::result::Result<String, String> {
-    let memory = memory.replace("\r\n", "\n").replace('\r', "\n");
-    let memory = memory.trim();
-    if memory.is_empty() || memory.len() > MAX_MEMORY_BYTES {
-        return Err(text::DEFINITION
-            .error_memory_length
-            .replace("{max}", &MAX_MEMORY_BYTES.to_string()));
-    }
-    Ok(memory.into())
 }
 
 #[cfg(test)]

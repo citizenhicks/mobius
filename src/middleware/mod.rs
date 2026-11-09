@@ -35,6 +35,7 @@ pub mod computer_control;
 mod context;
 pub(crate) mod delivery_once;
 pub mod extensions;
+mod idle;
 pub mod image_generation;
 pub mod instructions;
 pub mod intelligent_ui;
@@ -56,6 +57,7 @@ pub use context::{
     SubmissionResult, ToolExposureContext, TurnEndContext, TurnIdentity,
 };
 pub(crate) use context::{MessageSubmitResult, PreparationNotices, PreparedMessage, StagedInput};
+pub(crate) use idle::IdleSchedule;
 use tools::Catalog;
 
 /// Configurable heuristic for text context budgets, not a model tokenizer.
@@ -606,14 +608,6 @@ impl MiddlewareStack {
             .unwrap_or(context_window)
     }
 
-    /// The shortest idle delay any middleware subscribed for this session.
-    pub(crate) fn idle_after(&self, session_id: &SessionId) -> Option<std::time::Duration> {
-        self.entries
-            .iter()
-            .filter_map(|entry| entry.idle_after(session_id))
-            .min()
-    }
-
     /// The assembled prompt and the bytes each middleware contributed to it; the base prompt
     /// counts as `instructions`.
     pub(crate) fn system_prompt(
@@ -889,7 +883,7 @@ impl MiddlewareStack {
     pub(crate) async fn prepare_model(
         &self,
         mut context: ModelContext<'_>,
-        idle: bool,
+        idle: Option<&[&str]>,
     ) -> Result<Option<Vec<Value>>> {
         let supports_tool_image_input =
             context.model.supports_tool_image_input(context.provider)?;
@@ -900,8 +894,12 @@ impl MiddlewareStack {
             context.available_tools,
         )
         .await?;
-        if idle {
-            for entry in &self.entries {
+        if let Some(due) = idle {
+            for entry in self
+                .entries
+                .iter()
+                .filter(|entry| due.contains(&entry.name()))
+            {
                 entry.idle(&mut context).await?;
             }
             return Ok(None);

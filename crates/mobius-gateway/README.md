@@ -28,7 +28,7 @@ a fresh context. The default 250,000-token threshold is clamped to leave respons
 space on smaller models. Preparation restricts tools to checkpoint writing and
 preserves the current context if it fails. The optional **Allow model-requested
 compaction** setting also exposes `new_context` for early resets; it defaults to Off.
-Original messages and tool results remain available through `search_history` and `read_history`.
+Original messages and tool results remain available through `search_memory` and `read_memory`.
 
 Tasks remain independently optional and restore their durable list across compaction.
 Memories remain separate from the chat-local handoff checkpoint.

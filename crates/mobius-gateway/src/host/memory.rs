@@ -41,10 +41,11 @@ impl GatewayHost {
         Arc::clone(&self.state.lock().await.memory)
     }
 
-    /// Replaces one editable memory's text, then lists every memory.
+    /// Replaces one editable memory page, then lists every memory.
     pub(crate) async fn edit_memory(
         &self,
         id: &str,
+        description: &str,
         text: &str,
     ) -> std::result::Result<Vec<MemoryRecord>, Rejection> {
         {
@@ -54,7 +55,9 @@ impl GatewayHost {
                 memory: &memory,
                 projects: &[],
             };
-            memory::edit(&context, id, text).await.map_err(rejection)?;
+            memory::edit(&context, id, description, text)
+                .await
+                .map_err(rejection)?;
         }
         self.list_memories().await
     }

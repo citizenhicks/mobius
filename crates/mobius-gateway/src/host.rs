@@ -340,7 +340,10 @@ impl GatewayHost {
             .await?;
         let checkpoints: Arc<dyn CheckpointStore> =
             Arc::new(SqliteCheckpoint::new(store.checkpoints_path())?);
-        let memory = Arc::new(Memory::new(Arc::clone(&checkpoints)));
+        let memory = Arc::new(Memory::new(
+            Arc::clone(&checkpoints),
+            store.state_dir().join("memory"),
+        ));
         let session_files = Arc::new(SessionFileStore::new(store.state_dir(), None));
         let remote_desktop = Arc::new(RemoteDesktop::new(
             store.state_dir(),

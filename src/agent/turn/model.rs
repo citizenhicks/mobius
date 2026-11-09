@@ -265,9 +265,6 @@ impl Runner {
             self.transcript_delta.truncate(transcript_len);
             return Err(error);
         }
-        if was_idle {
-            self.idle_spent = false;
-        }
         Ok(())
     }
 
@@ -329,6 +326,10 @@ impl Runner {
                 .active_execution
                 .as_ref()
                 .is_some_and(|execution| execution.idle);
+        let idle = idle.then(|| {
+            self.idle
+                .take_due(&self.config.middleware, &self.runtime.session_id)
+        });
         let mut middleware_events = Vec::new();
         let mut middleware_usage = Vec::new();
         let provisional_target_sequence = self
@@ -396,7 +397,7 @@ impl Runner {
                     hooks: &middleware,
                     preparation_notices: &mut preparation_notices.notices,
                 },
-                idle,
+                idle.as_deref(),
             );
             // Keep preparation alive until cancellation is recorded for its provider drop guards.
             tokio::pin!(prepare_model);
@@ -519,7 +520,7 @@ impl Runner {
         if messages_ready {
             return Ok(PreparedModel::Repeat(rewrite_reasons));
         }
-        if idle {
+        if idle.is_some() {
             return Ok(PreparedModel::Idle);
         }
         if let Some(reason) = turn_stop {

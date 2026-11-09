@@ -305,9 +305,9 @@ impl Compaction {
     /// Arms the idle timer after a normal turn on a chat large enough to compact; an idle
     /// turn never re-arms it, so one failed idle compaction cannot hold the gateway awake.
     fn arm_idle(&self, session_id: &SessionId, idle_turn: bool) -> Result<()> {
-        if let Some(session) = self.counts()?.get_mut(session_id) {
+        if !idle_turn && let Some(session) = self.counts()?.get_mut(session_id) {
             session.idle_armed =
-                !idle_turn && self.idle_after.is_some() && session.observed >= self.idle_min_tokens;
+                self.idle_after.is_some() && session.observed >= self.idle_min_tokens;
         }
         Ok(())
     }
@@ -661,7 +661,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_armed_idle_timer_holds_the_session_until_an_idle_turn_ends() {
+    async fn an_armed_idle_timer_survives_other_subscribers_and_disarms_before_its_attempt() {
         let directory = tempfile::tempdir().expect("directory");
         let runtime = super::super::tests::lifecycle_runtime(directory.path());
         let after = Duration::from_secs(240);
@@ -680,7 +680,7 @@ mod tests {
         );
         let session = &runtime.session_id;
         for (observed, idle_turn, armed) in
-            [(99, false, false), (100, false, true), (100, true, false)]
+            [(99, false, false), (100, false, true), (100, true, true)]
         {
             policy.observe(session, observed).expect("observe");
             policy.arm_idle(session, idle_turn).expect("arm");
@@ -690,6 +690,9 @@ mod tests {
                 armed
             );
         }
+        assert!(policy.disarm_idle(session).unwrap());
+        policy.arm_idle(session, true).unwrap();
+        assert_eq!(policy.idle_after(session), None);
     }
 
     #[tokio::test]

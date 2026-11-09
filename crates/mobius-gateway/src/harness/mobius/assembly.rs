@@ -814,6 +814,10 @@ fn build_middleware(
     project: bool,
 ) -> Result<Vec<Arc<dyn Middleware>>> {
     let settings = &prepared.composition.middleware;
+    let memory_installed = MIDDLEWARE.iter().any(|feature| {
+        matches!(feature.kind, BuiltinMiddleware::Memory)
+            && installs(feature, settings, memory.chat_override)
+    });
     let mut entries: Vec<Arc<dyn Middleware>> = Vec::new();
     for feature in MIDDLEWARE
         .iter()
@@ -859,7 +863,11 @@ fn build_middleware(
             BuiltinMiddleware::Instructions => {
                 Arc::new(Instructions::discover(project.then_some(workspace))?)
             }
-            BuiltinMiddleware::Memory => Arc::new(memory.store.for_chat()),
+            BuiltinMiddleware::Memory => Arc::new(
+                memory
+                    .store
+                    .for_chat(|id| settings.setting(feature.manifest.id, id))?,
+            ),
             BuiltinMiddleware::Extensions => {
                 let (extensions, backend) = extensions
                     .take()
@@ -910,15 +918,22 @@ fn build_middleware(
                     |id| settings.setting(feature.manifest.id, id),
                 )?)
             }
-            BuiltinMiddleware::Sessions => Arc::new(Sessions::new(
-                crate::harness::mobius::middleware_manifest::count_setting(
-                    settings,
-                    feature.manifest.id,
-                    "page_size",
-                )?,
-                Some(Arc::clone(session_files)),
-                live_chats.take(),
-            )),
+            BuiltinMiddleware::Sessions => {
+                let sessions = Sessions::new(
+                    crate::harness::mobius::middleware_manifest::count_setting(
+                        settings,
+                        feature.manifest.id,
+                        "page_size",
+                    )?,
+                    Some(Arc::clone(session_files)),
+                    live_chats.take(),
+                );
+                Arc::new(if memory_installed {
+                    sessions.memory_pages(memory.store.pages())
+                } else {
+                    sessions
+                })
+            }
         };
         entries.push(middleware);
     }

@@ -4,7 +4,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::{
-    Access, Basis, MemoryOwner, MemoryStore, Reach, WriteOutcome, items, publish_widgets, text,
+    Basis, Change, MAX_OPS, MemoryOwner, MemoryStore, Op, Writer, items, pages, publish_widgets,
+    text,
 };
 use crate::backend::model::ToolDefinition;
 use crate::middleware::FrontendEventSink;
@@ -13,106 +14,67 @@ use crate::{BoxFuture, Error, Result};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct WriteArgs {
-    memory: String,
-    #[serde(default)]
-    global: bool,
-    #[serde(default)]
-    id: Option<String>,
+struct PatchArgs {
+    ops: Vec<OpArgs>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ForgetArgs {
-    id: String,
+struct OpArgs {
+    page: String,
+    #[serde(default)]
+    global: bool,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    delete: bool,
+    #[serde(default)]
+    base_updated_at: Option<u64>,
 }
 
-/// Saves or updates one memory for the chat's owner, or a global one.
-pub(super) struct WriteMemory {
-    pub(super) store: Arc<MemoryStore>,
-    pub(super) owner: Arc<MemoryOwner>,
-    pub(super) frontend: FrontendEventSink,
-}
-
-/// Forgets one memory the chat's owner can see.
-pub(super) struct ForgetMemory {
-    pub(super) store: Arc<MemoryStore>,
-    pub(super) owner: Arc<MemoryOwner>,
-    pub(super) frontend: FrontendEventSink,
-}
-
-async fn publish(
-    store: &MemoryStore,
-    frontend: &FrontendEventSink,
-    _access: &Access<'_>,
-) -> Result<()> {
-    publish_widgets(frontend, &items(store.all().await?))
-}
-
-impl Tool for WriteMemory {
-    fn definition(&self) -> &Arc<ToolDefinition> {
-        &text::DEFINITION.write_memory.tool
+/// Validates `patch_memory` arguments; one bad op rejects the whole call before any write.
+pub(super) fn parse_ops(arguments: Value) -> Result<Vec<Op>> {
+    let PatchArgs { ops } = serde_json::from_value(arguments)?;
+    if ops.is_empty() || ops.len() > MAX_OPS {
+        return Err(Error::Tool(format!("ops holds 1–{MAX_OPS} changes")));
     }
-
-    fn approval(&self) -> ApprovalRequirement {
-        ApprovalRequirement::Always
-    }
-
-    fn call(
-        &self,
-        _context: ToolContext,
-        arguments: Value,
-    ) -> BoxFuture<'_, Result<crate::protocol::ToolResponse>> {
-        Box::pin(async move {
-            let arguments: WriteArgs = serde_json::from_value(arguments)?;
-            let access = self.store.access.lock().await;
-            let outcome = match (&arguments.id, arguments.global) {
-                (Some(_), true) => {
-                    return Err(Error::Tool(
-                        text::DEFINITION.error_global_update.as_str().into(),
-                    ));
-                }
-                (Some(id), false) => {
-                    self.store
-                        .edit_locked(
-                            Reach::Visible(&self.owner),
-                            id,
-                            &arguments.memory,
-                            Basis::AgentObservation,
-                            &access,
-                        )
-                        .await?;
-                    WriteOutcome::Updated
-                }
-                (None, global) => {
-                    self.store
-                        .write_locked(
-                            (!global).then_some(&self.owner),
-                            Some(&self.owner),
-                            &arguments.memory,
-                            Basis::AgentObservation,
-                            &access,
-                        )
-                        .await?
+    ops.into_iter()
+        .map(|op| {
+            let page = pages::validate_name(&op.page).map_err(Error::Tool)?;
+            let change = match (op.delete, op.description, op.body) {
+                (true, None, None) => Change::Delete,
+                (false, Some(description), Some(body)) => Change::Set {
+                    description: pages::validate_description(&description).map_err(Error::Tool)?,
+                    body: pages::canonical_body(&body).map_err(Error::Tool)?,
+                },
+                _ => {
+                    return Err(Error::Tool(format!(
+                        "{page}: an op either sets description and body, or has delete: true alone"
+                    )));
                 }
             };
-            if outcome != WriteOutcome::Existing {
-                publish(&self.store, &self.frontend, &access).await?;
-            }
-            drop(access);
-            Ok(match outcome {
-                WriteOutcome::Added => text::DEFINITION.message_added.as_str(),
-                WriteOutcome::Updated => text::DEFINITION.message_updated.as_str(),
-                WriteOutcome::Existing => text::DEFINITION.message_existing.as_str(),
-            }
-            .into())
+            Ok(Op {
+                page,
+                global: op.global,
+                change,
+                base_updated_at: op.base_updated_at,
+            })
         })
-    }
+        .collect()
 }
 
-impl Tool for ForgetMemory {
+/// Creates, rewrites and deletes the chat owner's pages, or global ones.
+pub(super) struct PatchMemory {
+    pub(super) store: Arc<MemoryStore>,
+    pub(super) owner: Arc<MemoryOwner>,
+    pub(super) frontend: FrontendEventSink,
+}
+
+impl Tool for PatchMemory {
     fn definition(&self) -> &Arc<ToolDefinition> {
-        &text::DEFINITION.forget_memory.tool
+        &text::DEFINITION.patch_memory.tool
     }
 
     fn approval(&self) -> ApprovalRequirement {
@@ -125,14 +87,26 @@ impl Tool for ForgetMemory {
         arguments: Value,
     ) -> BoxFuture<'_, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
-            let arguments: ForgetArgs = serde_json::from_value(arguments)?;
+            let ops = parse_ops(arguments)?;
             let access = self.store.access.lock().await;
-            self.store
-                .forget_locked(Reach::Visible(&self.owner), &arguments.id, &access)
+            let results = self
+                .store
+                .apply_locked(
+                    &self.owner,
+                    ops,
+                    Basis::AgentObservation,
+                    Writer::Chat,
+                    &access,
+                )
                 .await?;
-            publish(&self.store, &self.frontend, &access).await?;
+            publish_widgets(&self.frontend, &items(&self.store.pages.all().await?)?)?;
             drop(access);
-            Ok(text::DEFINITION.message_forgot.as_str().into())
+            Ok(format!(
+                "{}\n{}",
+                text::DEFINITION.message_patched,
+                results.join("\n")
+            )
+            .into())
         })
     }
 }

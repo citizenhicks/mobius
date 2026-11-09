@@ -519,6 +519,14 @@ impl Runner {
                 events: &mut messages,
             })
             .await?;
+        if !self
+            .state
+            .active_execution
+            .as_ref()
+            .is_some_and(|execution| execution.idle)
+        {
+            self.idle.reset();
+        }
         self.catalog.finish_tool_turn(turn_id)?;
         Ok(messages
             .into_iter()

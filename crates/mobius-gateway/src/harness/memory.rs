@@ -49,9 +49,14 @@ pub(crate) async fn list(context: &MemoryContext<'_>) -> Result<Vec<MemoryRecord
     Ok(memories)
 }
 
-/// Replaces the text of the editable memory `id`.
-pub(crate) async fn edit(context: &MemoryContext<'_>, id: &str, text: &str) -> Result<()> {
-    Ok(context.memory.edit(id, text).await?)
+/// Replaces the description and body of the editable memory page `id`.
+pub(crate) async fn edit(
+    context: &MemoryContext<'_>,
+    id: &str,
+    description: &str,
+    text: &str,
+) -> Result<()> {
+    Ok(context.memory.edit(id, description, text).await?)
 }
 
 /// Forgets the editable memory `id`.
@@ -84,6 +89,9 @@ fn mobius_record(item: MemoryItem, projects: &[WorkspaceInfo]) -> MemoryRecord {
     let owner = item.owner.as_deref();
     MemoryRecord {
         id: item.id,
+        name: item.name,
+        description: item.description,
+        links: item.links,
         harness: HarnessKind::Mobius,
         project: owner
             .filter(|_| !item.global)
@@ -105,7 +113,7 @@ fn mobius_record(item: MemoryItem, projects: &[WorkspaceInfo]) -> MemoryRecord {
             }),
         bot_id: owner.map(|owner| Arc::clone(&owner.bot)),
         global: item.global,
-        text: item.text,
+        text: item.body,
         updated_at: i64::try_from(item.updated_at).unwrap_or(i64::MAX),
         editable: true,
     }
