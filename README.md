@@ -33,11 +33,11 @@
 
 The iPhone and iPad app connects to the same gateway and is maintained separately.
 
-The current release is **0.17.1** for all four packages. It requires protocol **100**
+The current release is **0.17.2** for all four packages. It requires protocol **100**
 clients and gateway configuration version **30**. This release removes public Rust
 APIs; applications embedding the framework must update their integrations. Existing
 gateways require an offline configuration conversion that preserves usage history
-in `usage.json`. Read the [upgrade notes](https://github.com/citizenhicks/mobius/releases/tag/mobius-gateway-v0.17.1)
+in `usage.json`. Read the [upgrade notes](https://github.com/citizenhicks/mobius/releases/tag/mobius-gateway-v0.17.2)
 before replacing an existing gateway; protocol-99 apps cannot connect to it.
 
 ## Quick start
