@@ -21,6 +21,7 @@ use crate::protocol::{
     PromptCacheOutcome, ToolDiscoveryMode,
 };
 
+pub mod a2agent;
 pub mod anthropic;
 mod authorization;
 mod cancellation;

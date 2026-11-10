@@ -68,6 +68,7 @@ pub fn preview_glyph(symbol: Option<&FrontendSymbol>) -> &'static str {
 /// rather than drawn as a placeholder (MobiusSymbol.knownGlyph).
 pub fn known_symbol_icon(symbol: Option<&FrontendSymbol>) -> Option<&'static str> {
     const SYMBOLS: &[(&str, &str)] = &[
+        ("a2agent", "provider.a2agent"),
         ("agent", "bot.face"),
         ("brain", "hi.stickyNote02"),
         ("branch", "hi.gitBranch"),
