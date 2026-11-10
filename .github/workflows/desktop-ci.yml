@@ -1,15 +1,6 @@
 name: Desktop CI
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - apps/macos/**
-      - src/**
-      - crates/mobius-gateway/**
-      - Cargo.toml
-      - .github/sync-gateway-contract.py
-      - .github/workflows/desktop-*.yml
   pull_request:
     paths:
       - apps/macos/**
@@ -19,6 +10,7 @@ on:
       - .github/sync-gateway-contract.py
       - .github/workflows/desktop-*.yml
   workflow_call:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -44,7 +36,11 @@ jobs:
         run: |
           rustup toolchain install --profile minimal --component clippy --component rustfmt
       - name: Select the browser SDK cache directory
-        run: printf 'CEF_PATH=%s/mobius-cef\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+        run: |
+          printf 'CEF_PATH=%s/mobius-cef\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          sdk_version="$(awk '/^name = "cef-dll-sys"$/ { getline; gsub(/"/, "", $3); print $3 }' Cargo.lock)"
+          test -n "$sdk_version"
+          printf 'CEF_CACHE_VERSION=%s\n' "$sdk_version" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: apps/macos -> target
@@ -52,7 +48,7 @@ jobs:
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: ${{ env.CEF_PATH }}
-          key: cef-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/macos/Cargo.lock') }}
+          key: cef-${{ runner.os }}-${{ runner.arch }}-${{ env.CEF_CACHE_VERSION }}
       - name: Install the Metal Toolchain for SwiftTerm
         run: xcodebuild -downloadComponent MetalToolchain
       - name: Install the build tools for Chromium's bindings

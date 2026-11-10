@@ -224,9 +224,12 @@ python3 .github/sync-gateway-contract.py --check
 
 `.github/rules.sh` checks the rules in this file that Clippy cannot express (no clones,
 no hosted-service names, no serde aliases, provider and middleware names only in their
-owners). CI runs all of the above, checks the minimum toolchain with
-`cargo +1.99.0 check --workspace --all-targets --all-features --locked`, and lints the
-generated manual pages.
+owners). Pull requests and manually dispatched qualification run all of the above, check
+the minimum toolchain with
+`cargo +1.99.0 check --workspace --all-targets --all-features --locked`, and lint the
+generated manual pages. Relevant main pushes run formatting, rules and contract
+checks only. Before tagging, manually dispatch `ci.yml` and `desktop-ci.yml` on
+the exact main commit; release workflows require both applicable full qualifications.
 
 Shortcuts: `just test` runs the test command, `just complexity` runs the Clippy command
 (`cognitive_complexity` is one of its lints), `just rules` runs `rules.sh`, and `just fmt`

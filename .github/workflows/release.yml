@@ -29,7 +29,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          gh run list --workflow ci.yml --branch main --commit "$GITHUB_SHA" \
+          gh run list --workflow ci.yml --branch main --event workflow_dispatch --commit "$GITHUB_SHA" \
             --status completed --json conclusion \
             --jq 'any(.[]; .conclusion == "success")' | grep -Fxq true
 
