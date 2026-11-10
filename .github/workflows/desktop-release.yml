@@ -140,7 +140,7 @@ jobs:
           gh release create "$GITHUB_REF_NAME" "dist/mobius-desktop-$version.dmg" \
             "dist/mobius-desktop-$version.dmg.sha256" "dist/mobius-desktop-$version.zip" \
             "dist/mobius-desktop-$version.zip.sha256" dist/appcast.xml dist/release.json \
-            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --repo "$GITHUB_REPOSITORY" --verify-tag \
             --title "möbius for macOS $version" \
             --notes-file "../../.github/release-notes/${GITHUB_REF_NAME}.md" --prerelease --latest=false
       - name: Remove signing material
