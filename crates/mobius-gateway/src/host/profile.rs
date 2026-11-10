@@ -283,7 +283,15 @@ pub(super) async fn gateway_ready(
         .bot_defaults
         .as_ref()
         .map(|defaults| {
-            crate::harness::mobius::assembly::bot_capabilities(&defaults.config, &voices)
+            let middleware = &defaults.config.middleware;
+            crate::harness::mobius::middleware_manifest::string_setting(
+                middleware,
+                mobius::middleware::voice::MANIFEST.id,
+                "model",
+            )
+            .map(|model| {
+                crate::harness::mobius::assembly::bot_capabilities(middleware, model, &voices)
+            })
         })
         .transpose()
         .map_err(internal)?;

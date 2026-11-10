@@ -10,6 +10,7 @@ use super::{
     read_frame_with_limit, selected_broadcast, validate_version, websocket_error, write_frame,
     write_rejection, write_server_error,
 };
+use crate::host::GatewayUpdate;
 use mobius::SessionId;
 
 use std::collections::VecDeque;
@@ -839,7 +840,8 @@ async fn dispatch_authenticated_frame(
     if client.access_lease.is_some_and(AccessLease::expired) {
         return Ok(false);
     }
-    handle_message(
+    // One match handles every message, so its future is large; keep it off the stack.
+    Box::pin(handle_message(
         frame.message,
         client.auth,
         host,
@@ -847,7 +849,7 @@ async fn dispatch_authenticated_frame(
         client,
         connection,
         writer,
-    )
+    ))
     .await?;
     Ok(true)
 }
@@ -1061,32 +1063,28 @@ fn profile_request(
     }
 }
 
-async fn write_gateway_broadcast(
-    writer: &mut (impl AsyncWrite + Unpin),
-    host: &GatewayHost,
-    view: &mut ClientView,
-    mut frame: ServerFrame,
-) -> Result<()> {
-    // Queued catalogs can predate a mutation response on this connection.
-    if let ServerMessage::Bots { bots, .. } = &mut frame.message {
-        *bots = host
-            .bots()
-            .await
-            .map_err(|rejection| Error::Protocol(rejection.message.to_string()))?;
-    }
-    view.write_broadcast(writer, frame).await
-}
-
 async fn handle_gateway_broadcast(
-    outgoing: std::result::Result<ServerFrame, broadcast::error::RecvError>,
+    outgoing: std::result::Result<GatewayUpdate, broadcast::error::RecvError>,
     host: &GatewayHost,
     disabled: &BTreeSet<GatewayNotification>,
     view: &mut ClientView,
     writer: &mut (impl AsyncWrite + Unpin),
 ) -> Result<()> {
     match outgoing {
-        Ok(frame) if notification_disabled(&frame.message, disabled) => Ok(()),
-        Ok(frame) => write_gateway_broadcast(writer, host, view, frame).await,
+        Ok(GatewayUpdate::Frame(frame)) => view.write_broadcast(writer, frame).await,
+        Ok(GatewayUpdate::Sessions(_)) if disabled.contains(&GatewayNotification::Sessions) => {
+            Ok(())
+        }
+        Ok(GatewayUpdate::Sessions(catalog)) => view.write_session_changes(writer, catalog).await,
+        Ok(GatewayUpdate::BotsChanged) if disabled.contains(&GatewayNotification::Bots) => Ok(()),
+        Ok(GatewayUpdate::BotsChanged) => {
+            // Read when written: a queued change can predate a mutation response here.
+            let bots = host
+                .bots()
+                .await
+                .map_err(|rejection| Error::Protocol(rejection.message.to_string()))?;
+            view.write_bots(writer, None, bots).await
+        }
         Err(broadcast::error::RecvError::Lagged(_)) => {
             let ready = host
                 .ready()
@@ -1103,22 +1101,6 @@ async fn handle_gateway_broadcast(
             Err(Error::Protocol("gateway event stream ended".into()))
         }
     }
-}
-
-fn notification_disabled(
-    message: &ServerMessage,
-    disabled: &BTreeSet<GatewayNotification>,
-) -> bool {
-    let notification = match message {
-        ServerMessage::Sessions {
-            request_id: None, ..
-        } => GatewayNotification::Sessions,
-        ServerMessage::Bots {
-            request_id: None, ..
-        } => GatewayNotification::Bots,
-        _ => return false,
-    };
-    disabled.contains(&notification)
 }
 
 async fn handle_selected_broadcast(

@@ -152,9 +152,9 @@ impl FrontendExtensions {
     /// Returns command and widget manifests in capability order, with current session counts.
     /// # Errors
     ///
-    /// Returns an error if a middleware exports metadata for another capability.
+    /// Never fails today; the `Result` keeps the catalog contract open for validation.
     pub fn contributions(&self) -> Result<Vec<FrontendContribution>> {
-        self.stack.declared_frontend(&self.session_id)
+        Ok(self.stack.declared_frontend(&self.session_id))
     }
 
     /// Returns the smallest input-token limit installed middleware enforce for a context window.
@@ -623,32 +623,20 @@ impl MiddlewareStack {
     ///
     /// Returns an error if validation or an operation required by this function fails.
     pub fn frontend(&self, session_id: &str) -> Result<Vec<FrontendContribution>> {
-        let contributions = self.declared_frontend(session_id)?;
+        let contributions = self.declared_frontend(session_id);
         validate_frontend(&contributions)?;
         Ok(contributions)
     }
 
-    fn declared_frontend(&self, session_id: &str) -> Result<Vec<FrontendContribution>> {
-        let mut contributions = Vec::new();
+    /// Every installed middleware appears in the catalog under its own name.
+    fn declared_frontend(&self, session_id: &str) -> Vec<FrontendContribution> {
+        let mut contributions = Vec::with_capacity(self.entries.len());
         for entry in &self.entries {
-            let contribution = entry.frontend(session_id);
-            if contribution.capability.is_empty()
-                && contribution.commands.is_empty()
-                && contribution.widgets.is_empty()
-                && contribution.references.is_empty()
-            {
-                continue;
-            }
-            if *contribution.capability != *entry.name() {
-                return Err(Error::Config(format!(
-                    "middleware `{}` exported frontend metadata for `{}`",
-                    entry.name(),
-                    contribution.capability
-                )));
-            }
+            let mut contribution = entry.frontend(session_id);
+            contribution.capability = entry.name().into();
             contributions.push(contribution);
         }
-        Ok(contributions)
+        contributions
     }
 
     fn message_handler(&self) -> Option<&Arc<dyn Middleware>> {
@@ -701,6 +689,12 @@ impl MiddlewareStack {
         let Some(entry) = self.entries.iter().find(|entry| entry.name() == middleware) else {
             return Ok(None);
         };
+        if !declares_command(entry, context.session_id.as_str(), context.command) {
+            return Ok(Some(SubmissionResult::Rejected(format!(
+                "unknown middleware command `{middleware}/{}`",
+                context.command
+            ))));
+        }
         if entry.handles_messages() {
             context.queued_messages.scope(entry.name());
         }
@@ -995,12 +989,7 @@ impl MiddlewareStack {
             .iter()
             .find(|entry| entry.name() == middleware)
             .ok_or_else(|| Error::Unknown(format!("middleware `{middleware}`")))?;
-        let declared = entry
-            .frontend(context.session_id)
-            .commands
-            .into_iter()
-            .any(|command| *command.name == *context.command);
-        if !declared {
+        if !declares_command(entry, context.session_id, context.command) {
             return Err(Error::Unknown(format!(
                 "middleware command `{middleware}/{}`",
                 context.command
@@ -1008,6 +997,15 @@ impl MiddlewareStack {
         }
         entry.command(context).await
     }
+}
+
+/// Commands reach a middleware only when its frontend contribution declares them.
+fn declares_command(entry: &Arc<dyn Middleware>, session_id: &str, command: &str) -> bool {
+    entry
+        .frontend(session_id)
+        .commands
+        .iter()
+        .any(|declared| *declared.name == *command)
 }
 
 fn validate_tool_rendering(

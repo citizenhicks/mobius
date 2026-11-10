@@ -1,63 +1,34 @@
 //! The gateway's per-chat browser assignment rendered by the local Mac app.
 
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex, MutexGuard},
-    time::Duration,
-};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use mobius::{Error, Result, SessionId};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 use uuid::Uuid;
 
+use super::app_bridge::{self, AppBridge, AppConnection, Occupied};
 use crate::wire::ServerMessage;
 
 /// How long a call waits for the app's page before using the worker's own browser.
 const PAGE_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_PENDING_PAGES: usize = 8;
 
-#[derive(Default)]
-pub(crate) struct BrowserHost {
-    app: Mutex<Option<App>>,
-}
+/// Page requests awaiting the renderer's reply.
+type Pending = HashMap<Uuid, oneshot::Sender<Option<String>>>;
 
-struct App {
-    id: Uuid,
-    outgoing: mpsc::Sender<ServerMessage>,
-    pending: HashMap<Uuid, oneshot::Sender<Option<String>>>,
-}
+pub(crate) type BrowserHost = AppBridge<Pending>;
 
 /// The renderer connection. Dropping it withdraws the browser and answers waiting
 /// calls with none.
-pub(crate) struct BrowserConnection {
-    host: Arc<BrowserHost>,
-    id: Uuid,
-    pub(crate) outgoing: mpsc::Receiver<ServerMessage>,
+pub(crate) type BrowserConnection = AppConnection<Pending>;
+
+impl Default for BrowserHost {
+    fn default() -> Self {
+        Self::new("browser renderer")
+    }
 }
 
 impl BrowserHost {
-    fn app(&self) -> Result<MutexGuard<'_, Option<App>>> {
-        self.app
-            .lock()
-            .map_err(|_poisoned| Error::Poisoned("browser renderer"))
-    }
-
-    /// Registers this renderer; a newer connection replaces it.
-    pub(crate) fn attach(self: &Arc<Self>) -> Result<BrowserConnection> {
-        let id = Uuid::new_v4();
-        let (outgoing, receiver) = mpsc::channel(MAX_PENDING_PAGES);
-        *self.app()? = Some(App {
-            id,
-            outgoing,
-            pending: HashMap::new(),
-        });
-        Ok(BrowserConnection {
-            host: Arc::clone(self),
-            id,
-            outgoing: receiver,
-        })
-    }
-
     /// Requests the renderer's assigned page for this chat.
     pub(crate) async fn page(&self, session_id: &SessionId, foreground: bool) -> Option<String> {
         let request = Uuid::new_v4();
@@ -103,11 +74,7 @@ impl BrowserConnection {
             ))
         })?;
         let reply = self
-            .host
-            .app()?
-            .as_mut()
-            .filter(|app| app.id == self.id)
-            .and_then(|app| app.pending.remove(&request))
+            .with_app(|app| app.and_then(|app| app.pending.remove(&request)))?
             .ok_or_else(stale)?;
         if reply
             .send(endpoint.filter(|endpoint| scoped_endpoint(endpoint)))
@@ -119,17 +86,6 @@ impl BrowserConnection {
             );
         }
         Ok(())
-    }
-}
-
-impl Drop for BrowserConnection {
-    fn drop(&mut self) {
-        // A poisoned renderer slot is never read; the next attach reports it.
-        if let Ok(mut app) = self.host.app()
-            && app.as_ref().is_some_and(|app| app.id == self.id)
-        {
-            *app = None;
-        }
     }
 }
 
@@ -158,28 +114,6 @@ fn scoped_endpoint(endpoint: &str) -> bool {
         && token.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-pub(crate) async fn next_update(
-    connection: &mut Option<BrowserConnection>,
-) -> Option<ServerMessage> {
-    match connection {
-        Some(connection) => connection.outgoing.recv().await,
-        None => std::future::pending().await,
-    }
-}
-
-pub(crate) async fn write_update(
-    connection: &mut Option<BrowserConnection>,
-    message: Option<ServerMessage>,
-    writer: &mut (impl tokio::io::AsyncWrite + Unpin),
-) -> crate::Result<()> {
-    if let Some(message) = message {
-        crate::wire::write_frame(writer, &crate::wire::ServerFrame::new(message)).await
-    } else {
-        *connection = None;
-        Ok(())
-    }
-}
-
 /// A connection's request to lend, or stop lending, its browser renderer.
 pub(crate) struct Registration {
     pub(crate) request_id: Arc<str>,
@@ -206,7 +140,8 @@ pub(crate) async fn set_runtime(
     } = registration;
     let result = if available && cfg!(target_os = "macos") && local && client.browser_renderer {
         if enabled {
-            host.attach().map(|attached| *connection = Some(attached))
+            host.attach(MAX_PENDING_PAGES, Occupied::Replace)
+                .map(|attached| *connection = Some(attached))
         } else {
             *connection = None;
             Ok(())
@@ -216,7 +151,7 @@ pub(crate) async fn set_runtime(
             "only a local browser renderer can register on this gateway".into(),
         ))
     };
-    write_outcome(writer, request_id, result).await
+    app_bridge::write_outcome(writer, request_id, "browser", result).await
 }
 
 /// Delivers the renderer's answer to one page request.
@@ -233,25 +168,7 @@ pub(crate) async fn reply(
     if result.is_ok() {
         return Ok(());
     }
-    write_outcome(writer, request_id, result).await
-}
-
-async fn write_outcome(
-    writer: &mut (impl tokio::io::AsyncWrite + Unpin),
-    request_id: Arc<str>,
-    result: Result<()>,
-) -> crate::Result<()> {
-    use crate::wire::{ServerFrame, write_frame};
-    let response = match result {
-        Ok(()) => ServerMessage::Accepted { request_id },
-        Err(error) => ServerMessage::Rejected {
-            request_id,
-            code: "browser".into(),
-            message: error.to_string().into(),
-            fatal: false,
-        },
-    };
-    write_frame(writer, &ServerFrame::new(response)).await
+    app_bridge::write_outcome(writer, request_id, "browser", result).await
 }
 
 #[cfg(test)]

@@ -150,6 +150,11 @@ impl QueuedMessage {
         &self.0.id
     }
 
+    /// Shares the submission ID without copying it.
+    pub(super) fn shared_id(&self) -> Arc<str> {
+        Arc::clone(&self.0.id)
+    }
+
     pub(crate) fn boundary(&self) -> &QueuedMessageBoundary {
         &self.0.boundary
     }

@@ -1,19 +1,19 @@
 use super::{
     AuthStore, CONNECTION_POLL_INTERVAL, ClientCapabilities, ClientMessage, CloudflareConfig,
-    ConfigStore, ConnectOptions, Duration, Endpoint, Error, GatewayClient, GatewayConfig, Instant,
-    PROCESS_FILE, PairingGrant, PairingStatus, PathBuf, Result, Serialize, ServerMessage,
-    SignalKind, StartupGuard, SystemTime, UNIX_EPOCH, Write, direct_loopback_endpoint,
-    loopback_endpoint, print_line, reuse_current_gateway, running_process_pid,
-    running_process_record, runtime_endpoint, shutdown_signal, signal, start_background_gateway,
-    stop_gateway,
+    ConfigStore, Duration, Endpoint, Error, GatewayClient, GatewayConfig, Instant, PROCESS_FILE,
+    PairingGrant, PairingStatus, PathBuf, Result, Serialize, ServerMessage, ShutdownSignals,
+    StartupGuard, SystemTime, UNIX_EPOCH, Write, direct_loopback_endpoint, loopback_endpoint,
+    print_line, reuse_current_gateway, running_process_pid, running_process_record,
+    runtime_endpoint, start_background_gateway, stop_gateway,
 };
 
 pub(super) async fn connect(
-    options: ConnectOptions,
+    state_dir: PathBuf,
+    endpoint: Option<Endpoint>,
     load_local_client: fn(&Endpoint) -> Result<Option<String>>,
 ) -> Result<()> {
-    let (store, config) = ConfigStore::open(options.state_dir)?;
-    let configured_endpoint = connection_endpoint(&config, options.endpoint)?;
+    let (store, config) = ConfigStore::open(state_dir)?;
+    let configured_endpoint = connection_endpoint(&config, endpoint)?;
     let startup = StartupGuard::create(store.state_dir())?;
     reuse_current_gateway(
         &store,
@@ -38,16 +38,17 @@ pub(super) async fn connect(
         return Ok(print_line(format_args!("gateway remains running"))?);
     }
     ensure_gateway_stopped(&store, &config)?;
-    let mut interrupts = signal(SignalKind::interrupt())?;
-    let mut terminations = signal(SignalKind::terminate())?;
+    let mut signals = ShutdownSignals::install()?;
 
     let auth = AuthStore::open(store.auth_path(), config.auth)?;
     let grant = auth.create_pairing_code()?;
     let deadline = pairing_deadline(grant.expires_at)?;
+    let binary = std::env::current_exe()?;
     let process = match start_background_gateway(
-        store.state_dir(),
-        &mut interrupts,
-        &mut terminations,
+        &store,
+        &config,
+        &binary,
+        Some(&mut signals),
         load_local_client,
     )
     .await
@@ -71,7 +72,7 @@ pub(super) async fn connect(
     let pid = process.pid;
     let runtime = tokio::select! {
         result = runtime_endpoint(&store, &config, &process) => result,
-        () = shutdown_signal(&mut interrupts, &mut terminations) => {
+        () = signals.recv() => {
             cleanup_connect(&store, config.auth, pid, &grant.code)?;
             return Ok(print_line(format_args!("connection cancelled"))?);
         }
@@ -166,7 +167,7 @@ pub(super) async fn connect(
         }
 
         tokio::select! {
-            () = shutdown_signal(&mut interrupts, &mut terminations) => {
+            () = signals.recv() => {
                 cleanup_connect(&store, config.auth, pid, &grant.code)?;
                 return Ok(print_line(format_args!("connection cancelled"))?);
             }

@@ -10,9 +10,9 @@ use super::{
 use crate::backend::checkpoint::{CheckpointStore, EventPageRequest, QueuedMessageBoundary};
 use crate::backend::model::internal_user_message;
 use crate::protocol::{
-    ActiveMessageDelivery, EventMsg, FrontendBlock, FrontendContribution, FrontendEvent,
-    FrontendSlot, FrontendSymbol, FrontendWidget, MessageAuthor, MessageDelivery, MessageEvent,
-    MessageReply, Op,
+    ActiveMessageDelivery, EventMsg, FrontendBlock, FrontendCommand, FrontendContribution,
+    FrontendEvent, FrontendSlot, FrontendSymbol, FrontendWidget, MessageAuthor, MessageDelivery,
+    MessageEvent, MessageReply, Op,
 };
 use crate::{BoxFuture, Result};
 
@@ -31,6 +31,8 @@ mod text {
         pub(super) edit_stale: String,
         pub(super) edit_empty: String,
         pub(super) edit_peer: String,
+        pub(super) command_edit_description: String,
+        pub(super) command_edit_arguments: String,
         pub(super) received_title: String,
         pub(super) default_enabled: bool,
         pub(super) manifest_description: String,
@@ -230,13 +232,6 @@ impl Middleware for Messages {
         MANIFEST.id
     }
 
-    fn frontend(&self, _session_id: &str) -> FrontendContribution {
-        FrontendContribution {
-            capability: self.name().into(),
-            ..FrontendContribution::default()
-        }
-    }
-
     fn render(&self, event: &EventMsg, _session_id: &str) -> Option<FrontendBlock> {
         let EventMsg::Message(message) = event else {
             return None;
@@ -308,6 +303,18 @@ impl Middleware for Messages {
             }
             Ok(())
         })
+    }
+
+    fn frontend(&self, _session_id: &str) -> FrontendContribution {
+        FrontendContribution {
+            commands: vec![FrontendCommand {
+                name: EDIT_COMMAND.into(),
+                arguments: text::DEFINITION.command_edit_arguments.as_str().into(),
+                description: text::DEFINITION.command_edit_description.as_str().into(),
+                requires_idle: false,
+            }],
+            ..FrontendContribution::default()
+        }
     }
 
     fn active_command<'a>(

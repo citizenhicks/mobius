@@ -386,7 +386,7 @@ impl Serialize for BotConfig {
 pub(crate) struct RuntimeBot {
     pub(crate) record: Arc<BotRecord>,
     pub(crate) composition: Arc<AgentComposition>,
-    pub(crate) approval_policy: mobius::backend::sandbox::ApprovalPolicy,
+    pub(crate) settings: Arc<crate::harness::mobius::middleware_manifest::MobiusSettings>,
 }
 
 impl StoredBot {
@@ -404,7 +404,11 @@ impl StoredBot {
             shape: self.shape,
             harness: self.config.versioned.config.kind(),
             config: Arc::clone(&self.config.versioned),
-            capabilities: crate::harness::bot_capabilities(&self.config.versioned.config, voices)?,
+            capabilities: crate::harness::bot_capabilities(
+                &self.config.versioned.config,
+                &self.config.approval,
+                voices,
+            ),
             routine_interaction_policy: self.config.approval.routine_interaction_policy(),
         })
     }
@@ -497,9 +501,9 @@ impl BotStore {
             return Ok(None);
         }
         let config = defaults.config.clone(); // rules-allow: callers keep their borrowed defaults; the seeded Bot owns its config
-        let approval = ApprovalMode::Mobius(crate::config::configured_approval_policy(
-            &config.middleware,
-        )?);
+        let approval = ApprovalMode::Mobius(Arc::new(
+            crate::harness::mobius::middleware_manifest::MobiusSettings::parse(&config.middleware)?,
+        ));
         let mut state = BotState::default();
         let bot = StoredBot {
             id: Uuid::new_v4().to_string().into(),
@@ -815,15 +819,15 @@ impl BotStore {
         let voices = self.voice_routes()?;
         let state = self.current_state()?;
         let bot = stored_bot(&state, id)?;
-        let (HarnessConfig::Mobius(composition), ApprovalMode::Mobius(approval_policy)) =
-            (&bot.config.versioned.config, bot.config.approval)
+        let (HarnessConfig::Mobius(composition), ApprovalMode::Mobius(settings)) =
+            (&bot.config.versioned.config, &bot.config.approval)
         else {
             return Err(Error::Config(format!("Bot `{id}` does not run on möbius")));
         };
         Ok(RuntimeBot {
             record: Arc::new(bot.record(&voices)?),
             composition: Arc::clone(composition),
-            approval_policy,
+            settings: Arc::clone(settings),
         })
     }
 

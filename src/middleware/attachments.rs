@@ -18,8 +18,8 @@ use super::{
 use crate::backend::model::{ToolDefinition, internal_user_message};
 use crate::backend::session_files::{SessionFileStore, session_storage_key};
 use crate::protocol::{
-    ATTACHMENT_CONTEXT_MARKER, ATTACHMENTS_FIELD, EventMsg, FrontendBlock, FrontendContribution,
-    INTERNAL_MESSAGE_FIELD, MESSAGE_METADATA_FIELD, SessionFileReference, internal_message_kind,
+    ATTACHMENT_CONTEXT_MARKER, ATTACHMENTS_FIELD, EventMsg, FrontendBlock, INTERNAL_MESSAGE_FIELD,
+    MESSAGE_METADATA_FIELD, SessionFileReference, internal_message_kind,
 };
 use crate::{BoxFuture, Error, Result};
 
@@ -181,13 +181,6 @@ impl Middleware for Attachments {
         Ok(Some(PromptSection::new(
             text::DEFINITION.prompt_main.as_str(),
         )))
-    }
-
-    fn frontend(&self, _session_id: &str) -> FrontendContribution {
-        FrontendContribution {
-            capability: MANIFEST.id.into(),
-            ..FrontendContribution::default()
-        }
     }
 
     fn render(&self, event: &EventMsg, _session_id: &str) -> Option<FrontendBlock> {

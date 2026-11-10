@@ -79,7 +79,7 @@ pub(super) async fn install_model(
         crate::bots::RuntimeBot {
             record: Arc::new(bot.clone()),
             composition: Arc::clone(composition),
-            approval_policy: crate::config::validate_agent_composition(composition).unwrap(),
+            settings: Arc::new(crate::config::validate_mobius_settings(composition).unwrap()),
         },
         &state.store,
         &state.credentials,
@@ -250,8 +250,10 @@ async fn idle_compaction_keeps_the_last_answer_and_emits_no_turn_hooks() {
     assert!(model.calls.load(Ordering::Relaxed) > 1);
     gateway.dispatch_bot_events().await.unwrap();
     while let Ok(frame) = hooks.try_recv() {
-        assert!(!matches!(&frame.message, ServerMessage::HookEvent { event }
-            if matches!(&event.data, HookData::SessionTurnStarted { .. } | HookData::SessionTurnFinished { .. })));
+        assert!(
+            !matches!(&frame.message(), ServerMessage::HookEvent { event }
+            if matches!(&event.data, HookData::SessionTurnStarted { .. } | HookData::SessionTurnFinished { .. }))
+        );
     }
     gateway.shutdown().await;
 }
@@ -382,7 +384,8 @@ async fn a_steered_idle_turn_publishes_normal_activity_and_hooks_without_an_extr
     .unwrap();
     let running = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
-            if let ServerMessage::Sessions { sessions, .. } = catalog.recv().await.unwrap().message
+            if let ServerMessage::Sessions { sessions, .. } =
+                catalog.recv().await.unwrap().message()
                 && let Some(activity) = sessions
                     .into_iter()
                     .find(|session| session.session_id == *host.session_id())
@@ -405,7 +408,7 @@ async fn a_steered_idle_turn_publishes_normal_activity_and_hooks_without_an_extr
     gateway.dispatch_bot_events().await.unwrap();
     let mut hooks = Vec::new();
     while let Ok(frame) = catalog.try_recv() {
-        if let ServerMessage::HookEvent { event } = frame.message {
+        if let ServerMessage::HookEvent { event } = frame.message() {
             match &event.data {
                 HookData::SessionTurnStarted { turn_id, .. } if turn_id == &idle_turn => {
                     hooks.push("started");

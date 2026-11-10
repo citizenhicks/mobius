@@ -52,6 +52,18 @@ impl Middleware for RefillMiddleware {
         "refill"
     }
 
+    fn frontend(&self, _session_id: &str) -> crate::protocol::FrontendContribution {
+        crate::protocol::FrontendContribution {
+            commands: vec![crate::protocol::FrontendCommand {
+                name: "refill".into(),
+                arguments: "".into(),
+                description: "refill".into(),
+                requires_idle: false,
+            }],
+            ..Default::default()
+        }
+    }
+
     fn active_command<'a>(
         &'a self,
         context: &'a mut ActiveCommandContext<'_>,
@@ -159,6 +171,29 @@ async fn rejected_input_refill_cannot_starve_model_completion() {
     *refill.sender.lock().expect("refill sender lock") = Some(agent.sender());
     agent.sender().submit(user_op("start")).expect("start turn");
     active_turn(&mut agent, &started).await;
+    let unknown = agent
+        .sender()
+        .submit(Op::command("refill", "not-declared", String::new()))
+        .expect("submit unknown command");
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let event = agent.next_event().await.expect("command rejection");
+            match event.msg {
+                EventMsg::SubmissionRejected(_)
+                    if event.submission_id.as_deref() == Some(&*unknown) =>
+                {
+                    break;
+                }
+                EventMsg::Error(_) | EventMsg::TurnAborted(_) => {
+                    panic!("an unknown command must not fail the active turn");
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("unknown command is rejected while the model remains active");
+    assert_eq!(refill.count.load(Ordering::SeqCst), 0);
     agent
         .sender()
         .submit(RefillMiddleware::op())

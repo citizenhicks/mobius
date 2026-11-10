@@ -4,9 +4,10 @@
 use std::collections::HashMap;
 
 use super::{Arc, AsyncWrite, BTreeMap, BTreeSet, Result, ServerFrame, ServerMessage, write_frame};
+use crate::host::SessionCatalogUpdate;
 use crate::wire::{
     BotRecord, CatalogHint, READY_SECTIONS, ReadySection, SessionRecord, SessionSlot,
-    apply_session_changes, content_revision,
+    content_revision,
 };
 
 pub(super) struct ClientView {
@@ -17,7 +18,7 @@ pub(super) struct ClientView {
     /// Revision of each section as this client last received it.
     held: BTreeMap<ReadySection, String>,
     /// The session catalog this client last received.
-    sessions: Option<Vec<SessionRecord>>,
+    sessions: Option<Arc<[SessionRecord]>>,
 }
 
 impl ClientView {
@@ -86,31 +87,23 @@ impl ClientView {
             if !payload.omitted.contains(&ReadySection::Sessions) {
                 payload.swap_section(&mut spare, ReadySection::Sessions);
             }
-            self.sessions = Some(spare.sessions);
+            self.sessions = Some(spare.sessions.into());
         }
         Ok(())
     }
 
-    /// Writes one gateway broadcast as the changes this client has not seen.
+    /// Writes one shared gateway broadcast frame, a Ready catalog without what this client
+    /// holds.
     pub(super) async fn write_broadcast(
         &mut self,
         writer: &mut (impl AsyncWrite + Unpin),
-        frame: ServerFrame,
+        frame: Arc<ServerFrame>,
     ) -> Result<()> {
-        match frame.message {
-            ServerMessage::Ready { .. } => self.write_catalog(writer, frame).await,
-            ServerMessage::Sessions {
-                request_id: None,
-                sessions,
-            } => self.write_session_changes(writer, sessions).await,
-            ServerMessage::Sessions {
-                request_id,
-                sessions,
-            } => self.write_sessions(writer, request_id, sessions).await,
-            ServerMessage::Bots { request_id, bots } => {
-                self.write_bots(writer, request_id, bots).await
-            }
-            message => write_frame(writer, &ServerFrame::new(message)).await,
+        if matches!(frame.message, ServerMessage::Ready { .. }) {
+            self.write_catalog(writer, Arc::unwrap_or_clone(frame))
+                .await
+        } else {
+            write_frame(writer, &*frame).await
         }
     }
 
@@ -129,7 +122,7 @@ impl ClientView {
         });
         write_frame(writer, &frame).await?;
         if let ServerMessage::Sessions { sessions, .. } = frame.message {
-            self.sessions = Some(sessions);
+            self.sessions = Some(sessions.into());
         }
         Ok(())
     }
@@ -153,17 +146,18 @@ impl ClientView {
         .await
     }
 
-    async fn write_session_changes(
+    /// Writes a broadcast session catalog as the changes this client has not seen.
+    pub(super) async fn write_session_changes(
         &mut self,
         writer: &mut (impl AsyncWrite + Unpin),
-        sessions: Vec<SessionRecord>,
+        catalog: SessionCatalogUpdate,
     ) -> Result<()> {
         let previous = self.sessions.take();
         let held = previous.as_deref().unwrap_or_default();
-        let unchanged = unchanged_positions(held, &sessions);
+        let unchanged = unchanged_positions(held, &catalog.sessions);
         // Before any catalog reached this client, every session counts as changed.
         if previous.is_some()
-            && sessions.len() == held.len()
+            && catalog.sessions.len() == held.len()
             && unchanged
                 .iter()
                 .enumerate()
@@ -172,26 +166,25 @@ impl ClientView {
             self.sessions = previous;
             return Ok(());
         }
-        let revision = content_revision(&sessions);
-        let slots = sessions
-            .into_iter()
+        let slots = catalog
+            .sessions
+            .iter()
             .zip(unchanged)
             .map(|(session, found)| match found {
-                Some(_) => SessionSlot::Unchanged(session.session_id),
-                None => SessionSlot::Changed(Box::new(session)),
+                Some(_) => SessionSlot::Unchanged(session.session_id.share()),
+                None => SessionSlot::Changed(Box::new(session.clone())), // rules-allow: the frame owns each changed record; the shared catalog stays intact
             })
             .collect();
         let frame = ServerFrame::new(ServerMessage::SessionsChanged {
             sessions: slots,
-            revision,
+            revision: catalog.revision.to_string(),
         });
         write_frame(writer, &frame).await?;
-        if let ServerMessage::SessionsChanged { sessions, revision } = frame.message {
+        if let ServerMessage::SessionsChanged { revision, .. } = frame.message {
             self.held.insert(ReadySection::Sessions, revision);
-            let mut catalog = previous.unwrap_or_default();
-            apply_session_changes(&mut catalog, sessions);
-            self.sessions = Some(catalog);
         }
+        // The client applied these changes to what it held and now holds this catalog.
+        self.sessions = Some(catalog.sessions);
         Ok(())
     }
 }

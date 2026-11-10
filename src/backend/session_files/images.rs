@@ -85,7 +85,7 @@ impl SessionFileStore {
         &self,
         session_id: &SessionId,
         image: &ImageReference,
-    ) -> Result<Option<ImageRendition>> {
+    ) -> Result<ImageRendition> {
         let record = self.resolve_image(session_id, image).await?;
         let policy = self.image_policy;
         let key = format!(
@@ -99,18 +99,18 @@ impl SessionFileStore {
         );
         let (width, height) = policy.dimensions(source_width, source_height);
         if record.image_rendition_key.as_deref() == Some(key.as_str()) {
-            return Ok(Some(ImageRendition {
+            return Ok(ImageRendition {
                 file: record.file,
                 width,
                 height,
-            }));
+            });
         }
         if let Some(rendition) = &image.rendition
             && let Some(rendition) = self
                 .resolve_rendition(session_id, rendition, &key, [width, height])
                 .await?
         {
-            return Ok(Some(rendition));
+            return Ok(rendition);
         }
         // ponytail: legacy references scan session records under one preparation lock; add a bounded
         // in-memory key-to-reference cache if repeated legacy replay scans become a bottleneck.
@@ -129,11 +129,11 @@ impl SessionFileStore {
                     "invalid cached image rendition dimensions".into(),
                 ));
             }
-            return Ok(Some(ImageRendition {
+            return Ok(ImageRendition {
                 file: record.file,
                 width,
                 height,
-            }));
+            });
         }
         // Blocking image work retains its semaphore permit even when the async caller is cancelled.
         let permit = Arc::clone(&self.state.image_work)
@@ -156,11 +156,11 @@ impl SessionFileStore {
                 Some(key),
             )
             .await?;
-            return Ok(Some(ImageRendition {
+            return Ok(ImageRendition {
                 file: record.file,
                 width,
                 height,
-            }));
+            });
         };
         let size = u64::try_from(bytes.len())
             .map_err(|error| Error::Tool(format!("image rendition size overflow: {error}")))?;
@@ -178,11 +178,11 @@ impl SessionFileStore {
         pending.record.image_dimensions = Some([width, height]);
         pending.record.image_orientation = Some(1);
         let file = pending.complete_bytes(&bytes).await?;
-        Ok(Some(ImageRendition {
+        Ok(ImageRendition {
             file,
             width,
             height,
-        }))
+        })
     }
 
     async fn resolve_image(
@@ -356,7 +356,7 @@ impl SessionFileStore {
             detail,
             rendition: None,
         };
-        image.rendition = self.prepare_image(session_id, &image).await?;
+        image.rendition = Some(self.prepare_image(session_id, &image).await?);
         Ok(image)
     }
 
@@ -537,7 +537,7 @@ impl SessionFileStore {
             detail,
             rendition: None,
         };
-        image.rendition = self.prepare_image(session_id, &image).await?;
+        image.rendition = Some(self.prepare_image(session_id, &image).await?);
         Ok(image)
     }
 
@@ -676,9 +676,8 @@ pub async fn grant_context<T: std::borrow::Borrow<serde_json::Value> + Sync>(
                 })?;
                 let image: ImageReference = serde::Deserialize::deserialize(image)?;
                 files.grant_file(parent, child, &image.file).await?;
-                if let Some(rendition) = files.prepare_image(parent, &image).await? {
-                    files.grant_file(parent, child, &rendition.file).await?;
-                }
+                let rendition = files.prepare_image(parent, &image).await?;
+                files.grant_file(parent, child, &rendition.file).await?;
             } else {
                 let file = part.get("file").ok_or_else(|| {
                     Error::Config("forked observation requires a file reference".into())
@@ -875,16 +874,14 @@ mod presentation_tests {
         let regenerated = store
             .prepare_image(&id, &image)
             .await
-            .expect("rebuild purged rendition")
-            .expect("rendition");
+            .expect("rebuild purged rendition");
         assert_ne!(regenerated.file.id, old_id);
         assert_eq!(
             store
                 .prepare_image(&id, &image)
                 .await
-                .expect("reuse regenerated")
-                .as_ref(),
-            Some(&regenerated)
+                .expect("reuse regenerated"),
+            regenerated
         );
         let input =
             [serde_json::json!({"role":"user", "content":[{"type":"input_image", "image":image}]})];
@@ -895,9 +892,8 @@ mod presentation_tests {
             store
                 .prepare_image(&child, &image)
                 .await
-                .expect("child retains the current rendition")
-                .as_ref(),
-            Some(&regenerated)
+                .expect("child retains the current rendition"),
+            regenerated
         );
         assert!(
             grant_context(

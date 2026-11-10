@@ -37,13 +37,13 @@ pub use self::store::{
 };
 pub use self::validation::validate_agent_composition;
 pub(crate) use self::validation::{
-    configured_approval_policy, effective_reasoning_effort, model_route_id,
-    validate_bot_compatibility,
+    effective_reasoning_effort, model_route_id, validate_bot_compatibility,
+    validate_mobius_settings,
 };
 use self::validation::{
     invalid_cloudflare_hostname, validate_agent_composition_with_ceilings,
     validate_cloudflare_token, validate_configured_provider,
-    validate_configured_provider_selection, validate_custom_model_route_count, validate_telemetry,
+    validate_configured_provider_selection, validate_custom_model_route_count,
 };
 pub(crate) use self::workspace::{
     CanonicalWorkspace, create_workspace_directory, local_user_name, validate_chat_workspace,
@@ -444,18 +444,20 @@ impl GatewayConfig {
                 previous.map_or_else(Vec::new, |previous| previous.models),
             )
         };
+        let entry = ConfiguredProvider {
+            selection: configured.selection,
+            label,
+            tint,
+            models,
+            image_model_ids,
+            image_models,
+            voice_models,
+            operator_managed,
+        };
+        validate_configured_provider(&entry)?;
         next.configured_providers.insert(
-            configured.selection.instance.clone(), // rules-allow: the map key and the stored selection each own the instance ID
-            ConfiguredProvider {
-                selection: configured.selection,
-                label,
-                tint,
-                models,
-                image_model_ids,
-                image_models,
-                voice_models,
-                operator_managed,
-            },
+            entry.selection.instance.clone(), // rules-allow: the map key and the stored selection each own the instance ID
+            entry,
         );
         if let Some(selection) = default_selection {
             let config = AgentComposition {
@@ -467,7 +469,8 @@ impl GatewayConfig {
                 config,
             });
         }
-        next.validated()
+        next.validate_catalog()?;
+        Ok(ValidatedGatewayConfig(next))
     }
 
     /// Removes one non-default provider and lets middleware inherit the primary model.
@@ -497,7 +500,8 @@ impl GatewayConfig {
             }
             next.bot_defaults = Some(default);
         }
-        next.validated()
+        next.validate_catalog()?;
+        Ok(ValidatedGatewayConfig(next))
     }
 
     /// Replaces only the defaults copied into future chats.
@@ -524,7 +528,8 @@ impl GatewayConfig {
                 .ok_or_else(|| Error::Config("configuration revision overflow".into()))?,
             config: composition,
         });
-        next.validated()
+        next.validate_bot_defaults()?;
+        Ok(ValidatedGatewayConfig(next))
     }
 
     /// Validates every persisted trust-boundary field.
@@ -538,7 +543,7 @@ impl GatewayConfig {
                 self.version
             )));
         }
-        validate_telemetry(&self.telemetry)?;
+        self.telemetry.validate()?;
         self.runtime.validate()?;
         self.connections.validate()?;
         self.auth.validate()?;
@@ -577,15 +582,6 @@ impl GatewayConfig {
         if let Some(cloudflare) = &self.cloudflare {
             cloudflare.validate()?;
         }
-        let has_chat = self
-            .configured_providers
-            .values()
-            .any(|configured| !configured.selection.model.is_empty());
-        if self.bot_defaults.is_some() != has_chat {
-            return Err(Error::Config(
-                "Bot defaults must exist exactly when a chat provider is configured".into(),
-            ));
-        }
         for (instance, configured) in &self.configured_providers {
             if instance != &configured.selection.instance {
                 return Err(Error::Config(format!(
@@ -596,7 +592,27 @@ impl GatewayConfig {
             validate_configured_provider(configured)?;
         }
         crate::harness::mobius::extensions::validate_installed(&self.installed_extensions)?;
+        self.validate_catalog()
+    }
+
+    /// Checks what a provider change can invalidate: the chat-provider invariant, the
+    /// custom route count, and the Bot defaults.
+    fn validate_catalog(&self) -> Result<()> {
+        let has_chat = self
+            .configured_providers
+            .values()
+            .any(|configured| !configured.selection.model.is_empty());
+        if self.bot_defaults.is_some() != has_chat {
+            return Err(Error::Config(
+                "Bot defaults must exist exactly when a chat provider is configured".into(),
+            ));
+        }
         validate_custom_model_route_count(&self.configured_providers)?;
+        self.validate_bot_defaults()
+    }
+
+    /// Checks the Bot defaults against the configured providers.
+    fn validate_bot_defaults(&self) -> Result<()> {
         if let Some(default) = &self.bot_defaults {
             if default.revision == 0 {
                 return Err(Error::Config(

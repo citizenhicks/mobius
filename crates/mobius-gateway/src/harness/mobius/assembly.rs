@@ -27,12 +27,12 @@ use mobius::middleware::subagents::Subagents;
 use mobius::middleware::tasks::Tasks;
 use mobius::middleware::tools::Tools;
 use mobius::middleware::{Middleware, MiddlewareStack};
-use mobius::protocol::{ActiveMessageDelivery, ModelChoice, ModelInfo, SessionContext, TokenUsage};
+use mobius::protocol::{ModelChoice, ModelInfo, SessionContext, TokenUsage};
 
 use crate::config::{ChatSpec, ConfigStore, CredentialStore, GatewayConfig, local_user_name};
 use crate::harness::mobius::extensions::{ExtensionStore, ResolvedExtensions};
 use crate::harness::mobius::middleware_manifest::{
-    BuiltinMiddleware, MIDDLEWARE, MiddlewareRegistration,
+    BuiltinMiddleware, MIDDLEWARE, MiddlewareRegistration, MobiusSettings,
 };
 use crate::harness::mobius::provider_catalog::{
     CatalogRoute, catalog_routes, configured_model_providers, configured_model_routes,
@@ -161,8 +161,8 @@ pub(crate) struct PreparedBot {
     models: Arc<ModelRouter>,
     context_window: i64,
     model_providers: BTreeMap<Arc<str>, String>,
-    approval_policy: ApprovalPolicy,
-    pub(crate) active_message_delivery: ActiveMessageDelivery,
+    /// The Bot's middleware settings, parsed when it was validated.
+    pub(crate) settings: Arc<MobiusSettings>,
     /// The configured voice route when voice is on; `Some(None)` uses the default voice.
     pub(crate) voice: Option<Option<Arc<str>>>,
     extensions: ResolvedExtensions,
@@ -201,7 +201,7 @@ pub(crate) fn prepare_bot<'a>(
     crate::bots::RuntimeBot {
         record: bot,
         composition,
-        approval_policy,
+        settings,
     }: crate::bots::RuntimeBot,
     store: &'a ConfigStore,
     credentials: &CredentialStore,
@@ -222,20 +222,10 @@ pub(crate) fn prepare_bot<'a>(
         } else {
             unavailable_models(gateway, &config.provider, store, credentials, session_files)?
         };
-        let active_message_delivery = configured_message_delivery(&config.middleware)?;
-        let voice_id = mobius::middleware::voice::MANIFEST.id;
         let voice = config
             .middleware
-            .enabled(voice_id)
-            .then(|| {
-                crate::harness::mobius::middleware_manifest::string_setting(
-                    &config.middleware,
-                    voice_id,
-                    "model",
-                )
-                .map(|route| route.map(Arc::from))
-            })
-            .transpose()?;
+            .enabled(mobius::middleware::voice::MANIFEST.id)
+            .then(|| settings.voice_model.as_ref().map(Arc::clone));
         let extensions = ExtensionStore::new(store).resolve(gateway, &config.extensions)?;
         let providers = std::iter::once(config.provider.clone()) // rules-allow: the prepared catalog owns its provider selections
             .chain(
@@ -273,8 +263,7 @@ pub(crate) fn prepare_bot<'a>(
                 models,
                 context_window,
                 model_providers,
-                approval_policy,
-                active_message_delivery,
+                settings,
                 voice,
                 extensions,
                 computer_runtime,
@@ -327,7 +316,7 @@ pub(crate) async fn assemble(
     };
     let models = Arc::clone(&prepared.models);
     let context_window = prepared.context_window;
-    let approval_policy = prepared.approval_policy;
+    let approval_policy = prepared.settings.approval_policy;
     let project = chat.workspace.is_some();
     let memory_override = chat.memory;
     let attached_folders = chat.attached_folders.clone(); // rules-allow: the discovery task owns the chat's folder list
@@ -374,14 +363,8 @@ pub(crate) async fn assemble(
                 &attached_folders,
             )?);
         }
-        let output_bytes = mobius::backend::sandbox::OutputLimit::new(
-            crate::harness::mobius::middleware_manifest::count_setting(
-                settings,
-                mobius::backend::sandbox::MANIFEST.id,
-                "tool_output_bytes",
-            )?
-            .get(),
-        )?;
+        let output_bytes =
+            mobius::backend::sandbox::OutputLimit::new(resources.settings.tool_output_bytes.get())?;
         let credential_environment = telemetry
             .sinks
             .iter()
@@ -419,11 +402,7 @@ pub(crate) async fn assemble(
         let backend: Arc<dyn SandboxBackend> = Arc::<GatewaySandbox>::clone(&gateway_sandbox); // rules-allow: the sandbox and the returned agent share the backend
         let sandbox = Sandbox::new(Arc::clone(&backend), approval_policy)
             .tool_output_limit(output_bytes)
-            .background_command_limit(crate::harness::mobius::middleware_manifest::count_setting(
-                settings,
-                mobius::backend::sandbox::MANIFEST.id,
-                "background_commands",
-            )?);
+            .background_command_limit(resources.settings.background_commands);
         let middleware = build_middleware(
             &resources,
             &workspace_path,
@@ -907,17 +886,10 @@ fn build_middleware(
                 } else {
                     Tools::reading(Arc::clone(session_files))
                 };
-                let count = |id| {
-                    crate::harness::mobius::middleware_manifest::count_setting(
-                        settings,
-                        feature.manifest.id,
-                        id,
-                    )
-                };
-                Arc::new(
-                    tools
-                        .repeat_limits(count("repeat_warning_calls")?, count("repeat_stop_calls")?),
-                )
+                Arc::new(tools.repeat_limits(
+                    prepared.settings.repeat_warning_calls,
+                    prepared.settings.repeat_stop_calls,
+                ))
             }
             BuiltinMiddleware::Instructions => {
                 Arc::new(Instructions::discover(project.then_some(workspace))?)
@@ -943,23 +915,15 @@ fn build_middleware(
                         Error::Config("subagent limits were not prepared".into())
                     })?)
                     .session_files(Arc::clone(session_files));
-                let middleware = match crate::harness::mobius::middleware_manifest::string_setting(
-                    settings,
-                    mobius::middleware::subagents::MANIFEST.id,
-                    "model_route",
-                )? {
+                let middleware = match prepared.settings.subagent_model_route.as_deref() {
                     Some(route) => middleware.default_model(route),
                     None => middleware,
                 };
                 Arc::new(middleware)
             }
             BuiltinMiddleware::Messages => Arc::new(Messages::new(
-                crate::harness::mobius::middleware_manifest::count_setting(
-                    settings,
-                    feature.manifest.id,
-                    "max_pending",
-                )?,
-                prepared.active_message_delivery,
+                prepared.settings.max_pending_messages,
+                prepared.settings.message_delivery,
             )),
             BuiltinMiddleware::Voice => Arc::new(mobius::middleware::voice::Voice),
             BuiltinMiddleware::ComputerControl => {
@@ -979,11 +943,7 @@ fn build_middleware(
             }
             BuiltinMiddleware::Sessions => {
                 let sessions = Sessions::new(
-                    crate::harness::mobius::middleware_manifest::count_setting(
-                        settings,
-                        feature.manifest.id,
-                        "page_size",
-                    )?,
+                    prepared.settings.session_page_size,
                     Some(Arc::clone(session_files)),
                     live_chats.take(),
                 );
@@ -999,28 +959,14 @@ fn build_middleware(
     Ok(entries)
 }
 
-fn configured_message_delivery(settings: &MiddlewareConfig) -> Result<ActiveMessageDelivery> {
-    crate::harness::mobius::middleware_manifest::string_setting(
-        settings,
-        mobius::middleware::messages::MANIFEST.id,
-        "delivery",
-    )?
-    .ok_or_else(|| Error::Config("missing middleware setting `messages.delivery`".into()))?
-    .parse::<ActiveMessageDelivery>()
-    .map_err(Error::from)
-}
-
 /// What chats composed from `config` can do, choosing the voice by the router's rule.
 pub(crate) fn bot_capabilities(
-    config: &AgentComposition,
+    middleware: &MiddlewareConfig,
+    voice_model: Option<&str>,
     voices: &crate::harness::mobius::provider_catalog::VoiceRoutes,
-) -> Result<crate::wire::BotCapabilities> {
-    let middleware = &config.middleware;
-    let voice_id = mobius::middleware::voice::MANIFEST.id;
-    let voice = if middleware.enabled(voice_id) {
-        match voices.select(crate::harness::mobius::middleware_manifest::string_setting(
-            middleware, voice_id, "model",
-        )?) {
+) -> crate::wire::BotCapabilities {
+    let voice = if middleware.enabled(mobius::middleware::voice::MANIFEST.id) {
+        match voices.select(voice_model) {
             Ok((route, waits_for_session_started)) => crate::wire::VoiceCapability::Ready {
                 route: Arc::clone(route),
                 waits_for_session_started,
@@ -1032,7 +978,7 @@ pub(crate) fn bot_capabilities(
     } else {
         crate::wire::VoiceCapability::Off
     };
-    Ok(crate::wire::BotCapabilities {
+    crate::wire::BotCapabilities {
         attachments: middleware.enabled(mobius::middleware::attachments::MANIFEST.id),
         computer: middleware.enabled(mobius::middleware::computer_control::MANIFEST.id),
         voice,
@@ -1043,7 +989,7 @@ pub(crate) fn bot_capabilities(
                 global: enabled,
             }
         },
-    })
+    }
 }
 
 /// Whether unattended routine work with `policy` can stop for a human decision.

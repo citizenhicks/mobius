@@ -55,6 +55,8 @@ struct HostState {
     termination: Arc<tokio::sync::Notify>,
     session_mutations: Arc<RwLock<()>>,
     activities: SessionActivities,
+    /// This chat's entry in `activities`, which only this actor changes.
+    activity: SessionActivity,
     running: Box<dyn HarnessSession>,
     pending_turns: usize,
     pending_messages: HashSet<Arc<str>>,
@@ -76,7 +78,7 @@ struct HostState {
     pub(super) token_usage: Option<Arc<mobius::protocol::TokenUsageInfo>>,
     commands: mpsc::Receiver<HostCommand>,
     events: broadcast::Sender<SharedFrame>,
-    gateway_events: broadcast::Sender<ServerFrame>,
+    gateway_events: broadcast::Sender<super::GatewayUpdate>,
     idle_waiters: Vec<oneshot::Sender<()>>,
 }
 
@@ -204,6 +206,13 @@ pub(super) fn turn_lifecycle(event: &EventMsg) -> Option<TurnLifecycle<'_>> {
     }
 }
 
+/// A chat's sandbox and its project workspace, if it has one.
+type ChatWorkspace = (Arc<GatewaySandbox>, Option<PathBuf>);
+
+fn no_workspace() -> Rejection {
+    Rejection::new("no_workspace", "Persistent Chat has no project workspace")
+}
+
 pub(super) enum HostCommand {
     RuntimeIsIdle {
         reply: oneshot::Sender<std::result::Result<bool, Rejection>>,
@@ -255,18 +264,9 @@ pub(super) enum HostCommand {
         pinned: bool,
         reply: oneshot::Sender<std::result::Result<(), Rejection>>,
     },
-    GitWorkspace {
-        reply: oneshot::Sender<std::result::Result<(Arc<GatewaySandbox>, PathBuf), Rejection>>,
-    },
-    WorkspaceFiles {
-        scope: WorkspaceFileScope,
-        reply: oneshot::Sender<std::result::Result<WorkspaceFiles, Rejection>>,
-    },
-    ReadWorkspaceFile {
-        path: String,
-        offset: u64,
-        max_bytes: usize,
-        reply: oneshot::Sender<std::result::Result<WorkspaceRead, Rejection>>,
+    /// The chat's sandbox and project workspace, for reads that run outside the actor.
+    Workspace {
+        reply: oneshot::Sender<std::result::Result<ChatWorkspace, Rejection>>,
     },
     DeleteWorkspaceFile {
         path: String,
@@ -342,7 +342,7 @@ impl HostHandle {
         session_mutations: Arc<RwLock<()>>,
         activities: SessionActivities,
         work_activity: Arc<WorkActivity>,
-        gateway_events: broadcast::Sender<ServerFrame>,
+        gateway_events: broadcast::Sender<super::GatewayUpdate>,
         session_id: SessionId,
         origin_label: &str,
     ) -> Result<Self> {
@@ -361,6 +361,7 @@ impl HostHandle {
             .or_default();
         activity.attention = super::replay::attention_count(&loaded.widgets);
         let awaiting_approval = activity.state == SessionActivityState::AwaitingApproval;
+        let activity = activity.clone(); // rules-allow: the actor keeps its own copy of its catalog entry
         drop(guard);
         let gateway_host = (harness.host_access)()?;
         let mut state = HostState {
@@ -376,6 +377,7 @@ impl HostHandle {
             termination: Arc::clone(&termination),
             session_mutations: Arc::clone(&session_mutations),
             activities,
+            activity,
             running,
             pending_turns: usize::from(awaiting_approval),
             pending_messages: HashSet::new(),
@@ -589,16 +591,22 @@ impl HostHandle {
     async fn git_workspace(
         &self,
     ) -> std::result::Result<(Arc<GatewaySandbox>, PathBuf), Rejection> {
-        self.request(|reply| HostCommand::GitWorkspace { reply })
-            .await
+        let (sandbox, workspace) = self.workspace().await?;
+        Ok((sandbox, workspace.ok_or_else(no_workspace)?))
     }
 
+    async fn workspace(&self) -> std::result::Result<ChatWorkspace, Rejection> {
+        self.request(|reply| HostCommand::Workspace { reply }).await
+    }
+
+    // Listing and reading wait on git and the filesystem, so they run here rather than
+    // stalling the actor's event stream.
     pub(crate) async fn workspace_files(
         &self,
         scope: WorkspaceFileScope,
     ) -> std::result::Result<WorkspaceFiles, Rejection> {
-        self.request(|reply| HostCommand::WorkspaceFiles { scope, reply })
-            .await
+        let (sandbox, workspace) = self.git_workspace().await?;
+        list_workspace_files(&sandbox, &workspace, scope).await
     }
 
     pub(crate) async fn read_workspace_file(
@@ -607,13 +615,8 @@ impl HostHandle {
         offset: u64,
         max_bytes: usize,
     ) -> std::result::Result<WorkspaceRead, Rejection> {
-        self.request(|reply| HostCommand::ReadWorkspaceFile {
-            path,
-            offset,
-            max_bytes,
-            reply,
-        })
-        .await
+        let (sandbox, workspace) = self.workspace().await?;
+        read_workspace_file(&sandbox, workspace.as_deref(), &path, offset, max_bytes).await
     }
 
     pub(crate) async fn delete_workspace_file(

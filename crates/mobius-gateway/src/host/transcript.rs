@@ -71,13 +71,15 @@ impl Step {
     }
 
     /// Marks the block item `id` appended to. A second change to it in this event sends
-    /// the whole item instead.
-    fn touch_delta(&mut self, id: &Arc<str>, turn: Option<&Arc<str>>, delta: BlockDelta) {
+    /// the whole item instead. Its rows are rebuilt only when `turn` is given.
+    fn touch_delta(&mut self, id: &Arc<str>, turn: Option<Option<&Arc<str>>>, delta: BlockDelta) {
         match self.items.iter_mut().find(|(item, _)| item == id) {
             Some((_, current)) => *current = None,
             None => self.items.push((Arc::clone(id), Some(delta))),
         }
-        self.touch_turn(turn);
+        if let Some(turn) = turn {
+            self.touch_turn(turn);
+        }
     }
 
     fn touch_turn(&mut self, turn: Option<&Arc<str>>) {
@@ -683,7 +685,16 @@ impl TranscriptReducer {
         if whole {
             step.touch(id, slot.turn.as_ref());
         } else if delta != BlockDelta::default() {
-            step.touch_delta(id, slot.turn.as_ref(), delta);
+            // Rows group and count items by these fields; text only for notices and
+            // completed diffs. Other appends leave every row as it was.
+            let regroups = delta.role.is_some()
+                || delta.tone.is_some()
+                || delta.format.is_some()
+                || delta.group.is_some()
+                || delta.item_state.is_some()
+                || is_notice(item)
+                || is_complete_diff(item);
+            step.touch_delta(id, regroups.then_some(slot.turn.as_ref()), delta);
         }
     }
 
@@ -1090,14 +1101,20 @@ fn repeats_error(
         })
 }
 
+/// A finished diff, whose text counts toward its turn's changes.
+fn is_complete_diff(item: &TranscriptItem) -> bool {
+    matches!(&item.content, TranscriptItemContent::Block { block, .. }
+        if block.role == FrontendBlockRole::Tool
+            && block.format == FrontendBlockFormat::UnifiedDiff
+            && item.state == TranscriptItemState::Complete)
+}
+
 fn turn_changes(slots: &[&Slot]) -> Option<TurnChanges> {
     let mut diffs = Vec::new();
     let mut totals = DiffTotals::default();
     for slot in slots {
-        if let TranscriptItemContent::Block { block, .. } = &slot.item.content
-            && block.role == FrontendBlockRole::Tool
-            && block.format == FrontendBlockFormat::UnifiedDiff
-            && slot.item.state == TranscriptItemState::Complete
+        if is_complete_diff(&slot.item)
+            && let TranscriptItemContent::Block { block, .. } = &slot.item.content
         {
             diffs.push(Arc::clone(&slot.item.id));
             for line in block

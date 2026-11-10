@@ -1,7 +1,7 @@
 //! SQLite's split checkpoint header and append-only active context.
 
 use crate::SessionId;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Weak};
 
 use rusqlite::{OptionalExtension, Transaction, params};
@@ -9,7 +9,7 @@ use serde::ser::SerializeStruct;
 use serde::{Serialize, Serializer};
 use serde_json::Value;
 
-use super::super::Checkpoint;
+use super::super::{Checkpoint, QueuedMessage};
 use crate::{Error, Result};
 
 /// An identity hint for a live session on one SQLite connection.
@@ -19,6 +19,8 @@ pub(super) struct ContextCache {
     epoch: u64,
     data_version: i64,
     items: Vec<Weak<Value>>,
+    /// Queued messages whose receipts this connection committed in its last save.
+    receipts: HashSet<Arc<str>>,
 }
 
 impl ContextCache {
@@ -39,6 +41,7 @@ impl ContextCache {
                 epoch: checkpoint.context_epoch,
                 data_version,
                 items: Vec::new(),
+                receipts: HashSet::new(),
             });
         cache.sequence = checkpoint.sequence;
         cache.epoch = checkpoint.context_epoch;
@@ -47,6 +50,30 @@ impl ContextCache {
         cache
             .items
             .extend(checkpoint.context.iter().map(Arc::downgrade));
+        cache.receipts.clear();
+    }
+
+    /// Notes that a just-committed save stored receipts for every queued message.
+    pub(super) fn record_receipts(
+        contexts: &mut HashMap<SessionId, Self>,
+        checkpoint: &Checkpoint,
+    ) {
+        if let Some(cache) = contexts.get_mut(&*checkpoint.session_id) {
+            cache.receipts.extend(
+                checkpoint
+                    .pending_messages
+                    .iter()
+                    .map(QueuedMessage::shared_id),
+            );
+        }
+    }
+
+    /// Receipts already durable for this session, if no other connection committed since.
+    ///
+    /// Receipt rows are only removed with their session, and a deletion on this connection
+    /// drops the hint; SQLite `data_version` changes when any other connection commits.
+    pub(super) fn durable_receipts(&self, data_version: i64) -> Option<&HashSet<Arc<str>>> {
+        (self.data_version == data_version).then_some(&self.receipts)
     }
 }
 

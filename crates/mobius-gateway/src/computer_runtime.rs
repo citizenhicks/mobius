@@ -1,5 +1,6 @@
 //! On-demand, owner-installed dependencies for the computer middleware.
 
+mod app_bridge;
 pub(crate) mod browser;
 pub mod config;
 pub(crate) mod desktop;
@@ -47,7 +48,7 @@ pub(crate) async fn next_app_update(
 ) -> AppUpdate {
     tokio::select! {
         message = desktop::next_update(desktop, desktop_host_requests) => AppUpdate::Desktop(message),
-        message = browser::next_update(browser) => AppUpdate::Browser(message),
+        message = app_bridge::next_update(browser) => AppUpdate::Browser(message),
     }
 }
 
@@ -58,8 +59,8 @@ pub(crate) async fn write_app_update(
     writer: &mut (impl tokio::io::AsyncWrite + Unpin),
 ) -> Result<()> {
     match update {
-        AppUpdate::Desktop(message) => desktop::write_update(desktop, message, writer).await,
-        AppUpdate::Browser(message) => browser::write_update(browser, message, writer).await,
+        AppUpdate::Desktop(message) => app_bridge::write_update(desktop, message, writer).await,
+        AppUpdate::Browser(message) => app_bridge::write_update(browser, message, writer).await,
     }
 }
 

@@ -290,9 +290,7 @@ pub(super) async fn hydrate<M: super::Model + ?Sized>(
             })?;
             let replacement = async {
                 let rendition = files.prepare_image(session_id, &image).await?;
-                let file = rendition
-                    .as_ref()
-                    .map_or(&image.file, |rendition| &rendition.file);
+                let file = &rendition.file;
                 let bytes = files.read_file(session_id, file).await?;
                 Ok(serde_json::json!({
                     "type": "input_image", "media_type": file.media_type,

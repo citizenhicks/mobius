@@ -84,7 +84,7 @@ async fn only_a_local_browser_renderer_lends_its_browser() {
 #[tokio::test(start_paused = true)]
 async fn a_stalled_app_cannot_queue_unbounded_or_unending_page_requests() {
     let host = Arc::new(BrowserHost::default());
-    let mut connection = host.attach().unwrap();
+    let mut connection = host.attach(MAX_PENDING_PAGES, Occupied::Replace).unwrap();
     // Timeouts leave messages in an unresponsive app's bounded outgoing queue.
     for _ in 0..MAX_PENDING_PAGES {
         assert_eq!(

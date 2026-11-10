@@ -11,74 +11,32 @@ use crate::{Error, Result};
 
 pub(super) const DEFAULTS_TEXT: &str = include_str!("defaults.toml");
 
-// Required DTOs never call public Default implementations while parsing the
-// embedded source. Missing fields therefore fail instead of recursing into LazyLock.
+// The pinned Node distributions and desktop application commands: data, not settings.
 #[expect(
     clippy::expect_used,
     reason = "the embedded defaults are compiled in; invalid ones are a build defect tests catch"
 )]
-static DEFAULTS: LazyLock<ComputerDefaults> = LazyLock::new(|| {
-    let defaults: ComputerDefaults = mobius::config::embedded(DEFAULTS_TEXT);
+static CATALOG: LazyLock<Catalog> = LazyLock::new(|| {
+    let catalog: Catalog = mobius::config::embedded(DEFAULTS_TEXT);
     for application in [
-        &defaults.applications.window_manager,
-        &defaults.applications.panel,
-        &defaults.applications.wallpaper,
-        &defaults.applications.terminal,
-        &defaults.applications.files,
+        &catalog.applications.window_manager,
+        &catalog.applications.panel,
+        &catalog.applications.wallpaper,
+        &catalog.applications.terminal,
+        &catalog.applications.files,
     ] {
         command_name(&application.executable).expect("valid embedded desktop command");
         for argument in &application.arguments {
             valid_argument(argument).expect("valid embedded desktop argument");
         }
     }
-    defaults
+    catalog
 });
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ComputerDefaults {
-    mode: RuntimeMode,
-    install_timeout_seconds: u64,
-    download_connect_timeout_seconds: u64,
-    download_timeout_seconds: u64,
-    node_download_base_url: String,
-    tar_executable: String,
+struct Catalog {
     node: NodeDefaults,
-    browser: BrowserDefaults,
-    desktop: DesktopDefaults,
     applications: ApplicationDefaults,
-    labels: LabelDefaults,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct BrowserDefaults {
-    sandbox: bool,
-    arguments: Vec<String>,
-    window_size: [u32; 2],
-    window_position: [i32; 2],
-    start_page: String,
-    viewport: [u32; 2],
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DesktopDefaults {
-    resolution: [u32; 2],
-    depth: u8,
-    display_start: u16,
-    display_end: u16,
-    startup_timeout_seconds: u64,
-    tools: ToolDefaults,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ToolDefaults {
-    xauth: String,
-    xvnc: Vec<String>,
-    vncconfig: Vec<String>,
-    setpriv: String,
 }
 
 #[derive(Deserialize)]
@@ -112,14 +70,6 @@ struct NodeDistribution {
     checksum: String,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LabelDefaults {
-    browser: String,
-    terminal: String,
-    files: String,
-}
-
 /// How executable computer resources are supplied by the operator.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -130,237 +80,161 @@ pub enum RuntimeMode {
     Preinstalled,
 }
 
-/// Computer resources and policy supplied by the gateway operator.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct ComputerConfig {
-    /// Managed installation or preinstalled resources without any downloads.
-    pub mode: RuntimeMode,
-    /// Resource directory; omitted means the gateway-derived managed directory.
-    pub directory: Option<PathBuf>,
-    /// System Node executable; omitted uses the pinned bundled Node.
-    pub node_executable: Option<PathBuf>,
-    /// npm executable for installation with a system Node.
-    pub npm_executable: Option<PathBuf>,
-    /// External Playwright module directory, containing its package.json.
-    pub playwright_module: Option<PathBuf>,
-    /// Browser installation directory; omitted uses resources/browsers.
-    pub browsers_directory: Option<PathBuf>,
-    /// Deadline for the complete managed installation.
-    pub install_timeout_seconds: u64,
-    /// Deadline for connecting to a runtime distribution server.
-    pub download_connect_timeout_seconds: u64,
-    /// Deadline for one pinned distribution download.
-    pub download_timeout_seconds: u64,
-    /// HTTPS mirror of the pinned Node distribution directory.
-    pub node_download_base_url: Cow<'static, str>,
-    /// tar command or absolute executable path used for the pinned Node archive.
-    pub tar_executable: Cow<'static, str>,
-    /// Additional PEM CA bundle for runtime downloads and npm/Playwright installation.
-    /// Omitted means SSL_CERT_FILE (and Node's own CA environment) is respected.
-    pub ca_file: Option<PathBuf>,
-    /// Browser launch policy shared by all launch paths.
-    pub browser: BrowserConfig,
-    /// Linux virtual desktop policy.
-    pub desktop: DesktopConfig,
-}
-
-impl Default for ComputerConfig {
-    fn default() -> Self {
-        Self {
-            mode: DEFAULTS.mode,
-            directory: None,
-            node_executable: None,
-            npm_executable: None,
-            playwright_module: None,
-            browsers_directory: None,
-            install_timeout_seconds: DEFAULTS.install_timeout_seconds,
-            download_connect_timeout_seconds: DEFAULTS.download_connect_timeout_seconds,
-            download_timeout_seconds: DEFAULTS.download_timeout_seconds,
-            node_download_base_url: Cow::Borrowed(&DEFAULTS.node_download_base_url),
-            tar_executable: Cow::Borrowed(&DEFAULTS.tar_executable),
-            ca_file: None,
-            browser: BrowserConfig::default(),
-            desktop: DesktopConfig::default(),
-        }
+mobius::embedded_config! {
+    clone;
+    /// Computer resources and policy supplied by the gateway operator.
+    #[derive(Debug, PartialEq, Eq)]
+    pub struct ComputerConfig {
+        /// Managed installation or preinstalled resources without any downloads.
+        pub mode: RuntimeMode,
+        /// Resource directory; omitted means the gateway-derived managed directory.
+        pub directory: Option<PathBuf>,
+        /// System Node executable; omitted uses the pinned bundled Node.
+        pub node_executable: Option<PathBuf>,
+        /// npm executable for installation with a system Node.
+        pub npm_executable: Option<PathBuf>,
+        /// External Playwright module directory, containing its package.json.
+        pub playwright_module: Option<PathBuf>,
+        /// Browser installation directory; omitted uses resources/browsers.
+        pub browsers_directory: Option<PathBuf>,
+        /// Deadline for the complete managed installation.
+        pub install_timeout_seconds: u64,
+        /// Deadline for connecting to a runtime distribution server.
+        pub download_connect_timeout_seconds: u64,
+        /// Deadline for one pinned distribution download.
+        pub download_timeout_seconds: u64,
+        /// HTTPS mirror of the pinned Node distribution directory.
+        pub node_download_base_url: Cow<'static, str>,
+        /// tar command or absolute executable path used for the pinned Node archive.
+        pub tar_executable: Cow<'static, str>,
+        /// Additional PEM CA bundle for runtime downloads and npm/Playwright installation.
+        /// Omitted means SSL_CERT_FILE (and Node's own CA environment) is respected.
+        pub ca_file: Option<PathBuf>,
+        /// Browser launch policy shared by all launch paths.
+        pub browser: BrowserConfig,
+        /// Linux virtual desktop policy.
+        pub desktop: DesktopConfig,
     }
+    defaults = DEFAULTS_TEXT, table = "computer";
 }
 
-/// Browser settings; the gateway always owns its private CDP endpoint and profile.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct BrowserConfig {
-    /// Chromium-compatible executable path or command; omitted uses Playwright discovery.
-    pub executable: Option<PathBuf>,
-    /// Private persistent profile directory; omitted uses gateway desktop state.
-    pub profile_directory: Option<PathBuf>,
-    /// Keep Chromium's internal sandbox enabled. Disabling requires an explicit operator choice.
-    pub sandbox: bool,
-    /// Additional launch switches. Profile, CDP, and sandbox switches are rejected.
-    pub arguments: Cow<'static, [String]>,
-    /// Headed window width and height in pixels.
-    pub window_size: [u32; 2],
-    /// Headed window x and y position in pixels.
-    pub window_position: [i32; 2],
-    /// Initial page for a newly launched browser or session tab.
-    pub start_page: Cow<'static, str>,
-    /// Headless browser viewport width and height in pixels.
-    pub viewport: [u32; 2],
-}
-
-impl Default for BrowserConfig {
-    fn default() -> Self {
-        Self {
-            executable: None,
-            profile_directory: None,
-            sandbox: DEFAULTS.browser.sandbox,
-            arguments: Cow::Borrowed(&DEFAULTS.browser.arguments),
-            window_size: DEFAULTS.browser.window_size,
-            window_position: DEFAULTS.browser.window_position,
-            start_page: Cow::Borrowed(&DEFAULTS.browser.start_page),
-            viewport: DEFAULTS.browser.viewport,
-        }
+mobius::embedded_config! {
+    clone;
+    /// Browser settings; the gateway always owns its private CDP endpoint and profile.
+    #[derive(Debug, PartialEq, Eq)]
+    pub struct BrowserConfig {
+        /// Chromium-compatible executable path or command; omitted uses Playwright discovery.
+        pub executable: Option<PathBuf>,
+        /// Private persistent profile directory; omitted uses gateway desktop state.
+        pub profile_directory: Option<PathBuf>,
+        /// Keep Chromium's internal sandbox enabled. Disabling requires an explicit operator choice.
+        pub sandbox: bool,
+        /// Additional launch switches. Profile, CDP, and sandbox switches are rejected.
+        pub arguments: Cow<'static, [String]>,
+        /// Headed window width and height in pixels.
+        pub window_size: [u32; 2],
+        /// Headed window x and y position in pixels.
+        pub window_position: [i32; 2],
+        /// Initial page for a newly launched browser or session tab.
+        pub start_page: Cow<'static, str>,
+        /// Headless browser viewport width and height in pixels.
+        pub viewport: [u32; 2],
     }
+    defaults = DEFAULTS_TEXT, table = "browser";
 }
 
-/// Optional desktop component. Missing default applications are skipped.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct DesktopApplication {
-    /// Enable this component when its executable is available.
-    pub enabled: bool,
-    /// Command or absolute path; omitted uses this component's manifest default.
-    pub executable: Option<String>,
-    /// Arguments; omitted uses this component's manifest default, while [] clears them.
-    pub arguments: Option<Vec<String>>,
-}
-
-impl Default for DesktopApplication {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            executable: None,
-            arguments: None,
-        }
+mobius::embedded_config! {
+    clone;
+    /// Optional desktop component. Missing default applications are skipped.
+    #[derive(Debug, PartialEq, Eq)]
+    pub struct DesktopApplication {
+        /// Enable this component when its executable is available.
+        pub enabled: bool,
+        /// Command or absolute path; omitted uses this component's manifest default.
+        pub executable: Option<String>,
+        /// Arguments; omitted uses this component's manifest default, while [] clears them.
+        pub arguments: Option<Vec<String>>,
     }
+    defaults = DEFAULTS_TEXT, table = "desktop_application";
 }
 
-/// Executables needed for the private virtual display and launcher lifecycle.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct DesktopTools {
-    /// Xauthority writer command or path.
-    pub xauth: Cow<'static, str>,
-    /// Ordered private VNC server command/path candidates.
-    pub xvnc: Cow<'static, [String]>,
-    /// Ordered VNC input-control command/path candidates.
-    pub vncconfig: Cow<'static, [String]>,
-    /// Launcher parent-death helper command or path.
-    pub setpriv: Cow<'static, str>,
-}
-
-impl Default for DesktopTools {
-    fn default() -> Self {
-        let tools = &DEFAULTS.desktop.tools;
-        Self {
-            xauth: Cow::Borrowed(&tools.xauth),
-            xvnc: Cow::Borrowed(&tools.xvnc),
-            vncconfig: Cow::Borrowed(&tools.vncconfig),
-            setpriv: Cow::Borrowed(&tools.setpriv),
-        }
+mobius::embedded_config! {
+    clone;
+    /// Executables needed for the private virtual display and launcher lifecycle.
+    #[derive(Debug, PartialEq, Eq)]
+    pub struct DesktopTools {
+        /// Xauthority writer command or path.
+        pub xauth: Cow<'static, str>,
+        /// Ordered private VNC server command/path candidates.
+        pub xvnc: Cow<'static, [String]>,
+        /// Ordered VNC input-control command/path candidates.
+        pub vncconfig: Cow<'static, [String]>,
+        /// Launcher parent-death helper command or path.
+        pub setpriv: Cow<'static, str>,
     }
+    defaults = DEFAULTS_TEXT, table = "desktop_tools";
 }
 
-/// Operator-provided artwork and tint2 templates, with bundled defaults when omitted.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct DesktopBranding {
-    /// Wallpaper image.
-    pub wallpaper: Option<PathBuf>,
-    /// Status-panel logo image.
-    pub logo: Option<PathBuf>,
-    /// Browser launcher icon; omitted uses the selected browser's installation icon.
-    pub browser_icon: Option<PathBuf>,
-    /// Terminal launcher icon.
-    pub terminal_icon: Option<PathBuf>,
-    /// File-manager launcher icon.
-    pub files_icon: Option<PathBuf>,
-    /// tint2 launcher-panel template. @DIRECTORY@ resolves to private desktop state.
-    pub panel_config: Option<PathBuf>,
-    /// tint2 status-panel template. @DIRECTORY@ resolves to private desktop state.
-    pub status_config: Option<PathBuf>,
-    /// Browser launcher display name.
-    pub browser_label: Cow<'static, str>,
-    /// Terminal launcher display name.
-    pub terminal_label: Cow<'static, str>,
-    /// File-manager launcher display name.
-    pub files_label: Cow<'static, str>,
-}
-
-impl Default for DesktopBranding {
-    fn default() -> Self {
-        Self {
-            wallpaper: None,
-            logo: None,
-            browser_icon: None,
-            terminal_icon: None,
-            files_icon: None,
-            panel_config: None,
-            status_config: None,
-            browser_label: Cow::Borrowed(&DEFAULTS.labels.browser),
-            terminal_label: Cow::Borrowed(&DEFAULTS.labels.terminal),
-            files_label: Cow::Borrowed(&DEFAULTS.labels.files),
-        }
+mobius::embedded_config! {
+    clone;
+    /// Operator-provided artwork and tint2 templates, with bundled defaults when omitted.
+    #[derive(Debug, PartialEq, Eq)]
+    pub struct DesktopBranding {
+        /// Wallpaper image.
+        pub wallpaper: Option<PathBuf>,
+        /// Status-panel logo image.
+        pub logo: Option<PathBuf>,
+        /// Browser launcher icon; omitted uses the selected browser's installation icon.
+        pub browser_icon: Option<PathBuf>,
+        /// Terminal launcher icon.
+        pub terminal_icon: Option<PathBuf>,
+        /// File-manager launcher icon.
+        pub files_icon: Option<PathBuf>,
+        /// tint2 launcher-panel template. @DIRECTORY@ resolves to private desktop state.
+        pub panel_config: Option<PathBuf>,
+        /// tint2 status-panel template. @DIRECTORY@ resolves to private desktop state.
+        pub status_config: Option<PathBuf>,
+        /// Browser launcher display name.
+        pub browser_label: Cow<'static, str>,
+        /// Terminal launcher display name.
+        pub terminal_label: Cow<'static, str>,
+        /// File-manager launcher display name.
+        pub files_label: Cow<'static, str>,
     }
+    defaults = DEFAULTS_TEXT, table = "desktop_branding";
 }
 
-/// Linux desktop geometry, tool discovery, optional components, and artwork.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct DesktopConfig {
-    /// Private virtual display width and height in pixels.
-    pub resolution: [u32; 2],
-    /// Virtual display colour depth: 16, 24, or 32.
-    pub depth: u8,
-    /// First candidate X11 display number, inclusive.
-    pub display_start: u16,
-    /// Last candidate X11 display number, exclusive.
-    pub display_end: u16,
-    /// Display/browser startup deadline.
-    pub startup_timeout_seconds: u64,
-    /// Private display tools.
-    pub tools: DesktopTools,
-    /// Optional window manager.
-    pub window_manager: DesktopApplication,
-    /// Optional tint2-compatible panel.
-    pub panel: DesktopApplication,
-    /// Optional wallpaper setter, whose last argument is the artwork path.
-    pub wallpaper: DesktopApplication,
-    /// Optional terminal launcher.
-    pub terminal: DesktopApplication,
-    /// Optional file-manager launcher.
-    pub files: DesktopApplication,
-    /// Artwork and panel templates.
-    pub branding: DesktopBranding,
-}
-
-impl Default for DesktopConfig {
-    fn default() -> Self {
-        Self {
-            resolution: DEFAULTS.desktop.resolution,
-            depth: DEFAULTS.desktop.depth,
-            display_start: DEFAULTS.desktop.display_start,
-            display_end: DEFAULTS.desktop.display_end,
-            startup_timeout_seconds: DEFAULTS.desktop.startup_timeout_seconds,
-            tools: DesktopTools::default(),
-            window_manager: DesktopApplication::default(),
-            panel: DesktopApplication::default(),
-            wallpaper: DesktopApplication::default(),
-            terminal: DesktopApplication::default(),
-            files: DesktopApplication::default(),
-            branding: DesktopBranding::default(),
-        }
+mobius::embedded_config! {
+    clone;
+    /// Linux desktop geometry, tool discovery, optional components, and artwork.
+    #[derive(Debug, PartialEq, Eq)]
+    pub struct DesktopConfig {
+        /// Private virtual display width and height in pixels.
+        pub resolution: [u32; 2],
+        /// Virtual display colour depth: 16, 24, or 32.
+        pub depth: u8,
+        /// First candidate X11 display number, inclusive.
+        pub display_start: u16,
+        /// Last candidate X11 display number, exclusive.
+        pub display_end: u16,
+        /// Display/browser startup deadline.
+        pub startup_timeout_seconds: u64,
+        /// Private display tools.
+        pub tools: DesktopTools,
+        /// Optional window manager.
+        pub window_manager: DesktopApplication,
+        /// Optional tint2-compatible panel.
+        pub panel: DesktopApplication,
+        /// Optional wallpaper setter, whose last argument is the artwork path.
+        pub wallpaper: DesktopApplication,
+        /// Optional terminal launcher.
+        pub terminal: DesktopApplication,
+        /// Optional file-manager launcher.
+        pub files: DesktopApplication,
+        /// Artwork and panel templates.
+        pub branding: DesktopBranding,
     }
+    defaults = DEFAULTS_TEXT, table = "desktop";
 }
 
 impl ComputerConfig {
@@ -588,11 +462,11 @@ pub(crate) fn application(
         return Ok(None);
     }
     let defaults = match role {
-        ApplicationRole::WindowManager => &DEFAULTS.applications.window_manager,
-        ApplicationRole::Panel => &DEFAULTS.applications.panel,
-        ApplicationRole::Wallpaper => &DEFAULTS.applications.wallpaper,
-        ApplicationRole::Terminal => &DEFAULTS.applications.terminal,
-        ApplicationRole::Files => &DEFAULTS.applications.files,
+        ApplicationRole::WindowManager => &CATALOG.applications.window_manager,
+        ApplicationRole::Panel => &CATALOG.applications.panel,
+        ApplicationRole::Wallpaper => &CATALOG.applications.wallpaper,
+        ApplicationRole::Terminal => &CATALOG.applications.terminal,
+        ApplicationRole::Files => &CATALOG.applications.files,
     };
     let executable = config.executable.as_deref().unwrap_or(&defaults.executable);
     let path = match resolve_executable(Path::new(executable)) {
@@ -636,13 +510,13 @@ pub(crate) fn resolve_candidates(commands: &[String]) -> Result<PathBuf> {
 }
 
 pub(crate) fn node_version() -> &'static str {
-    &DEFAULTS.node.version
+    &CATALOG.node.version
 }
 
 pub(crate) fn node_distribution(os: &str, arch: &str) -> Result<(&'static str, &'static str)> {
     let key = format!("{os}-{arch}");
     let distribution =
-        DEFAULTS.node.distributions.get(&key).ok_or_else(|| {
+        CATALOG.node.distributions.get(&key).ok_or_else(|| {
             Error::Config(format!("computer control has no runtime for {os}/{arch}"))
         })?;
     Ok((&distribution.platform, &distribution.checksum))

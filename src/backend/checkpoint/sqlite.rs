@@ -1,7 +1,7 @@
 //! Durable SQLite checkpoint storage.
 
 use crate::SessionId;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
@@ -438,10 +438,14 @@ impl CheckpointStore for SqliteCheckpoint {
                 cache.get(&checkpoint.session_id),
                 data_version,
             )?;
+            let receipted = cache
+                .get(&checkpoint.session_id)
+                .and_then(|cache| cache.durable_receipts(data_version));
             store_checkpoint(
                 &transaction,
                 &checkpoint,
                 sequence,
+                receipted,
                 SerializedCheckpoint {
                     checkpoint: &checkpoint_json,
                     session_context: &session_context_json,
@@ -470,6 +474,7 @@ impl CheckpointStore for SqliteCheckpoint {
             }
             transaction.commit()?;
             ContextCache::record(cache, &checkpoint, data_version);
+            ContextCache::record_receipts(cache, &checkpoint);
             Ok(records)
         }))
     }
@@ -979,6 +984,7 @@ fn store_checkpoint(
     transaction: &Transaction<'_>,
     checkpoint: &Checkpoint,
     sequence: i64,
+    receipted: Option<&HashSet<Arc<str>>>,
     serialized: SerializedCheckpoint<'_>,
 ) -> Result<()> {
     let changed = transaction.prepare_cached(
@@ -1014,7 +1020,11 @@ fn store_checkpoint(
             "checkpoint sequence did not advance".into(),
         ));
     }
-    for message in &checkpoint.pending_messages {
+    let new_messages = checkpoint
+        .pending_messages
+        .iter()
+        .filter(|message| !receipted.is_some_and(|receipted| receipted.contains(message.id())));
+    for message in new_messages {
         transaction.prepare_cached(
             "INSERT OR IGNORE INTO message_receipts (session_id, submission_id) VALUES (?1, ?2)")?.execute(
             params![checkpoint.session_id, message.id()],

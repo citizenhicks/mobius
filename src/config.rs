@@ -69,7 +69,10 @@ pub fn embedded<T: DeserializeOwned>(text: &str) -> T {
 ///
 /// The private complete decoder does not invoke `Default`, preventing recursive
 /// initialization when Serde fills omitted external settings. Use `copy;` for
-/// settings containing only `Copy` fields.
+/// settings containing only `Copy` fields. Use `clone;` with `defaults = text, table = "name";`
+/// for settings that own data: their complete defaults are the document's `name` table, a
+/// nested settings field is given there as `{}` to take its own defaults, and every
+/// `Default` call clones the decoded value.
 /// A `static NAME: Type = text;` declaration shares the same loader for complete
 /// embedded catalogs without adding external deserialization defaults; a trailing
 /// `=> prepare` runs `prepare(&mut value)` once on the decoded catalog.
@@ -113,6 +116,39 @@ macro_rules! embedded_config {
                     $name { $($field: complete.$field,)* }
                 });
                 *DEFAULTS
+            }
+        }
+    };
+    (clone;
+        $(#[$attribute:meta])* $visibility:vis struct $name:ident {
+            $($(#[$field_attribute:meta])* $field_visibility:vis $field:ident: $type:ty,)*
+        }
+        defaults = $text:expr, table = $table:literal;
+    ) => {
+        $(#[$attribute])*
+        #[derive(Clone, serde::Serialize, serde::Deserialize)]
+        #[serde(default, deny_unknown_fields)]
+        $visibility struct $name {
+            $($(#[$field_attribute])* $field_visibility $field: $type,)*
+        }
+
+        impl Default for $name {
+            fn default() -> Self {
+                #[derive(serde::Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Complete {
+                    $($field: $type,)*
+                }
+                #[derive(serde::Deserialize)]
+                struct Document {
+                    #[serde(rename = $table)]
+                    table: Complete,
+                }
+                static DEFAULTS: std::sync::LazyLock<$name> = std::sync::LazyLock::new(|| {
+                    let Document { table: complete } = $crate::config::embedded($text);
+                    $name { $($field: complete.$field,)* }
+                });
+                Clone::clone(&*DEFAULTS) // rules-allow: each caller owns its copy of the shared defaults
             }
         }
     };

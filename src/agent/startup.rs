@@ -440,6 +440,7 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
         system_prompt,
         prompt_estimate,
         context_estimate: None,
+        tool_schema_estimate: super::context_estimate::ToolSchemaEstimate::default(),
         catalog: Arc::new(catalog),
         state,
         transcript_delta: Vec::new(),

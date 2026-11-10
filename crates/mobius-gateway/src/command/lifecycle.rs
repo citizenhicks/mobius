@@ -110,26 +110,14 @@ pub(super) async fn serve(
     }
 }
 
-pub(super) async fn serve_in_background(
-    state_dir: PathBuf,
-    load_local_client: fn(&Endpoint) -> Result<Option<String>>,
-) -> Result<()> {
-    let (store, config) = ConfigStore::open(state_dir)?;
-    let _startup = StartupGuard::create(store.state_dir())?;
-    let mut interrupts = signal(SignalKind::interrupt())?;
-    let mut terminations = signal(SignalKind::terminate())?;
-    let Some(process) = start_background_gateway(
-        store.state_dir(),
-        &mut interrupts,
-        &mut terminations,
-        load_local_client,
-    )
-    .await?
-    else {
-        return Ok(print_line(format_args!("gateway start cancelled"))?);
-    };
-    print_line(format_args!("gateway running (pid {})", process.pid))?;
-    Ok(print_listener(&config, process.endpoint()?.as_ref())?)
+/// How [`ensure_background_gateway_with`] starts the detached gateway.
+#[derive(Debug, Default)]
+pub struct BackgroundGatewayOptions {
+    /// Gateway executable started as `__serve`; the current executable when `None`.
+    pub binary: Option<PathBuf>,
+    /// Print nothing and install no signal handlers, for callers embedding the start in
+    /// their own process; interrupting such a caller leaves the starting gateway alone.
+    pub quiet: bool,
 }
 
 /// Starts the configured detached gateway, replacing an older running release.
@@ -140,25 +128,89 @@ pub async fn ensure_background_gateway(
     state_dir: PathBuf,
     load_local_client: fn(&Endpoint) -> Result<Option<String>>,
 ) -> Result<()> {
-    serve_in_background(state_dir, load_local_client).await
+    ensure_background_gateway_with(
+        state_dir,
+        load_local_client,
+        BackgroundGatewayOptions::default(),
+    )
+    .await
+}
+
+/// Starts the configured detached gateway as [`ensure_background_gateway`] does, with
+/// the executable and output chosen by `options`.
+/// # Errors
+///
+/// Returns an error if the configuration is invalid or the gateway does not start.
+pub async fn ensure_background_gateway_with(
+    state_dir: PathBuf,
+    load_local_client: fn(&Endpoint) -> Result<Option<String>>,
+    options: BackgroundGatewayOptions,
+) -> Result<()> {
+    let (store, config) = ConfigStore::open(state_dir)?;
+    let _startup = StartupGuard::create(store.state_dir())?;
+    let binary = match options.binary {
+        Some(binary) => binary,
+        None => std::env::current_exe()?,
+    };
+    let mut signals = (!options.quiet)
+        .then(ShutdownSignals::install)
+        .transpose()?;
+    let Some(process) = start_background_gateway(
+        &store,
+        &config,
+        &binary,
+        signals.as_mut(),
+        load_local_client,
+    )
+    .await?
+    else {
+        return Ok(print_line(format_args!("gateway start cancelled"))?);
+    };
+    if options.quiet {
+        return Ok(());
+    }
+    print_line(format_args!("gateway running (pid {})", process.pid))?;
+    Ok(print_listener(&config, process.endpoint()?.as_ref())?)
+}
+
+/// Interrupt and termination signals that cancel a foreground gateway command.
+pub(super) struct ShutdownSignals {
+    interrupts: TokioSignal,
+    terminations: TokioSignal,
+}
+
+impl ShutdownSignals {
+    pub(super) fn install() -> Result<Self> {
+        Ok(Self {
+            interrupts: signal(SignalKind::interrupt())?,
+            terminations: signal(SignalKind::terminate())?,
+        })
+    }
+
+    pub(super) async fn recv(&mut self) {
+        tokio::select! {
+            _ = self.interrupts.recv() => {}
+            _ = self.terminations.recv() => {}
+        }
+    }
 }
 
 pub(super) async fn start_background_gateway(
-    state_dir: &Path,
-    interrupts: &mut TokioSignal,
-    terminations: &mut TokioSignal,
+    store: &ConfigStore,
+    config: &GatewayConfig,
+    binary: &Path,
+    mut signals: Option<&mut ShutdownSignals>,
     load_local_client: fn(&Endpoint) -> Result<Option<String>>,
 ) -> Result<Option<ProcessRecord>> {
-    let (store, config) = ConfigStore::open(state_dir.to_path_buf())?;
     let state_dir = store.state_dir();
     let process_path = state_dir.join(PROCESS_FILE);
-    if let Some(process) = reuse_current_gateway(&store, &config, None, load_local_client).await? {
+    if let Some(process) = reuse_current_gateway(store, config, None, load_local_client).await? {
         return Ok(Some(process));
     }
 
     let log = tempfile::NamedTempFile::new_in(state_dir)?;
     log.as_file().set_permissions(mobius::owner_only::file())?;
-    let mut command = TokioCommand::new(std::env::current_exe()?);
+    let mut command = TokioCommand::new(binary);
     command
         .arg("__serve")
         .arg("--state-dir")
@@ -224,8 +276,14 @@ pub(super) async fn start_background_gateway(
             );
             return Err(background_startup_error(message, &log));
         }
+        let cancelled = async {
+            match signals.as_deref_mut() {
+                Some(signals) => signals.recv().await,
+                None => std::future::pending().await,
+            }
+        };
         tokio::select! {
-            () = shutdown_signal(interrupts, terminations) => {
+            () = cancelled => {
                 stop_background_child(&mut child, &process_path).await;
                 return Ok(None);
             }
@@ -242,13 +300,6 @@ pub(super) fn macos_gateway_path(inherited: Option<&std::ffi::OsStr>) -> OsStrin
         .to_os_string();
     path.push(":/opt/homebrew/bin:/usr/local/bin");
     path
-}
-
-pub(super) async fn shutdown_signal(interrupts: &mut TokioSignal, terminations: &mut TokioSignal) {
-    tokio::select! {
-        _ = interrupts.recv() => {}
-        _ = terminations.recv() => {}
-    }
 }
 
 pub(super) async fn reuse_current_gateway(
@@ -359,22 +410,16 @@ pub(super) fn remove_unlocked_process_record(path: &Path) {
     }
 }
 
-pub(super) fn background_startup_error(
+/// Adds a bounded diagnostic excerpt from the background gateway's startup log.
+fn background_startup_error(
     message: impl std::fmt::Display,
     log: &tempfile::NamedTempFile,
-) -> Error {
-    startup_error(message, log, MAX_BACKGROUND_ERROR_BYTES)
-}
-
-/// Adds a bounded diagnostic excerpt from a gateway startup log.
-pub fn startup_error(
-    message: impl std::fmt::Display,
-    log: &tempfile::NamedTempFile,
-    max_bytes: u64,
 ) -> Error {
     let mut details = String::new();
     if let Ok(file) = File::open(log.path())
-        && let Err(error) = file.take(max_bytes).read_to_string(&mut details)
+        && let Err(error) = file
+            .take(MAX_BACKGROUND_ERROR_BYTES)
+            .read_to_string(&mut details)
     {
         tracing::warn!(%error, "failed to read gateway startup log");
     }

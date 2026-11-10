@@ -54,6 +54,16 @@ impl ContextEstimate {
         }
     }
 
+    /// Adds another estimate's parts to this one.
+    pub(crate) fn merge(&mut self, other: &Self) {
+        for (total, tokens) in self.tokens.iter_mut().zip(other.tokens) {
+            *total = total.saturating_add(tokens);
+        }
+        for (total, items) in self.items.iter_mut().zip(other.items) {
+            *total = total.saturating_add(items);
+        }
+    }
+
     /// Adds every input item under the part it belongs to.
     pub(crate) fn add_input<'a>(
         &mut self,
@@ -144,6 +154,62 @@ impl ContextEstimate {
     }
 }
 
+/// The tool-schema part of a request estimate, reused while the same schemas are sent.
+///
+/// A catalog revision fixes every schema, so the revision and the exposed and materialized
+/// names determine the estimate; unchanged tool sets are not re-serialized each model step.
+#[derive(Debug, Default)]
+pub(crate) struct ToolSchemaEstimate {
+    cached: Option<CachedToolSchemas>,
+}
+
+#[derive(Debug)]
+struct CachedToolSchemas {
+    revision: String,
+    direct: Vec<Arc<ToolDefinition>>,
+    deferred: Vec<Arc<ToolDefinition>>,
+    materialized: BTreeSet<String>,
+    estimate: ContextEstimate,
+}
+
+impl ToolSchemaEstimate {
+    /// Estimates the schemas as `ContextEstimate::add_tools` would, reusing the last result.
+    pub(crate) fn estimate(
+        &mut self,
+        revision: &str,
+        direct: &[Arc<ToolDefinition>],
+        deferred: &[Arc<ToolDefinition>],
+        materialized: &BTreeSet<String>,
+        estimate: TokenEstimate,
+    ) -> crate::Result<ContextEstimate> {
+        let same_names = |cached: &[Arc<ToolDefinition>], current: &[Arc<ToolDefinition>]| {
+            cached.len() == current.len()
+                && cached
+                    .iter()
+                    .zip(current)
+                    .all(|(cached, current)| cached.name == current.name)
+        };
+        if let Some(cached) = &self.cached
+            && cached.revision == revision
+            && same_names(&cached.direct, direct)
+            && same_names(&cached.deferred, deferred)
+            && cached.materialized == *materialized
+        {
+            return Ok(cached.estimate);
+        }
+        let mut tools = ContextEstimate::default();
+        tools.add_tools(direct, deferred, materialized, estimate)?;
+        self.cached = Some(CachedToolSchemas {
+            revision: revision.to_owned(),
+            direct: direct.to_vec(),
+            deferred: deferred.to_vec(),
+            materialized: materialized.clone(), // rules-allow: the cache key outlives this step's set
+            estimate: tools,
+        });
+        Ok(tools)
+    }
+}
+
 /// The part an input item belongs to, read from its `type` and internal marker.
 fn input_kind(item: &Value) -> ContextPartKind {
     use crate::protocol::{ATTACHMENT_CONTEXT_MARKER, CONTEXT_COMPACTED_MARKER};
@@ -200,6 +266,41 @@ mod tests {
         );
         assert_eq!(parts[0].tokens, 100);
         assert_eq!(parts[0].items, 2);
+    }
+
+    #[test]
+    fn cached_schema_estimates_follow_materialized_and_exposed_tools() {
+        let tools = ["direct", "loaded"].map(|name| {
+            Arc::new(ToolDefinition {
+                name: name.into(),
+                description: "test".into(),
+                parameters: json!({"type": "object"}),
+            })
+        });
+        let mut cache = ToolSchemaEstimate::default();
+        for (direct, materialized) in [
+            (&tools[..1], BTreeSet::new()),
+            (&tools[..1], BTreeSet::from(["loaded".into()])),
+            (&tools[..0], BTreeSet::from(["loaded".into()])),
+            (&tools[..0], BTreeSet::from(["loaded".into()])),
+        ] {
+            let mut fresh = ContextEstimate::default();
+            fresh
+                .add_tools(direct, &tools[1..], &materialized, TokenEstimate::default())
+                .expect("schemas");
+            assert_eq!(
+                cache
+                    .estimate(
+                        "catalog",
+                        direct,
+                        &tools[1..],
+                        &materialized,
+                        TokenEstimate::default()
+                    )
+                    .expect("cached schemas"),
+                fresh
+            );
+        }
     }
 
     #[test]

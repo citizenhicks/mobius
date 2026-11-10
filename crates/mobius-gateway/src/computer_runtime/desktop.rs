@@ -1,17 +1,23 @@
 //! Native requests travel over the desktop app's existing authenticated connection.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use mobius::{Error, Result, SessionId};
 use serde_json::Value;
-use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
+use tokio::io::{AsyncReadExt as _, DuplexStream};
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
+use super::app_bridge::{self, AppBridge, AppConnection, Occupied};
 use crate::wire::ServerMessage;
 
+/// The desktop request awaiting the app's reply.
+type Pending = Option<(Uuid, oneshot::Sender<Value>)>;
+
+pub(crate) type DesktopConnection = AppConnection<Pending>;
+
 pub(crate) struct DesktopControl {
-    runtime: Mutex<Option<Runtime>>,
+    app: Arc<AppBridge<Pending>>,
     control: Arc<tokio::sync::Mutex<()>>,
     /// Chats whose computer control found no attached desktop host.
     host_requests: tokio::sync::broadcast::Sender<SessionId>,
@@ -20,46 +26,19 @@ pub(crate) struct DesktopControl {
 impl Default for DesktopControl {
     fn default() -> Self {
         Self {
-            runtime: Mutex::default(),
+            app: Arc::new(AppBridge::new("desktop control")),
             control: Arc::default(),
             host_requests: tokio::sync::broadcast::channel(4).0,
         }
     }
 }
 
-struct Runtime {
-    id: Uuid,
-    outgoing: mpsc::Sender<ServerMessage>,
-    pending: Option<(Uuid, oneshot::Sender<Value>)>,
-}
-
-pub(crate) struct DesktopConnection {
-    control: Arc<DesktopControl>,
-    id: Uuid,
-    pub(crate) outgoing: mpsc::Receiver<ServerMessage>,
-}
-
 impl DesktopControl {
-    pub(crate) fn attach(self: &Arc<Self>) -> Result<DesktopConnection> {
-        let mut runtime = self.runtime.lock().map_err(unavailable_after)?;
-        if runtime.is_some() {
-            return Err(Error::Sandbox(
-                "another Mac app already hosts desktop control".into(),
-            ));
-        }
-        let id = Uuid::new_v4();
-        let (outgoing, receiver) = mpsc::channel(4);
-        *runtime = Some(Runtime {
-            id,
-            outgoing,
-            pending: None,
-        });
-        drop(runtime);
-        Ok(DesktopConnection {
-            control: Arc::clone(self),
-            id,
-            outgoing: receiver,
-        })
+    pub(crate) fn attach(&self) -> Result<DesktopConnection> {
+        self.app.attach(
+            4,
+            Occupied::Refuse("another Mac app already hosts desktop control"),
+        )
     }
 
     /// Chats that asked for a desktop host while none was attached.
@@ -74,7 +53,7 @@ impl DesktopControl {
             ))
         })?;
         let (runtime_id, outgoing) = {
-            let guard = self.runtime.lock().map_err(unavailable_after)?;
+            let guard = self.app.app()?;
             let Some(runtime) = guard.as_ref() else {
                 drop(guard);
                 if self.host_requests.send(session_id.share()).is_err() {
@@ -124,17 +103,14 @@ impl DesktopControl {
         execution_id: &str,
     ) -> Result<()> {
         loop {
-            let size = channel.read_u32().await? as usize;
-            if size == 0 || size > 1024 * 1024 {
-                return Err(unavailable());
-            }
-            let mut request = vec![0; size];
-            channel.read_exact(&mut request).await?;
+            let request = app_bridge::read_frame(channel, 1024 * 1024)
+                .await?
+                .ok_or_else(unavailable)?;
             let request: Value = serde_json::from_slice(&request)?;
             let request_id = Uuid::new_v4();
             let (reply, response) = oneshot::channel();
             {
-                let mut guard = self.runtime.lock().map_err(unavailable_after)?;
+                let mut guard = self.app.app()?;
                 let runtime = guard
                     .as_mut()
                     .filter(|runtime| runtime.id == runtime_id)
@@ -160,15 +136,12 @@ impl DesktopControl {
             if response.len() > crate::wire::MAX_FRAME_BYTES {
                 return Err(unavailable());
             }
-            channel
-                .write_u32(u32::try_from(response.len()).map_err(unavailable_after)?)
-                .await?;
-            channel.write_all(&response).await?;
+            app_bridge::write_frame(channel, &response).await?;
         }
     }
 
     fn clear_pending(&self, id: Uuid) {
-        if let Ok(mut runtime) = self.runtime.lock()
+        if let Ok(mut runtime) = self.app.app()
             && let Some(runtime) = runtime.as_mut().filter(|runtime| runtime.id == id)
         {
             runtime.pending = None;
@@ -178,38 +151,25 @@ impl DesktopControl {
 
 impl DesktopConnection {
     pub(crate) fn reply(&self, request_id: &str, response: Value) -> Result<()> {
-        let mut state = self.control.runtime.lock().map_err(unavailable_after)?;
-        let runtime = state
-            .as_mut()
-            .filter(|runtime| runtime.id == self.id)
-            .ok_or_else(unavailable)?;
         let mut buffer = Uuid::encode_buffer();
-        let (_, reply) = runtime
-            .pending
-            .take_if(|(id, _)| *id.hyphenated().encode_lower(&mut buffer) == *request_id)
+        let reply = self
+            .with_app(|runtime| {
+                runtime.ok_or_else(unavailable).map(|runtime| {
+                    runtime.pending.take_if(|(id, _)| {
+                        *id.hyphenated().encode_lower(&mut buffer) == *request_id
+                    })
+                })
+            })??
             .ok_or_else(|| {
                 Error::Sandbox("desktop reply is stale or belongs to another evaluation".into())
             })?;
-        drop(state);
-        if reply.send(response).is_err() {
+        if reply.1.send(response).is_err() {
             tracing::debug!(
                 request_id,
                 "desktop evaluation ended before its reply arrived"
             );
         }
         Ok(())
-    }
-}
-
-impl Drop for DesktopConnection {
-    fn drop(&mut self) {
-        if let Ok(mut runtime) = self.control.runtime.lock()
-            && runtime
-                .as_ref()
-                .is_some_and(|runtime| runtime.id == self.id)
-        {
-            *runtime = None;
-        }
     }
 }
 
@@ -257,19 +217,6 @@ pub(crate) async fn next_update(
     }
 }
 
-pub(crate) async fn write_update(
-    connection: &mut Option<DesktopConnection>,
-    message: Option<ServerMessage>,
-    writer: &mut (impl tokio::io::AsyncWrite + Unpin),
-) -> crate::Result<()> {
-    if let Some(message) = message {
-        crate::wire::write_frame(writer, &crate::wire::ServerFrame::new(message)).await
-    } else {
-        *connection = None;
-        Ok(())
-    }
-}
-
 /// Registers or withdraws this connection as the gateway's local desktop host.
 pub(crate) async fn set_runtime(
     request_id: Arc<str>,
@@ -294,7 +241,7 @@ pub(crate) async fn set_runtime(
     } else {
         Ok(())
     };
-    write_outcome(writer, request_id, result).await
+    app_bridge::write_outcome(writer, request_id, "desktop_control", result).await
 }
 
 /// Delivers the desktop host's answer to one control request.
@@ -311,23 +258,5 @@ pub(crate) async fn reply(
     if result.is_ok() {
         return Ok(());
     }
-    write_outcome(writer, request_id, result).await
-}
-
-async fn write_outcome(
-    writer: &mut (impl tokio::io::AsyncWrite + Unpin),
-    request_id: Arc<str>,
-    result: Result<()>,
-) -> crate::Result<()> {
-    use crate::wire::{ServerFrame, write_frame};
-    let response = match result {
-        Ok(()) => ServerMessage::Accepted { request_id },
-        Err(error) => ServerMessage::Rejected {
-            request_id,
-            code: "desktop_control".into(),
-            message: error.to_string().into(),
-            fatal: false,
-        },
-    };
-    write_frame(writer, &ServerFrame::new(response)).await
+    app_bridge::write_outcome(writer, request_id, "desktop_control", result).await
 }

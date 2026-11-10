@@ -115,7 +115,7 @@ pub(crate) struct GatewayHost {
     state: Arc<Mutex<GatewayState>>,
     capacity_gate: Arc<Mutex<()>>,
     storage_reads: Arc<telemetry::StorageMeasurements>,
-    events: broadcast::Sender<ServerFrame>,
+    events: broadcast::Sender<GatewayUpdate>,
     work_activity: Arc<WorkActivity>,
     pub(crate) telemetry: Arc<crate::telemetry::Telemetry>,
 }
@@ -552,7 +552,7 @@ impl GatewayHost {
         Ok(mutation)
     }
 
-    pub(crate) fn subscribe(&self) -> broadcast::Receiver<ServerFrame> {
+    pub(crate) fn subscribe(&self) -> broadcast::Receiver<GatewayUpdate> {
         self.events.subscribe()
     }
 
@@ -642,9 +642,8 @@ impl GatewayHost {
             .bots
             .create_bot(name, description, config)
             .map_err(invalid_bot)?;
-        let bots = state.bots.bots().map_err(internal)?;
         drop(state);
-        self.broadcast_bots(&bots);
+        self.broadcast_bots();
         Ok(bot)
     }
 
@@ -704,8 +703,8 @@ impl GatewayHost {
         let prepared = if runtime_changed
             && let (
                 HarnessConfig::Mobius(composition),
-                crate::harness::ApprovalMode::Mobius(approval_policy),
-            ) = (&config.config, approval)
+                crate::harness::ApprovalMode::Mobius(settings),
+            ) = (&config.config, &approval)
         {
             let mut candidate = previous;
             candidate.description = identity.description.into();
@@ -717,7 +716,7 @@ impl GatewayHost {
                     crate::bots::RuntimeBot {
                         record: Arc::new(candidate),
                         composition: Arc::clone(composition),
-                        approval_policy,
+                        settings: Arc::clone(settings),
                     },
                     &state.store,
                     &state.credentials,
@@ -740,9 +739,8 @@ impl GatewayHost {
             prepared.bot = Arc::clone(&bot);
             state.bots.prepared.replace(prepared).await;
         }
-        let bots = state.bots.bots().map_err(internal)?;
         drop(state);
-        self.broadcast_bots(&bots);
+        self.broadcast_bots();
         Ok(bot)
     }
 
@@ -1198,14 +1196,8 @@ impl GatewayHost {
         Ok(())
     }
 
-    fn broadcast_bots(&self, bots: &[crate::wire::BotRecord]) {
-        send_event(
-            &self.events,
-            ServerMessage::Bots {
-                request_id: None,
-                bots: bots.to_vec(),
-            },
-        );
+    fn broadcast_bots(&self) {
+        broadcast(&self.events, GatewayUpdate::BotsChanged);
     }
 }
 
@@ -1237,10 +1229,10 @@ fn validate_bot_config(
 ) -> std::result::Result<crate::harness::ValidatedConfig, Rejection> {
     match config {
         HarnessConfig::Mobius(composition) => {
-            let approval_policy = check_composition(state, &*state.config()?, &composition)?;
+            let settings = check_composition(state, &*state.config()?, &composition)?;
             Ok(crate::harness::ValidatedConfig::mobius(
                 composition,
-                approval_policy,
+                settings,
             ))
         }
         config => crate::harness::validate_cli(config).map_err(harness_unavailable),
@@ -1257,21 +1249,20 @@ fn validate_composition(
     Ok(ValidatedComposition { config })
 }
 
-/// The approval policy of a composition the gateway's catalog and extensions support.
+/// The middleware settings of a composition the gateway's catalog and extensions support.
 fn check_composition(
     state: &GatewayState,
     gateway: &GatewayConfig,
     config: &AgentComposition,
-) -> std::result::Result<mobius::backend::sandbox::ApprovalPolicy, Rejection> {
+) -> std::result::Result<crate::harness::mobius::middleware_manifest::MobiusSettings, Rejection> {
     let models =
         configured_model_choices(gateway, &state.store, &state.credentials).map_err(internal)?;
-    let approval_policy =
-        crate::config::validate_bot_compatibility(gateway, config, models.catalogs())
-            .map_err(invalid_config)?;
+    let settings = crate::config::validate_bot_compatibility(gateway, config, models.catalogs())
+        .map_err(invalid_config)?;
     ExtensionStore::new(&state.store)
         .resolve(gateway, &config.extensions)
         .map_err(invalid_config)?;
-    Ok(approval_policy)
+    Ok(settings)
 }
 
 fn validate_bot_workspace(
@@ -1488,30 +1479,74 @@ pub(crate) fn internal(error: impl std::fmt::Display) -> Rejection {
     Rejection::new("gateway_error", error.to_string())
 }
 
-fn send_event(events: &broadcast::Sender<ServerFrame>, message: ServerMessage) {
-    if let Err(error) = events.send(ServerFrame::new(message)) {
+/// One gateway-wide broadcast. Catalog changes are built once and shared by every
+/// connection, which writes each as the frame its client needs.
+#[derive(Clone)]
+pub(crate) enum GatewayUpdate {
+    Frame(Arc<ServerFrame>),
+    /// The whole session catalog.
+    Sessions(SessionCatalogUpdate),
+    /// The Bot catalog changed; each connection reads the current one when it writes.
+    BotsChanged,
+}
+
+/// A broadcast session catalog with its content revision, computed once.
+#[derive(Clone)]
+pub(crate) struct SessionCatalogUpdate {
+    pub(crate) sessions: Arc<[SessionRecord]>,
+    pub(crate) revision: Arc<str>,
+}
+
+#[cfg(test)]
+impl GatewayUpdate {
+    /// The message a client without a held catalog would receive.
+    pub(crate) fn message(self) -> ServerMessage {
+        match self {
+            Self::Frame(frame) => Arc::unwrap_or_clone(frame).message,
+            Self::Sessions(catalog) => ServerMessage::Sessions {
+                request_id: None,
+                sessions: catalog.sessions.to_vec(),
+            },
+            Self::BotsChanged => ServerMessage::Bots {
+                request_id: None,
+                bots: Vec::new(),
+            },
+        }
+    }
+}
+
+fn broadcast(events: &broadcast::Sender<GatewayUpdate>, update: GatewayUpdate) {
+    if let Err(error) = events.send(update) {
         tracing::debug!(%error, "gateway event had no subscribers");
     }
 }
 
+fn send_event(events: &broadcast::Sender<GatewayUpdate>, message: ServerMessage) {
+    broadcast(
+        events,
+        GatewayUpdate::Frame(Arc::new(ServerFrame::new(message))),
+    );
+}
+
 /// Publishes the session list and the background approvals it carries.
 fn send_catalog(
-    events: &broadcast::Sender<ServerFrame>,
+    events: &broadcast::Sender<GatewayUpdate>,
     sessions: Vec<SessionRecord>,
     approvals: Vec<Arc<crate::wire::BackgroundApproval>>,
 ) {
-    send_event(
+    let revision = crate::wire::content_revision(&sessions).into();
+    broadcast(
         events,
-        ServerMessage::Sessions {
-            request_id: None,
-            sessions,
-        },
+        GatewayUpdate::Sessions(SessionCatalogUpdate {
+            sessions: sessions.into(),
+            revision,
+        }),
     );
     send_event(events, ServerMessage::BackgroundApprovals { approvals });
 }
 
 /// Tells clients about a failure that leaves the gateway usable.
-fn send_warning(events: &broadcast::Sender<ServerFrame>, code: &'static str, message: Arc<str>) {
+fn send_warning(events: &broadcast::Sender<GatewayUpdate>, code: &'static str, message: Arc<str>) {
     send_event(
         events,
         ServerMessage::Error {

@@ -26,7 +26,6 @@ use crate::protocol::FrontendBlock;
 use crate::protocol::FrontendBlockRole;
 use crate::protocol::FrontendBlockState;
 use crate::protocol::FrontendBlockUpdate;
-use crate::protocol::FrontendContribution;
 use crate::protocol::FrontendTone;
 use crate::protocol::TokenUsage;
 use crate::protocol::ToolCall;
@@ -1585,13 +1584,6 @@ impl Middleware for Tools {
 
     fn prompt_section(&self, _runtime: &super::RuntimeContext) -> Result<Option<PromptSection>> {
         Ok(Some(self.section()))
-    }
-
-    fn frontend(&self, _session_id: &str) -> FrontendContribution {
-        FrontendContribution {
-            capability: self.name().into(),
-            ..FrontendContribution::default()
-        }
     }
 
     fn render(&self, event: &EventMsg, _session_id: &str) -> Option<FrontendBlock> {

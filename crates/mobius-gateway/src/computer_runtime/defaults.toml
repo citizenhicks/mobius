@@ -1,9 +1,50 @@
+# Each settings table is complete; `{}` gives a nested table its own defaults.
+
+[computer]
 mode = "managed"
 install_timeout_seconds = 600
 node_download_base_url = "https://nodejs.org/dist"
 tar_executable = "tar"
 download_connect_timeout_seconds = 30
 download_timeout_seconds = 180
+browser = {}
+desktop = {}
+
+[browser]
+sandbox = true
+arguments = ["--no-first-run", "--no-default-browser-check", "--disable-infobars"]
+window_size = [1200, 640]
+window_position = [80, 42]
+start_page = "about:blank"
+viewport = [1365, 768]
+
+[desktop]
+resolution = [1365, 768]
+depth = 24
+display_start = 100
+display_end = 200
+startup_timeout_seconds = 15
+tools = {}
+window_manager = {}
+panel = {}
+wallpaper = {}
+terminal = {}
+files = {}
+branding = {}
+
+[desktop_tools]
+xauth = "xauth"
+xvnc = ["Xtigervnc", "Xvnc"]
+vncconfig = ["tigervncconfig", "vncconfig"]
+setpriv = "setpriv"
+
+[desktop_application]
+enabled = true
+
+[desktop_branding]
+browser_label = "Browser"
+terminal_label = "Terminal"
+files_label = "Files"
 
 [node]
 version = "26.13.0"
@@ -24,27 +65,6 @@ checksum = "439e9c438acdf6a6ffe47418da709153d66c4bed812e30a473faacb107dd2791"
 platform = "linux-x64"
 checksum = "5848553868b402d3fabb5b09270649977780a390f832155721025a08b5104455"
 
-[browser]
-sandbox = true
-arguments = ["--no-first-run", "--no-default-browser-check", "--disable-infobars"]
-window_size = [1200, 640]
-window_position = [80, 42]
-start_page = "about:blank"
-viewport = [1365, 768]
-
-[desktop]
-resolution = [1365, 768]
-depth = 24
-display_start = 100
-display_end = 200
-startup_timeout_seconds = 15
-
-[desktop.tools]
-xauth = "xauth"
-xvnc = ["Xtigervnc", "Xvnc"]
-vncconfig = ["tigervncconfig", "vncconfig"]
-setpriv = "setpriv"
-
 [applications.window_manager]
 executable = "openbox"
 arguments = []
@@ -64,8 +84,3 @@ arguments = ["-title", "Terminal", "-fa", "Liberation Mono", "-fs", "12"]
 [applications.files]
 executable = "pcmanfm"
 arguments = ["--new-win", "--profile=mobius"]
-
-[labels]
-browser = "Browser"
-terminal = "Terminal"
-files = "Files"

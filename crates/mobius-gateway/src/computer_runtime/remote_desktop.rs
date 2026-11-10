@@ -23,6 +23,7 @@ use tokio::process::Command;
 use tokio::sync::{OwnedMutexGuard, broadcast};
 use uuid::Uuid;
 
+use super::app_bridge::{read_frame, write_frame};
 use super::desktop::DesktopControl;
 use super::{ComputerConfig, config};
 use crate::wire::MAX_DESKTOP_CHUNK_BYTES;
@@ -315,12 +316,9 @@ impl RemoteDesktop {
         #[cfg(target_os = "linux")]
         let mut first_native = true;
         loop {
-            let size = channel.read_u32().await? as usize;
-            if size == 0 || size > MAX_HOST_REQUEST {
-                return Err(Error::Protocol("invalid desktop host request".into()));
-            }
-            let mut bytes = vec![0; size];
-            channel.read_exact(&mut bytes).await?;
+            let bytes = read_frame(&mut channel, MAX_HOST_REQUEST)
+                .await?
+                .ok_or_else(|| Error::Protocol("invalid desktop host request".into()))?;
             let request: Value = serde_json::from_slice(&bytes)?;
             let reply = if request == json!({"op":"begin_browser"}) {
                 match self.binding(session_id, !cfg!(target_os = "macos")).await {
@@ -372,11 +370,7 @@ impl RemoteDesktop {
                     }
                 }
             };
-            channel
-                .write_u32(u32::try_from(reply.len()).map_err(unavailable_after)?)
-                .await?;
-            channel.write_all(&reply).await?;
-            channel.flush().await?;
+            write_frame(&mut channel, &reply).await?;
         }
     }
 
@@ -903,18 +897,10 @@ fn input_enabled(output: &[u8]) -> Option<bool> {
 
 #[cfg(not(target_os = "linux"))]
 async fn forward_native(channel: &mut DuplexStream, bytes: &[u8]) -> Result<Vec<u8>> {
-    channel
-        .write_u32(u32::try_from(bytes.len()).map_err(unavailable_after)?)
-        .await?;
-    channel.write_all(bytes).await?;
-    channel.flush().await?;
-    let size = channel.read_u32().await? as usize;
-    if size == 0 || size > 64 * 1024 * 1024 {
-        return Err(Error::Protocol("invalid native desktop response".into()));
-    }
-    let mut reply = vec![0; size];
-    channel.read_exact(&mut reply).await?;
-    Ok(reply)
+    write_frame(channel, bytes).await?;
+    read_frame(channel, 64 * 1024 * 1024)
+        .await?
+        .ok_or_else(|| Error::Protocol("invalid native desktop response".into()))
 }
 
 async fn chromium_executable(runtime: &Path, config: &ComputerConfig) -> Result<PathBuf> {

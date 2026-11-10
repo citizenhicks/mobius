@@ -14,8 +14,7 @@ use crate::backend::sandbox::ApprovalPolicy;
 use crate::backend::sandbox::{MAX_BINARY_FILE_BYTES, NetworkAccess, SandboxMode, WorkerCommand};
 use crate::backend::session_files::SessionFileStore;
 use crate::protocol::{
-    ContentPart, EventMsg, FrontendBlock, FrontendContribution, ImageDetail, ToolContent,
-    ToolResponse,
+    ContentPart, EventMsg, FrontendBlock, ImageDetail, ToolContent, ToolResponse,
 };
 use crate::{BoxFuture, Error, Result};
 
@@ -130,13 +129,6 @@ impl Middleware for ComputerControl {
             }
             Ok(())
         })
-    }
-
-    fn frontend(&self, _session_id: &str) -> FrontendContribution {
-        FrontendContribution {
-            capability: MANIFEST.id.into(),
-            ..Default::default()
-        }
     }
 
     fn render(&self, event: &EventMsg, _: &str) -> Option<FrontendBlock> {

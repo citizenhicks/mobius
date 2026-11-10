@@ -29,7 +29,8 @@ async fn admission_receipts_commit_with_queue_and_survive_consumption() {
 
     let session_id = session("session");
     let directory = tempfile::tempdir().expect("directory");
-    let store = SqliteCheckpoint::new(directory.path().join("receipts.sqlite3")).expect("store");
+    let path = directory.path().join("receipts.sqlite3");
+    let store = SqliteCheckpoint::new(&path).expect("store");
     let mut state = checkpoint("session");
     store
         .save(state.clone(), Vec::new(), None)
@@ -64,7 +65,7 @@ async fn admission_receipts_commit_with_queue_and_survive_consumption() {
         .await
         .expect("admit");
     state.sequence += 1;
-    state.pending_messages.clear();
+    let message = state.pending_messages.pop().expect("queued message");
     store
         .save(state.clone(), Vec::new(), None)
         .await
@@ -90,6 +91,30 @@ async fn admission_receipts_commit_with_queue_and_survive_consumption() {
             .message_accepted(&session_id, "input")
             .await
             .expect("deleted receipt")
+    );
+
+    // A warm save skips known receipts only while no other connection has committed.
+    state.pending_messages.push(message);
+    state.context = Arc::new(vec![Arc::new(json!({"role": "user", "content": "hello"}))]);
+    state.sequence = 1;
+    store
+        .save(state.clone(), Vec::new(), None)
+        .await
+        .expect("readmit");
+    SqliteCheckpoint::new(&path)
+        .expect("second connection")
+        .delete_sessions(&[session_id.share()])
+        .await
+        .expect("delete elsewhere");
+    store
+        .save(state.clone(), Vec::new(), None)
+        .await
+        .expect("recreate");
+    assert!(
+        store
+            .message_accepted(&session_id, "input")
+            .await
+            .expect("receipt after another connection deleted it")
     );
 }
 

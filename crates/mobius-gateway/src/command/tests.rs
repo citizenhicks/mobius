@@ -98,7 +98,7 @@ fn parse_init_loads_a_private_cloudflare_token_without_debugging_it() {
         .as_file()
         .set_permissions(mobius::owner_only::file())
         .expect("secure token");
-    let command = parse(vec![
+    let cli = parse_cli(vec![
         "init".into(),
         "--cloudflare-hostname".into(),
         "mobius.example.com".into(),
@@ -106,8 +106,13 @@ fn parse_init_loads_a_private_cloudflare_token_without_debugging_it() {
         token.path().into(),
     ])
     .expect("parse Cloudflare init");
+    let Some(GatewaySubcommand::Init(arguments)) = cli.command else {
+        panic!("init command expected");
+    };
+    let options =
+        parse_init(PathBuf::from("/tmp/gateway"), arguments).expect("load Cloudflare init");
 
-    assert!(!format!("{command:?}").contains("secret-tunnel-token"));
+    assert!(!format!("{options:?}").contains("secret-tunnel-token"));
 }
 
 async fn report_gateway_version(

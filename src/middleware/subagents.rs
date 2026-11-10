@@ -725,10 +725,6 @@ impl Middleware for Subagents {
         context: &'a mut ActiveCommandContext<'_>,
     ) -> BoxFuture<'a, Result<Option<SubmissionResult>>> {
         Box::pin(async move {
-            // Active commands reach every capability unchecked, so match the name here.
-            if context.command != OPEN_COMMAND {
-                return Ok(None);
-            }
             match self
                 .read_command(context.session_id, context.metadata, context.arguments)
                 .await

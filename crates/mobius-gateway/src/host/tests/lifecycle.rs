@@ -3,20 +3,7 @@ use mobius::SessionId;
 
 #[tokio::test]
 async fn full_session_queue_rejects_external_work_but_preserves_shutdown() {
-    let (commands, mut pending) = mpsc::channel(1);
-    let (events, _) = broadcast::channel(1);
-    let handle = HostHandle {
-        inner: Arc::new(HostInner {
-            session_id: SessionId::new("saturated").unwrap(),
-            commands,
-            events,
-            alive: Arc::new(AtomicBool::new(true)),
-            terminated: Arc::new(AtomicBool::new(true)),
-            termination: Arc::new(tokio::sync::Notify::new()),
-            session_mutations: Arc::new(RwLock::new(())),
-            realtime_voice: Arc::new(Mutex::new(())),
-        }),
-    };
+    let (handle, mut pending) = probe_handle("saturated", 1, true);
     let (reply, _) = tokio::sync::oneshot::channel();
     handle
         .inner
@@ -56,21 +43,11 @@ async fn full_session_queue_rejects_external_work_but_preserves_shutdown() {
 
 #[tokio::test]
 async fn concurrent_catalog_updates_preserve_both_fields_for_resident_and_stopped_chats() {
-    let root = tempfile::tempdir().expect("root");
-    let workspace = root.path().join("workspace");
-    std::fs::create_dir(&workspace).expect("workspace");
-    let (store, config) = ConfigStore::initialize(
-        root.path().join("state"),
-        "127.0.0.1:8741".parse().expect("listen"),
-        None,
-    )
-    .expect("config");
-    let credentials =
-        Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
-    let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
-    let gateway = GatewayHost::start(store, config, credentials, bots)
-        .await
-        .expect("gateway");
+    let TestGateway {
+        root: _root,
+        workspace,
+        gateway,
+    } = test_gateway().await;
     for stopped in [false, true] {
         let host = create_test_session(&gateway, &workspace)
             .await
@@ -90,7 +67,7 @@ async fn concurrent_catalog_updates_preserve_both_fields_for_resident_and_stoppe
         let mut approval_updates = 0;
         let mut latest_sessions = None;
         while let Ok(frame) = events.try_recv() {
-            match frame.message {
+            match frame.message() {
                 ServerMessage::Sessions { sessions, .. } => {
                     catalog_updates += 1;
                     latest_sessions = Some(sessions);
@@ -120,18 +97,11 @@ async fn concurrent_catalog_updates_preserve_both_fields_for_resident_and_stoppe
 
 #[tokio::test]
 async fn durable_event_journal_restores_complete_turn_pages() {
-    let root = tempfile::tempdir().expect("root");
-    let workspace = root.path().join("workspace");
-    std::fs::create_dir(&workspace).expect("workspace");
-    let listen = "127.0.0.1:8741".parse().expect("listen address");
-    let (store, config) =
-        ConfigStore::initialize(root.path().join("state"), listen, None).expect("config");
-    let credentials =
-        Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
-    let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
-    let gateway = GatewayHost::start(store, config, credentials, Arc::clone(&bots))
-        .await
-        .expect("gateway");
+    let TestGateway {
+        root: _root,
+        workspace,
+        gateway,
+    } = test_gateway().await;
     let host = create_test_session(&gateway, &workspace)
         .await
         .expect("create session");
@@ -142,30 +112,16 @@ async fn durable_event_journal_restores_complete_turn_pages() {
     drop(host);
     let mut latest_start = 0;
     for (index, event) in [
-        EventMsg::TurnStarted(mobius::protocol::TurnStartedEvent {
-            idle: false,
-            turn_id: "older".into(),
-            model_context_window: None,
-        }),
+        turn_started("older"),
         EventMsg::Warning(mobius::protocol::WarningEvent {
             message: "older work".into(),
         }),
-        EventMsg::TurnComplete(mobius::protocol::TurnCompleteEvent {
-            idle: false,
-            turn_id: "older".into(),
-        }),
-        EventMsg::TurnStarted(mobius::protocol::TurnStartedEvent {
-            idle: false,
-            turn_id: "latest".into(),
-            model_context_window: None,
-        }),
+        turn_complete("older"),
+        turn_started("latest"),
         EventMsg::Warning(mobius::protocol::WarningEvent {
             message: "latest work".into(),
         }),
-        EventMsg::TurnComplete(mobius::protocol::TurnCompleteEvent {
-            idle: false,
-            turn_id: "latest".into(),
-        }),
+        turn_complete("latest"),
     ]
     .into_iter()
     .enumerate()
@@ -257,18 +213,11 @@ async fn durable_event_journal_restores_complete_turn_pages() {
 
 #[tokio::test]
 async fn delete_sessions_preflight_all_roots_before_durable_removal() {
-    let root = tempfile::tempdir().expect("root");
-    let workspace = root.path().join("workspace");
-    std::fs::create_dir(&workspace).expect("workspace");
-    let listen = "127.0.0.1:8741".parse().expect("listen address");
-    let (store, config) =
-        ConfigStore::initialize(root.path().join("state"), listen, None).expect("config");
-    let credentials =
-        Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
-    let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
-    let gateway = GatewayHost::start(store, config, credentials, bots)
-        .await
-        .expect("gateway");
+    let TestGateway {
+        root: _root,
+        workspace,
+        gateway,
+    } = test_gateway().await;
     let root_host = create_test_session(&gateway, &workspace)
         .await
         .expect("create root session");
@@ -302,7 +251,7 @@ async fn delete_sessions_preflight_all_roots_before_durable_removal() {
     assert!(other_host.is_alive());
     assert!(checkpoints.load(&other_id).await.unwrap().is_some());
 
-    let (commands, mut receiver) = mpsc::channel(1);
+    let (handle, mut receiver) = probe_handle("child", 1, true);
     tokio::spawn(async move {
         for _ in 0..2 {
             if let Some(HostCommand::ProviderCutoverStatus { reply }) = receiver.recv().await
@@ -312,22 +261,12 @@ async fn delete_sessions_preflight_all_roots_before_durable_removal() {
             }
         }
     });
-    let (events, _) = broadcast::channel(1);
-    gateway.state.lock().await.sessions.insert(
-        SessionId::new("child").unwrap(),
-        HostHandle {
-            inner: Arc::new(HostInner {
-                session_id: SessionId::new("child").unwrap(),
-                commands,
-                events,
-                alive: Arc::new(AtomicBool::new(true)),
-                terminated: Arc::new(AtomicBool::new(true)),
-                termination: Arc::new(tokio::sync::Notify::new()),
-                session_mutations: Arc::new(tokio::sync::RwLock::new(())),
-                realtime_voice: Arc::new(tokio::sync::Mutex::new(())),
-            }),
-        },
-    );
+    gateway
+        .state
+        .lock()
+        .await
+        .sessions
+        .insert(SessionId::new("child").unwrap(), handle);
 
     let purge_error = super::super::deletion::prepare_session_tree_deletion(
         &*gateway.state.lock().await,
@@ -368,18 +307,11 @@ async fn delete_sessions_preflight_all_roots_before_durable_removal() {
 
 #[tokio::test]
 async fn opening_a_chat_rejects_tampered_bot_identity() {
-    let root = tempfile::tempdir().expect("root");
-    let workspace = root.path().join("workspace");
-    std::fs::create_dir(&workspace).expect("workspace");
-    let listen = "127.0.0.1:8741".parse().expect("listen address");
-    let (store, config) =
-        ConfigStore::initialize(root.path().join("state"), listen, None).expect("config");
-    let credentials =
-        Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
-    let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
-    let gateway = GatewayHost::start(store, config, credentials, bots)
-        .await
-        .expect("gateway");
+    let TestGateway {
+        root: _root,
+        workspace,
+        gateway,
+    } = test_gateway().await;
     let checkpoints = Arc::clone(&gateway.state.lock().await.checkpoints);
 
     let host = create_test_session(&gateway, &workspace)
@@ -411,18 +343,11 @@ async fn opening_a_chat_rejects_tampered_bot_identity() {
 
 #[tokio::test]
 async fn message_pins_accept_only_assistant_messages_and_survive_reopen() {
-    let root = tempfile::tempdir().expect("root");
-    let workspace = root.path().join("workspace");
-    std::fs::create_dir(&workspace).expect("workspace");
-    let listen = "127.0.0.1:8741".parse().expect("listen address");
-    let (store, config) =
-        ConfigStore::initialize(root.path().join("state"), listen, None).expect("config");
-    let credentials =
-        Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
-    let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
-    let gateway = GatewayHost::start(store, config, credentials, Arc::clone(&bots))
-        .await
-        .expect("gateway");
+    let TestGateway {
+        root: _root,
+        workspace,
+        gateway,
+    } = test_gateway().await;
     let host = create_test_session(&gateway, &workspace)
         .await
         .expect("create session");
@@ -508,18 +433,11 @@ async fn fork_history_continues_into_the_parent_above_the_fork_point() {
     use crate::wire::{HistoryCursor, TranscriptItemContent};
     use mobius::protocol::{AssistantMessageEvent, MessageTarget, ModelStepContent};
 
-    let root = tempfile::tempdir().expect("root");
-    let workspace = root.path().join("workspace");
-    std::fs::create_dir(&workspace).expect("workspace");
-    let listen = "127.0.0.1:8741".parse().expect("listen address");
-    let (store, config) =
-        ConfigStore::initialize(root.path().join("state"), listen, None).expect("config");
-    let credentials =
-        Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
-    let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
-    let gateway = GatewayHost::start(store, config, credentials, bots)
-        .await
-        .expect("gateway");
+    let TestGateway {
+        root: _root,
+        workspace,
+        gateway,
+    } = test_gateway().await;
     let parent = create_test_session(&gateway, &workspace)
         .await
         .expect("create parent");
@@ -540,14 +458,7 @@ async fn fork_history_continues_into_the_parent_above_the_fork_point() {
     };
     let turn = |turn: &str, submission: &str, checkpoint| {
         [
-            (
-                None,
-                EventMsg::TurnStarted(mobius::protocol::TurnStartedEvent {
-                    idle: false,
-                    turn_id: turn.into(),
-                    model_context_window: None,
-                }),
-            ),
+            (None, turn_started(turn)),
             (
                 Some(submission.to_owned()),
                 EventMsg::Message(mobius::protocol::MessageEvent {
@@ -575,13 +486,7 @@ async fn fork_history_continues_into_the_parent_above_the_fork_point() {
                     message_target: target(checkpoint),
                 }),
             ),
-            (
-                None,
-                EventMsg::TurnComplete(mobius::protocol::TurnCompleteEvent {
-                    idle: false,
-                    turn_id: turn.into(),
-                }),
-            ),
+            (None, turn_complete(turn)),
         ]
     };
     let mut child = Checkpoint::empty(SessionId::new("child").unwrap());
@@ -678,18 +583,11 @@ async fn fork_history_continues_into_the_parent_above_the_fork_point() {
 async fn history_and_a_cut_replay_mark_only_the_turn_after_an_agent_restart_resumed() {
     use crate::wire::TranscriptItemContent;
 
-    let root = tempfile::tempdir().expect("root");
-    let workspace = root.path().join("workspace");
-    std::fs::create_dir(&workspace).expect("workspace");
-    let listen = "127.0.0.1:8741".parse().expect("listen address");
-    let (store, config) =
-        ConfigStore::initialize(root.path().join("state"), listen, None).expect("config");
-    let credentials =
-        Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
-    let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
-    let gateway = GatewayHost::start(store, config, credentials, bots)
-        .await
-        .expect("gateway");
+    let TestGateway {
+        root: _root,
+        workspace,
+        gateway,
+    } = test_gateway().await;
     let chat = create_test_session(&gateway, &workspace)
         .await
         .expect("create chat");
@@ -713,14 +611,7 @@ async fn history_and_a_cut_replay_mark_only_the_turn_after_an_agent_restart_resu
     };
     let turn = |turn: &str| {
         [
-            (
-                None,
-                EventMsg::TurnStarted(mobius::protocol::TurnStartedEvent {
-                    idle: false,
-                    turn_id: turn.into(),
-                    model_context_window: None,
-                }),
-            ),
+            (None, turn_started(turn)),
             (
                 Some(turn.to_owned()),
                 EventMsg::Message(mobius::protocol::MessageEvent {
@@ -732,13 +623,7 @@ async fn history_and_a_cut_replay_mark_only_the_turn_after_an_agent_restart_resu
                     message_target: None,
                 }),
             ),
-            (
-                None,
-                EventMsg::TurnComplete(mobius::protocol::TurnCompleteEvent {
-                    idle: false,
-                    turn_id: turn.into(),
-                }),
-            ),
+            (None, turn_complete(turn)),
         ]
     };
     // Enough work in the first turn that the replay window starts after it.

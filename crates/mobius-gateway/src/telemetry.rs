@@ -3,6 +3,7 @@ mod activity;
 mod policy;
 mod resources;
 mod upload;
+mod validation;
 use crate::wire::HookKind;
 use crate::{Error, Result, host::GatewayHost};
 pub(crate) use activity::ActivityHook;

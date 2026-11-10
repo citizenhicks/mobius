@@ -140,7 +140,7 @@ impl HarnessSession for MobiusSession {
     }
 
     fn active_message_delivery(&self) -> ActiveMessageDelivery {
-        self.prepared.active_message_delivery
+        self.prepared.settings.message_delivery
     }
 
     fn realtime(

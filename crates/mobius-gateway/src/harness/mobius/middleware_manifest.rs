@@ -2,10 +2,13 @@
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
+use std::num::NonZeroUsize;
+use std::sync::Arc;
 
+use mobius::backend::sandbox::ApprovalPolicy;
 use mobius::middleware::manifest::{MiddlewareManifest, MiddlewareSettingManifest, ModelCatalogs};
 use mobius::middleware::subagents::{SubagentCeilings, SubagentLimits};
-use mobius::protocol::{FrontendSettingValue, MiddlewareFeature};
+use mobius::protocol::{ActiveMessageDelivery, FrontendSettingValue, MiddlewareFeature};
 
 use crate::wire::MiddlewareConfig;
 use crate::{Error, Result};
@@ -250,6 +253,62 @@ pub(crate) fn configured_model_routes(
         .collect()
 }
 
+/// A möbius composition's middleware settings, parsed once when the composition is validated
+/// or read back from disk.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct MobiusSettings {
+    pub(crate) approval_policy: ApprovalPolicy,
+    /// The voice route; `None` uses the default voice.
+    pub(crate) voice_model: Option<Arc<str>>,
+    pub(crate) message_delivery: ActiveMessageDelivery,
+    pub(crate) max_pending_messages: NonZeroUsize,
+    pub(crate) tool_output_bytes: NonZeroUsize,
+    pub(crate) background_commands: NonZeroUsize,
+    pub(crate) repeat_warning_calls: NonZeroUsize,
+    pub(crate) repeat_stop_calls: NonZeroUsize,
+    /// The subagents' default model route; `None` keeps the parent's.
+    pub(crate) subagent_model_route: Option<Arc<str>>,
+    pub(crate) session_page_size: NonZeroUsize,
+}
+
+impl MobiusSettings {
+    /// Parses the settings the gateway's runtime reads from `config`.
+    /// # Errors
+    ///
+    /// Returns an error if a setting is missing, mistyped, or not a positive count.
+    pub(crate) fn parse(config: &MiddlewareConfig) -> Result<Self> {
+        let sandbox = mobius::backend::sandbox::MANIFEST.id;
+        let messages = mobius::middleware::messages::MANIFEST.id;
+        let tools = mobius::middleware::tools::MANIFEST.id;
+        let required = |middleware: &str, setting: &str| {
+            string_setting(config, middleware, setting)?.ok_or_else(|| {
+                Error::Config(format!(
+                    "missing middleware setting `{middleware}.{setting}`"
+                ))
+            })
+        };
+        let route = |middleware: &str, setting: &str| {
+            Ok::<_, Error>(string_setting(config, middleware, setting)?.map(Arc::from))
+        };
+        Ok(Self {
+            approval_policy: required(sandbox, "approval_policy")?.parse()?,
+            voice_model: route(mobius::middleware::voice::MANIFEST.id, "model")?,
+            message_delivery: required(messages, "delivery")?.parse()?,
+            max_pending_messages: count_setting(config, messages, "max_pending")?,
+            tool_output_bytes: count_setting(config, sandbox, "tool_output_bytes")?,
+            background_commands: count_setting(config, sandbox, "background_commands")?,
+            repeat_warning_calls: count_setting(config, tools, "repeat_warning_calls")?,
+            repeat_stop_calls: count_setting(config, tools, "repeat_stop_calls")?,
+            subagent_model_route: route(mobius::middleware::subagents::MANIFEST.id, "model_route")?,
+            session_page_size: count_setting(
+                config,
+                mobius::middleware::sessions::MANIFEST.id,
+                "page_size",
+            )?,
+        })
+    }
+}
+
 pub(crate) fn integer_setting(
     config: &MiddlewareConfig,
     middleware: &str,
@@ -287,7 +346,7 @@ pub(crate) fn subagent_limits(
     Ok(ceilings.limits(max_depth, max_concurrency, max_agents)?)
 }
 
-pub(crate) fn count_setting(
+fn count_setting(
     config: &MiddlewareConfig,
     middleware: &str,
     setting: &str,

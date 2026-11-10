@@ -65,11 +65,9 @@ async fn desktop_serializes_evaluations_and_rejects_stale_replies() {
             .is_err()
     );
     let request = serde_json::to_vec(&json!({"action": "apps"})).expect("request");
-    worker
-        .write_u32(u32::try_from(request.len()).expect("size fits"))
+    app_bridge::write_frame(&mut worker, &request)
         .await
-        .expect("size");
-    worker.write_all(&request).await.expect("request");
+        .expect("request");
     let Some(ServerMessage::DesktopControlRequested {
         request_id,
         execution_id,
@@ -84,9 +82,10 @@ async fn desktop_serializes_evaluations_and_rejects_stale_replies() {
     assert!(app.reply("stale", json!({"result": []})).is_err());
     app.reply(&request_id, json!({"result": []}))
         .expect("reply");
-    let size = usize::try_from(worker.read_u32().await.expect("reply size")).expect("size fits");
-    let mut reply = vec![0; size];
-    worker.read_exact(&mut reply).await.expect("reply");
+    let reply = app_bridge::read_frame(&mut worker, 1024)
+        .await
+        .expect("reply")
+        .expect("reply size");
     assert_eq!(
         serde_json::from_slice::<Value>(&reply).expect("JSON"),
         json!({"result": []})

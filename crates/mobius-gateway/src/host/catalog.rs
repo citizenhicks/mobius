@@ -156,12 +156,12 @@ pub(super) async fn update_session_activity(
     session_id: &SessionId,
     activity: SessionActivity,
 ) -> Result<()> {
-    let mut catalog = activities.lock().await;
+    // Read before locking: the gateway-wide catalog must not wait on the checkpoint store.
     let summary = checkpoints
         .session_summary(session_id)
         .await?
         .ok_or_else(|| Error::Config("the running session has no catalog entry".into()))?;
-    catalog.update(summary, activity)
+    activities.lock().await.update(summary, activity)
 }
 
 impl SessionCatalog {

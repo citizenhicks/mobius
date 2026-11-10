@@ -36,10 +36,10 @@ use tokio::process::{Child, Command as TokioCommand};
 use tokio::signal::unix::{Signal as TokioSignal, SignalKind, signal};
 use uuid::Uuid;
 
-#[cfg(test)]
-use self::args::parse;
 pub use self::args::{CloudflareInit, FrontendCommand, GatewayCli};
-use self::args::{Command, ConnectOptions, InitOptions, RegisterProviderOptions, parse_cli};
+use self::args::{
+    GatewaySubcommand, InitOptions, RegisterProviderArgs, ServeArgs, parse_cli, parse_init,
+};
 use self::connection::{connect, ensure_gateway_stopped, pairing_code};
 use self::init::{
     direct_loopback_endpoint, initialize, initialize_bootstrap, loopback_endpoint,
@@ -48,16 +48,18 @@ use self::init::{
 pub use self::init::{
     initialize_named_cloudflare, initialize_quick_cloudflare, reset_gateway_state,
 };
-use self::lifecycle::{
-    StartupGuard, exit_gateway, print_listener, reuse_current_gateway, running_process_pid,
-    running_process_record, runtime_endpoint, serve, serve_in_background, shutdown_signal,
-    start_background_gateway, stop_gateway,
+pub use self::lifecycle::{
+    BackgroundGatewayOptions, ensure_background_gateway, ensure_background_gateway_with,
 };
-pub use self::lifecycle::{ensure_background_gateway, startup_error};
+use self::lifecycle::{
+    ShutdownSignals, StartupGuard, exit_gateway, print_listener, reuse_current_gateway,
+    running_process_pid, running_process_record, runtime_endpoint, serve, start_background_gateway,
+    stop_gateway,
+};
 use self::provider::register_provider_command;
 
 /// Terminates a process group created by gateway autostart.
-pub fn terminate_process_group(pid: u32) {
+fn terminate_process_group(pid: u32) {
     if pid <= 1 {
         return;
     }
@@ -130,8 +132,10 @@ pub async fn run_cli(
     save_local_client: fn(&Endpoint, String) -> Result<()>,
     load_local_client: fn(&Endpoint) -> Result<Option<String>>,
 ) -> Result<()> {
-    match cli.into_command()? {
-        Command::PrintDefaultConfig => {
+    let GatewayCli { state_dir, command } = cli;
+    let state_dir = || state_dir.map_or_else(crate::config::state_dir, Ok);
+    match command {
+        Some(GatewaySubcommand::PrintDefaultConfig) => {
             let config =
                 toml::to_string_pretty(&GatewayConfig::new(crate::config::DEFAULT_LISTEN, None)?)
                     .map_err(|error| {
@@ -141,25 +145,24 @@ pub async fn run_cli(
                 })?;
             Ok(print_line(format_args!("{config}"))?)
         }
-        Command::CheckConfig { state_dir } => {
-            ConfigStore::open(state_dir)?;
-            Ok(print_line(format_args!("gateway configuration is valid"))?)
-        }
-        Command::ExportComputerResources { directory } => {
+        Some(GatewaySubcommand::ExportComputerResources { directory }) => {
             crate::computer_runtime::export_resources(&directory)
         }
-        Command::Telemetry { state_dir, command } => {
-            telemetry::run(state_dir, command, load_local_client).await
+        Some(GatewaySubcommand::CheckConfig) => {
+            ConfigStore::open(state_dir()?)?;
+            Ok(print_line(format_args!("gateway configuration is valid"))?)
         }
-        Command::SetRuntime {
-            state_dir,
+        Some(GatewaySubcommand::Telemetry { command }) => {
+            telemetry::run(state_dir()?, command, load_local_client).await
+        }
+        Some(GatewaySubcommand::SetRuntime {
             idle_exit_seconds,
             storage_limit_bytes,
             ingress,
             clear_ingress,
             clear_storage_limit,
-        } => {
-            let (store, mut config) = ConfigStore::open(state_dir)?;
+        }) => {
+            let (store, mut config) = ConfigStore::open(state_dir()?)?;
             ensure_gateway_stopped(&store, &config)?;
             if let Some(seconds) = idle_exit_seconds {
                 config.runtime.idle_exit_seconds = seconds;
@@ -178,33 +181,37 @@ pub async fn run_cli(
             }
             store.save(&config.validated()?)
         }
-        Command::Init(options) => initialize(options),
-        Command::Bootstrap { state_dir } => initialize_bootstrap(state_dir, save_local_client),
-        Command::ResetBotDefaults { state_dir } => reset_bot_defaults(state_dir),
-        Command::SetDesktop { state_dir, enabled } => set_desktop(state_dir, enabled),
-        Command::PairingCode { state_dir } => pairing_code(state_dir, load_local_client).await,
-        Command::ClearProviderCredential {
-            state_dir,
-            instance,
-        } => provider::clear_provider_credential(state_dir, instance, load_local_client).await,
-        Command::RegisterProvider(options) => {
-            register_provider_command(options, load_local_client).await
+        Some(GatewaySubcommand::Init(arguments)) => {
+            initialize(parse_init(state_dir()?, arguments)?)
         }
-        Command::Connect(options) => connect(options, load_local_client).await,
-        Command::Serve {
-            state_dir,
-            background,
-        } => {
-            if background {
-                serve_in_background(state_dir, load_local_client).await
-            } else {
-                serve(state_dir, true, save_local_client, load_local_client).await
-            }
+        Some(GatewaySubcommand::Bootstrap) => initialize_bootstrap(state_dir()?, save_local_client),
+        Some(GatewaySubcommand::ResetBotDefaults) => reset_bot_defaults(state_dir()?),
+        Some(GatewaySubcommand::SetDesktop { enabled }) => set_desktop(state_dir()?, enabled),
+        Some(GatewaySubcommand::PairingCode { json: _ }) => {
+            pairing_code(state_dir()?, load_local_client).await
         }
-        Command::ServeChild { state_dir } => {
-            serve(state_dir, false, save_local_client, load_local_client).await
+        Some(GatewaySubcommand::ClearProviderCredential { instance }) => {
+            provider::clear_provider_credential(state_dir()?, instance, load_local_client).await
         }
-        Command::Exit { state_dir } => exit_gateway(state_dir),
+        Some(GatewaySubcommand::RegisterProvider(arguments)) => {
+            register_provider_command(state_dir()?, arguments, load_local_client).await
+        }
+        Some(GatewaySubcommand::Connect(arguments)) => {
+            connect(state_dir()?, arguments.endpoint, load_local_client).await
+        }
+        Some(GatewaySubcommand::Serve(ServeArgs { background: true })) => {
+            ensure_background_gateway(state_dir()?, load_local_client).await
+        }
+        Some(GatewaySubcommand::Serve(ServeArgs { background: false })) => {
+            serve(state_dir()?, true, save_local_client, load_local_client).await
+        }
+        Some(GatewaySubcommand::ServeChild) => {
+            serve(state_dir()?, false, save_local_client, load_local_client).await
+        }
+        Some(GatewaySubcommand::Exit) => exit_gateway(state_dir()?),
+        None | Some(GatewaySubcommand::Provider) => Err(Error::Config(
+            "an executable gateway command is required".into(),
+        )),
     }
 }
 

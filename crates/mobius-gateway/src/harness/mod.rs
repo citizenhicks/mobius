@@ -10,7 +10,6 @@ use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, LazyLock};
 
 use ::mobius::backend::checkpoint::{CheckpointStore, JournalEvent};
-use ::mobius::backend::sandbox::ApprovalPolicy;
 use ::mobius::backend::session_files::SessionFileStore;
 use ::mobius::middleware::memory::Memory;
 use ::mobius::middleware::sessions::LiveChats;
@@ -24,6 +23,7 @@ pub(crate) use self::mobius::{MessageAcceptance, ValidatedSubmission};
 use crate::bots::BotStore;
 use crate::computer_runtime::{desktop::DesktopControl, remote_desktop::RemoteDesktop};
 use crate::config::{ChatSpec, ConfigStore, CredentialStore, GatewayConfig};
+use crate::harness::mobius::middleware_manifest::MobiusSettings;
 use crate::host::{HostAccess, Rejection, RenderEvents, SessionRuntimeState};
 use crate::sandbox::GatewaySandbox;
 use crate::wire::{
@@ -166,21 +166,24 @@ pub(crate) async fn start(
         .await
 }
 
-/// How a Bot's tool calls are approved, parsed once from its configuration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// How a Bot's tool calls are approved, parsed once from its configuration with the rest of
+/// the settings its runtime reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ApprovalMode {
-    /// The möbius sandbox's approval policy.
-    Mobius(ApprovalPolicy),
+    /// The möbius middleware settings, including the sandbox's approval policy.
+    Mobius(Arc<MobiusSettings>),
     /// A CLI harness's access level.
     Cli(crate::wire::BotAccess),
 }
 
 impl ApprovalMode {
     /// Whether unattended routine work can stop for a human decision.
-    pub(crate) const fn routine_interaction_policy(self) -> RoutineInteractionPolicy {
+    pub(crate) fn routine_interaction_policy(&self) -> RoutineInteractionPolicy {
         match self {
-            Self::Mobius(policy) => mobius::assembly::routine_interaction_policy(policy),
-            Self::Cli(access) => cli_routine_interaction_policy(access),
+            Self::Mobius(settings) => {
+                mobius::assembly::routine_interaction_policy(settings.approval_policy)
+            }
+            Self::Cli(access) => cli_routine_interaction_policy(*access),
         }
     }
 }
@@ -193,10 +196,10 @@ pub(crate) struct ValidatedConfig {
 }
 
 impl ValidatedConfig {
-    pub(crate) const fn mobius(composition: Arc<AgentComposition>, policy: ApprovalPolicy) -> Self {
+    pub(crate) fn mobius(composition: Arc<AgentComposition>, settings: MobiusSettings) -> Self {
         Self {
             config: HarnessConfig::Mobius(composition),
-            approval: ApprovalMode::Mobius(policy),
+            approval: ApprovalMode::Mobius(Arc::new(settings)),
         }
     }
 
@@ -212,9 +215,9 @@ impl ValidatedConfig {
 #[cfg(test)]
 impl From<AgentComposition> for ValidatedConfig {
     fn from(composition: AgentComposition) -> Self {
-        let policy = crate::config::validate_agent_composition(&composition)
-            .expect("valid test composition");
-        Self::mobius(Arc::new(composition), policy)
+        let settings =
+            crate::config::validate_mobius_settings(&composition).expect("valid test composition");
+        Self::mobius(Arc::new(composition), settings)
     }
 }
 
@@ -247,9 +250,8 @@ pub(crate) fn validate_cli(config: HarnessConfig) -> Result<ValidatedConfig> {
 /// Returns an error if a möbius composition is invalid.
 pub(crate) fn validate_stored(config: &HarnessConfig) -> Result<ApprovalMode> {
     match config {
-        HarnessConfig::Mobius(composition) => {
-            crate::config::validate_agent_composition(composition).map(ApprovalMode::Mobius)
-        }
+        HarnessConfig::Mobius(composition) => crate::config::validate_mobius_settings(composition)
+            .map(|settings| ApprovalMode::Mobius(Arc::new(settings))),
         HarnessConfig::Codex(options) | HarnessConfig::Claude(options) => {
             Ok(ApprovalMode::Cli(options.access))
         }
@@ -266,19 +268,22 @@ const fn cli_routine_interaction_policy(access: BotAccess) -> RoutineInteraction
     }
 }
 
-/// What chats composed from `config` can do.
-/// # Errors
-///
-/// Returns an error if a möbius composition's voice setting cannot be read.
+/// What chats composed from `config`, whose settings parsed to `approval`, can do.
 pub(crate) fn bot_capabilities(
     config: &HarnessConfig,
+    approval: &ApprovalMode,
     voices: &mobius::provider_catalog::VoiceRoutes,
-) -> Result<BotCapabilities> {
-    match config {
-        HarnessConfig::Mobius(composition) => {
-            mobius::assembly::bot_capabilities(composition, voices)
+) -> BotCapabilities {
+    match (config, approval) {
+        (HarnessConfig::Mobius(composition), ApprovalMode::Mobius(settings)) => {
+            mobius::assembly::bot_capabilities(
+                &composition.middleware,
+                settings.voice_model.as_deref(),
+                voices,
+            )
         }
-        HarnessConfig::Codex(_) | HarnessConfig::Claude(_) => Ok(BotCapabilities {
+        // A configuration and its parsed settings always share a harness.
+        _ => BotCapabilities {
             attachments: false,
             computer: false,
             voice: VoiceCapability::Off,
@@ -286,7 +291,7 @@ pub(crate) fn bot_capabilities(
                 enabled: false,
                 global: false,
             },
-        }),
+        },
     }
 }
 

@@ -6,9 +6,8 @@ use super::{
     PathBuf, ProviderCutoverStatus, Rejection, Result, ReviewDecision, RoutineRunStatus,
     ServerMessage, SessionHistoryPage, SharedFrame, SourceAdmission, Submission, Uuid,
     ValidatedSubmission, delete_workspace_file, durable_history_page, event_sequence,
-    fail_active_routine, internal, invalid_config, invalid_workspace, list_workspace_files, mpsc,
-    oneshot, read_workspace_file, shutdown_agent, stopped, try_begin_session_mutation, validated,
-    write_workspace_file,
+    fail_active_routine, internal, invalid_config, invalid_workspace, mpsc, oneshot,
+    shutdown_agent, stopped, try_begin_session_mutation, validated, write_workspace_file,
 };
 use crate::harness::{MessageAcceptance, RealtimeCall};
 use crate::wire::HistoryCursor;
@@ -16,9 +15,10 @@ use futures_util::StreamExt as _;
 
 impl HostState {
     fn project(&self) -> std::result::Result<&Path, Rejection> {
-        self.spec.workspace.as_deref().ok_or_else(|| {
-            Rejection::new("no_workspace", "Persistent Chat has no project workspace")
-        })
+        self.spec
+            .workspace
+            .as_deref()
+            .ok_or_else(super::no_workspace)
     }
 
     fn begin_session_mutation(
@@ -198,7 +198,7 @@ impl HostState {
                     let _mutation = self.begin_session_mutation()?;
                     self.bind_bot().await?;
                     let bot = self.bots.bot(&self.spec.bot_id).map_err(internal)?;
-                    let active_turn_id = self.activity().await.map_err(internal)?.turn_id;
+                    let active_turn_id = self.activity.turn_id.as_ref().map(Arc::clone);
                     self.running
                         .realtime(RealtimeCall {
                             bot,
@@ -309,35 +309,12 @@ impl HostState {
                 let result = self.set_message_pinned(target, pinned).await;
                 respond(reply, result, "session command");
             }
-            HostCommand::GitWorkspace { reply } => {
-                let result = self
-                    .project()
-                    .map(|workspace| (Arc::clone(self.running.sandbox()), workspace.to_owned()));
-                respond(reply, result, "session command");
-            }
-            HostCommand::WorkspaceFiles { scope, reply } => {
-                let result = async {
-                    let workspace = self.project()?;
-                    list_workspace_files(self.running.sandbox(), workspace, scope).await
-                }
-                .await;
-                respond(reply, result, "session command");
-            }
-            HostCommand::ReadWorkspaceFile {
-                path,
-                offset,
-                max_bytes,
-                reply,
-            } => {
-                let result = read_workspace_file(
-                    self.running.sandbox(),
-                    self.spec.workspace.as_deref(),
-                    &path,
-                    offset,
-                    max_bytes,
-                )
-                .await;
-                respond(reply, result, "session command");
+            HostCommand::Workspace { reply } => {
+                let workspace = (
+                    Arc::clone(self.running.sandbox()),
+                    self.spec.workspace.clone(), // rules-allow: the requester reads outside the actor with its own path
+                );
+                respond(reply, Ok(workspace), "session command");
             }
             HostCommand::DeleteWorkspaceFile { path, reply } => {
                 let result = async {

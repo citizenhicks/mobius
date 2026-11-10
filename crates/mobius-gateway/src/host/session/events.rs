@@ -58,7 +58,7 @@ impl HostState {
             )?,
             _ => {}
         }
-        let next_activity = self.activity_for_event(&event.msg).await?;
+        let next_activity = self.activity_for_event(&event.msg);
         // The hidden start already reserved this same turn; its accepted Message releases its own reservation.
         if !promoted_idle_turn {
             account_turn_event(&mut self.pending_turns, &mut self.pending_messages, event);
@@ -359,11 +359,8 @@ impl HostState {
         Ok(())
     }
 
-    pub(super) async fn activity_for_event(
-        &mut self,
-        event: &EventMsg,
-    ) -> Result<Option<SessionActivity>> {
-        let next = match event {
+    pub(super) fn activity_for_event(&mut self, event: &EventMsg) -> Option<SessionActivity> {
+        match event {
             EventMsg::TurnStarted(turn) if turn.idle => None,
             EventMsg::TurnStarted(turn) => {
                 self.turn_error = None;
@@ -379,8 +376,7 @@ impl HostState {
                 turn_id: Some(Arc::clone(&request.turn_id)),
                 approval_request_id: Some(Arc::clone(&request.id)),
                 started_at: self
-                    .activity()
-                    .await?
+                    .activity
                     .started_at
                     .or_else(|| Some(Utc::now().timestamp())),
                 ..SessionActivity::default()
@@ -389,9 +385,7 @@ impl HostState {
                 self.turn_error = Some(Arc::clone(&error.message));
                 None
             }
-            EventMsg::Error(error)
-                if self.activity().await?.state == SessionActivityState::Idle =>
-            {
+            EventMsg::Error(error) if self.activity.state == SessionActivityState::Idle => {
                 self.turn_error = None;
                 Some(SessionActivity {
                     last_outcome: Some(ExecutionOutcome::Failed),
@@ -430,34 +424,32 @@ impl HostState {
             EventMsg::Frontend(
                 FrontendEvent::Widget { .. } | FrontendEvent::RemoveWidget { .. },
             ) => {
-                let current = self.activity().await?;
-                (current.attention != super::super::replay::attention_count(&self.widgets))
-                    .then_some(current)
+                (self.activity.attention != super::super::replay::attention_count(&self.widgets))
+                    .then(|| self.activity.clone()) // rules-allow: the catalog receives its own copy of the refreshed activity
             }
             _ => None,
-        };
-        Ok(next)
+        }
     }
 
-    pub(super) async fn resume_activity(&self) -> Result<()> {
-        let current = self.activity().await?;
+    pub(super) async fn resume_activity(&mut self) -> Result<()> {
+        let current = &self.activity;
         if current.state != SessionActivityState::AwaitingApproval {
             return Ok(());
         }
-        self.set_activity(SessionActivity {
+        let resumed = SessionActivity {
             state: SessionActivityState::Running,
-            turn_id: current.turn_id,
+            turn_id: current.turn_id.as_ref().map(Arc::clone),
             started_at: current.started_at,
             ..SessionActivity::default()
-        })
-        .await?;
+        };
+        self.set_activity(resumed).await?;
         self.broadcast_sessions()
             .await
             .map_err(|rejection| Error::Config(rejection.message.to_string()))
     }
 
-    pub(super) async fn fail_activity(&self, message: &str) -> Result<()> {
-        if self.activity().await?.state == SessionActivityState::Idle {
+    pub(super) async fn fail_activity(&mut self, message: &str) -> Result<()> {
+        if self.activity.state == SessionActivityState::Idle {
             return Ok(());
         }
         self.set_activity(SessionActivity {
@@ -471,26 +463,17 @@ impl HostState {
             .map_err(|rejection| Error::Config(rejection.message.to_string()))
     }
 
-    pub(super) async fn activity(&self) -> Result<SessionActivity> {
-        Ok(self
-            .activities
-            .lock()
-            .await
-            .activities
-            .get(self.running.session_id().as_ref())
-            .cloned() // rules-allow: the activity is read out before the catalog lock is released
-            .unwrap_or_default())
-    }
-
-    pub(super) async fn set_activity(&self, mut activity: SessionActivity) -> Result<()> {
+    pub(super) async fn set_activity(&mut self, mut activity: SessionActivity) -> Result<()> {
         activity.attention = super::super::replay::attention_count(&self.widgets);
         update_session_activity(
             &self.checkpoints,
             &self.activities,
             self.running.session_id(),
-            activity,
+            activity.clone(), // rules-allow: the catalog and this actor each keep the activity
         )
-        .await
+        .await?;
+        self.activity = activity;
+        Ok(())
     }
 
     pub(super) fn broadcast(&self, message: ServerMessage) {

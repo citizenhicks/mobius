@@ -3,17 +3,23 @@ use std::io::{IsTerminal as _, Read};
 use mobius::backend::model::provider::{BaseUrl, provider};
 
 use super::{
-    ClientCapabilities, ClientMessage, ConfigStore, Endpoint, Error, GatewayClient,
-    RegisterProviderOptions, Result, Serialize, ServerMessage, Uuid, direct_loopback_endpoint,
+    ClientCapabilities, ClientMessage, ConfigStore, Endpoint, Error, GatewayClient, PathBuf,
+    RegisterProviderArgs, Result, Serialize, ServerMessage, Uuid, direct_loopback_endpoint,
     print_line,
 };
 use crate::config::{MAX_PROVIDER_API_KEY_BYTES, ProviderRegistration};
 use crate::wire::{ConfiguredModel, ProviderConfig, ProviderEndpointAuth};
 
 pub(super) async fn register_provider_command(
-    options: RegisterProviderOptions,
+    state_dir: PathBuf,
+    options: RegisterProviderArgs,
     load_local_client: fn(&Endpoint) -> Result<Option<String>>,
 ) -> Result<()> {
+    let models: Option<Vec<ConfiguredModel>> = options
+        .models_json
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()?;
     let credential = if options.credential_stdin {
         if std::io::stdin().is_terminal() {
             return Err(Error::Config(
@@ -24,16 +30,8 @@ pub(super) async fn register_provider_command(
     } else {
         None
     };
-    register_provider_with_credential(options, credential, load_local_client).await
-}
-
-pub(super) async fn register_provider_with_credential(
-    options: RegisterProviderOptions,
-    credential: Option<String>,
-    load_local_client: fn(&Endpoint) -> Result<Option<String>>,
-) -> Result<()> {
     let endpoint = {
-        let (_, config) = ConfigStore::open(options.state_dir)?;
+        let (_, config) = ConfigStore::open(state_dir)?;
         direct_loopback_endpoint(&config)?
     };
     let token = load_local_client(&endpoint)?
@@ -66,10 +64,12 @@ pub(super) async fn register_provider_with_credential(
         reasoning_effort: None,
         service_tier: options.service_tier,
         web_search: options.web_search,
-        tool_discovery: options.tool_discovery,
+        tool_discovery: options.tool_discovery.map(|mode| match mode.as_str() {
+            "native" => mobius::protocol::ToolDiscoveryMode::Native,
+            _ => mobius::protocol::ToolDiscoveryMode::Rebuild,
+        }),
     };
-    let models = options
-        .models
+    let models = models
         .or_else(|| {
             options.model_ids.map(|ids| {
                 ids.into_iter()

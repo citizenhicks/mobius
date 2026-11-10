@@ -42,6 +42,8 @@ pub(super) struct Runner {
     pub(super) prompt_estimate: super::context_estimate::ContextEstimate,
     /// The last model request's parts, scaled once its usage arrives.
     pub(super) context_estimate: Option<super::context_estimate::ContextEstimate>,
+    /// The last request's tool-schema estimate, reused while its tool set is unchanged.
+    pub(super) tool_schema_estimate: super::context_estimate::ToolSchemaEstimate,
     pub(super) catalog: Arc<Catalog>,
     pub(super) state: LiveCheckpoint,
     pub(super) transcript_delta: Vec<Arc<Value>>,

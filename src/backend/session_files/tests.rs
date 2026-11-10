@@ -483,3 +483,83 @@ async fn generated_images_survive_selective_cleanup_until_the_chat_is_deleted() 
         assert_eq!(store.blob_bytes().await.unwrap(), 0);
     }
 }
+
+#[tokio::test]
+async fn quotas_follow_commits_deletions_and_restart() {
+    let id = session("session");
+    let child = session("child");
+    let state = tempfile::tempdir().unwrap();
+    let store = SessionFileStore::new(state.path(), Some(10));
+    let publish = |store: &SessionFileStore, bytes: &'static [u8]| {
+        let store = store.share();
+        let id = id.share();
+        async move {
+            store
+                .publish_artifact(&id, "file.txt".into(), "text/plain".into(), bytes)
+                .await
+        }
+    };
+    publish(&store, b"aaaaa").await.unwrap();
+    let second = publish(&store, b"bbbbb").await.unwrap();
+    assert!(matches!(
+        publish(&store, b"c").await,
+        Err(Error::StorageFull)
+    ));
+    store.grant_file(&id, &child, &second).await.unwrap();
+    store
+        .prepare_delete_sessions(
+            std::slice::from_ref(&id),
+            SessionFileSelection::Ids(vec![second.id]),
+        )
+        .await
+        .unwrap()
+        .delete()
+        .await
+        .unwrap();
+    store.delete_session(&child).await.unwrap();
+    publish(&store, b"ccccc").await.unwrap();
+    let restarted = SessionFileStore::new(state.path(), Some(10));
+    assert!(matches!(
+        publish(&restarted, b"d").await,
+        Err(Error::StorageFull)
+    ));
+    restarted
+        .prepare_delete_sessions(
+            std::slice::from_ref(&id),
+            SessionFileSelection::Origins(vec![SessionFileOrigin::Artifact]),
+        )
+        .await
+        .unwrap()
+        .delete()
+        .await
+        .unwrap();
+    publish(&restarted, b"ddddd").await.unwrap();
+    restarted.delete_session(&id).await.unwrap();
+    publish(&restarted, b"eeeeeeeeee").await.unwrap();
+}
+
+#[tokio::test]
+async fn storage_limit_observes_writes_from_another_store_handle() {
+    let state = tempfile::tempdir().expect("state");
+    let first = SessionFileStore::new(state.path(), Some(5));
+    let second = SessionFileStore::new(state.path(), Some(5));
+    let id = session("shared");
+    let abandoned = second
+        .begin_upload(&id, "probe.txt".into(), 1, "text/plain".into())
+        .await
+        .expect("warm second handle");
+    drop(abandoned);
+    first
+        .publish_artifact(&id, "full.txt".into(), "text/plain".into(), b"12345")
+        .await
+        .expect("fill allowance through first handle");
+    assert!(
+        matches!(
+            second
+                .begin_upload(&id, "extra.txt".into(), 1, "text/plain".into())
+                .await,
+            Err(Error::StorageFull)
+        ),
+        "another handle's committed bytes must count toward the allowance"
+    );
+}

@@ -330,11 +330,8 @@ fn voice_capability_follows_the_router_rule_and_flags_unknown_saved_routes() {
     )
     .expect("voices");
     let mut composition = AgentComposition::default();
-    let voice = |composition: &AgentComposition| {
-        bot_capabilities(composition, &voices)
-            .expect("capabilities")
-            .voice
-    };
+    let voice =
+        |composition: &AgentComposition| composition_capabilities(composition, &voices).voice;
     composition.middleware.set_enabled("voice", false);
     assert_eq!(voice(&composition), crate::wire::VoiceCapability::Off);
     composition.middleware.set_enabled("voice", true);
@@ -426,9 +423,8 @@ fn default_voice_capability_matches_the_router_when_an_earlier_provider_has_no_k
         &credentials,
     )
     .expect("voice capabilities");
-    let crate::wire::VoiceCapability::Ready { route, .. } = bot_capabilities(&composition, &voices)
-        .expect("capabilities")
-        .voice
+    let crate::wire::VoiceCapability::Ready { route, .. } =
+        composition_capabilities(&composition, &voices).voice
     else {
         panic!("usable voice")
     };
@@ -453,4 +449,17 @@ fn a_chat_memory_override_wins_over_its_bot_setting() {
     settings.set_enabled(mobius::middleware::memory::MANIFEST.id, false);
     assert!(!installs(memory, &settings, None));
     assert!(installs(memory, &settings, Some(true)));
+}
+
+fn composition_capabilities(
+    composition: &AgentComposition,
+    voices: &crate::harness::mobius::provider_catalog::VoiceRoutes,
+) -> crate::wire::BotCapabilities {
+    let model = crate::harness::mobius::middleware_manifest::string_setting(
+        &composition.middleware,
+        "voice",
+        "model",
+    )
+    .expect("voice setting");
+    bot_capabilities(&composition.middleware, model, voices)
 }

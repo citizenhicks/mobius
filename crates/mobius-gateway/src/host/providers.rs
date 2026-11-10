@@ -516,7 +516,7 @@ impl GatewayHost {
             };
             if seeded {
                 bots = state.bots.bots().map_err(internal)?;
-                self.broadcast_bots(&bots);
+                self.broadcast_bots();
             }
             let payload = gateway_ready_after_unlock(state).await?;
             super::send_event(

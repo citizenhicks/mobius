@@ -12,7 +12,7 @@ use super::{Middleware, PromptSection, RuntimeContext};
 use crate::backend::model::ToolDefinition;
 use crate::backend::sandbox::MAX_BINARY_FILE_BYTES;
 use crate::backend::session_files::{SessionFileStore, media_type};
-use crate::protocol::{EventMsg, FrontendBlock, FrontendContribution};
+use crate::protocol::{EventMsg, FrontendBlock};
 use crate::{BoxFuture, Error, Result};
 
 mod text {
@@ -72,13 +72,6 @@ impl Middleware for Artifacts {
         Ok(Some(PromptSection::new(
             text::DEFINITION.prompt_main.as_str(),
         )))
-    }
-
-    fn frontend(&self, _session_id: &str) -> FrontendContribution {
-        FrontendContribution {
-            capability: MANIFEST.id.into(),
-            ..FrontendContribution::default()
-        }
     }
 
     fn render(&self, event: &EventMsg, _session_id: &str) -> Option<FrontendBlock> {

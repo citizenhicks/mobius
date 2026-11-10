@@ -13,7 +13,7 @@ use super::{Middleware, PromptSection, RuntimeContext};
 use crate::backend::model::ToolDefinition;
 use crate::protocol::{
     EventMsg, FrontendBlock, FrontendBlockFormat, FrontendBlockRole, FrontendBlockUpdate,
-    FrontendContribution, ToolResponse, UiBlock, UiChartKind,
+    ToolResponse, UiBlock, UiChartKind,
 };
 use crate::{BoxFuture, Error, Result};
 
@@ -66,13 +66,6 @@ impl Middleware for IntelligentUi {
 
     fn prompt_section(&self, _runtime: &RuntimeContext) -> Result<Option<PromptSection>> {
         Ok(Some(PromptSection::new(DEFINITION.prompt_main.as_str())))
-    }
-
-    fn frontend(&self, _session_id: &str) -> FrontendContribution {
-        FrontendContribution {
-            capability: MANIFEST.id.into(),
-            ..FrontendContribution::default()
-        }
     }
 
     fn render(&self, event: &EventMsg, _session_id: &str) -> Option<FrontendBlock> {

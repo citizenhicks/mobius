@@ -228,7 +228,14 @@ async fn saved_bot_routes_survive_missing_credentials_without_advertising_unavai
             revision: saved.config.revision + 1,
             config: crate::wire::HarnessConfig::Mobius(Arc::new(composition)),
         }),
-        crate::harness::ApprovalMode::Mobius(mobius::backend::sandbox::ApprovalPolicy::Ask),
+        crate::harness::ApprovalMode::Mobius(std::sync::Arc::new(
+            crate::harness::mobius::middleware_manifest::MobiusSettings::parse(
+                &crate::harness::mobius::middleware_manifest::default_config(
+                    mobius::middleware::subagents::SubagentCeilings::default(),
+                ),
+            )
+            .expect("default settings"),
+        )),
     )
     .expect("persist invalid route for startup validation");
     let error = GatewayHost::start(store, config, credentials, bots)

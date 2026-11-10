@@ -5,9 +5,7 @@ use std::fs::File;
 use std::io::IsTerminal as _;
 use std::ops::ControlFlow;
 use std::os::unix::fs::PermissionsExt as _;
-use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -19,6 +17,7 @@ use mobius::backend::session_files::SessionFileSelection;
 use mobius::protocol::MAX_MESSAGE_BYTES;
 use mobius::{Error, Result};
 use mobius_gateway::client::{Endpoint, GatewayClient, GatewayEvents, GatewaySender};
+use mobius_gateway::command::BackgroundGatewayOptions;
 use mobius_gateway::config::state_dir;
 use mobius_gateway::gateway_accounts::{
     GatewayAccounts, configured_endpoint, configured_token, missing_local_token,
@@ -29,7 +28,6 @@ use mobius_gateway::wire::{
     SessionActivityState, SessionReadyPayload, SessionRecord,
 };
 use tokio::io::AsyncReadExt as _;
-use tokio::process::{Child, Command as ProcessCommand};
 
 /// Parsed `mobius` command line.
 #[derive(Debug, Parser)]
@@ -71,9 +69,7 @@ pub enum Command {
 }
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
-const STARTUP_TIMEOUT: Duration = Duration::from_secs(50);
 const DEFAULT_LOCAL_ENDPOINT: &str = "tcp://127.0.0.1:8741";
-const MAX_STARTUP_ERROR_BYTES: u64 = 8192;
 
 impl Cli {
     /// Executes the parsed command, including gateway startup and terminal lifecycle.
@@ -462,10 +458,9 @@ async fn start_local_gateway(endpoint: &Endpoint) -> mobius_gateway::Result<Gate
     }
     let connected = async {
         if configured {
-            let (child, log) = spawn_gateway(&binary, &configured_state_dir)?;
-            connect_started_gateway(endpoint, child, log).await
+            start_gateway(endpoint, binary, &configured_state_dir).await
         } else {
-            bootstrap_local_gateway(endpoint, &binary, &configured_state_dir).await
+            bootstrap_local_gateway(endpoint, binary, &configured_state_dir).await
         }
     }
     .await;
@@ -497,15 +492,11 @@ fn lock_local_gateway_startup(state_dir: &Path) -> mobius_gateway::Result<File> 
 
 async fn bootstrap_local_gateway(
     endpoint: &Endpoint,
-    binary: &Path,
+    binary: PathBuf,
     state_dir: &Path,
 ) -> mobius_gateway::Result<GatewayClient> {
     mobius_gateway::command::initialize_quick_cloudflare(state_dir.to_path_buf())?;
-    let started = match spawn_gateway(binary, state_dir) {
-        Ok((child, log)) => connect_started_gateway(endpoint, child, log).await,
-        Err(error) => Err(error),
-    };
-    match started {
+    match start_gateway(endpoint, binary, state_dir).await {
         Ok(client) => Ok(client),
         Err(error) => {
             if let Err(cleanup) = cleanup_failed_bootstrap(endpoint, state_dir) {
@@ -571,100 +562,26 @@ fn gateway_binary_beside(current_executable: &Path) -> mobius_gateway::Result<Pa
     Ok(std::fs::canonicalize(candidate)?)
 }
 
-fn spawn_gateway(
-    binary: &Path,
-    state_dir: &Path,
-) -> mobius_gateway::Result<(Child, tempfile::NamedTempFile)> {
-    let log = tempfile::NamedTempFile::new()?;
-    log.as_file().set_permissions(mobius::owner_only::file())?;
-    let mut command = ProcessCommand::new(binary);
-    command
-        .arg("serve")
-        .arg("--state-dir")
-        .arg(state_dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::from(log.reopen()?));
-    {
-        command.arg("--background");
-        command.as_std_mut().process_group(0);
-    }
-    Ok((command.spawn()?, log))
-}
-
-async fn connect_started_gateway(
+/// Starts the detached gateway in this process, then connects to it.
+async fn start_gateway(
     endpoint: &Endpoint,
-    mut child: Child,
-    log: tempfile::NamedTempFile,
+    binary: PathBuf,
+    state_dir: &Path,
 ) -> mobius_gateway::Result<GatewayClient> {
-    wait_gateway_startup(&mut child, &log).await?;
+    mobius_gateway::command::ensure_background_gateway_with(
+        state_dir.to_path_buf(),
+        configured_token,
+        BackgroundGatewayOptions {
+            binary: Some(binary),
+            quiet: true,
+        },
+    )
+    .await?;
     let token = configured_token(endpoint)?.ok_or_else(|| missing_local_token(endpoint))?;
     match connect_local_once(endpoint, &token).await {
         Err(mobius_gateway::Error::Unauthorized) => Err(missing_local_token(endpoint)),
         result => result,
     }
-}
-
-async fn wait_gateway_startup(
-    child: &mut Child,
-    log: &tempfile::NamedTempFile,
-) -> mobius_gateway::Result<()> {
-    match tokio::time::timeout(STARTUP_TIMEOUT, child.wait()).await {
-        Ok(Ok(status)) if status.success() => Ok(()),
-        Ok(Ok(status)) => Err(startup_error(
-            format!("mobius-gateway exited during startup with {status}"),
-            log,
-        )),
-        Ok(Err(error)) => {
-            stop_child(child).await;
-            Err(error.into())
-        }
-        Err(_) => {
-            stop_child(child).await;
-            Err(startup_error(
-                format!(
-                    "mobius-gateway did not start within {} seconds",
-                    STARTUP_TIMEOUT.as_secs()
-                ),
-                log,
-            ))
-        }
-    }
-}
-
-#[expect(
-    clippy::print_stderr,
-    reason = "startup cleanup runs before any terminal UI exists, so stderr is the only diagnostic channel"
-)]
-async fn stop_child(child: &mut Child) {
-    if let Some(pid) = child.id() {
-        if let Err(error) = ProcessCommand::new("/bin/kill")
-            .args(["-TERM", &pid.to_string()])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .await
-        {
-            eprintln!("could not signal mobius-gateway {pid}: {error}");
-        }
-        if matches!(
-            tokio::time::timeout(Duration::from_secs(5), child.wait()).await,
-            Ok(Ok(_))
-        ) {
-            return;
-        }
-        mobius_gateway::command::terminate_process_group(pid);
-    }
-    if let Err(error) = child.wait().await {
-        eprintln!("could not reap mobius-gateway: {error}");
-    }
-}
-
-fn startup_error(
-    message: impl std::fmt::Display,
-    log: &tempfile::NamedTempFile,
-) -> mobius_gateway::Error {
-    mobius_gateway::command::startup_error(message, log, MAX_STARTUP_ERROR_BYTES)
 }
 
 async fn open_session(

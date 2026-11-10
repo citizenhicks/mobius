@@ -191,7 +191,7 @@ impl GatewayHost {
         {
             cleanup_errors.push(rejection.message);
         }
-        self.broadcast_bots(&bots);
+        self.broadcast_bots();
         for message in cleanup_errors {
             send_warning(&self.events, "bot_cleanup", message);
         }

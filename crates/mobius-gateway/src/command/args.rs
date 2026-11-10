@@ -17,10 +17,10 @@ use super::{
 pub struct GatewayCli {
     /// Directory containing gateway configuration and runtime state.
     #[arg(long, global = true, value_name = "PATH")]
-    state_dir: Option<PathBuf>,
+    pub(super) state_dir: Option<PathBuf>,
 
     #[command(subcommand)]
-    command: Option<GatewaySubcommand>,
+    pub(super) command: Option<GatewaySubcommand>,
 }
 
 /// Frontend selected by a parsed gateway command line.
@@ -35,7 +35,7 @@ pub enum FrontendCommand {
 }
 
 #[derive(Debug, Subcommand)]
-enum GatewaySubcommand {
+pub(super) enum GatewaySubcommand {
     /// Print complete default gateway TOML without creating state.
     PrintDefaultConfig,
     /// Validate the current gateway TOML without starting services.
@@ -136,7 +136,7 @@ pub(super) enum TelemetryCommand {
 }
 
 #[derive(Debug, Args)]
-struct InitArgs {
+pub(super) struct InitArgs {
     /// Address on which the gateway listens.
     #[arg(long, value_name = "ADDR")]
     listen: Option<SocketAddr>,
@@ -189,141 +189,88 @@ impl InitArgs {
 }
 
 #[derive(Debug, Args)]
-struct RegisterProviderArgs {
+pub(super) struct RegisterProviderArgs {
     /// Native Responses processing tier; omitted to use the endpoint default.
     #[arg(long, value_name = "TIER")]
-    service_tier: Option<String>,
+    pub(super) service_tier: Option<String>,
     /// Provider identifier.
     #[arg(long, value_name = "ID")]
-    provider: String,
+    pub(super) provider: String,
 
     /// Stable identifier for this configured provider instance.
     #[arg(long, value_name = "ID")]
-    instance: Option<String>,
+    pub(super) instance: Option<String>,
 
     /// User-facing provider label.
     #[arg(long, value_name = "TEXT")]
-    label: Option<String>,
+    pub(super) label: Option<String>,
 
     /// Preserve existing model catalogs and selections when refreshing credentials/endpoints.
     /// Omit this flag when intentionally replacing an existing catalog.
     #[arg(long)]
-    preserve_selection: bool,
+    pub(super) preserve_selection: bool,
 
     /// Update only an already configured provider instance.
     #[arg(long)]
-    if_configured: bool,
+    pub(super) if_configured: bool,
 
     /// Default chat model; omit for a media-only provider.
     #[arg(long, value_name = "ID", default_value = "")]
-    model: String,
+    pub(super) model: String,
 
     /// Chat model ID; repeat to replace the list. Omit to preserve existing IDs.
     #[arg(long = "model-id", value_name = "ID")]
-    model_ids: Option<Vec<String>>,
+    pub(super) model_ids: Option<Vec<String>>,
 
     /// Replace models with JSON records: id, reasoning_efforts, default_reasoning; optional label, description, context_window.
     #[arg(long, value_name = "JSON", conflicts_with = "model_ids")]
-    models_json: Option<String>,
+    pub(super) models_json: Option<String>,
 
     /// Image model ID; repeat to replace the list. Omit to preserve existing IDs.
     #[arg(long = "image-model-id", value_name = "ID")]
-    image_model_ids: Option<Vec<String>>,
+    pub(super) image_model_ids: Option<Vec<String>>,
 
     /// Mark this setup's credential and usage limits as supplied by the gateway operator.
     #[arg(long)]
-    operator_managed: bool,
+    pub(super) operator_managed: bool,
 
     /// Tool discovery mode: native or rebuild; omit to preserve the existing override.
     #[arg(long, value_name = "MODE", value_parser = ["native", "rebuild"], hide_possible_values = true)]
-    tool_discovery: Option<String>,
+    pub(super) tool_discovery: Option<String>,
 
     /// Hosted web-search mode: off, cached, or live.
     #[arg(long, value_name = "MODE", default_value = "off")]
-    web_search: HostedWebSearch,
+    pub(super) web_search: HostedWebSearch,
 
     /// Provider API base URL override.
     #[arg(long, value_name = "URL")]
-    base_url: Option<mobius::backend::model::provider::BaseUrl>,
+    pub(super) base_url: Option<mobius::backend::model::provider::BaseUrl>,
 
     /// Configure an endpoint that does not require a credential.
     #[arg(long, conflicts_with = "credential_stdin")]
-    credentialless: bool,
+    pub(super) credentialless: bool,
 
     /// Read the provider credential from standard input.
     #[arg(long)]
-    credential_stdin: bool,
+    pub(super) credential_stdin: bool,
 
     /// Expire the piped credential at this Unix timestamp (seconds).
     #[arg(long, value_name = "TIMESTAMP", requires = "credential_stdin")]
-    credential_expires_at: Option<u64>,
+    pub(super) credential_expires_at: Option<u64>,
 }
 
 #[derive(Debug, Args)]
-struct ConnectArgs {
+pub(super) struct ConnectArgs {
     /// Public or local gateway endpoint.
     #[arg(long, value_name = "ENDPOINT")]
-    endpoint: Option<Endpoint>,
+    pub(super) endpoint: Option<Endpoint>,
 }
 
 #[derive(Debug, Args)]
-struct ServeArgs {
+pub(super) struct ServeArgs {
     /// Start the gateway as a background process.
     #[arg(long)]
-    background: bool,
-}
-
-#[derive(Debug)]
-pub(super) enum Command {
-    PrintDefaultConfig,
-    CheckConfig {
-        state_dir: PathBuf,
-    },
-    ExportComputerResources {
-        directory: PathBuf,
-    },
-    Telemetry {
-        state_dir: PathBuf,
-        command: TelemetryCommand,
-    },
-    SetRuntime {
-        state_dir: PathBuf,
-        idle_exit_seconds: Option<u64>,
-        storage_limit_bytes: Option<u64>,
-        ingress: Option<SocketAddr>,
-        clear_ingress: bool,
-        clear_storage_limit: bool,
-    },
-    Init(InitOptions),
-    Bootstrap {
-        state_dir: PathBuf,
-    },
-    ResetBotDefaults {
-        state_dir: PathBuf,
-    },
-    SetDesktop {
-        state_dir: PathBuf,
-        enabled: bool,
-    },
-    PairingCode {
-        state_dir: PathBuf,
-    },
-    RegisterProvider(RegisterProviderOptions),
-    ClearProviderCredential {
-        state_dir: PathBuf,
-        instance: String,
-    },
-    Connect(ConnectOptions),
-    Serve {
-        state_dir: PathBuf,
-        background: bool,
-    },
-    ServeChild {
-        state_dir: PathBuf,
-    },
-    Exit {
-        state_dir: PathBuf,
-    },
+    pub(super) background: bool,
 }
 
 #[derive(Debug)]
@@ -341,34 +288,6 @@ pub enum CloudflareInit {
     Quick,
     /// Named tunnel whose credential is redacted in debug output.
     Named(crate::config::NamedTunnel),
-}
-
-#[derive(Debug)]
-pub(super) struct ConnectOptions {
-    pub(super) state_dir: PathBuf,
-    pub(super) endpoint: Option<Endpoint>,
-}
-
-#[derive(Debug)]
-pub(super) struct RegisterProviderOptions {
-    pub(super) service_tier: Option<String>,
-    pub(super) state_dir: PathBuf,
-    pub(super) provider: String,
-    pub(super) instance: Option<String>,
-    pub(super) label: Option<String>,
-    pub(super) model: String,
-    pub(super) preserve_selection: bool,
-    pub(super) if_configured: bool,
-    pub(super) model_ids: Option<Vec<String>>,
-    pub(super) models: Option<Vec<crate::wire::ConfiguredModel>>,
-    pub(super) image_model_ids: Option<Vec<String>>,
-    pub(super) operator_managed: bool,
-    pub(super) tool_discovery: Option<mobius::protocol::ToolDiscoveryMode>,
-    pub(super) web_search: HostedWebSearch,
-    pub(super) base_url: Option<mobius::backend::model::provider::BaseUrl>,
-    pub(super) credentialless: bool,
-    pub(super) credential_stdin: bool,
-    pub(super) credential_expires_at: Option<u64>,
 }
 
 impl GatewayCli {
@@ -393,121 +312,13 @@ impl GatewayCli {
     fn resolved_state_dir(&self) -> Result<PathBuf> {
         self.state_dir.clone().map_or_else(state_dir, Ok) // rules-allow: frontend_command borrows the parsed CLI and the frontend owns its path
     }
-
-    pub(super) fn into_command(self) -> Result<Command> {
-        self.into_command_with_state(state_dir)
-    }
-
-    fn into_command_with_state(self, resolve: impl FnOnce() -> Result<PathBuf>) -> Result<Command> {
-        let command = match self.command {
-            Some(GatewaySubcommand::PrintDefaultConfig) => return Ok(Command::PrintDefaultConfig),
-            Some(GatewaySubcommand::ExportComputerResources { directory }) => {
-                return Ok(Command::ExportComputerResources { directory });
-            }
-            command => command,
-        };
-        let state_dir = self.state_dir.map_or_else(resolve, Ok)?;
-        match command {
-            Some(GatewaySubcommand::CheckConfig) => Ok(Command::CheckConfig { state_dir }),
-            Some(GatewaySubcommand::Telemetry { command }) => {
-                Ok(Command::Telemetry { state_dir, command })
-            }
-            Some(GatewaySubcommand::SetRuntime {
-                idle_exit_seconds,
-                storage_limit_bytes,
-                ingress,
-                clear_ingress,
-                clear_storage_limit,
-            }) => Ok(Command::SetRuntime {
-                state_dir,
-                idle_exit_seconds,
-                storage_limit_bytes,
-                ingress,
-                clear_ingress,
-                clear_storage_limit,
-            }),
-            Some(GatewaySubcommand::Init(arguments)) => {
-                parse_init(state_dir, arguments).map(Command::Init)
-            }
-            Some(GatewaySubcommand::Bootstrap) => Ok(Command::Bootstrap { state_dir }),
-            Some(GatewaySubcommand::ResetBotDefaults) => {
-                Ok(Command::ResetBotDefaults { state_dir })
-            }
-            Some(GatewaySubcommand::SetDesktop { enabled }) => {
-                Ok(Command::SetDesktop { state_dir, enabled })
-            }
-            Some(GatewaySubcommand::PairingCode { json: _ }) => {
-                Ok(Command::PairingCode { state_dir })
-            }
-            Some(GatewaySubcommand::ClearProviderCredential { instance }) => {
-                Ok(Command::ClearProviderCredential {
-                    state_dir,
-                    instance,
-                })
-            }
-            Some(GatewaySubcommand::RegisterProvider(arguments)) => {
-                Ok(Command::RegisterProvider(RegisterProviderOptions {
-                    service_tier: arguments.service_tier,
-                    state_dir,
-                    provider: arguments.provider,
-                    instance: arguments.instance,
-                    label: arguments.label,
-                    model: arguments.model,
-                    preserve_selection: arguments.preserve_selection,
-                    if_configured: arguments.if_configured,
-                    model_ids: arguments.model_ids,
-                    models: arguments
-                        .models_json
-                        .as_deref()
-                        .map(serde_json::from_str)
-                        .transpose()?,
-                    image_model_ids: arguments.image_model_ids,
-                    operator_managed: arguments.operator_managed,
-                    tool_discovery: arguments.tool_discovery.map(|mode| match mode.as_str() {
-                        "native" => mobius::protocol::ToolDiscoveryMode::Native,
-                        _ => mobius::protocol::ToolDiscoveryMode::Rebuild,
-                    }),
-                    web_search: arguments.web_search,
-                    base_url: arguments.base_url,
-                    credentialless: arguments.credentialless,
-                    credential_stdin: arguments.credential_stdin,
-                    credential_expires_at: arguments.credential_expires_at,
-                }))
-            }
-            Some(GatewaySubcommand::Connect(arguments)) => Ok(Command::Connect(ConnectOptions {
-                state_dir,
-                endpoint: arguments.endpoint,
-            })),
-            Some(GatewaySubcommand::Serve(arguments)) => Ok(Command::Serve {
-                state_dir,
-                background: arguments.background,
-            }),
-            Some(GatewaySubcommand::ServeChild) => Ok(Command::ServeChild { state_dir }),
-            Some(GatewaySubcommand::Exit) => Ok(Command::Exit { state_dir }),
-            None
-            | Some(
-                GatewaySubcommand::Provider
-                | GatewaySubcommand::PrintDefaultConfig
-                | GatewaySubcommand::ExportComputerResources { .. },
-            ) => Err(Error::Config(
-                "an executable gateway command is required".into(),
-            )),
-        }
-    }
 }
 
 pub(super) fn parse_cli(arguments: Vec<OsString>) -> std::result::Result<GatewayCli, clap::Error> {
     GatewayCli::try_parse_from(std::iter::once(OsString::from("mobius-gateway")).chain(arguments))
 }
 
-#[cfg(test)]
-pub(super) fn parse(arguments: Vec<OsString>) -> Result<Command> {
-    parse_cli(arguments)
-        .map_err(|error| Error::Config(error.to_string()))?
-        .into_command()
-}
-
-fn parse_init(state_dir: PathBuf, arguments: InitArgs) -> Result<InitOptions> {
+pub(super) fn parse_init(state_dir: PathBuf, arguments: InitArgs) -> Result<InitOptions> {
     let tls = match (arguments.certificate, arguments.private_key) {
         (Some(certificate), Some(private_key)) => Some(TlsConfig {
             certificate: std::fs::canonicalize(certificate)?,

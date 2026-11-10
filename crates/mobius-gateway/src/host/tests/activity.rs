@@ -91,23 +91,13 @@ async fn runtime_activity_tracks_reservations_and_pending_deliveries() {
         gateway.runtime_activity().await.unwrap().activity_revision
     );
 
-    let (commands, mut receiver) = mpsc::channel(1);
-    let (events, _) = broadcast::channel(1);
-    gateway.state.lock().await.sessions.insert(
-        SessionId::new("activity-probe").unwrap(),
-        HostHandle {
-            inner: Arc::new(HostInner {
-                session_id: SessionId::new("activity-probe").unwrap(),
-                commands,
-                events,
-                alive: Arc::new(AtomicBool::new(true)),
-                terminated: Arc::new(AtomicBool::new(true)),
-                termination: Arc::new(tokio::sync::Notify::new()),
-                session_mutations: Arc::new(RwLock::new(())),
-                realtime_voice: Arc::new(Mutex::new(())),
-            }),
-        },
-    );
+    let (handle, mut receiver) = probe_handle("activity-probe", 1, true);
+    gateway
+        .state
+        .lock()
+        .await
+        .sessions
+        .insert(SessionId::new("activity-probe").unwrap(), handle);
     let (activity, ()) = tokio::join!(gateway.runtime_activity(), async {
         let Some(HostCommand::RuntimeIsIdle { reply }) = receiver.recv().await else {
             panic!("activity query reaches the resident actor");

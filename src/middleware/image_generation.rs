@@ -14,7 +14,7 @@ use crate::backend::model::{
 use crate::backend::session_files::SessionFileStore;
 use crate::protocol::{
     ContentPart, EventMsg, FrontendBlock, FrontendBlockFormat, FrontendBlockRole,
-    FrontendBlockUpdate, FrontendContribution, FrontendSettingValue, ToolContent, ToolResponse,
+    FrontendBlockUpdate, FrontendSettingValue, ToolContent, ToolResponse,
 };
 use crate::{BoxFuture, Error, Result};
 
@@ -127,13 +127,6 @@ impl Middleware for ImageGeneration {
             session_id: runtime.session_id.share(),
             route: self.route.as_ref().map(Arc::clone),
         }))
-    }
-
-    fn frontend(&self, _session_id: &str) -> FrontendContribution {
-        FrontendContribution {
-            capability: MANIFEST.id.into(),
-            ..FrontendContribution::default()
-        }
     }
 
     fn render(&self, event: &EventMsg, _session_id: &str) -> Option<FrontendBlock> {

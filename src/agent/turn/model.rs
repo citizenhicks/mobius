@@ -670,12 +670,13 @@ impl Runner {
         let estimate = self.config.token_estimate;
         let mut context = self.prompt_estimate;
         context.add_input(request_input.iter(), estimate);
-        context.add_tools(
+        context.merge(&self.tool_schema_estimate.estimate(
+            self.catalog.revision()?,
             tools.catalog.direct(),
             tools.catalog.deferred(),
             tools.catalog.materialized(),
             estimate,
-        )?;
+        )?);
         self.context_estimate = Some(context);
         let mut stream_retries = 0;
         let hosted = Arc::new(HostedObserver::new(
