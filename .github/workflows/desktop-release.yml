@@ -97,6 +97,18 @@ jobs:
           MOBIUS_RELEASE_REPOSITORY: ${{ github.repository }}
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
         run: scripts/release.sh
+      - name: Retain available native debug symbols
+        run: |
+          python3 - <<'PYTHON'
+          import os, pathlib, shutil, subprocess
+          cache = pathlib.Path(subprocess.check_output(['scripts/swiftpm-cache.sh'], text=True).strip())
+          symbols = pathlib.Path(os.environ['RUNNER_TEMP']) / 'mobius-native-symbols'
+          bundles = list(cache.rglob('*.dSYM'))
+          assert any(bundle.name == 'libMobiusNative.dylib.dSYM' for bundle in bundles), 'Native symbols missing'
+          for bundle in bundles:
+              shutil.copytree(bundle, symbols / bundle.relative_to(cache), symlinks=True)
+          subprocess.run(['ditto', '-c', '-k', '--keepParent', str(symbols), 'dist/native-symbols.zip'], check=True)
+          PYTHON
       - name: Record release provenance
         run: |
           jq -n --arg revision "$GITHUB_SHA" --arg tag "$GITHUB_REF_NAME" \
