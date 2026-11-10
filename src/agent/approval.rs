@@ -7,7 +7,6 @@ use super::Runner;
 use super::SubmissionInbox;
 use super::input::ActiveRoute;
 use super::input::Wait;
-use super::send_event;
 use super::tool_step::{ToolCompletion, order_results};
 use crate::Error;
 use crate::Result;
@@ -110,7 +109,7 @@ impl Runner {
         reassert_request: bool,
     ) -> Result<Option<ToolCompletion>> {
         if reassert_request {
-            send_event(&self.events, approval_event(pending)).await?;
+            self.events.record(approval_event(pending)).await?;
         }
         let approval = self.wait_for_approval(inbox, pending).await?;
         let Some(approval) = self.ready_or_aborted(approval, &pending.turn_id).await? else {

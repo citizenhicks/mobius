@@ -438,7 +438,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn package_inspection_rejects_symlinked_manifest_directory() {
         use std::os::unix::fs::symlink;

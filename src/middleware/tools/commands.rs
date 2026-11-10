@@ -18,7 +18,15 @@ struct Definition {
     default_timeout_ms: u64,
     max_timeout_ms: u64,
 }
-crate::embedded_config! { static DEFINITION: Definition = include_str!("commands.toml"); }
+crate::embedded_config! { static DEFINITION: Definition = include_str!("commands.toml") => fill_limits; }
+
+fn fill_limits(definition: &mut Definition) {
+    super::fill_max_bytes(
+        &mut definition.bash.tool,
+        "/properties/command/description",
+        MAX_COMMAND_BYTES,
+    );
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -305,16 +313,6 @@ pub(super) fn background_output(output: &BackgroundCommandPoll, output_limit: us
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn advertised_size_limits_match_the_enforced_limits() {
-        assert!(
-            include_str!("commands.toml").contains(&format!("at most {MAX_COMMAND_BYTES} bytes"))
-        );
-        let coding = include_str!("coding.toml");
-        let mutation = format!("at most {} bytes", super::super::MAX_MUTATION_BYTES);
-        assert_eq!(coding.matches(&mutation).count(), 2);
-    }
 
     #[test]
     fn bash_wait_bounds_and_hook_options_are_preserved() {

@@ -1,6 +1,23 @@
 use super::*;
+use crate::backend::model::ModelInput;
 use crate::backend::model::PromptCacheIdentity;
-use crate::backend::model::transport::capture_http_request;
+use crate::backend::model::test_support::{
+    RefreshingAuthorization, capture_http_request, read_http_request,
+};
+
+fn wire_input(
+    input: ModelInput<'_>,
+    allow_images: bool,
+    catalog_revision: &str,
+    additional_tools: &[Arc<ToolDefinition>],
+) -> Result<Vec<Value>> {
+    let input = WireInput::new(input, allow_images, catalog_revision, additional_tools)?;
+    Ok(serde_json::from_value(serde_json::to_value(input)?)?)
+}
+
+fn body_value(provider: &OpenAi, request: ModelRequest<'_>) -> Value {
+    serde_json::to_value(provider.response_body(request).expect("request body")).expect("JSON")
+}
 use crate::protocol::ModelStepContentPhase;
 
 #[tokio::test]
@@ -146,7 +163,7 @@ async fn actual_hosted_completions_are_distinct_from_local_calls_and_citation_ac
     );
 
     let cited = ModelOutput::from_output(vec![serde_json::json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer","annotations":[{"type":"url_citation","url":"https://example.com","title":"source","start_index":0,"end_index":6}]}]})], true, TokenUsage::default()).expect("cited output");
-    emit_citation_web_search(&cited, &BTreeSet::new(), &sink)
+    emit_citation_web_search(&cited, false, &sink)
         .await
         .expect("inferred activity");
     assert_eq!(
@@ -294,7 +311,7 @@ fn responses_input_strips_only_top_level_provider_metadata() {
     ];
 
     assert_eq!(
-        wire_input_with_cache((&input).into(), true, false, "catalog-1", &[]).expect("wire input"),
+        wire_input((&input).into(), true, "catalog-1", &[]).expect("wire input"),
         vec![
             serde_json::json!({
                 "type": "function_call",
@@ -353,37 +370,19 @@ fn compatible_responses_are_implicit_while_first_party_breakpoints_are_explicit(
 
     let compatible = OpenAi::new("test-key", url("https://example.com/v1"), "test-model")
         .expect("compatible provider");
-    let compatible_body = compatible
-        .response_body_value(request)
-        .expect("compatible body");
+    let compatible_body = body_value(&compatible, request);
     assert_eq!(compatible_body["prompt_cache_key"], "opaque-cache-key");
-    assert!(compatible_body.get("prompt_cache_options").is_none());
     assert!(compatible_body.get("max_output_tokens").is_none());
     assert_eq!(
         compatible_body["input"][0]["content"][0],
         serde_json::json!({"type": "input_text", "text": "stable prefix"})
     );
 
-    let first_party = OpenAi::new("test-key", url("https://api.openai.com/v1"), "test-model")
+    let capped = OpenAi::new("test-key", url("https://api.openai.com/v1"), "test-model")
         .expect("first-party provider")
-        .with_explicit_prompt_cache()
         .with_max_output_tokens(Some(32_000));
-    let first_party_body = first_party
-        .response_body_value(request)
-        .expect("first-party body");
-    assert_eq!(
-        first_party_body["prompt_cache_options"],
-        serde_json::json!({"mode": "explicit"})
-    );
-    assert_eq!(first_party_body["max_output_tokens"], 32_000);
-    assert_eq!(
-        first_party_body["input"][0]["content"][0],
-        serde_json::json!({
-            "type": "input_text",
-            "text": "stable prefix",
-            "prompt_cache_breakpoint": {"mode": "explicit"}
-        })
-    );
+    let capped_body = body_value(&capped, request);
+    assert_eq!(capped_body["max_output_tokens"], 32_000);
 }
 
 #[test]
@@ -584,60 +583,8 @@ async fn responses_preserves_reasoning_summary_part_boundaries() {
     );
 }
 
-struct HttpRefreshingAuthorization {
-    token: std::sync::Mutex<String>,
-    refreshes: std::sync::atomic::AtomicUsize,
-}
-
-impl HttpRefreshingAuthorization {
-    fn new() -> Self {
-        Self {
-            token: std::sync::Mutex::new("rejected-token".into()),
-            refreshes: std::sync::atomic::AtomicUsize::new(0),
-        }
-    }
-
-    fn resolved(&self) -> ResolvedAuthorization<'static> {
-        ResolvedAuthorization {
-            token: self.token.lock().expect("token lock").clone().into(),
-            headers: Vec::new(),
-        }
-    }
-}
-
-impl OpenAiAuthorization for HttpRefreshingAuthorization {
-    fn authorize_http<'a>(
-        &'a self,
-        _streaming: bool,
-        _session_id: Option<&'a str>,
-    ) -> BoxFuture<'a, Result<ResolvedAuthorization<'a>>> {
-        let authorization = self.resolved();
-        Box::pin(async move { Ok(authorization) })
-    }
-
-    fn authorize_websocket<'a>(
-        &'a self,
-        _session_id: &'a str,
-    ) -> BoxFuture<'a, Result<ResolvedAuthorization<'a>>> {
-        let authorization = self.resolved();
-        Box::pin(async move { Ok(authorization) })
-    }
-
-    fn recover_unauthorized<'a>(&'a self, rejected_token: &'a str) -> BoxFuture<'a, Result<bool>> {
-        let mut token = self.token.lock().expect("token lock");
-        if token.as_str() == rejected_token {
-            *token = "fresh-token".into();
-            drop(token);
-            self.refreshes
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
-        Box::pin(async { Ok(true) })
-    }
-}
-
 #[tokio::test]
 async fn http_unauthorized_refreshes_and_retries_once() {
-    use tokio::io::AsyncReadExt as _;
     use tokio::io::AsyncWriteExt as _;
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
@@ -656,37 +603,7 @@ async fn http_unauthorized_refreshes_and_retries_once() {
             ),
         ] {
             let (mut stream, _) = listener.accept().await.expect("HTTP connection");
-            let mut request = Vec::new();
-            while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
-                let mut chunk = [0; 1_024];
-                let count = stream.read(&mut chunk).await.expect("HTTP request");
-                assert_ne!(count, 0, "request ended before its headers");
-                request.extend_from_slice(&chunk[..count]);
-            }
-            let header_end = request
-                .windows(4)
-                .position(|bytes| bytes == b"\r\n\r\n")
-                .expect("headers")
-                + 4;
-            let headers = std::str::from_utf8(&request[..header_end]).expect("headers UTF-8");
-            let length: usize = headers
-                .lines()
-                .find_map(|line| {
-                    line.to_ascii_lowercase()
-                        .strip_prefix("content-length:")
-                        .map(str::trim)
-                        .map(str::to_owned)
-                })
-                .expect("content length")
-                .parse()
-                .expect("body length");
-            while request.len() < header_end + length {
-                let mut chunk = [0; 1024];
-                let count = stream.read(&mut chunk).await.expect("request body");
-                assert_ne!(count, 0);
-                request.extend_from_slice(&chunk[..count]);
-            }
-            requests.push(String::from_utf8(request).expect("request UTF-8"));
+            requests.push(read_http_request(&mut stream).await);
             stream
                 .write_all(response.as_bytes())
                 .await
@@ -695,11 +612,11 @@ async fn http_unauthorized_refreshes_and_retries_once() {
         requests
     });
 
-    let auth = Arc::new(HttpRefreshingAuthorization::new());
-    let mut provider = OpenAi::with_authorization(
-        Arc::<HttpRefreshingAuthorization>::clone(&auth),
+    let auth = Arc::new(RefreshingAuthorization::new());
+    let mut provider = OpenAi::from_authorization(
+        Some(Arc::<RefreshingAuthorization>::clone(&auth)),
         url(&format!("http://{address}")),
-        "test-model",
+        "test-model".into(),
         reqwest::Client::new(),
         crate::backend::model::ModelTransportSettings::default(),
     )
@@ -737,45 +654,18 @@ async fn http_unauthorized_refreshes_and_retries_once() {
     assert!(error.to_string().contains("request budget"));
     assert!(requests[0].contains("Bearer rejected-token"));
     assert!(requests[1].contains("Bearer fresh-token"));
-    assert_eq!(auth.refreshes.load(std::sync::atomic::Ordering::Relaxed), 1);
+    assert_eq!(auth.refreshes(), 1);
 }
 
 #[tokio::test]
 async fn http_transport_failure_does_not_replay_accepted_post() {
-    use tokio::io::AsyncReadExt as _;
-
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
         .expect("HTTP listener");
     let address = listener.local_addr().expect("HTTP address");
     let server = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.expect("HTTP connection");
-        let mut request = Vec::new();
-        let header_end = loop {
-            if let Some(position) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
-                break position;
-            }
-            let mut chunk = [0; 1_024];
-            let count = stream.read(&mut chunk).await.expect("HTTP request");
-            assert_ne!(count, 0, "request ended before its headers");
-            request.extend_from_slice(&chunk[..count]);
-        };
-        let headers = String::from_utf8_lossy(&request[..header_end]);
-        let content_length = headers
-            .lines()
-            .find_map(|line| {
-                let (name, value) = line.split_once(':')?;
-                name.trim()
-                    .eq_ignore_ascii_case("content-length")
-                    .then(|| value.trim().parse::<usize>().expect("content length"))
-            })
-            .expect("content length header");
-        while request.len() < header_end + 4 + content_length {
-            let mut chunk = [0; 1_024];
-            let count = stream.read(&mut chunk).await.expect("HTTP request body");
-            assert_ne!(count, 0, "request ended before its body");
-            request.extend_from_slice(&chunk[..count]);
-        }
+        let request = read_http_request(&mut stream).await;
         drop(stream);
         let replayed =
             tokio::time::timeout(std::time::Duration::from_millis(500), listener.accept())
@@ -783,10 +673,10 @@ async fn http_transport_failure_does_not_replay_accepted_post() {
                 .is_ok();
         (request, replayed)
     });
-    let provider = OpenAi::with_client(
+    let provider = OpenAi::from_api_key(
         Some("test-key".into()),
         url(&format!("http://{address}")),
-        "test-model",
+        "test-model".into(),
         reqwest::Client::new(),
         crate::backend::model::ModelTransportSettings::default(),
     )
@@ -799,8 +689,8 @@ async fn http_transport_failure_does_not_replay_accepted_post() {
     assert!(result.is_err());
     let (request, replayed) = server.await.expect("HTTP server");
     assert!(!replayed);
-    assert!(request.ends_with(b"{}"));
-    assert!(String::from_utf8_lossy(&request).contains("Bearer test-key"));
+    assert!(request.ends_with("{}"));
+    assert!(request.contains("Bearer test-key"));
 }
 
 #[tokio::test]
@@ -839,8 +729,7 @@ fn a_tool_loaded_twice_is_sent_once() {
         parameters: serde_json::json!({"type": "object"}),
     });
     let input = vec![load(), load()];
-    let wire = wire_input_with_cache((&input).into(), true, false, "catalog-1", &[tool])
-        .expect("wire input");
+    let wire = wire_input((&input).into(), true, "catalog-1", &[tool]).expect("wire input");
     assert_eq!(wire.len(), 1, "{wire:?}");
     assert_eq!(wire[0]["type"], "additional_tools");
 }

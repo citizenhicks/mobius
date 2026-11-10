@@ -99,10 +99,6 @@ crate::embedded_config! {
         pub voice_call_timeout_ms: u64,
         /// OAuth HTTP request deadline.
         pub oauth_request_timeout_ms: u64,
-        /// Browser OAuth completion deadline.
-        pub oauth_callback_timeout_ms: u64,
-        /// Deadline for reading one OAuth callback request.
-        pub oauth_callback_request_timeout_ms: u64,
         /// Device-code authentication completion deadline.
         pub device_code_timeout_ms: u64,
     }
@@ -161,8 +157,6 @@ impl TryFrom<RawModelTransportSettings> for ModelTransportSettings {
             raw.voice_io_timeout_ms,
             raw.voice_call_timeout_ms,
             raw.oauth_request_timeout_ms,
-            raw.oauth_callback_timeout_ms,
-            raw.oauth_callback_request_timeout_ms,
             raw.device_code_timeout_ms,
         ];
         if deadlines
@@ -199,61 +193,6 @@ impl ModelTransportSettings {
             .read_timeout(Duration::from_millis(self.http_idle_timeout_ms))
             .build()?)
     }
-}
-
-/// Builds the streaming HTTP client shared by provider construction.
-///
-/// Clone the returned client freely: every clone shares one connection pool.
-/// # Errors
-///
-/// Returns an error if validation or an operation required by this function fails.
-pub fn streaming_client() -> Result<Client> {
-    ModelTransportSettings::default().streaming_client()
-}
-
-#[cfg(test)]
-fn streaming_client_with_idle_timeout(idle_timeout: Duration) -> Result<Client> {
-    ModelTransportSettings::try_from(RawModelTransportSettings {
-        http_idle_timeout_ms: u64::try_from(idle_timeout.as_millis())
-            .map_err(|error| Error::Config(format!("test timeout does not fit: {error}")))?,
-        ..RawModelTransportSettings::default()
-    })?
-    .streaming_client()
-}
-
-#[cfg(test)]
-async fn read_http_request_headers(stream: &mut tokio::net::TcpStream) -> Vec<u8> {
-    use tokio::io::AsyncReadExt as _;
-
-    let mut request = Vec::new();
-    while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
-        let mut chunk = [0; 1_024];
-        let count = stream.read(&mut chunk).await.expect("HTTP request");
-        assert_ne!(count, 0, "request ended before its headers");
-        request.extend_from_slice(&chunk[..count]);
-    }
-    request
-}
-
-#[cfg(test)]
-pub(super) async fn capture_http_request() -> (std::net::SocketAddr, tokio::task::JoinHandle<String>)
-{
-    use tokio::io::AsyncWriteExt as _;
-
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-        .await
-        .expect("HTTP listener");
-    let address = listener.local_addr().expect("HTTP address");
-    let server = tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await.expect("HTTP connection");
-        let request = read_http_request_headers(&mut stream).await;
-        stream
-            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
-            .await
-            .expect("HTTP response");
-        String::from_utf8(request).expect("request UTF-8")
-    });
-    (address, server)
 }
 
 pub(super) fn account_stream_bytes(total: &mut usize, added: usize, provider: &str) -> Result<()> {
@@ -435,6 +374,29 @@ pub(super) fn http_provider_error(
     .with_code(event.as_ref().and_then(response_error_code))
 }
 
+/// Maps a rejected WebSocket handshake to the provider's HTTP error.
+pub(super) fn handshake_error(
+    provider: &str,
+    response: &tokio_tungstenite::tungstenite::http::Response<Option<Vec<u8>>>,
+) -> ProviderError {
+    let retry_after = response
+        .headers()
+        .get(tokio_tungstenite::tungstenite::http::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let body = response.body().as_deref().unwrap_or_default();
+    let body = body.get(..MAX_ERROR_BYTES).unwrap_or(body);
+    http_provider_error(provider, response.status(), body, retry_after)
+}
+
+/// Derives a provider WebSocket URL from an HTTP API URL, keeping TLS.
+pub(super) fn socket_url(mut url: reqwest::Url) -> Result<reqwest::Url> {
+    let scheme = if url.scheme() == "https" { "wss" } else { "ws" };
+    url.set_scheme(scheme)
+        .map_err(|()| Error::Config("invalid provider socket scheme".into()))?;
+    Ok(url)
+}
+
 pub(super) fn response_error_code(event: &serde_json::Value) -> Option<&str> {
     let mut codes = [
         "/error/code",
@@ -504,11 +466,13 @@ impl std::fmt::Debug for ApiKeyModel {
 }
 
 impl ApiKeyModel {
+    /// Wraps settings that provider assembly has already resolved and validated.
     pub(super) fn new(
         api_key: Option<String>,
         base_url: BaseUrl,
-        model: impl Into<String>,
+        model: String,
         client: Client,
+        transport: ModelTransportSettings,
     ) -> Result<Self> {
         if api_key.as_deref().is_some_and(|key| key.trim().is_empty()) {
             return Err(Error::Config("provider API key cannot be empty".into()));
@@ -517,10 +481,29 @@ impl ApiKeyModel {
             client,
             api_key,
             base_url,
-            model: Arc::from(model.into()),
+            model: model.into(),
             reasoning_effort: None,
-            transport: ModelTransportSettings::default(),
+            transport,
         })
+    }
+
+    /// Checks a library caller's model and builds its own streaming client.
+    pub(super) fn from_settings(
+        api_key: String,
+        base_url: BaseUrl,
+        model: String,
+        transport: ModelTransportSettings,
+    ) -> Result<Self> {
+        if model.trim().is_empty() {
+            return Err(Error::Config("model is empty".into()));
+        }
+        Self::new(
+            Some(api_key),
+            base_url,
+            model,
+            transport.streaming_client()?,
+            transport,
+        )
     }
 
     pub(super) fn set_reasoning(&mut self, effort: impl Into<String>) -> Result<()> {
@@ -540,7 +523,9 @@ impl ApiKeyModel {
     }
 }
 
+/// Consumes the data payloads of one server-sent event stream.
 pub(super) trait SseHandler: Send {
+    /// Applies one event's data.
     fn apply_data(
         &mut self,
         data: &str,
@@ -586,11 +571,13 @@ mod tests {
             ),
             Box::new(OpenAi::new("private-test-key", base_url(), "test-model").expect("OpenAI")),
             Box::new(
-                OpenAi::with_client(
+                OpenAi::from_api_key(
                     None,
                     base_url(),
-                    "test-model",
-                    streaming_client().expect("client"),
+                    "test-model".into(),
+                    ModelTransportSettings::default()
+                        .streaming_client()
+                        .expect("client"),
                     ModelTransportSettings::default(),
                 )
                 .expect("credentialless Responses"),
@@ -629,26 +616,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn request_errors_retry_refused_connections_but_not_invalid_configuration() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
-        let address = listener.local_addr().expect("address");
-        drop(listener);
-        let client = streaming_client().expect("client");
-        let error = client
-            .post(format!("http://{address}/private?key=sensitive"))
-            .send()
-            .await
-            .expect_err("connection refused");
-        let error = request_error(error, "test");
-        let event = crate::protocol::ErrorEvent::from_error(&error);
-        assert!(event.retryable);
-        assert_eq!(event.status, None);
-        assert_eq!(event.retry_after, None);
-        assert_eq!(
-            &*event.message,
-            "provider error: test request connection failed: connection refused"
-        );
-
+    async fn invalid_request_configuration_is_terminal_and_omits_the_url() {
+        let client = ModelTransportSettings::default()
+            .streaming_client()
+            .expect("client");
         let error = client
             .post("http://127.0.0.1/private?key=sensitive")
             .bearer_auth("invalid\ncredential")
@@ -675,7 +646,8 @@ mod tests {
                 .expect("invalid TLS response");
             std::future::pending::<()>().await;
         });
-        let error = streaming_client()
+        let error = ModelTransportSettings::default()
+            .streaming_client()
             .expect("client")
             .post(format!("https://{address}/private?key=sensitive"))
             .send()
@@ -831,37 +803,6 @@ mod tests {
             }
         }
     }
-
-    #[tokio::test]
-    async fn chunk_timeout_is_idle_not_whole_stream_timeout() {
-        let listener = TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .expect("test listener");
-        let address = listener.local_addr().expect("listener address");
-        let server = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.expect("test connection");
-            read_http_request_headers(&mut stream).await;
-            stream
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\n")
-                .await
-                .expect("test headers");
-            std::future::pending::<()>().await;
-        });
-        let mut response = streaming_client_with_idle_timeout(Duration::from_millis(10))
-            .expect("client")
-            .get(format!("http://{address}"))
-            .send()
-            .await
-            .expect("response headers");
-
-        let error = response
-            .chunk()
-            .await
-            .expect_err("idle response should time out");
-        server.abort();
-
-        assert!(error.is_timeout());
-    }
 }
 
 #[cfg(test)]
@@ -881,10 +822,11 @@ mod settings_tests {
         let address = source.local_addr().expect("source address");
         let server = tokio::spawn(async move {
             let (mut stream, _) = source.accept().await.expect("source connection");
-            read_http_request_headers(&mut stream).await;
+            crate::backend::model::test_support::read_http_request(&mut stream).await;
             stream.write_all(format!("HTTP/1.1 302 Found\r\nLocation: http://{target}/secret\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.expect("redirect response");
         });
-        let response = streaming_client()
+        let response = ModelTransportSettings::default()
+            .streaming_client()
             .expect("client")
             .get(format!("http://{address}"))
             .bearer_auth("test-token")

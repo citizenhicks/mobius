@@ -95,7 +95,6 @@ fn startup_validation_rejects_tampered_snapshot() {
     assert!(error.to_string().contains("digest changed"));
 }
 
-#[cfg(unix)]
 #[test]
 fn tree_digest_has_unambiguous_path_and_content_framing() {
     let temporary = tempfile::tempdir().expect("temporary packages");

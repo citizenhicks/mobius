@@ -8,13 +8,18 @@ pub(super) fn rendered(block: FrontendBlock) -> RenderedBlock {
 }
 
 pub(super) fn recorded(event: EventMsg, preview: Option<RenderedPreview>) -> RecordedEvent {
+    let submission_id = preview.as_ref().map(|_| "preview-request".into());
+    let (msg, preview) = match preview {
+        Some(preview) => {
+            let (msg, page) = preview.into_parts();
+            (msg, Some(page))
+        }
+        None => (event, None),
+    };
     RecordedEvent {
         sequence: 1,
         recorded_at_ms: 0,
-        event: Event {
-            submission_id: preview.as_ref().map(|_| "preview-request".into()),
-            msg: event,
-        },
+        event: Event { submission_id, msg },
         stream_metrics: Vec::new(),
         preview,
     }

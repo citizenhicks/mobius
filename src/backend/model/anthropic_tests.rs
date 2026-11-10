@@ -49,8 +49,9 @@ async fn hosted_results_resume_pending_calls_from_native_replay() {
             &[],
         )
         .expect("continuation request");
-        assert_eq!(replay[1].content[0]["id"], "search");
-        assert_eq!(replay[1].content[0]["input"]["query"], "mobius");
+        let replay = serde_json::to_value(replay).expect("replay JSON");
+        assert_eq!(replay[1]["content"][0]["id"], "search");
+        assert_eq!(replay[1]["content"][0]["input"]["query"], "mobius");
         seen.lock().expect("events").clear();
 
         let mut second = StreamState::new(history.as_slice().into());
@@ -88,7 +89,7 @@ async fn hosted_results_resume_pending_calls_from_native_replay() {
             assert_eq!(&*execution.name, "web_search");
             assert_eq!(
                 execution.arguments.as_ref(),
-                Some(&replay[1].content[0]["input"])
+                Some(&replay[1]["content"][0]["input"])
             );
             assert_eq!(
                 execution.result_fingerprint,
@@ -253,26 +254,26 @@ fn explicit_cache_endpoint_advances_and_keeps_the_stable_anchor() {
             .count()
     };
 
-    let short = provider
-        .request_body_value(
-            "instructions",
-            (&history[..1]).into(),
-            "catalog-1",
-            &[],
-            &[],
-            false,
-        )
-        .expect("first request");
-    let long = provider
-        .request_body_value(
-            "instructions",
-            (&history).into(),
-            "catalog-1",
-            &[],
-            &[],
-            false,
-        )
-        .expect("follow-up request");
+    let short = body_value(
+        &provider,
+        "instructions",
+        (&history[..1]).into(),
+        "catalog-1",
+        &[],
+        &[],
+        false,
+    )
+    .expect("first request");
+    let long = body_value(
+        &provider,
+        "instructions",
+        (&history).into(),
+        "catalog-1",
+        &[],
+        &[],
+        false,
+    )
+    .expect("follow-up request");
 
     assert_eq!(cache_points(&short), 1);
     assert_eq!(
@@ -329,16 +330,16 @@ fn native_discovery_defers_schemas_and_replays_tool_references() {
             "claude-sonnet-5-5",
         )
         .expect("provider");
-        let body = provider
-            .request_body_value(
-                "instructions",
-                (&input).into(),
-                "catalog-1",
-                &direct,
-                &deferred,
-                false,
-            )
-            .expect("request body");
+        let body = body_value(
+            &provider,
+            "instructions",
+            (&input).into(),
+            "catalog-1",
+            &direct,
+            &deferred,
+            false,
+        )
+        .expect("request body");
 
         assert_eq!(
             (
@@ -563,7 +564,8 @@ async fn stream_normalizes_deltas_tools_usage_and_errors() {
         &[],
     )
     .expect("native replay");
-    assert_eq!(&replay[0].content[3]["input"], repaired);
+    let replay = serde_json::to_value(replay).expect("replay JSON");
+    assert_eq!(&replay[0]["content"][3]["input"], repaired);
 
     let error = StreamState::default()
         .apply(
@@ -648,39 +650,21 @@ async fn empty_refusals_are_non_retryable_errors_and_visible_refusals_are_preser
     }
 }
 
-#[test]
-fn route_replay_strips_private_reasoning_without_copying_untouched_items() {
-    let visible = std::sync::Arc::new(serde_json::json!({
-        "type": "message", "role": "assistant", "content": "Visible answer"
-    }));
-    let private = std::sync::Arc::new(serde_json::json!({
-        "type": "message", "role": "assistant", "content": "Visible answer",
-        RAW_CONTENT: [{"type": "thinking", "thinking": "private"}]
-    }));
-    let call = std::sync::Arc::new(serde_json::json!({
-        "type": "function_call", "call_id": "call", "name": "read", "arguments": "{}"
-    }));
-    let result = std::sync::Arc::new(serde_json::json!({
-        "type": "function_call_output", "call_id": "call", "output": []
-    }));
-    let mut input = vec![
-        std::sync::Arc::clone(&private),
-        std::sync::Arc::clone(&call),
-        std::sync::Arc::clone(&result),
-        std::sync::Arc::clone(&visible),
-    ];
-    assert!(super::super::strip_shared_provider_reasoning(&mut input));
-    assert_eq!(input[0]["content"], "Visible answer");
-    assert!(!super::super::has_provider_reasoning(&input[0]));
-    assert!(super::super::has_provider_reasoning(&private));
-    assert!(std::sync::Arc::ptr_eq(&input[1], &call));
-    assert!(std::sync::Arc::ptr_eq(&input[2], &result));
-    assert!(std::sync::Arc::ptr_eq(&input[3], &visible));
-    assert!(
-        !input
-            .iter()
-            .any(|item| super::super::has_provider_reasoning(item))
-    );
-    assert!(!super::super::strip_shared_provider_reasoning(&mut input));
-    assert!(std::sync::Arc::ptr_eq(&input[3], &visible));
+fn body_value(
+    provider: &Anthropic,
+    instructions: &str,
+    input: ModelInput<'_>,
+    catalog_revision: &str,
+    tools: &[Arc<ToolDefinition>],
+    deferred_tools: &[Arc<ToolDefinition>],
+    allow_hosted_tools: bool,
+) -> Result<Value> {
+    Ok(serde_json::to_value(provider.request_body(
+        instructions,
+        input,
+        catalog_revision,
+        tools,
+        deferred_tools,
+        allow_hosted_tools,
+    )?)?)
 }

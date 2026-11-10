@@ -23,18 +23,18 @@ async fn register(
     local: bool,
     client: crate::wire::ClientCapabilities,
 ) -> ServerMessage {
-    use crate::wire::{ClientMessage, FrameReader, ServerFrame, read_frame};
+    use crate::wire::{FrameReader, ServerFrame, read_frame};
     let (reader, mut writer) = tokio::io::duplex(4096);
-    handle_message(
-        ClientMessage::SetBrowserRuntime {
+    set_runtime(
+        Registration {
             request_id: "register".into(),
             enabled,
+            local,
+            client,
+            available: true,
         },
         host,
         connection,
-        local,
-        client,
-        true,
         &mut writer,
     )
     .await
@@ -65,23 +65,26 @@ async fn only_a_local_browser_renderer_lends_its_browser() {
             matches!(response, ServerMessage::Rejected { code, fatal: false, .. } if code == "browser")
         );
         assert!(connection.is_none());
-        assert!(host.app().is_none());
+        assert!(host.app().unwrap().is_none());
     }
     if cfg!(target_os = "macos") {
         let host = Arc::new(BrowserHost::default());
         let mut connection = None;
         let response = register(&host, &mut connection, true, true, renderer).await;
         assert!(matches!(response, ServerMessage::Accepted { .. }));
-        assert!(host.app().is_some());
+        assert!(host.app().unwrap().is_some());
         register(&host, &mut connection, false, true, renderer).await;
-        assert!(host.app().is_none(), "withdrawing ends the lending");
+        assert!(
+            host.app().unwrap().is_none(),
+            "withdrawing ends the lending"
+        );
     }
 }
 
 #[tokio::test(start_paused = true)]
 async fn a_stalled_app_cannot_queue_unbounded_or_unending_page_requests() {
     let host = Arc::new(BrowserHost::default());
-    let mut connection = host.attach();
+    let mut connection = host.attach().unwrap();
     // Timeouts leave messages in an unresponsive app's bounded outgoing queue.
     for _ in 0..MAX_PENDING_PAGES {
         assert_eq!(
@@ -98,7 +101,7 @@ async fn a_stalled_app_cannot_queue_unbounded_or_unending_page_requests() {
         Ok(None),
         "a full app queue must fall back without waiting for capacity"
     );
-    assert!(host.app().as_ref().unwrap().pending.is_empty());
+    assert!(host.app().unwrap().as_ref().unwrap().pending.is_empty());
     while connection.outgoing.try_recv().is_ok() {}
 
     {
@@ -114,5 +117,5 @@ async fn a_stalled_app_cannot_queue_unbounded_or_unending_page_requests() {
     let next = SessionId::new("next").unwrap();
     let (page, _) = tokio::join!(host.page(&next, false), answer(&mut connection, None));
     assert_eq!(page, None);
-    assert!(host.app().as_ref().unwrap().pending.is_empty());
+    assert!(host.app().unwrap().as_ref().unwrap().pending.is_empty());
 }

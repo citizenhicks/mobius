@@ -6,30 +6,16 @@ use std::hash::Hasher;
 use std::io;
 use std::io::Write;
 use std::sync::Arc;
-#[cfg(test)]
-use std::sync::atomic::Ordering;
-#[cfg(test)]
-use std::time::Duration;
 
 use futures_util::future::join_all;
 use serde_json::Value;
 use tokio::sync::Mutex;
-#[cfg(test)]
-use tokio::sync::mpsc;
 use tokio::time::Instant;
-#[cfg(test)]
-use tokio::time::timeout;
-#[cfg(test)]
-use tokio_tungstenite::tungstenite::Message;
 
 use self::connection::Exchange;
 use self::connection::OpenAiWsConnection;
-#[cfg(test)]
-use self::connection::SocketEvent;
 use self::connection::connect;
 use self::connection::exchange;
-#[cfg(test)]
-use self::connection::read_exchange;
 use super::GeneratedImage;
 use super::ImageGenerationRequest;
 use super::Model;
@@ -39,10 +25,10 @@ use super::ModelRequest;
 use super::PromptCacheMode;
 use super::authorization::ApiKeyAuthorization;
 use super::authorization::OpenAiAuthorization;
-#[cfg(test)]
-use super::authorization::ResolvedAuthorization;
 use super::provider::BaseUrl;
+use super::provider::HostedWebSearch;
 use super::responses::decode_response;
+use super::responses::emit_citation_web_search;
 use super::responses::wire_tools;
 use super::responses::{CATALOG, OpenAi};
 use super::responses_wire::{RequestMetadata, ResponsesBody, WireInput};
@@ -57,12 +43,10 @@ use crate::protocol::ToolDiscoveryMode;
 mod connection;
 
 pub(super) fn responses_socket_url(base_url: &BaseUrl) -> Result<reqwest::Url> {
-    let mut url = reqwest::Url::parse(&format!("{}/responses", base_url.root()))
-        .map_err(|error| Error::Config(format!("invalid Responses endpoint: {error}")))?;
-    let scheme = if url.scheme() == "https" { "wss" } else { "ws" };
-    url.set_scheme(scheme)
-        .map_err(|()| Error::Config("invalid Responses socket scheme".into()))?;
-    Ok(url)
+    super::transport::socket_url(
+        reqwest::Url::parse(&format!("{}/responses", base_url.root()))
+            .map_err(|error| Error::Config(format!("invalid Responses endpoint: {error}")))?,
+    )
 }
 
 const MAX_SESSION_ENTRIES: usize = 128;
@@ -70,9 +54,7 @@ const MAX_SESSION_ENTRIES: usize = 128;
 /// OpenAI's persistent Responses WebSocket transport.
 pub struct OpenAiSocket {
     auth: Arc<dyn OpenAiAuthorization>,
-    transport: super::ModelTransportSettings,
     socket_url: String,
-    explicit_prompt_cache: bool,
     sessions: Mutex<BTreeMap<String, Arc<Mutex<SocketState>>>>,
     http: OpenAi,
 }
@@ -126,8 +108,8 @@ impl OpenAiSocket {
         if model.trim().is_empty() {
             return Err(Error::Config("OPENAI_MODEL is empty".into()));
         }
-        Self::with_client(
-            api_key,
+        Self::from_api_key(
+            api_key.into(),
             base_url,
             model,
             settings.streaming_client()?,
@@ -135,20 +117,18 @@ impl OpenAiSocket {
         )
     }
 
-    pub(super) fn with_client(
-        api_key: impl Into<String>,
+    pub(super) fn from_api_key(
+        api_key: String,
         base_url: BaseUrl,
-        model: impl Into<String>,
+        model: String,
         client: reqwest::Client,
         settings: super::ModelTransportSettings,
     ) -> Result<Self> {
-        let api_key = api_key.into();
-        let model = model.into();
         if api_key.trim().is_empty() {
             return Err(Error::Config("provider API key cannot be empty".into()));
         }
         let socket_url = responses_socket_url(&base_url)?;
-        let mut provider = Self::with_authorization(
+        let mut provider = Self::from_authorization(
             Arc::new(ApiKeyAuthorization::new(api_key)),
             base_url,
             socket_url.as_str(),
@@ -165,23 +145,20 @@ impl OpenAiSocket {
         self
     }
 
-    pub(super) fn with_authorization(
+    pub(super) fn from_authorization(
         auth: Arc<dyn OpenAiAuthorization>,
         http_url: BaseUrl,
         socket_url: impl Into<String>,
-        model: impl Into<String>,
+        model: String,
         client: reqwest::Client,
         settings: super::ModelTransportSettings,
     ) -> Result<Self> {
-        let model = model.into();
         let http =
-            OpenAi::with_authorization(Arc::clone(&auth), http_url, model, client, settings)?
+            OpenAi::from_authorization(Some(Arc::clone(&auth)), http_url, model, client, settings)?
                 .with_tool_discovery(ToolDiscoveryMode::Native);
         Ok(Self {
             auth,
-            transport: settings,
             socket_url: socket_url.into(),
-            explicit_prompt_cache: false,
             sessions: Mutex::new(BTreeMap::new()),
             http,
         })
@@ -190,18 +167,6 @@ impl OpenAiSocket {
     pub(super) fn with_service_tier(mut self, service_tier: Option<String>) -> Self {
         self.http = self.http.with_service_tier(service_tier);
         self
-    }
-
-    /// Configures validated model sockets and realtime calls.
-    /// # Errors
-    /// Returns an error for invalid operational settings.
-    pub fn with_transport_settings(
-        mut self,
-        settings: super::ModelTransportSettings,
-    ) -> Result<Self> {
-        self.http = self.http.with_transport_settings(settings)?;
-        self.transport = settings;
-        Ok(self)
     }
 
     pub(super) fn with_codex_realtime_voice(mut self, default_endpoint: bool) -> Result<Self> {
@@ -214,15 +179,6 @@ impl OpenAiSocket {
         api: Option<&'static super::image_generation::ImageApi>,
     ) -> Self {
         self.http = self.http.with_image_api(api);
-        self
-    }
-
-    /// Uses explicit caching at user/developer messages and tool-result endpoints.
-    /// Preserves earlier endpoints for prefix reuse instead of relying on implicit caching.
-    /// Applies to WebSocket requests and HTTP fallback.
-    pub fn with_explicit_prompt_cache(mut self) -> Self {
-        self.explicit_prompt_cache = true;
-        self.http = self.http.with_explicit_prompt_cache();
         self
     }
 
@@ -248,6 +204,23 @@ impl OpenAiSocket {
             .with_reasoning_effort(effort)?
             .with_reasoning_summary();
         Ok(self)
+    }
+
+    /// Applies the effort and hosted web search a provider configuration selected.
+    pub(super) fn with_selection(
+        self,
+        effort: Option<String>,
+        web_search: HostedWebSearch,
+    ) -> Result<Self> {
+        let provider = match effort {
+            Some(effort) => self.with_reasoning_effort(effort)?,
+            None => self,
+        };
+        Ok(match web_search {
+            HostedWebSearch::Off => provider,
+            HostedWebSearch::Cached => provider.with_cached_web_search(),
+            HostedWebSearch::Live => provider.with_web_search(),
+        })
     }
 
     /// Enables provider-hosted live web search.
@@ -303,7 +276,7 @@ impl OpenAiSocket {
                         self.auth.as_ref(),
                         &self.socket_url,
                         session_id,
-                        &self.transport,
+                        &self.http.transport_settings(),
                     )
                     .await
                     {
@@ -327,11 +300,13 @@ impl OpenAiSocket {
                 self.http.reasoning_effort(),
                 self.http.hosted_tools(),
             )?;
+            let mut history = HistoryHash::default();
             let (previous_response_id, input) = response_input(
                 &mut state,
                 request.input,
                 request.allow_continuation,
                 envelope_fingerprint,
+                &mut history,
             )?;
             let used_previous_response = previous_response_id.is_some();
             let body = super::media::encode_request(
@@ -356,7 +331,8 @@ impl OpenAiSocket {
                 Error::Provider("model connection disappeared before send".into())
             })?;
             match exchange(&mut connection, body, &events, request.cancellation).await? {
-                Exchange::Completed(response) => {
+                Exchange::Completed(completed) => {
+                    let response = completed.response;
                     let response_id = response
                         .get("id")
                         .and_then(Value::as_str)
@@ -366,12 +342,13 @@ impl OpenAiSocket {
                     let output = decode_response(response)?;
                     let known_items = request.input.len() + output.output().len();
                     state.continuation = if request.allow_continuation {
+                        // Continue the prefix hash taken while checking the previous cursor.
+                        history.absorb(request.input.iter().skip(history.items))?;
+                        history.absorb(output.output())?;
                         Some(Continuation {
                             response_id,
                             known_items,
-                            fingerprint: fingerprint(
-                                request.input.iter().chain(output.output().iter()),
-                            )?,
+                            fingerprint: history.finish(),
                             envelope_fingerprint,
                         })
                     } else {
@@ -379,6 +356,9 @@ impl OpenAiSocket {
                     };
                     state.last_used_at = Instant::now();
                     state.connection = Some(connection);
+                    drop(state);
+                    emit_citation_web_search(&output, completed.web_search_reported, &events)
+                        .await?;
                     return Ok(output);
                 }
                 Exchange::PreviousMissing {
@@ -444,7 +424,6 @@ impl OpenAiSocket {
             previous,
             self.http.reasoning_effort(),
             self.http.hosted_tools(),
-            self.explicit_prompt_cache,
         )?;
         body.metadata.service_tier = self.http.service_tier();
         Ok(body)
@@ -530,9 +509,10 @@ fn response_input<'s, 'a>(
     input: super::ModelInput<'a>,
     allow_continuation: bool,
     envelope_fingerprint: u64,
+    history: &mut HistoryHash,
 ) -> Result<(Option<&'s str>, super::ModelInput<'a>)> {
     if allow_continuation {
-        continuation_input(state, input, envelope_fingerprint)
+        continuation_input(state, input, envelope_fingerprint, history)
     } else {
         state.continuation = None;
         Ok((None, input))
@@ -541,7 +521,7 @@ fn response_input<'s, 'a>(
 
 impl Model for OpenAiSocket {
     fn transport_settings(&self) -> super::ModelTransportSettings {
-        self.transport
+        self.http.transport_settings()
     }
 
     fn info(&self) -> ModelInfo {
@@ -579,11 +559,7 @@ impl Model for OpenAiSocket {
     }
 
     fn prompt_cache_capability(&self) -> PromptCacheMode {
-        if self.explicit_prompt_cache {
-            PromptCacheMode::Explicit
-        } else {
-            PromptCacheMode::Implicit
-        }
+        self.http.prompt_cache_capability()
     }
 
     fn tool_discovery(&self) -> ToolDiscoveryMode {
@@ -633,12 +609,10 @@ fn response_body<'a>(
     previous_response_id: Option<&'a str>,
     reasoning_effort: Option<&'a str>,
     hosted_tools: &'a [Value],
-    explicit_prompt_cache: bool,
 ) -> Result<ResponsesBody<'a>> {
     let mut metadata = RequestMetadata::new(
         model,
         *request,
-        explicit_prompt_cache,
         reasoning_effort,
         reasoning_effort.is_some(),
     );
@@ -651,7 +625,6 @@ fn response_body<'a>(
         input: WireInput::new(
             input,
             true,
-            explicit_prompt_cache,
             request.catalog_revision,
             request.deferred_tools,
         )?,
@@ -695,17 +668,22 @@ fn envelope_fingerprint(
     fingerprint(std::iter::once(&envelope))
 }
 
+/// Reuses the cursor when the envelope matches and the history extends its known prefix.
+/// `history` absorbs every prefix item it hashes, so the response can extend the same hash.
 fn continuation_input<'s, 'a>(
     state: &'s mut SocketState,
     input: super::ModelInput<'a>,
     envelope_fingerprint: u64,
+    history: &mut HistoryHash,
 ) -> Result<(Option<&'s str>, super::ModelInput<'a>)> {
     let reusable = match &state.continuation {
         Some(continuation) => {
             continuation.envelope_fingerprint == envelope_fingerprint
                 && continuation.known_items <= input.len()
-                && fingerprint(input.prefix(continuation.known_items).iter())?
-                    == continuation.fingerprint
+                && {
+                    history.absorb(input.prefix(continuation.known_items).iter())?;
+                    history.finish() == continuation.fingerprint
+                }
         }
         None => false,
     };
@@ -728,11 +706,36 @@ fn fingerprint<'a, T: serde::Serialize + 'a>(
 ) -> Result<u64> {
     let mut hasher = DefaultHasher::new();
     for item in items {
-        let mut item_hasher = DefaultHasher::new();
-        serde_json::to_writer(HasherWriter(&mut item_hasher), item)?;
-        hasher.write_u64(item_hasher.finish());
+        hasher.write_u64(item_hash(item)?);
     }
     Ok(hasher.finish())
+}
+
+fn item_hash(item: &impl serde::Serialize) -> Result<u64> {
+    let mut hasher = DefaultHasher::new();
+    serde_json::to_writer(HasherWriter(&mut hasher), item)?;
+    Ok(hasher.finish())
+}
+
+/// A running [`fingerprint`] over the leading items of one request's history.
+#[derive(Default)]
+struct HistoryHash {
+    hasher: DefaultHasher,
+    items: usize,
+}
+
+impl HistoryHash {
+    fn absorb<'a>(&mut self, items: impl IntoIterator<Item = &'a Value>) -> Result<()> {
+        for item in items {
+            self.hasher.write_u64(item_hash(item)?);
+            self.items += 1;
+        }
+        Ok(())
+    }
+
+    fn finish(&self) -> u64 {
+        self.hasher.finish()
+    }
 }
 
 struct HasherWriter<'a>(&'a mut DefaultHasher);

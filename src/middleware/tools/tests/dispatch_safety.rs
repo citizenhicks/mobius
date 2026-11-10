@@ -83,14 +83,11 @@ async fn each_call_receives_its_own_permissions() {
     let calls = finalize_and_bind(&mut catalog, &calls);
 
     assert_eq!(
-        execute_batch(
+        run_calls(
             &catalog,
             calls,
             test_sandbox(),
-            &test_permissions(&["allowed"]),
-            &"turn".into(),
-            &"test".into(),
-            &crate::protocol::MessageAuthor::User.into()
+            &test_permissions(&["allowed"])
         )
         .await,
         vec![
@@ -132,10 +129,7 @@ async fn approval_required_handler_cannot_run_without_exact_call_authority() {
         arguments: serde_json::json!({}),
     }];
     let calls = finalize_and_bind(&mut catalog, &calls);
-    let sandbox = Arc::new(crate::backend::sandbox::Sandbox::new(
-        Arc::new(crate::backend::sandbox::local::LocalSandbox::new(".").expect("sandbox")),
-        crate::backend::sandbox::ApprovalPolicy::Ask,
-    ));
+    let sandbox = test_sandbox();
     let permissions = SandboxPermissions::restore(
         &"session".parse().expect("session ID"),
         crate::backend::sandbox::SandboxMode::WorkspaceWrite,
@@ -143,18 +137,10 @@ async fn approval_required_handler_cannot_run_without_exact_call_authority() {
         ["different-call".into()],
     );
 
-    let result = execute_batch(
-        &catalog,
-        calls,
-        sandbox,
-        &permissions,
-        &"turn".into(),
-        &"test".into(),
-        &crate::protocol::MessageAuthor::User.into(),
-    )
-    .await
-    .pop()
-    .expect("tool result");
+    let result = run_calls(&catalog, calls, sandbox, &permissions)
+        .await
+        .pop()
+        .expect("tool result");
 
     assert_eq!(
         (

@@ -23,7 +23,6 @@ use tokio_tungstenite::tungstenite::http::{
 };
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 
-#[cfg(unix)]
 use crate::wire::read_frame_with_limit;
 use crate::wire::{
     CatalogHint, ClientCapabilities, ClientFrame, ClientMessage, FrameReader,
@@ -215,7 +214,6 @@ impl Endpoint {
         Ok(Box::new(stream))
     }
 
-    #[cfg(unix)]
     pub(crate) async fn local_gateway_version(
         &self,
         mut listen: std::net::SocketAddr,
@@ -697,6 +695,35 @@ impl Drop for GatewayEventScope<'_> {
             self.events.pending.push_front(frame);
         }
     }
+}
+
+/// Sends the request `build` makes under a fresh ID and returns what `answer` takes from the
+/// first response correlated with it; a correlated rejection fails. `what` names the
+/// response in errors.
+pub(crate) async fn request<T>(
+    sender: &GatewaySender,
+    events: &mut GatewayEvents,
+    what: &str,
+    build: impl FnOnce(Arc<str>) -> ClientMessage,
+    mut answer: impl FnMut(&str, ServerMessage) -> Option<T>,
+) -> Result<T> {
+    let mut buffer = [0; uuid::fmt::Hyphenated::LENGTH];
+    let request_id = uuid::Uuid::new_v4().hyphenated().encode_lower(&mut buffer);
+    sender.send(build(request_id.into())).await?;
+    for _ in 0..MAX_PENDING_FRAMES {
+        let frame = events.next().await?.ok_or_else(|| {
+            Error::Protocol(format!("gateway disconnected before the {what} response"))
+        })?;
+        if let Some(error) = frame.message.response_error(Some(request_id)) {
+            return Err(Error::Protocol(error.message.into()));
+        }
+        if let Some(value) = answer(request_id, frame.message) {
+            return Ok(value);
+        }
+    }
+    Err(Error::Protocol(format!(
+        "gateway sent {MAX_PENDING_FRAMES} unrelated frames before the {what} response"
+    )))
 }
 
 /// Resolves the bearer token expected by the reusable CLI client.

@@ -22,9 +22,24 @@ fn continuation_ignores_searchable_inventory_and_resets_on_catalog_change() {
     continued.push(serde_json::json!({"type": "function_call_output"}));
     let envelope = envelope_fingerprint("test-model", &model_request(), None, &[])
         .expect("envelope fingerprint");
+    let mut history = HistoryHash::default();
     let (response, input) =
-        continuation_input(&mut state, (&continued).into(), envelope).expect("continue");
+        continuation_input(&mut state, (&continued).into(), envelope, &mut history)
+            .expect("continue");
     assert_eq!(response, Some("resp-1"));
+    assert_eq!(
+        history.items,
+        known.len(),
+        "the checked prefix stays hashed"
+    );
+    history
+        .absorb(continued.iter().skip(history.items))
+        .expect("suffix hash");
+    assert_eq!(
+        history.finish(),
+        fingerprint(continued.iter()).expect("fingerprint"),
+        "the extended prefix hash equals a fresh hash of the whole history"
+    );
     assert_eq!(
         serde_json::to_value(input).expect("input"),
         serde_json::json!([{ "type": "function_call_output" }])
@@ -46,8 +61,13 @@ fn continuation_ignores_searchable_inventory_and_resets_on_catalog_change() {
     )
     .expect("searchable inventory fingerprint");
     assert_eq!(inventory_envelope, envelope);
-    let (response, input) = continuation_input(&mut state, (&continued).into(), inventory_envelope)
-        .expect("inventory continuation");
+    let (response, input) = continuation_input(
+        &mut state,
+        (&continued).into(),
+        inventory_envelope,
+        &mut HistoryHash::default(),
+    )
+    .expect("inventory continuation");
     assert_eq!(response, Some("resp-1"));
     assert_eq!(
         serde_json::to_value(input).expect("input"),
@@ -65,8 +85,13 @@ fn continuation_ignores_searchable_inventory_and_resets_on_catalog_change() {
         &[],
     )
     .expect("changed catalog fingerprint");
-    let (response, input) = continuation_input(&mut state, (&continued).into(), changed_envelope)
-        .expect("catalog reset");
+    let (response, input) = continuation_input(
+        &mut state,
+        (&continued).into(),
+        changed_envelope,
+        &mut HistoryHash::default(),
+    )
+    .expect("catalog reset");
     assert_eq!(response, None);
     assert_eq!(
         input.iter().collect::<Vec<_>>(),
@@ -75,8 +100,13 @@ fn continuation_ignores_searchable_inventory_and_resets_on_catalog_change() {
     assert!(state.continuation.is_none());
 
     let rewritten = vec![serde_json::json!({"role": "user", "content": "Working checkpoint"})];
-    let (response, input) =
-        continuation_input(&mut state, (&rewritten).into(), envelope).expect("reset");
+    let (response, input) = continuation_input(
+        &mut state,
+        (&rewritten).into(),
+        envelope,
+        &mut HistoryHash::default(),
+    )
+    .expect("reset");
     assert_eq!(response, None);
     assert_eq!(
         input.iter().collect::<Vec<_>>(),
@@ -90,8 +120,14 @@ fn continuation_ignores_searchable_inventory_and_resets_on_catalog_change() {
         fingerprint: fingerprint(known.iter()).expect("fingerprint"),
         envelope_fingerprint: envelope,
     });
-    let (response, input) =
-        response_input(&mut state, (&known).into(), false, envelope).expect("stateless request");
+    let (response, input) = response_input(
+        &mut state,
+        (&known).into(),
+        false,
+        envelope,
+        &mut HistoryHash::default(),
+    )
+    .expect("stateless request");
     assert_eq!(response, None);
     assert_eq!(
         input.iter().collect::<Vec<_>>(),

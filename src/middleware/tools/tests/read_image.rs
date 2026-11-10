@@ -17,12 +17,7 @@ async fn extensionless_images_are_durable_and_reinspectable_after_source_deletio
         .expect("PNG");
     let path = workspace.path().join("page");
     std::fs::write(&path, &bytes).expect("image");
-    let sandbox = Arc::new(Sandbox::new(
-        Arc::new(
-            crate::backend::sandbox::local::LocalSandbox::new(workspace.path()).expect("sandbox"),
-        ),
-        crate::backend::sandbox::ApprovalPolicy::Ask,
-    ));
+    let sandbox = test_sandbox_at(workspace.path());
     let mut catalog = Catalog::default();
     catalog
         .register(Arc::new(ReadFile {
@@ -37,14 +32,11 @@ async fn extensionless_images_are_durable_and_reinspectable_after_source_deletio
             arguments: serde_json::json!({"path": "page"}),
         }],
     );
-    let result = execute_batch(
+    let result = run_calls(
         &catalog,
         calls,
         Arc::clone(&sandbox),
         &test_permissions(&[]),
-        &"turn".into(),
-        &"test".into(),
-        &crate::protocol::MessageAuthor::User.into(),
     )
     .await
     .remove(0);
@@ -82,14 +74,11 @@ async fn extensionless_images_are_durable_and_reinspectable_after_source_deletio
             &BTreeSet::new(),
         )
         .expect("bind");
-    let result = execute_batch(
+    let result = run_calls(
         &catalog,
         [call.clone()],
         Arc::clone(&sandbox),
         &test_permissions(&[]),
-        &"turn".into(),
-        &"test".into(),
-        &crate::protocol::MessageAuthor::User.into(),
     )
     .await
     .remove(0);
@@ -101,17 +90,9 @@ async fn extensionless_images_are_durable_and_reinspectable_after_source_deletio
         crate::backend::sandbox::NetworkAccess::Denied,
         Vec::new(),
     );
-    let result = execute_batch(
-        &catalog,
-        [call],
-        sandbox,
-        &other_session,
-        &"turn".into(),
-        &"test".into(),
-        &crate::protocol::MessageAuthor::User.into(),
-    )
-    .await
-    .remove(0);
+    let result = run_calls(&catalog, [call], sandbox, &other_session)
+        .await
+        .remove(0);
     assert!(
         result.is_error,
         "a shared handler must use the calling session's authority"
@@ -143,12 +124,7 @@ async fn read_file_preserves_text_limits_and_rejects_ambiguous_sources() {
         vec![b'a'; crate::backend::sandbox::MAX_FILE_BYTES + 1],
     )
     .expect("oversized text");
-    let sandbox = Arc::new(Sandbox::new(
-        Arc::new(
-            crate::backend::sandbox::local::LocalSandbox::new(workspace.path()).expect("sandbox"),
-        ),
-        crate::backend::sandbox::ApprovalPolicy::Ask,
-    ));
+    let sandbox = test_sandbox_at(workspace.path());
     let mut catalog = Catalog::default();
     catalog
         .register(Arc::new(ReadFile {
@@ -188,16 +164,7 @@ async fn read_file_preserves_text_limits_and_rejects_ambiguous_sources() {
         })
         .collect::<Vec<_>>();
     let calls = finalize_and_bind(&mut catalog, &calls);
-    let results = execute_batch(
-        &catalog,
-        calls,
-        sandbox,
-        &test_permissions(&[]),
-        &"turn".into(),
-        &"test".into(),
-        &crate::protocol::MessageAuthor::User.into(),
-    )
-    .await;
+    let results = run_calls(&catalog, calls, sandbox, &test_permissions(&[])).await;
     assert_eq!(results.len(), cases.len());
     for (result, (arguments, is_error, expected)) in results.into_iter().zip(cases) {
         assert_eq!(result.is_error, is_error, "{arguments}");

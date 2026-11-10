@@ -1,6 +1,18 @@
 use super::*;
 
 #[test]
+fn sqlite_failures_keep_engine_details_out_of_frontend_errors() {
+    let connection = Connection::open_in_memory().unwrap();
+    let engine = connection
+        .execute("SELECT private_checkpoint_secret", [])
+        .unwrap_err();
+    assert!(engine.to_string().contains("private_checkpoint_secret"));
+    let error = Error::from(engine);
+    let frontend = crate::protocol::ErrorEvent::from_error(&error);
+    assert_eq!(&*frontend.message, "checkpoint storage error");
+}
+
+#[test]
 fn open_hard_rejects_previous_schema_generations() {
     for version in [6, 7, 8, 9, 10, 11, 12, 13] {
         let workspace = tempfile::tempdir().expect("create workspace");

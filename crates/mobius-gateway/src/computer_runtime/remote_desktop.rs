@@ -1,7 +1,7 @@
 //! One gateway-owned browser/profile; Linux adds a private virtual desktop.
 
 use mobius::SessionId;
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 mod linux;
 mod processes;
 #[cfg(target_os = "linux")]
@@ -125,12 +125,12 @@ impl RemoteDesktop {
         self.enabled
     }
 
-    pub(crate) async fn acquire_use(self: &Arc<Self>) -> DesktopUse {
+    pub(crate) async fn acquire_use(self: &Arc<Self>) -> Result<DesktopUse> {
         let _runtime = self.runtime.lock().await;
-        *mobius::sync::recover_lock(&self.consumers) += 1;
-        DesktopUse {
+        *lock(&self.consumers)? += 1;
+        Ok(DesktopUse {
             remote: Arc::clone(self),
-        }
+        })
     }
 
     fn stop_if_unused(self: &Arc<Self>) {
@@ -138,8 +138,12 @@ impl RemoteDesktop {
         tokio::spawn(async move {
             let _execution = remote.executions.write().await;
             let mut runtime = remote.runtime.lock().await;
+            // A poisoned count is never read; the desktop then stays up until shutdown.
             if remote.held.load(Ordering::Acquire)
-                || *mobius::sync::recover_lock(&remote.consumers) != 0
+                || remote
+                    .consumers
+                    .lock()
+                    .map_or(true, |consumers| *consumers != 0)
             {
                 return;
             }
@@ -185,17 +189,18 @@ impl RemoteDesktop {
         }
     }
 
-    pub(crate) fn control_state(&self, connection: Uuid) -> (bool, bool, Option<SessionId>) {
-        let user = mobius::sync::recover_lock(&self.user);
+    pub(crate) fn control_state(
+        &self,
+        connection: Uuid,
+    ) -> Result<(bool, bool, Option<SessionId>)> {
+        let user = lock(&self.user)?;
         let (held, owner) = match user.as_ref() {
             Some(user) => (true, user.connection == connection),
             None => (self.held.load(Ordering::Acquire), false),
         };
-        let session = mobius::sync::recover_lock(&self.last_session)
-            .as_ref()
-            .map(SessionId::share);
+        let session = lock(&self.last_session)?.as_ref().map(SessionId::share);
         drop(user);
-        (held, owner, session)
+        Ok((held, owner, session))
     }
 
     pub(crate) async fn page(&self, session_id: &SessionId) -> Result<Option<DesktopBrowserPage>> {
@@ -231,7 +236,7 @@ impl RemoteDesktop {
             if let Some(runtime) = guard.as_mut() {
                 runtime.show(session_id, &self.config).await?;
             }
-            *mobius::sync::recover_lock(&self.last_session) = Some(session_id.share());
+            *lock(&self.last_session)? = Some(session_id.share());
             drop(guard);
         }
         self.notify_changed();
@@ -261,7 +266,7 @@ impl RemoteDesktop {
         runtime.ensure_browser(&self.config).await?;
         let page = runtime.page(session_id, activate, &self.config).await?;
         if activate {
-            *mobius::sync::recover_lock(&self.last_session) = Some(session_id.share());
+            *lock(&self.last_session)? = Some(session_id.share());
             self.notify_changed();
         }
         drop(guard);
@@ -463,14 +468,12 @@ impl RemoteDesktop {
         if !self.available() {
             return Err(unavailable());
         }
-        let desktop_use = self.acquire_use().await;
+        let desktop_use = self.acquire_use().await?;
         let mut runtime = self.runtime.lock().await;
         if runtime.is_none() {
             *runtime = Some(Runtime::start(&self.state_dir, &self.config).await?);
             // Browser activation awaits without holding the synchronous last-session mutex.
-            let session_id = mobius::sync::recover_lock(&self.last_session)
-                .as_ref()
-                .map(SessionId::share);
+            let session_id = lock(&self.last_session)?.as_ref().map(SessionId::share);
             if let Some(session_id) = session_id {
                 runtime
                     .as_mut()
@@ -508,7 +511,8 @@ impl RemoteDesktop {
     }
 
     pub(crate) async fn cancel_takeover(self: &Arc<Self>) {
-        if mobius::sync::recover_lock(&self.user).is_none() {
+        // A poisoned control slot is never read; the takeover then stays in place.
+        if self.user.lock().is_ok_and(|user| user.is_none()) {
             let _execution = self.executions.write().await;
             let has_runtime = self.runtime.lock().await.is_some();
             if has_runtime && self.set_input(false).await.is_err() {
@@ -537,14 +541,14 @@ impl RemoteDesktop {
             runtime.show(&session_id, &self.config).await?;
             drop(guard);
         }
-        *mobius::sync::recover_lock(&self.last_session) = Some(session_id);
+        *lock(&self.last_session)? = Some(session_id);
         if let Err(error) = self.set_input(true).await {
             if self.set_input(false).await.is_err() {
                 self.shutdown().await;
             }
             return Err(error);
         }
-        *mobius::sync::recover_lock(&self.user) = Some(UserControl {
+        *lock(&self.user)? = Some(UserControl {
             connection,
             _lease: lease,
             _execution: execution,
@@ -562,7 +566,7 @@ impl RemoteDesktop {
 
     async fn release_control_inner(self: &Arc<Self>, connection: Uuid) -> Result<()> {
         let user = {
-            let mut user = mobius::sync::recover_lock(&self.user);
+            let mut user = lock(&self.user)?;
             if user
                 .as_ref()
                 .is_none_or(|user| user.connection != connection)
@@ -612,11 +616,11 @@ impl RemoteDesktop {
 
 impl Drop for DesktopUse {
     fn drop(&mut self) {
-        let unused = {
-            let mut consumers = mobius::sync::recover_lock(&self.remote.consumers);
+        // A poisoned count is never read; the desktop then stays up until shutdown.
+        let unused = self.remote.consumers.lock().is_ok_and(|mut consumers| {
             *consumers -= 1;
             *consumers == 0
-        };
+        });
         if unused {
             self.remote.stop_if_unused();
         }
@@ -645,7 +649,7 @@ impl DesktopStream {
 
 impl Drop for DesktopStream {
     fn drop(&mut self) {
-        if !self.remote.control_state(self.connection).1 {
+        if !matches!(self.remote.control_state(self.connection), Ok((_, true, _))) {
             return;
         }
         let remote = Arc::clone(&self.remote);
@@ -1226,6 +1230,11 @@ fn unavailable() -> Error {
 
 fn unavailable_after(error: impl std::fmt::Display) -> Error {
     Error::Config(format!("gateway desktop is unavailable: {error}"))
+}
+
+/// Locks desktop state; a poisoned lock fails the operation instead of being read.
+fn lock<T>(mutex: &std::sync::Mutex<T>) -> Result<std::sync::MutexGuard<'_, T>> {
+    mutex.lock().map_err(unavailable_after)
 }
 
 #[cfg(test)]

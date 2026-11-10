@@ -4,10 +4,8 @@ use std::borrow::Borrow;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use super::FRONTEND_DISCONNECTED_REASON;
 use super::Runner;
 use super::SubmissionInbox;
-use super::input::ActiveRoute;
 use super::input::Wait;
 use crate::Error;
 use crate::Result;
@@ -153,7 +151,7 @@ impl Runner {
         if let Some(submission_id) = drained.interrupted {
             return Ok(Wait::Interrupted { submission_id });
         }
-        let mut input_changed = drained.input_changed;
+        let input_changed = drained.input_changed;
         let messages_ready = self
             .config
             .middleware
@@ -162,7 +160,7 @@ impl Runner {
             let mut results = interrupted_results(
                 callable.iter().copied(),
                 "execution cancelled before start because newer input is ready",
-                self.config.sandbox.output_limit(),
+                output_limit,
             );
             results.append(&mut unavailable_results);
             return Ok(Wait::Ready {
@@ -181,7 +179,6 @@ impl Runner {
             &model_route,
             &author,
         );
-        let output_limit = self.config.sandbox.output_limit();
         let cancelled_results = || {
             interrupted_results(
                 callable.iter().copied(),
@@ -189,68 +186,17 @@ impl Runner {
                 output_limit,
             )
         };
-        tokio::pin!(execution);
-        let mut executed = false;
-        let results = loop {
-            let drained = self.drain_submissions(inbox, turn_id).await?;
-            input_changed |= drained.input_changed;
-            if let Some(submission_id) = drained.interrupted {
-                break Wait::Interrupted { submission_id };
-            }
-            if cancel_on_input && drained.input_changed {
-                break Wait::Ready {
-                    value: cancelled_results(),
-                    input_changed: true,
-                };
-            }
-            tokio::select! {
-                biased;
-                results = &mut execution => {
-                    let drained = self.drain_submissions(inbox, turn_id).await?;
-                    input_changed |= drained.input_changed;
-                    if let Some(submission_id) = drained.interrupted {
-                        break Wait::Interrupted { submission_id };
-                    }
-                    if cancel_on_input && drained.input_changed {
-                        break Wait::Ready {
-                            value: cancelled_results(),
-                            input_changed: true,
-                        };
-                    }
-                    executed = true;
-                    break Wait::Ready { value: results, input_changed };
-                }
-                submission = inbox.recv() => {
-                    let Some(submission) = submission else {
-                        return Err(Error::Stopped(FRONTEND_DISCONNECTED_REASON.into()));
-                    };
-                    match self.route_active_submission(submission, turn_id, None).await? {
-                        ActiveRoute::Continue {
-                            input_changed: changed,
-                        } => {
-                            if changed {
-                                if cancel_on_input {
-                                    break Wait::Ready {
-                                        value: cancelled_results(),
-                                        input_changed: true,
-                                    };
-                                }
-                                input_changed = true;
-                            }
-                        }
-                        ActiveRoute::Interrupted { submission_id } => {
-                            break Wait::Interrupted { submission_id };
-                        }
-                        ActiveRoute::Approval { .. } => {}
-                    }
-                }
-            }
-        };
-        let (mut results, input_changed) = match results {
+        let execution = async { (execution.await, true) };
+        let wait = self
+            .wait_active(inbox, turn_id, execution, || {
+                cancel_on_input.then(|| (cancelled_results(), false))
+            })
+            .await?;
+        let ((mut results, executed), input_changed) = match wait {
             Wait::Ready {
                 value,
-                input_changed,
-            } => (value, input_changed),
+                input_changed: changed,
+            } => (value, input_changed || changed),
             Wait::Interrupted { submission_id } => {
                 return Ok(Wait::Interrupted { submission_id });
             }
@@ -285,10 +231,8 @@ impl Runner {
         if results.is_empty() && hook_events.is_empty() {
             return Ok(());
         }
-        let mut events = hook_events
-            .into_iter()
-            .map(|msg| crate::agent::turn::turn_event(submission_id, msg))
-            .collect::<Vec<_>>();
+        let mut events =
+            crate::agent::turn::turn_events(submission_id, hook_events).collect::<Vec<_>>();
         let tool_usage = batch_usage(&results)?;
         // Failed persistence restores calls removed by the tentative result application.
         let pending_tools = self.state.pending_tools.clone(); // rules-allow: restored if persisting the results fails
@@ -458,12 +402,10 @@ fn tool_result_events(
                 is_error: result.is_error,
             }),
         ));
-        events.extend(
-            result
-                .events
-                .into_iter()
-                .map(|msg| crate::agent::turn::turn_event(submission_id, msg)),
-        );
+        events.extend(crate::agent::turn::turn_events(
+            submission_id,
+            result.events,
+        ));
     }
     events
 }

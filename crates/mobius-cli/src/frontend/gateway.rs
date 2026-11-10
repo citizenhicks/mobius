@@ -2,30 +2,24 @@
 
 pub(super) use crate::frontend::terminal::masked_credential as masked;
 
-use std::io;
-
 use mobius::Result;
 use mobius_gateway::client::{Endpoint, GatewayClient};
 use mobius_gateway::wire::ClientCapabilities;
-use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Wrap};
 use tokio::time::MissedTickBehavior;
 
-use super::terminal::{INPUT_POLL, MAX_ENDPOINT_BYTES, MAX_INPUT_BATCH, poll_event};
+use super::terminal::{INPUT_POLL, MAX_ENDPOINT_BYTES, Screen, TextForm, input_batch};
 use super::terminal_text;
-use super::theme::{Role, current};
+use super::theme::{Role, brand_header, current};
 use crate::gateway_error;
 use mobius_gateway::gateway_accounts::{GatewayAccounts, environment_override_message};
 
 const MAX_PAIRING_CODE_BYTES: usize = 512;
 
-type GatewayTerminal = Terminal<CrosstermBackend<io::Stdout>>;
-
-pub(crate) async fn run(terminal: &mut GatewayTerminal, connected: &str) -> Result<bool> {
+pub(crate) async fn run(terminal: &mut Screen, connected: &str) -> Result<bool> {
     let accounts = GatewayAccounts::load().map_err(gateway_error)?;
     let mut state = State::new(accounts, connected);
     let mut tick = tokio::time::interval(INPUT_POLL);
@@ -35,10 +29,8 @@ pub(crate) async fn run(terminal: &mut GatewayTerminal, connected: &str) -> Resu
     loop {
         draw(terminal, &state)?;
         tick.tick().await;
-        for _ in 0..MAX_INPUT_BATCH {
-            let Some(event) = poll_event()? else {
-                break;
-            };
+        for event in input_batch() {
+            let event = event?;
             let action = match event {
                 Event::Key(key) => state.handle_key(key),
                 Event::Paste(value) => {
@@ -133,8 +125,8 @@ struct State {
     page: Page,
     selection: usize,
     field: Field,
-    endpoint: String,
-    pairing_code: String,
+    endpoint: TextForm,
+    pairing_code: TextForm,
     pairing: bool,
     override_message: Option<&'static str>,
     error: Option<String>,
@@ -157,8 +149,8 @@ impl State {
             page: Page::Accounts,
             selection,
             field: Field::Endpoint,
-            endpoint: String::new(),
-            pairing_code: String::new(),
+            endpoint: TextForm::new("", MAX_ENDPOINT_BYTES),
+            pairing_code: TextForm::new("", MAX_PAIRING_CODE_BYTES),
             pairing: false,
             override_message: environment_override_message(),
             error: None,
@@ -208,7 +200,7 @@ impl State {
         match key.code {
             KeyCode::Esc => {
                 self.page = Page::Accounts;
-                self.pairing_code.clear();
+                self.pairing_code.value.clear();
                 Ok(Action::None)
             }
             KeyCode::Tab | KeyCode::BackTab | KeyCode::Up | KeyCode::Down => {
@@ -219,11 +211,11 @@ impl State {
                 Ok(Action::None)
             }
             KeyCode::Backspace => {
-                self.selected_input().pop();
+                self.selected_input().backspace();
                 Ok(Action::None)
             }
             KeyCode::Enter if self.field == Field::Endpoint => {
-                self.endpoint.trim().parse::<Endpoint>()?;
+                self.endpoint.value.trim().parse::<Endpoint>()?;
                 self.field = Field::PairingCode;
                 Ok(Action::None)
             }
@@ -231,7 +223,7 @@ impl State {
             KeyCode::Char(value)
                 if matches!(key.modifiers, KeyModifiers::NONE | KeyModifiers::SHIFT) =>
             {
-                self.insert_char(value);
+                self.insert(value.encode_utf8(&mut [0; 4]));
                 Ok(Action::None)
             }
             _ => Ok(Action::None),
@@ -271,8 +263,8 @@ impl State {
         self.require_saved_management()?;
         self.page = Page::Add;
         self.field = Field::Endpoint;
-        self.endpoint.clear();
-        self.pairing_code.clear();
+        self.endpoint.value.clear();
+        self.pairing_code.value.clear();
         Ok(Action::None)
     }
 
@@ -295,20 +287,10 @@ impl State {
         self.accounts.endpoints().len() + usize::from(self.override_message.is_none())
     }
 
-    fn selected_input(&mut self) -> &mut String {
+    fn selected_input(&mut self) -> &mut TextForm {
         match self.field {
             Field::Endpoint => &mut self.endpoint,
             Field::PairingCode => &mut self.pairing_code,
-        }
-    }
-
-    fn insert_char(&mut self, value: char) {
-        let limit = self.input_limit();
-        let input = self.selected_input();
-        if input.len() + value.len_utf8() <= limit {
-            input.push(value);
-        } else {
-            self.error = Some(format!("input is limited to {limit} bytes"));
         }
     }
 
@@ -316,29 +298,19 @@ impl State {
         if self.page != Page::Add {
             return;
         }
-        let limit = self.input_limit();
         let input = self.selected_input();
-        if input.len() + value.len() <= limit {
-            input.push_str(value);
-        } else {
-            self.error = Some(format!("input is limited to {limit} bytes"));
-        }
-    }
-
-    const fn input_limit(&self) -> usize {
-        match self.field {
-            Field::Endpoint => MAX_ENDPOINT_BYTES,
-            Field::PairingCode => MAX_PAIRING_CODE_BYTES,
-        }
+        input.push(value);
+        let error = input.error.take();
+        self.error = error;
     }
 
     fn pairing_request(&self) -> mobius_gateway::Result<(Endpoint, String)> {
-        let endpoint = self.endpoint.trim().parse()?;
-        Ok((endpoint, self.pairing_code.trim().to_owned()))
+        let endpoint = self.endpoint.value.trim().parse()?;
+        Ok((endpoint, self.pairing_code.value.trim().to_owned()))
     }
 }
 
-fn draw(terminal: &mut GatewayTerminal, state: &State) -> Result<()> {
+fn draw(terminal: &mut Screen, state: &State) -> Result<()> {
     terminal.draw(|frame| render(frame, state))?;
     Ok(())
 }
@@ -355,14 +327,7 @@ fn render(frame: &mut ratatui::Frame<'_>, state: &State) {
         Page::Add => 2,
     };
     let mut lines = vec![
-        Line::from(vec![
-            Span::styled("◉ ", theme.style(Role::AccentStrong)),
-            Span::styled(
-                "MÖBIUS",
-                theme.style(Role::Accent).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" gateway settings", theme.style(Role::Muted)),
-        ]),
+        brand_header("gateway settings"),
         Line::styled(format!("Page {page} of 2"), theme.style(Role::Muted)),
         Line::from(""),
     ];
@@ -461,13 +426,13 @@ fn render_add(lines: &mut Vec<Line<'static>>, state: &State) {
     field(
         lines,
         "Endpoint",
-        &terminal_text(&state.endpoint),
+        &terminal_text(&state.endpoint.value),
         state.field == Field::Endpoint,
     );
     field(
         lines,
         "One-time code",
-        &masked(&state.pairing_code, 32),
+        &masked(&state.pairing_code.value, 32),
         state.field == Field::PairingCode,
     );
     lines.push(Line::from(""));

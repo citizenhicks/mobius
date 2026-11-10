@@ -27,7 +27,6 @@ async fn upload_round_trip_is_session_scoped_and_atomic() {
 
     assert_eq!(bytes.data, b"hello");
 
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
 
@@ -120,7 +119,6 @@ async fn tampered_content_blob_is_rejected() {
     assert!(store.read_chunk(&id, &file.id, 0, 4).await.is_err());
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn attachment_cleanup_remains_safe_after_symlink_workspace_replacement_and_restart() {
     use std::os::unix::fs::symlink;
@@ -482,6 +480,6 @@ async fn generated_images_survive_selective_cleanup_until_the_chat_is_deleted() 
         store.delete_session(&id).await.unwrap();
         assert!(store.list_files(&id, &origins).await.unwrap().is_empty());
         assert!(store.read_image(&id, &generated).await.is_err());
-        assert_eq!(store.stored_bytes().await.unwrap(), 0);
+        assert_eq!(store.blob_bytes().await.unwrap(), 0);
     }
 }

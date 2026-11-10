@@ -14,12 +14,7 @@ use mobius::agent::AgentConfig;
 use mobius::agent::create_agent;
 use mobius::backend::checkpoint::Checkpoint;
 use mobius::backend::checkpoint::CheckpointStore;
-use mobius::backend::checkpoint::EventPage;
-use mobius::backend::checkpoint::EventPageRequest;
-use mobius::backend::checkpoint::ExecutionRecord;
-use mobius::backend::checkpoint::JournalEvent;
 use mobius::backend::checkpoint::SessionPageRequest;
-use mobius::backend::checkpoint::TimestampedEvent;
 use mobius::backend::checkpoint::TranscriptPageRequest;
 use mobius::backend::checkpoint::sqlite::SqliteCheckpoint;
 use mobius::backend::model::Model;
@@ -29,8 +24,6 @@ use mobius::backend::model::ModelRequest;
 use mobius::backend::model::ModelRouter;
 use mobius::backend::model::ToolDefinition;
 use mobius::backend::sandbox::ApprovalPolicy;
-use mobius::backend::sandbox::CommandOutputSink;
-use mobius::backend::sandbox::NetworkAccess;
 use mobius::backend::sandbox::Sandbox;
 use mobius::backend::sandbox::SandboxBackend;
 use mobius::backend::sandbox::SandboxMode;
@@ -43,7 +36,6 @@ use mobius::middleware::compaction::Compaction;
 use mobius::middleware::messages::Messages;
 use mobius::middleware::tools::Tools;
 use mobius::protocol::AssistantMessageEvent;
-use mobius::protocol::Event;
 use mobius::protocol::EventMsg;
 use mobius::protocol::MessageAuthor;
 use mobius::protocol::MessageSubmission;
@@ -161,147 +153,6 @@ impl Model for GatedModel {
     }
 }
 
-#[derive(Default)]
-struct MemoryCheckpoints {
-    sessions: Mutex<BTreeMap<SessionId, Checkpoint>>,
-    receipts: Mutex<std::collections::BTreeSet<(SessionId, String)>>,
-    state: Mutex<BTreeMap<(String, String), Value>>,
-}
-
-impl CheckpointStore for MemoryCheckpoints {
-    fn message_accepted<'a>(
-        &'a self,
-        session_id: &'a SessionId,
-        submission_id: &'a str,
-    ) -> BoxFuture<'a, Result<bool>> {
-        Box::pin(async move {
-            let _sessions = self.sessions.lock().expect("checkpoint store");
-            Ok(self
-                .receipts
-                .lock()
-                .expect("receipts")
-                .contains(&(session_id.share(), submission_id.into())))
-        })
-    }
-
-    fn load<'a>(&'a self, session_id: &'a SessionId) -> BoxFuture<'a, Result<Option<Checkpoint>>> {
-        Box::pin(async move {
-            Ok(self
-                .sessions
-                .lock()
-                .expect("checkpoint store")
-                .get(session_id)
-                .cloned())
-        })
-    }
-
-    fn delete_sessions<'a>(&'a self, session_ids: &'a [SessionId]) -> BoxFuture<'a, Result<bool>> {
-        Box::pin(async move {
-            let mut sessions = self.sessions.lock().expect("checkpoint store");
-            if session_ids
-                .iter()
-                .any(|session_id| !sessions.contains_key(session_id.as_str()))
-            {
-                return Ok(false);
-            }
-            for session_id in session_ids {
-                sessions.remove(session_id.as_str());
-            }
-            drop(sessions);
-            self.receipts
-                .lock()
-                .expect("receipts")
-                .retain(|(session_id, _)| {
-                    !session_ids.iter().any(|deleted| **deleted == **session_id)
-                });
-            Ok(true)
-        })
-    }
-
-    fn save_with_events(
-        &self,
-        checkpoint: mobius::backend::checkpoint::ValidatedCheckpoint,
-        _transcript_delta: Vec<Arc<Value>>,
-        _execution: Option<ExecutionRecord>,
-        events: Vec<TimestampedEvent>,
-    ) -> BoxFuture<'_, Result<Vec<JournalEvent>>> {
-        Box::pin(async move {
-            self.receipts.lock().expect("receipts").extend(
-                checkpoint
-                    .pending_messages
-                    .iter()
-                    .map(|message| (checkpoint.session_id.share(), message.id().into())),
-            );
-            self.sessions.lock().expect("checkpoint store").insert(
-                checkpoint.session_id.share(),
-                Checkpoint::clone(&checkpoint),
-            );
-            let mut records = Vec::with_capacity(events.len());
-            for event in events {
-                records.push(
-                    self.append_event(&checkpoint.session_id, event.recorded_at_ms, event.event)
-                        .await?,
-                );
-            }
-            Ok(records)
-        })
-    }
-
-    fn append_event<'a>(
-        &'a self,
-        _session_id: &'a SessionId,
-        recorded_at_ms: i64,
-        event: Event,
-    ) -> BoxFuture<'a, Result<JournalEvent>> {
-        Box::pin(async move {
-            Ok(JournalEvent {
-                sequence: 1,
-                recorded_at_ms,
-                event,
-                stream_metrics: Vec::new(),
-            })
-        })
-    }
-
-    fn event_page<'a>(
-        &'a self,
-        _session_id: &'a SessionId,
-        _request: EventPageRequest,
-    ) -> BoxFuture<'a, Result<EventPage>> {
-        Box::pin(async { Ok(EventPage::default()) })
-    }
-
-    fn load_state<'a>(
-        &'a self,
-        scope: &'a str,
-        key: &'a str,
-    ) -> BoxFuture<'a, Result<Option<Value>>> {
-        Box::pin(async move {
-            Ok(self
-                .state
-                .lock()
-                .expect("checkpoint state")
-                .get(&(scope.to_owned(), key.to_owned()))
-                .cloned())
-        })
-    }
-
-    fn save_state<'a>(
-        &'a self,
-        scope: &'a str,
-        key: &'a str,
-        value: &'a Value,
-    ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            self.state
-                .lock()
-                .expect("checkpoint state")
-                .insert((scope.to_owned(), key.to_owned()), value.clone());
-            Ok(())
-        })
-    }
-}
-
 fn test_config<M>(
     workspace: &std::path::Path,
     model: Arc<M>,
@@ -320,7 +171,9 @@ fn test_config_with_router(
     mut middleware: Vec<Arc<dyn Middleware>>,
 ) -> AgentConfig {
     middleware.insert(0, Arc::new(Messages::default()));
-    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(MemoryCheckpoints::default());
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
+        SqliteCheckpoint::new(workspace.join(".checkpoints.sqlite3")).expect("checkpoint store"),
+    );
     let sandbox = Arc::new(Sandbox::new(
         Arc::new(LocalSandbox::new(workspace).expect("local sandbox")),
         ApprovalPolicy::Ask,

@@ -9,7 +9,6 @@ mod dispatch;
 mod responses;
 mod transport;
 mod view;
-#[path = "harness/mobius/server/voice.rs"]
 mod voice;
 
 use crate::telemetry::{StopCause, Trigger};
@@ -20,7 +19,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::harness::ValidatedSubmission;
 use chrono::Utc;
 use mobius::backend::session_files::{PendingSessionFileWrite, SessionFileStore};
 use mobius::protocol::Op;
@@ -57,10 +55,9 @@ use self::dispatch::{
     AuthenticatedClient, ConnectionSessionState, SelectedChat, handle_message, selected_broadcast,
 };
 use self::responses::{
-    directory_rejection, internal_rejection, list_directories, open_selected, require_selected,
-    require_uploads_enabled, routine_rejection, sequence, uploads_disabled_rejection,
-    write_client_inventory, write_gateway_result, write_rejection, write_result,
-    write_server_error, write_session_history,
+    directory_rejection, list_directories, open_selected, require_selected,
+    require_uploads_enabled, uploads_disabled_rejection, write_client_inventory,
+    write_gateway_result, write_rejection, write_result, write_server_error, write_session_history,
 };
 use self::transport::{
     ClientConnections, ConnectionAdmission, ConnectionContext, ConnectionShared,
@@ -119,7 +116,7 @@ impl GatewayServer {
         let listen = listener.local_addr()?;
         let (store, config) = ConfigStore::initialize(state_dir, listen, None)?;
         let initialized_state = store.state_dir().to_path_buf();
-        let result = match AuthStore::initialize_validated(store.auth_path(), config.auth) {
+        let result = match AuthStore::initialize(store.auth_path(), config.auth) {
             Ok((_, grant)) => Self::assemble(store, config, listener)
                 .await
                 .map(|server| (server, grant)),
@@ -145,7 +142,7 @@ impl GatewayServer {
         listener: TcpListener,
     ) -> Result<Self> {
         let access_lease = configured_access_lease(&config.runtime)?;
-        let auth = Arc::new(AuthStore::open_validated(store.auth_path(), config.auth)?);
+        let auth = Arc::new(AuthStore::open(store.auth_path(), config.auth)?);
         let credentials = Arc::new(CredentialStore::open(store.credentials_path())?);
         let bots = Arc::new(BotStore::open(store.state_dir())?);
         bots.sync_telemetry_cursors(&config.telemetry.sinks)?;
@@ -186,7 +183,6 @@ impl GatewayServer {
 
     async fn serve_with_host(self, websocket_host: Option<Arc<OnceLock<String>>>) -> Result<()> {
         let inactivity_timeout = Duration::from_secs(self.config.runtime.idle_exit_seconds);
-        #[cfg(unix)]
         {
             use tokio::signal::unix::{SignalKind, signal};
 
@@ -204,15 +200,6 @@ impl GatewayServer {
             )
             .await
         }
-        #[cfg(not(unix))]
-        self.serve_until_inactive_with_host(
-            async {
-                let _ = tokio::signal::ctrl_c().await;
-            },
-            inactivity_timeout,
-            websocket_host,
-        )
-        .await
     }
 
     /// Serves until shutdown or the same inactivity policy as [`Self::serve`].
@@ -273,8 +260,8 @@ impl GatewayServer {
         });
         let client_connections = &shared.client_connections;
         let mut has_active_routines = self.bots.has_active_routines(Utc::now().timestamp())?
-            || self.bots.has_pending_deliveries()?
-            || self.bots.has_monitored_sessions()?;
+            || self.bots.storage.has_pending_deliveries()?
+            || self.bots.storage.has_monitored_sessions()?;
         let inactivity = tokio::time::sleep(inactivity_timeout);
         tokio::pin!(inactivity);
         let mut routine_timer = tokio::time::interval(ROUTINE_TICK);
@@ -315,7 +302,7 @@ impl GatewayServer {
                         let Ok(_admission) = self.host.begin_mutation().await else { continue; };
                         let now = Utc::now().timestamp();
                         let poll = self.bots.poll_due(now)?;
-                        let routines_active = poll.active || self.bots.has_pending_deliveries()? || self.bots.has_monitored_sessions()?;
+                        let routines_active = poll.active || self.bots.storage.has_pending_deliveries()? || self.bots.storage.has_monitored_sessions()?;
                         if has_active_routines && !routines_active && connections.is_empty() {
                             inactivity.as_mut().reset(tokio::time::Instant::now() + inactivity_timeout);
                         }
@@ -342,7 +329,7 @@ impl GatewayServer {
                     Some(_) = connections.join_next(), if !connections.is_empty() => {
                         if connections.is_empty() {
                             has_active_routines =
-                                self.bots.has_active_routines(Utc::now().timestamp())? || self.bots.has_pending_deliveries()? || self.bots.has_monitored_sessions()?;
+                                self.bots.has_active_routines(Utc::now().timestamp())? || self.bots.storage.has_pending_deliveries()? || self.bots.storage.has_monitored_sessions()?;
                             if !has_active_routines {
                                 inactivity.as_mut().reset(tokio::time::Instant::now() + inactivity_timeout);
                             }
@@ -418,7 +405,7 @@ impl GatewayServer {
                         });
                     }
                     () = &mut inactivity, if connections.is_empty() && !has_active_routines && self.config.runtime.idle_exit_seconds != 0 => {
-                        has_active_routines = self.bots.has_active_routines(Utc::now().timestamp())? || self.bots.has_pending_deliveries()? || self.bots.has_monitored_sessions()?;
+                        has_active_routines = self.bots.has_active_routines(Utc::now().timestamp())? || self.bots.storage.has_pending_deliveries()? || self.bots.storage.has_monitored_sessions()?;
                         if !has_active_routines {
                             if crate::telemetry::Telemetry::pending(&self.host).await {
                                 inactivity.as_mut().reset(Instant::now() + ROUTINE_TICK);

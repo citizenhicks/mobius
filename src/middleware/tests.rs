@@ -250,7 +250,7 @@ fn hook_policy_decisions_are_monotonic_and_stop_continuation_is_bounded() {
     };
     stop.continue_with("first").expect("first continuation");
     stop.continue_with("second").expect("first decision wins");
-    assert_eq!(stop.continuation(), Some("first"));
+    assert_eq!(stop.continuation.as_deref(), Some("first"));
     let mut active = StopContext {
         stop_hook_active: true,
         continuation: None,
@@ -323,15 +323,6 @@ fn queued(owner: &str, id: &str, text: &str) -> DurableQueuedMessage {
         .expect("valid queued message")
 }
 
-fn scoped_queue<'a>(
-    items: &'a mut Vec<DurableQueuedMessage>,
-    owner: &'static str,
-) -> MessageQueue<'a> {
-    let mut queue = MessageQueue::new(items);
-    queue.scope(owner);
-    queue
-}
-
 fn enqueue(queue: &mut MessageQueue<'_>, id: &str, text: &str) -> Result<bool> {
     let event = MessageEvent {
         author: MessageAuthor::User,
@@ -351,7 +342,7 @@ fn queued_message_queue_cannot_observe_or_consume_another_owner() {
         queued("beta", "one", "private"),
     ];
     let prepared = {
-        let mut queue = scoped_queue(&mut items, "alpha");
+        let mut queue = MessageQueue::scoped(&mut items, "alpha");
         assert_eq!(queue.count(), 1);
         assert_eq!(queue.latest().map(|item| item.id()), Some("one"));
         let prepared = queue
@@ -373,7 +364,7 @@ fn queued_message_invalid_mutations_are_atomic() {
     let mut items = vec![queued("alpha", "one", "first")];
     let original = items.clone();
     {
-        let mut queue = scoped_queue(&mut items, "alpha");
+        let mut queue = MessageQueue::scoped(&mut items, "alpha");
         assert!(enqueue(&mut queue, "", "second").is_err());
         assert!(
             enqueue(

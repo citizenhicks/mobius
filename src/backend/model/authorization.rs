@@ -65,3 +65,23 @@ impl ApiKeyAuthorization {
         })
     }
 }
+
+/// Allows one more attempt after the provider recovers a credential an endpoint rejected.
+#[derive(Default)]
+pub(super) struct UnauthorizedRetry {
+    used: bool,
+}
+
+impl UnauthorizedRetry {
+    /// Reports whether to repeat an attempt whose `token` was rejected; only the first may.
+    pub(super) async fn retry_unauthorized(
+        &mut self,
+        auth: &(impl OpenAiAuthorization + ?Sized),
+        token: &str,
+    ) -> Result<bool> {
+        if std::mem::replace(&mut self.used, true) {
+            return Ok(false);
+        }
+        auth.recover_unauthorized(token).await
+    }
+}

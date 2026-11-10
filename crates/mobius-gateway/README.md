@@ -1,6 +1,15 @@
 # möbius Gateway
 
-`mobius-gateway` is the headless möbius runtime. One process owns machine
+`mobius-gateway` is the headless möbius runtime: it runs the agents and serves every
+paired client. This guide covers [installing](#install), [pairing](#set-up-and-pair),
+[state and security boundaries](#state-and-security-boundaries), and
+[day-to-day operation](#dashboard-start-and-stop). Every setting is in the
+[configuration reference](CONFIGURATION.md); Bots, routines, and memory are in
+[Bots and context](BOTS.md).
+
+## What the gateway owns
+
+One process owns machine
 credentials, usage, durable Bot profiles, Bot routines, and chats
 with a configurable resident-session limit (32 by default). Every conversation belongs
 to exactly one Bot. Project chats own their canonical workspace and transcript; each Bot also
@@ -11,8 +20,9 @@ conversations or subscribe to the same one.
 Bots store enabled optional middleware IDs and generic scalar settings. The gateway advertises
 the ordered middleware catalog plus integer and select control schemas, so terminal and iOS
 clients render new middleware and settings without capability-specific code. New Bots enable
-attachments, artifacts, compaction, memory, and subagents by default;
-tasks, workspace instructions, and extensions start disabled. Project chats install
+attachments, artifacts, Intelligent UI, questions, subagents, voice, compaction, and memory
+by default; tasks, workspace instructions, extensions, image generation, and computer
+control start disabled. Project chats install
 sandboxing and workspace tools; project-free chats expose file and image reads under the same sandbox policy, including
 skill guides, while commands and file mutations remain unavailable. All chats use turn steering
 and durable sessions. Only the canonical Bot conversation
@@ -23,15 +33,21 @@ or creates a new project chat when given a workspace and its first task. `list_c
 the active turn ID for interruption. Saved session hooks use the same message/interrupt protocol.
 New gateways use Full Access as their Bot-creation default; saved policies remain explicit.
 
+### Compaction, tasks, and memory
+
 Compaction saves a plaintext working checkpoint and continues the same chat with
 a fresh context. The default 250,000-token threshold is clamped to leave response
 space on smaller models. Preparation restricts tools to checkpoint writing and
 preserves the current context if it fails. The optional **Allow model-requested
 compaction** setting also exposes `new_context` for early resets; it defaults to Off.
-Original messages and tool results remain available through `search_memory` and `read_memory`.
+Idle compaction, on by default, also compacts a large chat a few minutes after its last turn.
+Original messages and tool results remain available through `search_memory` and `read_memory`,
+which also cover memory pages.
 
 Tasks remain independently optional and restore their durable list across compaction.
 Memories remain separate from the chat-local handoff checkpoint.
+
+## Install
 
 Install the gateway with Homebrew, or install `mobius-cli` for both commands:
 
@@ -48,7 +64,9 @@ Cargo remains available with `cargo install --locked mobius-cli`.
 template while preserving providers, credentials, installed extensions, Bots, conversations, and
 workspaces. Start the gateway again after the command completes.
 
-The separately versioned `mobius-gateway` crate is the runtime library used by those binaries.
+The `mobius-gateway` crate is the runtime library used by those binaries.
+
+## Computer control
 
 Enabling **Computer control** on a Bot downloads its pinned Node, Playwright, and
 Chromium runtime once. This works with Cargo-installed binaries and the native app.
@@ -59,6 +77,8 @@ the capability again. Linux hosts need Chromium's system libraries and Bubblewra
 `MOBIUS_COMPUTER_RUNTIME` can select an administrator-provided runtime instead.
 System executables, offline resources, proxy/CA and launch policy are configurable;
 see the [complete configuration reference](CONFIGURATION.md).
+
+### Linux desktop
 
 While the gateway is stopped, `set-desktop --enabled true` enables gateway-owned
 headed Chromium on Linux with one persistent profile. Linux needs TigerVNC,
@@ -73,6 +93,12 @@ enabling input. Worker resets retain the browser, and their first evaluation
 observes without executing code. Portable backups omit the desktop profile.
 Passwords and verification codes work; passkeys and Touch ID forwarding do not.
 
+Browser state survives compaction. An overall evaluation deadline, cancellation, reset,
+or runtime restart loses interpreter state. Action timeouts can retain state; follow the
+reported status and never automatically repeat an uncertain action.
+
+### macOS
+
 On macOS the gateway coordinates the existing app's CEF tab over a scoped Unix
 DevTools broker. The app renders the chat's assigned tab; it does not launch a
 separate native Chrome window. One **Bot's computer** action opens the selected
@@ -85,10 +111,14 @@ repository. Native control uses the same authenticated connection and requires
 **Allow Mac control**, macOS Accessibility and Screen Recording access, and the
 Bot's **Full access** policy.
 
+## Embedding the server
+
 Library hosts should signal shutdown through `GatewayServer::serve_until` and
 await its return. The server closes connections, finishes routine dispatch, and
 shuts down resident sessions, including active routines.
 Dropping the serving future is not a graceful-shutdown boundary.
+
+## Set up and pair
 
 Initialize and pair the default gateway:
 
@@ -106,6 +136,8 @@ pairs through either endpoint, `connect` returns and the gateway keeps running i
 the background. Run `mobius-gateway connect` later to advertise a fresh code while
 the gateway remains running.
 
+### Encrypted channel
+
 Every WebSocket connection requires the `mobius-noise-v1` subprotocol and an inner
 `Noise_NK_25519_ChaChaPoly_SHA256` channel. Pairing codes and device tokens contain
 the gateway public-key pin (`m1.<public-key>.<secret>`); the full credential is
@@ -118,7 +150,9 @@ with gateway state. Existing `auth.json` credentials and revocations remain inta
 but older WebSocket clients and credentials must be updated and paired again.
 Direct loopback TCP and direct TLS keep their existing transport.
 
-For that advanced option, enter the intended hostname and connector token.
+### Stable Cloudflare hostname
+
+For the stable-hostname option, enter the intended hostname and connector token.
 möbius starts the connector first and waits for pairing; you can then publish the
 hostname to `http://127.0.0.1:8741` in Cloudflare without the missing-route
 failure aborting setup. möbius stores the token in an owner-only file outside
@@ -142,6 +176,8 @@ mobius-gateway init \
 mobius-gateway connect
 ```
 
+### Direct TLS
+
 Plaintext listeners and clients are restricted to loopback. An iPhone, iPad,
 or another machine therefore needs a routable TLS endpoint with a
 publicly trusted certificate whose hostname matches that endpoint:
@@ -153,7 +189,9 @@ mobius-gateway init --listen 0.0.0.0:8741 \
 mobius-gateway connect --endpoint tls://gateway.example:8741
 ```
 
-On iPhone, iPad, or Mac, choose **Add gateway** and enter the displayed
+### Pair a device
+
+On iPhone, iPad, or Mac, choose **Use your own gateway** and enter the displayed
 **Gateway address** and **One-time code**. On another terminal client, run the
 displayed `mobius pair` command. Pairing consumes the code and returns a unique
 bearer token; Apple clients keep it in Keychain and `mobius` keeps it in its
@@ -164,6 +202,8 @@ To add another device while the gateway is already running, an authenticated
 Apple client can open **Gateway → Pair another device → Create one-time code**;
 an authenticated terminal client can run `/pair`. `mobius-gateway connect` is
 the host-side recovery flow for a stopped gateway.
+
+## State and security boundaries
 
 By default, owner-only state is stored under `~/.mobius/gateway`. Set
 `MOBIUS_GATEWAY_STATE_DIR` or pass `--state-dir` to use another location.
@@ -176,6 +216,10 @@ PID, mount, and network namespaces but forbid mounting procfs inside a child PID
 namespace can set `execution.procfs_mode = "empty"` in `gateway.toml`. This keeps PID isolation
 and mounts an empty `/proc`; the default `private` mode mounts a private procfs.
 Provider credential APIs are write-only and never return stored secret values.
+Protected execution uses Seatbelt on macOS and Bubblewrap on Linux and fails closed if
+the selected sandbox is unavailable. Commands receive the execution's private temporary
+directory in `$TMPDIR`, shared across calls; workspace isolation confines file tools and
+protects sibling temporary files.
 Full-access file tools and shell commands can use the host filesystem; shell commands also
 receive network access. They can access gateway state, TLS credentials, stored provider
 credentials, and any other files or services available to the gateway account.
@@ -185,12 +229,16 @@ created and remains the authoritative owner of its runtime recipe. A conversatio
 only its workspace and Bot identity, so reopening any of that Bot's conversations uses the current
 Bot profile without coupling unrelated Bots or workspaces.
 
+## Extensions
+
 The gateway also owns the extension catalog. Clients may install a standalone
-Agent Skill or OpenAI plugin from a credential-free HTTPS Git source. Packages
+Agent Skill or OpenAI plugin from an HTTPS or SSH Git URL with no embedded password. Packages
 are stored as content-addressed snapshots and remain inactive until selected for
 the Bot-creation template or a Bot. Executable plugin hooks require explicit review for
 the installed package digest. Update and uninstall require deactivation first;
 per-workspace plugin data under `.mobius/extensions` is retained.
+
+## Register a provider from automation
 
 Automation may register OpenRouter with a direct credential read from bounded
 standard input, keeping the key out of arguments and URLs:
@@ -218,6 +266,8 @@ A provider catalog change is rejected when it would invalidate a Bot profile or
 the Bot-creation template. Register the replacement under a new instance, move
 affected Bots and defaults explicitly, then remove the old instance.
 
+## Dashboard, start, and stop
+
 On macOS or Linux, open the live dashboard or gracefully stop the configured
 gateway from another terminal:
 
@@ -228,12 +278,12 @@ mobius-gateway exit
 ```
 
 The no-command form starts the gateway in the background when needed, then
-shows every paired device and chat with active entries first, plus configured
+shows every paired device, chat, and Bot with active entries first, plus configured
 providers, editable defaults, and usage. Use Tab plus the arrow, page, or mouse
 wheel controls to scroll device and chat history. In Devices, press `u` or
 Delete and confirm to unpair the selected device; the dashboard cannot unpair
-its own credential. Press `p` for provider setup, `d` for defaults, or `q` to
-leave without stopping the gateway. `provider` opens the same provider setup
+its own credential. Press `p` for provider setup, `r` to refresh, Enter to open the
+selection, or `q` to leave without stopping the gateway. `provider` opens the same provider setup
 directly. These views use this machine's saved gateway pairing.
 
 Exit verifies the gateway's locked process record before sending
@@ -248,21 +298,23 @@ the starting gateway executable is newer, it gracefully stops the old process
 and starts a fresh one with the existing configuration, chats, and pairing state.
 CLI autostart and the dashboard use this same version check.
 
+## Wire protocol notes for client authors
+
 Authenticated clients may send `set_notifications` with a request ID and a `disabled` array
 containing `sessions` and/or `bots` to suppress unsolicited catalog updates. An empty array
 restores them. Preferences last for that connection; initial and recovery `ready` snapshots,
 explicit responses, approvals, and session events remain mandatory. Provider command clients
 use these exclusions while awaiting their responses.
 
-`ready` and `gateway_configured` carry `revisions`, a content hash of each `config`, `bots`, and
-`sessions` section. Each connection receives only the sections it does not already hold: those
+`ready` and `gateway_configured` carry `revisions`, a content hash of each `config`, `bots`,
+`sessions`, and `harnesses` section. Each connection receives only the sections it does not already hold: those
 equal to what it last received, or to the `known` revisions and `skip` list of the optional
 `catalog` hint in its `authenticate`, arrive empty and are named in `omitted`, so a client keeps
 its own copy of them. A Bot catalog broadcast the connection already holds is not repeated, and
 unsolicited session catalog updates arrive as `sessions_changed`: the whole ordered catalog,
 unchanged chats as bare IDs, with the new `revision`. `select_session` selects a chat for file,
 history, and workspace requests without replay or live events.
-`get_git_diff_totals` answers `git_diff_totals` with Git's own `--numstat` line counts
+`get_git_diff` with `totals: true` answers `git_diff_totals` with Git's own `--numstat` line counts
 (untracked files included for the unstaged scope), not the size-limited display diff.
 
 Full session request queues reject new external work with `server_busy` before accepting it;
@@ -274,6 +326,8 @@ Immutable agent-event frames share their validated JSON bytes across replay and 
 The replay budget charges both event data and cached bytes; an event that exceeds that budget
 is delivered live and remains recoverable from the durable journal.
 
+## Recover access
+
 If every client token is lost, stop the gateway and run the supervised pairing
 flow again; existing paired clients remain valid:
 
@@ -282,8 +336,10 @@ mobius-gateway exit
 mobius-gateway connect # add --endpoint tls://HOST:PORT for TLS
 ```
 
+## Routines
+
 Each Bot may own routines with one-time, interval, or standard five-field cron
-schedules, optionally bounded by an end time and pinned to a workspace. Every invocation creates a
+schedules, or a lifecycle event binding, optionally bounded by an end time and pinned to a workspace. Every invocation creates a
 fresh hidden conversation owned by that Bot, exposed through routine history rather than the chat
 catalog; it never installs a system crontab entry or spawns a child CLI. Routine instructions are
 owner-only under the gateway state directory. With no clients
@@ -296,7 +352,7 @@ Choose one Bot in New Chat. Each chat has one Bot, one Agent checkpoint, and one
 workspace. See [Bots and context](BOTS.md) for history recovery, routine ownership,
 context boundaries, memory, task lists, and subagents.
 
-### Storage and telemetry
+## Storage and telemetry
 
 The gateway enforces no storage limit of its own. An optional telemetry
 collector owns upload admission; `telemetry add --upload-admission` enables this

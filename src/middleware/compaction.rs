@@ -406,13 +406,12 @@ impl Middleware for Compaction {
             if self.counts()?.contains_key(&runtime.session_id) {
                 return Ok(());
             }
-            let state: CompactionState = runtime
-                .checkpoints
-                .load_state(&runtime.session_id, STATE_KEY)
-                .await?
-                .map(serde_json::from_value)
-                .transpose()?
-                .unwrap_or_default();
+            let state: CompactionState = super::load_state_or_default(
+                runtime.checkpoints.as_ref(),
+                &runtime.session_id,
+                STATE_KEY,
+            )
+            .await?;
             self.counts()?.insert(
                 runtime.session_id.share(),
                 SessionCount {

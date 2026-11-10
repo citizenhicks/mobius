@@ -11,6 +11,4 @@ voice_start_timeout_ms = 30000
 voice_io_timeout_ms = 5000
 voice_call_timeout_ms = 3600000
 oauth_request_timeout_ms = 30000
-oauth_callback_timeout_ms = 900000
-oauth_callback_request_timeout_ms = 5000
 device_code_timeout_ms = 900000

@@ -1,17 +1,14 @@
 use mobius::backend::session_files::media_type;
 use std::collections::VecDeque;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::sync::Arc;
 
-use image::ColorType;
-use image::ImageEncoder;
 use image::codecs::png::PngEncoder;
-use mobius::protocol::{SessionFileLimits, SessionFileReference};
-use mobius_gateway::wire::ClientMessage;
-use mobius_gateway::wire::ServerMessage;
+use image::{ColorType, ImageEncoder};
+use mobius::protocol::SessionFileReference;
+use mobius_gateway::wire::{ClientMessage, ServerMessage};
 use tokio::io::AsyncReadExt;
-use tokio::sync::oneshot;
-use tokio::sync::{Semaphore, TryAcquireError};
-use uuid::Uuid;
+use tokio::sync::{Semaphore, TryAcquireError, oneshot};
 
 const INVALID_UPLOAD_RESPONSE: &str = "gateway returned an invalid attachment upload response";
 const CLIPBOARD_PREPARATION_BUSY: &str = "clipboard preparation is already in progress";
@@ -20,12 +17,8 @@ static CLIPBOARD_PREPARATION_GATE: Semaphore = Semaphore::const_new(1);
 
 pub(super) type ClipboardPreparation = oneshot::Receiver<Result<Vec<UploadCandidate>, String>>;
 
-pub(super) fn prepare_clipboard(
-    existing: &[SessionFileReference],
-    limits: SessionFileLimits,
-) -> Result<ClipboardPreparation, String> {
-    let count = existing.len();
-    spawn_preparation(move || read_clipboard(count, &limits))
+pub(super) fn prepare_clipboard() -> Result<ClipboardPreparation, String> {
+    spawn_preparation(read_clipboard)
 }
 
 fn spawn_preparation(
@@ -52,25 +45,15 @@ fn spawn_preparation(
     Ok(receiver)
 }
 
-fn read_clipboard(
-    existing_count: usize,
-    limits: &SessionFileLimits,
-) -> Result<Vec<UploadCandidate>, String> {
-    let remaining = limits
-        .max_attachment_references
-        .saturating_sub(existing_count);
-    if remaining == 0 {
-        return Err(format!(
-            "a message cannot contain more than {} attachments",
-            limits.max_attachment_references
-        ));
-    }
-
+fn read_clipboard() -> Result<Vec<UploadCandidate>, String> {
     let mut clipboard =
         arboard::Clipboard::new().map_err(|error| format!("clipboard unavailable: {error}"))?;
     let files = clipboard.get().file_list().unwrap_or_default();
     if !files.is_empty() {
-        return file_candidates(files, remaining, limits);
+        return files
+            .iter()
+            .map(|path| UploadCandidate::from_file(path))
+            .collect();
     }
 
     let image = clipboard
@@ -81,24 +64,6 @@ fn read_clipboard(
         image.height,
         image.bytes.as_ref(),
     )?])
-}
-
-fn file_candidates(
-    paths: Vec<PathBuf>,
-    remaining: usize,
-    limits: &SessionFileLimits,
-) -> Result<Vec<UploadCandidate>, String> {
-    if paths.len() > remaining {
-        return Err(format!(
-            "pasting {} files would exceed the {}-attachment message limit",
-            paths.len(),
-            limits.max_attachment_references
-        ));
-    }
-    paths
-        .into_iter()
-        .map(|path| UploadCandidate::from_file(&path))
-        .collect()
 }
 
 fn bitmap_candidate(width: usize, height: usize, rgba: &[u8]) -> Result<UploadCandidate, String> {
@@ -213,42 +178,20 @@ impl UploadSource {
 }
 
 enum UploadPhase {
-    Begin {
-        request_id: Uuid,
-    },
+    Begin,
     Chunk {
-        request_id: Uuid,
         upload_id: String,
         max_chunk_bytes: usize,
     },
-    Finish {
-        request_id: Uuid,
-    },
-}
-
-impl UploadPhase {
-    fn answers(&self, request_id: &str) -> bool {
-        let (Self::Begin {
-            request_id: expected,
-        }
-        | Self::Chunk {
-            request_id: expected,
-            ..
-        }
-        | Self::Finish {
-            request_id: expected,
-        }) = self;
-        request_id
-            == expected
-                .hyphenated()
-                .encode_lower(&mut Uuid::encode_buffer())
-    }
+    Finish,
 }
 
 struct ActiveUpload {
     name: String,
     size: u64,
     source: UploadSource,
+    /// The request whose response advances this upload.
+    request_id: Arc<str>,
     phase: UploadPhase,
 }
 
@@ -295,11 +238,11 @@ impl ClipboardUploads {
             return false;
         };
         match message {
-            ServerMessage::Rejected { request_id, .. } => current.phase.answers(request_id),
-            ServerMessage::SessionFileUploadReady { request_id, .. }
+            ServerMessage::Rejected { request_id, .. }
+            | ServerMessage::SessionFileUploadReady { request_id, .. }
             | ServerMessage::SessionFileUploadChunkAccepted { request_id, .. }
             | ServerMessage::SessionFileUploadCompleted { request_id, .. } => {
-                current.phase.answers(request_id)
+                **request_id == *current.request_id
             }
             _ => false,
         }
@@ -315,63 +258,38 @@ impl ClipboardUploads {
             .current
             .as_mut()
             .ok_or_else(|| "attachment upload is not active".to_owned())?;
-        let result = match message {
-            ServerMessage::Rejected { message, .. } => {
+        let result = match (message, &mut current.phase) {
+            (ServerMessage::Rejected { message, .. }, _) => {
                 Err(format!("could not attach `{}`: {message}", current.name))
             }
-            ServerMessage::SessionFileUploadReady {
-                session_id: actual_session,
-                upload_id,
-                max_chunk_bytes,
-                ..
-            } if matches!(current.phase, UploadPhase::Begin { .. })
-                && &actual_session == session_id =>
-            {
-                let wire_upload_id = upload_id.clone(); // rules-allow: the first chunk message and the pending phase both need the gateway's new upload id
-                self.next_transfer(session_id, wire_upload_id, upload_id, max_chunk_bytes, 0)
-                    .await
-                    .map(|message| UploadAdvance {
-                        attachment: None,
-                        message: Some(message),
-                    })
-            }
-            ServerMessage::SessionFileUploadChunkAccepted {
-                session_id: actual_session,
-                upload_id: actual_upload,
-                next_offset,
-                ..
-            } if &actual_session == session_id => match &mut current.phase {
-                UploadPhase::Chunk {
+            (
+                ServerMessage::SessionFileUploadReady {
                     upload_id,
                     max_chunk_bytes,
                     ..
-                } if *upload_id == actual_upload => {
-                    let max_chunk_bytes = *max_chunk_bytes;
-                    let upload_id = std::mem::take(upload_id);
-                    self.next_transfer(
-                        session_id,
-                        actual_upload,
-                        upload_id,
-                        max_chunk_bytes,
-                        next_offset,
-                    )
+                },
+                UploadPhase::Begin,
+            ) => {
+                let wire_upload_id = upload_id.clone(); // rules-allow: the first chunk message and the pending phase both need the gateway's new upload id
+                self.next_transfer(session_id, wire_upload_id, upload_id, max_chunk_bytes)
                     .await
-                    .map(|message| UploadAdvance {
-                        attachment: None,
-                        message: Some(message),
-                    })
-                }
-                UploadPhase::Begin { .. }
-                | UploadPhase::Chunk { .. }
-                | UploadPhase::Finish { .. } => Err(INVALID_UPLOAD_RESPONSE.into()),
-            },
-            ServerMessage::SessionFileUploadCompleted {
-                session_id: actual_session,
-                file,
-                ..
-            } if matches!(current.phase, UploadPhase::Finish { .. })
-                && &actual_session == session_id =>
-            {
+            }
+            (
+                ServerMessage::SessionFileUploadChunkAccepted {
+                    upload_id: wire_upload_id,
+                    ..
+                },
+                UploadPhase::Chunk {
+                    upload_id,
+                    max_chunk_bytes,
+                },
+            ) => {
+                let max_chunk_bytes = *max_chunk_bytes;
+                let upload_id = std::mem::take(upload_id);
+                self.next_transfer(session_id, wire_upload_id, upload_id, max_chunk_bytes)
+                    .await
+            }
+            (ServerMessage::SessionFileUploadCompleted { file, .. }, UploadPhase::Finish) => {
                 self.current = None;
                 Ok(UploadAdvance {
                     attachment: Some(file),
@@ -393,9 +311,9 @@ impl ClipboardUploads {
             media_type,
             source,
         } = self.queued.pop_front()?;
-        let request_id = Uuid::new_v4();
+        let request_id = crate::fresh_id();
         let message = ClientMessage::BeginSessionFileUpload {
-            request_id: request_id.to_string().into(),
+            request_id: Arc::clone(&request_id),
             session_id: session_id.share(),
             name: name.clone(), // rules-allow: a rejection names the file after this message is sent
             size,
@@ -405,57 +323,56 @@ impl ClipboardUploads {
             name,
             size,
             source,
-            phase: UploadPhase::Begin { request_id },
+            request_id,
+            phase: UploadPhase::Begin,
         });
         Some(message)
     }
 
+    /// Sends the next chunk read from the source, or finishes once it is exhausted.
     async fn next_transfer(
         &mut self,
         session_id: &mobius::SessionId,
         wire_upload_id: String,
         upload_id: String,
         max_chunk_bytes: usize,
-        next_offset: u64,
-    ) -> Result<ClientMessage, String> {
+    ) -> Result<UploadAdvance, String> {
         let current = self
             .current
             .as_mut()
             .ok_or_else(|| "attachment upload is not active".to_owned())?;
-        if next_offset != current.source.offset() {
-            return Err("gateway returned an unexpected attachment offset".into());
-        }
-        if next_offset == current.size {
-            let request_id = Uuid::new_v4();
-            current.phase = UploadPhase::Finish { request_id };
-            return Ok(ClientMessage::FinishSessionFileUpload {
-                request_id: request_id.to_string().into(),
+        let request_id = crate::fresh_id();
+        current.request_id = Arc::clone(&request_id);
+        let offset = current.source.offset();
+        let remaining = current.size.saturating_sub(offset);
+        let message = if remaining == 0 {
+            current.phase = UploadPhase::Finish;
+            ClientMessage::FinishSessionFileUpload {
+                request_id,
                 session_id: session_id.share(),
                 upload_id: wire_upload_id,
-            });
-        }
-        let remaining = current
-            .size
-            .checked_sub(next_offset)
-            .ok_or_else(|| "gateway advanced beyond the attachment size".to_owned())?;
-        let length = usize::try_from(remaining)
-            .unwrap_or(usize::MAX)
-            .min(max_chunk_bytes);
-        let data = current.source.read(length).await?;
-        let request_id = Uuid::new_v4();
-        let message = ClientMessage::UploadSessionFileChunk {
-            request_id: request_id.to_string().into(),
-            session_id: session_id.share(),
-            upload_id: wire_upload_id,
-            offset: next_offset,
-            data,
+            }
+        } else {
+            let length = usize::try_from(remaining)
+                .unwrap_or(usize::MAX)
+                .min(max_chunk_bytes);
+            let data = current.source.read(length).await?;
+            current.phase = UploadPhase::Chunk {
+                upload_id,
+                max_chunk_bytes,
+            };
+            ClientMessage::UploadSessionFileChunk {
+                request_id,
+                session_id: session_id.share(),
+                upload_id: wire_upload_id,
+                offset,
+                data,
+            }
         };
-        current.phase = UploadPhase::Chunk {
-            request_id,
-            upload_id,
-            max_chunk_bytes,
-        };
-        Ok(message)
+        Ok(UploadAdvance {
+            attachment: None,
+            message: Some(message),
+        })
     }
 }
 
@@ -475,37 +392,11 @@ mod tests {
     }
 
     const UPLOAD_ID: &str = "6752c95f-f2f6-4845-928d-93db92ee0e2a";
-    const TEST_LIMITS: SessionFileLimits = SessionFileLimits {
-        max_attachment_references: 16,
-        max_file_bytes: 250 * 1024 * 1024,
-        max_session_files: 128,
-        max_session_bytes: 250 * 1024 * 1024,
-        max_upload_chunk_bytes: 256 * 1024,
-    };
 
     #[test]
-    fn local_files_must_be_regular_and_fit_the_attachment_count() {
+    fn local_attachments_must_be_regular_files() {
         let directory = tempfile::tempdir().expect("tempdir");
-        assert!(
-            file_candidates(
-                vec![directory.path().to_path_buf()],
-                TEST_LIMITS.max_attachment_references,
-                &TEST_LIMITS,
-            )
-            .is_err()
-        );
-        let one_reference = SessionFileLimits {
-            max_attachment_references: 1,
-            ..TEST_LIMITS
-        };
-        assert!(
-            file_candidates(
-                vec![PathBuf::new(), PathBuf::new()],
-                one_reference.max_attachment_references,
-                &one_reference,
-            )
-            .is_err()
-        );
+        assert!(UploadCandidate::from_file(directory.path()).is_err());
     }
 
     #[tokio::test]
@@ -645,7 +536,7 @@ mod tests {
                 request_id,
                 session_id: session_id.share(),
                 file: SessionFileReference {
-                    id: Uuid::new_v4().to_string(),
+                    id: "file-1".into(),
                     name: "one.txt".into(),
                     size: 3,
                     media_type: "text/plain".into(),
@@ -662,54 +553,5 @@ mod tests {
             completed.message,
             Some(ClientMessage::BeginSessionFileUpload { name, .. }) if name == "two.txt"
         ));
-    }
-
-    #[tokio::test]
-    async fn upload_machine_aborts_on_an_unexpected_acknowledged_offset() {
-        let session_id = mobius::SessionId::new("session").expect("session");
-        let candidate = UploadCandidate::from_bytes("one.txt", "text/plain", b"abc".to_vec())
-            .expect("candidate");
-        let mut uploads = ClipboardUploads::default();
-        let begin = uploads.start(vec![candidate], &session_id).expect("begin");
-        let ClientMessage::BeginSessionFileUpload { request_id, .. } = begin else {
-            panic!("begin message");
-        };
-        let chunk = handled(
-            &mut uploads,
-            ServerMessage::SessionFileUploadReady {
-                request_id,
-                session_id: session_id.share(),
-                upload_id: UPLOAD_ID.into(),
-                max_chunk_bytes: 2,
-            },
-            &session_id,
-        )
-        .await
-        .expect("matched ready")
-        .expect("chunk");
-        let ClientMessage::UploadSessionFileChunk { request_id, .. } =
-            chunk.message.expect("chunk message")
-        else {
-            panic!("chunk message");
-        };
-
-        let result = handled(
-            &mut uploads,
-            ServerMessage::SessionFileUploadChunkAccepted {
-                request_id,
-                session_id: session_id.share(),
-                upload_id: UPLOAD_ID.into(),
-                next_offset: 1,
-            },
-            &session_id,
-        )
-        .await
-        .expect("matched chunk");
-        let Err(error) = result else {
-            panic!("unexpected offset was accepted");
-        };
-
-        assert!(error.contains("unexpected attachment offset"));
-        assert!(!uploads.is_active());
     }
 }

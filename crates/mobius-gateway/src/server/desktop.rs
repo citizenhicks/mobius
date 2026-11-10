@@ -1,7 +1,7 @@
 use super::{
-    Arc, AsyncWrite, AuthenticatedClient, ClientMessage, ConnectionSessionState, Error, Future,
-    GatewayHost, JoinSet, Rejection, Result, ServerFrame, ServerMessage, Uuid, broadcast,
-    write_frame, write_result, write_server_error,
+    Arc, AsyncWrite, AuthenticatedClient, ConnectionSessionState, Error, Future, GatewayHost,
+    JoinSet, Rejection, Result, ServerFrame, ServerMessage, Uuid, broadcast, write_frame,
+    write_result, write_server_error,
 };
 use crate::computer_runtime::remote_desktop::DesktopStream;
 
@@ -79,7 +79,7 @@ pub(super) async fn write_control_state(
     request_id: Option<Arc<str>>,
     writer: &mut (impl AsyncWrite + Unpin),
 ) -> Result<()> {
-    let (enabled, is_owner, session_id) = gateway.remote_desktop.control_state(connection);
+    let (enabled, is_owner, session_id) = gateway.remote_desktop.control_state(connection)?;
     write_frame(
         writer,
         &ServerFrame::new(ServerMessage::DesktopControlState {
@@ -140,145 +140,150 @@ pub(super) async fn write_data(
     }
 }
 
-pub(super) async fn handle_message(
-    message: ClientMessage,
+pub(super) async fn open_computer(
+    request_id: Arc<str>,
+    session_id: mobius::SessionId,
     gateway: &Arc<GatewayHost>,
     client: &AuthenticatedClient<'_>,
     connection: &mut ConnectionSessionState<'_>,
     writer: &mut (impl AsyncWrite + Unpin),
-) -> Result<Option<ClientMessage>> {
-    match message {
-        ClientMessage::OpenComputer {
+) -> Result<()> {
+    if !computer_available(gateway, client) {
+        return write_result(writer, request_id, Err(desktop_unavailable())).await;
+    }
+    if connection.requests.len() >= super::dispatch::MAX_PENDING_REQUESTS {
+        return write_result(
+            writer,
             request_id,
-            session_id,
-        } => {
-            if !computer_available(gateway, client) {
-                write_result(writer, request_id, Err(desktop_unavailable())).await?;
-            } else if connection.requests.len() >= super::dispatch::MAX_PENDING_REQUESTS {
-                write_result(
+            Err(Rejection::new(
+                "computer_busy",
+                "connection requests are already in progress; try again shortly",
+            )),
+        )
+        .await;
+    }
+    // The same connection must keep pumping the renderer's page request and reply.
+    let gateway = Arc::clone(gateway);
+    connection.requests.spawn(async move {
+        match gateway.open_computer(&session_id).await {
+            Ok(()) => ServerMessage::ComputerOpened {
+                request_id,
+                session_id,
+            },
+            Err(error) => ServerMessage::Rejected {
+                request_id,
+                code: error.code.into(),
+                message: error.message,
+                fatal: error.fatal,
+            },
+        }
+    });
+    Ok(())
+}
+
+pub(super) async fn set_stream(
+    request_id: Arc<str>,
+    enabled: bool,
+    gateway: &Arc<GatewayHost>,
+    client: &AuthenticatedClient<'_>,
+    connection: &mut ConnectionSessionState<'_>,
+    writer: &mut (impl AsyncWrite + Unpin),
+) -> Result<()> {
+    if !client.desktop_transport || !gateway.remote_desktop.available() {
+        return write_result(writer, request_id, Err(desktop_unavailable())).await;
+    }
+    if enabled && connection.remote_desktop.is_none() {
+        match gateway.remote_desktop.stream(client.connection_id).await {
+            Ok(stream) => *connection.remote_desktop = Some(stream),
+            Err(error) => {
+                return write_result(
                     writer,
                     request_id,
-                    Err(Rejection::new(
-                        "computer_busy",
-                        "connection requests are already in progress; try again shortly",
-                    )),
+                    Err(Rejection::new("desktop_unavailable", error.to_string())),
                 )
-                .await?;
-            } else {
-                // The same connection must keep pumping the renderer's page request and reply.
-                let gateway = Arc::clone(gateway);
-                connection.requests.spawn(async move {
-                    match gateway.open_computer(&session_id).await {
-                        Ok(()) => ServerMessage::ComputerOpened {
-                            request_id,
-                            session_id,
-                        },
-                        Err(error) => ServerMessage::Rejected {
-                            request_id,
-                            code: error.code.into(),
-                            message: error.message,
-                            fatal: error.fatal,
-                        },
-                    }
-                });
+                .await;
             }
         }
-        ClientMessage::SetDesktopStream {
-            request_id,
-            enabled,
-        } => {
-            if !client.desktop_transport || !gateway.remote_desktop.available() {
-                write_result(writer, request_id, Err(desktop_unavailable())).await?;
-            } else {
-                if enabled && connection.remote_desktop.is_none() {
-                    match gateway.remote_desktop.stream(client.connection_id).await {
-                        Ok(stream) => *connection.remote_desktop = Some(stream),
-                        Err(error) => {
-                            write_result(
-                                writer,
-                                request_id,
-                                Err(Rejection::new("desktop_unavailable", error.to_string())),
-                            )
-                            .await?;
-                            return Ok(None);
-                        }
-                    }
-                } else if !enabled {
-                    connection.pending_desktop_control.take();
-                    gateway
-                        .remote_desktop
-                        .release_control(client.connection_id)
-                        .await?;
-                    connection.remote_desktop.take();
-                }
-                write_frame(
-                    writer,
-                    &ServerFrame::new(ServerMessage::DesktopStreamState {
-                        request_id,
-                        enabled,
-                    }),
-                )
-                .await?;
-                write_control_state(gateway, client.connection_id, None, writer).await?;
-            }
-        }
-        ClientMessage::DesktopData { data } => {
-            if !client.desktop_transport || connection.remote_desktop.is_none() {
-                write_server_error(
-                    writer,
-                    "desktop_unavailable",
-                    "open an encrypted desktop stream first",
-                    false,
-                )
-                .await?;
-            } else if let Some(stream) = connection.remote_desktop.as_mut() {
-                stream.write(&data).await?;
-            }
-        }
-        ClientMessage::SetDesktopControl {
-            request_id,
-            enabled,
-            session_id,
-        } => {
-            if !client.desktop_transport || connection.remote_desktop.is_none() {
-                write_result(writer, request_id, Err(desktop_unavailable())).await?;
-            } else {
-                if enabled {
-                    if connection.pending_desktop_control.is_some() {
-                        write_result(
-                            writer,
-                            request_id,
-                            Err(Rejection::new(
-                                "desktop_busy",
-                                "desktop control is already pending",
-                            )),
-                        )
-                        .await?;
-                    } else {
-                        let gateway = Arc::clone(gateway);
-                        let connection_id = client.connection_id;
-                        *connection.pending_desktop_control = Some(PendingControl {
-                            request_id,
-                            future: Box::pin(async move {
-                                gateway
-                                    .set_desktop_control(connection_id, true, session_id)
-                                    .await
-                            }),
-                        });
-                    }
-                    return Ok(None);
-                }
-                connection.pending_desktop_control.take();
-                let result = gateway
-                    .set_desktop_control(client.connection_id, enabled, session_id)
-                    .await;
-                write_control_result(gateway, client.connection_id, request_id, result, writer)
-                    .await?;
-            }
-        }
-        message => return Ok(Some(message)),
+    } else if !enabled {
+        connection.pending_desktop_control.take();
+        gateway
+            .remote_desktop
+            .release_control(client.connection_id)
+            .await?;
+        connection.remote_desktop.take();
     }
-    Ok(None)
+    write_frame(
+        writer,
+        &ServerFrame::new(ServerMessage::DesktopStreamState {
+            request_id,
+            enabled,
+        }),
+    )
+    .await?;
+    write_control_state(gateway, client.connection_id, None, writer).await
+}
+
+pub(super) async fn forward_data(
+    data: &[u8],
+    client: &AuthenticatedClient<'_>,
+    connection: &mut ConnectionSessionState<'_>,
+    writer: &mut (impl AsyncWrite + Unpin),
+) -> Result<()> {
+    match connection.remote_desktop.as_mut() {
+        Some(stream) if client.desktop_transport => stream.write(data).await,
+        _ => {
+            write_server_error(
+                writer,
+                "desktop_unavailable",
+                "open an encrypted desktop stream first",
+                false,
+            )
+            .await
+        }
+    }
+}
+
+pub(super) async fn set_control(
+    request_id: Arc<str>,
+    enabled: bool,
+    session_id: Option<mobius::SessionId>,
+    gateway: &Arc<GatewayHost>,
+    client: &AuthenticatedClient<'_>,
+    connection: &mut ConnectionSessionState<'_>,
+    writer: &mut (impl AsyncWrite + Unpin),
+) -> Result<()> {
+    if !client.desktop_transport || connection.remote_desktop.is_none() {
+        return write_result(writer, request_id, Err(desktop_unavailable())).await;
+    }
+    if enabled {
+        if connection.pending_desktop_control.is_some() {
+            return write_result(
+                writer,
+                request_id,
+                Err(Rejection::new(
+                    "desktop_busy",
+                    "desktop control is already pending",
+                )),
+            )
+            .await;
+        }
+        let gateway = Arc::clone(gateway);
+        let connection_id = client.connection_id;
+        *connection.pending_desktop_control = Some(PendingControl {
+            request_id,
+            future: Box::pin(async move {
+                gateway
+                    .set_desktop_control(connection_id, true, session_id)
+                    .await
+            }),
+        });
+        return Ok(());
+    }
+    connection.pending_desktop_control.take();
+    let result = gateway
+        .set_desktop_control(client.connection_id, enabled, session_id)
+        .await;
+    write_control_result(gateway, client.connection_id, request_id, result, writer).await
 }
 
 fn desktop_unavailable() -> Rejection {

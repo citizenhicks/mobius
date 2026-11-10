@@ -15,8 +15,8 @@ use crate::middleware::FrontendEventSink;
 use crate::protocol::{
     AssistantContentDeltaEvent, AssistantMessageEvent, ConversationRole, Event, EventMsg,
     FrontendEvent, FrontendPreviewEvent, FrontendPreviewUpdate, FrontendSlot, FrontendSymbol,
-    FrontendTone, FrontendWidget, MAX_MESSAGE_BYTES, MessageAuthor, MessageDelivery,
-    MessageDeltaEvent, MessageEvent, ModelStepContent, ModelStepContentPhase, Op,
+    FrontendWidget, MAX_MESSAGE_BYTES, MessageAuthor, MessageDelivery, MessageDeltaEvent,
+    MessageEvent, ModelStepContent, ModelStepContentPhase, Op,
 };
 use crate::{Error, Result};
 
@@ -115,12 +115,9 @@ impl VoiceTranscript {
                 session_id
             };
         let visible = has_events(checkpoints.as_ref(), &session_id).await?;
-        let cursor = checkpoints
-            .load_state(&session_id, CURSOR_KEY)
-            .await?
-            .map(serde_json::from_value)
-            .transpose()?
-            .unwrap_or_default();
+        let cursor =
+            crate::middleware::load_state_or_default(checkpoints.as_ref(), &session_id, CURSOR_KEY)
+                .await?;
         Ok(Self {
             checkpoints,
             session_id,
@@ -389,12 +386,7 @@ async fn call_summary(
     checkpoints: &dyn CheckpointStore,
     session_id: &SessionId,
 ) -> Result<CallSummary> {
-    Ok(checkpoints
-        .load_state(session_id, CALL_KEY)
-        .await?
-        .map(serde_json::from_value)
-        .transpose()?
-        .unwrap_or_default())
+    crate::middleware::load_state_or_default(checkpoints, session_id, CALL_KEY).await
 }
 
 fn speech_event(
@@ -515,17 +507,14 @@ fn widget() -> FrontendEvent {
     FrontendEvent::Widget {
         capability: super::MANIFEST.id.into(),
         item: Arc::new(FrontendWidget {
-            id: "voice".into(),
-            count: None,
-            priority: crate::protocol::FrontendPriority::Primary,
-            slot: FrontendSlot::ComposerFooter,
-            text: super::text::DEFINITION.widget_text.as_str().into(),
-            tone: FrontendTone::Neutral,
             symbol: Some(FrontendSymbol::Voice),
             icon_only: true,
-            progress: None,
-            content: None,
             action: Some(command(None)),
+            ..FrontendWidget::new(
+                "voice",
+                FrontendSlot::ComposerFooter,
+                super::text::DEFINITION.widget_text.as_str(),
+            )
         }),
     }
 }
@@ -592,16 +581,11 @@ async fn preview(
     let next = page
         .next_before_sequence
         .map(|before| command(Some(before)));
-    let events = page
+    let events: Vec<FrontendPreviewEvent> = page
         .into_chronological()
         .into_iter()
-        .map(|record| FrontendPreviewEvent {
-            sequence: record.sequence,
-            submission_id: record.event.submission_id,
-            recorded_at_ms: record.recorded_at_ms,
-            event: record.event.msg,
-        })
-        .collect::<Vec<_>>();
+        .map(FrontendPreviewEvent::from)
+        .collect();
     if serde_json::to_vec(&events)?.len() > MAX_PREVIEW_BYTES {
         return Err(Error::Tool("voice preview exceeds its size limit".into()));
     }

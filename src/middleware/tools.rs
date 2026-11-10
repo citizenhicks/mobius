@@ -2,18 +2,16 @@
 
 use std::borrow::Cow;
 use std::collections::BTreeSet;
-use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Mutex};
 
 use bm25::Document;
 use bm25::Language;
 use bm25::SearchEngineBuilder;
-use futures_util::FutureExt;
 use futures_util::future::join_all;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use super::{Middleware, PromptSection, ToolExposureContext};
+use super::{Middleware, PromptSection};
 use crate::BoxFuture;
 use crate::Error;
 use crate::Result;
@@ -126,7 +124,6 @@ pub struct ToolContext {
     pub turn_id: Arc<str>,
     model_route: Arc<str>,
     usage: ToolUsage,
-    input: ToolInput,
 }
 
 impl std::fmt::Debug for ToolContext {
@@ -155,7 +152,6 @@ impl ToolContext {
             turn_id: turn_id.into(),
             model_route: Arc::default(),
             usage: ToolUsage::default(),
-            input: ToolInput::default(),
         }
     }
 
@@ -187,14 +183,6 @@ impl ToolContext {
     pub fn report_usage(&self, usage: TokenUsage) -> Result<()> {
         self.usage.record(usage)
     }
-
-    /// Adds provider-neutral context immediately after this tool output.
-    /// # Errors
-    ///
-    /// Returns an error if validation or an operation required by this function fails.
-    pub fn push_input(&self, item: Value) -> Result<()> {
-        self.input.push(item)
-    }
 }
 
 #[derive(Clone, Default)]
@@ -223,25 +211,6 @@ impl ToolUsage {
     }
 }
 
-#[derive(Clone, Default)]
-struct ToolInput(Arc<Mutex<Vec<Value>>>);
-
-impl ToolInput {
-    fn push(&self, item: Value) -> Result<()> {
-        self.0
-            .lock()
-            .map_err(|error| Error::Tool(format!("tool model input is unavailable: {error}")))?
-            .push(item);
-        Ok(())
-    }
-
-    fn take(&self) -> Result<Vec<Value>> {
-        Ok(std::mem::take(&mut *self.0.lock().map_err(|error| {
-            Error::Tool(format!("tool model input is unavailable: {error}"))
-        })?))
-    }
-}
-
 /// External identity used when a tool participates in extension hooks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HookIdentity {
@@ -260,9 +229,6 @@ pub trait Tool: Send + Sync {
     fn prompt_section(&self) -> Option<&str> {
         None
     }
-
-    /// Applies this tool's model capability requirements at a request boundary.
-    fn tool_exposure(&self, _context: &mut ToolExposureContext<'_>) {}
 
     /// Renders this tool's events into frontend-neutral transcript blocks.
     fn render(&self, event: &EventMsg) -> Option<FrontendBlock> {
@@ -1345,7 +1311,6 @@ async fn run_call(
     .with_model_route(Arc::clone(model_route))
     .with_call_id(Arc::clone(&call.call_id))
     .with_author(Arc::clone(author));
-    let pending_input = ToolInput(Arc::clone(&context.input.0));
     let pending_usage = ToolUsage(Arc::clone(&context.usage.0));
     let Some(tool) = catalog.get(&call.name) else {
         return ToolResult::error(&call, format!("unknown tool `{}`", call.name), output_limit);
@@ -1366,40 +1331,19 @@ async fn run_call(
         name,
         arguments,
     } = call;
-    let result = AssertUnwindSafe(async move {
-        match &tool.handler {
-            RegisteredHandler::Tool(handler) => handler
-                .call(context, arguments)
-                .await
-                .map(DispatchOutput::content),
-            RegisteredHandler::Search => {
-                let Some(search_scope) = search_scope else {
-                    return Err(Error::Tool("tools_search scope is unavailable".into()));
-                };
-                tools_search(catalog, &arguments, &search_scope)
-            }
-        }
-    })
-    .catch_unwind()
-    .await;
+    let result = match &tool.handler {
+        RegisteredHandler::Tool(handler) => handler
+            .call(context, arguments)
+            .await
+            .map(DispatchOutput::content),
+        RegisteredHandler::Search => search_scope
+            .ok_or_else(|| Error::Tool("tools_search scope is unavailable".into()))
+            .and_then(|search_scope| tools_search(catalog, &arguments, &search_scope)),
+    };
     match result {
-        Ok(Ok(output)) => {
-            let mut additional_input = match pending_input.take() {
-                Ok(input) => input,
-                Err(error) => {
-                    return ToolResult::failure(
-                        call_id,
-                        name,
-                        &error.to_string(),
-                        true,
-                        output_limit,
-                    )
-                    .with_usage(&pending_usage, model_route);
-                }
-            };
+        Ok(output) => {
             let effects =
                 materialization_effects(catalog_revision, output.loaded_tools, turn_id, &call_id);
-            additional_input.extend(effects.input);
             ToolResult {
                 call_id,
                 name,
@@ -1407,15 +1351,12 @@ async fn run_call(
                 is_error: output.content.is_error,
                 usage: None,
                 handler_executed: true,
-                additional_input,
+                additional_input: effects.input,
                 events: effects.events,
                 output_limit,
             }
         }
-        Ok(Err(error)) => {
-            ToolResult::failure(call_id, name, &error.to_string(), true, output_limit)
-        }
-        Err(_) => ToolResult::failure(call_id, name, "tool panicked", true, output_limit),
+        Err(error) => ToolResult::failure(call_id, name, &error.to_string(), true, output_limit),
     }
     .with_usage(&pending_usage, model_route)
 }
@@ -1531,23 +1472,29 @@ fn compact_output(output: &str) -> String {
     };
 
     if total_lines <= MAX_TOOL_UI_LINES {
-        output.lines().for_each(&mut append);
+        for line in output.lines() {
+            append(line);
+        }
         return preview;
     }
 
     let head_lines = (MAX_TOOL_UI_LINES - 1) / 2;
-    output.lines().take(head_lines).for_each(&mut append);
+    for line in output.lines().take(head_lines) {
+        append(line);
+    }
     append(&format!(
         "… +{} lines",
         total_lines - (MAX_TOOL_UI_LINES - 1)
     ));
-    let mut tail = output
+    let mut tail: Vec<&str> = output
         .lines()
         .rev()
         .take(MAX_TOOL_UI_LINES - 1 - head_lines)
-        .collect::<Vec<_>>();
+        .collect();
     tail.reverse();
-    tail.into_iter().for_each(append);
+    for line in tail {
+        append(line);
+    }
     preview
 }
 
@@ -1638,18 +1585,6 @@ impl Middleware for Tools {
 
     fn prompt_section(&self, _runtime: &super::RuntimeContext) -> Result<Option<PromptSection>> {
         Ok(Some(self.section()))
-    }
-
-    fn tool_exposure<'a>(
-        &'a self,
-        context: &'a mut ToolExposureContext<'_>,
-    ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            for tool in &self.tools {
-                tool.tool_exposure(context);
-            }
-            Ok(())
-        })
     }
 
     fn frontend(&self, _session_id: &str) -> FrontendContribution {

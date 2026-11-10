@@ -13,7 +13,7 @@ use super::tools::Catalog;
 use super::tools::ToolResult;
 use crate::agent::{AgentRole, WeakAgentSender};
 use crate::backend::checkpoint::{
-    Checkpoint, CheckpointStore, ContextRewriteReason, ExecutionOutcome, MAX_QUEUED_MESSAGES,
+    Checkpoint, CheckpointStore, ContextRewriteReason, MAX_QUEUED_MESSAGES,
     QueuedMessage as DurableQueuedMessage, QueuedMessageBoundary,
 };
 use crate::backend::model::{ModelCancellation, ModelInput, ModelRouter, message_input};
@@ -22,7 +22,7 @@ use crate::protocol::{
     EventMsg, FrontendBlock, FrontendBlockRole, FrontendBlockState, FrontendEvent, FrontendTone,
     MAX_CAPABILITY_INPUT_BYTES, MessageAuthor, MessageDelivery, MessageEvent, MessageReply,
     MessageSubmission, MessageTarget, ReviewDecision, SessionContext, SessionFileReference,
-    TokenUsage, ToolCall, message_metadata,
+    TokenUsage, ToolCall,
 };
 use crate::{Error, Result};
 
@@ -218,6 +218,13 @@ pub struct MessageQueue<'a> {
 impl<'a> MessageQueue<'a> {
     pub(crate) fn new(items: &'a mut Vec<DurableQueuedMessage>) -> Self {
         Self { items, owner: None }
+    }
+
+    pub(super) fn scoped(items: &'a mut Vec<DurableQueuedMessage>, owner: &'static str) -> Self {
+        Self {
+            items,
+            owner: Some(owner),
+        }
     }
 
     pub(super) fn scope(&mut self, owner: &'static str) {
@@ -529,16 +536,6 @@ impl std::fmt::Debug for SessionStartContext<'_> {
 }
 
 impl SessionStartContext<'_> {
-    /// Appends guidance once per session and middleware, at this hook's normal position.
-    /// The receipt becomes durable only when the appended input is accepted.
-    /// # Errors
-    /// Returns an error for an invalid key or a non-guidance context item.
-    pub fn deliver_once(&mut self, key: &str, make: impl FnOnce() -> Value) -> Result<bool> {
-        let appended = self.delivery_once.deliver(self.input, Some(key), make)?;
-        self.input_changed |= appended;
-        Ok(appended)
-    }
-
     #[must_use]
     /// Returns the session-start source.
     pub fn source(&self) -> SessionStartSource {
@@ -563,12 +560,6 @@ impl SessionStartContext<'_> {
     /// Returns an error if validation or an operation required by this function fails.
     pub fn stop(&mut self, reason: impl Into<String>) -> Result<()> {
         set_stop_reason(&mut self.stop_reason, "session-start stop", reason)
-    }
-
-    /// Returns the first stop requested by the ordered middleware chain.
-    #[must_use]
-    pub fn stop_reason(&self) -> Option<&str> {
-        self.stop_reason.as_deref()
     }
 }
 
@@ -605,11 +596,6 @@ impl MessageSubmitContext<'_> {
     /// Returns an error for an invalid key or a non-guidance context item.
     pub fn deliver_once(&mut self, key: &str, make: impl FnOnce() -> Value) -> Result<bool> {
         self.delivery_once.deliver(&mut self.input, Some(key), make)
-    }
-
-    /// Adds provider-neutral context immediately before the submitted message.
-    pub fn push_input(&mut self, item: Value) {
-        self.input.push(item);
     }
 
     /// Rejects the submission without treating the policy decision as a hook failure.
@@ -724,7 +710,6 @@ pub struct ModelContext<'a> {
     pub instructions: &'a str,
     pub(crate) checkpoint_sequence: u64,
     pub(crate) available_tools: &'a mut BTreeSet<String>,
-    pub(crate) allow_hosted_tools: &'a mut bool,
     pub(crate) durable_input: &'a mut StagedInput,
     pub(crate) delivered_once: &'a mut Receipts,
     pub(crate) transcript_delta: &'a mut Vec<Arc<Value>>,
@@ -768,7 +753,6 @@ pub struct ToolExposureContext<'a> {
     /// The session identifier.
     pub session_id: &'a SessionId,
     pub(crate) supports_tool_image_input: bool,
-    pub(crate) input: ModelInput<'a>,
     pub(crate) available: &'a mut BTreeSet<String>,
 }
 
@@ -777,12 +761,6 @@ impl ToolExposureContext<'_> {
     #[must_use]
     pub fn supports_tool_image_input(&self) -> bool {
         self.supports_tool_image_input
-    }
-
-    /// Returns the most recent typed conversation message in model context.
-    #[must_use]
-    pub fn latest_message(&self) -> Option<MessageEvent> {
-        self.input.iter().rev().find_map(message_metadata)
     }
 
     /// Hides registered tools for this boundary.
@@ -816,11 +794,6 @@ impl ModelContext<'_> {
             cancelled,
         )?);
         Ok(())
-    }
-
-    /// Prevents provider-hosted tools for this model step.
-    pub fn disable_hosted_tools(&mut self) {
-        *self.allow_hosted_tools = false;
     }
 
     /// Returns durable provider-neutral model context.
@@ -968,53 +941,6 @@ impl ModelContext<'_> {
     }
 }
 
-/// Request-only model input exposed after every durable `PreModel` hook.
-pub struct ModelRequestContext<'a> {
-    /// Trusted provenance of the message that initiated the active turn.
-    pub author: &'a MessageAuthor,
-    /// The role.
-    pub role: &'a AgentRole,
-    /// The model.
-    pub model: &'a ModelRouter,
-    /// The provider.
-    pub provider: &'a str,
-    /// The session identifier.
-    pub session_id: &'a SessionId,
-    /// The turn identifier.
-    pub turn_id: &'a str,
-    /// The model step.
-    pub model_step: usize,
-    pub(crate) input: ModelInput<'a>,
-    pub(crate) replacement: Option<Vec<Value>>,
-}
-
-impl std::fmt::Debug for ModelRequestContext<'_> {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("ModelRequestContext")
-            .field("provider", &self.provider)
-            .field("session_id", &self.session_id)
-            .field("turn_id", &self.turn_id)
-            .field("model_step", &self.model_step)
-            .finish_non_exhaustive()
-    }
-}
-
-impl ModelRequestContext<'_> {
-    /// Returns the input currently prepared for this one model request.
-    #[must_use]
-    pub fn input(&self) -> ModelInput<'_> {
-        self.replacement
-            .as_deref()
-            .map_or(self.input, ModelInput::from)
-    }
-
-    /// Replaces only the input sent by this model request.
-    pub fn replace_input(&mut self, input: Vec<Value>) {
-        self.replacement = Some(input);
-    }
-}
-
 /// Mutable policy boundary for one normalized model-requested tool call.
 pub struct PreToolUseContext<'a> {
     /// The turn.
@@ -1039,14 +965,6 @@ impl std::fmt::Debug for PreToolUseContext<'_> {
 }
 
 impl PreToolUseContext<'_> {
-    /// Appends guidance once per session and middleware, before this tool call.
-    /// Interrupted preparation does not consume the delivery receipt.
-    /// # Errors
-    /// Returns an error for an invalid key or a non-guidance context item.
-    pub fn deliver_once(&mut self, key: &str, make: impl FnOnce() -> Value) -> Result<bool> {
-        self.delivery_once.deliver(&mut self.input, Some(key), make)
-    }
-
     /// Returns the call after any earlier middleware rewrites.
     #[must_use]
     pub fn call(&self) -> &ToolCall {
@@ -1071,11 +989,6 @@ impl PreToolUseContext<'_> {
         Ok(())
     }
 
-    /// Adds durable provider-neutral context before this call at a tool-complete boundary.
-    pub fn push_input(&mut self, item: Value) {
-        self.input.push(item);
-    }
-
     /// Denies the call. Later middleware may observe but cannot undo the denial.
     /// # Errors
     ///
@@ -1086,12 +999,6 @@ impl PreToolUseContext<'_> {
             self.denial = Some(reason);
         }
         Ok(())
-    }
-
-    /// Returns the first denial made by the ordered middleware chain.
-    #[must_use]
-    pub fn denial(&self) -> Option<&str> {
-        self.denial.as_deref()
     }
 }
 
@@ -1220,12 +1127,6 @@ impl CompactContext<'_> {
     pub fn stop(&mut self, reason: impl Into<String>) -> Result<()> {
         set_stop_reason(&mut self.stop_reason, "compaction stop", reason)
     }
-
-    /// Returns the first stop requested by the ordered middleware chain.
-    #[must_use]
-    pub fn stop_reason(&self) -> Option<&str> {
-        self.stop_reason.as_deref()
-    }
 }
 
 /// Mutable policy boundary immediately before normal turn completion.
@@ -1258,12 +1159,6 @@ impl StopContext<'_> {
     /// Returns the last assistant message.
     pub fn last_assistant_message(&self) -> Option<&str> {
         self.last_assistant_message
-    }
-
-    /// Returns the first continuation requested by the middleware chain.
-    #[must_use]
-    pub fn continuation(&self) -> Option<&str> {
-        self.continuation.as_deref()
     }
 
     /// Requests one more model step with hidden context.
@@ -1412,8 +1307,6 @@ pub struct TurnEndContext<'a> {
     pub session_id: &'a SessionId,
     /// The turn identifier.
     pub turn_id: &'a str,
-    pub(crate) outcome: ExecutionOutcome,
-    pub(crate) queued_messages: &'a [DurableQueuedMessage],
     pub(crate) owner: Option<&'static str>,
     pub(crate) idle: bool,
     /// The events.
@@ -1425,21 +1318,6 @@ impl TurnEndContext<'_> {
     #[must_use]
     pub const fn is_idle(&self) -> bool {
         self.idle
-    }
-
-    #[must_use]
-    /// Returns the turn outcome.
-    pub fn outcome(&self) -> ExecutionOutcome {
-        self.outcome
-    }
-
-    /// Returns queued messages still pending for this middleware, oldest first.
-    pub fn queued_messages(&self) -> impl Iterator<Item = QueuedMessageView<'_>> {
-        let owner = self.owner;
-        self.queued_messages
-            .iter()
-            .filter(move |item| owner.is_some_and(|owner| item.owner() == owner))
-            .map(|item| QueuedMessageView { item })
     }
 }
 

@@ -206,15 +206,7 @@ impl Middleware for Attachments {
 
 impl Attachments {
     async fn materialize_latest(&self, context: &mut ModelContext<'_>) -> Result<()> {
-        let input = context.input();
-        let latest_message = input.iter().rposition(|item| {
-            item.get("role").and_then(Value::as_str) == Some("user")
-                && item.get(INTERNAL_MESSAGE_FIELD).is_none()
-        });
-        let Some((message_index, references)) = referenced_attachments(input)?
-            .into_iter()
-            .find(|(index, _)| Some(*index) == latest_message)
-        else {
+        let Some((message_index, references)) = latest_attachments(context.input())? else {
             return Ok(());
         };
         if materialization_matches(context.input(), message_index, &references)? {
@@ -427,16 +419,10 @@ fn open_or_create_dir(parent: &Dir, name: &str) -> Result<Dir> {
     Ok(directory)
 }
 
-#[cfg(unix)]
 fn same_file(left: &cap_std::fs::Metadata, right: &cap_std::fs::Metadata) -> bool {
     use cap_std::fs::MetadataExt as _;
 
     left.dev() == right.dev() && left.ino() == right.ino()
-}
-
-#[cfg(not(unix))]
-fn same_file(_left: &cap_std::fs::Metadata, _right: &cap_std::fs::Metadata) -> bool {
-    true
 }
 
 fn replace_with_copy(source: &Path, destination: &Dir, name: &str) -> Result<()> {
@@ -452,13 +438,10 @@ fn replace_with_copy(source: &Path, destination: &Dir, name: &str) -> Result<()>
     if let Ok(existing) = destination.symlink_metadata(name)
         && existing.is_file()
         && !existing.is_symlink()
+        && let Ok(source) = source_dir.metadata(source_name)
+        && !same_file(&source, &existing)
     {
-        #[cfg(unix)]
-        if let Ok(source) = source_dir.metadata(source_name)
-            && !same_file(&source, &existing)
-        {
-            return Ok(());
-        }
+        return Ok(());
     }
     let temporary = format!(".{}.copy", uuid::Uuid::new_v4());
     source_dir
@@ -561,25 +544,24 @@ struct ListedAttachment {
     size: u64,
 }
 
-fn referenced_attachments(
+/// The attachments of the latest non-internal user message, with that message's index.
+fn latest_attachments(
     input: crate::backend::model::ModelInput<'_>,
-) -> Result<Vec<(usize, Vec<SessionFileReference>)>> {
-    let mut messages = Vec::new();
-    for (index, item) in input.iter().enumerate() {
-        if item.get("role").and_then(Value::as_str) != Some("user")
-            || item.get(INTERNAL_MESSAGE_FIELD).is_some()
-        {
-            continue;
-        }
-        let Some(value) = item.get(ATTACHMENTS_FIELD) else {
-            continue;
-        };
-        let attachments: Vec<SessionFileReference> = serde::Deserialize::deserialize(value)?;
-        if !attachments.is_empty() {
-            messages.push((index, attachments));
-        }
-    }
-    Ok(messages)
+) -> Result<Option<(usize, Vec<SessionFileReference>)>> {
+    let Some(index) = input.iter().rposition(|item| {
+        item.get("role").and_then(Value::as_str) == Some("user")
+            && item.get(INTERNAL_MESSAGE_FIELD).is_none()
+    }) else {
+        return Ok(None);
+    };
+    let Some(value) = input
+        .get(index)
+        .and_then(|item| item.get(ATTACHMENTS_FIELD))
+    else {
+        return Ok(None);
+    };
+    let attachments: Vec<SessionFileReference> = serde::Deserialize::deserialize(value)?;
+    Ok((!attachments.is_empty()).then_some((index, attachments)))
 }
 
 #[expect(
@@ -670,7 +652,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn staging_rejects_a_symlinked_workspace_directory() {
         use std::os::unix::fs::symlink;

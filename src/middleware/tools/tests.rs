@@ -3,10 +3,33 @@
 use super::*;
 
 fn test_sandbox() -> Arc<Sandbox> {
+    test_sandbox_at(std::path::Path::new("."))
+}
+
+fn test_sandbox_at(root: &std::path::Path) -> Arc<Sandbox> {
     Arc::new(Sandbox::new(
-        Arc::new(crate::backend::sandbox::local::LocalSandbox::new(".").expect("sandbox")),
+        Arc::new(crate::backend::sandbox::local::LocalSandbox::new(root).expect("sandbox")),
         crate::backend::sandbox::ApprovalPolicy::Ask,
     ))
+}
+
+/// Executes one batch as a user's turn on the `test` route.
+async fn run_calls(
+    catalog: &Catalog,
+    calls: impl IntoIterator<Item = BoundToolCall>,
+    sandbox: Arc<Sandbox>,
+    permissions: &SandboxPermissions,
+) -> Vec<ToolResult> {
+    execute_batch(
+        catalog,
+        calls,
+        sandbox,
+        permissions,
+        &"turn".into(),
+        &"test".into(),
+        &crate::protocol::MessageAuthor::User.into(),
+    )
+    .await
 }
 
 fn test_permissions(mutation_call_ids: &[&str]) -> SandboxPermissions {

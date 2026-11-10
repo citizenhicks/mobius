@@ -28,7 +28,7 @@ pub(super) fn initialize(options: InitOptions) -> Result<()> {
 }
 
 pub(super) fn initialize_auth(store: &ConfigStore, policy: crate::auth::AuthConfig) -> Result<()> {
-    if let Err(error) = AuthStore::initialize_validated(store.auth_path(), policy) {
+    if let Err(error) = AuthStore::initialize(store.auth_path(), policy) {
         return cleanup_failed_initialization(store, error);
     }
     Ok(())
@@ -40,7 +40,7 @@ pub(super) fn initialize_bootstrap(
 ) -> Result<()> {
     let (store, config) = ConfigStore::initialize(state_dir, DEFAULT_LISTEN, None)?;
     let initialized =
-        AuthStore::initialize_validated(store.auth_path(), config.auth).and_then(|(auth, _)| {
+        AuthStore::initialize(store.auth_path(), config.auth).and_then(|(auth, _)| {
             let endpoint = direct_loopback_endpoint(&config)?;
             let issued = auth.provision_local_client()?;
             save_local_client(&endpoint, issued.token)
@@ -53,7 +53,6 @@ pub(super) fn initialize_bootstrap(
 }
 
 pub(super) fn reset_bot_defaults(state_dir: PathBuf) -> Result<()> {
-    #[cfg(unix)]
     {
         let (store, _) = ConfigStore::open(state_dir)?;
         let _startup = StartupGuard::create(store.state_dir())?;
@@ -72,11 +71,6 @@ pub(super) fn reset_bot_defaults(state_dir: PathBuf) -> Result<()> {
         Ok(print_line(format_args!(
             "reset möbius gateway Bot defaults"
         ))?)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = state_dir;
-        Err(unsupported_lifecycle())
     }
 }
 
@@ -162,7 +156,6 @@ pub fn initialize_named_cloudflare(state_dir: PathBuf, tunnel: NamedTunnel) -> R
 /// Returns an error unless the target is an empty real directory or contains a regular
 /// `gateway.toml` marker. Lifecycle or filesystem failures are also returned.
 pub fn reset_gateway_state(state_dir: PathBuf) -> Result<()> {
-    #[cfg(unix)]
     {
         let had_config = validate_reset_target(&state_dir, false)?;
         let state_dir = fs::canonicalize(state_dir)?;
@@ -174,14 +167,8 @@ pub fn reset_gateway_state(state_dir: PathBuf) -> Result<()> {
         fs::remove_dir_all(state_dir)?;
         Ok(())
     }
-    #[cfg(not(unix))]
-    {
-        let _ = state_dir;
-        Err(unsupported_lifecycle())
-    }
 }
 
-#[cfg(unix)]
 pub(super) fn validate_reset_target(path: &Path, ignore_startup_lock: bool) -> Result<bool> {
     let metadata = fs::symlink_metadata(path)?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
@@ -206,7 +193,6 @@ pub(super) fn validate_reset_target(path: &Path, ignore_startup_lock: bool) -> R
     Ok(true)
 }
 
-#[cfg(unix)]
 pub(super) fn invalid_reset_target(path: &Path) -> Error {
     Error::Config(format!(
         "refusing to reset {}: expected an empty directory or möbius gateway state with a regular {STATE_MARKER_FILE}",

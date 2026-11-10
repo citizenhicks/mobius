@@ -8,26 +8,18 @@ mod provider;
 mod telemetry;
 
 use std::ffi::OsString;
-#[cfg(any(unix, test))]
 use std::fs::{self, File, OpenOptions, TryLockError};
-#[cfg(any(unix, test))]
+use std::io::SeekFrom;
 use std::io::Write;
-#[cfg(any(unix, test))]
-use std::io::{Read as _, Seek as _, SeekFrom};
 use std::net::SocketAddr;
-#[cfg(unix)]
-use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
-#[cfg(unix)]
 use std::process::Stdio;
 use std::sync::{Arc, OnceLock};
-#[cfg(unix)]
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-#[cfg(unix)]
 use crate::auth::PairingStatus;
 use crate::auth::{AuthStore, PairingGrant};
-use crate::client::{Endpoint, GatewayClient, MAX_PENDING_FRAMES};
+use crate::client::{Endpoint, GatewayClient};
 use crate::cloudflare::{CloudflareTunnel, PUBLIC_ENDPOINT_TIMEOUT};
 use crate::config::{
     CloudflareConfig, ConfigStore, DEFAULT_LISTEN, GatewayConfig, TlsConfig, load_secret_file,
@@ -36,16 +28,11 @@ use crate::config::{
 use crate::server::GatewayServer;
 use crate::wire::{ClientCapabilities, ClientMessage, ServerMessage};
 use crate::{Error, Result};
-#[cfg(unix)]
 use nix::sys::signal::{Signal, kill};
-#[cfg(unix)]
 use nix::unistd::Pid;
-#[cfg(any(unix, test))]
 use serde::Deserialize;
 use serde::Serialize;
-#[cfg(unix)]
 use tokio::process::{Child, Command as TokioCommand};
-#[cfg(unix)]
 use tokio::signal::unix::{Signal as TokioSignal, SignalKind, signal};
 use uuid::Uuid;
 
@@ -69,7 +56,6 @@ use self::lifecycle::{
 pub use self::lifecycle::{ensure_background_gateway, startup_error};
 use self::provider::register_provider_command;
 
-#[cfg(unix)]
 /// Terminates a process group created by gateway autostart.
 pub fn terminate_process_group(pid: u32) {
     if pid <= 1 {
@@ -87,11 +73,6 @@ pub fn terminate_process_group(pid: u32) {
     }
 }
 
-/// Formats a fresh request ID in `buffer`, so the wire message holds its only owned copy.
-fn new_request_id(buffer: &mut [u8; uuid::fmt::Hyphenated::LENGTH]) -> &str {
-    Uuid::new_v4().hyphenated().encode_lower(buffer)
-}
-
 /// Writes one line of command output to standard output.
 fn print_line(line: std::fmt::Arguments<'_>) -> std::io::Result<()> {
     use std::io::Write as _;
@@ -99,31 +80,20 @@ fn print_line(line: std::fmt::Arguments<'_>) -> std::io::Result<()> {
 }
 
 /// Writes one line of command status to standard error.
-#[cfg(unix)]
 fn eprint_line(line: std::fmt::Arguments<'_>) -> std::io::Result<()> {
     use std::io::Write as _;
     writeln!(std::io::stderr().lock(), "{line}")
 }
 
-#[cfg(any(unix, test))]
 const PROCESS_FILE: &str = "gateway-process.json";
-#[cfg(unix)]
 const STARTUP_FILE: &str = "gateway-start.lock";
-#[cfg(unix)]
 const STATE_MARKER_FILE: &str = "gateway.toml";
-#[cfg(any(unix, test))]
 const MAX_PROCESS_RECORD_BYTES: usize = 4 * 1024;
-#[cfg(unix)]
 const EXIT_TIMEOUT: Duration = Duration::from_secs(5);
-#[cfg(unix)]
 const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(100);
-#[cfg(unix)]
 const BACKGROUND_START_TIMEOUT: Duration = Duration::from_secs(40);
-#[cfg(unix)]
 const BACKGROUND_START_POLL_INTERVAL: Duration = Duration::from_millis(50);
-#[cfg(unix)]
 const MAX_BACKGROUND_ERROR_BYTES: u64 = 16 * 1024;
-#[cfg(unix)]
 const CONNECTION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Runs a gateway command with arguments excluding the executable name.

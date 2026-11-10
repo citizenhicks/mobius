@@ -1,6 +1,6 @@
 # möbius Privacy Policy
 
-Effective August 16, 2026.
+Effective November 10, 2026.
 
 möbius connects to local, self-hosted, or möbius-hosted AI gateways. The app
 developer does not sell your personal data or use it for advertising.
@@ -19,7 +19,10 @@ host. Each enabled endpoint always receives envelope fields including the gatewa
 instance ID, software and protocol versions, send time, sequence, uptime, delivery
 reason, and configured static labels. It also receives only the snapshot sections
 and event kinds selected for that endpoint. Sections may contain activity, usage,
-run, or storage totals; event kinds may contain committed Bot hook facts. The
+run, or storage totals; host hardware measurements (processor, memory, disk, and GPU
+use of the gateway machine and process); or, for up to 64 recent chats, the chat
+identifier and how many input tokens each part of its context used, never message
+text. Event kinds may contain committed Bot hook facts. The
 endpoint’s operator controls retention. Credentials used for delivery are not sent
 to paired clients in telemetry reports.
 

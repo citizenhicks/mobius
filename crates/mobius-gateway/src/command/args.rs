@@ -1,7 +1,10 @@
 use clap::{ArgAction, Args, Parser, Subcommand};
 use mobius::backend::model::provider::HostedWebSearch;
 
-use super::*;
+use super::{
+    DEFAULT_LISTEN, Endpoint, Error, OsString, PathBuf, Result, SocketAddr, TlsConfig,
+    load_secret_file, state_dir,
+};
 
 /// Parsed `mobius-gateway` command line.
 #[derive(Debug, Parser)]
@@ -113,7 +116,7 @@ pub(super) enum TelemetryCommand {
         /// Require this collector's decision before accepting a user upload.
         #[arg(long)]
         upload_admission: bool,
-        /// Snapshot sections: activity, usage, runs, storage, resources.
+        /// Snapshot sections: activity, usage, runs, storage, resources, context.
         #[arg(long, value_delimiter = ',')]
         sections: Vec<String>,
         #[arg(long, value_delimiter = ',')]

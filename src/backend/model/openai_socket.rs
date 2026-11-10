@@ -1,9 +1,10 @@
 //! OpenAI API-key provider registration and default endpoint.
 
 use super::Model;
-use super::provider::{BaseUrl, HostedWebSearch, ProviderBuildConfig, ProviderDefinition};
+use super::provider::{BaseUrl, ProviderBuildConfig, ProviderDefinition};
 use super::responses::CATALOG;
 use crate::Result;
+use crate::protocol::ToolDiscoveryMode;
 use std::sync::Arc;
 
 pub use super::responses_socket::OpenAiSocket;
@@ -44,12 +45,13 @@ pub(super) fn provider() -> ProviderDefinition {
     )
 }
 
-fn build_provider(config: ProviderBuildConfig, base_url: BaseUrl) -> Result<Arc<dyn Model>> {
-    let tool_discovery = config
-        .tool_discovery
-        .unwrap_or_else(|| provider().tool_discovery(&config.model, Some(base_url.as_str())));
+fn build_provider(
+    config: ProviderBuildConfig,
+    base_url: BaseUrl,
+    tool_discovery: ToolDiscoveryMode,
+) -> Result<Arc<dyn Model>> {
     let api_key = config.credential.into_api_key("openai_socket")?;
-    let provider = OpenAiSocket::with_client(
+    let provider = OpenAiSocket::from_api_key(
         api_key,
         base_url,
         config.model,
@@ -57,15 +59,7 @@ fn build_provider(config: ProviderBuildConfig, base_url: BaseUrl) -> Result<Arc<
         config.transport,
     )?
     .with_tool_discovery(tool_discovery)
-    .with_service_tier(config.service_tier);
-    let provider = match config.reasoning_effort {
-        Some(effort) => provider.with_reasoning_effort(effort)?,
-        None => provider,
-    };
-    let provider = match config.web_search {
-        HostedWebSearch::Off => provider,
-        HostedWebSearch::Cached => provider.with_cached_web_search(),
-        HostedWebSearch::Live => provider.with_web_search(),
-    };
+    .with_service_tier(config.service_tier)
+    .with_selection(config.reasoning_effort, config.web_search)?;
     Ok(Arc::new(provider))
 }

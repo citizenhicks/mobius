@@ -32,6 +32,13 @@
 The macOS, iPhone, and iPad apps connect to the same gateway. They are maintained in
 separate private repositories.
 
+The current release is **0.17.0** for all three crates. It requires protocol **100**
+clients and gateway configuration version **30**. This release removes public Rust
+APIs; applications embedding the framework must update their integrations. Existing
+gateways require an offline configuration conversion that preserves usage history
+in `usage.json`. Read the [upgrade notes](https://github.com/citizenhicks/mobius/releases/tag/mobius-gateway-v0.17.0)
+before replacing an existing gateway; protocol-99 apps cannot connect to it.
+
 ## Quick start
 
 Install with [Homebrew](https://github.com/citizenhicks/homebrew-mobius) on macOS or Linux:
@@ -106,10 +113,11 @@ gateway runs, even after you close a client.
 | **Routine** | A scheduled task owned by a Bot. Each run gets a fresh conversation. |
 | **Subagent** | A bounded helper a Bot starts inside a chat for parallel work. |
 
-What a Bot can do is opt-in per Bot: file and shell tools, memory, context compaction,
-task lists, subagents, image generation, voice, computer control (Chromium, and native
-apps on macOS), and installed Agent Skills or OpenAI-format plugins. MCP and app
-connectors are not yet supported.
+Each Bot chooses its capabilities. File and shell tools are always present. Memory,
+context compaction, subagents, voice, questions, attachments, and artifacts start on;
+task lists, workspace instructions, image generation, computer control (Chromium, and
+native apps on macOS), and installed Agent Skills or OpenAI-format plugins start off.
+MCP and app connectors are not yet supported.
 
 Commands run in a sandbox, **Seatbelt on macOS** and **Bubblewrap on Linux**, and fail
 closed if it is unavailable. A Bot's approval policy decides which actions need your
@@ -163,8 +171,8 @@ Rust 1.99.0 is pinned in `rust-toolchain.toml`. Linux sandbox tests need Bubblew
 | `tests/` | Framework integration tests |
 
 Read [AGENTS.md](https://github.com/citizenhicks/mobius/blob/main/AGENTS.md) before you
-change anything: it holds the design rules, the Rust style rules, the full list of
-required checks, and the release order. [Issue reports](https://github.com/citizenhicks/mobius/issues)
+change anything: it holds the design rules, the Rust style rules, the checks to run
+before handoff, and the release order. [Issue reports](https://github.com/citizenhicks/mobius/issues)
 and contributions are welcome.
 
 ## Documentation
@@ -180,7 +188,7 @@ and contributions are welcome.
 | [Rust API](https://docs.rs/mobius/latest/mobius/) | The `mobius` crate |
 | [Privacy](https://github.com/citizenhicks/mobius/blob/main/PRIVACY.md) | What leaves your machine |
 
-The three crates are versioned and released separately; see
+The three crates share one version number and are published one at a time; see
 [Releases in AGENTS.md](https://github.com/citizenhicks/mobius/blob/main/AGENTS.md#releases).
 
 ## License

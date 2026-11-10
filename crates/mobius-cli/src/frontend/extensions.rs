@@ -1,6 +1,5 @@
 //! Gateway-scoped extension catalog and lifecycle controls.
 
-use std::io;
 use std::sync::Arc;
 
 use mobius::{Error, Result};
@@ -9,30 +8,19 @@ use mobius_gateway::wire::{
     ClientMessage, ExtensionHookRecord, ExtensionRecord, ReadyPayload, ServerFrame, ServerMessage,
     apply_session_changes,
 };
-use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, HighlightSpacing, List, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Block, ListState, Paragraph, Wrap};
 use tokio::time::MissedTickBehavior;
 
 use super::terminal::{
-    INPUT_POLL, MAX_ENDPOINT_BYTES, MAX_INPUT_BATCH, TerminalGuard, append_text, poll_event,
+    INPUT_POLL, MAX_ENDPOINT_BYTES, Screen, append_text, input_batch, open_screen,
 };
 use super::terminal_text;
-use super::theme::{Role, current};
+use super::theme::{Role, brand_header, current, selectable_list};
 use crate::gateway_error;
-
-type ExtensionsTerminal = Terminal<CrosstermBackend<io::Stdout>>;
-
-enum Mutation {
-    Update,
-    Uninstall,
-    Trust(Arc<str>),
-    Untrust(Arc<str>),
-}
 
 enum Confirmation {
     Uninstall {
@@ -213,7 +201,11 @@ impl ExtensionsState {
                     self.fail("There is no extension to update.");
                     return ScreenAction::None;
                 };
-                id_action(Mutation::Update, Arc::clone(&extension.id))
+                let id = Arc::clone(&extension.id);
+                request_action("Update", |request_id| ClientMessage::UpdateExtension {
+                    request_id,
+                    id,
+                })
             }
             KeyCode::Char('x') | KeyCode::Delete => {
                 let Some(extension) = self.selected(gateway) else {
@@ -235,10 +227,16 @@ impl ExtensionsState {
                 if extension.hooks.is_empty() {
                     self.fail("The selected extension has no executable hooks.");
                 } else if extension.hooks_trusted {
-                    return id_action(
-                        Mutation::Untrust(Arc::clone(&extension.digest)),
-                        Arc::clone(&extension.id),
-                    );
+                    let (id, expected_digest) =
+                        (Arc::clone(&extension.id), Arc::clone(&extension.digest));
+                    return request_action("Untrust", |request_id| {
+                        ClientMessage::TrustExtensionHooks {
+                            request_id,
+                            id,
+                            expected_digest,
+                            trusted: false,
+                        }
+                    });
                 } else {
                     // Pin the reviewed hook snapshot and digest until the user confirms this exact version.
                     self.mode = Mode::Confirm(Confirmation::Trust {
@@ -293,9 +291,18 @@ impl ExtensionsState {
                     unreachable!("confirmation handler requires a confirmation")
                 };
                 match confirmation {
-                    Confirmation::Uninstall { id, .. } => id_action(Mutation::Uninstall, id),
+                    Confirmation::Uninstall { id, .. } => {
+                        request_action("Uninstall", |request_id| {
+                            ClientMessage::UninstallExtension { request_id, id }
+                        })
+                    }
                     Confirmation::Trust { id, digest, .. } => {
-                        id_action(Mutation::Trust(digest), id)
+                        request_action("Trust", |request_id| ClientMessage::TrustExtensionHooks {
+                            request_id,
+                            id,
+                            expected_digest: digest,
+                            trusted: true,
+                        })
                     }
                 }
             }
@@ -338,19 +345,21 @@ impl ExtensionsState {
     }
 }
 
-pub(super) async fn standalone(
+/// Runs the extension manager in its own terminal screen.
+/// # Errors
+///
+/// Returns terminal, transport, or gateway failures.
+pub async fn standalone(
     sender: GatewaySender,
     mut events: GatewayEvents,
     mut gateway: ReadyPayload,
 ) -> Result<()> {
-    let mut guard = TerminalGuard::alternate()?;
-    guard.set_mouse_capture(false)?;
-    let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
+    let (_guard, mut terminal) = open_screen()?;
     run(&mut terminal, &sender, &mut events, &mut gateway).await
 }
 
 pub(in crate::frontend) async fn run(
-    terminal: &mut ExtensionsTerminal,
+    terminal: &mut Screen,
     sender: &GatewaySender,
     events: &mut GatewayEvents,
     gateway: &mut ReadyPayload,
@@ -417,10 +426,8 @@ pub(in crate::frontend) async fn run(
                 dirty = true;
             }
             _ = tick.tick() => {
-                for _ in 0..MAX_INPUT_BATCH {
-                    let Some(event) = poll_event()? else {
-                        break;
-                    };
+                for event in input_batch() {
+                    let event = event?;
                     dirty = true;
                     let action = match event {
                         Event::Key(key) => state.handle_key(key, gateway),
@@ -450,56 +457,22 @@ pub(in crate::frontend) async fn run(
 }
 
 fn install_action(source: String) -> ScreenAction {
-    let request_id: Arc<str> = crate::fresh_id();
-    ScreenAction::Send {
-        message: Box::new(ClientMessage::InstallExtension {
-            request_id: Arc::clone(&request_id),
-            source,
-            reference: None,
-            subdirectory: None,
-        }),
+    request_action("Install", |request_id| ClientMessage::InstallExtension {
         request_id,
-        label: "Install",
-    }
+        source,
+        reference: None,
+        subdirectory: None,
+    })
 }
 
-fn id_action(mutation: Mutation, id: Arc<str>) -> ScreenAction {
-    let request_id: Arc<str> = crate::fresh_id();
-    let (message, label) = match mutation {
-        Mutation::Update => (
-            ClientMessage::UpdateExtension {
-                request_id: Arc::clone(&request_id),
-                id,
-            },
-            "Update",
-        ),
-        Mutation::Uninstall => (
-            ClientMessage::UninstallExtension {
-                request_id: Arc::clone(&request_id),
-                id,
-            },
-            "Uninstall",
-        ),
-        Mutation::Trust(expected_digest) => (
-            ClientMessage::TrustExtensionHooks {
-                request_id: Arc::clone(&request_id),
-                id,
-                expected_digest,
-            },
-            "Trust",
-        ),
-        Mutation::Untrust(expected_digest) => (
-            ClientMessage::RevokeExtensionHooksTrust {
-                request_id: Arc::clone(&request_id),
-                id,
-                expected_digest,
-            },
-            "Untrust",
-        ),
-    };
+fn request_action(
+    label: &'static str,
+    make_message: impl FnOnce(Arc<str>) -> ClientMessage,
+) -> ScreenAction {
+    let request_id = crate::fresh_id();
     ScreenAction::Send {
+        message: Box::new(make_message(Arc::clone(&request_id))),
         request_id,
-        message: Box::new(message),
         label,
     }
 }
@@ -527,14 +500,7 @@ fn render(frame: &mut ratatui::Frame<'_>, state: &ExtensionsState, gateway: &Rea
 
     frame.render_widget(
         Paragraph::new(vec![
-            Line::from(vec![
-                Span::styled("◉ ", theme.style(Role::AccentStrong)),
-                Span::styled(
-                    "MÖBIUS",
-                    theme.style(Role::Accent).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" extensions", theme.style(Role::Muted)),
-            ]),
+            brand_header("extensions"), // rules-allow: the screen title, not a middleware branch
             Line::styled(
                 format!("  {}", terminal_text(&gateway.machine_name)),
                 theme.style(Role::Muted),
@@ -606,15 +572,7 @@ fn render_catalog(
         ])
     });
     let mut list_state = ListState::default().with_selected(Some(state.selected));
-    frame.render_stateful_widget(
-        List::new(rows)
-            .block(block)
-            .highlight_symbol("› ")
-            .highlight_spacing(HighlightSpacing::Always)
-            .highlight_style(Style::default().add_modifier(Modifier::BOLD)),
-        area,
-        &mut list_state,
-    );
+    frame.render_stateful_widget(selectable_list(rows).block(block), area, &mut list_state);
 }
 
 fn render_details(
@@ -793,6 +751,12 @@ mod tests {
     use super::*;
     use mobius_gateway::wire::ExtensionKind;
 
+    fn gateway(extensions: Vec<ExtensionRecord>) -> ReadyPayload {
+        let mut gateway = crate::frontend::fixtures::ready(Vec::new());
+        gateway.agent_catalog.extensions = extensions;
+        gateway
+    }
+
     fn extension() -> ExtensionRecord {
         ExtensionRecord {
             id: "ponytail".into(),
@@ -820,18 +784,17 @@ mod tests {
     #[test]
     fn lifecycle_requests_bind_identity_and_hook_trust_to_the_digest() {
         let record = extension();
-        let actions = [
-            id_action(Mutation::Update, Arc::clone(&record.id)),
-            id_action(Mutation::Uninstall, Arc::clone(&record.id)),
-            id_action(
-                Mutation::Trust(Arc::clone(&record.digest)),
-                Arc::clone(&record.id),
-            ),
-            id_action(
-                Mutation::Untrust(Arc::clone(&record.digest)),
-                Arc::clone(&record.id),
-            ),
-        ];
+        let mut state = ExtensionsState::new(&gateway(vec![record.clone()]));
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        let update = state.handle_key(key(KeyCode::Char('u')), &gateway(vec![record.clone()]));
+        state.handle_key(key(KeyCode::Char('x')), &gateway(vec![record.clone()]));
+        let uninstall = state.handle_key(key(KeyCode::Char('y')), &gateway(vec![record.clone()]));
+        state.handle_key(key(KeyCode::Char('t')), &gateway(vec![record.clone()]));
+        let trust = state.handle_key(key(KeyCode::Char('y')), &gateway(vec![record.clone()]));
+        let mut trusted = record.clone();
+        trusted.hooks_trusted = true;
+        let untrust = state.handle_key(key(KeyCode::Char('t')), &gateway(vec![trusted]));
+        let actions = [update, uninstall, trust, untrust];
 
         let messages = actions.map(|action| {
             let ScreenAction::Send { message, .. } = action else {
@@ -849,12 +812,12 @@ mod tests {
         ));
         assert!(matches!(
             messages[2].as_ref(),
-            ClientMessage::TrustExtensionHooks { id, expected_digest, .. }
+            ClientMessage::TrustExtensionHooks { id, expected_digest, trusted: true, .. }
                 if id == &record.id && expected_digest == &record.digest
         ));
         assert!(matches!(
             messages[3].as_ref(),
-            ClientMessage::RevokeExtensionHooksTrust { id, expected_digest, .. }
+            ClientMessage::TrustExtensionHooks { id, expected_digest, trusted: false, .. }
                 if id == &record.id && expected_digest == &record.digest
         ));
     }

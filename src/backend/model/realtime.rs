@@ -15,6 +15,7 @@ use tokio_tungstenite::tungstenite::{
 };
 
 use super::authorization::OpenAiAuthorization;
+use super::authorization::UnauthorizedRetry;
 use super::provider::BaseUrl;
 use super::transport::{read_limited, status_error};
 use crate::{Error, ProviderError, Result};
@@ -273,14 +274,6 @@ impl RealtimeTransport {
         })
     }
 
-    pub(super) fn with_settings(mut self, settings: super::ModelTransportSettings) -> Result<Self> {
-        if settings.voice_start_timeout_ms != self.settings.voice_start_timeout_ms {
-            self.client = client(settings)?;
-        }
-        self.settings = settings;
-        Ok(self)
-    }
-
     fn codex_headers<'a>(
         &self,
         session_id: &'a str,
@@ -480,7 +473,8 @@ impl RealtimeTransport {
             .header(reqwest::header::CONTENT_TYPE, content_type)
             .body(body)
             .timeout(Duration::from_millis(self.settings.voice_start_timeout_ms));
-        for attempt in 0..2 {
+        let mut retry = UnauthorizedRetry::default();
+        loop {
             let auth = self.auth.authorize_http(false, Some(session_id)).await?;
             // Reqwest shares the owned byte body while each authorization attempt gets its own headers.
             let mut request = request
@@ -495,13 +489,13 @@ impl RealtimeTransport {
             }
             let response = request.send().await?;
             if response.status() != reqwest::StatusCode::UNAUTHORIZED
-                || attempt == 1
-                || !self.auth.recover_unauthorized(&auth.token).await?
+                || !retry
+                    .retry_unauthorized(self.auth.as_ref(), &auth.token)
+                    .await?
             {
                 return Ok(response);
             }
         }
-        unreachable!("authorization retry is bounded")
     }
 
     fn call_id(&self, response: &reqwest::Response) -> Result<String> {
@@ -540,16 +534,14 @@ impl RealtimeTransport {
     }
 
     async fn connect(&self, call_id: &str, session_id: &str) -> Result<Socket> {
-        let mut url = self.api_url.clone(); // rules-allow: each call derives its own socket URL from the shared base
-        let scheme = if url.scheme() == "https" { "wss" } else { "ws" };
-        url.set_scheme(scheme)
-            .map_err(|()| invalid("invalid voice socket scheme"))?;
+        let mut url = super::transport::socket_url(self.api_url.clone())?; // rules-allow: each call derives its own socket URL from the shared base
         if self.api == VoiceApi::Codex {
             url.set_path(&format!("{}/{call_id}", url.path()));
         } else {
             url.set_path(&format!("{}/{call_id}/attach", url.path()));
         }
-        for attempt in 0..2 {
+        let mut retry = UnauthorizedRetry::default();
+        loop {
             // Reuse the call-create identity, including the signed-in ChatGPT account header.
             let auth = self.auth.authorize_http(false, Some(session_id)).await?;
             let mut request = url.as_str().into_client_request().map_err(socket_error)?;
@@ -580,31 +572,20 @@ impl RealtimeTransport {
                 Ok((socket, _)) => return Ok(socket),
                 Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
                     if response.status().as_u16() == 401
-                        && attempt == 0
-                        && self.auth.recover_unauthorized(&auth.token).await?
+                        && retry
+                            .retry_unauthorized(self.auth.as_ref(), &auth.token)
+                            .await?
                     {
                         continue;
                     }
-                    let body = response.body().as_deref().unwrap_or_default();
-                    let body = body
-                        .get(..super::transport::MAX_ERROR_BYTES)
-                        .unwrap_or(body);
-                    let retry_after = response
-                        .headers()
-                        .get("retry-after")
-                        .and_then(|v| v.to_str().ok())
-                        .map(str::to_owned);
-                    return Err(Error::Provider(super::transport::http_provider_error(
+                    return Err(Error::Provider(super::transport::handshake_error(
                         "Realtime sideband",
-                        response.status(),
-                        body,
-                        retry_after,
+                        &response,
                     )));
                 }
                 Err(error) => return Err(socket_error(error)),
             }
         }
-        unreachable!("authorization retry is bounded")
     }
 }
 

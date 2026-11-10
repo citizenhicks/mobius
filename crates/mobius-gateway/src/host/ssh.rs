@@ -22,11 +22,11 @@ const MAX_ALGORITHM_BYTES: usize = 128;
 // ponytail: one process-wide lock is enough for the single fixed key destination.
 static SETUP_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-pub(super) fn identities() -> std::result::Result<Vec<SshIdentityRecord>, Rejection> {
+pub(crate) fn identities() -> std::result::Result<Vec<SshIdentityRecord>, Rejection> {
     identities_in(&ssh_directory()?)
 }
 
-pub(super) async fn generate() -> std::result::Result<(SshIdentityRecord, String), Rejection> {
+pub(crate) async fn generate() -> std::result::Result<(SshIdentityRecord, String), Rejection> {
     generate_in(&ssh_directory()?).await
 }
 
@@ -150,7 +150,6 @@ fn install_keypair(
     ensure_destination_available(destination_private)?;
     let temporary_public = temporary_private.with_extension("pub");
     protect(temporary_private, false)?;
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
         fs::set_permissions(&temporary_public, fs::Permissions::from_mode(0o644)).map_err(
@@ -221,7 +220,6 @@ fn blob_algorithm(blob: &[u8]) -> Option<&str> {
 fn read_public_key(path: &Path) -> std::io::Result<Vec<u8>> {
     let mut options = fs::OpenOptions::new();
     options.read(true);
-    #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt as _;
         options.custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK);
@@ -246,7 +244,6 @@ fn path_exists(path: &Path) -> bool {
     }
 }
 
-#[cfg(unix)]
 fn protect(path: &Path, directory: bool) -> std::result::Result<(), Rejection> {
     let permissions = if directory {
         mobius::owner_only::dir()
@@ -255,11 +252,6 @@ fn protect(path: &Path, directory: bool) -> std::result::Result<(), Rejection> {
     };
     fs::set_permissions(path, permissions)
         .map_err(|error| ssh_error(format!("failed to protect host SSH credentials: {error}")))
-}
-
-#[cfg(not(unix))]
-fn protect(_path: &Path, _directory: bool) -> std::result::Result<(), Rejection> {
-    Ok(())
 }
 
 fn identity_install_error(error: impl std::fmt::Display) -> Rejection {
@@ -311,7 +303,6 @@ mod tests {
         assert!(!serialized.contains(&directory.path().display().to_string()));
     }
 
-    #[cfg(unix)]
     #[test]
     fn keypair_install_is_create_new_and_sets_owner_permissions() {
         use std::os::unix::fs::PermissionsExt as _;

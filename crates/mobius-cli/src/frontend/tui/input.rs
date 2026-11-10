@@ -1,45 +1,23 @@
-use ratatui::crossterm::event::KeyCode;
-use ratatui::crossterm::event::KeyEvent;
-use ratatui::crossterm::event::KeyEventKind;
-use ratatui::crossterm::event::KeyModifiers;
-use ratatui::crossterm::event::MouseEvent;
-use ratatui::crossterm::event::MouseEventKind;
+use ratatui::crossterm::event::{
+    KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
+};
 
-use super::PreviewContent;
-use super::PreviewState;
-use super::TranscriptTone;
-use super::TuiState;
-use super::references::ReferenceToken;
-use super::references::active_reference_token;
-use super::references::replace_reference_token;
+use super::references::{ReferenceToken, active_reference_token, replace_reference_token};
 use super::view::widget_status;
-use crate::frontend::catalog::CommandAction;
-use crate::frontend::catalog::CommandContext;
-use crate::frontend::catalog::GatewayAction;
-use crate::frontend::catalog::MenuItem;
-use crate::frontend::catalog::UiCatalog;
-use crate::frontend::dashboard::activate_overlay;
-use crate::frontend::dashboard::handle_action_input_key;
-use crate::frontend::dashboard::insert_overlay_input;
-use crate::frontend::dashboard::move_overlay_action;
-use crate::frontend::dashboard::move_overlay_selection;
-use crate::frontend::dashboard::prepare_overlay_operation;
-use crate::frontend::dashboard::select_overlay_edge;
-use crate::frontend::setup::SetupMode;
+use super::{PreviewContent, PreviewState, TranscriptTone, TuiState};
+pub(super) use crate::frontend::catalog::UiAction;
+use crate::frontend::catalog::{CommandAction, CommandContext, GatewayAction, MenuItem, UiCatalog};
+use crate::frontend::dashboard::{OverlayKey, insert_overlay_input, overlay_key};
 use crate::frontend::terminal::terminal_text;
-use mobius::protocol::ActiveMessageDelivery;
-use mobius::protocol::FrontendSlot;
-use mobius::protocol::FrontendWidget;
-use mobius::protocol::FrontendWidgetContent;
-use mobius::protocol::MAX_MESSAGE_BYTES;
-use mobius::protocol::MessageAuthor;
-use mobius::protocol::MessageSubmission;
-use mobius::protocol::Op;
-use mobius::protocol::ReviewDecision;
-use mobius::protocol::{SessionFileOrigin, SessionFileRecord, SessionFileReference};
+use crate::frontend::wrap_step;
+use mobius::protocol::{
+    ActiveMessageDelivery, FrontendSlot, FrontendWidget, MAX_MESSAGE_BYTES, MessageAuthor,
+    MessageSubmission, Op, ReviewDecision, SessionFileOrigin, SessionFileRecord,
+    SessionFileReference,
+};
 use mobius_gateway::wire::{BackgroundApproval, BotRecord, GitStatus};
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 type KeyedWidgets = Vec<(Arc<str>, Arc<FrontendWidget>)>;
@@ -47,47 +25,6 @@ type KeyedWidgets = Vec<(Arc<str>, Arc<FrontendWidget>)>;
 const COLLAPSED_PASTE_BYTES: usize = 200;
 const SCROLL_ROWS: usize = 3;
 const WORD_SEPARATORS: &str = "`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?";
-
-#[derive(Debug, PartialEq)]
-pub(super) enum UiAction {
-    None,
-    PasteClipboard,
-    Submit(Box<Op>),
-    Resume(mobius::SessionId),
-    Gateway(GatewayAction),
-    Download(SessionFileReference),
-    GatewaySettings,
-    Extensions,
-    Bots,
-    Conversation,
-    Setup {
-        mode: SetupMode,
-        provider: Option<String>,
-    },
-    Exit,
-    ChooseBot {
-        workspace: Option<PathBuf>,
-        clear: bool,
-    },
-    CreateSession {
-        workspace: PathBuf,
-        bot_id: Arc<str>,
-        clear: bool,
-    },
-    Events,
-    ReassignBot,
-    Branches,
-    ConfirmDelete,
-    ConfirmDeleteFile(SessionFileReference),
-    Queued,
-    LoadEarlierHistory,
-}
-
-impl UiAction {
-    pub(super) fn submit(op: Op) -> Self {
-        Self::Submit(Box::new(op))
-    }
-}
 
 impl TuiState {
     pub(super) fn handle_key(&mut self, key: KeyEvent, catalog: &UiCatalog) -> UiAction {
@@ -177,42 +114,42 @@ impl TuiState {
                 })
             }
             KeyCode::Backspace => {
-                if self.input.is_empty() {
-                    self.attachments.pop();
+                if self.composer.text.is_empty() {
+                    self.composer.attachments.pop();
                     return UiAction::None;
                 }
                 let previous = if key.modifiers.contains(KeyModifiers::ALT) {
-                    previous_word_boundary(&self.input, self.cursor)
+                    previous_word_boundary(&self.composer.text, self.composer.cursor)
                 } else {
-                    previous_boundary(&self.input, self.cursor)
+                    previous_boundary(&self.composer.text, self.composer.cursor)
                 };
-                self.input.drain(previous..self.cursor);
-                self.cursor = previous;
+                self.composer.text.drain(previous..self.composer.cursor);
+                self.composer.cursor = previous;
                 self.prune_pastes();
                 self.slash_input_changed();
                 UiAction::None
             }
             KeyCode::Delete => {
-                let next = next_boundary(&self.input, self.cursor);
-                self.input.drain(self.cursor..next);
+                let next = next_boundary(&self.composer.text, self.composer.cursor);
+                self.composer.text.drain(self.composer.cursor..next);
                 self.prune_pastes();
                 self.slash_input_changed();
                 UiAction::None
             }
             KeyCode::Left => {
-                self.cursor = previous_boundary(&self.input, self.cursor);
+                self.composer.cursor = previous_boundary(&self.composer.text, self.composer.cursor);
                 UiAction::None
             }
             KeyCode::Right => {
-                self.cursor = next_boundary(&self.input, self.cursor);
+                self.composer.cursor = next_boundary(&self.composer.text, self.composer.cursor);
                 UiAction::None
             }
             KeyCode::Home => {
-                self.cursor = 0;
+                self.composer.cursor = 0;
                 UiAction::None
             }
             KeyCode::End => {
-                self.cursor = self.input.len();
+                self.composer.cursor = self.composer.text.len();
                 UiAction::None
             }
             KeyCode::Tab => {
@@ -221,7 +158,9 @@ impl TuiState {
                 }
                 UiAction::None
             }
-            KeyCode::Char('q') if self.disconnected && self.input.is_empty() => UiAction::Exit,
+            KeyCode::Char('q') if self.disconnected && self.composer.text.is_empty() => {
+                UiAction::Exit
+            }
             KeyCode::Char(character) => {
                 self.insert_text(&character.to_string());
                 UiAction::None
@@ -251,7 +190,7 @@ impl TuiState {
 
     fn handle_control_key(&mut self, code: KeyCode, catalog: &UiCatalog) -> UiAction {
         match code {
-            KeyCode::Char('d') if self.input.is_empty() => UiAction::Exit,
+            KeyCode::Char('d') if self.composer.text.is_empty() => UiAction::Exit,
             KeyCode::Char('j') => {
                 self.insert_text("\n");
                 UiAction::None
@@ -265,35 +204,40 @@ impl TuiState {
                 UiAction::None
             }
             KeyCode::Char('a') => {
-                self.cursor = self
-                    .input
-                    .get(..self.cursor)
+                self.composer.cursor = self
+                    .composer
+                    .text
+                    .get(..self.composer.cursor)
                     .unwrap_or_default()
                     .rfind('\n')
                     .map_or(0, |index| index + 1);
                 UiAction::None
             }
             KeyCode::Char('e') => {
-                self.cursor = self
-                    .input
-                    .get(self.cursor..)
+                self.composer.cursor = self
+                    .composer
+                    .text
+                    .get(self.composer.cursor..)
                     .unwrap_or_default()
                     .find('\n')
-                    .map_or(self.input.len(), |index| self.cursor + index);
+                    .map_or(self.composer.text.len(), |index| {
+                        self.composer.cursor + index
+                    });
                 UiAction::None
             }
             KeyCode::Char('u' | 'w') => {
                 let start = if code == KeyCode::Char('u') {
-                    self.input
-                        .get(..self.cursor)
+                    self.composer
+                        .text
+                        .get(..self.composer.cursor)
                         .unwrap_or_default()
                         .rfind('\n')
                         .map_or(0, |index| index + 1)
                 } else {
-                    previous_word_boundary(&self.input, self.cursor)
+                    previous_word_boundary(&self.composer.text, self.composer.cursor)
                 };
-                self.input.drain(start..self.cursor);
-                self.cursor = start;
+                self.composer.text.drain(start..self.composer.cursor);
+                self.composer.cursor = start;
                 self.prune_pastes();
                 self.slash_input_changed();
                 UiAction::None
@@ -434,40 +378,27 @@ impl TuiState {
                 UiAction::None
             }
             KeyCode::Esc => {
-                picker.query.clear();
-                picker.selected = 0;
+                picker.edit_query(String::clear);
                 UiAction::None
             }
             KeyCode::Up => {
-                let count = picker.match_count();
-                if count > 0 {
-                    picker.selected = (picker.selected + count - 1) % count;
-                }
+                picker.selected = wrap_step(picker.selected, -1, picker.match_count());
                 UiAction::None
             }
             KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                let count = picker.match_count();
-                if count > 0 {
-                    picker.selected = (picker.selected + count - 1) % count;
-                }
+                picker.selected = wrap_step(picker.selected, -1, picker.match_count());
                 UiAction::None
             }
             KeyCode::Down => {
-                let count = picker.match_count();
-                if count > 0 {
-                    picker.selected = (picker.selected + 1) % count;
-                }
+                picker.selected = wrap_step(picker.selected, 1, picker.match_count());
                 UiAction::None
             }
             KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                let count = picker.match_count();
-                if count > 0 {
-                    picker.selected = (picker.selected + 1) % count;
-                }
+                picker.selected = wrap_step(picker.selected, 1, picker.match_count());
                 UiAction::None
             }
             KeyCode::Enter => {
-                let Some(index) = picker.matching_indices().nth(picker.selected) else {
+                let Some(index) = picker.selected_index() else {
                     return UiAction::None;
                 };
                 let option = picker.options.swap_remove(index);
@@ -475,8 +406,8 @@ impl TuiState {
                 picker_action(option.action)
             }
             KeyCode::Delete => {
-                let index = picker.matching_indices().nth(picker.selected);
-                let Some(action) = index
+                let Some(action) = picker
+                    .selected_index()
                     .and_then(|index| picker.options.get_mut(index))
                     .and_then(|option| option.secondary.take())
                 else {
@@ -486,13 +417,13 @@ impl TuiState {
                 picker_action(action)
             }
             KeyCode::Backspace => {
-                picker.query.pop();
-                picker.selected = 0;
+                picker.edit_query(|query| {
+                    query.pop();
+                });
                 UiAction::None
             }
             KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                picker.query.push(character);
-                picker.selected = 0;
+                picker.edit_query(|query| query.push(character));
                 UiAction::None
             }
             _ => UiAction::None,
@@ -508,14 +439,9 @@ impl TuiState {
     ) {
         self.preview = None;
         self.capability_overlay = None;
-        self.picker = Some(super::PickerState {
-            title: "Select Bot".into(),
-            selected: bots
-                .iter()
-                .position(|bot| *bot.id == *current_bot_id)
-                .unwrap_or_default(),
-            options: bots
-                .iter()
+        self.picker = Some(super::PickerState::new(
+            "Select Bot".into(),
+            bots.iter()
                 .map(|bot| super::PickerOption {
                     label: format!("@{}", terminal_text(&bot.handle)),
                     description: terminal_text(&bot.name),
@@ -532,8 +458,10 @@ impl TuiState {
                     secondary: None,
                 })
                 .collect(),
-            query: String::new(),
-        });
+            bots.iter()
+                .position(|bot| *bot.id == *current_bot_id)
+                .unwrap_or_default(),
+        ));
     }
 
     pub(super) fn open_reassign_bot_picker(&mut self, bots: &[BotRecord], current_bot_id: &str) {
@@ -700,12 +628,11 @@ impl TuiState {
     ) {
         self.preview = None;
         self.capability_overlay = None;
-        self.picker = Some(super::PickerState {
-            title: title.into(),
-            options: options.into_iter().collect(),
+        self.picker = Some(super::PickerState::new(
+            title.into(),
+            options.into_iter().collect(),
             selected,
-            query: String::new(),
-        });
+        ));
     }
 
     fn handle_open_surface_key(&mut self, key: KeyEvent) -> Option<UiAction> {
@@ -718,58 +645,21 @@ impl TuiState {
     }
 
     fn handle_capability_overlay_key(&mut self, key: KeyEvent) -> UiAction {
-        let editing = self
-            .capability_overlay
-            .as_ref()
-            .is_some_and(crate::frontend::dashboard::CapabilityOverlay::is_editing);
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c')
-            || key.code == KeyCode::Char('q') && !editing
-        {
-            self.capability_overlay = None;
-            return UiAction::None;
-        }
-        if key.code == KeyCode::Esc && !editing {
-            match self.capability_overlay.as_mut() {
-                Some(overlay) if overlay.can_go_back() => overlay.close_widget(),
-                _ => self.capability_overlay = None,
-            }
-            return UiAction::None;
-        }
         let Some(overlay) = self.capability_overlay.as_mut() else {
             return UiAction::None;
         };
-        if overlay.is_editing() {
-            return handle_action_input_key(overlay, key)
-                .map_or(UiAction::None, |op| self.submit_attention_operation(op));
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+            self.capability_overlay = None;
+            return UiAction::None;
         }
-        let action_list_open = matches!(
-            overlay
-                .open_widget()
-                .and_then(|widget| widget.content.as_ref()),
-            Some(FrontendWidgetContent::ActionList { .. })
-        );
-        match key.code {
-            KeyCode::Left if action_list_open => move_overlay_action(overlay, -1),
-            KeyCode::Up | KeyCode::Char('k') => move_overlay_selection(overlay, -1),
-            KeyCode::Down | KeyCode::Char('j') => move_overlay_selection(overlay, 1),
-            KeyCode::Home => select_overlay_edge(overlay, false),
-            KeyCode::End => select_overlay_edge(overlay, true),
-            KeyCode::Right if action_list_open => move_overlay_action(overlay, 1),
-            KeyCode::Enter | KeyCode::Right => {
-                return activate_overlay(overlay)
-                    .and_then(|op| prepare_overlay_operation(overlay, op))
-                    .map_or(UiAction::None, |op| self.submit_attention_operation(op));
+        match overlay_key(overlay, key) {
+            OverlayKey::Handled => UiAction::None,
+            OverlayKey::Close => {
+                self.capability_overlay = None;
+                UiAction::None
             }
-            KeyCode::Char('a') => {
-                return overlay
-                    .open_widget()
-                    .and_then(|widget| widget.action.clone()) // rules-allow: the widget keeps its action while the overlay submits a copy
-                    .and_then(|op| prepare_overlay_operation(overlay, op))
-                    .map_or(UiAction::None, |op| self.submit_attention_operation(op));
-            }
-            _ => {}
+            OverlayKey::Submit(op) => self.submit_attention_operation(*op),
         }
-        UiAction::None
     }
 
     pub(super) fn insert_capability_overlay_paste(&mut self, value: &str) -> bool {
@@ -783,8 +673,8 @@ impl TuiState {
         if !self.accepts_input(text.len(), 0) {
             return;
         }
-        self.input.insert_str(self.cursor, &text);
-        self.cursor += text.len();
+        self.composer.text.insert_str(self.composer.cursor, &text);
+        self.composer.cursor += text.len();
         self.slash_input_changed();
     }
 
@@ -803,14 +693,16 @@ impl TuiState {
             .chain(11..=31)
             .chain(127..=159)
             .filter_map(char::from_u32)
-            .find(|token| !self.pastes.contains_key(token) && !self.input.contains(*token))
+            .find(|token| {
+                !self.composer.pastes.contains_key(token) && !self.composer.text.contains(*token)
+            })
         else {
             self.insert_text(text);
             return;
         };
-        self.input.insert(self.cursor, token);
-        self.cursor += token.len_utf8();
-        self.pastes.insert(token, text.to_owned());
+        self.composer.text.insert(self.composer.cursor, token);
+        self.composer.cursor += token.len_utf8();
+        self.composer.pastes.insert(token, text.to_owned());
         self.slash_input_changed();
     }
 
@@ -821,28 +713,28 @@ impl TuiState {
     pub(super) fn visible_input(&self) -> (String, usize) {
         let mut visible = String::new();
         let mut visible_cursor = 0;
-        for (index, character) in self.input.char_indices() {
-            if index == self.cursor {
+        for (index, character) in self.composer.text.char_indices() {
+            if index == self.composer.cursor {
                 visible_cursor = visible.len();
             }
-            if let Some(paste) = self.pastes.get(&character) {
+            if let Some(paste) = self.composer.pastes.get(&character) {
                 write!(visible, "[pasted content {} chars]", paste.chars().count())
                     .expect("writing to String cannot fail");
             } else {
                 visible.push(character);
             }
         }
-        if self.cursor == self.input.len() {
+        if self.composer.cursor == self.composer.text.len() {
             visible_cursor = visible.len();
         }
         (visible, visible_cursor)
     }
 
     fn expanded_input(&self) -> String {
-        self.input.chars().fold(
+        self.composer.text.chars().fold(
             String::with_capacity(self.expanded_input_bytes()),
             |mut expanded, character| {
-                if let Some(paste) = self.pastes.get(&character) {
+                if let Some(paste) = self.composer.pastes.get(&character) {
                     expanded.push_str(paste);
                 } else {
                     expanded.push(character);
@@ -853,7 +745,9 @@ impl TuiState {
     }
 
     fn prune_pastes(&mut self) {
-        self.pastes.retain(|token, _| self.input.contains(*token));
+        self.composer
+            .pastes
+            .retain(|token, _| self.composer.text.contains(*token));
     }
 
     fn complete_slash(&mut self, catalog: &UiCatalog) {
@@ -861,19 +755,20 @@ impl TuiState {
             return;
         };
         let token_end = self
-            .input
+            .composer
+            .text
             .find(char::is_whitespace)
-            .unwrap_or(self.input.len());
+            .unwrap_or(self.composer.text.len());
         if !self.accepts_input(command.len(), token_end) {
             return;
         }
-        let tail = self.input.get(token_end..).unwrap_or_default();
-        self.input = if tail.is_empty() {
+        let tail = self.composer.text.get(token_end..).unwrap_or_default();
+        self.composer.text = if tail.is_empty() {
             format!("{command} ")
         } else {
             format!("{command}{tail}")
         };
-        self.cursor = self.input.len();
+        self.composer.cursor = self.composer.text.len();
         self.slash_input_changed();
     }
 
@@ -884,14 +779,15 @@ impl TuiState {
     ) -> Option<UiAction> {
         let command = self.selected_slash_command(catalog)?;
         let token_end = self
-            .input
+            .composer
+            .text
             .find(char::is_whitespace)
-            .unwrap_or(self.input.len());
+            .unwrap_or(self.composer.text.len());
         if !self.accepts_input(command.len(), token_end) {
             return Some(UiAction::None);
         }
-        self.input.replace_range(..token_end, &command);
-        self.cursor = self.input.len();
+        self.composer.text.replace_range(..token_end, &command);
+        self.composer.cursor = self.composer.text.len();
         Some(self.submit_input_with_delivery(catalog, delivery))
     }
 
@@ -906,16 +802,14 @@ impl TuiState {
         if self.slash_menu_dismissed {
             return None;
         }
-        catalog.command_suggestions(&self.input, self.cursor)
+        catalog.command_suggestions(&self.composer.text, self.composer.cursor)
     }
 
     fn move_slash_up(&mut self, catalog: &UiCatalog) -> bool {
         let Some(items) = self.slash_suggestions(catalog) else {
             return false;
         };
-        if !items.is_empty() {
-            self.slash_selection = (self.slash_selection + items.len() - 1) % items.len();
-        }
+        self.slash_selection = wrap_step(self.slash_selection, -1, items.len());
         true
     }
 
@@ -923,9 +817,7 @@ impl TuiState {
         let Some(items) = self.slash_suggestions(catalog) else {
             return false;
         };
-        if !items.is_empty() {
-            self.slash_selection = (self.slash_selection + 1) % items.len();
-        }
+        self.slash_selection = wrap_step(self.slash_selection, 1, items.len());
         true
     }
 
@@ -936,10 +828,10 @@ impl TuiState {
         if self.reference_menu_dismissed {
             return None;
         }
-        let trigger = catalog
-            .reference_triggers()
-            .find(|trigger| active_reference_token(&self.input, self.cursor, *trigger).is_some())?;
-        let token = active_reference_token(&self.input, self.cursor, trigger)?;
+        let trigger = catalog.reference_triggers().find(|trigger| {
+            active_reference_token(&self.composer.text, self.composer.cursor, *trigger).is_some()
+        })?;
+        let token = active_reference_token(&self.composer.text, self.composer.cursor, trigger)?;
         let cached =
             self.reference_cache
                 .as_ref()
@@ -972,10 +864,11 @@ impl TuiState {
         let Some(item) = matches.get(selection) else {
             return false;
         };
-        let Some(cursor) = replace_reference_token(&mut self.input, &token, &item.value) else {
+        let Some(cursor) = replace_reference_token(&mut self.composer.text, &token, &item.value)
+        else {
             return false;
         };
-        self.cursor = cursor;
+        self.composer.cursor = cursor;
         self.prune_pastes();
         self.slash_input_changed();
         self.reference_menu_dismissed = true;
@@ -987,7 +880,7 @@ impl TuiState {
             .reference_suggestions(catalog)
             .map(|(_, matches)| matches.len())
         {
-            self.reference_selection = (self.reference_selection + count - 1) % count;
+            self.reference_selection = wrap_step(self.reference_selection, -1, count);
             true
         } else {
             self.move_slash_up(catalog)
@@ -999,7 +892,7 @@ impl TuiState {
             .reference_suggestions(catalog)
             .map(|(_, matches)| matches.len())
         {
-            self.reference_selection = (self.reference_selection + 1) % count;
+            self.reference_selection = wrap_step(self.reference_selection, 1, count);
             true
         } else {
             self.move_slash_down(catalog)
@@ -1024,7 +917,7 @@ impl TuiState {
         catalog: &UiCatalog,
         delivery: Option<ActiveMessageDelivery>,
     ) -> UiAction {
-        let had_pastes = !self.pastes.is_empty();
+        let had_pastes = !self.composer.pastes.is_empty();
         let line = self.expanded_input();
         if line.len() > MAX_MESSAGE_BYTES {
             self.input_limit_reached = true;
@@ -1048,21 +941,21 @@ impl TuiState {
         } else {
             line.trim()
         };
-        if !self.attachments.is_empty() && self.composer_target_turn().is_some() {
+        if !self.composer.attachments.is_empty() && self.composer_target_turn().is_some() {
             self.push(
                 "attachments can be sent when the agent is idle",
                 TranscriptTone::Warning,
             );
             return UiAction::None;
         }
-        let submitted_input = std::mem::take(&mut self.input);
-        let submitted_cursor = self.cursor;
-        self.pastes.clear();
-        self.cursor = 0;
+        let submitted_input = std::mem::take(&mut self.composer.text);
+        let submitted_cursor = self.composer.cursor;
+        self.composer.pastes.clear();
+        self.composer.cursor = 0;
         self.slash_input_changed();
         let status = self.status();
         if !had_pastes
-            && self.attachments.is_empty()
+            && self.composer.attachments.is_empty()
             && let Some(action) = catalog.dispatch(
                 line,
                 CommandContext {
@@ -1072,45 +965,34 @@ impl TuiState {
             )
         {
             return match action {
-                CommandAction::Submit(op) => match (self.capability_popup_for(&op), *op) {
-                    (Some((widgets, action)), Op::CapabilityCommand { capability, .. }) => {
-                        self.picker = None;
-                        self.preview = None;
-                        self.capability_overlay =
-                            Some(crate::frontend::dashboard::CapabilityOverlay::from_widgets(
-                                capability.to_string(),
-                                widgets,
-                            ));
-                        UiAction::submit(action)
+                CommandAction::Ui(UiAction::Submit(op)) => {
+                    match (self.capability_popup_for(&op), *op) {
+                        (Some((widgets, action)), Op::CapabilityCommand { capability, .. }) => {
+                            self.picker = None;
+                            self.preview = None;
+                            self.capability_overlay =
+                                Some(crate::frontend::dashboard::CapabilityOverlay::from_widgets(
+                                    capability.to_string(),
+                                    widgets,
+                                ));
+                            UiAction::submit(action)
+                        }
+                        (_, op) => UiAction::submit(op),
                     }
-                    (_, op) => UiAction::submit(op),
-                },
-                CommandAction::Gateway(action) => UiAction::Gateway(action),
-                CommandAction::GatewaySettings => UiAction::GatewaySettings,
-                CommandAction::Extensions => UiAction::Extensions,
-                CommandAction::Bots => UiAction::Bots,
-                CommandAction::Conversation => UiAction::Conversation,
-                CommandAction::Setup { mode, provider } => UiAction::Setup { mode, provider },
+                }
+                CommandAction::Ui(action) => action,
                 CommandAction::ShowMenu => {
                     self.push(catalog.menu(), TranscriptTone::Neutral);
                     UiAction::None
                 }
                 CommandAction::Print(message) => {
                     if line.split_whitespace().next() != Some("/status") {
-                        self.input = submitted_input;
-                        self.cursor = submitted_cursor;
+                        self.composer.text = submitted_input;
+                        self.composer.cursor = submitted_cursor;
                     }
                     self.push(message, TranscriptTone::Warning);
                     UiAction::None
                 }
-                CommandAction::Exit => UiAction::Exit,
-                CommandAction::ChooseBot { workspace, clear } => {
-                    UiAction::ChooseBot { workspace, clear }
-                }
-                CommandAction::Events => UiAction::Events,
-                CommandAction::ReassignBot => UiAction::ReassignBot,
-                CommandAction::Branches => UiAction::Branches,
-                CommandAction::ConfirmDelete => UiAction::ConfirmDelete,
                 CommandAction::Attention => {
                     let widgets = self
                         .widgets
@@ -1124,17 +1006,16 @@ impl TuiState {
                     self.sync_attention_approvals();
                     UiAction::None
                 }
-                CommandAction::Queued => UiAction::Queued,
             };
         }
-        if line.is_empty() && self.attachments.is_empty() {
+        if line.is_empty() && self.composer.attachments.is_empty() {
             return UiAction::None;
         }
         let op = Op::Message {
             message: MessageSubmission {
                 author: MessageAuthor::User,
                 text: line.into(),
-                attachments: std::mem::take(&mut self.attachments),
+                attachments: std::mem::take(&mut self.composer.attachments),
                 reply: None,
                 requested_delivery: self.composer_target_turn().and(delivery),
                 target_turn_id: self.composer_target_turn().map(str::to_owned),
@@ -1213,8 +1094,9 @@ impl TuiState {
     }
 
     fn expanded_input_bytes(&self) -> usize {
-        self.input.len().saturating_add(
-            self.pastes
+        self.composer.text.len().saturating_add(
+            self.composer
+                .pastes
                 .iter()
                 .map(|(token, paste)| paste.len().saturating_sub(token.len_utf8()))
                 .sum::<usize>(),

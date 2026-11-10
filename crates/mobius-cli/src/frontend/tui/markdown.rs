@@ -1,20 +1,10 @@
 //! Small Markdown-to-ratatui renderer for assistant transcript messages.
 
-use pulldown_cmark::Alignment;
-use pulldown_cmark::CodeBlockKind;
-use pulldown_cmark::Event;
-use pulldown_cmark::HeadingLevel;
-use pulldown_cmark::Options;
-use pulldown_cmark::Parser;
-use pulldown_cmark::Tag;
-use pulldown_cmark::TagEnd;
-use ratatui::style::Modifier;
-use ratatui::style::Style;
-use ratatui::text::Line;
-use ratatui::text::Span;
+use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
 
-use crate::frontend::theme::Role;
-use crate::frontend::theme::current;
+use crate::frontend::theme::{Role, current};
 
 fn options() -> Options {
     let mut options = Options::empty();

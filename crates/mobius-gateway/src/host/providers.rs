@@ -106,7 +106,7 @@ impl GatewayHost {
                 .get(&instance)
                 .map(|configured| {
                     provider(&configured.selection.provider).map(|definition| {
-                        selected_base_url(definition, &configured.selection).map(BaseUrl::share)
+                        Some(selected_base_url(definition, &configured.selection).share())
                     })
                 })
                 .transpose()
@@ -142,17 +142,18 @@ impl GatewayHost {
         let (base_url, configured, publication) = {
             let state = self.state.lock().await;
             let definition = provider(&provider_id).map_err(invalid_config)?;
-            let base_url = if definition.configurable_base_url() {
-                base_url.as_ref().or_else(|| definition.default_base_url())
-            } else {
-                base_url.as_ref()
-            };
+            let base_url = Some(
+                base_url
+                    .as_ref()
+                    .unwrap_or_else(|| definition.default_base_url()),
+            );
             let configured = state
                 .config()?
                 .configured_providers
                 .get(&instance)
                 .filter(|configured| {
-                    let configured_base_url = selected_base_url(definition, &configured.selection);
+                    let configured_base_url =
+                        Some(selected_base_url(definition, &configured.selection));
                     configured.selection.provider == provider_id.as_str()
                         && configured.selection.endpoint_auth
                             == ProviderEndpointAuth::Credentialless
@@ -390,22 +391,20 @@ impl GatewayHost {
             .map_err(internal)?
         };
         state.bots.set_voice_routes(voices).map_err(internal)?;
-        let cache = state.bots.prepared.lock().await;
         state
             .bots
-            .preparation_generation
-            .fetch_add(1, Ordering::Release);
-        for prepared in cache.values() {
-            for selection in &prepared.providers {
-                if super::session::provider_refresh_matches(selection, &scope)
-                    .map_err(invalid_config)?
-                {
-                    prepared.invalidate();
-                    break;
+            .prepared
+            .invalidate(|prepared| {
+                for selection in &prepared.providers {
+                    if super::session::provider_refresh_matches(selection, &scope)
+                        .map_err(invalid_config)?
+                    {
+                        return Ok(true);
+                    }
                 }
-            }
-        }
-        drop(cache);
+                Ok(false)
+            })
+            .await?;
         drop(state);
         Ok(())
     }
@@ -583,7 +582,7 @@ fn validate_browser_endpoint_registration(
     operator: bool,
 ) -> std::result::Result<(), Rejection> {
     let definition = provider(&selection.provider).map_err(invalid_config)?;
-    let endpoint = selected_base_url(definition, selection);
+    let endpoint = Some(selected_base_url(definition, selection));
     if operator
         || !matches!(definition.auth(), ProviderAuth::Browser(_))
         || definition.uses_default_endpoint(endpoint.map(BaseUrl::as_str))
@@ -593,7 +592,7 @@ fn validate_browser_endpoint_registration(
     let trusted = gateway.configured_providers.values().any(|configured| {
         configured.selection.provider == selection.provider
             && uses_default_endpoint(
-                selected_base_url(definition, &configured.selection).map(BaseUrl::as_str),
+                Some(selected_base_url(definition, &configured.selection).as_str()),
                 endpoint.map(BaseUrl::as_str),
             )
     });
@@ -743,9 +742,7 @@ fn reserve_provider_login(
 }
 
 #[cfg(test)]
-#[path = "tests/provider_bots.rs"]
 mod tests;
 
 #[cfg(test)]
-#[path = "tests/providers.rs"]
 mod coverage_tests;

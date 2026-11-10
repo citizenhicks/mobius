@@ -12,7 +12,6 @@ use super::ModelCancellationReason;
 use super::ModelEventSink;
 use super::ModelOutput;
 use super::ModelRequest;
-use super::PromptCacheMode;
 use super::ToolDefinition;
 use crate::Error;
 use crate::Result;
@@ -428,14 +427,6 @@ impl ModelRouter {
         .map(|_| ())
     }
 
-    /// Reports whether one route accepts native image input.
-    /// # Errors
-    ///
-    /// Returns an error if validation or an operation required by this function fails.
-    pub fn supports_image_input(&self, provider: &str) -> Result<bool> {
-        Ok(self.provider(provider)?.supports_image_input())
-    }
-
     /// Resolves the selected image route, or the first configured one, with its provider model
     /// and quality.
     /// # Errors
@@ -525,14 +516,6 @@ impl ModelRouter {
         Ok(call)
     }
 
-    /// Reports deferred-tool cache behavior for one route.
-    /// # Errors
-    ///
-    /// Returns an error if validation or an operation required by this function fails.
-    pub fn tool_discovery(&self, provider: &str) -> Result<ToolDiscoveryMode> {
-        Ok(self.provider(provider)?.tool_discovery())
-    }
-
     /// Prepares the provider-owned direct/deferred tool envelope for one request.
     pub(crate) fn prepare_tool_definitions(
         &self,
@@ -552,14 +535,6 @@ impl ModelRouter {
                 Ok((direct, Vec::new()))
             }
         }
-    }
-
-    /// Reports prompt-cache support for one route.
-    /// # Errors
-    ///
-    /// Returns an error if validation or an operation required by this function fails.
-    pub fn prompt_cache_capability(&self, provider: &str) -> Result<PromptCacheMode> {
-        Ok(self.provider(provider)?.prompt_cache_capability())
     }
 
     pub(crate) fn model_step_diagnostics(

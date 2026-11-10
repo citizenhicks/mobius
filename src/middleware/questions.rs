@@ -273,13 +273,7 @@ impl Middleware for Questions {
 
 impl QuestionSession {
     async fn load(&self) -> Result<Vec<Question>> {
-        self.checkpoints
-            .load_state(&self.id, STATE_KEY)
-            .await?
-            .map(serde_json::from_value)
-            .transpose()
-            .map(std::option::Option::unwrap_or_default)
-            .map_err(Into::into)
+        super::load_state_or_default(self.checkpoints.as_ref(), &self.id, STATE_KEY).await
     }
 
     async fn save(&self, questions: &[Question]) -> Result<()> {
@@ -488,25 +482,18 @@ fn widget(mut questions: Vec<Question>) -> FrontendWidget {
         )
     });
     FrontendWidget {
-        id: "status".into(),
-        count: None,
-        priority: crate::protocol::FrontendPriority::Primary,
-        slot: FrontendSlot::Attention,
-        text: open.to_string(),
         tone: if open > 0 {
             FrontendTone::Warning
         } else {
             FrontendTone::Neutral
         },
         symbol: Some(FrontendSymbol::Question),
-        icon_only: false,
-        progress: None,
-        action: None,
         content: Some(FrontendWidgetContent::ActionList {
             title: DEFINITION.widget_title.clone(), // rules-allow: the widget record owns a copy of the embedded text
             items: questions.into_iter().map(question_item).collect(),
             actions: Vec::new(),
         }),
+        ..FrontendWidget::new("status", FrontendSlot::Attention, open.to_string())
     }
 }
 

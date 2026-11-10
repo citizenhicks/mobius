@@ -6,7 +6,6 @@ fn sink(url: &str) -> TelemetrySink {
     serde_json::from_value(serde_json::json!({"id":"test", "url":url, "every_seconds":15, "sections":["activity"], "events":["custom_received"]})).unwrap()
 }
 
-#[cfg(unix)]
 #[tokio::test(start_paused = true)]
 async fn shutdown_remains_live_when_activity_and_routine_dispatch_contend_for_host_state() {
     for hook in [true, false] {
@@ -82,7 +81,7 @@ async fn committed_events_retry_and_advance_only_after_delivery() {
             data: serde_json::json!({}),
         },
     };
-    server.bots.record_hook(&event).unwrap();
+    server.bots.storage.record_hook(&event).unwrap();
     assert_eq!(server.bots.telemetry_batch(&endpoint).unwrap().1, 1);
     let receiver = tokio::spawn(async move {
         for status in [500, 202, 400] {
@@ -117,7 +116,7 @@ async fn committed_events_retry_and_advance_only_after_delivery() {
     let mut second = event;
     second.id = "second-fact".into();
     second.occurred_at = 0;
-    server.bots.record_hook(&second).unwrap();
+    server.bots.storage.record_hook(&second).unwrap();
     let mut tasks = JoinSet::new();
     Telemetry::tick(&server.host, 0, Trigger::Events, &mut tasks).await;
     while tasks.join_next().await.is_some() {}
@@ -195,6 +194,7 @@ async fn telemetry_oversized_event_advances_cursor_with_a_permanent_diagnostic()
     let bot = server.bots.bots().unwrap().remove(0);
     server
         .bots
+        .storage
         .record_hook(&HookEvent {
             id: "oversized-fact".into(),
             bot_id: Arc::clone(&bot.id),
@@ -232,16 +232,16 @@ async fn paired_clients_cannot_redirect_collectors_or_select_host_credentials() 
     let mut endpoint = sink("https://client-controlled.example/collect");
     endpoint.bearer_env = Some("OPENAI_API_KEY".into());
     let mut bytes = Vec::new();
-    dispatch::handle_runtime_message(
-        ClientMessage::ConfigureTelemetry {
-            request_id: "attempt".into(),
+    dispatch::configure_telemetry(
+        &mut bytes,
+        "attempt".into(),
+        dispatch::TelemetryUpdate {
             expected_revision: 0,
             sinks: vec![endpoint],
             preserve_auth: vec![],
         },
-        &server.host,
         false,
-        &mut bytes,
+        &server.host,
     )
     .await
     .unwrap();
@@ -282,7 +282,7 @@ async fn collector_failure_body_cannot_echo_credentials_into_public_status() {
         stream.write_all(response.as_bytes()).await.unwrap();
     });
     let mut tasks = JoinSet::new();
-    Telemetry::tick(&server.host, 0, Trigger::Manual, &mut tasks).await;
+    Telemetry::tick(&server.host, 0, Trigger::Start, &mut tasks).await;
     while tasks.join_next().await.is_some() {}
     let (_, reports) = server.host.telemetry_report().await.unwrap();
     assert_eq!(

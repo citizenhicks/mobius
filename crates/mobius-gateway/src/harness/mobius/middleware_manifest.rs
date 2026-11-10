@@ -164,17 +164,6 @@ pub(crate) fn default_config(ceilings: SubagentCeilings) -> MiddlewareConfig {
     config
 }
 
-/// Gives every declared setting the config leaves unset its declared default.
-pub(crate) fn fill_defaults(config: &mut MiddlewareConfig) {
-    for entry in MIDDLEWARE.iter() {
-        for setting in entry.settings(SubagentCeilings::default()).iter() {
-            if config.setting(entry.manifest.id, setting.id()).is_none() {
-                config.set_setting(entry.manifest.id, setting.id(), setting.default_value());
-            }
-        }
-    }
-}
-
 pub(crate) fn validate(config: &MiddlewareConfig, ceilings: SubagentCeilings) -> Result<()> {
     let features = features(ModelCatalogs::default(), ceilings);
     for id in config.entries() {
@@ -341,22 +330,6 @@ fn setting_type(middleware: &str, setting: &str, expected: &str) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn loading_fills_a_newly_declared_setting_with_its_default() {
-        let mut stored =
-            serde_json::to_value(default_config(SubagentCeilings::default())).expect("config JSON");
-        stored["settings"]["compaction"]
-            .as_object_mut()
-            .expect("compaction settings")
-            .remove("checkpoint_percent");
-        let config: MiddlewareConfig = serde_json::from_value(stored).expect("stored config");
-        assert_eq!(
-            config.setting("compaction", "checkpoint_percent"),
-            Some(&FrontendSettingValue::Integer(20))
-        );
-        assert!(validate(&config, SubagentCeilings::default()).is_ok());
-    }
 
     #[test]
     fn config_rejects_unknown_mistyped_and_inconsistent_settings() {

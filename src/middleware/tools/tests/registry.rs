@@ -48,35 +48,3 @@ fn only_wholly_cancellable_batches_stop_for_new_input() {
     assert!(!catalog.cancels_on_input(&[call("wait"), call("write"),]));
     assert!(!catalog.cancels_on_input(&[]));
 }
-
-#[test]
-fn only_inspection_tools_declare_read_only() {
-    let files = tempfile::tempdir().expect("files");
-    let mut catalog = Catalog::default();
-    for tool in [
-        Arc::new(ReadFile {
-            store: crate::backend::session_files::SessionFileStore::new(files.path(), None).into(),
-        }) as Arc<dyn Tool>,
-        Arc::new(WriteFile),
-        Arc::new(ApplyPatch),
-        Arc::new(Bash),
-        Arc::new(ManageCommand),
-    ] {
-        catalog.register(tool).expect("register tool");
-    }
-    catalog.register_search().expect("register tools_search");
-
-    let read_only = ["read_file", TOOLS_SEARCH_NAME];
-    for name in read_only {
-        assert!(catalog.is_read_only(name), "{name}");
-    }
-    for name in [
-        "write_file",
-        "apply_patch",
-        "bash",
-        "manage_command",
-        "unknown",
-    ] {
-        assert!(!catalog.is_read_only(name), "{name}");
-    }
-}

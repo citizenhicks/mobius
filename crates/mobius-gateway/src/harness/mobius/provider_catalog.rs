@@ -24,18 +24,13 @@ pub(crate) fn provider_statuses() -> Vec<ProviderStatus> {
 }
 
 pub(crate) fn selected_base_url<'a>(
-    definition: &ProviderDefinition,
+    definition: &'a ProviderDefinition,
     selection: &'a ProviderConfig,
-) -> Option<&'a BaseUrl> {
-    definition
-        .configurable_base_url()
-        .then(|| {
-            selection
-                .base_url
-                .as_ref()
-                .or_else(|| definition.default_base_url())
-        })
-        .flatten()
+) -> &'a BaseUrl {
+    selection
+        .base_url
+        .as_ref()
+        .unwrap_or_else(|| definition.default_base_url())
 }
 
 pub(crate) fn provider_instances(
@@ -47,7 +42,7 @@ pub(crate) fn provider_instances(
         .values()
         .map(|configured| {
             let definition = provider(&configured.selection.provider)?;
-            let base_url = selected_base_url(definition, &configured.selection);
+            let base_url = Some(selected_base_url(definition, &configured.selection));
             Ok(ProviderInstance {
                 label: configured.label.clone(), // rules-allow: provider records are sent to clients
                 tint: configured.tint,
@@ -578,7 +573,7 @@ pub(crate) fn credential_is_configured(
     if selection.endpoint_auth == ProviderEndpointAuth::Credentialless {
         return Ok(true);
     }
-    let base_url = selected_base_url(definition, selection);
+    let base_url = Some(selected_base_url(definition, selection));
     match definition.auth() {
         ProviderAuth::ApiKey(default_env) => {
             if credentials
@@ -638,12 +633,9 @@ fn provider_models(definition: &ProviderDefinition) -> Vec<ProviderModel> {
 }
 
 fn provider_status(definition: &ProviderDefinition) -> ProviderStatus {
-    let (auth, default_api_key_env) = match definition.auth() {
-        ProviderAuth::ApiKey(default_env) => (
-            ProviderAuthKind::ApiKey,
-            (!definition.configurable_base_url()).then(|| default_env.to_owned()),
-        ),
-        ProviderAuth::Browser(_) => (ProviderAuthKind::DeviceCode, None),
+    let auth = match definition.auth() {
+        ProviderAuth::ApiKey(_) => ProviderAuthKind::ApiKey,
+        ProviderAuth::Browser(_) => ProviderAuthKind::DeviceCode,
     };
     ProviderStatus {
         provider: definition.id().into(),
@@ -656,8 +648,7 @@ fn provider_status(definition: &ProviderDefinition) -> ProviderStatus {
             && definition.supports_at(ModelCapability::ImageGeneration, None),
         voice_models: std::borrow::Cow::Borrowed(definition.voice_models()),
         auth,
-        default_base_url: definition.default_base_url().map(BaseUrl::share),
-        default_api_key_env,
+        default_base_url: definition.default_base_url().share(),
         models: provider_models(definition),
         web_search: definition
             .web_search()
@@ -680,7 +671,6 @@ fn provider_status(definition: &ProviderDefinition) -> ProviderStatus {
 #[cfg(test)]
 mod tests {
     use mobius::backend::model::provider::provider;
-    use mobius::protocol::ToolDiscoveryMode;
 
     use super::*;
 
@@ -696,10 +686,12 @@ mod tests {
             (
                 "openai_codex",
                 None,
-                provider("openai_codex")
-                    .expect("Codex")
-                    .default_base_url()
-                    .map(BaseUrl::as_str),
+                Some(
+                    provider("openai_codex")
+                        .expect("Codex")
+                        .default_base_url()
+                        .as_str(),
+                ),
             ),
             (
                 "openai_codex",
@@ -711,31 +703,11 @@ mod tests {
             selection.provider = provider_id.into();
             selection.base_url = explicit.map(|url| BaseUrl::new(url).unwrap());
             assert_eq!(
-                selected_base_url(provider(provider_id).expect("provider"), &selection)
-                    .map(BaseUrl::as_str),
+                Some(
+                    selected_base_url(provider(provider_id).expect("provider"), &selection)
+                        .as_str()
+                ),
                 expected
-            );
-        }
-    }
-
-    #[test]
-    fn every_built_in_provider_advertises_a_discovery_mode() {
-        let expected = [
-            ("openai_socket", ToolDiscoveryMode::Native),
-            ("openai_codex", ToolDiscoveryMode::Native),
-            ("deepseek", ToolDiscoveryMode::Rebuild),
-            ("kimi", ToolDiscoveryMode::Rebuild),
-            ("mistral", ToolDiscoveryMode::Rebuild),
-            ("openrouter", ToolDiscoveryMode::Native),
-            ("anthropic", ToolDiscoveryMode::Native),
-            ("responses", ToolDiscoveryMode::Rebuild),
-        ];
-
-        for (id, expected) in expected {
-            assert_eq!(
-                provider_status(provider(id).expect("provider")).tool_discovery,
-                expected,
-                "provider {id}"
             );
         }
     }

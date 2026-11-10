@@ -8,6 +8,8 @@ use base64::Engine as _;
 use cap_std::ambient_authority;
 use cap_std::fs::Dir;
 use futures_util::{StreamExt as _, TryStreamExt as _, stream};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use sha2::{Digest as _, Sha256};
 use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
 use uuid::Uuid;
@@ -192,23 +194,19 @@ pub(super) async fn gc_unreferenced_blobs(root: &Path) -> Result<()> {
 }
 
 pub(super) async fn load_metadata(path: &Path) -> Result<StoredSessionFile> {
-    require_regular_file(path).await?;
-    let bytes = tokio::fs::read(path).await?;
-    if bytes.len() > 4 * 1024 {
-        return Err(Error::Tool(
-            "session file metadata exceeds size limit".into(),
-        ));
-    }
-    serde_json::from_slice(&bytes).map_err(Into::into)
+    load_json(path, "session file metadata").await
 }
 
 pub(super) async fn load_attachment_workspace(path: &Path) -> Result<StoredAttachmentWorkspace> {
+    load_json(path, "attachment workspace metadata").await
+}
+
+/// Reads one small JSON record; `what` names it when it is too large.
+async fn load_json<T: DeserializeOwned>(path: &Path, what: &str) -> Result<T> {
     require_regular_file(path).await?;
     let bytes = tokio::fs::read(path).await?;
     if bytes.len() > 4 * 1024 {
-        return Err(Error::Tool(
-            "attachment workspace metadata exceeds size limit".into(),
-        ));
+        return Err(Error::Tool(format!("{what} exceeds size limit")));
     }
     serde_json::from_slice(&bytes).map_err(Into::into)
 }
@@ -228,15 +226,13 @@ pub(super) async fn save_attachment_workspace(
     directory: &Path,
     workspace: &StoredAttachmentWorkspace,
 ) -> Result<()> {
-    let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
-    serde_json::to_writer(&mut temporary, workspace)?;
-    temporary.as_file().sync_all()?;
-    let destination = directory.join(ATTACHMENT_WORKSPACE_FILE);
-    temporary
-        .persist_noclobber(&destination)
-        .map_err(|error| error.error)?;
-    set_private_file(&destination).await?;
-    sync_directory(directory)
+    write_json(
+        directory,
+        ATTACHMENT_WORKSPACE_FILE,
+        workspace,
+        WriteMode::CreateNew,
+    )
+    .await
 }
 
 pub(super) async fn remove_staged_attachments(
@@ -266,23 +262,35 @@ pub(super) async fn remove_staged_attachments(
 }
 
 pub(super) async fn save_metadata(directory: &Path, file: &StoredSessionFile) -> Result<()> {
-    write_metadata(directory, file, false).await
+    write_json(directory, METADATA_FILE, file, WriteMode::CreateNew).await
 }
 
 pub(super) async fn replace_metadata(directory: &Path, file: &StoredSessionFile) -> Result<()> {
-    write_metadata(directory, file, true).await
+    write_json(directory, METADATA_FILE, file, WriteMode::Replace).await
 }
 
-async fn write_metadata(directory: &Path, file: &StoredSessionFile, replace: bool) -> Result<()> {
+/// Whether `write_json` may overwrite an existing record.
+#[derive(Clone, Copy)]
+enum WriteMode {
+    CreateNew,
+    Replace,
+}
+
+/// Durably writes one private JSON record through a synced temporary file.
+async fn write_json(
+    directory: &Path,
+    name: &str,
+    value: &(impl Serialize + Sync),
+    mode: WriteMode,
+) -> Result<()> {
     let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
-    serde_json::to_writer(&mut temporary, file)?;
+    serde_json::to_writer(&mut temporary, value)?;
     temporary.as_file().sync_all()?;
     set_private_file(temporary.path()).await?;
-    let destination = directory.join(METADATA_FILE);
-    if replace {
-        temporary.persist(&destination)
-    } else {
-        temporary.persist_noclobber(&destination)
+    let destination = directory.join(name);
+    match mode {
+        WriteMode::CreateNew => temporary.persist_noclobber(&destination),
+        WriteMode::Replace => temporary.persist(&destination),
     }
     .map_err(|error| error.error)?;
     sync_directory(directory)
@@ -378,9 +386,16 @@ pub(super) async fn validate_content_blob(
             size: metadata.len(),
             modified,
         });
-    let cached = stamp.is_some_and(|stamp| {
-        crate::sync::recover_lock(validated_blobs).get(content_hash) == Some(&stamp)
-    });
+    let cached = match &stamp {
+        Some(stamp) => {
+            validated_blobs
+                .lock()
+                .map_err(|_poisoned| Error::Poisoned("validated blob cache"))?
+                .get(content_hash)
+                == Some(stamp)
+        }
+        None => false,
+    };
     if cached {
         return Ok(());
     }
@@ -390,7 +405,7 @@ pub(super) async fn validate_content_blob(
         ));
     }
     if let Some(stamp) = stamp {
-        remember_validated_blob(validated_blobs, content_hash, stamp);
+        remember_validated_blob(validated_blobs, content_hash, stamp)?;
     }
     Ok(())
 }
@@ -399,12 +414,16 @@ pub(super) fn remember_validated_blob(
     validated_blobs: &StdMutex<BTreeMap<String, BlobValidationStamp>>,
     content_hash: &str,
     stamp: BlobValidationStamp,
-) {
-    let mut validated_blobs = crate::sync::recover_lock(validated_blobs);
+) -> Result<()> {
+    let mut validated_blobs = validated_blobs
+        .lock()
+        .map_err(|_poisoned| Error::Poisoned("validated blob cache"))?;
     if validated_blobs.len() >= MAX_VALIDATED_BLOBS && !validated_blobs.contains_key(content_hash) {
         validated_blobs.pop_first();
     }
     validated_blobs.insert(content_hash.into(), stamp);
+    drop(validated_blobs);
+    Ok(())
 }
 
 async fn validate_content_blob_metadata(path: &Path, size: u64) -> Result<std::fs::Metadata> {
@@ -490,6 +509,18 @@ pub(super) fn validate_media_type(media_type: &str) -> Result<()> {
     Ok(())
 }
 
+/// Whether `path` is an existing real directory; anything else there is an error.
+pub(super) async fn existing_directory(path: &Path) -> Result<bool> {
+    match tokio::fs::symlink_metadata(path).await {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => Ok(true),
+        Ok(_) => Err(Error::Tool(
+            "session file directory is not a protected directory".into(),
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
 pub(super) async fn require_directory(path: &Path) -> Result<()> {
     let metadata = tokio::fs::symlink_metadata(path).await?;
     if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() {
@@ -523,24 +554,12 @@ pub(super) async fn ensure_private_dir(path: &Path) -> Result<()> {
     set_private_dir(path).await
 }
 
-#[cfg(unix)]
 async fn set_private_dir(path: &Path) -> Result<()> {
     tokio::fs::set_permissions(path, crate::owner_only::dir()).await?;
     Ok(())
 }
 
-#[cfg(not(unix))]
-async fn set_private_dir(_path: &Path) -> Result<()> {
-    Ok(())
-}
-
-#[cfg(unix)]
 pub(super) async fn set_private_file(path: &Path) -> Result<()> {
     tokio::fs::set_permissions(path, crate::owner_only::file()).await?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-pub(super) async fn set_private_file(_path: &Path) -> Result<()> {
     Ok(())
 }

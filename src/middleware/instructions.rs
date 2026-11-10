@@ -5,7 +5,6 @@ use std::path::Path;
 
 use cap_std::ambient_authority;
 use cap_std::fs::Dir;
-#[cfg(unix)]
 use cap_std::fs::MetadataExt as _;
 
 use super::Middleware;
@@ -122,21 +121,14 @@ fn read_optional(directory: &Dir, name: &str) -> Result<Option<String>> {
     })
 }
 
-#[cfg(unix)]
 fn same_file(left: &cap_std::fs::Metadata, right: &cap_std::fs::Metadata) -> bool {
     left.dev() == right.dev() && left.ino() == right.ino()
-}
-
-#[cfg(not(unix))]
-fn same_file(_left: &cap_std::fs::Metadata, _right: &cap_std::fs::Metadata) -> bool {
-    true
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[cfg(unix)]
     #[test]
     fn instruction_symlinks_are_rejected() {
         use std::os::unix::fs::symlink;

@@ -1,20 +1,210 @@
-//! Shared Chat Completions wire primitives for native providers.
+//! Shared Chat Completions model and wire primitives for native providers.
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 use serde::Serialize;
 use serde::ser::SerializeSeq as _;
 use serde_json::Value;
 
+use super::provider::{BaseUrl, ProviderBuildConfig};
 use super::transport::{ApiKeyModel, SseHandler};
 use super::{
-    ImageDataUrl, MAX_TOOL_CALLS, MediaPreparation, Model, ModelEventSink, ModelRequest,
-    ToolDefinition, image_input, usage_i64,
+    ImageDataUrl, MAX_TOOL_CALLS, MediaPreparation, Model, ModelEventSink, ModelOutput,
+    ModelRequest, PromptCacheMode, ToolDefinition, image_input, usage_i64,
 };
-use crate::protocol::TokenUsage;
-use crate::{Error, Result};
+use crate::protocol::{ModelInfo, TokenUsage, ToolDiscoveryMode};
+use crate::{BoxFuture, Error, Result};
+
+/// Provider-specific wire behavior of a native Chat Completions model.
+pub(super) trait Dialect: Send + Sync + 'static {
+    /// Provider name used in errors and request admission.
+    const NAME: &'static str;
+    /// Built-in provider manifest ID.
+    const ID: &'static str;
+    /// Whether the stream ends with a usage chunk only when requested.
+    const STREAM_USAGE: bool;
+    /// Whether tool results may carry images.
+    const TOOL_IMAGES: bool;
+    /// Provider fields of one wire message.
+    type Message<'a>: Default + Serialize;
+    /// Accumulates one streamed response.
+    type Stream: ChatStream;
+
+    /// Encodes one message payload.
+    /// # Errors
+    /// Returns content the provider cannot represent.
+    fn message(source: MessageSource<'_>) -> Result<Self::Message<'_>>;
+}
+
+/// A streamed Chat Completions response that normalizes into model output.
+pub(super) trait ChatStream: SseHandler + Default {
+    /// Validates the completed stream.
+    /// # Errors
+    /// Returns an incomplete or invalid stream.
+    fn finish(self) -> Result<ModelOutput>;
+}
+
+/// A native Chat Completions model speaking one provider dialect.
+#[derive(Debug)]
+pub struct ChatCompletions<D> {
+    pub(super) config: ApiKeyModel,
+    dialect: PhantomData<D>,
+}
+
+impl<D> ChatCompletions<D> {
+    /// Creates a provider for an API root or compatible endpoint.
+    /// # Errors
+    /// Returns invalid credentials, endpoint or model configuration.
+    pub fn new(
+        api_key: impl Into<String>,
+        base_url: BaseUrl,
+        model: impl Into<String>,
+    ) -> Result<Self> {
+        Self::new_with_transport(
+            api_key,
+            base_url,
+            model,
+            super::ModelTransportSettings::default(),
+        )
+    }
+
+    /// Creates a provider with explicit HTTP and retry policy.
+    /// # Errors
+    /// Returns invalid provider configuration or HTTP client construction errors.
+    pub fn new_with_transport(
+        api_key: impl Into<String>,
+        base_url: BaseUrl,
+        model: impl Into<String>,
+        settings: super::ModelTransportSettings,
+    ) -> Result<Self> {
+        ApiKeyModel::from_settings(api_key.into(), base_url, model.into(), settings)
+            .map(Self::from_config)
+    }
+
+    pub(super) const fn from_config(config: ApiKeyModel) -> Self {
+        Self {
+            config,
+            dialect: PhantomData,
+        }
+    }
+
+    /// Selects an operator-configured reasoning effort.
+    /// # Errors
+    /// Returns an error when the effort is empty.
+    pub fn with_reasoning_effort(mut self, effort: impl Into<String>) -> Result<Self> {
+        self.config.set_reasoning(effort)?;
+        Ok(self)
+    }
+}
+
+pub(super) fn request_body<'a, D: Dialect>(
+    model: &'a ChatCompletions<D>,
+    request: ModelRequest<'a>,
+) -> Result<RequestBody<'a, D::Message<'a>>> {
+    let mut body = RequestBody::new(
+        &model.config.model,
+        model.config.reasoning_effort.as_deref(),
+        request,
+        D::NAME,
+        D::message,
+    )?;
+    if D::STREAM_USAGE {
+        body.stream_options = Some(StreamOptions {
+            include_usage: true,
+        });
+    }
+    Ok(body)
+}
+
+/// Runs one streamed request: admits and encodes the body, posts it, and reads the stream.
+async fn send_response<D: Dialect>(
+    model: &ChatCompletions<D>,
+    request: ModelRequest<'_>,
+    events: ModelEventSink,
+    media: Option<MediaPreparation<'_>>,
+) -> Result<ModelOutput> {
+    let body = super::media::encode_request(model, request, media, true, |input| {
+        Ok(serde_json::to_vec(&request_body(
+            model,
+            ModelRequest { input, ..request },
+        )?)?)
+    })
+    .await?;
+    let response = post(
+        &model.config.client,
+        model.config.base_url.root(),
+        model.config.api_key.as_deref(),
+        body,
+        D::NAME,
+    )
+    .await?;
+    let mut stream = D::Stream::default();
+    super::transport::read_sse(response, D::NAME, &events, &mut stream).await?;
+    stream.finish()
+}
+
+impl<D: Dialect> Model for ChatCompletions<D> {
+    fn transport_settings(&self) -> super::ModelTransportSettings {
+        self.config.transport
+    }
+
+    fn info(&self) -> ModelInfo {
+        self.config.info()
+    }
+
+    fn supports_image_input(&self) -> bool {
+        true
+    }
+
+    fn supports_tool_image_input(&self) -> bool {
+        D::TOOL_IMAGES
+    }
+
+    fn prompt_cache_capability(&self) -> PromptCacheMode {
+        PromptCacheMode::Implicit
+    }
+
+    fn respond_prepared<'a>(
+        &'a self,
+        request: ModelRequest<'a>,
+        events: ModelEventSink,
+        media: MediaPreparation<'a>,
+    ) -> BoxFuture<'a, Result<ModelOutput>> {
+        Box::pin(send_response(self, request, events, Some(media)))
+    }
+
+    fn respond<'a>(
+        &'a self,
+        request: ModelRequest<'a>,
+        events: ModelEventSink,
+    ) -> BoxFuture<'a, Result<ModelOutput>> {
+        Box::pin(send_response(self, request, events, None))
+    }
+}
+
+/// Builds a catalogued Chat Completions provider from resolved settings.
+/// These transports implement only rebuild discovery, which provider assembly has checked.
+pub(super) fn build<D: Dialect>(
+    config: ProviderBuildConfig,
+    base_url: BaseUrl,
+    _tool_discovery: ToolDiscoveryMode,
+) -> Result<Arc<dyn Model>> {
+    let api_key = config.credential.into_optional_api_key(D::ID)?;
+    let mut provider = ChatCompletions::<D>::from_config(ApiKeyModel::new(
+        api_key,
+        base_url,
+        config.model,
+        config.http,
+        config.transport,
+    )?);
+    if let Some(effort) = config.reasoning_effort {
+        provider = provider.with_reasoning_effort(effort)?;
+    }
+    Ok(Arc::new(provider))
+}
 
 #[derive(Serialize)]
 pub(super) struct RequestBody<'a, C> {
@@ -51,10 +241,19 @@ pub(super) struct StreamOptions {
     pub(super) include_usage: bool,
 }
 
+/// One history entry encoded as a Chat Completions message.
 #[derive(Clone, Copy)]
 pub(super) enum MessageSource<'a> {
+    /// System instructions.
     System(&'a str),
-    History { role: &'a str, item: &'a Value },
+    /// A history message with its normalized role.
+    History {
+        /// The wire role.
+        role: &'a str,
+        /// The provider-neutral item.
+        item: &'a Value,
+    },
+    /// A tool result's output.
     Tool(&'a Value),
 }
 
@@ -244,7 +443,7 @@ impl<'a> WireContent<'a> {
                         .into(),
                 }),
                 Some("file") => content.push(WireContentPart::Text {
-                    text: Cow::Owned(format!("Stored file: {}", part["file"])),
+                    text: Cow::Owned(super::StoredFile(&part["file"]).to_string()),
                 }),
                 Some("input_image") => {
                     if let Some((media_type, data)) = image_input(part, provider)? {
@@ -385,12 +584,11 @@ impl ToolCalls {
                 } else {
                     call.arguments
                 };
-                Ok(serde_json::json!({
-                    "type": "function_call",
-                    "call_id": required(call.id, "tool-call ID", provider)?,
-                    "name": required(call.name, "tool name", provider)?,
-                    "arguments": arguments
-                }))
+                Ok(super::function_call_item(
+                    &required(call.id, "tool-call ID", provider)?,
+                    &required(call.name, "tool name", provider)?,
+                    &arguments,
+                ))
             })
             .collect()
     }
@@ -480,33 +678,6 @@ pub(super) async fn post(
         return Err(super::transport::status_error(response, provider).await);
     }
     Ok(response)
-}
-
-/// Runs one streamed request: admits and encodes the body, posts it, and reads the stream.
-pub(super) async fn respond<H: SseHandler + Default>(
-    model: &(impl Model + ?Sized),
-    config: &ApiKeyModel,
-    provider: &str,
-    request: ModelRequest<'_>,
-    events: ModelEventSink,
-    media: Option<MediaPreparation<'_>>,
-    encode: impl Fn(ModelRequest<'_>) -> Result<Vec<u8>> + Send + Sync,
-) -> Result<H> {
-    let body = super::media::encode_request(model, request, media, true, |input| {
-        encode(ModelRequest { input, ..request })
-    })
-    .await?;
-    let response = post(
-        &config.client,
-        config.base_url.root(),
-        config.api_key.as_deref(),
-        body,
-        provider,
-    )
-    .await?;
-    let mut stream = H::default();
-    super::transport::read_sse(response, provider, &events, &mut stream).await?;
-    Ok(stream)
 }
 
 pub(super) fn tool_text(output: &Value) -> Result<Cow<'_, str>> {

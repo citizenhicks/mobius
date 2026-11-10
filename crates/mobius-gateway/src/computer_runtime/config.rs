@@ -649,15 +649,10 @@ pub(crate) fn node_distribution(os: &str, arch: &str) -> Result<(&'static str, &
 }
 
 fn is_executable(path: &Path) -> bool {
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
         path.metadata()
             .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
-    }
-    #[cfg(not(unix))]
-    {
-        path.is_file()
     }
 }
 

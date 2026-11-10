@@ -1,17 +1,13 @@
 use std::path::Path;
 use std::sync::OnceLock;
 
-use ratatui::style::Color;
-use ratatui::style::Modifier;
-use ratatui::style::Style;
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 use syntect::easy::HighlightLines;
-use syntect::highlighting::FontStyle;
-use syntect::highlighting::Theme;
+use syntect::highlighting::{FontStyle, Theme};
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
-use two_face::theme::EmbeddedLazyThemeSet;
-use two_face::theme::EmbeddedThemeName;
+use two_face::theme::{EmbeddedLazyThemeSet, EmbeddedThemeName};
 
 const MAX_LINE_BYTES: usize = 4 * 1024;
 

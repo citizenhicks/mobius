@@ -5,9 +5,6 @@ pub use config::AuthConfig;
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::io::Read as _;
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -89,7 +86,6 @@ pub struct PairingGrant {
     pub expires_at: i64,
 }
 
-#[cfg(any(unix, test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PairingStatus {
     Pending,
@@ -116,19 +112,9 @@ impl std::fmt::Debug for AuthStore {
 }
 
 impl AuthStore {
-    /// Initializes authentication with the required operator pairing policy.
-    /// # Errors
-    /// Returns an error for invalid policy or inaccessible authentication state.
-    pub fn initialize(
-        path: impl Into<PathBuf>,
-        config: AuthConfig,
-    ) -> Result<(Self, PairingGrant)> {
-        config.validate()?;
-        Self::initialize_validated(path, config)
-    }
-
-    /// Uses pairing policy already checked with its gateway configuration.
-    pub(crate) fn initialize_validated(
+    /// Initializes authentication with pairing policy already checked with its gateway
+    /// configuration.
+    pub(crate) fn initialize(
         path: impl Into<PathBuf>,
         config: AuthConfig,
     ) -> Result<(Self, PairingGrant)> {
@@ -158,38 +144,12 @@ impl AuthStore {
         ))
     }
 
-    /// Opens authentication with the required operator pairing policy.
-    /// Existing clients remain valid when the configured limit is reduced.
-    /// # Errors
-    /// Returns an error for invalid policy, corrupt state, or inaccessible files.
-    pub fn open(path: impl Into<PathBuf>, config: AuthConfig) -> Result<Self> {
-        config.validate()?;
-        Self::open_validated(path, config)
-    }
-
-    /// Uses pairing policy already checked with its gateway configuration.
-    pub(crate) fn open_validated(path: impl Into<PathBuf>, config: AuthConfig) -> Result<Self> {
+    /// Opens authentication with pairing policy already checked with its gateway
+    /// configuration. Existing clients remain valid when the configured limit is reduced.
+    pub(crate) fn open(path: impl Into<PathBuf>, config: AuthConfig) -> Result<Self> {
         let path = path.into();
-        let mut options = fs::OpenOptions::new();
-        options.read(true);
-        #[cfg(unix)]
-        options.custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK);
-        let file = options.open(&path)?;
-        let metadata = file.metadata()?;
-        if !metadata.is_file() {
-            return Err(Error::Config(
-                "authentication state must be a regular file".into(),
-            ));
-        }
-        if metadata.len() > MAX_AUTH_STATE_BYTES {
-            return Err(Error::Config("authentication state is too large".into()));
-        }
-        let mut contents = Vec::new();
-        file.take(MAX_AUTH_STATE_BYTES + 1)
-            .read_to_end(&mut contents)?;
-        if u64::try_from(contents.len()).unwrap_or(u64::MAX) > MAX_AUTH_STATE_BYTES {
-            return Err(Error::Config("authentication state is too large".into()));
-        }
+        let contents =
+            crate::publication::read_private(&path, MAX_AUTH_STATE_BYTES, "authentication state")?;
         let state: AuthState = serde_json::from_slice(&contents)?;
         validate_auth_state(&state)?;
         let channel_identity = crate::channel::Identity::open(&path)?;
@@ -403,7 +363,6 @@ impl AuthStore {
         Ok(true)
     }
 
-    #[cfg(any(unix, test))]
     pub(crate) fn pairing_status(&self, code: &str) -> Result<PairingStatus> {
         let state = self.lock_state()?;
         if state
@@ -419,7 +378,6 @@ impl AuthStore {
         })
     }
 
-    #[cfg(any(unix, test))]
     pub(crate) fn revoke_pairing_code(&self, code: &str) -> Result<()> {
         let mut state = self.lock_state()?;
         let Some(pending) = &state.pending_pairing else {
@@ -560,7 +518,6 @@ fn save_auth_state(path: &Path, state: &AuthState, create_new: bool) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt as _;
 
     #[test]
@@ -658,19 +615,11 @@ mod tests {
         assert!(auth.authenticate(&repaired.token).is_ok());
     }
 
-    #[cfg(unix)]
     #[test]
     fn auth_state_is_owner_only() {
         let directory = tempfile::tempdir().expect("state directory");
         let path = directory.path().join("auth.json");
-        let invalid = AuthConfig {
-            paired_clients: 0,
-            ..AuthConfig::default()
-        };
-        assert!(AuthStore::initialize(&path, invalid).is_err());
-        assert!(!path.exists());
         AuthStore::initialize(&path, AuthConfig::default()).expect("initialize auth");
-        assert!(AuthStore::open(&path, invalid).is_err());
 
         let mode = fs::metadata(path)
             .expect("auth metadata")

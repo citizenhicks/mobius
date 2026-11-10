@@ -146,66 +146,66 @@ fn rejected(Rejection { message, .. }: Rejection) -> Error {
     Error::Protocol(message.to_string())
 }
 
-pub(super) async fn handle_message(
-    message: ClientMessage,
+/// Ends the call when the connection creates a chat or opens a different one.
+pub(super) async fn end_on_switch(message: &ClientMessage, voice: &mut Option<ConnectionVoice>) {
+    if matches!(message, ClientMessage::CreateSession { .. })
+        || matches!(message, ClientMessage::OpenSession { session_id, .. }
+            if voice.as_ref().is_some_and(|voice| *voice.session_id != **session_id))
+    {
+        end(voice).await;
+    }
+}
+
+pub(super) async fn start_call(
+    request_id: Arc<str>,
+    session_id: SessionId,
+    offer_sdp: String,
     connection: &mut super::dispatch::ConnectionSessionState<'_>,
     writer: &mut (impl AsyncWrite + Unpin),
-) -> Result<Option<ClientMessage>> {
-    if matches!(&message, ClientMessage::CreateSession { .. })
-        || matches!(&message, ClientMessage::OpenSession { session_id, .. }
-            if connection.voice.as_ref().is_some_and(|voice| *voice.session_id != **session_id))
+) -> Result<()> {
+    let selected = require_selected(connection.selected.as_ref(), &session_id).cloned(); // rules-allow: the voice task owns its session handle
+    match selected {
+        Ok(host) => {
+            end(connection.voice).await;
+            *connection.voice = Some(ConnectionVoice::start(host, request_id, offer_sdp));
+            Ok(())
+        }
+        Err(rejection) => {
+            write_frame(
+                writer,
+                &ServerFrame::new(ServerMessage::RealtimeVoiceFailed {
+                    request_id,
+                    session_id,
+                    message: rejection.message,
+                }),
+            )
+            .await
+        }
+    }
+}
+
+pub(super) async fn end_call(
+    session_id: SessionId,
+    voice_id: Arc<str>,
+    voice: &mut Option<ConnectionVoice>,
+    writer: &mut (impl AsyncWrite + Unpin),
+) -> Result<()> {
+    if voice
+        .as_ref()
+        .is_some_and(|voice| voice.session_id == session_id && voice.voice_id == voice_id)
     {
-        end(connection.voice).await;
+        end(voice).await;
+        write_frame(
+            writer,
+            &ServerFrame::new(ServerMessage::RealtimeVoiceEnded {
+                session_id,
+                voice_id,
+                reason: None,
+            }),
+        )
+        .await?;
     }
-    match message {
-        ClientMessage::StartRealtimeVoice {
-            request_id,
-            session_id,
-            offer_sdp,
-        } => {
-            let selected = require_selected(connection.selected.as_ref(), &session_id).cloned(); // rules-allow: the voice task owns its session handle
-            match selected {
-                Ok(host) => {
-                    end(connection.voice).await;
-                    *connection.voice = Some(ConnectionVoice::start(host, request_id, offer_sdp));
-                    Ok(None)
-                }
-                Err(rejection) => write_frame(
-                    writer,
-                    &ServerFrame::new(ServerMessage::RealtimeVoiceFailed {
-                        request_id,
-                        session_id: session_id.share(),
-                        message: rejection.message,
-                    }),
-                )
-                .await
-                .map(|()| None),
-            }
-        }
-        ClientMessage::EndRealtimeVoice {
-            session_id,
-            voice_id,
-        } => {
-            if connection
-                .voice
-                .as_ref()
-                .is_some_and(|voice| voice.session_id == session_id && voice.voice_id == voice_id)
-            {
-                end(connection.voice).await;
-                write_frame(
-                    writer,
-                    &ServerFrame::new(ServerMessage::RealtimeVoiceEnded {
-                        session_id,
-                        voice_id,
-                        reason: None,
-                    }),
-                )
-                .await?;
-            }
-            Ok(None)
-        }
-        _ => Ok(Some(message)),
-    }
+    Ok(())
 }
 
 pub(super) async fn next_update(voice: &mut Option<ConnectionVoice>) -> Option<ServerMessage> {
@@ -282,5 +282,4 @@ async fn drive(
 }
 
 #[cfg(test)]
-#[path = "voice_tests.rs"]
 mod tests;

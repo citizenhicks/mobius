@@ -203,6 +203,23 @@ pub enum FrontendPriority {
 }
 
 impl FrontendWidget {
+    /// A neutral, primary text widget with no symbol, progress, content, action, or count.
+    pub fn new(id: impl Into<Arc<str>>, slot: FrontendSlot, text: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            slot,
+            text: text.into(),
+            tone: FrontendTone::Neutral,
+            symbol: None,
+            icon_only: false,
+            progress: None,
+            content: None,
+            action: None,
+            count: None,
+            priority: FrontendPriority::Primary,
+        }
+    }
+
     /// Pending decisions contributed by an attention widget.
     pub fn pending_attention_items(&self) -> impl Iterator<Item = &FrontendActionListItem> {
         let items = match (&self.slot, &self.content) {
@@ -407,8 +424,6 @@ pub struct FrontendPickerOption {
     pub detail: String,
     /// The symbol.
     pub symbol: Option<FrontendSymbol>,
-    /// The shows detail.
-    pub shows_detail: bool,
     /// The op.
     pub op: Op,
 }
@@ -502,6 +517,17 @@ pub struct FrontendPreviewEvent {
     pub recorded_at_ms: i64,
     /// The event.
     pub event: EventMsg,
+}
+
+impl From<crate::backend::checkpoint::JournalEvent> for FrontendPreviewEvent {
+    fn from(record: crate::backend::checkpoint::JournalEvent) -> Self {
+        Self {
+            sequence: record.sequence,
+            submission_id: record.event.submission_id,
+            recorded_at_ms: record.recorded_at_ms,
+            event: record.event.msg,
+        }
+    }
 }
 
 /// Generic capability UI updates understood by every frontend.
@@ -610,6 +636,7 @@ impl EventMsg {
     /// Renders framework-owned semantic events without frontend prose parsing.
     #[must_use]
     pub fn presentation(&self) -> Option<RenderedBlock> {
+        let mut capability = "agent";
         let block = match self {
             Self::Error(error) => FrontendBlock {
                 role: FrontendBlockRole::Notice,
@@ -643,16 +670,20 @@ impl EventMsg {
                     ..Default::default()
                 }
             }
-            Self::WebSearchBegin(search) => FrontendBlock {
-                id: Some(format!("{}/{}", search.model_step_id, search.call_id)),
-                group: Some(search.turn_id.to_string()),
-                state: FrontendBlockState::Pending,
-                role: FrontendBlockRole::WebSearch,
-                title: "Searching the web".into(),
-                symbol: Some(FrontendSymbol::Search),
-                ..Default::default()
-            },
+            Self::WebSearchBegin(search) => {
+                capability = "web_search";
+                FrontendBlock {
+                    id: Some(format!("{}/{}", search.model_step_id, search.call_id)),
+                    group: Some(search.turn_id.to_string()),
+                    state: FrontendBlockState::Pending,
+                    role: FrontendBlockRole::WebSearch,
+                    title: "Searching the web".into(),
+                    symbol: Some(FrontendSymbol::Search),
+                    ..Default::default()
+                }
+            }
             Self::WebSearchEnd(search) => {
+                capability = "web_search";
                 let (title, text, tone) = match &search.action {
                     WebSearchAction::Search { queries } => (
                         "Searched the web",
@@ -685,18 +716,12 @@ impl EventMsg {
                 FrontendBlock {
                     id: Some(format!("{}/{}", search.model_step_id, search.call_id)),
                     group: Some(search.turn_id.to_string()),
-                    update: FrontendBlockUpdate::Replace,
-                    state: FrontendBlockState::Complete,
                     role: FrontendBlockRole::WebSearch,
                     title: title.into(),
                     text,
                     symbol: Some(FrontendSymbol::Search),
-                    links: Vec::new(),
-                    files: Vec::new(),
-                    content: Default::default(),
-                    format: FrontendBlockFormat::PlainText,
                     tone,
-                    ui: Vec::new(),
+                    ..Default::default()
                 }
             }
             Self::Frontend(FrontendEvent::Render { capability, block }) => {
@@ -727,33 +752,7 @@ impl EventMsg {
             | Self::Frontend(_) => return None,
         };
         Some(RenderedBlock {
-            capability: match self {
-                Self::WebSearchBegin(_) | Self::WebSearchEnd(_) => "web_search",
-                Self::MessageDelta(_)
-                | Self::SubmissionRejected(_)
-                | Self::SessionConfigured(_)
-                | Self::TurnStarted(_)
-                | Self::TurnComplete(_)
-                | Self::Message(_)
-                | Self::AssistantMessage(_)
-                | Self::AssistantContentDelta(_)
-                | Self::ModelStepStarted(_)
-                | Self::ModelStepCompleted(_)
-                | Self::SessionHistory(_)
-                | Self::ModelChanged(_)
-                | Self::SessionResumeRequested(_)
-                | Self::ToolCallBegin(_)
-                | Self::ToolCallEnd(_)
-                | Self::ToolLoad(_)
-                | Self::ExecApprovalRequest(_)
-                | Self::TokenCount(_)
-                | Self::ContextCompacted
-                | Self::Frontend(_)
-                | Self::Error(_)
-                | Self::Warning(_)
-                | Self::TurnAborted(_) => "agent",
-            }
-            .into(),
+            capability: capability.into(),
             block,
         })
     }
@@ -854,33 +853,38 @@ impl FrontendSymbol {
     /// Unknown names become [`Self::Custom`] rather than an error: a frontend rendering a
     /// placeholder is a better outcome than a gateway refusing to decode a whole frame.
     pub(crate) fn from_wire(name: &str) -> Self {
-        match name {
-            "agent" => Self::Agent,
-            "brain" => Self::Brain,
-            "branch" => Self::Branch,
-            "chat" => Self::Chat,
-            "delete" => Self::Delete,
-            "edit" => Self::Edit,
-            "progress" => Self::Progress,
-            "promote" => Self::Promote,
-            "route" => Self::Route,
-            "search" => Self::Search,
-            "shield" => Self::Shield,
-            "shield_alert" => Self::ShieldAlert,
-            "shield_check" => Self::ShieldCheck,
-            "shield_off" => Self::ShieldOff,
-            "sparkle" => Self::Sparkle,
-            "storage" => Self::Storage,
-            "task" => Self::Task,
-            "voice" => Self::Voice,
-            "steer" => Self::Steer,
-            "queue" => Self::Queue,
-            "question" => Self::Question,
-            "plus" => Self::Plus,
-            "compaction" => Self::Compaction,
-            other => Self::Custom(other.to_owned()),
-        }
+        Self::NAMED
+            .into_iter()
+            .find(|symbol| symbol.as_str() == name)
+            .unwrap_or_else(|| Self::Custom(name.to_owned()))
     }
+
+    /// Every named symbol; `as_str` holds the one name table.
+    const NAMED: [Self; 23] = [
+        Self::Agent,
+        Self::Brain,
+        Self::Branch,
+        Self::Chat,
+        Self::Delete,
+        Self::Edit,
+        Self::Progress,
+        Self::Promote,
+        Self::Route,
+        Self::Search,
+        Self::Shield,
+        Self::ShieldAlert,
+        Self::ShieldCheck,
+        Self::ShieldOff,
+        Self::Sparkle,
+        Self::Storage,
+        Self::Task,
+        Self::Voice,
+        Self::Steer,
+        Self::Queue,
+        Self::Question,
+        Self::Plus,
+        Self::Compaction,
+    ];
 }
 
 impl std::fmt::Display for FrontendSymbol {

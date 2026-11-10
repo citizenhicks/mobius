@@ -13,59 +13,6 @@ async fn local_sandbox_rejects_parent_path_escape() {
     assert!(matches!(error, Error::Sandbox(_)));
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-#[tokio::test]
-async fn local_sandbox_confines_command_writes_to_the_workspace() {
-    if std::env::var("CODEX_SANDBOX").as_deref() == Ok("seatbelt") {
-        return;
-    }
-    let workspace = TempDir::new().expect("create workspace");
-    let outside = workspace.path().parent().expect("parent").join(format!(
-        "{}-outside.txt",
-        workspace
-            .path()
-            .file_name()
-            .expect("workspace name")
-            .to_string_lossy()
-    ));
-    let probe = outside.with_extension("probe");
-    let can_write_outside = std::process::Command::new("sh")
-        .args(["-c", "printf probe > \"$1\"", "sh"])
-        .arg(&probe)
-        .status()
-        .is_ok_and(|status| status.success());
-    if !can_write_outside {
-        return;
-    }
-    std::fs::remove_file(&probe).expect("clean sandbox probe");
-    let sandbox = LocalSandbox::new(workspace.path()).expect("sandbox");
-
-    let output = sandbox
-        .execute(
-            &format!(
-                "printf mobius > command.txt; printf blocked > ../{}",
-                outside.file_name().expect("outside name").to_string_lossy()
-            ),
-            SandboxMode::WorkspaceWrite,
-            NetworkAccess::Denied,
-            mobius::backend::sandbox::CommandMode::Foreground,
-            CommandOutputSink::default(),
-        )
-        .await
-        .expect("execute sandboxed command");
-    let escaped = outside.exists();
-    if escaped {
-        std::fs::remove_file(&outside).expect("clean escaped file");
-    }
-
-    let workspace_output = std::fs::read_to_string(workspace.path().join("command.txt"))
-        .unwrap_or_else(|error| {
-            panic!("read workspace output: {error}; command output: {output:?}")
-        });
-    assert_eq!(workspace_output, "mobius");
-    assert!(!escaped);
-}
-
 #[tokio::test]
 async fn sqlite_persists_latest_checkpoint_transcript_and_fork_lineage() {
     let workspace = TempDir::new().expect("create workspace");

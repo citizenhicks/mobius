@@ -132,15 +132,17 @@ async fn pipelined_open_resumes_after_ready_and_selection_skips_replay() {
     .unwrap()
     .into_parts();
     for request in [
-        ClientMessage::GetGitDiffTotals {
+        ClientMessage::GetGitDiff {
             request_id: "totals".into(),
             session_id: session_id.share(),
             scope: GitDiffScope::Unstaged,
+            totals: true,
         },
         ClientMessage::GetGitDiff {
             request_id: "diff".into(),
             session_id: session_id.share(),
             scope: GitDiffScope::Unstaged,
+            totals: false,
         },
     ] {
         selector.send(request).await.unwrap();

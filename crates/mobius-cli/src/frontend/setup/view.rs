@@ -8,13 +8,13 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Wrap};
 use std::borrow::Cow;
 
-use super::state::{AuthField, MiddlewareRow, Page, Progress, SetupState};
+use super::state::{AuthField, MiddlewareRow, Page, Progress, SaveTarget, SetupState};
 use super::{
     MIN_INLINE_DESCRIPTION_WIDTH, SAVE_DEFAULT_DESCRIPTION, SAVE_DEFAULT_LABEL, SetupMode,
-    SetupTerminal, UPDATE_BOT_DESCRIPTION, UPDATE_BOT_LABEL,
+    UPDATE_BOT_DESCRIPTION, UPDATE_BOT_LABEL,
 };
-use crate::frontend::terminal::terminal_text;
-use crate::frontend::theme::{Role, current};
+use crate::frontend::terminal::{Screen, terminal_text};
+use crate::frontend::theme::{Role, brand_header, current};
 
 #[derive(Clone, Copy)]
 pub(super) struct AgentLayout {
@@ -23,7 +23,7 @@ pub(super) struct AgentLayout {
     pub(super) description_column: Option<usize>,
 }
 
-pub(super) fn draw(terminal: &mut SetupTerminal, state: &SetupState) -> Result<()> {
+pub(super) fn draw(terminal: &mut Screen, state: &SetupState) -> Result<()> {
     terminal.draw(|frame| render(frame, state))?;
     Ok(())
 }
@@ -85,22 +85,10 @@ pub(in crate::frontend) fn selection_scroll(lines: &[Line<'_>], area: Rect) -> u
 }
 
 pub(super) fn header(state: &SetupState) -> Vec<Line<'static>> {
-    brand_header(match state.mode {
+    vec![brand_header(match state.mode {
         SetupMode::Login => "provider login",
         SetupMode::Bot | SetupMode::BotModel => "Bot setup",
-    })
-}
-
-pub(in crate::frontend) fn brand_header(section: &str) -> Vec<Line<'static>> {
-    let theme = current();
-    vec![Line::from(vec![
-        Span::styled("◉ ", theme.style(Role::AccentStrong)),
-        Span::styled(
-            "MÖBIUS",
-            theme.style(Role::Accent).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(format!(" {section}"), theme.style(Role::Muted)),
-    ])]
+    })]
 }
 
 pub(super) fn render_editing(lines: &mut Vec<Line<'static>>, state: &SetupState, width: u16) {
@@ -234,20 +222,9 @@ fn render_authentication_page(lines: &mut Vec<Line<'static>>, state: &SetupState
             ));
             lines.push(Line::styled(
                 if state.has_matching_credential() {
-                    "    Paste a new key, or leave empty to reuse the gateway credential.".into()
+                    "    Paste a new key, or leave empty to reuse the gateway credential."
                 } else {
-                    state
-                        .definition()
-                        .default_api_key_env
-                        .as_deref()
-                        .map_or_else(
-                            || "    Paste a key configured for this gateway endpoint.".into(),
-                            |environment| {
-                                format!(
-                                    "    Paste a key, or leave empty to use {environment} when set."
-                                )
-                            },
-                        )
+                    "    Paste a key configured for this gateway endpoint."
                 },
                 theme.style(Role::Muted),
             ));
@@ -262,7 +239,7 @@ fn render_authentication_page(lines: &mut Vec<Line<'static>>, state: &SetupState
             ));
         }
     }
-    if state.definition().configurable_base_url() {
+    {
         let focused = state.auth_field == AuthField::Endpoint;
         lines.push(Line::from(""));
         lines.push(Line::styled(
@@ -424,6 +401,7 @@ fn render_agent_page(lines: &mut Vec<Line<'static>>, state: &SetupState, width: 
                     } else {
                         "[ ]"
                     },
+                    Nesting::Top,
                     layout,
                 );
             }
@@ -459,7 +437,7 @@ fn render_agent_page(lines: &mut Vec<Line<'static>>, state: &SetupState, width: 
                 } else {
                     ""
                 };
-                extension_choice(
+                agent_choice(
                     lines,
                     &extension.name,
                     &format!(
@@ -475,6 +453,7 @@ fn render_agent_page(lines: &mut Vec<Line<'static>>, state: &SetupState, width: 
                     } else {
                         "[ ]"
                     },
+                    Nesting::Nested,
                     layout,
                 );
             }
@@ -514,7 +493,7 @@ pub(super) fn agent_layout(state: &SetupState, width: usize) -> AgentLayout {
         .map(|extension| 10 + display_width(&terminal_text(&extension.name)))
         .max()
         .unwrap_or(0);
-    let action_end = 6 + display_width(if state.default_only {
+    let action_end = 6 + display_width(if state.save_to == SaveTarget::Template {
         SAVE_DEFAULT_LABEL
     } else {
         UPDATE_BOT_LABEL
@@ -595,20 +574,26 @@ pub(super) fn setting_choice(
     );
 }
 
+/// A checkbox or action row; a nested row is an extension under its feature.
 pub(super) fn agent_choice(
     lines: &mut Vec<Line<'static>>,
     label: &str,
     description: &str,
     focused: bool,
     marker: &str,
+    nesting: Nesting,
     layout: AgentLayout,
 ) {
     let role = if focused { Role::Selection } else { Role::Text };
+    let indent = match nesting {
+        Nesting::Top => "",
+        Nesting::Nested => "    ",
+    };
     push_described_row(
         lines,
         vec![Span::styled(
             format!(
-                "{} {:3} {}",
+                "{}{indent} {:3} {}",
                 if focused { "›" } else { " " },
                 marker,
                 terminal_text(label)
@@ -621,30 +606,10 @@ pub(super) fn agent_choice(
     );
 }
 
-pub(super) fn extension_choice(
-    lines: &mut Vec<Line<'static>>,
-    label: &str,
-    description: &str,
-    focused: bool,
-    marker: &str,
-    layout: AgentLayout,
-) {
-    let role = if focused { Role::Selection } else { Role::Text };
-    push_described_row(
-        lines,
-        vec![Span::styled(
-            format!(
-                "{}     {:3} {}",
-                if focused { "›" } else { " " },
-                marker,
-                terminal_text(label)
-            ),
-            current().style(role),
-        )],
-        description,
-        focused,
-        layout,
-    );
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Nesting {
+    Top,
+    Nested,
 }
 
 pub(super) fn push_described_row(
@@ -750,7 +715,7 @@ pub(super) fn render_apply_actions(
     layout: Option<AgentLayout>,
 ) {
     lines.push(Line::from(""));
-    if state.default_only {
+    if state.save_to == SaveTarget::Template {
         apply_choice(
             lines,
             if state.start_chat {
@@ -785,7 +750,15 @@ pub(super) fn apply_choice(
     layout: Option<AgentLayout>,
 ) {
     if let Some(layout) = layout {
-        agent_choice(lines, label, description, focused, "→", layout);
+        agent_choice(
+            lines,
+            label,
+            description,
+            focused,
+            "→",
+            Nesting::Top,
+            layout,
+        );
     } else {
         choice(lines, label, description, focused, "→");
     }

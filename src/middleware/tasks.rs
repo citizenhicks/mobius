@@ -64,23 +64,8 @@ super::manifest::middleware_manifest! {
     "tasks", text::DEFINITION, required: false, settings: &[]
 }
 
-enum Command {
-    Tasks,
-}
-
-impl Command {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::Tasks => "tasks",
-        }
-    }
-
-    fn parse(value: &str) -> Option<Self> {
-        [Self::Tasks]
-            .into_iter()
-            .find(|command| command.as_str() == value)
-    }
-}
+/// The one declared command; the stack rejects every other name before `command` runs.
+const TASKS_COMMAND: &str = "tasks";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -130,7 +115,7 @@ impl Middleware for Tasks {
         FrontendContribution {
             capability: self.name().into(),
             commands: vec![FrontendCommand {
-                name: Command::Tasks.as_str().into(),
+                name: TASKS_COMMAND.into(),
                 arguments: String::new().into(),
                 description: text::DEFINITION.command_tasks_description.clone().into(), // rules-allow: owned frontend record built from static text
                 requires_idle: true,
@@ -182,7 +167,7 @@ impl Middleware for Tasks {
         context: MiddlewareCommandContext<'a>,
     ) -> BoxFuture<'a, Result<MiddlewareCommandOutput>> {
         Box::pin(async move {
-            if Command::parse(context.command).is_none() || !context.arguments.trim().is_empty() {
+            if !context.arguments.trim().is_empty() {
                 return Err(Error::Unknown(format!(
                     "tasks command `{}`",
                     context.command
@@ -256,12 +241,8 @@ async fn load_todos(
     checkpoints: &Arc<dyn CheckpointStore>,
     session_id: &SessionId,
 ) -> Result<Vec<Todo>> {
-    let mut todos: Vec<Todo> = checkpoints
-        .load_state(session_id, STATE_KEY)
-        .await?
-        .map(serde_json::from_value)
-        .transpose()?
-        .unwrap_or_default();
+    let mut todos: Vec<Todo> =
+        super::load_state_or_default(checkpoints.as_ref(), session_id, STATE_KEY).await?;
     validate_todos(&mut todos)
         .map_err(|error| Error::Checkpoint(format!("invalid tasks state: {error}")))?;
     Ok(todos)
@@ -278,25 +259,18 @@ fn widget_event(todos: Vec<Todo>) -> FrontendEvent {
         .iter()
         .filter(|todo| todo.status == TodoStatus::Completed)
         .count();
+    let total = todos.len();
     FrontendEvent::Widget {
         capability: MANIFEST.id.into(),
         item: Arc::new(FrontendWidget {
-            id: "status".into(),
-            count: None,
             priority: crate::protocol::FrontendPriority::Secondary,
-            slot: FrontendSlot::ComposerFooter,
-            text: format!("{completed}/{}", todos.len()),
-            tone: if completed == todos.len() {
+            tone: if completed == total {
                 FrontendTone::Success
             } else {
                 FrontendTone::Neutral
             },
             symbol: Some(FrontendSymbol::Task),
-            icon_only: false,
-            progress: Some(FrontendProgress {
-                completed,
-                total: todos.len(),
-            }),
+            progress: Some(FrontendProgress { completed, total }),
             content: Some(FrontendWidgetContent::ActionList {
                 actions: Vec::new(),
                 title: text::DEFINITION.write_todos.title().into(),
@@ -315,7 +289,11 @@ fn widget_event(todos: Vec<Todo>) -> FrontendEvent {
                     })
                     .collect(),
             }),
-            action: None,
+            ..FrontendWidget::new(
+                "status",
+                FrontendSlot::ComposerFooter,
+                format!("{completed}/{total}"),
+            )
         }),
     }
 }

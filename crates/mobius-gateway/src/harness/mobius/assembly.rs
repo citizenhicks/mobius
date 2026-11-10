@@ -62,6 +62,95 @@ where
     .map_err(|error| Error::Config(format!("agent discovery task failed: {error}")))?
 }
 
+/// Each Bot's cached preparation. A refresh advances the generation, so a preparation
+/// that started before it is never cached.
+#[derive(Default)]
+pub(crate) struct PreparedBots {
+    cache: tokio::sync::Mutex<BTreeMap<Arc<str>, Arc<PreparedBot>>>,
+    generation: std::sync::atomic::AtomicU64,
+}
+
+impl PreparedBots {
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// The cached preparation of `bot` from provider `epoch`, while it is still current.
+    pub(crate) async fn current(
+        &self,
+        bot: &crate::wire::BotRecord,
+        epoch: u64,
+    ) -> Option<Arc<PreparedBot>> {
+        self.cache
+            .lock()
+            .await
+            .get(&*bot.id)
+            .filter(|prepared| prepared.matches_runtime(bot) && prepared.epoch == epoch)
+            .map(Arc::clone)
+    }
+
+    /// Caches `prepared` unless a refresh since `generation` or `still_current` made it
+    /// stale, keeping a current preparation another chat cached first. `None` means stale.
+    pub(crate) async fn store(
+        &self,
+        generation: u64,
+        epoch: u64,
+        bot: &crate::wire::BotRecord,
+        prepared: Result<PreparedBot>,
+        still_current: impl FnOnce() -> Result<bool>,
+    ) -> Result<Option<Arc<PreparedBot>>> {
+        let mut cache = self.cache.lock().await;
+        if generation != self.generation() || !still_current()? {
+            return Ok(None);
+        }
+        if let Some(cached) = cache
+            .get(&*bot.id)
+            .filter(|cached| cached.matches_runtime(bot) && cached.epoch == epoch)
+        {
+            return Ok(Some(Arc::clone(cached)));
+        }
+        let prepared = Arc::new(prepared?);
+        if let Some(previous) = cache.insert(Arc::clone(&bot.id), Arc::clone(&prepared)) {
+            previous.invalidate();
+        }
+        drop(cache);
+        Ok(Some(prepared))
+    }
+
+    /// Makes every preparation `stale` selects, and every one still in flight, unusable.
+    pub(crate) async fn invalidate<E>(
+        &self,
+        mut stale: impl FnMut(&PreparedBot) -> std::result::Result<bool, E>,
+    ) -> std::result::Result<(), E> {
+        let cache = self.cache.lock().await;
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+        for prepared in cache.values() {
+            if stale(prepared)? {
+                prepared.invalidate();
+            }
+        }
+        drop(cache);
+        Ok(())
+    }
+
+    pub(crate) async fn remove(&self, bot_id: &str) {
+        self.cache.lock().await.remove(bot_id);
+    }
+
+    /// Caches `prepared` for its Bot, retiring the preparation it replaces.
+    pub(crate) async fn replace(&self, prepared: PreparedBot) {
+        let previous = self
+            .cache
+            .lock()
+            .await
+            .insert(Arc::clone(&prepared.bot.id), Arc::new(prepared));
+        if let Some(previous) = previous {
+            previous.invalidate();
+        }
+    }
+}
+
 pub(crate) struct PreparedBot {
     pub(crate) bot: Arc<crate::wire::BotRecord>,
     /// The möbius composition `bot` was prepared from.
@@ -210,6 +299,7 @@ pub(crate) struct BuiltAgent {
 )]
 pub(crate) async fn assemble(
     gateway: Arc<Mutex<GatewayConfig>>,
+    usage_store: Arc<crate::config::UsageStore>,
     chat: &ChatSpec,
     store: &ConfigStore,
     checkpoints: Arc<dyn CheckpointStore>,
@@ -218,11 +308,11 @@ pub(crate) async fn assemble(
     discovery_gate: Arc<tokio::sync::Mutex<()>>,
     desktop: Arc<crate::computer_runtime::desktop::DesktopControl>,
     remote_desktop: Arc<crate::computer_runtime::remote_desktop::RemoteDesktop>,
-    session_id: Option<SessionId>,
+    session_id: SessionId,
     origin_label: &str,
     prepared: Arc<PreparedBot>,
-    live_chats: Option<Arc<dyn LiveChats>>,
-    host_access: Option<crate::host::HostAccess>,
+    live_chats: Arc<dyn LiveChats>,
+    host_access: crate::host::HostAccess,
 ) -> Result<BuiltAgent> {
     let (workspace_path, execution, telemetry, tls, profile_directory) = {
         let config = crate::config::lock(&gateway)?;
@@ -246,7 +336,7 @@ pub(crate) async fn assemble(
     let resources = Arc::clone(&prepared);
     let gateway_for_middleware = Arc::clone(&gateway);
     // Hidden routine and channel chats may carry third-party input.
-    let live_chats = live_chats.filter(|_| chat.catalog_visible);
+    let live_chats = chat.catalog_visible.then_some(live_chats);
     let (gateway_sandbox, sandbox, mut entries) = run_discovery(discovery_gate, move || {
         let settings = &resources.composition.middleware;
         let computer_runtime = &resources.computer_runtime;
@@ -354,28 +444,24 @@ pub(crate) async fn assemble(
         Ok((gateway_sandbox, Arc::new(sandbox), middleware))
     })
     .await?;
-    let mut metadata = match session_id.as_ref() {
-        Some(session_id) => checkpoints
-            .load(session_id)
-            .await?
-            .map(|checkpoint| checkpoint.metadata)
-            .unwrap_or_default(),
-        None => Default::default(),
-    };
+    let mut metadata = checkpoints
+        .load(&session_id)
+        .await?
+        .map(|checkpoint| checkpoint.metadata)
+        .unwrap_or_default();
     metadata.extend(chat.metadata()?);
     let workspace = chat.workspace_info();
     let workspace_label = workspace
         .as_ref()
         .map(|workspace| workspace.path.display().to_string());
     let usage_resources = Arc::clone(&prepared);
-    let usage_store = Arc::new(store.clone()); // rules-allow: the usage observer outlives this call
     let max_model_steps =
         usize::try_from(prepared.composition.max_model_steps).map_err(|error| {
             Error::Config(format!(
                 "maximum model steps exceed this platform's supported range: {error}"
             ))
         })?;
-    let persistent = session_id.as_ref() == Some(&prepared.bot.conversation_session_id);
+    let persistent = session_id == prepared.bot.conversation_session_id;
     if persistent {
         if project || !chat.catalog_visible {
             return Err(Error::Config(
@@ -385,13 +471,12 @@ pub(crate) async fn assemble(
         entries.push(Arc::new(
             crate::harness::mobius::persistent_chat::PersistentChat::new(
                 Arc::clone(&prepared.bot.id),
-                host_access
-                    .ok_or_else(|| Error::Config("Persistent Chat requires the gateway".into()))?,
+                host_access,
             ),
         ));
     }
     let system_prompt = prepared.instructions();
-    let mut agent_config = AgentConfig::new(
+    let agent_config = AgentConfig::new(
         models,
         Arc::clone(&sandbox),
         checkpoints,
@@ -407,7 +492,6 @@ pub(crate) async fn assemble(
     .metadata(metadata)
     .usage_observer(move |route, usage| {
         let resources = Arc::clone(&usage_resources);
-        let gateway = Arc::clone(&gateway);
         let store = Arc::clone(&usage_store);
         Box::pin(async move {
             let provider = resources.model_providers.get(route).ok_or_else(|| {
@@ -415,7 +499,7 @@ pub(crate) async fn assemble(
                     "model route is not in the configured gateway usage catalog".into(),
                 )
             })?;
-            publish_usage(&gateway, &store, provider, usage).await
+            publish_usage(store, provider, usage).await
         })
     })
     .session_context(SessionContext {
@@ -426,9 +510,7 @@ pub(crate) async fn assemble(
         origin_label: Some(origin_label.into()),
         ..SessionContext::default()
     });
-    if let Some(session_id) = session_id {
-        agent_config = agent_config.session_id(session_id);
-    }
+    let agent_config = agent_config.session_id(session_id);
     let agent = create_agent(agent_config).await?;
     let model_router = agent.model_router();
     Ok(BuiltAgent {
@@ -443,37 +525,22 @@ pub(crate) async fn assemble(
 static USAGE_PUBLICATION: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 async fn publish_usage(
-    gateway: &Arc<Mutex<GatewayConfig>>,
-    store: &ConfigStore,
+    store: Arc<crate::config::UsageStore>,
     provider: &str,
     usage: &TokenUsage,
 ) -> mobius::Result<()> {
     let guard = USAGE_PUBLICATION.lock().await;
-    // The blocking task must own everything it publishes.
-    let gateway = Arc::clone(gateway);
-    let store = store.clone(); // rules-allow: the blocking task owns its handle
     let provider = provider.to_owned();
     let usage = *usage;
     tokio::task::spawn_blocking(move || {
         // Keep admission occupied until atomic publication finishes, even after caller cancellation.
         let _guard = guard;
-        persist_usage(&gateway, &store, &provider, &usage)
+        store
+            .record(&provider, &usage)
+            .map_err(|error| MobiusError::Config(error.to_string()))
     })
     .await
     .map_err(|error| MobiusError::Config(format!("usage publication task failed: {error}")))?
-}
-
-fn persist_usage(
-    gateway: &Mutex<GatewayConfig>,
-    store: &ConfigStore,
-    provider: &str,
-    usage: &TokenUsage,
-) -> mobius::Result<()> {
-    let mut gateway =
-        crate::config::lock(gateway).map_err(|error| MobiusError::Config(error.to_string()))?;
-    store
-        .record_usage(&mut gateway, provider, usage)
-        .map_err(|error| MobiusError::Config(error.to_string()))
 }
 
 fn build_models(
@@ -577,15 +644,7 @@ fn instantiate_routes(
             continue;
         }
         let definition = provider(&route.provider.provider)?;
-        let base_url = if definition.configurable_base_url() {
-            route.provider.base_url.take().or_else(|| {
-                definition
-                    .default_base_url()
-                    .map(mobius::backend::model::provider::BaseUrl::share)
-            })
-        } else {
-            None
-        };
+        let base_url = Some(definition.resolve_base_url(route.provider.base_url.take().as_ref()));
         let (credential, lifetime) = if route.provider.endpoint_auth
             == ProviderEndpointAuth::Credentialless
         {

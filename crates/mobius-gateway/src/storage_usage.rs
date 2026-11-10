@@ -437,10 +437,8 @@ mod tests {
     fn measures_regular_files_without_following_symlinks() {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("file"), b"data").unwrap();
-        #[cfg(unix)]
         std::os::unix::fs::symlink(root.path(), root.path().join("loop")).unwrap();
         let size = super::measure(root.path(), &mut super::MeasurementBudget::new());
-        #[cfg(unix)]
         assert_eq!(
             (size.bytes, size.files),
             (
@@ -450,8 +448,6 @@ mod tests {
                 2
             )
         );
-        #[cfg(not(unix))]
-        assert_eq!((size.bytes, size.files), (4, 1));
         assert!(size.complete);
     }
 
@@ -496,7 +492,6 @@ mod tests {
         assert_eq!(sizes["sibling"], (5, 1));
     }
 
-    #[cfg(unix)]
     #[test]
     fn charged_blob_symlinks_and_linked_blob_roots_make_usage_incomplete() {
         let root = tempfile::tempdir().unwrap();

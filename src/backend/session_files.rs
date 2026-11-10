@@ -7,7 +7,6 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::SystemTime;
 
 use cap_std::fs::Dir;
-#[cfg(unix)]
 use cap_std::fs::MetadataExt as _;
 use serde::{Deserialize, Serialize};
 use tempfile::TempPath;
@@ -26,11 +25,12 @@ mod storage;
 pub use storage::media_type;
 pub(crate) use storage::session_storage_key;
 use storage::{
-    cleanup_stale_files, create_private_dir, ensure_private_dir, gc_unreferenced_blobs, hash_file,
-    list_completed, load_attachment_workspace, load_metadata, load_optional_attachment_workspace,
-    read_resolved_chunk, remove_staged_attachments, require_directory, save_attachment_workspace,
-    save_metadata, set_private_file, validate_content_blob, validate_content_hash,
-    validate_file_id, validate_media_type, validate_name, validate_stored_file,
+    cleanup_stale_files, create_private_dir, ensure_private_dir, existing_directory,
+    gc_unreferenced_blobs, hash_file, list_completed, load_attachment_workspace, load_metadata,
+    load_optional_attachment_workspace, read_resolved_chunk, remove_staged_attachments,
+    require_directory, save_attachment_workspace, save_metadata, set_private_file,
+    validate_content_blob, validate_content_hash, validate_file_id, validate_media_type,
+    validate_name, validate_stored_file,
 };
 
 const MAX_ATTACHMENT_REFERENCES: usize = 16;
@@ -179,11 +179,10 @@ struct StoredAttachmentWorkspace {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AttachmentWorkspaceIdentity {
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(not(target_os = "macos"))]
     device: u64,
     #[cfg(target_os = "macos")]
     volume_uuid: String,
-    #[cfg(unix)]
     inode: u64,
 }
 
@@ -229,19 +228,12 @@ impl AttachmentWorkspaceIdentity {
                 inode: metadata.ino(),
             })
         }
-        #[cfg(all(unix, not(target_os = "macos")))]
+        #[cfg(not(target_os = "macos"))]
         {
             Ok(Self {
                 device: metadata.dev(),
                 inode: metadata.ino(),
             })
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = metadata;
-            Err(Error::Config(
-                "attachment workspace identity is unavailable".into(),
-            ))
         }
     }
 
@@ -463,17 +455,8 @@ impl SessionFileStore {
 
     async fn validate_session_deletion(&self, session_id: &SessionId) -> Result<()> {
         let directory = self.session_dir(session_id);
-        match tokio::fs::symlink_metadata(&directory).await {
-            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
-                load_optional_attachment_workspace(&directory).await?;
-            }
-            Ok(_) => {
-                return Err(Error::Tool(
-                    "session file directory is not a protected directory".into(),
-                ));
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
+        if existing_directory(&directory).await? {
+            load_optional_attachment_workspace(&directory).await?;
         }
         Ok(())
     }
@@ -511,21 +494,12 @@ impl SessionFileStore {
 
     async fn cleanup_deleted_directory(&self, key: &str) -> Result<()> {
         let directory = self.state.root.join(format!("{DELETED_PREFIX}{key}"));
-        match tokio::fs::symlink_metadata(&directory).await {
-            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
-                let workspace = load_optional_attachment_workspace(&directory).await?;
-                if let Some(workspace) = workspace {
-                    remove_staged_attachments(Arc::new(workspace), key).await?;
-                }
-                tokio::fs::remove_dir_all(directory).await?;
+        if existing_directory(&directory).await? {
+            let workspace = load_optional_attachment_workspace(&directory).await?;
+            if let Some(workspace) = workspace {
+                remove_staged_attachments(Arc::new(workspace), key).await?;
             }
-            Ok(_) => {
-                return Err(Error::Tool(
-                    "session file directory is not a protected directory".into(),
-                ));
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
+            tokio::fs::remove_dir_all(directory).await?;
         }
         Ok(())
     }
@@ -554,13 +528,9 @@ impl SessionFileStore {
         session_id: &SessionId,
         expected: &SessionFileReference,
     ) -> Result<()> {
-        let (actual, _) = self.resolve_upload(session_id, &expected.id).await?;
-        if &actual != expected {
-            return Err(Error::Tool(
-                "session file metadata does not match the uploaded file".into(),
-            ));
-        }
-        Ok(())
+        self.upload_content_hash(session_id, expected)
+            .await
+            .map(drop)
     }
 
     /// Resolves an owned upload to its private content-addressed identity.
@@ -703,15 +673,6 @@ impl SessionFileStore {
         }
     }
 
-    async fn resolve_upload(
-        &self,
-        session_id: &SessionId,
-        file_id: &str,
-    ) -> Result<(SessionFileReference, PathBuf)> {
-        let (record, path) = self.resolve_upload_record(session_id, file_id).await?;
-        Ok((record.file, path))
-    }
-
     async fn resolve_upload_record(
         &self,
         session_id: &SessionId,
@@ -747,15 +708,6 @@ impl SessionFileStore {
             })
             .await?;
         Ok(())
-    }
-
-    /// Measures content bytes charged against the gateway allowance.
-    /// # Errors
-    /// Returns an error if the protected blob directory cannot be measured.
-    pub async fn stored_bytes(&self) -> Result<u64> {
-        self.ensure_initialized().await?;
-        let _commit = self.state.commits.lock().await;
-        self.blob_bytes().await
     }
 
     async fn blob_bytes(&self) -> Result<u64> {
@@ -811,30 +763,20 @@ impl SessionFileStore {
         size: u64,
         completed: &[StoredSessionFile],
     ) -> Result<SessionFileReservation> {
-        let completed_bytes = completed.iter().try_fold(0_u64, |total, item| {
-            total
-                .checked_add(item.file.size)
-                .ok_or_else(|| Error::Tool("session file quota overflow".into()))
-        })?;
         let mut reservations = self.state.reservations.lock().map_err(|error| {
             Error::Tool(format!(
                 "session file reservation state is unavailable: {error}"
             ))
         })?;
-        let pending_files = reservations
-            .get(session_id)
-            .map_or(0, |pending| pending.files);
-        let pending_bytes = reservations
-            .get(session_id)
-            .map_or(0, |pending| pending.bytes);
-        if completed.len().saturating_add(pending_files) >= MAX_SESSION_FILES {
+        let reserved = reserved_totals(&reservations, session_id, completed)?;
+        if reserved.files >= MAX_SESSION_FILES {
             return Err(Error::Tool(format!(
                 "session cannot contain more than {MAX_SESSION_FILES} files"
             )));
         }
-        let reserved_bytes = completed_bytes
-            .checked_add(pending_bytes)
-            .and_then(|total| total.checked_add(size))
+        let reserved_bytes = reserved
+            .bytes
+            .checked_add(size)
             .ok_or_else(|| Error::Tool("session file quota overflow".into()))?;
         if reserved_bytes > MAX_SESSION_BYTES {
             return Err(Error::Tool(format!(
@@ -858,31 +800,40 @@ impl SessionFileStore {
         session_id: &SessionId,
         completed: &[StoredSessionFile],
     ) -> Result<()> {
-        let completed_bytes = completed.iter().try_fold(0_u64, |total, item| {
-            total
-                .checked_add(item.file.size)
-                .ok_or_else(|| Error::Tool("session file quota overflow".into()))
+        let reservations = self.state.reservations.lock().map_err(|error| {
+            Error::Tool(format!(
+                "session file reservation state is unavailable: {error}"
+            ))
         })?;
-        let (pending_files, pending_bytes) = self
-            .state
-            .reservations
-            .lock()
-            .map_err(|error| {
-                Error::Tool(format!(
-                    "session file reservation state is unavailable: {error}"
-                ))
-            })?
-            .get(session_id)
-            .map_or((0, 0), |pending| (pending.files, pending.bytes));
-        if completed.len().saturating_add(pending_files) > MAX_SESSION_FILES
-            || completed_bytes
-                .checked_add(pending_bytes)
-                .is_none_or(|bytes| bytes > MAX_SESSION_BYTES)
-        {
+        let reserved = reserved_totals(&reservations, session_id, completed)?;
+        drop(reservations);
+        if reserved.files > MAX_SESSION_FILES || reserved.bytes > MAX_SESSION_BYTES {
             return Err(Error::Tool("session file reservation exceeds quota".into()));
         }
         Ok(())
     }
+}
+
+/// One session's completed files plus its pending reservations.
+fn reserved_totals(
+    reservations: &BTreeMap<SessionId, ReservationTotals>,
+    session_id: &SessionId,
+    completed: &[StoredSessionFile],
+) -> Result<ReservationTotals> {
+    let pending = reservations.get(session_id);
+    let pending_bytes = pending.map_or(0, |pending| pending.bytes);
+    let bytes = completed
+        .iter()
+        .try_fold(pending_bytes, |total, item| {
+            total.checked_add(item.file.size)
+        })
+        .ok_or_else(|| Error::Tool("session file quota overflow".into()))?;
+    Ok(ReservationTotals {
+        files: completed
+            .len()
+            .saturating_add(pending.map_or(0, |pending| pending.files)),
+        bytes,
+    })
 }
 
 impl SessionFileDeletion {
@@ -1159,7 +1110,11 @@ impl SessionFileReservation {
         if !self.active {
             return;
         }
-        let mut reservations = crate::sync::recover_lock(&self.reservations);
+        self.active = false;
+        // A poisoned reservation map is never read; the reservation lapses with it.
+        let Ok(mut reservations) = self.reservations.lock() else {
+            return;
+        };
         let remove = if let Some(pending) = reservations.get_mut(&self.session_id) {
             pending.files = pending.files.saturating_sub(1);
             pending.bytes = pending.bytes.saturating_sub(self.size);
@@ -1171,7 +1126,6 @@ impl SessionFileReservation {
             reservations.remove(&self.session_id);
         }
         drop(reservations);
-        self.active = false;
     }
 }
 

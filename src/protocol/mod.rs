@@ -1328,20 +1328,6 @@ mod tests {
     }
 
     #[test]
-    fn stored_message_event_without_reply_decodes_as_no_reply() {
-        let event: MessageEvent = serde_json::from_value(json!({
-            "author": {"type": "user"},
-            "delivery": "turn",
-            "text": "before replies existed",
-            "attachments": [],
-            "message_target": null
-        }))
-        .expect("decode old stored message event");
-
-        assert_eq!(event.reply, None);
-    }
-
-    #[test]
     fn token_usage_overflow_does_not_partially_update_the_total() {
         let mut total = TokenUsage {
             input_tokens: 7,

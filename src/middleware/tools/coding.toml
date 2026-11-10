@@ -44,7 +44,7 @@ type = "string"
 
 [write_file.tool.parameters.properties.content]
 type = "string"
-description = "Complete file text, at most 128000 bytes. For larger files, write the first part, then add the rest with apply_patch."
+description = "Complete file text, at most {max_bytes} bytes. For larger files, write the first part, then add the rest with apply_patch."
 
 [apply_patch]
 title = "Patch"
@@ -64,4 +64,4 @@ additionalProperties = false
 
 [apply_patch.tool.parameters.properties.patch]
 type = "string"
-description = "One `apply_patch` envelope, at most 128000 bytes, containing exactly one `*** Update File: path` operation and bare `@@` or `@@ context` changes."
+description = "One `apply_patch` envelope, at most {max_bytes} bytes, containing exactly one `*** Update File: path` operation and bare `@@` or `@@ context` changes."

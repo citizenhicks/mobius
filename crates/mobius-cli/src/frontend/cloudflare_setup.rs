@@ -1,20 +1,17 @@
 //! First-run setup for account-free or stable Cloudflare Tunnel exposure.
 
 use crate::frontend::terminal::masked_credential as masked_token;
-use std::io;
 
 use mobius::{Error, Result};
 use mobius_gateway::config::{
     MAX_CLOUDFLARE_TOKEN_BYTES as MAX_TOKEN_BYTES, MAX_HOSTNAME_BYTES, NamedTunnel,
 };
-use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use tokio::time::MissedTickBehavior;
 
-use super::terminal::{INPUT_POLL, MAX_INPUT_BATCH, TerminalGuard, poll_event};
+use super::terminal::{INPUT_POLL, input_batch, open_screen};
 use super::terminal_text;
 use super::theme::{Role, current};
 
@@ -107,9 +104,7 @@ fn configuration_error(error: mobius_gateway::Error) -> Error {
 ///
 /// Returns an error if validation or an operation required to complete the request fails.
 pub async fn run() -> Result<Option<CloudflareInit>> {
-    let mut guard = TerminalGuard::alternate()?;
-    guard.set_mouse_capture(false)?;
-    let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
+    let (_guard, mut terminal) = open_screen()?;
     let mut state = State::new();
     terminal.clear()?;
     let mut tick = tokio::time::interval(INPUT_POLL);
@@ -121,10 +116,8 @@ pub async fn run() -> Result<Option<CloudflareInit>> {
             dirty = false;
         }
         tick.tick().await;
-        for _ in 0..MAX_INPUT_BATCH {
-            let Some(event) = poll_event()? else {
-                break;
-            };
+        for event in input_batch() {
+            let event = event?;
             dirty = true;
             match event {
                 Event::Key(key) => match handle_key(&mut state, key) {

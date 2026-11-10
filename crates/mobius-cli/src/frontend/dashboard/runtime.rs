@@ -1,7 +1,6 @@
 pub(super) use crate::frontend::response::wait_ready;
-use std::borrow::Borrow;
-use std::io;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use mobius::protocol::{
     EventMsg, FrontendWidgetContent, MAX_CAPABILITY_INPUT_BYTES, MAX_MESSAGE_BYTES, Op, Submission,
@@ -12,24 +11,17 @@ use mobius_gateway::wire::{
     ClientCapabilities, ClientMessage, ClientStatus, ServerMessage, SessionActivityState,
     SessionRecord, apply_session_changes,
 };
-use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
 };
 use ratatui::layout::Rect;
-use ratatui::widgets::ListState;
 use tokio::time::MissedTickBehavior;
-use uuid::Uuid;
 
 use super::REFRESH_INTERVAL;
-use super::state::{ActionInput, CapabilityOverlay, DashboardFocus, DashboardState};
+use super::state::{ActionInput, CapabilityOverlay, DashboardFocus, DashboardState, Selection};
 use super::view::{dashboard_areas, render};
-use crate::frontend::bots;
-use crate::frontend::setup::{self, SetupMode};
-use crate::frontend::terminal::{
-    INPUT_POLL, MAX_INPUT_BATCH, poll_event, terminal_text, truncate_bytes,
-};
+use crate::frontend::terminal::{INPUT_POLL, Screen, input_batch, terminal_text, truncate_bytes};
+use crate::frontend::{bots, setup};
 use crate::gateway_error;
 use mobius_gateway::gateway_accounts::{configured_token, dashboard_gateway_endpoint};
 
@@ -60,12 +52,9 @@ pub(super) async fn connect(
             gateway,
             clients: Vec::new(),
             current_client_id: None,
-            selected_client_id: None,
-            selected_session_id: None,
-            selected_bot_id: None,
-            device_list: ListState::default(),
-            chat_list: ListState::default(),
-            bot_list: ListState::default(),
+            devices: Selection::default(),
+            chats: Selection::default(),
+            bots: Selection::default(),
             focus: DashboardFocus::Devices,
             pending_unpair: None,
             profile: None,
@@ -77,7 +66,7 @@ pub(super) async fn connect(
 }
 
 pub(super) async fn dashboard_loop(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    terminal: &mut Screen,
     sender: GatewaySender,
     events: &mut GatewayEvents,
     state: &mut DashboardState,
@@ -99,8 +88,8 @@ pub(super) async fn dashboard_loop(
                 request_snapshot(&sender).await?;
             }
             _ = input.tick() => {
-                for _ in 0..MAX_INPUT_BATCH {
-                    let Some(event) = poll_event()? else { break; };
+                for event in input_batch() {
+                    let event = event?;
                     dirty = true;
                     match event {
                         Event::Key(key)
@@ -130,7 +119,7 @@ pub(super) async fn dashboard_loop(
 }
 
 pub(super) async fn handle_key(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    terminal: &mut Screen,
     sender: &GatewaySender,
     events: &mut GatewayEvents,
     state: &mut DashboardState,
@@ -174,13 +163,13 @@ pub(super) async fn handle_key(
             sender,
             events,
             &mut state.gateway,
-            state.selected_bot_id.as_deref(),
+            state.bots.id.as_deref(),
             None,
         )
         .await
         {
             Ok(Some(session_id)) => {
-                state.selected_session_id = Some(session_id);
+                state.chats.id = Some(session_id);
                 open_selected_session(sender, state).await?;
             }
             Ok(None) => state.error = None,
@@ -192,22 +181,20 @@ pub(super) async fn handle_key(
         request_snapshot(sender).await?;
         return Ok(false);
     }
-    let mode = match key.code {
-        KeyCode::Char('p') => Some(SetupMode::Login),
+    match key.code {
+        KeyCode::Char('p') => {
+            state.error = setup::run_gateway(terminal, sender, events, &mut state.gateway)
+                .await
+                .err()
+                .map(|error| error.to_string());
+            terminal.clear()?;
+            request_snapshot(sender).await?;
+        }
         KeyCode::Char('r') => {
             state.error = None;
             request_snapshot(sender).await?;
-            None
         }
-        _ => None,
-    };
-    if let Some(mode) = mode {
-        state.error = setup::run_gateway(terminal, mode, None, sender, events, &mut state.gateway)
-            .await
-            .err()
-            .map(|error| error.to_string());
-        terminal.clear()?;
-        request_snapshot(sender).await?;
+        _ => {}
     }
     Ok(false)
 }
@@ -216,23 +203,19 @@ pub(super) async fn open_selected_session(
     sender: &GatewaySender,
     state: &mut DashboardState,
 ) -> Result<()> {
-    let Some(session_id) = state
-        .selected_session_id
-        .as_ref()
-        .map(mobius::SessionId::share)
-    else {
+    let Some(session_id) = state.chats.id.as_ref().map(mobius::SessionId::share) else {
         return Ok(());
     };
-    let request_id = Uuid::new_v4();
+    let request_id = crate::fresh_id();
     sender
         .send(ClientMessage::OpenSession {
-            request_id: request_id.to_string().into(),
-            session_id: session_id.share(),
+            request_id: Arc::clone(&request_id),
+            session_id,
             last_sequence: None,
         })
         .await
         .map_err(gateway_error)?;
-    state.pending_open = Some((request_id, session_id));
+    state.pending_open = Some(request_id);
     state.error = None;
     Ok(())
 }
@@ -245,14 +228,33 @@ pub(super) async fn handle_overlay_key(
     let Some(overlay) = state.overlay.as_mut() else {
         return Ok(());
     };
-    let Some(session_id) = overlay.session_id.as_ref().map(mobius::SessionId::share) else {
-        return Ok(());
-    };
-    if overlay.input.is_some() {
-        if let Some(op) = handle_action_input_key(overlay, key) {
-            submit_operation(sender, &session_id, op).await?;
+    match overlay_key(overlay, key) {
+        OverlayKey::Handled => {}
+        OverlayKey::Close => state.overlay = None,
+        OverlayKey::Submit(op) => {
+            if let Some(session_id) = overlay.session_id.as_ref() {
+                submit_operation(sender, session_id, *op).await?;
+            }
         }
-        return Ok(());
+    }
+    Ok(())
+}
+
+/// What a key did to an open capability overlay.
+pub(in crate::frontend) enum OverlayKey {
+    Handled,
+    Close,
+    Submit(Box<Op>),
+}
+
+/// The one key map of a capability overlay, shared by the dashboard and the chat screen.
+pub(in crate::frontend) fn overlay_key(
+    overlay: &mut CapabilityOverlay,
+    key: KeyEvent,
+) -> OverlayKey {
+    if overlay.is_editing() {
+        return handle_action_input_key(overlay, key)
+            .map_or(OverlayKey::Handled, |op| OverlayKey::Submit(Box::new(op)));
     }
     let action_list_open = matches!(
         overlay
@@ -260,41 +262,52 @@ pub(super) async fn handle_overlay_key(
             .and_then(|widget| widget.content.as_ref()),
         Some(FrontendWidgetContent::ActionList { .. })
     );
-    match key.code {
-        KeyCode::Esc | KeyCode::Char('q') => {
-            if overlay.open.take().is_none() {
-                state.overlay = None;
-            }
+    let op = match key.code {
+        KeyCode::Char('q') => return OverlayKey::Close,
+        KeyCode::Esc if !overlay.can_go_back() => return OverlayKey::Close,
+        KeyCode::Esc => {
+            overlay.close_widget();
+            None
         }
-        KeyCode::Left if action_list_open => move_overlay_action(overlay, -1),
+        KeyCode::Left if action_list_open => {
+            move_overlay_action(overlay, -1);
+            None
+        }
         KeyCode::Left => {
-            overlay.open = None;
-        }
-        KeyCode::Up | KeyCode::Char('k') => move_overlay_selection(overlay, -1),
-        KeyCode::Down | KeyCode::Char('j') => move_overlay_selection(overlay, 1),
-        KeyCode::Home => select_overlay_edge(overlay, false),
-        KeyCode::End => select_overlay_edge(overlay, true),
-        KeyCode::Right if action_list_open => move_overlay_action(overlay, 1),
-        KeyCode::Enter | KeyCode::Right => {
-            if let Some(op) = activate_overlay(overlay)
-                && let Some(op) = prepare_overlay_operation(overlay, op)
-            {
-                submit_operation(sender, &session_id, op).await?;
+            if overlay.can_go_back() {
+                overlay.close_widget();
             }
+            None
         }
-        KeyCode::Char('a') => {
-            if let Some(op) = overlay
-                .open_widget()
-                .or_else(|| overlay.selected_key().and_then(|key| overlay.widget(&key)))
-                .and_then(|widget| widget.action.clone()) // rules-allow: the overlay keeps its widget action while the submission owns one
-                && let Some(op) = prepare_overlay_operation(overlay, op)
-            {
-                submit_operation(sender, &session_id, op).await?;
-            }
+        KeyCode::Up | KeyCode::Char('k') => {
+            move_overlay_selection(overlay, -1);
+            None
         }
-        _ => {}
-    }
-    Ok(())
+        KeyCode::Down | KeyCode::Char('j') => {
+            move_overlay_selection(overlay, 1);
+            None
+        }
+        KeyCode::Home => {
+            select_overlay_edge(overlay, Edge::First);
+            None
+        }
+        KeyCode::End => {
+            select_overlay_edge(overlay, Edge::Last);
+            None
+        }
+        KeyCode::Right if action_list_open => {
+            move_overlay_action(overlay, 1);
+            None
+        }
+        KeyCode::Enter | KeyCode::Right => activate_overlay(overlay),
+        KeyCode::Char('a') => overlay
+            .open_widget()
+            .or_else(|| overlay.selected_key().and_then(|key| overlay.widget(&key)))
+            .and_then(|widget| widget.action.clone()), // rules-allow: the overlay keeps its widget action while the submission owns one
+        _ => None,
+    };
+    op.and_then(|op| prepare_overlay_operation(overlay, op))
+        .map_or(OverlayKey::Handled, |op| OverlayKey::Submit(Box::new(op)))
 }
 
 pub(in crate::frontend) fn move_overlay_selection(overlay: &mut CapabilityOverlay, delta: isize) {
@@ -318,7 +331,7 @@ pub(in crate::frontend) fn move_overlay_selection(overlay: &mut CapabilityOverla
     }
 }
 
-pub(in crate::frontend) fn select_overlay_edge(overlay: &mut CapabilityOverlay, last: bool) {
+pub(in crate::frontend) fn select_overlay_edge(overlay: &mut CapabilityOverlay, edge: Edge) {
     let option_count = overlay
         .open_widget()
         .and_then(|widget| widget.content.as_ref())
@@ -330,11 +343,7 @@ pub(in crate::frontend) fn select_overlay_edge(overlay: &mut CapabilityOverlay, 
     } else {
         return;
     };
-    list.select(
-        length
-            .checked_sub(1)
-            .map(|last_index| if last { last_index } else { 0 }),
-    );
+    list.select(length.checked_sub(1).map(|last| edge.index(last)));
     overlay.action_index = 0;
 }
 
@@ -543,8 +552,8 @@ pub(super) fn handle_navigation_key(state: &mut DashboardState, key: KeyEvent, a
         KeyCode::Down | KeyCode::Char('j') => move_selection(state, 1),
         KeyCode::PageUp => move_selection(state, -page),
         KeyCode::PageDown => move_selection(state, page),
-        KeyCode::Home => select_edge(state, false),
-        KeyCode::End => select_edge(state, true),
+        KeyCode::Home => select_edge(state, Edge::First),
+        KeyCode::End => select_edge(state, Edge::Last),
         _ => return false,
     }
     true
@@ -582,87 +591,63 @@ pub(super) fn contains(area: Rect, column: u16, row: u16) -> bool {
 }
 
 pub(super) fn move_selection(state: &mut DashboardState, delta: isize) {
-    match state.focus {
+    update_selection(state, state.focus, |current, length| {
+        moved_index(current, length, delta)
+    });
+}
+
+pub(super) fn select_edge(state: &mut DashboardState, edge: Edge) {
+    update_selection(state, state.focus, |_, length| {
+        length.checked_sub(1).map(|last| edge.index(last))
+    });
+}
+
+/// Keeps the selected id when it is still listed, and otherwise selects the first row.
+fn sync_selection(state: &mut DashboardState, focus: DashboardFocus) {
+    update_selection(state, focus, |current, length| {
+        current.or_else(|| (length > 0).then_some(0))
+    });
+}
+
+fn update_selection(
+    state: &mut DashboardState,
+    focus: DashboardFocus,
+    pick: impl FnOnce(Option<usize>, usize) -> Option<usize>,
+) {
+    match focus {
         DashboardFocus::Devices => {
-            let ordered = ordered_clients(&state.clients);
-            let current = state
-                .selected_client_id
-                .as_deref()
-                .and_then(|id| ordered.iter().position(|client| client.client_id == id));
-            let selected = moved_index(current, ordered.len(), delta);
-            select_id(
-                &mut state.selected_client_id,
-                selected
-                    .and_then(|index| ordered.get(index))
-                    .map(|client| client.client_id.as_str()),
-            );
-            state.device_list.select(selected);
+            let ids: Vec<&String> = ordered_clients(&state.clients)
+                .into_iter()
+                .map(|client| &client.client_id)
+                .collect();
+            state.devices.update(&ids, |id| id.as_str().into(), pick);
         }
         DashboardFocus::Chats => {
-            let ordered = ordered_sessions(&state.gateway.sessions);
-            let current = state
-                .selected_session_id
-                .as_ref()
-                .and_then(|id| ordered.iter().position(|session| session.session_id == *id));
-            let selected = moved_index(current, ordered.len(), delta);
-            state.selected_session_id = selected
-                .and_then(|index| ordered.get(index))
-                .map(|session| session.session_id.share());
-            state.chat_list.select(selected);
+            let ids: Vec<&mobius::SessionId> = ordered_sessions(&state.gateway.sessions)
+                .into_iter()
+                .map(|session| &session.session_id)
+                .collect();
+            state.chats.update(&ids, mobius::SessionId::share, pick);
         }
         DashboardFocus::Bots => {
-            let current = state
-                .selected_bot_id
-                .as_deref()
-                .and_then(|id| state.gateway.bots.iter().position(|bot| *bot.id == *id));
-            let selected = moved_index(current, state.gateway.bots.len(), delta);
-            select_id(
-                &mut state.selected_bot_id,
-                selected
-                    .and_then(|index| state.gateway.bots.get(index))
-                    .map(|bot| &bot.id),
-            );
-            state.bot_list.select(selected);
+            let ids: Vec<&Arc<str>> = state.gateway.bots.iter().map(|bot| &bot.id).collect();
+            state.bots.update(&ids, Arc::clone, pick);
         }
     }
 }
 
-pub(super) fn select_edge(state: &mut DashboardState, last: bool) {
-    let length = match state.focus {
-        DashboardFocus::Devices => state.clients.len(),
-        DashboardFocus::Chats => state.gateway.sessions.len(),
-        DashboardFocus::Bots => state.gateway.bots.len(),
-    };
-    let Some(selected) = length
-        .checked_sub(1)
-        .map(|last_index| if last { last_index } else { 0 })
-    else {
-        return;
-    };
-    match state.focus {
-        DashboardFocus::Devices => {
-            let ordered = ordered_clients(&state.clients);
-            select_id(
-                &mut state.selected_client_id,
-                ordered
-                    .get(selected)
-                    .map(|client| client.client_id.as_str()),
-            );
-            state.device_list.select(Some(selected));
-        }
-        DashboardFocus::Chats => {
-            let ordered = ordered_sessions(&state.gateway.sessions);
-            state.selected_session_id = ordered
-                .get(selected)
-                .map(|session| session.session_id.share());
-            state.chat_list.select(Some(selected));
-        }
-        DashboardFocus::Bots => {
-            select_id(
-                &mut state.selected_bot_id,
-                state.gateway.bots.get(selected).map(|bot| &bot.id),
-            );
-            state.bot_list.select(Some(selected));
+/// The end of a list Home or End selects.
+#[derive(Clone, Copy)]
+pub(in crate::frontend) enum Edge {
+    First,
+    Last,
+}
+
+impl Edge {
+    const fn index(self, last: usize) -> usize {
+        match self {
+            Self::First => 0,
+            Self::Last => last,
         }
     }
 }
@@ -680,7 +665,7 @@ pub(super) fn moved_index(current: Option<usize>, length: usize, delta: isize) -
 pub(super) fn begin_unpair(state: &mut DashboardState) {
     let Some(client) = ordered_clients(&state.clients)
         .into_iter()
-        .find(|client| Some(client.client_id.as_str()) == state.selected_client_id.as_deref())
+        .find(|client| Some(&client.client_id) == state.devices.id.as_ref())
     else {
         return;
     };
@@ -758,18 +743,10 @@ pub(super) fn handle_frame(state: &mut DashboardState, message: ServerMessage) -
             request_id,
             payload,
         } => {
-            let Some((pending_request, expected_session)) = state.pending_open.as_ref() else {
-                return Ok(());
-            };
-            if Uuid::try_parse(&request_id) != Ok(*pending_request) {
-                return Ok(());
-            }
-            if payload.session.session_id == *expected_session {
+            if state.pending_open.as_ref() == Some(&request_id) {
                 state.overlay = Some(CapabilityOverlay::from_session(payload));
-            } else {
-                state.error = Some("gateway opened a different chat than requested".into());
+                state.pending_open = None;
             }
-            state.pending_open = None;
         }
         ServerMessage::AgentEvent {
             session_id, record, ..
@@ -790,11 +767,7 @@ pub(super) fn handle_frame(state: &mut DashboardState, message: ServerMessage) -
             fatal,
             ..
         } => {
-            if state
-                .pending_open
-                .as_ref()
-                .is_some_and(|(pending, _)| Uuid::try_parse(&request_id) == Ok(*pending))
-            {
+            if state.pending_open.as_ref() == Some(&request_id) {
                 state.pending_open = None;
             }
             if !fatal && code == "profile_superseded" {
@@ -817,53 +790,15 @@ pub(super) fn handle_frame(state: &mut DashboardState, message: ServerMessage) -
 }
 
 pub(super) fn sync_device_selection(state: &mut DashboardState) {
-    let ordered = ordered_clients(&state.clients);
-    let selected = state
-        .selected_client_id
-        .as_deref()
-        .and_then(|id| ordered.iter().position(|client| client.client_id == id))
-        .or_else(|| (!ordered.is_empty()).then_some(0));
-    select_id(
-        &mut state.selected_client_id,
-        selected
-            .and_then(|index| ordered.get(index))
-            .map(|client| client.client_id.as_str()),
-    );
-    state.device_list.select(selected);
+    sync_selection(state, DashboardFocus::Devices);
 }
 
 pub(super) fn sync_chat_selection(state: &mut DashboardState) {
-    let ordered = ordered_sessions(&state.gateway.sessions);
-    let selected = state
-        .selected_session_id
-        .as_ref()
-        .and_then(|id| ordered.iter().position(|session| session.session_id == *id))
-        .or_else(|| (!ordered.is_empty()).then_some(0));
-    state.selected_session_id = selected
-        .and_then(|index| ordered.get(index))
-        .map(|session| session.session_id.share());
-    state.chat_list.select(selected);
+    sync_selection(state, DashboardFocus::Chats);
 }
 
 pub(super) fn sync_bot_selection(state: &mut DashboardState) {
-    let selected = state
-        .selected_bot_id
-        .as_deref()
-        .and_then(|id| state.gateway.bots.iter().position(|bot| *bot.id == *id))
-        .or_else(|| (!state.gateway.bots.is_empty()).then_some(0));
-    select_id(
-        &mut state.selected_bot_id,
-        selected
-            .and_then(|index| state.gateway.bots.get(index))
-            .map(|bot| &bot.id),
-    );
-    state.bot_list.select(selected);
-}
-
-fn select_id<T: ?Sized + PartialEq + ToOwned>(selected: &mut Option<T::Owned>, id: Option<&T>) {
-    if selected.as_ref().map(Borrow::borrow) != id {
-        *selected = id.map(ToOwned::to_owned); // rules-allow: the selection owns its id while the list keeps the record
-    }
+    sync_selection(state, DashboardFocus::Bots);
 }
 
 pub(super) fn ordered_clients(clients: &[ClientStatus]) -> Vec<&ClientStatus> {

@@ -21,7 +21,10 @@ impl GatewayHost {
             crate::bots::subscription_source(&subscription.binding).map_err(invalid_config)?;
         let _mutation = self.begin_exclusive_mutation().await?;
         let state = self.state.lock().await;
-        state.bots.bot(&subscription.bot_id).map_err(invalid_bot)?;
+        state
+            .bots
+            .require_bot(&subscription.bot_id)
+            .map_err(invalid_bot)?;
         let after = validate_source(&state, &subscription.bot_id, source).await?;
         validate_action(&state, &subscription.bot_id, &subscription.binding.action).await?;
         state
@@ -106,7 +109,7 @@ impl GatewayHost {
         }
         let _mutation = self.begin_mutation().await?;
         let state = self.state.lock().await;
-        state.bots.bot(bot_id).map_err(invalid_bot)?;
+        state.bots.require_bot(bot_id).map_err(invalid_bot)?;
         let event = HookEvent {
             id: format!("custom-{command_id}").into(),
             bot_id: bot_id.into(),
@@ -121,7 +124,11 @@ impl GatewayHost {
                 data,
             },
         };
-        state.bots.record_hook(&event).map_err(invalid_config)?;
+        state
+            .bots
+            .storage
+            .record_hook(&event)
+            .map_err(invalid_config)?;
         drop(state);
         self.telemetry.notify.notify_one();
         Ok(event)
@@ -182,7 +189,7 @@ impl GatewayHost {
                     if execution.outcome == ExecutionOutcome::Completed {
                         RoutineRunStatus::Succeeded
                     } else if execution.outcome == ExecutionOutcome::Aborted
-                        && bots.run_cancel_requested(&run.id)?
+                        && bots.storage.run_cancel_requested(&run.id)?
                     {
                         RoutineRunStatus::Cancelled
                     } else {
@@ -203,7 +210,8 @@ impl GatewayHost {
                     Some("the gateway stopped before this run completed".into()),
                 ),
             };
-            bots.recover_run(&run.id, status, finished_at, message)?;
+            bots.storage
+                .finish_run(&run.id, status, finished_at, message)?;
         }
         Ok(())
     }
@@ -239,19 +247,23 @@ impl GatewayHost {
             .map_err(internal)?;
         }
 
-        for event in bots.unpublished_events(100).map_err(internal)? {
+        for event in bots.storage.unpublished_events(100).map_err(internal)? {
             let id = Arc::clone(&event.id);
             super::send_event(&self.events, ServerMessage::HookEvent { event });
-            bots.event_published(&id).map_err(internal)?;
+            bots.storage.event_published(&id).map_err(internal)?;
         }
         drop(mutation);
         for pending in bots
+            .storage
             .pending_actions(Utc::now().timestamp(), 32)
             .map_err(internal)?
         {
             let result = self.execute_hook_action(&pending).await;
             match result {
-                Ok(()) => bots.action_accepted(&pending.id).map_err(internal)?,
+                Ok(()) => bots
+                    .storage
+                    .action_accepted(&pending.id)
+                    .map_err(internal)?,
                 Err(error) => {
                     let retry = matches!(
                         error.code,
@@ -264,12 +276,13 @@ impl GatewayHost {
                             | "gateway_error"
                             | "server_busy"
                     );
-                    bots.action_failed(
-                        &pending.id,
-                        &error.message,
-                        retry.then(|| Utc::now().timestamp() + 15),
-                    )
-                    .map_err(internal)?;
+                    bots.storage
+                        .action_failed(
+                            &pending.id,
+                            &error.message,
+                            retry.then(|| Utc::now().timestamp() + 15),
+                        )
+                        .map_err(internal)?;
                     if !retry {
                         super::send_warning(&self.events, "hook_action", error.message);
                     }
@@ -284,7 +297,7 @@ impl GatewayHost {
         pending: &crate::bots::PendingHookAction,
     ) -> std::result::Result<(), Rejection> {
         let bots = Arc::clone(&self.state.lock().await.bots);
-        if !bots.action_pending(&pending.id).map_err(internal)? {
+        if !bots.storage.action_pending(&pending.id).map_err(internal)? {
             return Ok(());
         }
         match &pending.action {
@@ -295,7 +308,7 @@ impl GatewayHost {
                     .conversation_session_id;
                 let host = self.open_session(&session).await?;
                 let _delivery = self.begin_mutation().await?;
-                if !bots.action_pending(&pending.id).map_err(internal)? {
+                if !bots.storage.action_pending(&pending.id).map_err(internal)? {
                     return Ok(());
                 }
                 let text =
@@ -388,12 +401,12 @@ pub(super) async fn validate_source(
                 .map(|page| page.latest_sequence)
         }
         HookSource::Bot { bot_id: source } => {
-            state.bots.bot(source).map_err(invalid_bot)?;
+            state.bots.require_bot(source).map_err(invalid_bot)?;
             Ok(0)
         }
         HookSource::Client { client_id } => {
             let policy = state.config()?.auth;
-            if !crate::auth::AuthStore::open_validated(state.store.auth_path(), policy)
+            if !crate::auth::AuthStore::open(state.store.auth_path(), policy)
                 .map_err(internal)?
                 .clients()
                 .map_err(internal)?
@@ -586,7 +599,9 @@ async fn session_hook(
             .history(None)?
             .into_iter()
             .find(|run| run.session_id.as_ref() == Some(session_id))
-        && let Some(cause) = bots.hook_event(&format!("run-{}-running", run.id))?
+        && let Some(cause) = bots
+            .storage
+            .hook_event(&format!("run-{}-running", run.id))?
     {
         cause_id = Some(Arc::clone(&cause.id));
         ancestry = cause.ancestry;
@@ -626,7 +641,7 @@ async fn project_attention(
         // Stable item identity makes repeated widget snapshots and crash replay idempotent.
         let key = serde_json::to_vec(&(session_id, capability, &widget.id, &item.id))?;
         let id = format!("attention-{:x}", Sha256::digest(key));
-        if bots.hook_event(&id)?.is_some() {
+        if bots.storage.hook_event(&id)?.is_some() {
             continue;
         }
         let mut event = session_hook(
@@ -645,7 +660,7 @@ async fn project_attention(
         )
         .await?;
         event.id = id.into();
-        bots.record_hook(&event)?;
+        bots.storage.record_hook(&event)?;
     }
     Ok(())
 }
@@ -669,7 +684,7 @@ async fn project_session_journal(
     fallback_owner: &str,
     through: Option<u64>,
 ) -> Result<()> {
-    let (mut cursor, mut owner) = bots.source_cursor(session_id)?;
+    let (mut cursor, mut owner) = bots.storage.source_cursor(session_id)?;
     loop {
         if through.is_some_and(|sequence| cursor >= sequence) {
             return Ok(());
@@ -694,18 +709,18 @@ async fn project_session_journal(
                 owner = Some(next);
             }
             let bot_id = owner.as_deref().unwrap_or(fallback_owner);
-            if bots.bot(bot_id).is_ok() {
+            if bots.require_bot(bot_id).is_ok() {
                 project_attention(checkpoints, bots, bot_id, session_id, &record).await?;
                 if let Some(event) =
                     lifecycle_event(checkpoints, bots, bot_id, session_id, &record).await?
                 {
-                    bots.project_session(&event, record.sequence)?;
+                    bots.storage.project_session(&event, record.sequence)?;
                     persisted_cursor = cursor;
                 }
             }
         }
         if cursor > persisted_cursor {
-            bots.advance_source_cursor(
+            bots.storage.advance_source_cursor(
                 session_id,
                 owner.as_deref().unwrap_or(fallback_owner),
                 cursor,
@@ -743,7 +758,8 @@ fn close_owner_change(
         cause_id: None,
         ancestry: Vec::new(),
     }])?;
-    bots.advance_source_cursor(session_id, next, record.sequence)
+    bots.storage
+        .advance_source_cursor(session_id, next, record.sequence)
 }
 
 pub(super) async fn close_reassigned_source(
@@ -814,7 +830,7 @@ pub(super) fn command_pending(
     command_id: &str,
 ) -> std::result::Result<bool, Rejection> {
     if cause.is_some() {
-        bots.action_pending(command_id).map_err(internal)
+        bots.storage.action_pending(command_id).map_err(internal)
     } else {
         Ok(true)
     }
@@ -889,7 +905,7 @@ mod tests {
             .await
             .expect("projection");
         }
-        let events = bots.unpublished_events(10).expect("events");
+        let events = bots.storage.unpublished_events(10).expect("events");
         assert_eq!(events.len(), 1);
         assert!(
             matches!(&events[0].data, HookData::SessionAttention { text, item_id, .. } if text.chars().count() == 200 && &**item_id == "call")
@@ -911,6 +927,9 @@ mod tests {
         )
         .await
         .expect("closed projection");
-        assert_eq!(bots.unpublished_events(10).expect("events").len(), 1);
+        assert_eq!(
+            bots.storage.unpublished_events(10).expect("events").len(),
+            1
+        );
     }
 }

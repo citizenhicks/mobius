@@ -11,7 +11,9 @@ use super::SubmissionInbox;
 use super::TURN_INTERRUPTED_REASON;
 use super::input::{ActiveRoute, Wait};
 use super::unix_timestamp_ms;
-use crate::backend::checkpoint::{ActiveExecution, ExecutionOutcome, ExecutionPhase};
+use crate::backend::checkpoint::{
+    ActiveExecution, ExecutionOutcome, ExecutionPhase, QueuedMessage,
+};
 use crate::middleware::{PreparedMessage, TurnEndContext};
 use crate::protocol::{
     ErrorEvent, Event, EventMsg, MessageAuthor, MessageTarget, TokenCountEvent, TokenUsage,
@@ -40,6 +42,14 @@ impl Runner {
             .ok_or_else(|| Error::Checkpoint("active turn has no initiating message".into()))
     }
 
+    /// Whether the active execution was started by an idle wake-up.
+    pub(super) fn active_idle(&self) -> bool {
+        self.state
+            .active_execution
+            .as_ref()
+            .is_some_and(|execution| execution.idle)
+    }
+
     pub(super) async fn stop_resumed_turn_at_session_start(&mut self) -> Result<()> {
         let Some(reason) = self.pending_session_start_stop.take() else {
             return Ok(());
@@ -61,13 +71,7 @@ impl Runner {
         match wait {
             Wait::Ready { value, .. } => Ok(Some(value)),
             Wait::Interrupted { submission_id } => {
-                self.abort(
-                    &submission_id,
-                    turn_id,
-                    TURN_INTERRUPTED_REASON,
-                    ExecutionOutcome::Aborted,
-                )
-                .await?;
+                self.interrupt(&submission_id, turn_id).await?;
                 Ok(None)
             }
         }
@@ -132,39 +136,22 @@ impl Runner {
             )
             .await?;
         let submission_id = std::mem::take(&mut message.submission_id);
+        let mut events = vec![turn_event(
+            &submission_id,
+            EventMsg::TurnStarted(TurnStartedEvent {
+                idle: false,
+                turn_id: Arc::clone(&turn_id),
+                model_context_window: Some(self.config.context_window),
+            }),
+        )];
+        events.extend(turn_events(&submission_id, hook_messages));
+        events.extend(turn_events(
+            &submission_id,
+            std::mem::take(&mut message.boundary_events),
+        ));
         if let Some(rejection) = submitted.rejection {
-            // Only the consumed item is needed to undo a failed turn start.
-            let (queue_index, queued_message) = self
-                .config
-                .middleware
-                .consume_next_turn(&mut self.state.make_mut().pending_messages, &submission_id)?;
-            let started = self.begin_turn(&submission_id, Arc::clone(&turn_id), author);
-            if let Err(error) = started {
-                self.state
-                    .make_mut()
-                    .pending_messages
-                    .insert(queue_index, queued_message);
-                return Err(error);
-            }
-            let mut events = vec![turn_event(
-                &submission_id,
-                EventMsg::TurnStarted(TurnStartedEvent {
-                    idle: false,
-                    turn_id: Arc::clone(&turn_id),
-                    model_context_window: Some(self.config.context_window),
-                }),
-            )];
-            events.extend(
-                hook_messages
-                    .into_iter()
-                    .map(|message| turn_event(&submission_id, message)),
-            );
-            events.extend(
-                message
-                    .boundary_events
-                    .drain(..)
-                    .map(|event| turn_event(&submission_id, event)),
-            );
+            let (queue_index, queued_message) =
+                self.consume_turn_message(&submission_id, Arc::clone(&turn_id), author)?;
             let result = self
                 .abort_with_events(
                     &submission_id,
@@ -187,30 +174,7 @@ impl Runner {
             self.state.context.as_slice().into(),
             &mut model_input,
         );
-        let checkpoint_sequence = self
-            .state
-            .sequence
-            .checked_add(1)
-            .ok_or_else(|| Error::Checkpoint("checkpoint sequence overflow".into()))?;
-        let mut events = vec![turn_event(
-            &submission_id,
-            EventMsg::TurnStarted(TurnStartedEvent {
-                idle: false,
-                turn_id: Arc::clone(&turn_id),
-                model_context_window: Some(self.config.context_window),
-            }),
-        )];
-        events.extend(
-            hook_messages
-                .into_iter()
-                .map(|message| turn_event(&submission_id, message)),
-        );
-        events.extend(
-            message
-                .boundary_events
-                .into_iter()
-                .map(|event| turn_event(&submission_id, event)),
-        );
+        let checkpoint_sequence = self.state.next_sequence()?;
         let target = message.event.message_target_mut().ok_or_else(|| {
             Error::Checkpoint("prepared input event has no message target".into())
         })?;
@@ -221,18 +185,8 @@ impl Runner {
         });
         events.push(turn_event(&submission_id, message.event));
         // Retain the removed item at its original position until turn-start publication succeeds.
-        let (queue_index, queued_message) = self
-            .config
-            .middleware
-            .consume_next_turn(&mut self.state.make_mut().pending_messages, &submission_id)?;
-        let started = self.begin_turn(&submission_id, Arc::clone(&turn_id), author);
-        if let Err(error) = started {
-            self.state
-                .make_mut()
-                .pending_messages
-                .insert(queue_index, queued_message);
-            return Err(error);
-        }
+        let (queue_index, queued_message) =
+            self.consume_turn_message(&submission_id, Arc::clone(&turn_id), author)?;
         let context_len = self.state.context.len();
         let transcript_len = self.transcript_delta.len();
         let had_first_user_message = self.state.first_user_message.is_some();
@@ -269,6 +223,28 @@ impl Runner {
         }
         drop(queued_message);
         self.continue_turn(inbox, &submission_id, &turn_id).await
+    }
+
+    /// Removes the turn's queued message and begins its execution, putting the message back
+    /// if the turn cannot begin. The caller restores it if publishing the start fails.
+    fn consume_turn_message(
+        &mut self,
+        submission_id: &Arc<str>,
+        turn_id: Arc<str>,
+        author: Arc<MessageAuthor>,
+    ) -> Result<(usize, QueuedMessage)> {
+        let (queue_index, queued_message) = self
+            .config
+            .middleware
+            .consume_next_turn(&mut self.state.make_mut().pending_messages, submission_id)?;
+        if let Err(error) = self.begin_turn(submission_id, turn_id, author) {
+            self.state
+                .make_mut()
+                .pending_messages
+                .insert(queue_index, queued_message);
+            return Err(error);
+        }
+        Ok((queue_index, queued_message))
     }
 
     /// Starts a hidden turn for idle-timer subscribers. A message staged into it makes it a
@@ -405,14 +381,24 @@ impl Runner {
             turn_id,
             ExecutionOutcome::Completed,
             EventMsg::TurnComplete(TurnCompleteEvent {
-                idle: self
-                    .state
-                    .active_execution
-                    .as_ref()
-                    .is_some_and(|execution| execution.idle),
+                idle: self.active_idle(),
                 turn_id: Arc::clone(turn_id),
             }),
             events,
+        )
+        .await
+    }
+
+    pub(super) async fn interrupt(
+        &mut self,
+        submission_id: &Arc<str>,
+        turn_id: &Arc<str>,
+    ) -> Result<()> {
+        self.abort(
+            submission_id,
+            turn_id,
+            TURN_INTERRUPTED_REASON,
+            ExecutionOutcome::Aborted,
         )
         .await
     }
@@ -450,11 +436,7 @@ impl Runner {
                 turn_id,
                 outcome,
                 EventMsg::TurnAborted(TurnAbortedEvent {
-                    idle: self
-                        .state
-                        .active_execution
-                        .as_ref()
-                        .is_some_and(|execution| execution.idle),
+                    idle: self.active_idle(),
                     turn_id: Arc::clone(turn_id),
                     reason: reason.into(),
                 }),
@@ -483,10 +465,7 @@ impl Runner {
             turn_id,
             outcome,
         )?;
-        events.extend(
-            self.turn_end_events(submission_id, turn_id, outcome)
-                .await?,
-        );
+        events.extend(self.turn_end_events(submission_id, turn_id).await?);
         events.push(turn_event(submission_id, terminal));
         self.finish_and_persist_execution(outcome, events).await?;
         Ok(())
@@ -496,7 +475,6 @@ impl Runner {
         &mut self,
         submission_id: &Arc<str>,
         turn_id: &Arc<str>,
-        outcome: ExecutionOutcome,
     ) -> Result<Vec<Event>> {
         if self.turn_end_turn_id.as_deref() == Some(turn_id) {
             return Ok(Vec::new());
@@ -508,30 +486,16 @@ impl Runner {
             .turn_end(TurnEndContext {
                 session_id: &self.runtime.session_id,
                 turn_id,
-                outcome,
-                queued_messages: &self.state.pending_messages,
                 owner: None,
-                idle: self
-                    .state
-                    .active_execution
-                    .as_ref()
-                    .is_some_and(|execution| execution.idle),
+                idle: self.active_idle(),
                 events: &mut messages,
             })
             .await?;
-        if !self
-            .state
-            .active_execution
-            .as_ref()
-            .is_some_and(|execution| execution.idle)
-        {
+        if !self.active_idle() {
             self.idle.reset();
         }
         self.catalog.finish_tool_turn(turn_id)?;
-        Ok(messages
-            .into_iter()
-            .map(|message| turn_event(submission_id, message))
-            .collect())
+        Ok(turn_events(submission_id, messages).collect())
     }
 }
 
@@ -540,4 +504,14 @@ pub(super) fn turn_event(submission_id: &Arc<str>, msg: EventMsg) -> Event {
         submission_id: Some(Arc::clone(submission_id)),
         msg,
     }
+}
+
+/// Tags each message with its submission.
+pub(super) fn turn_events(
+    submission_id: &Arc<str>,
+    messages: impl IntoIterator<Item = EventMsg>,
+) -> impl Iterator<Item = Event> {
+    messages
+        .into_iter()
+        .map(move |msg| turn_event(submission_id, msg))
 }

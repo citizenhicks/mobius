@@ -1,4 +1,5 @@
 use super::super::*;
+use super::support::*;
 use crate::protocol::ModelEvent;
 
 #[tokio::test]

@@ -350,16 +350,24 @@ struct TakenOutput {
     saw_output: bool,
 }
 
+impl TakenOutput {
+    fn into_poll(self, status: BackgroundCommandStatus) -> BackgroundCommandPoll {
+        BackgroundCommandPoll {
+            command_id: None,
+            status,
+            exit_code: None,
+            stdout: self.stdout,
+            stderr: self.stderr,
+            truncated: self.truncated,
+            error: None,
+        }
+    }
+}
+
 fn poll_running(id: &str, output: &Arc<Mutex<BufferedOutput>>) -> Result<BackgroundCommandPoll> {
-    let output = take_output(output)?;
     Ok(BackgroundCommandPoll {
         command_id: Some(id.into()),
-        status: BackgroundCommandStatus::Running,
-        exit_code: None,
-        stdout: output.stdout,
-        stderr: output.stderr,
-        truncated: output.truncated,
-        error: None,
+        ..take_output(output)?.into_poll(BackgroundCommandStatus::Running)
     })
 }
 
@@ -369,16 +377,7 @@ async fn completed(entry: Entry) -> Result<BackgroundCommandPoll> {
 }
 
 fn stopped(output: &Arc<Mutex<BufferedOutput>>) -> Result<BackgroundCommandPoll> {
-    let output = take_output(output)?;
-    Ok(BackgroundCommandPoll {
-        command_id: None,
-        status: BackgroundCommandStatus::Stopped,
-        exit_code: None,
-        stdout: output.stdout,
-        stderr: output.stderr,
-        truncated: output.truncated,
-        error: None,
-    })
+    Ok(take_output(output)?.into_poll(BackgroundCommandStatus::Stopped))
 }
 
 fn finish(
@@ -393,40 +392,24 @@ fn finish(
                 output.stderr = command.stderr;
             }
             Ok(BackgroundCommandPoll {
-                command_id: None,
-                status: BackgroundCommandStatus::Exited,
                 exit_code: Some(command.exit_code),
-                stdout: output.stdout,
-                stderr: output.stderr,
-                truncated: output.truncated,
-                error: None,
+                ..output.into_poll(BackgroundCommandStatus::Exited)
             })
         }
         Ok(Err(error)) => {
             let error = error.to_string();
-            let truncated = error.len() > MAX_ERROR_BYTES;
+            output.truncated |= error.len() > MAX_ERROR_BYTES;
             Ok(BackgroundCommandPoll {
-                command_id: None,
-                status: BackgroundCommandStatus::Failed,
-                exit_code: None,
-                stdout: output.stdout,
-                stderr: output.stderr,
-                truncated: output.truncated || truncated,
                 error: Some(crate::truncate_utf8(&error, MAX_ERROR_BYTES).into()),
+                ..output.into_poll(BackgroundCommandStatus::Failed)
             })
         }
-        Err(error) => Ok(BackgroundCommandPoll {
-            command_id: None,
-            status: if error.is_cancelled() {
-                BackgroundCommandStatus::Stopped
-            } else {
-                BackgroundCommandStatus::Failed
-            },
-            exit_code: None,
-            stdout: output.stdout,
-            stderr: output.stderr,
-            truncated: output.truncated,
-            error: (!error.is_cancelled()).then(|| "background command task failed".into()),
+        Err(error) if error.is_cancelled() => {
+            Ok(output.into_poll(BackgroundCommandStatus::Stopped))
+        }
+        Err(_) => Ok(BackgroundCommandPoll {
+            error: Some("background command task failed".into()),
+            ..output.into_poll(BackgroundCommandStatus::Failed)
         }),
     }
 }
@@ -494,31 +477,7 @@ mod tests {
     }
 
     impl SandboxBackend for PendingBackend {
-        fn read<'a>(
-            &'a self,
-            _path: &'a str,
-            _sandbox_mode: SandboxMode,
-        ) -> BoxFuture<'a, Result<String>> {
-            Box::pin(async { unreachable!() })
-        }
-
-        fn read_bytes<'a>(
-            &'a self,
-            _path: &'a str,
-            _max_bytes: usize,
-            _sandbox_mode: SandboxMode,
-        ) -> BoxFuture<'a, Result<Vec<u8>>> {
-            Box::pin(async { unreachable!() })
-        }
-
-        fn write<'a>(
-            &'a self,
-            _path: &'a str,
-            _content: &'a str,
-            _sandbox_mode: SandboxMode,
-        ) -> BoxFuture<'a, Result<()>> {
-            Box::pin(async { unreachable!() })
-        }
+        crate::backend::sandbox::unreachable_backend_methods!();
 
         fn execute<'a>(
             &'a self,

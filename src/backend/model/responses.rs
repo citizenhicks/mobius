@@ -11,16 +11,13 @@ use super::GeneratedImage;
 use super::ImageGenerationRequest;
 use super::Model;
 use super::ModelEventSink;
-#[cfg(test)]
-use super::ModelInput;
 use super::ModelOutput;
 use super::ModelRequest;
 use super::PromptCacheMode;
 use super::ToolDefinition;
 use super::authorization::ApiKeyAuthorization;
 use super::authorization::OpenAiAuthorization;
-#[cfg(test)]
-use super::authorization::ResolvedAuthorization;
+use super::authorization::UnauthorizedRetry;
 use super::image_generation::{ImageApi, image_api};
 use super::provider::BaseUrl;
 use super::realtime::RealtimeTransport;
@@ -64,11 +61,7 @@ impl ToolDiscoveryWire {
 
 pub(super) static CATALOG: std::sync::LazyLock<super::provider::ModelCatalog> =
     std::sync::LazyLock::new(|| {
-        crate::config::overridable(
-            "openai.toml",
-            include_str!("openai.toml"),
-            super::provider::ModelCatalog::validate,
-        )
+        super::provider::ModelCatalog::load("openai.toml", include_str!("openai.toml"))
     });
 
 /// OpenAI Responses API configuration.
@@ -87,7 +80,6 @@ pub struct OpenAi {
     hosted_tools: Vec<Value>,
     image_input: bool,
     image_api: Option<&'static ImageApi>,
-    explicit_prompt_cache: bool,
     tool_discovery: ToolDiscoveryWire,
     web_search_event_type: &'static str,
 }
@@ -135,7 +127,7 @@ impl OpenAi {
         if model.trim().is_empty() {
             return Err(Error::Config("OPENAI_MODEL is empty".into()));
         }
-        Self::with_client(
+        Self::from_api_key(
             Some(api_key.into()),
             base_url,
             model,
@@ -145,10 +137,10 @@ impl OpenAi {
         .with_openai_realtime_voice()
     }
 
-    pub(super) fn with_client(
+    pub(super) fn from_api_key(
         api_key: Option<String>,
         base_url: BaseUrl,
-        model: impl Into<String>,
+        model: String,
         client: Client,
         settings: super::ModelTransportSettings,
     ) -> Result<Self> {
@@ -157,23 +149,13 @@ impl OpenAi {
         }
         let auth = api_key
             .map(|key| Arc::new(ApiKeyAuthorization::new(key)) as Arc<dyn OpenAiAuthorization>);
-        Self::from_parts(auth, base_url, model, client, settings)
+        Self::from_authorization(auth, base_url, model, client, settings)
     }
 
-    pub(super) fn with_authorization(
-        auth: Arc<dyn OpenAiAuthorization>,
-        base_url: BaseUrl,
-        model: impl Into<String>,
-        client: Client,
-        settings: super::ModelTransportSettings,
-    ) -> Result<Self> {
-        Self::from_parts(Some(auth), base_url, model, client, settings)
-    }
-
-    fn from_parts(
+    pub(super) fn from_authorization(
         auth: Option<Arc<dyn OpenAiAuthorization>>,
         base_url: BaseUrl,
-        model: impl Into<String>,
+        model: String,
         client: Client,
         settings: super::ModelTransportSettings,
     ) -> Result<Self> {
@@ -184,7 +166,7 @@ impl OpenAi {
             auth,
             realtime: None,
             base_url,
-            model: Arc::from(model.into()),
+            model: model.into(),
             reasoning_effort: None,
             service_tier: None,
             max_output_tokens: None,
@@ -193,29 +175,9 @@ impl OpenAi {
             hosted_tools: Vec::new(),
             image_input: true,
             image_api,
-            explicit_prompt_cache: false,
             tool_discovery: ToolDiscoveryWire::Rebuild,
             web_search_event_type: "web_search_call",
         })
-    }
-
-    /// Sets validated socket, voice and retry policy for this model.
-    /// # Errors
-    /// Returns an error while a voice call holds the realtime transport.
-    pub fn with_transport_settings(
-        mut self,
-        settings: super::ModelTransportSettings,
-    ) -> Result<Self> {
-        if let Some(realtime) = self.realtime.take() {
-            let Ok(realtime) = Arc::try_unwrap(realtime) else {
-                return Err(Error::Config(
-                    "voice transport settings cannot change while a call is active".into(),
-                ));
-            };
-            self.realtime = Some(Arc::new(realtime.with_settings(settings)?));
-        }
-        self.transport = settings;
-        Ok(self)
     }
 
     pub(super) fn with_codex_realtime_voice(mut self, default_endpoint: bool) -> Result<Self> {
@@ -284,6 +246,14 @@ impl OpenAi {
         Ok(self)
     }
 
+    /// Applies the reasoning effort a provider configuration selected, if any.
+    pub(super) fn with_selected_effort(self, effort: Option<String>) -> Result<Self> {
+        match effort {
+            Some(effort) => self.with_reasoning_effort(effort),
+            None => Ok(self),
+        }
+    }
+
     pub(super) fn reasoning_effort(&self) -> Option<&str> {
         self.reasoning_effort.as_deref()
     }
@@ -321,11 +291,6 @@ impl OpenAi {
     #[must_use]
     pub(super) fn with_image_input(mut self, enabled: bool) -> Self {
         self.image_input = enabled;
-        self
-    }
-
-    pub(super) fn with_explicit_prompt_cache(mut self) -> Self {
-        self.explicit_prompt_cache = true;
         self
     }
 
@@ -387,11 +352,7 @@ impl OpenAi {
         }
 
         let mut sse = SseDecoder::default();
-        let mut commentary = BTreeSet::new();
-        let mut reasoning_part = None;
-        let mut web_searches = BTreeSet::new();
-        let mut output = BTreeMap::new();
-        let mut next_output_index = 0;
+        let mut stream = ResponsesStream::new(self.web_search_event_type);
         while let Some(chunk) = response.chunk().await? {
             sse.push(&chunk, "Responses")?;
             while let Some(frame) = sse.next_frame()? {
@@ -401,33 +362,17 @@ impl OpenAi {
                 if data == "[DONE]" {
                     continue;
                 }
-                let mut event: Value = serde_json::from_str(&data)?;
-                let pending = validate_stream_output(&event, &output)?;
-                emit_ready_tool_calls(
-                    &output,
-                    pending.map(|index| (index, event.get("item").unwrap_or(&Value::Null))),
-                    &mut next_output_index,
-                    &events,
-                )
-                .await?;
-                let handled = emit_web_event(
-                    &event,
-                    &mut web_searches,
-                    &events,
-                    self.web_search_event_type,
-                )
-                .await?
-                    || emit_reasoning_event(&event, &mut reasoning_part, &events).await?
-                    || emit_text_event(&event, &mut commentary, &events).await?;
-                collect_stream_output(&mut event, &mut output, pending);
-                if handled {
-                    continue;
-                }
-                if let Some(response) =
-                    self.finish_stream_event(event, &mut output, deferred_tools)?
-                {
-                    emit_citation_web_search(&response, &web_searches, &events).await?;
-                    return Ok(response);
+                match stream.apply(serde_json::from_str(&data)?, &events).await? {
+                    StreamStep::Pending => {}
+                    StreamStep::Completed(completed) => {
+                        let output = self.decode_response(completed.response, deferred_tools)?;
+                        emit_citation_web_search(&output, completed.web_search_reported, &events)
+                            .await?;
+                        return Ok(output);
+                    }
+                    StreamStep::Failed(event) => {
+                        return Err(Error::Provider(response_provider_error(&event, None)));
+                    }
                 }
             }
         }
@@ -457,28 +402,6 @@ impl OpenAi {
         api.decode(&read_limited(response, MAX_IMAGE_RESPONSE_BYTES, "Images").await?)
     }
 
-    fn finish_stream_event(
-        &self,
-        mut event: Value,
-        output: &mut BTreeMap<u64, Value>,
-        deferred_tools: &[Arc<ToolDefinition>],
-    ) -> Result<Option<ModelOutput>> {
-        match event.get("type").and_then(Value::as_str) {
-            Some("response.completed") => {
-                let response = event
-                    .get_mut("response")
-                    .map(Value::take)
-                    .map(|response| attach_stream_output(response, std::mem::take(output)))
-                    .ok_or_else(|| Error::Provider("completion omitted response".into()))?;
-                self.decode_response(response, deferred_tools).map(Some)
-            }
-            Some("error" | "response.failed" | "response.incomplete") => {
-                Err(Error::Provider(response_provider_error(&event, None)))
-            }
-            _ => Ok(None),
-        }
-    }
-
     fn response_body<'a>(&'a self, request: ModelRequest<'a>) -> Result<ResponsesBody<'a>> {
         let additional_tools = match self.tool_discovery {
             ToolDiscoveryWire::AdditionalTools => request.deferred_tools,
@@ -487,7 +410,6 @@ impl OpenAi {
         let mut metadata = RequestMetadata::new(
             &self.model,
             request,
-            self.explicit_prompt_cache,
             self.reasoning_effort(),
             self.reasoning_summary,
         );
@@ -499,16 +421,10 @@ impl OpenAi {
             input: WireInput::new(
                 request.input,
                 self.image_input,
-                self.explicit_prompt_cache,
                 request.catalog_revision,
                 additional_tools,
             )?,
         })
-    }
-
-    #[cfg(test)]
-    fn response_body_value(&self, request: ModelRequest<'_>) -> Result<Value> {
-        Ok(serde_json::to_value(self.response_body(request)?)?)
     }
 
     fn wire_request_tools<'a>(&'a self, request: &ModelRequest<'a>) -> WireTools<'a> {
@@ -576,7 +492,8 @@ impl OpenAi {
         session_id: Option<&str>,
         mut body: impl FnMut() -> Result<reqwest::RequestBuilder>,
     ) -> Result<reqwest::Response> {
-        for attempt in 0..2 {
+        let mut retry = UnauthorizedRetry::default();
+        loop {
             let mut request = body()?;
             for (name, value) in self.headers.into_iter().flatten() {
                 request = request.header(name.as_str(), value.as_bytes());
@@ -596,14 +513,14 @@ impl OpenAi {
                 .send()
                 .await
                 .map_err(|error| super::transport::request_error(error, "OpenAI"))?;
-            if response.status() != reqwest::StatusCode::UNAUTHORIZED || attempt == 1 {
-                return Ok(response);
-            }
-            if !auth.recover_unauthorized(&authorization.token).await? {
+            if response.status() != reqwest::StatusCode::UNAUTHORIZED
+                || !retry
+                    .retry_unauthorized(auth.as_ref(), &authorization.token)
+                    .await?
+            {
                 return Ok(response);
             }
         }
-        unreachable!("authorized request retry is bounded")
     }
 }
 
@@ -658,11 +575,7 @@ impl Model for OpenAi {
     }
 
     fn prompt_cache_capability(&self) -> PromptCacheMode {
-        if self.explicit_prompt_cache {
-            PromptCacheMode::Explicit
-        } else {
-            PromptCacheMode::Implicit
-        }
+        PromptCacheMode::Implicit
     }
 
     fn tool_discovery(&self) -> ToolDiscoveryMode {
@@ -678,10 +591,6 @@ impl Model for OpenAi {
         Box::pin(self.send_response(request, events, Some(media)))
     }
 
-    fn request_size(&self, request: ModelRequest<'_>) -> Result<usize> {
-        super::media::serialized_size(&self.response_body(request)?)
-    }
-
     fn respond<'a>(
         &'a self,
         request: ModelRequest<'a>,
@@ -691,33 +600,89 @@ impl Model for OpenAi {
     }
 }
 
-#[cfg(test)]
-pub(super) fn wire_input_with_cache(
-    input: ModelInput<'_>,
-    allow_images: bool,
-    explicit_prompt_cache: bool,
-    catalog_revision: &str,
-    additional_tools: &[Arc<ToolDefinition>],
-) -> Result<Vec<Value>> {
-    let input = WireInput::new(
-        input,
-        allow_images,
-        explicit_prompt_cache,
-        catalog_revision,
-        additional_tools,
-    )?;
-    match serde_json::to_value(input)? {
-        Value::Array(items) => Ok(items),
-        _ => Err(Error::Provider(
-            "Responses wire input must be an array".into(),
-        )),
+/// Normalizes one Responses event stream shared by the HTTP and WebSocket transports.
+pub(super) struct ResponsesStream {
+    web_search_event_type: &'static str,
+    web_searches: BTreeSet<String>,
+    commentary: BTreeSet<String>,
+    reasoning_part: Option<ReasoningPart>,
+    output: BTreeMap<u64, Value>,
+    next_output_index: u64,
+}
+
+/// What one applied stream event concluded.
+pub(super) enum StreamStep {
+    /// The response continues.
+    Pending,
+    /// The response completed; its streamed items fill any omitted output.
+    Completed(CompletedResponse),
+    /// The provider reported a failed response with this event.
+    Failed(Value),
+}
+
+pub(super) struct CompletedResponse {
+    pub(super) response: Value,
+    /// Whether the stream already reported web search activity.
+    pub(super) web_search_reported: bool,
+}
+
+impl ResponsesStream {
+    pub(super) fn new(web_search_event_type: &'static str) -> Self {
+        Self {
+            web_search_event_type,
+            web_searches: BTreeSet::new(),
+            commentary: BTreeSet::new(),
+            reasoning_part: None,
+            output: BTreeMap::new(),
+            next_output_index: 0,
+        }
+    }
+
+    /// Forwards one event's normalized deltas and collects its completed output item.
+    pub(super) async fn apply(
+        &mut self,
+        mut event: Value,
+        events: &ModelEventSink,
+    ) -> Result<StreamStep> {
+        let pending = validate_stream_output(&event, &self.output)?;
+        emit_ready_tool_calls(
+            &self.output,
+            pending.map(|index| (index, event.get("item").unwrap_or(&Value::Null))),
+            &mut self.next_output_index,
+            events,
+        )
+        .await?;
+        let handled = emit_web_event(
+            &event,
+            &mut self.web_searches,
+            events,
+            self.web_search_event_type,
+        )
+        .await?
+            || emit_reasoning_event(&event, &mut self.reasoning_part, events).await?
+            || emit_text_event(&event, &mut self.commentary, events).await?;
+        collect_stream_output(&mut event, &mut self.output, pending);
+        if handled {
+            return Ok(StreamStep::Pending);
+        }
+        Ok(match event.get("type").and_then(Value::as_str) {
+            Some("response.completed") => {
+                let response = event
+                    .get_mut("response")
+                    .map(Value::take)
+                    .ok_or_else(|| Error::Provider("completion omitted response".into()))?;
+                StreamStep::Completed(CompletedResponse {
+                    response: attach_stream_output(response, std::mem::take(&mut self.output)),
+                    web_search_reported: !self.web_searches.is_empty(),
+                })
+            }
+            Some("error" | "response.failed" | "response.incomplete") => StreamStep::Failed(event),
+            _ => StreamStep::Pending,
+        })
     }
 }
 
-pub(super) fn validate_stream_output(
-    event: &Value,
-    output: &BTreeMap<u64, Value>,
-) -> Result<Option<u64>> {
+fn validate_stream_output(event: &Value, output: &BTreeMap<u64, Value>) -> Result<Option<u64>> {
     if event.get("type").and_then(Value::as_str) != Some("response.output_item.done") {
         return Ok(None);
     }
@@ -745,17 +710,13 @@ pub(super) fn validate_stream_output(
     Ok(Some(index))
 }
 
-pub(super) fn collect_stream_output(
-    event: &mut Value,
-    output: &mut BTreeMap<u64, Value>,
-    index: Option<u64>,
-) {
+fn collect_stream_output(event: &mut Value, output: &mut BTreeMap<u64, Value>, index: Option<u64>) {
     if let Some(index) = index {
         output.insert(index, event["item"].take());
     }
 }
 
-pub(super) async fn emit_ready_tool_calls(
+async fn emit_ready_tool_calls(
     output: &BTreeMap<u64, Value>,
     pending: Option<(u64, &Value)>,
     next_output_index: &mut u64,
@@ -778,7 +739,7 @@ pub(super) async fn emit_ready_tool_calls(
     Ok(())
 }
 
-pub(super) fn attach_stream_output(mut response: Value, output: BTreeMap<u64, Value>) -> Value {
+fn attach_stream_output(mut response: Value, output: BTreeMap<u64, Value>) -> Value {
     // Completed output owns its final annotations; item snapshots only fill omitted output.
     let needs_stream_output = response.is_object()
         && response
@@ -817,13 +778,14 @@ fn web_search_item<'a>(event: &'a Value, kind: &str) -> Option<&'a Value> {
         .filter(|item| item.get("type").and_then(Value::as_str) == Some(kind))
 }
 
-async fn emit_citation_web_search(
+/// Reports URL citations as web activity when the stream showed no search of its own.
+pub(super) async fn emit_citation_web_search(
     output: &ModelOutput,
-    web_searches: &BTreeSet<String>,
+    web_search_reported: bool,
     events: &ModelEventSink,
 ) -> Result<()> {
     const CALL_ID: &str = "citations";
-    if !web_searches.is_empty()
+    if web_search_reported
         || !output.content().iter().any(|part| {
             part.annotations
                 .iter()
@@ -843,7 +805,7 @@ async fn emit_citation_web_search(
     .await
 }
 
-pub(super) async fn emit_web_event(
+async fn emit_web_event(
     event: &Value,
     seen: &mut BTreeSet<String>,
     events: &ModelEventSink,
@@ -1022,13 +984,13 @@ enum ReasoningPartKind {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) struct ReasoningPart {
+struct ReasoningPart {
     kind: ReasoningPartKind,
     output_index: usize,
     part_index: usize,
 }
 
-pub(super) async fn emit_reasoning_event(
+async fn emit_reasoning_event(
     event: &Value,
     previous_part: &mut Option<ReasoningPart>,
     events: &ModelEventSink,
@@ -1078,7 +1040,7 @@ fn reasoning_part(
     })
 }
 
-pub(super) async fn emit_text_event(
+async fn emit_text_event(
     event: &Value,
     commentary: &mut BTreeSet<String>,
     events: &ModelEventSink,

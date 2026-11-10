@@ -1,4 +1,5 @@
 use super::super::*;
+use super::support::*;
 use super::support::{completed_events, model_request};
 use crate::backend::model::PromptCacheIdentity;
 
@@ -80,11 +81,11 @@ async fn previous_response_not_found_rebuilds_full_context_on_the_same_connectio
         }
     });
     let socket_url = format!("ws://{address}/responses");
-    let provider = OpenAiSocket::with_authorization(
+    let provider = OpenAiSocket::from_authorization(
         Arc::new(ApiKeyAuthorization::new("test-key".into())),
         BaseUrl::new(format!("http://{address}")).unwrap(),
         &socket_url,
-        "test-model",
+        "test-model".into(),
         reqwest::Client::new(),
         crate::backend::model::ModelTransportSettings::default(),
     )
@@ -126,4 +127,77 @@ async fn previous_response_not_found_rebuilds_full_context_on_the_same_connectio
     server.await.expect("WebSocket server");
 
     assert_eq!(output.text(), "Recovered.");
+}
+
+#[tokio::test]
+async fn socket_citations_without_search_report_web_activity_like_http() {
+    use futures_util::SinkExt as _;
+    use futures_util::StreamExt as _;
+
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("WebSocket listener");
+    let address = listener.local_addr().expect("WebSocket address");
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("WebSocket connection");
+        let mut socket = tokio_tungstenite::accept_async(stream)
+            .await
+            .expect("WebSocket handshake");
+        socket
+            .next()
+            .await
+            .expect("request")
+            .expect("valid request");
+        let completed = serde_json::json!({
+            "type": "response.completed",
+            "response": {"id": "response-cited", "output": [{
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "answer", "annotations": [{
+                    "type": "url_citation", "url": "https://example.com", "title": "source",
+                    "start_index": 0, "end_index": 6
+                }]}]
+            }]}
+        });
+        socket
+            .send(Message::text(completed.to_string()))
+            .await
+            .expect("completed event");
+        socket
+    });
+    let socket_url = format!("ws://{address}/responses");
+    let provider = OpenAiSocket::from_authorization(
+        Arc::new(ApiKeyAuthorization::new("test-key".into())),
+        BaseUrl::new(format!("http://{address}")).unwrap(),
+        &socket_url,
+        "test-model".into(),
+        reqwest::Client::new(),
+        ModelTransportSettings::default(),
+    )
+    .expect("provider");
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let captured = Arc::clone(&seen);
+    let events: ModelEventSink = Arc::new(move |event| {
+        captured.lock().expect("events").push(event);
+        Box::pin(async { Ok(()) })
+    });
+    let input = [crate::backend::model::user_message("cite")];
+    provider
+        .respond(
+            ModelRequest {
+                input: (&input).into(),
+                ..model_request()
+            },
+            events,
+        )
+        .await
+        .expect("cited response");
+    drop(server.await.expect("WebSocket server"));
+    assert!(matches!(
+        seen.lock().expect("events").as_slice(),
+        [
+            crate::protocol::ModelEvent::WebSearchStarted { .. },
+            crate::protocol::ModelEvent::WebSearchCompleted { .. }
+        ]
+    ));
 }

@@ -21,12 +21,7 @@ pub(crate) fn sandboxed_command(
     network_access: NetworkAccess,
     workspace_access: WorkspaceAccess,
 ) -> Result<Command> {
-    let bwrap = sandbox.trusted_bubblewrap().map_err(|error| {
-        Error::Sandbox(format!(
-            "bubblewrap (`bwrap`) is required on Linux: {error}"
-        ))
-    })?;
-    let mut command = Command::new(bwrap);
+    let mut command = bubblewrap(sandbox)?;
     command.args([
         "--new-session",
         "--die-with-parent",
@@ -94,13 +89,7 @@ pub(crate) fn sandboxed_command(
             .arg(&root.path)
             .arg(&root.path);
     }
-    for denied in &sandbox.policy.denied_reads {
-        if denied.directory {
-            command.arg("--tmpfs").arg(&denied.path);
-        } else {
-            command.arg("--ro-bind").arg("/dev/null").arg(&denied.path);
-        }
-    }
+    hide_denied_reads(&mut command, sandbox);
     command.args(["--unshare-user", "--unshare-pid"]);
     if network_access == NetworkAccess::Denied {
         command.arg("--unshare-net");
@@ -121,12 +110,7 @@ pub(crate) fn protected_full_access_command(
     sandbox: &LocalSandbox,
     invocation: &Invocation<'_>,
 ) -> Result<Command> {
-    let bwrap = sandbox.trusted_bubblewrap().map_err(|error| {
-        Error::Sandbox(format!(
-            "bubblewrap (`bwrap`) is required on Linux: {error}"
-        ))
-    })?;
-    let mut command = Command::new(bwrap);
+    let mut command = bubblewrap(sandbox)?;
     command.args([
         "--new-session",
         "--die-with-parent",
@@ -137,13 +121,7 @@ pub(crate) fn protected_full_access_command(
         "/dev",
         "/dev",
     ]);
-    for denied in &sandbox.policy.denied_reads {
-        if denied.directory {
-            command.arg("--tmpfs").arg(&denied.path);
-        } else {
-            command.arg("--ro-bind").arg("/dev/null").arg(&denied.path);
-        }
-    }
+    hide_denied_reads(&mut command, sandbox);
     command.args(["--unshare-user", "--unshare-pid"]);
     command
         .arg(match sandbox.procfs_mode {
@@ -154,6 +132,26 @@ pub(crate) fn protected_full_access_command(
     command.arg(&sandbox.root).arg("--");
     append_invocation(&mut command, invocation, sandbox.isolated_home);
     Ok(command)
+}
+
+fn bubblewrap(sandbox: &LocalSandbox) -> Result<Command> {
+    let bwrap = sandbox.trusted_bubblewrap().map_err(|error| {
+        Error::Sandbox(format!(
+            "bubblewrap (`bwrap`) is required on Linux: {error}"
+        ))
+    })?;
+    Ok(Command::new(bwrap))
+}
+
+/// Masks every denied path: an empty tmpfs over directories, `/dev/null` over files.
+fn hide_denied_reads(command: &mut Command, sandbox: &LocalSandbox) {
+    for denied in &sandbox.policy.denied_reads {
+        if denied.directory {
+            command.arg("--tmpfs").arg(&denied.path);
+        } else {
+            command.arg("--ro-bind").arg("/dev/null").arg(&denied.path);
+        }
+    }
 }
 
 pub(crate) fn check_procfs_output(mode: ProcfsMode, output: &CommandOutput) -> Result<()> {

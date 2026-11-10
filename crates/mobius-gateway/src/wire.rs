@@ -19,10 +19,10 @@ use mobius::protocol::{
     ModelChoice, Op, SessionConfiguredEvent, SessionFileLimits, SessionFileRecord,
     SessionFileReference, Submission, TokenUsage, ToolDiscoveryMode,
 };
-use serde::de::{DeserializeOwned, Error as _};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_tungstenite::tungstenite::error::Error as WebSocketError;
 
 use crate::{Error, Result};
@@ -96,7 +96,7 @@ mod desktop_bytes {
 }
 
 /// Current gateway protocol version.
-pub const PROTOCOL_VERSION: u16 = 99;
+pub const PROTOCOL_VERSION: u16 = 100;
 /// Maximum raw RFB payload in one desktop data frame.
 pub const MAX_DESKTOP_CHUNK_BYTES: usize = 16 * 1024;
 /// Maximum encoded JSON payload accepted in one frame.

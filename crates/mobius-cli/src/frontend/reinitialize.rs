@@ -1,17 +1,14 @@
 //! Confirmation before replacing existing gateway state.
 
-use std::io;
 use std::path::Path;
 
 use mobius::Result;
-use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use tokio::time::MissedTickBehavior;
 
-use super::terminal::{INPUT_POLL, MAX_INPUT_BATCH, TerminalGuard, poll_event};
+use super::terminal::{INPUT_POLL, input_batch, open_screen};
 use super::terminal_text;
 use super::theme::{Role, current};
 
@@ -20,19 +17,15 @@ use super::theme::{Role, current};
 ///
 /// Returns an error if validation or an operation required by this function fails.
 pub async fn confirm(state_dir: &Path) -> Result<bool> {
-    let mut guard = TerminalGuard::alternate()?;
-    guard.set_mouse_capture(false)?;
-    let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
+    let (_guard, mut terminal) = open_screen()?;
     terminal.clear()?;
     let mut tick = tokio::time::interval(INPUT_POLL);
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     loop {
         terminal.draw(|frame| render(frame, state_dir))?;
         tick.tick().await;
-        for _ in 0..MAX_INPUT_BATCH {
-            let Some(event) = poll_event()? else {
-                break;
-            };
+        for event in input_batch() {
+            let event = event?;
             if let Event::Key(key) = event
                 && let Some(confirm) = decision(key)
             {

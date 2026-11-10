@@ -8,10 +8,7 @@ mod workspace;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
-use std::io::Read as _;
 use std::net::SocketAddr;
-#[cfg(unix)]
-use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -23,22 +20,21 @@ use mobius::backend::model::provider::{
 use mobius::protocol::TokenUsage;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::Digest as _;
 
 pub(crate) use crate::wire::ConfiguredModel;
 #[cfg(test)]
 use crate::wire::RoutineInteractionPolicy;
 use crate::wire::{
-    AgentComposition, DailyUsage, ProfileSnapshot, ProviderConfig, ProviderEndpointAuth,
-    ProviderTint, VersionedAgentConfig, WorkspaceInfo,
+    AgentComposition, DailyUsage, ProviderConfig, ProviderEndpointAuth, ProviderTint,
+    VersionedAgentConfig, WorkspaceInfo,
 };
 use crate::{Error, Result};
 
 pub use self::runtime::RuntimeConfig;
+pub(crate) use self::store::UsageStore;
 pub use self::store::{
     ConfigStore, CredentialStore, ResolvedCredential, load_secret_file, state_dir, unix_day,
 };
-use self::store::{UsageHistory, validate_usage, validate_usage_provider};
 pub use self::validation::validate_agent_composition;
 pub(crate) use self::validation::{
     configured_approval_policy, effective_reasoning_effort, model_route_id,
@@ -55,7 +51,7 @@ pub(crate) use self::workspace::{
 };
 pub use crate::server::ConnectionPolicy;
 
-const CONFIG_VERSION: u32 = 29;
+const CONFIG_VERSION: u32 = 30;
 pub(crate) const MAX_CAPACITY: usize = 4_096;
 
 pub(crate) fn bounded<T>(name: &str, value: T, range: std::ops::RangeInclusive<T>) -> Result<()>
@@ -168,7 +164,6 @@ pub struct GatewayConfig {
     pub(crate) configured_providers: BTreeMap<String, ConfiguredProvider>,
     pub(crate) installed_extensions:
         BTreeMap<Arc<str>, crate::harness::mobius::extensions::InstalledExtension>,
-    usage: UsageHistory,
 }
 
 /// One durable provider selection and its gateway model and reasoning catalogs.
@@ -204,28 +199,23 @@ pub(crate) struct ProviderRegistration {
 }
 
 /// Chat ownership and workspace, independent of Bot configuration.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ChatSpec {
     version: u32,
     pub(crate) workspace: Option<PathBuf>,
     pub(crate) attached_folders: Vec<PathBuf>,
     pub(crate) bot_id: Arc<str>,
     /// Memory for this chat, overriding its Bot's setting; `None` follows the Bot.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) memory: Option<bool>,
-    #[serde(skip)]
+    /// A chat read back from its checkpoint is listed.
+    #[serde(skip, default = "listed")]
     pub(crate) catalog_visible: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StoredChatSpec {
-    version: u32,
-    workspace: Option<PathBuf>,
-    attached_folders: Vec<PathBuf>,
-    bot_id: String,
-    #[serde(default)]
-    memory: Option<bool>,
+const fn listed() -> bool {
+    true
 }
 
 impl Default for AgentComposition {
@@ -257,7 +247,7 @@ impl AgentComposition {
                 instance: provider.id().into(),
                 provider: provider.id().into(),
                 model: model.map_or_else(String::new, |model| model.id.as_str().into()),
-                base_url: provider.default_base_url().map(BaseUrl::share),
+                base_url: Some(provider.default_base_url().share()),
                 endpoint_auth: ProviderEndpointAuth::ProviderDefault,
                 reasoning_effort: model
                     .and_then(|model| model.default_reasoning.as_deref())
@@ -293,16 +283,6 @@ impl GatewayConfig {
         Ok(Self::defaults(listen, tls, None).validated()?.into_inner())
     }
 
-    /// Builds a loopback gateway exposed through Cloudflare Tunnel.
-    /// # Errors
-    ///
-    /// Returns an error if configuration is invalid or a required resource cannot be initialized.
-    pub fn new_cloudflare(listen: SocketAddr, cloudflare: CloudflareConfig) -> Result<Self> {
-        Ok(Self::defaults(listen, None, Some(cloudflare))
-            .validated()?
-            .into_inner())
-    }
-
     /// Default settings, checked by the caller.
     fn defaults(
         listen: SocketAddr,
@@ -325,7 +305,6 @@ impl GatewayConfig {
             bot_defaults: None,
             configured_providers: BTreeMap::new(),
             installed_extensions: BTreeMap::new(),
-            usage: UsageHistory::default(),
         }
     }
 
@@ -432,7 +411,6 @@ impl GatewayConfig {
         if !selection.model.is_empty() {
             definition.build_config_is_valid(
                 &selection.model,
-                selection.base_url.as_ref(),
                 selection.reasoning_effort.as_deref(),
                 selection.web_search,
             )?;
@@ -549,37 +527,6 @@ impl GatewayConfig {
         next.validated()
     }
 
-    /// Records one live token-usage increment and reports whether daily usage changed.
-    /// # Errors
-    ///
-    /// Returns an error if validation or an operation required by this function fails.
-    pub fn observe_usage(&mut self, provider: &str, usage: &TokenUsage) -> Result<bool> {
-        self.usage.observe(provider, usage, SystemTime::now())
-    }
-
-    /// Returns frontend-safe local identity and daily aggregate usage.
-    #[must_use]
-    pub fn profile(&self) -> ProfileSnapshot {
-        ProfileSnapshot {
-            user_name: local_user_name(),
-            daily_usage: self
-                .usage
-                .days
-                .iter()
-                .flat_map(|(unix_day, providers)| {
-                    providers.iter().map(|(provider, usage)| DailyUsage {
-                        unix_day: *unix_day,
-                        provider: provider.clone(), // rules-allow: the profile snapshot is sent to clients
-                        usage: *usage,
-                    })
-                })
-                .collect(),
-            provider_usage: Vec::new(),
-            run_stats: crate::wire::RunStats::default(),
-            recent_run_groups: Vec::new(),
-        }
-    }
-
     /// Validates every persisted trust-boundary field.
     /// # Errors
     ///
@@ -681,12 +628,6 @@ impl GatewayConfig {
                 }
             }
         }
-        for providers in self.usage.days.values() {
-            for (provider, usage) in providers {
-                validate_usage_provider(provider)?;
-                validate_usage(usage)?;
-            }
-        }
         Ok(())
     }
 }
@@ -748,20 +689,9 @@ impl ChatSpec {
         let Some(value) = metadata.get(CHAT_SPEC_METADATA_KEY) else {
             return Ok(None);
         };
-        let stored = StoredChatSpec::deserialize(value)?;
-        let bot = bots.bot(&stored.bot_id)?;
-        let spec = Self {
-            version: stored.version,
-            workspace: stored.workspace,
-            attached_folders: stored
-                .attached_folders
-                .into_iter()
-                .filter(|folder| folder.is_dir())
-                .collect(),
-            bot_id: bot.id,
-            memory: stored.memory,
-            catalog_visible: true,
-        };
+        let mut spec = Self::deserialize(value)?;
+        bots.require_bot(&spec.bot_id)?;
+        spec.attached_folders.retain(|folder| folder.is_dir());
         spec.validate(state_dir, tls)?;
         Ok(Some(spec))
     }
@@ -795,7 +725,6 @@ impl ChatSpec {
         }
         let root = state_dir.with_extension("workspaces").join(&*self.bot_id);
         fs::create_dir_all(&root)?;
-        #[cfg(unix)]
         fs::set_permissions(&root, mobius::owner_only::dir())?;
         Ok(validate_chat_workspace(&root, state_dir, tls)?.into_path())
     }

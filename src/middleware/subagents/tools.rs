@@ -8,10 +8,13 @@ use serde::Deserialize;
 use serde_json::Value;
 use uuid::Uuid;
 
-use super::runtime::{AgentPresentation, MAX_MESSAGE_BYTES, Wake, WakeTarget, monitor_agent};
+use super::runtime::{
+    AgentPresentation, ExecutionGuard, MAX_MESSAGE_BYTES, Wake, WakeTarget, monitor_agent,
+};
 use super::{
     Collaboration, DEFAULT_WAIT_MS, ForkTurns, MAX_TASK_NAME_BYTES, MAX_WAIT_MS, MIN_WAIT_MS, text,
 };
+use crate::agent::{AgentEvents, AgentSender};
 use crate::backend::model::ToolDefinition;
 use crate::middleware::tools::{HookIdentity, Tool, ToolContext};
 use crate::protocol::strip_attachment_references;
@@ -78,7 +81,7 @@ impl Tool for SpawnAgent {
             supervise(async move {
                 let shared = &collaboration.shared;
                 let scope = &collaboration.scope;
-                let lifetime = shared.track_execution(&scope.root_session_id).await?;
+                let mut lifetime = Some(shared.track_execution(&scope.root_session_id).await?);
                 shared
                     .reserve(
                         &scope.root_session_id,
@@ -92,46 +95,28 @@ impl Tool for SpawnAgent {
                         },
                     )
                     .await?;
-                let agent = match scope
-                    .fork(
-                        &session_id,
-                        &path,
-                        &model,
-                        reasoning_effort,
-                        turns,
-                        context.turn_id,
-                    )
-                    .await
-                {
-                    Ok(agent) => agent,
-                    Err(error) => {
-                        return Err(cleanup_error(
-                            error,
-                            shared.remove(&scope.root_session_id, &path).await,
-                        ));
-                    }
-                };
-                let model = Arc::from(agent.model_route());
-                let (sender, events) = agent.into_parts();
-                if let Err(error) = shared
-                    .attach(&scope.root_session_id, &path, sender.clone(), Some(model)) // rules-allow: the root keeps the sender while this task admits the first message
-                    .await
-                {
-                    drop(sender);
-                    let mut events = events;
-                    while events.recv().await.is_some() {}
-                    return Err(cleanup_error(
-                        error,
-                        shared.remove(&scope.root_session_id, &path).await,
-                    ));
+                let started = async {
+                    let agent = scope
+                        .fork(
+                            &session_id,
+                            &path,
+                            &model,
+                            reasoning_effort,
+                            turns,
+                            context.turn_id,
+                        )
+                        .await?;
+                    let model = Arc::from(agent.model_route());
+                    let (sender, events) = agent.into_parts();
+                    let started = StartedAgent {
+                        sender,
+                        events: Some(events),
+                        model: Some(model),
+                    };
+                    start_agent(&collaboration, &path, started, &mut lifetime, submission).await
                 }
-                tokio::spawn(monitor_agent(
-                    Arc::clone(&collaboration),
-                    Arc::clone(&path),
-                    events,
-                    lifetime,
-                ));
-                if let Err(error) = admit_message(&sender, submission).await {
+                .await;
+                if let Err(error) = started {
                     return Err(cleanup_error(
                         error,
                         shared.remove(&scope.root_session_id, &path).await,
@@ -182,7 +167,7 @@ impl Tool for SendMessage {
             supervise(async move {
                 let shared = &collaboration.shared;
                 let scope = &collaboration.scope;
-                let lifetime = shared.track_execution(&scope.root_session_id).await?;
+                let mut lifetime = Some(shared.track_execution(&scope.root_session_id).await?);
                 let wake = shared
                     .send_message(&scope.root_session_id, &scope.agent_path, &target, message)
                     .await?;
@@ -194,56 +179,34 @@ impl Tool for SendMessage {
                 else {
                     return Ok(String::new());
                 };
-                let (sender, events, model) = match wake_target {
-                    WakeTarget::Live(sender) => (sender, None, None),
-                    WakeTarget::Resume {
-                        session_id,
-                        depth,
-                        model,
-                    } => {
-                        let agent = match scope
-                            .resume(&session_id, &target, depth, &model, turn_id)
-                            .await
-                        {
-                            Ok(agent) => agent,
-                            Err(error) => {
-                                return Err(cleanup_error(
-                                    error,
-                                    shared
-                                        .rollback(&scope.root_session_id, &target, previous)
-                                        .await,
-                                ));
+                let delivered = async {
+                    let started = match wake_target {
+                        WakeTarget::Live(sender) => StartedAgent {
+                            sender,
+                            events: None,
+                            model: None,
+                        },
+                        WakeTarget::Resume {
+                            session_id,
+                            depth,
+                            model,
+                        } => {
+                            let agent = scope
+                                .resume(&session_id, &target, depth, &model, turn_id)
+                                .await?;
+                            let model = Arc::from(agent.model_route());
+                            let (sender, events) = agent.into_parts();
+                            StartedAgent {
+                                sender,
+                                events: Some(events),
+                                model: Some(model),
                             }
-                        };
-                        let model = Arc::from(agent.model_route());
-                        let (sender, events) = agent.into_parts();
-                        (sender, Some(events), Some(model))
-                    }
-                };
-                if let Err(error) = shared
-                    .attach(&scope.root_session_id, &target, sender.clone(), model) // rules-allow: the root keeps the sender while this task admits the message
-                    .await
-                {
-                    drop(sender);
-                    if let Some(mut events) = events {
-                        while events.recv().await.is_some() {}
-                    }
-                    return Err(cleanup_error(
-                        error,
-                        shared
-                            .rollback(&scope.root_session_id, &target, previous)
-                            .await,
-                    ));
+                        }
+                    };
+                    start_agent(&collaboration, &target, started, &mut lifetime, message).await
                 }
-                if let Some(events) = events {
-                    tokio::spawn(monitor_agent(
-                        Arc::clone(&collaboration),
-                        Arc::clone(&target),
-                        events,
-                        lifetime,
-                    ));
-                }
-                if let Err(error) = admit_message(&sender, message).await {
+                .await;
+                if let Err(error) = delivered {
                     return Err(cleanup_error(
                         error,
                         shared
@@ -493,6 +456,59 @@ fn peer_submission(
         requested_delivery: Some(crate::protocol::ActiveMessageDelivery::Steer),
         target_turn_id: None,
     }
+}
+
+/// An agent ready to be attached under its path.
+struct StartedAgent {
+    sender: AgentSender,
+    /// Events of an agent this call started; `None` for one that is already monitored.
+    events: Option<AgentEvents>,
+    /// The resolved model route of an agent this call started.
+    model: Option<Arc<str>>,
+}
+
+/// Attaches `agent` under `path`, monitors a newly started agent's events, and admits
+/// `message`. The caller rolls the tree back on error; when attaching fails, the sender is
+/// dropped and the events drained first so the agent stops.
+async fn start_agent(
+    collaboration: &Arc<Collaboration>,
+    path: &Arc<str>,
+    agent: StartedAgent,
+    lifetime: &mut Option<ExecutionGuard>,
+    message: MessageSubmission,
+) -> Result<()> {
+    let StartedAgent {
+        sender,
+        events,
+        model,
+    } = agent;
+    if let Err(error) = collaboration
+        .shared
+        .attach(
+            &collaboration.scope.root_session_id,
+            path,
+            sender.clone(), // rules-allow: the root keeps the sender while this task admits the message
+            model,
+        )
+        .await
+    {
+        drop(sender);
+        if let Some(mut events) = events {
+            while events.recv().await.is_some() {}
+        }
+        return Err(error);
+    }
+    if let Some(events) = events
+        && let Some(lifetime) = lifetime.take()
+    {
+        tokio::spawn(monitor_agent(
+            Arc::clone(collaboration),
+            Arc::clone(path),
+            events,
+            lifetime,
+        ));
+    }
+    admit_message(&sender, message).await
 }
 
 async fn admit_message(

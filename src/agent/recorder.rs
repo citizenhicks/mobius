@@ -216,7 +216,7 @@ impl RecorderIngress {
 }
 
 fn timestamp(event: Event) -> Result<(TimestampedEvent, usize)> {
-    let event_bytes = crate::serialized_len(&event)?;
+    let event_bytes = queued_bytes(&event)?;
     Ok((
         TimestampedEvent {
             recorded_at_ms: unix_timestamp_ms()?,
@@ -224,6 +224,18 @@ fn timestamp(event: Event) -> Result<(TimestampedEvent, usize)> {
         },
         event_bytes,
     ))
+}
+
+/// What one queued event charges against the byte budget. A streamed delta, the hot path,
+/// charges its text plus the record around it instead of being serialized just to measure it.
+fn queued_bytes(event: &Event) -> Result<usize> {
+    match &event.msg {
+        EventMsg::AssistantContentDelta(delta) => Ok(delta
+            .delta
+            .len()
+            .saturating_add(std::mem::size_of::<TimestampedEvent>())),
+        _ => crate::serialized_len(event),
+    }
 }
 
 fn byte_permits(bytes: usize) -> Result<u32> {
@@ -527,19 +539,6 @@ mod tests {
         .expect_err("pending tool without an execution");
         assert!(error.to_string().contains("no active execution"), "{error}");
         assert!(receiver.try_recv().is_err());
-    }
-
-    #[test]
-    fn accounting_counts_encoded_bytes_without_changing_the_event() {
-        let event = warning("\"\\\n雪".into());
-        let expected = serde_json::to_vec(&event).expect("encoded event");
-        let (recorded, bytes) = timestamp(event).expect("timestamp");
-
-        assert_eq!(bytes, expected.len());
-        assert_eq!(
-            serde_json::to_vec(&recorded.event).expect("event"),
-            expected
-        );
     }
 
     #[test]

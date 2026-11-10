@@ -1,8 +1,15 @@
 use std::fmt::Write as _;
 
+pub(super) use super::super::connection::{SocketEvent, read_exchange_with_timeout};
 use super::super::*;
+pub(super) use crate::backend::model::ModelTransportSettings;
 use crate::backend::model::PromptCacheIdentity;
-use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+pub(super) use std::sync::atomic::Ordering;
+pub(super) use std::time::Duration;
+use tokio::io::AsyncWriteExt as _;
+pub(super) use tokio::sync::mpsc;
+pub(super) use tokio::time::timeout;
+pub(super) use tokio_tungstenite::tungstenite::Message;
 
 pub(super) fn model_request() -> ModelRequest<'static> {
     static SESSION: std::sync::LazyLock<crate::SessionId> =
@@ -44,34 +51,9 @@ pub(super) fn completed_events(text: &str, response_id: &str) -> [Value; 2] {
 }
 
 pub(super) async fn read_http_json(stream: &mut tokio::net::TcpStream) -> Value {
-    let mut request = Vec::new();
-    let header_end = loop {
-        if let Some(index) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
-            break index + 4;
-        }
-        let mut chunk = [0; 4_096];
-        let count = stream.read(&mut chunk).await.expect("HTTP request");
-        assert_ne!(count, 0, "HTTP request ended before its headers");
-        request.extend_from_slice(&chunk[..count]);
-    };
-    let headers = String::from_utf8_lossy(&request[..header_end]);
-    let content_length = headers
-        .lines()
-        .find_map(|line| {
-            line.split_once(':').and_then(|(name, value)| {
-                name.eq_ignore_ascii_case("content-length")
-                    .then(|| value.trim().parse::<usize>().expect("content length"))
-            })
-        })
-        .expect("content-length header");
-    while request.len() < header_end + content_length {
-        let mut chunk = [0; 4_096];
-        let count = stream.read(&mut chunk).await.expect("HTTP request body");
-        assert_ne!(count, 0, "HTTP request body ended early");
-        request.extend_from_slice(&chunk[..count]);
-    }
-    serde_json::from_slice(&request[header_end..header_end + content_length])
-        .expect("HTTP JSON body")
+    let request = crate::backend::model::test_support::read_http_request(stream).await;
+    let (_, body) = request.split_once("\r\n\r\n").expect("HTTP body");
+    serde_json::from_str(body).expect("HTTP JSON body")
 }
 
 pub(super) async fn write_http_stream(
@@ -94,4 +76,12 @@ pub(super) async fn write_http_stream(
         .write_all(response.as_bytes())
         .await
         .expect("HTTP stream response");
+}
+
+pub(super) async fn read_exchange(
+    messages: &mut mpsc::UnboundedReceiver<SocketEvent>,
+    events: &ModelEventSink,
+) -> Result<connection::Exchange> {
+    let idle = ModelTransportSettings::default().socket_idle_timeout_ms;
+    read_exchange_with_timeout(messages, events, Duration::from_millis(idle)).await
 }

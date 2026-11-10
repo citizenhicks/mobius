@@ -1,5 +1,6 @@
 //! Capability-safe file reads, ranges, and atomic writes.
 
+use std::ffi::OsStr;
 use std::io::Read as _;
 use std::io::Seek as _;
 use std::io::Write as _;
@@ -91,14 +92,7 @@ pub(super) fn read_file_range(
 }
 
 fn open_regular_file(root: Dir, relative: &Path, requested: &str) -> Result<cap_std::fs::File> {
-    let name = relative
-        .file_name()
-        .ok_or_else(|| Rejected::NoFileName.path(requested))?;
-    let parent = open_parent(
-        root,
-        relative.parent().unwrap_or_else(|| Path::new("")),
-        requested,
-    )?;
+    let (parent, name) = open_named_parent(root, relative, requested)?;
     let before = parent
         .symlink_metadata(name)
         .map_err(|error| Error::Sandbox(format!("{requested}: {error}")))?;
@@ -110,13 +104,12 @@ fn open_regular_file(root: Dir, relative: &Path, requested: &str) -> Result<cap_
 
 fn open_checked_file(
     parent: &Dir,
-    name: &std::ffi::OsStr,
+    name: &OsStr,
     before: &cap_std::fs::Metadata,
     requested: &str,
 ) -> Result<cap_std::fs::File> {
     let mut options = OpenOptions::new();
     options.read(true);
-    #[cfg(unix)]
     {
         use cap_std::fs::OpenOptionsExt as _;
 
@@ -141,14 +134,7 @@ fn open_checked_file(
 }
 
 pub(super) fn remove_file(root: Dir, relative: &Path, requested: &str) -> Result<()> {
-    let name = relative
-        .file_name()
-        .ok_or_else(|| Rejected::NoFileName.path(requested))?;
-    let parent = open_parent(
-        root,
-        relative.parent().unwrap_or_else(|| Path::new("")),
-        requested,
-    )?;
+    let (parent, name) = open_named_parent(root, relative, requested)?;
     let metadata = parent.symlink_metadata(name)?;
     if metadata.is_symlink() {
         return Err(Error::Sandbox(format!(
@@ -170,14 +156,7 @@ pub(super) fn atomic_write(
     content: &[u8],
     requested: &str,
 ) -> Result<()> {
-    let target = relative
-        .file_name()
-        .ok_or_else(|| Rejected::NoFileName.path(requested))?;
-    let parent = open_parent(
-        root,
-        relative.parent().unwrap_or_else(|| Path::new("")),
-        requested,
-    )?;
+    let (parent, target) = open_named_parent(root, relative, requested)?;
     let permissions = match parent.symlink_metadata(target) {
         Ok(metadata) if metadata.is_symlink() || !metadata.is_file() => {
             return Err(Rejected::NotRegularFile.path(requested));
@@ -213,6 +192,23 @@ fn sync_directory(directory: &Dir) -> Result<()> {
     directory.open(".")?.sync_all()?;
     Ok(())
 }
+/// Opens the directory holding `relative` and returns it with the final name.
+fn open_named_parent<'path>(
+    root: Dir,
+    relative: &'path Path,
+    requested: &str,
+) -> Result<(Dir, &'path OsStr)> {
+    let name = relative
+        .file_name()
+        .ok_or_else(|| Rejected::NoFileName.path(requested))?;
+    let parent = open_parent(
+        root,
+        relative.parent().unwrap_or_else(|| Path::new("")),
+        requested,
+    )?;
+    Ok((parent, name))
+}
+
 fn open_parent(mut parent: Dir, path: &Path, requested: &str) -> Result<Dir> {
     for component in path.components() {
         let Component::Normal(name) = component else {
@@ -235,19 +231,13 @@ fn open_parent(mut parent: Dir, path: &Path, requested: &str) -> Result<Dir> {
     Ok(parent)
 }
 
-#[cfg(unix)]
 fn same_cap_file(left: &cap_std::fs::Metadata, right: &cap_std::fs::Metadata) -> bool {
     use cap_std::fs::MetadataExt;
 
     left.dev() == right.dev() && left.ino() == right.ino()
 }
 
-#[cfg(not(unix))]
-fn same_cap_file(_left: &cap_std::fs::Metadata, _right: &cap_std::fs::Metadata) -> bool {
-    false
-}
-
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::os::unix::fs::OpenOptionsExt as _;

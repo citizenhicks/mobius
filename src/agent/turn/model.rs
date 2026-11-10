@@ -9,10 +9,12 @@ use uuid::Uuid;
 
 use super::streaming::StreamedTools;
 use super::turn_event;
+use super::turn_events;
 use crate::agent::input::Wait;
+use crate::agent::recorder::RecorderIngress;
 use crate::agent::tool_step::order_results;
 use crate::agent::{
-    FRONTEND_DISCONNECTED_REASON, Runner, SubmissionInbox, TURN_INTERRUPTED_REASON, send_event,
+    FRONTEND_DISCONNECTED_REASON, Runner, SubmissionInbox, TURN_INTERRUPTED_REASON,
     unix_timestamp_ms,
 };
 use crate::backend::checkpoint::{
@@ -22,8 +24,7 @@ use crate::backend::model::{
     MAX_TOOL_CALLS, ModelCancellation, ModelCancellationReason, ModelEventSink, ModelInput,
     ModelOutput, ModelRequest, PromptCacheIdentity, StreamingToolCalls, ToolDefinition,
     durable_visible_message_index, insert_before_open_tool_calls, internal_user_message,
-    prepare_turn_input, prompt_cache_key, reset_prompt_cache_breakpoint,
-    reset_shared_prompt_cache_breakpoint, strip_provider_reasoning,
+    prepare_turn_input, prompt_cache_key, reset_shared_prompt_cache_breakpoint,
     strip_shared_provider_reasoning,
 };
 use crate::backend::sandbox::SandboxAuthorization;
@@ -61,27 +62,64 @@ enum PreparedModel {
     Repeat(Vec<crate::backend::checkpoint::ContextRewriteReason>),
     /// Proceed to the model request.
     Ready {
-        input: PreparedInput,
+        input: SharedInput,
         tools: Box<PreparedTools>,
         rewrite_reasons: Vec<crate::backend::checkpoint::ContextRewriteReason>,
     },
 }
 
-#[expect(
-    clippy::rc_buffer,
-    reason = "shares the checkpoint's copy-on-write context without copying it"
-)]
-enum PreparedInput {
-    Shared(Arc<Vec<Arc<Value>>>),
-    Request(Vec<Value>),
+/// The checkpoint's copy-on-write context, shared with the model request without copying.
+type SharedInput = Arc<Vec<Arc<Value>>>;
+
+/// What every streamed event of one model step shares, behind one handle.
+struct StepSink {
+    response_closed: tokio::sync::watch::Receiver<()>,
+    call_validation: Mutex<StreamingToolCalls>,
+    ready_calls: tokio::sync::mpsc::Sender<ToolCall>,
+    model_events: Arc<ModelEventTracker>,
+    recorder: std::sync::Weak<RecorderIngress>,
+    submission_id: Arc<str>,
+    started: Arc<ModelStepStartedEvent>,
+    hosted: Arc<HostedObserver>,
 }
 
-impl PreparedInput {
-    fn input(&self) -> ModelInput<'_> {
-        match self {
-            Self::Shared(input) => input.as_slice().into(),
-            Self::Request(input) => input.as_slice().into(),
+impl StepSink {
+    async fn record(&self, event: ModelEvent) -> Result<()> {
+        self.model_events.observe(&event)?;
+        let Some(event) = self.hosted.observe(&self.started.model_step_id, event)? else {
+            return Ok(());
+        };
+        if let ModelEvent::ToolCallReady(call) = event {
+            self.call_validation
+                .lock()
+                .map_err(|error| {
+                    Error::Stopped(format!("streamed tool validation unavailable: {error}"))
+                })?
+                .accept(&call)?;
+            self.recorder()?.flush().await?;
+            return self.ready_calls.send(call).await.map_err(|error| {
+                Error::Stopped(format!("streamed tool queue unavailable: {error}"))
+            });
         }
+        let Some(msg) = event.into_event(
+            self.started.session_id.share(),
+            Arc::clone(&self.started.turn_id),
+            Arc::clone(&self.started.model_step_id),
+        ) else {
+            return Ok(());
+        };
+        self.recorder()?
+            .record(Event {
+                submission_id: Some(Arc::clone(&self.submission_id)),
+                msg,
+            })
+            .await
+    }
+
+    fn recorder(&self) -> Result<Arc<RecorderIngress>> {
+        self.recorder
+            .upgrade()
+            .ok_or_else(|| Error::Stopped("event recorder stopped".into()))
     }
 }
 
@@ -89,7 +127,6 @@ struct PreparedTools {
     direct: Vec<Arc<ToolDefinition>>,
     deferred: Vec<Arc<ToolDefinition>>,
     catalog: PreparedToolSet<'static>,
-    allow_hosted_tools: bool,
 }
 
 struct CompletedModelStep {
@@ -131,11 +168,7 @@ impl Runner {
         if messages.is_empty() {
             return Ok(());
         }
-        let checkpoint_sequence = self
-            .state
-            .sequence
-            .checked_add(1)
-            .ok_or_else(|| Error::Checkpoint("checkpoint sequence overflow".into()))?;
+        let checkpoint_sequence = self.state.next_sequence()?;
         let batch_before = self.transcript_delta.len();
         let mut context = StagedInput::new(Arc::clone(&self.state.context));
         // A staged batch must see earlier accepted notices without changing live state.
@@ -155,17 +188,11 @@ impl Runner {
                     &delivered_once,
                 )
                 .await?;
-            events.extend(
-                hook_events
-                    .into_iter()
-                    .map(|msg| crate::agent::turn::turn_event(&message.submission_id, msg)),
-            );
-            events.extend(
-                message
-                    .boundary_events
-                    .drain(..)
-                    .map(|msg| crate::agent::turn::turn_event(&message.submission_id, msg)),
-            );
+            events.extend(turn_events(&message.submission_id, hook_events));
+            events.extend(turn_events(
+                &message.submission_id,
+                message.boundary_events.drain(..),
+            ));
             if let Some(rejection) = submitted.rejection {
                 events.push(Event {
                     submission_id: Some(message.submission_id),
@@ -176,11 +203,7 @@ impl Runner {
                 continue;
             }
             if idle_origin.is_none()
-                && self
-                    .state
-                    .active_execution
-                    .as_ref()
-                    .is_some_and(|execution| execution.idle)
+                && self.active_idle()
                 && let EventMsg::Message(event) = &message.event
             {
                 let author = Arc::new(event.author.clone()); // rules-allow: the execution keeps the first accepted author while its message moves on
@@ -277,21 +300,14 @@ impl Runner {
         provisional_target_sequence: u64,
     ) -> Result<()> {
         if checkpoint_changed {
-            let durable_sequence = self
-                .state
-                .sequence
-                .checked_add(1)
-                .ok_or_else(|| Error::Checkpoint("checkpoint sequence overflow".into()))?;
+            let durable_sequence = self.state.next_sequence()?;
             rebase_live_message_targets(
                 &mut middleware_events,
                 provisional_target_sequence,
                 durable_sequence,
             );
         }
-        let mut events = middleware_events
-            .into_iter()
-            .map(|message| turn_event(submission_id, message))
-            .collect::<Vec<_>>();
+        let mut events = turn_events(submission_id, middleware_events).collect::<Vec<_>>();
         if accounting_usage.is_some()
             && let Some(usage) = self.usage_event(submission_id, accounting_usage)
         {
@@ -301,7 +317,7 @@ impl Runner {
             self.persist_with_events(events, None).await?;
         } else {
             for event in events {
-                send_event(&self.events, event).await?;
+                self.events.record(event).await?;
             }
         }
         Ok(())
@@ -320,23 +336,14 @@ impl Runner {
         if let Some(reason) = self.catalog.repeat_stop(turn_id)? {
             return Ok(PreparedModel::Stopped(reason.to_owned()));
         }
-        let idle = model_step == 0
-            && self
-                .state
-                .active_execution
-                .as_ref()
-                .is_some_and(|execution| execution.idle);
+        let idle = model_step == 0 && self.active_idle();
         let idle = idle.then(|| {
             self.idle
                 .take_due(&self.config.middleware, &self.runtime.session_id)
         });
         let mut middleware_events = Vec::new();
         let mut middleware_usage = Vec::new();
-        let provisional_target_sequence = self
-            .state
-            .sequence
-            .checked_add(1)
-            .ok_or_else(|| Error::Checkpoint("checkpoint sequence overflow".into()))?;
+        let provisional_target_sequence = self.state.next_sequence()?;
         let mut checkpoint_changed = false;
         let mut rewrite_reasons = Vec::new();
         let mut turn_stop = None;
@@ -346,7 +353,6 @@ impl Runner {
         let mut transcript_delta = Vec::new();
         let mut context_epoch = self.state.context_epoch;
         let mut available_tools = self.catalog.exposed_names();
-        let mut allow_hosted_tools = true;
         // Compact session-start hooks may read this queue after awaiting a provider.
         // wait_active can replace/edit the live queue meanwhile, so its Vec cannot stay borrowed.
         let queued_messages = self.state.pending_messages.clone(); // rules-allow: the live queue may change while preparation awaits
@@ -380,7 +386,6 @@ impl Runner {
                     instructions: &instructions,
                     checkpoint_sequence: self.state.sequence,
                     available_tools: &mut available_tools,
-                    allow_hosted_tools: &mut allow_hosted_tools,
                     durable_input: &mut durable_input,
                     delivered_once: &mut delivered_once,
                     transcript_delta: &mut transcript_delta,
@@ -402,7 +407,7 @@ impl Runner {
             // Keep preparation alive until cancellation is recorded for its provider drop guards.
             tokio::pin!(prepare_model);
             let control = self
-                .wait_active(inbox, turn_id, prepare_model.as_mut())
+                .wait_active(inbox, turn_id, prepare_model.as_mut(), || None)
                 .await;
             record_cancellation(&cancellation, &control);
             control
@@ -412,12 +417,10 @@ impl Runner {
             self.record_model_call()?;
             self.record_usage(route, usage).await?;
         }
-        let mut hook_result = match control? {
+        let hook_result = match control? {
             Wait::Ready { value, .. } => value,
             Wait::Interrupted { submission_id } => {
-                let mut events = preparation_notices
-                    .cancellations()
-                    .map(|message| turn_event(&submission_id, message))
+                let mut events = turn_events(&submission_id, preparation_notices.cancellations())
                     .collect::<Vec<_>>();
                 if let Some(usage) = middleware_usage.last().map(|(_, usage)| usage)
                     && let Some(event) = self.usage_event(&submission_id, Some(usage))
@@ -436,7 +439,7 @@ impl Runner {
                 return Ok(PreparedModel::Aborted);
             }
         };
-        if let Ok(request_input) = &mut hook_result
+        if hook_result.is_ok()
             && turn_stop.is_none()
             && context_provider
                 .as_deref()
@@ -448,12 +451,6 @@ impl Runner {
                 .iter()
                 .any(crate::backend::model::has_provider_reasoning)
                 && strip_shared_provider_reasoning(durable_input.make_mut());
-            if let Some(input) = request_input {
-                let request_changed = strip_provider_reasoning(input);
-                if changed || request_changed {
-                    reset_prompt_cache_breakpoint(input);
-                }
-            }
             if changed {
                 if rewrite_reasons.is_empty() {
                     context_epoch = context_epoch.checked_add(1).ok_or_else(|| {
@@ -470,15 +467,11 @@ impl Runner {
         let preparation_accepted = hook_result.is_ok();
         preparation_notices.fail();
         let request_input = match hook_result {
-            Ok(request_input) => {
+            Ok(()) => {
                 if checkpoint_changed {
                     durable_input.commit(&mut self.state.make_mut().context);
                 }
-                let request_input = request_input.map_or_else(
-                    || PreparedInput::Shared(Arc::clone(&self.state.context)),
-                    PreparedInput::Request,
-                );
-                Ok(request_input)
+                Ok(Arc::clone(&self.state.context))
             }
             Err(error) => {
                 context_epoch = self.state.context_epoch;
@@ -527,11 +520,7 @@ impl Runner {
             return Ok(PreparedModel::Stopped(reason));
         }
         Ok(PreparedModel::Ready {
-            tools: Box::new(self.prepare_tools(
-                request_input.input(),
-                available_tools,
-                allow_hosted_tools,
-            )?),
+            tools: Box::new(self.prepare_tools(request_input.as_slice().into(), available_tools)?),
             input: request_input,
             rewrite_reasons,
         })
@@ -541,7 +530,6 @@ impl Runner {
         &self,
         input: ModelInput<'_>,
         available: BTreeSet<String>,
-        allow_hosted_tools: bool,
     ) -> Result<PreparedTools> {
         let catalog = self.catalog.prepare(input, Cow::Owned(available))?;
         let (direct, deferred) = self.config.model.prepare_tool_definitions(
@@ -554,7 +542,6 @@ impl Runner {
             direct,
             deferred,
             catalog,
-            allow_hosted_tools,
         })
     }
 
@@ -569,7 +556,6 @@ impl Runner {
             .resolve_tool_exposure(
                 &self.runtime.session_id,
                 supports_tool_image_input,
-                self.state.context.as_slice().into(),
                 &mut available,
             )
             .await?;
@@ -719,74 +705,29 @@ impl Runner {
                 None,
             )
             .await?;
-            let event_submission_id = Arc::clone(submission_id);
-            let event_turn_id = Arc::clone(&started.turn_id);
-            let event_session_id = started.session_id.share();
-            let event_model_step_id = Arc::clone(&started.model_step_id);
             let model_events = Arc::new(ModelEventTracker::default());
-            let streamed_events = Arc::clone(&model_events);
             let catalog_revision = self.catalog.revision()?.to_owned();
-            let recorder = Arc::downgrade(&self.events);
             let (response_open, response_closed) = tokio::sync::watch::channel(());
             let (ready_calls_tx, ready_calls) = tokio::sync::mpsc::channel(MAX_TOOL_CALLS);
-            let ready_calls_tx = Arc::new(ready_calls_tx);
-            let call_validation = Arc::new(Mutex::new(StreamingToolCalls::default()));
-            let event_hosted = Arc::clone(&hosted);
+            let sink = Arc::new(StepSink {
+                response_closed,
+                call_validation: Mutex::new(StreamingToolCalls::default()),
+                ready_calls: ready_calls_tx,
+                model_events: Arc::clone(&model_events),
+                // Only a weak recorder handle enters the sink, avoiding an ownership cycle.
+                recorder: Arc::downgrade(&self.events),
+                submission_id: Arc::clone(submission_id),
+                started: Arc::clone(&started),
+                hosted: Arc::clone(&hosted),
+            });
             let stream: ModelEventSink = Arc::new(move |event| {
-                let mut response_closed = response_closed.clone(); // rules-allow: each streamed event future owns its handles
-                let call_validation = Arc::clone(&call_validation);
-                let ready_calls_tx = Arc::clone(&ready_calls_tx);
-                let streamed_events = Arc::clone(&streamed_events);
-                // Only a weak recorder handle enters this callback future, avoiding an ownership cycle.
-                let recorder = std::sync::Weak::clone(&recorder);
-                let event_submission_id = Arc::clone(&event_submission_id);
-                let event_turn_id = Arc::clone(&event_turn_id);
-                let event_session_id = event_session_id.share();
-                let event_model_step_id = Arc::clone(&event_model_step_id);
-                let hosted = Arc::clone(&event_hosted);
+                let sink = Arc::clone(&sink);
                 Box::pin(async move {
-                    let record = async {
-                        streamed_events.observe(&event)?;
-                        let Some(event) = hosted.observe(&event_model_step_id, event)? else {
-                            return Ok(());
-                        };
-                        if let ModelEvent::ToolCallReady(call) = event {
-                            call_validation
-                                .lock()
-                                .map_err(|error| {
-                                    Error::Stopped(format!(
-                                        "streamed tool validation unavailable: {error}"
-                                    ))
-                                })?
-                                .accept(&call)?;
-                            recorder
-                                .upgrade()
-                                .ok_or_else(|| Error::Stopped("event recorder stopped".into()))?
-                                .flush()
-                                .await?;
-                            return ready_calls_tx.send(call).await.map_err(|error| {
-                                Error::Stopped(format!("streamed tool queue unavailable: {error}"))
-                            });
-                        }
-                        let Some(msg) =
-                            event.into_event(event_session_id, event_turn_id, event_model_step_id)
-                        else {
-                            return Ok(());
-                        };
-                        let recorder = recorder
-                            .upgrade()
-                            .ok_or_else(|| Error::Stopped("event recorder stopped".into()))?;
-                        recorder
-                            .record(Event {
-                                submission_id: Some(event_submission_id),
-                                msg,
-                            })
-                            .await
-                    };
+                    let mut response_closed = sink.response_closed.clone(); // rules-allow: each streamed event future watches its own receiver
                     tokio::select! {
                         biased;
                         _ = response_closed.changed() => Err(Error::Stopped("model event sink closed".into())),
-                        result = record => result,
+                        result = sink.record(event) => result,
                     }
                 })
             });
@@ -803,7 +744,7 @@ impl Runner {
                 catalog_revision: &catalog_revision,
                 tools: &tools.direct,
                 deferred_tools: &tools.deferred,
-                allow_hosted_tools: tools.allow_hosted_tools,
+                allow_hosted_tools: true,
                 allow_continuation: true,
             };
             let mut streamed = StreamedTools::default();
@@ -897,20 +838,14 @@ impl Runner {
                         return Ok(ModelStepRequest::Restart);
                     }
                     match self
-                        .wait_active(inbox, turn_id, tokio::time::sleep(delay))
+                        .wait_active(inbox, turn_id, tokio::time::sleep(delay), || None)
                         .await?
                     {
                         Wait::Ready { input_changed, .. } => {
                             if let Some(interrupt_submission_id) =
                                 self.drain_submissions(inbox, turn_id).await?.interrupted
                             {
-                                self.abort(
-                                    &interrupt_submission_id,
-                                    turn_id,
-                                    TURN_INTERRUPTED_REASON,
-                                    ExecutionOutcome::Aborted,
-                                )
-                                .await?;
+                                self.interrupt(&interrupt_submission_id, turn_id).await?;
                                 return Ok(ModelStepRequest::Finished);
                             }
                             if input_changed
@@ -925,13 +860,7 @@ impl Runner {
                         Wait::Interrupted {
                             submission_id: interrupt_submission_id,
                         } => {
-                            self.abort(
-                                &interrupt_submission_id,
-                                turn_id,
-                                TURN_INTERRUPTED_REASON,
-                                ExecutionOutcome::Aborted,
-                            )
-                            .await?;
+                            self.interrupt(&interrupt_submission_id, turn_id).await?;
                             return Ok(ModelStepRequest::Finished);
                         }
                     }
@@ -1144,11 +1073,7 @@ impl Runner {
                 .collect(),
             &step.output.usage,
         )?;
-        let checkpoint_sequence = self
-            .state
-            .sequence
-            .checked_add(1)
-            .ok_or_else(|| Error::Checkpoint("checkpoint sequence overflow".into()))?;
+        let checkpoint_sequence = self.state.next_sequence()?;
         let mut model_events = vec![model_step_completed_event(
             submission_id,
             &step.started,
@@ -1180,17 +1105,8 @@ impl Runner {
                 }),
             ));
         }
-        model_events.extend(
-            tool_effects
-                .events
-                .into_iter()
-                .map(|event| turn_event(submission_id, event)),
-        );
-        model_events.extend(
-            hook_events
-                .into_iter()
-                .map(|message| turn_event(submission_id, message)),
-        );
+        model_events.extend(turn_events(submission_id, tool_effects.events));
+        model_events.extend(turn_events(submission_id, hook_events));
         if let Some(usage) = self.usage_event(submission_id, None) {
             model_events.push(usage);
         }
@@ -1216,13 +1132,7 @@ impl Runner {
         if let Some(interrupt_submission_id) =
             self.drain_submissions(inbox, turn_id).await?.interrupted
         {
-            self.abort(
-                &interrupt_submission_id,
-                turn_id,
-                TURN_INTERRUPTED_REASON,
-                ExecutionOutcome::Aborted,
-            )
-            .await?;
+            self.interrupt(&interrupt_submission_id, turn_id).await?;
             return Ok(true);
         }
         if self
@@ -1258,23 +1168,14 @@ impl Runner {
             self.config.middleware.stop(&mut context).await?;
             context.continuation
         };
-        let hook_events = hook_events
-            .into_iter()
-            .map(|message| turn_event(submission_id, message))
-            .collect::<Vec<_>>();
+        let hook_events = turn_events(submission_id, hook_events).collect::<Vec<_>>();
         if let Some(interrupt_submission_id) =
             self.drain_submissions(inbox, turn_id).await?.interrupted
         {
             if !hook_events.is_empty() {
                 self.persist_with_events(hook_events, None).await?;
             }
-            self.abort(
-                &interrupt_submission_id,
-                turn_id,
-                TURN_INTERRUPTED_REASON,
-                ExecutionOutcome::Aborted,
-            )
-            .await?;
+            self.interrupt(&interrupt_submission_id, turn_id).await?;
             return Ok(true);
         }
         if self
@@ -1402,13 +1303,7 @@ impl Runner {
             if let Some(interrupt_submission_id) =
                 self.drain_submissions(inbox, turn_id).await?.interrupted
             {
-                self.abort(
-                    &interrupt_submission_id,
-                    turn_id,
-                    TURN_INTERRUPTED_REASON,
-                    ExecutionOutcome::Aborted,
-                )
-                .await?;
+                self.interrupt(&interrupt_submission_id, turn_id).await?;
                 return Ok(());
             }
             let model_step = self
@@ -1469,7 +1364,7 @@ impl Runner {
                     submission_id,
                     turn_id,
                     model_step,
-                    request_input.input(),
+                    request_input.as_slice().into(),
                     tools,
                 )
                 .await?
@@ -1500,7 +1395,9 @@ impl Runner {
             if output.tool_calls.is_empty() {
                 continue;
             }
-            let streamed = self.wait_active(inbox, turn_id, streamed.finish()).await?;
+            let streamed = self
+                .wait_active(inbox, turn_id, streamed.finish(), || None)
+                .await?;
             let Some(streamed) = self.ready_or_aborted(streamed, turn_id).await? else {
                 return Ok(());
             };

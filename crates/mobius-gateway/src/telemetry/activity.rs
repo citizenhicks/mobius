@@ -1,17 +1,13 @@
 //! Operator-owned host activity lease, independent of outbound collectors.
 
 use std::path::{Path, PathBuf};
-#[cfg(unix)]
 use std::process::Stdio;
 use std::time::Duration;
 
 use mobius::backend::sandbox::ProcessGroupGuard;
-#[cfg(unix)]
 use nix::sys::signal::{Signal, kill};
-#[cfg(unix)]
 use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
-#[cfg(unix)]
 use tokio::process::Command;
 use tokio::process::{Child, ChildStdin};
 use tokio::task::JoinSet;
@@ -79,9 +75,6 @@ impl ActivityHookConfig {
     }
 
     fn executable(&self) -> Result<PathBuf> {
-        if !cfg!(unix) {
-            return Err(Error::Config("activity hooks require Unix".into()));
-        }
         crate::config::bounded(
             "telemetry.activity_hook.command",
             self.command.len(),
@@ -127,7 +120,6 @@ impl ActivityHookConfig {
                 "activity hook executable must be a file".into(),
             ));
         }
-        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
             if metadata.permissions().mode() & 0o111 == 0 {
@@ -305,7 +297,6 @@ impl<'a> ActivityHook<'a> {
         )
     }
 
-    #[cfg(unix)]
     fn acquire(&mut self) -> Result<()> {
         let Some(config) = self.config else {
             return Ok(());
@@ -338,11 +329,6 @@ impl<'a> ActivityHook<'a> {
             stdin: Some(stdin),
         });
         Ok(())
-    }
-
-    #[cfg(not(unix))]
-    fn acquire(&mut self) -> Result<()> {
-        Err(Error::Config("activity hooks require Unix".into()))
     }
 
     pub(crate) async fn stop(&mut self) {
@@ -398,7 +384,6 @@ async fn stop_process(mut process: HookProcess, timeout: Duration) {
         tokio::time::timeout(timeout, process.child.wait()).await,
         Ok(Ok(_))
     ) {
-        #[cfg(unix)]
         if let Some(pid) = process.child.id().and_then(|pid| i32::try_from(pid).ok())
             && let Err(error) = kill(Pid::from_raw(-pid), Signal::SIGTERM)
         {
@@ -419,7 +404,7 @@ async fn stop_process(mut process: HookProcess, timeout: Duration) {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

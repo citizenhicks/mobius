@@ -4,8 +4,7 @@ use mobius::protocol::{
 };
 use std::sync::Arc;
 
-use mobius::backend::session_files::session_file_limits;
-use mobius_gateway::wire::{ReadyPayload, ServerMessage};
+use mobius_gateway::wire::ServerMessage;
 use ratatui::widgets::ListState;
 
 use super::runtime::{handle_frame, insert_overlay_input, prepare_overlay_operation};
@@ -59,30 +58,12 @@ fn capability_input_paste_stops_at_the_protocol_capability_limit() {
 fn dashboard_state() -> super::state::DashboardState {
     super::state::DashboardState {
         endpoint: String::new(),
-        gateway: ReadyPayload {
-            gateway_version: env!("CARGO_PKG_VERSION").into(),
-            machine_name: String::new(),
-            computer_view: mobius_gateway::wire::ComputerView::Unavailable,
-            bots: Vec::new(),
-            sessions: Vec::new(),
-            background_approvals: Vec::new(),
-            providers: Vec::new(),
-            provider_instances: Vec::new(),
-            agent_catalog: Default::default(),
-            harnesses: Vec::new(),
-            max_active_sessions: 0,
-            session_file_limits: session_file_limits(),
-            revisions: Default::default(),
-            omitted: Default::default(),
-        },
+        gateway: crate::frontend::fixtures::ready(Vec::new()),
         clients: Vec::new(),
         current_client_id: None,
-        selected_client_id: None,
-        selected_session_id: None,
-        selected_bot_id: None,
-        device_list: ListState::default(),
-        chat_list: ListState::default(),
-        bot_list: ListState::default(),
+        devices: Default::default(),
+        chats: Default::default(),
+        bots: Default::default(),
         focus: DashboardFocus::Devices,
         pending_unpair: None,
         profile: None,

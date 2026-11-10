@@ -1,13 +1,9 @@
 use std::collections::BTreeSet;
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use mobius::Error;
-use mobius::Result;
-use mobius::protocol::FrontendContribution;
-use mobius::protocol::FrontendWidget;
-use mobius::protocol::Op;
+use mobius::protocol::{FrontendContribution, FrontendWidget, Op, SessionFileReference};
+use mobius::{Error, Result};
 use mobius_gateway::wire::GitDiffScope;
 
 use super::setup::SetupMode;
@@ -85,10 +81,25 @@ pub(crate) struct CommandContext<'a> {
     pub status: &'a str,
 }
 
+/// What a slash command asks of the terminal.
 #[derive(Debug, PartialEq)]
 pub(crate) enum CommandAction {
+    /// An action the terminal runtime performs as is.
+    Ui(UiAction),
+    ShowMenu,
+    Print(String),
+    Attention,
+}
+
+/// One thing the terminal runtime does in response to input.
+#[derive(Debug, PartialEq)]
+pub(crate) enum UiAction {
+    None,
+    PasteClipboard,
     Submit(Box<Op>),
+    Resume(mobius::SessionId),
     Gateway(GatewayAction),
+    Download(SessionFileReference),
     GatewaySettings,
     Extensions,
     Bots,
@@ -97,19 +108,29 @@ pub(crate) enum CommandAction {
         mode: SetupMode,
         provider: Option<String>,
     },
-    ShowMenu,
-    Print(String),
     Exit,
     ChooseBot {
         workspace: Option<PathBuf>,
+        clear: bool,
+    },
+    CreateSession {
+        workspace: PathBuf,
+        bot_id: Arc<str>,
         clear: bool,
     },
     Events,
     ReassignBot,
     Branches,
     ConfirmDelete,
+    ConfirmDeleteFile(SessionFileReference),
     Queued,
-    Attention,
+    LoadEarlierHistory,
+}
+
+impl UiAction {
+    pub(crate) fn submit(op: Op) -> Self {
+        Self::Submit(Box::new(op))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -321,74 +342,86 @@ impl UiCatalog {
         Some(match &command.handler {
             CommandHandler::Help => CommandAction::ShowMenu,
             CommandHandler::GatewaySettings if arguments.is_empty() => {
-                CommandAction::GatewaySettings
+                CommandAction::Ui(UiAction::GatewaySettings)
             }
-            CommandHandler::Extensions if arguments.is_empty() => CommandAction::Extensions,
-            CommandHandler::Bot if arguments.is_empty() => CommandAction::Bots,
-            CommandHandler::Conversation if arguments.is_empty() => CommandAction::Conversation,
-            CommandHandler::Workspace if !arguments.is_empty() => CommandAction::ChooseBot {
-                workspace: Some(PathBuf::from(arguments)),
-                clear: false,
-            },
+            CommandHandler::Extensions if arguments.is_empty() => {
+                CommandAction::Ui(UiAction::Extensions)
+            }
+            CommandHandler::Bot if arguments.is_empty() => CommandAction::Ui(UiAction::Bots),
+            CommandHandler::Conversation if arguments.is_empty() => {
+                CommandAction::Ui(UiAction::Conversation)
+            }
+            CommandHandler::Workspace if !arguments.is_empty() => {
+                CommandAction::Ui(UiAction::ChooseBot {
+                    workspace: Some(PathBuf::from(arguments)),
+                    clear: false,
+                })
+            }
             CommandHandler::Login if arguments.split_whitespace().count() <= 1 => {
-                CommandAction::Setup {
+                CommandAction::Ui(UiAction::Setup {
                     mode: SetupMode::Login,
                     provider: (!arguments.is_empty()).then(|| arguments.into()),
-                }
+                })
             }
-            CommandHandler::Pair => CommandAction::Gateway(GatewayAction::Pair),
-            CommandHandler::Profile => CommandAction::Gateway(GatewayAction::Profile),
-            CommandHandler::Events if arguments.is_empty() => CommandAction::Events,
-            CommandHandler::New => CommandAction::ChooseBot {
+            CommandHandler::Pair => CommandAction::Ui(UiAction::Gateway(GatewayAction::Pair)),
+            CommandHandler::Profile => CommandAction::Ui(UiAction::Gateway(GatewayAction::Profile)),
+            CommandHandler::Events if arguments.is_empty() => CommandAction::Ui(UiAction::Events),
+            CommandHandler::New => CommandAction::Ui(UiAction::ChooseBot {
                 workspace: self.workspace.clone(), // rules-allow: the action owns the workspace while the catalog keeps it for later commands
                 clear: false,
-            },
-            CommandHandler::Clear => CommandAction::ChooseBot {
+            }),
+            CommandHandler::Clear => CommandAction::Ui(UiAction::ChooseBot {
                 workspace: self.workspace.clone(), // rules-allow: the action owns the workspace while the catalog keeps it for later commands
                 clear: true,
-            },
+            }),
             CommandHandler::Rename if !arguments.is_empty() => {
-                CommandAction::Gateway(GatewayAction::Rename(arguments.into()))
+                CommandAction::Ui(UiAction::Gateway(GatewayAction::Rename(arguments.into())))
             }
             CommandHandler::Pin if arguments.is_empty() => {
-                CommandAction::Gateway(GatewayAction::SetPinned(true))
+                CommandAction::Ui(UiAction::Gateway(GatewayAction::SetPinned(true)))
             }
             CommandHandler::Unpin if arguments.is_empty() => {
-                CommandAction::Gateway(GatewayAction::SetPinned(false))
+                CommandAction::Ui(UiAction::Gateway(GatewayAction::SetPinned(false)))
             }
-            CommandHandler::Reassign if arguments.is_empty() => CommandAction::ReassignBot,
-            CommandHandler::Attach if !arguments.is_empty() => {
-                CommandAction::Gateway(GatewayAction::AttachFolder(PathBuf::from(arguments)))
+            CommandHandler::Reassign if arguments.is_empty() => {
+                CommandAction::Ui(UiAction::ReassignBot)
             }
-            CommandHandler::Delete if arguments.is_empty() => CommandAction::ConfirmDelete,
+            CommandHandler::Attach if !arguments.is_empty() => CommandAction::Ui(
+                UiAction::Gateway(GatewayAction::AttachFolder(PathBuf::from(arguments))),
+            ),
+            CommandHandler::Delete if arguments.is_empty() => {
+                CommandAction::Ui(UiAction::ConfirmDelete)
+            }
             CommandHandler::Files if arguments.is_empty() => {
-                CommandAction::Gateway(GatewayAction::ListSessionFiles)
+                CommandAction::Ui(UiAction::Gateway(GatewayAction::ListSessionFiles))
             }
             CommandHandler::Diff => match arguments {
-                "" | "unstaged" => {
-                    CommandAction::Gateway(GatewayAction::GitDiff(GitDiffScope::Unstaged))
-                }
-                "staged" => CommandAction::Gateway(GatewayAction::GitDiff(GitDiffScope::Staged)),
-                "committed" => {
-                    CommandAction::Gateway(GatewayAction::GitDiff(GitDiffScope::Committed))
-                }
+                "" | "unstaged" => CommandAction::Ui(UiAction::Gateway(GatewayAction::GitDiff(
+                    GitDiffScope::Unstaged,
+                ))),
+                "staged" => CommandAction::Ui(UiAction::Gateway(GatewayAction::GitDiff(
+                    GitDiffScope::Staged,
+                ))),
+                "committed" => CommandAction::Ui(UiAction::Gateway(GatewayAction::GitDiff(
+                    GitDiffScope::Committed,
+                ))),
                 _ => command.usage(),
             },
-            CommandHandler::Branch if arguments.is_empty() => CommandAction::Branches,
+            CommandHandler::Branch if arguments.is_empty() => CommandAction::Ui(UiAction::Branches),
             CommandHandler::Attention if arguments.is_empty() => CommandAction::Attention,
-            CommandHandler::Queued if arguments.is_empty() => CommandAction::Queued,
+            CommandHandler::Queued if arguments.is_empty() => CommandAction::Ui(UiAction::Queued),
             CommandHandler::Status => CommandAction::Print(context.status.to_owned()),
             CommandHandler::Interrupt => context.active_turn.map_or_else(
                 || CommandAction::Print("no active turn to interrupt".into()),
                 |turn_id| {
-                    CommandAction::Submit(Box::new(Op::Interrupt {
+                    CommandAction::Ui(UiAction::submit(Op::Interrupt {
                         turn_id: Arc::clone(turn_id),
                     }))
                 },
             ),
-            CommandHandler::Exit => CommandAction::Exit,
+            CommandHandler::Exit => CommandAction::Ui(UiAction::Exit),
             CommandHandler::Capability { capability } => {
-                CommandAction::Submit(Box::new(Op::command(
+                CommandAction::Ui(UiAction::submit(Op::command(
                     Arc::clone(capability),
                     Arc::clone(&command.name),
                     arguments.to_owned(),
@@ -629,17 +662,10 @@ fn validate(commands: &[UiCommand], references: &[UiReference]) -> Result<()> {
         }
     }
 
-    let mut registered = BTreeSet::new();
     for reference in references {
         if reference.trigger == COMMAND_PREFIX {
             return Err(Error::Config(format!(
                 "invalid frontend reference `{}{}`",
-                reference.trigger, reference.value
-            )));
-        }
-        if !registered.insert((reference.trigger, &*reference.value)) {
-            return Err(Error::Duplicate(format!(
-                "frontend reference `{}{}`",
                 reference.trigger, reference.value
             )));
         }

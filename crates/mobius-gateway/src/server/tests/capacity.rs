@@ -5,29 +5,7 @@ async fn capacity_server(
     state_dir: PathBuf,
     policy: ConnectionPolicy,
 ) -> (GatewayServer, PairingGrant) {
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
-    let listen = listener.local_addr().expect("listen address");
-    let (store, config) =
-        ConfigStore::initialize(state_dir, listen, None).expect("initialize gateway");
-    let mut config = config
-        .registering_provider(
-            crate::wire::AgentComposition::default().provider,
-            "Test".into(),
-            Default::default(),
-            Vec::new(),
-            Vec::new(),
-        )
-        .expect("register provider");
-    config.connections = policy;
-    store
-        .save(&config.clone().validated().expect("valid config"))
-        .expect("save capacity policy");
-    let (_, grant) =
-        AuthStore::initialize(store.auth_path(), config.auth).expect("initialize auth");
-    let server = GatewayServer::assemble(store, config, listener)
-        .await
-        .expect("assemble gateway with capacity policy");
-    (server, grant)
+    configured_test_server_with(state_dir, |config| config.connections = policy).await
 }
 
 async fn expect_capacity_accepted(events: &mut GatewayEvents, expected: &str) {

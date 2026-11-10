@@ -3,7 +3,7 @@ use serde_json::json;
 
 #[tokio::test]
 async fn desktop_registration_requires_a_local_desktop_host() {
-    use crate::wire::{ClientMessage, FrameReader, ServerFrame, read_frame};
+    use crate::wire::{FrameReader, ServerFrame, read_frame};
 
     let host = crate::wire::ClientCapabilities {
         desktop_host: true,
@@ -18,11 +18,9 @@ async fn desktop_registration_requires_a_local_desktop_host() {
         let control = Arc::new(DesktopControl::default());
         let mut connection = None;
         let (reader, mut writer) = tokio::io::duplex(4096);
-        handle_message(
-            ClientMessage::SetDesktopRuntime {
-                request_id: "register".into(),
-                enabled: true,
-            },
+        set_runtime(
+            "register".into(),
+            true,
             &control,
             &mut connection,
             local,

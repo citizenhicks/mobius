@@ -4,39 +4,29 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Local, Utc};
-use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::crossterm::SynchronizedUpdate;
 use ratatui::crossterm::event::Event as TerminalEvent;
-use ratatui::crossterm::event::KeyCode;
-use ratatui::crossterm::event::KeyEventKind;
-use ratatui::crossterm::execute;
+use ratatui::crossterm::event::{KeyCode, KeyEventKind};
 use ratatui::crossterm::style::Print;
+use ratatui::crossterm::{SynchronizedUpdate, execute};
 use tokio::io::AsyncWriteExt as _;
 use tokio::time::MissedTickBehavior;
 
-use super::InputDraft;
-use super::TranscriptTone;
-use super::TuiState;
 use super::clipboard::{
     ClipboardPreparation, ClipboardUploads, UploadCandidate, prepare_clipboard,
 };
 use super::events::{handle_gateway_event, handle_gateway_history};
 use super::input::UiAction;
 use super::view::render_preview;
-use crate::frontend::FrontendExit;
-use crate::frontend::bots;
+use super::{InputDraft, TranscriptTone, TuiState};
 use crate::frontend::catalog::{GatewayAction, UiCatalog};
 use crate::frontend::dashboard::render_capability_overlay;
-use crate::frontend::extensions;
-use crate::frontend::gateway;
 use crate::frontend::gateway_actions::{ResponseSeverity, prepare, render_response};
-use crate::frontend::setup;
-use crate::frontend::terminal::{INPUT_POLL, MAX_INPUT_BATCH, TerminalGuard, poll_event};
+use crate::frontend::terminal::{INPUT_POLL, Screen, TerminalGuard, input_batch};
+use crate::frontend::{FrontendExit, bots, extensions, gateway, setup};
 use mobius::backend::checkpoint::ExecutionOutcome;
 use mobius::protocol::{
-    Event, EventMsg, FrontendBlockFormat, FrontendEvent, MessageAuthor, ModelInfo, Op,
-    SessionFileReference, Submission,
+    Event, EventMsg, FrontendEvent, MessageAuthor, ModelInfo, Op, SessionFileReference, Submission,
 };
 use mobius::{Error, Result};
 use mobius_gateway::client::{GatewayEvents, GatewaySender};
@@ -51,42 +41,10 @@ const FRAME_INTERVAL: Duration = Duration::from_millis(16);
 const CLEAR_SCREEN_AND_SCROLLBACK: &str = "\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H";
 const FILE_READ_CHUNK_BYTES: usize = 256 * 1024;
 
-type TuiTerminal = Terminal<CrosstermBackend<io::Stdout>>;
-
-struct ReplayHydration {
-    pending: bool,
-}
-
 #[derive(Debug, PartialEq, Eq)]
 struct PendingSessionCreation {
     request_id: Arc<str>,
     clear: bool,
-}
-
-impl ReplayHydration {
-    const fn pending() -> Self {
-        Self { pending: true }
-    }
-
-    const fn allows_draw(&self) -> bool {
-        !self.pending
-    }
-
-    fn observe(&mut self, message: &ServerMessage, session_id: &mobius::SessionId) {
-        if matches!(
-            message,
-            ServerMessage::SessionReplayComplete {
-                session_id: actual,
-                ..
-            } if actual == session_id
-        ) {
-            self.pending = false;
-        }
-    }
-
-    fn finish(&mut self) {
-        self.pending = false;
-    }
 }
 
 pub(in crate::frontend) async fn run(
@@ -99,7 +57,7 @@ pub(in crate::frontend) async fn run(
     choose_initial_bot: bool,
 ) -> Result<(FrontendExit, GatewaySender, GatewayEvents)> {
     let mut guard = TerminalGuard::alternate()?;
-    let mut terminal = TuiTerminal::new(CrosstermBackend::new(io::stdout()))?;
+    let mut terminal = Screen::new(CrosstermBackend::new(io::stdout()))?;
     terminal.clear()?;
     let mut state = TuiState::new(
         &catalog,
@@ -128,7 +86,8 @@ pub(in crate::frontend) async fn run(
     elapsed.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut events_open = true;
     let mut dirty = true;
-    let mut replay_hydration = ReplayHydration::pending();
+    // Frames are drawn only once the session's replay completes (or the gateway disconnects).
+    let mut replaying = true;
     let exit;
     let mut clear_on_exit = false;
     let mut pending_session_creation = None;
@@ -146,18 +105,18 @@ pub(in crate::frontend) async fn run(
             &mut state,
             &catalog,
             &mut dirty,
-            &replay_hydration,
+            replaying,
             &mut next_frame,
         )?;
         tokio::select! {
-            () = tokio::time::sleep_until(next_frame.into()), if dirty && replay_hydration.allows_draw() => {}
+            () = tokio::time::sleep_until(next_frame.into()), if dirty && !replaying => {}
             event = events.next(), if events_open => {
                 match event {
                     Ok(Some(frame)) => {
-                        replay_hydration.observe(&frame.message, &session.session.session_id);
+                        replaying &= !replay_complete(&frame.message, &session.session.session_id);
                         let Some(message) = refresh_workspace(
                             &sender, frame.message, session, &mut catalog, &mut state,
-                            replay_hydration.allows_draw(), workspace_reference_open,
+                            !replaying, workspace_reference_open,
                         ).await else {
                             dirty = true;
                             continue 'ui;
@@ -184,7 +143,7 @@ pub(in crate::frontend) async fn run(
                             &mut state,
                             &mut uploads,
                             &mut clipboard_preparation,
-                            &mut replay_hydration,
+                            &mut replaying,
                             "gateway disconnected · Ctrl-C to exit",
                         );
                         events_open = false;
@@ -194,7 +153,7 @@ pub(in crate::frontend) async fn run(
                             &mut state,
                             &mut uploads,
                             &mut clipboard_preparation,
-                            &mut replay_hydration,
+                            &mut replaying,
                             error.to_string(),
                         );
                         events_open = false;
@@ -295,7 +254,12 @@ async fn request_open_reference_inventory(
     state: &mut TuiState,
 ) {
     let reference_open = !state.reference_menu_dismissed
-        && super::references::active_reference_token(&state.input, state.cursor, '@').is_some();
+        && super::references::active_reference_token(
+            &state.composer.text,
+            state.composer.cursor,
+            '@',
+        )
+        .is_some();
     if session.workspace.is_some() && events_open && reference_open && !*was_open {
         request_workspace_inventory(sender, &session.session.session_id, state).await;
     }
@@ -355,10 +319,11 @@ async fn request_git_summary(
     {
         let request_id: Arc<str> = crate::fresh_id();
         if sender
-            .send(ClientMessage::GetGitDiffTotals {
+            .send(ClientMessage::GetGitDiff {
                 request_id: Arc::clone(&request_id),
                 session_id: session_id.share(),
                 scope,
+                totals: true,
             })
             .await
             .is_ok()
@@ -402,7 +367,7 @@ fn refresh_workspace_inventory(
     reason = "terminal input dispatch keeps the active frontend state explicit"
 )]
 async fn handle_terminal_input(
-    terminal: &mut TuiTerminal,
+    terminal: &mut Screen,
     sender: &GatewaySender,
     events: &mut GatewayEvents,
     gateway: &mut ReadyPayload,
@@ -415,8 +380,8 @@ async fn handle_terminal_input(
     clipboard_preparation: &mut Option<ClipboardPreparation>,
     dirty: &mut bool,
 ) -> Result<Option<FrontendExit>> {
-    for _ in 0..MAX_INPUT_BATCH {
-        let Some(event) = poll_event()? else { break };
+    for event in input_batch() {
+        let event = event?;
         let draft = matches!(
             &event,
             TerminalEvent::Key(key) if key.code == KeyCode::Enter
@@ -429,7 +394,7 @@ async fn handle_terminal_input(
         match action {
             UiAction::None => {}
             UiAction::PasteClipboard => {
-                paste_clipboard(gateway, state, uploads, clipboard_preparation);
+                paste_clipboard(state, uploads, clipboard_preparation);
             }
             UiAction::Exit => {
                 interrupt_active_turn(sender, &session.session.session_id, state).await;
@@ -495,14 +460,14 @@ async fn handle_terminal_input(
                 *dirty = true;
             }
             UiAction::Setup { mode, provider } => {
-                let result = setup::run(
+                let result = setup::run_bot(
                     terminal,
                     mode,
                     provider.as_deref(),
                     sender,
                     events,
                     gateway,
-                    session,
+                    &session.session.context.owner_id,
                 )
                 .await;
                 if let Err(error) = sync_session_info(state, session, gateway) {
@@ -639,15 +604,19 @@ fn settle_session_creation(
     clear
 }
 
+fn replay_complete(message: &ServerMessage, session_id: &mobius::SessionId) -> bool {
+    matches!(message, ServerMessage::SessionReplayComplete { session_id: actual, .. } if actual == session_id)
+}
+
 fn draw_if_dirty(
-    terminal: &mut TuiTerminal,
+    terminal: &mut Screen,
     state: &mut TuiState,
     catalog: &UiCatalog,
     dirty: &mut bool,
-    replay_hydration: &ReplayHydration,
+    replaying: bool,
     next_frame: &mut Instant,
 ) -> Result<()> {
-    if *dirty && replay_hydration.allows_draw() && Instant::now() >= *next_frame {
+    if *dirty && !replaying && Instant::now() >= *next_frame {
         draw(terminal, state, catalog)?;
         *dirty = false;
         *next_frame = Instant::now() + FRAME_INTERVAL;
@@ -655,7 +624,7 @@ fn draw_if_dirty(
     Ok(())
 }
 
-fn draw(terminal: &mut TuiTerminal, state: &mut TuiState, catalog: &UiCatalog) -> Result<()> {
+fn draw(terminal: &mut Screen, state: &mut TuiState, catalog: &UiCatalog) -> Result<()> {
     io::stdout().sync_update(|_| -> Result<()> {
         terminal.draw(|frame| {
             super::view::render(frame, state, catalog);
@@ -684,7 +653,7 @@ async fn handle_upload_message(
     match uploads.handle(message, session_id).await {
         Ok(advance) => {
             if let Some(attachment) = advance.attachment {
-                state.attachments.push(attachment);
+                state.composer.attachments.push(attachment);
             }
             if let Some(message) = advance.message
                 && let Err(error) = sender.send(message).await
@@ -885,15 +854,15 @@ fn disconnect(
     state: &mut TuiState,
     uploads: &mut ClipboardUploads,
     clipboard_preparation: &mut Option<ClipboardPreparation>,
-    replay_hydration: &mut ReplayHydration,
+    replaying: &mut bool,
     message: impl AsRef<str>,
 ) {
+    *replaying = false;
     if let Some(preparation) = clipboard_preparation.take() {
         drop(preparation);
     }
     uploads.abort();
     state.upload_in_progress = false;
-    replay_hydration.finish();
     state.disconnected = true;
     while let Some(turn_id) = state.active_turns.pop() {
         state.finish_turn(&turn_id);
@@ -917,9 +886,9 @@ fn terminal_action(
             if state.capability_overlay.is_some() {
                 *dirty |= state.insert_capability_overlay_paste(&text);
             } else if state.preview.is_none() && state.picker.is_none() {
-                let before = (state.input.len(), state.input_limit_reached);
+                let before = (state.composer.text.len(), state.input_limit_reached);
                 state.insert_paste(&text);
-                *dirty |= before != (state.input.len(), state.input_limit_reached);
+                *dirty |= before != (state.composer.text.len(), state.input_limit_reached);
             }
             UiAction::None
         }
@@ -936,7 +905,6 @@ fn terminal_action(
 }
 
 fn paste_clipboard(
-    gateway: &ReadyPayload,
     state: &mut TuiState,
     uploads: &ClipboardUploads,
     clipboard_preparation: &mut Option<ClipboardPreparation>,
@@ -959,8 +927,7 @@ fn paste_clipboard(
         );
         return;
     }
-    let limits = gateway.session_file_limits;
-    match prepare_clipboard(&state.attachments, limits) {
+    match prepare_clipboard() {
         Ok(preparation) => {
             *clipboard_preparation = Some(preparation);
             state.upload_in_progress = true;
@@ -1060,26 +1027,15 @@ async fn send_gateway_action(
     action: GatewayAction,
     state: &mut TuiState,
 ) {
-    match action {
-        GatewayAction::DeleteCurrent => {
-            let request_id: Arc<str> = crate::fresh_id();
-            let result = sender
-                .send(ClientMessage::DeleteSessions {
-                    request_id: Arc::clone(&request_id),
-                    session_ids: vec![session_id.share()],
-                    selection: mobius::backend::session_files::SessionFileSelection::All,
-                })
-                .await;
-            match result {
-                Ok(()) => state.deletion_request_id = Some(request_id),
-                Err(error) => state.push(error.to_string(), TranscriptTone::Error),
-            }
-        }
-        action => {
-            if let Err(error) = sender.send(*prepare(action, session_id)).await {
-                state.push(error.to_string(), TranscriptTone::Error);
-            }
-        }
+    let request_id: Arc<str> = crate::fresh_id();
+    let deletes_current = matches!(action, GatewayAction::DeleteCurrent);
+    match sender
+        .send(prepare(action, session_id, Arc::clone(&request_id)))
+        .await
+    {
+        Ok(()) if deletes_current => state.deletion_request_id = Some(request_id),
+        Ok(()) => {}
+        Err(error) => state.push(error.to_string(), TranscriptTone::Error),
     }
 }
 
@@ -1161,7 +1117,6 @@ async fn start_file_download(
         file,
         destination,
         output,
-        offset: 0,
         preview: Vec::new(),
         preview_truncated: false,
     });
@@ -1213,16 +1168,7 @@ async fn handle_file_download_message(
         return false;
     };
     let matches_request = match message {
-        ServerMessage::SessionFileChunk {
-            request_id,
-            session_id,
-            file_id,
-            ..
-        } => {
-            request_id == &download.request_id
-                && session_id == &download.session_id
-                && file_id == &download.file.id
-        }
+        ServerMessage::SessionFileChunk { request_id, .. } => *request_id == download.request_id,
         ServerMessage::Rejected { request_id, .. } => **request_id == *download.request_id,
         _ => false,
     };
@@ -1234,12 +1180,9 @@ async fn handle_file_download_message(
             fail_file_download(state, message).await;
         }
         ServerMessage::SessionFileChunk {
-            offset,
-            data,
-            next_offset,
-            ..
+            data, next_offset, ..
         } => {
-            if let Err(error) = write_file_chunk(state, *offset, data, *next_offset).await {
+            if let Err(error) = write_file_chunk(state, data).await {
                 fail_file_download(state, &error.to_string()).await;
                 return true;
             }
@@ -1268,50 +1211,17 @@ async fn handle_file_download_message(
     true
 }
 
-async fn write_file_chunk(
-    state: &mut TuiState,
-    offset: u64,
-    data: &[u8],
-    next_offset: Option<u64>,
-) -> io::Result<()> {
+async fn write_file_chunk(state: &mut TuiState, data: &[u8]) -> io::Result<()> {
     let download = state.file_download.as_mut().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
             "session file download is not active",
         )
     })?;
-    if offset != download.offset {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "session file chunk offset did not match the requested offset",
-        ));
-    }
-    let end = offset
-        .checked_add(u64::try_from(data.len()).map_err(io::Error::other)?)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "file offset overflow"))?;
-    if data.is_empty() && next_offset.is_some() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "session file chunk did not advance the download",
-        ));
-    }
-    if end > download.file.size || next_offset.is_some_and(|next| next != end) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "session file chunk exceeded the advertised file size",
-        ));
-    }
-    if next_offset.is_none() && end != download.file.size {
-        return Err(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "session file download ended before the advertised file size",
-        ));
-    }
     download.output.write_all(data).await?;
     let available = super::MAX_ENTRY_BYTES.saturating_sub(download.preview.len());
     download.preview.extend(data.iter().take(available));
     download.preview_truncated |= data.len() > available;
-    download.offset = end;
     Ok(())
 }
 
@@ -1339,12 +1249,7 @@ async fn finish_file_download(state: &mut TuiState) {
         if download.preview_truncated {
             text.push_str("\n\n[preview truncated]");
         }
-        state.open_text_preview(
-            download.file.name,
-            text,
-            FrontendBlockFormat::PlainText,
-            TranscriptTone::Neutral,
-        );
+        state.push_titled(&download.file.name, &text, TranscriptTone::Neutral);
     }
 }
 
@@ -1362,7 +1267,7 @@ async fn fail_file_download(state: &mut TuiState, message: &str) {
 }
 
 async fn open_gateway_settings(
-    terminal: &mut TuiTerminal,
+    terminal: &mut Screen,
     gateway_endpoint: &str,
     state: &mut TuiState,
 ) -> bool {
@@ -1376,7 +1281,7 @@ async fn open_gateway_settings(
 }
 
 async fn open_extensions(
-    terminal: &mut TuiTerminal,
+    terminal: &mut Screen,
     sender: &GatewaySender,
     events: &mut GatewayEvents,
     gateway: &mut ReadyPayload,
@@ -1393,7 +1298,7 @@ async fn open_extensions(
 }
 
 async fn open_bots(
-    terminal: &mut TuiTerminal,
+    terminal: &mut Screen,
     sender: &GatewaySender,
     events: &mut GatewayEvents,
     gateway: &mut ReadyPayload,
@@ -1674,12 +1579,9 @@ mod tests {
     use super::*;
     use mobius::protocol::{
         ActiveMessageDelivery, Event, EventMsg, ModelChangedEvent, SessionConfiguredEvent,
-        SessionContext, SessionFileLimits,
+        SessionContext,
     };
-    use mobius_gateway::wire::{
-        ReadyPayload, RoutineInteractionPolicy, RunStats, SessionReadyPayload,
-        VersionedAgentConfig, WorkspaceInfo,
-    };
+    use mobius_gateway::wire::{RunStats, SessionReadyPayload, WorkspaceInfo};
 
     #[test]
     fn rejected_message_keeps_newer_input_and_recovers_the_failed_draft() {
@@ -1700,8 +1602,8 @@ mod tests {
                 }],
             },
         );
-        state.input = "new draft".into();
-        state.cursor = state.input.len();
+        state.composer.text = "new draft".into();
+        state.composer.cursor = state.composer.text.len();
         state.composer_history.push_back("older request".into());
 
         settle_message_draft(
@@ -1714,18 +1616,18 @@ mod tests {
             },
         );
 
-        assert_eq!(state.input, "new draft");
+        assert_eq!(state.composer.text, "new draft");
         assert!(state.pending_message_drafts.is_empty());
         state.composer_history_up();
-        assert_eq!(state.input, "older request");
+        assert_eq!(state.composer.text, "older request");
         state.composer_history_down();
-        assert_eq!(state.input, "new draft");
+        assert_eq!(state.composer.text, "new draft");
         state.recover_saved_message();
-        assert_eq!(state.input, "original request");
-        assert_eq!(state.attachments[0].name, "notes.txt");
+        assert_eq!(state.composer.text, "original request");
+        assert_eq!(state.composer.attachments[0].name, "notes.txt");
         state.recover_saved_message();
-        assert_eq!(state.input, "new draft");
-        assert!(state.attachments.is_empty());
+        assert_eq!(state.composer.text, "new draft");
+        assert!(state.composer.attachments.is_empty());
     }
 
     #[test]
@@ -1744,7 +1646,7 @@ mod tests {
         state.recover_unconfirmed_messages();
 
         assert!(state.pending_message_drafts.is_empty());
-        assert_eq!(state.input, "possibly delivered");
+        assert_eq!(state.composer.text, "possibly delivered");
         assert!(
             state
                 .transcript
@@ -1754,7 +1656,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn downloads_do_not_overwrite_and_reject_invalid_chunks() {
+    async fn downloads_do_not_overwrite_existing_files() {
         let directory = tempfile::tempdir().expect("download directory");
         let (first_path, first) = create_download_file(directory.path(), "report.txt")
             .await
@@ -1777,20 +1679,13 @@ mod tests {
                 },
                 destination: second_path.clone(),
                 output: second,
-                offset: 0,
                 preview: Vec::new(),
                 preview_truncated: false,
             }),
             ..TuiState::default()
         };
 
-        assert!(
-            write_file_chunk(&mut state, 0, b"too long", None)
-                .await
-                .is_err()
-        );
-        assert!(write_file_chunk(&mut state, 0, b"", Some(0)).await.is_err());
-        write_file_chunk(&mut state, 0, b"ok", None)
+        write_file_chunk(&mut state, b"ok")
             .await
             .expect("valid chunk");
         finish_file_download(&mut state).await;
@@ -1819,7 +1714,8 @@ mod tests {
             _ => false,
         };
         let mut session = session_payload("session-current");
-        let mut gateway = ready_payload();
+        let mut gateway =
+            crate::frontend::fixtures::ready(vec![crate::frontend::fixtures::bot("bot-a")]);
         let catalog = UiCatalog::build(&[], Some(std::path::Path::new("/tmp"))).expect("catalog");
         let mut state = TuiState::new(
             &catalog,
@@ -1880,55 +1776,6 @@ mod tests {
             run_stats: RunStats::default(),
             pinned_messages: Default::default(),
             memory: None,
-        }
-    }
-
-    fn ready_payload() -> ReadyPayload {
-        ReadyPayload {
-            gateway_version: env!("CARGO_PKG_VERSION").into(),
-            machine_name: String::new(),
-            computer_view: mobius_gateway::wire::ComputerView::Unavailable,
-            bots: vec![BotRecord {
-                id: "bot-a".into(),
-                conversation_session_id: mobius::SessionId::new("bot-conversation-test")
-                    .expect("session"),
-                handle: "ada".into(),
-                name: "Ada".into(),
-                description: "".into(),
-                tint: Default::default(),
-                shape: mobius_gateway::wire::BotShape::Circle,
-                harness: mobius_gateway::wire::HarnessKind::Mobius,
-                config: Arc::new(VersionedAgentConfig {
-                    revision: 1,
-                    config: mobius_gateway::wire::HarnessConfig::Mobius(Arc::default()),
-                }),
-                capabilities: mobius_gateway::wire::BotCapabilities {
-                    attachments: false,
-                    computer: false,
-                    voice: mobius_gateway::wire::VoiceCapability::Off,
-                    memory: mobius_gateway::wire::BotMemory {
-                        enabled: false,
-                        global: false,
-                    },
-                },
-                routine_interaction_policy: RoutineInteractionPolicy::Unattended,
-            }],
-            sessions: Vec::new(),
-            background_approvals: Vec::new(),
-            providers: Vec::new(),
-            provider_instances: Vec::new(),
-            agent_catalog: Default::default(),
-            harnesses: Vec::new(),
-            max_active_sessions: 0,
-            session_file_limits: SessionFileLimits {
-                max_attachment_references: 1,
-                max_file_bytes: 1,
-                max_session_files: 1,
-                max_session_bytes: 1,
-                max_upload_chunk_bytes: 1,
-            },
-            revisions: Default::default(),
-            omitted: Default::default(),
         }
     }
 }

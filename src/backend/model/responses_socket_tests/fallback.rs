@@ -1,7 +1,8 @@
 use super::super::*;
+use super::support::*;
 use super::support::{completed_events, read_http_json, write_http_stream};
 use crate::backend::model::PromptCacheIdentity;
-use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use tokio::io::AsyncWriteExt as _;
 
 #[tokio::test]
 async fn upgrade_required_switches_only_that_session_to_sticky_http() {
@@ -61,13 +62,7 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
             .accept()
             .await
             .expect("fallback WebSocket connection");
-        let mut request = Vec::new();
-        while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
-            let mut chunk = [0; 1_024];
-            let count = stream.read(&mut chunk).await.expect("handshake request");
-            assert_ne!(count, 0, "request ended before its headers");
-            request.extend_from_slice(&chunk[..count]);
-        }
+        crate::backend::model::test_support::read_http_request(&mut stream).await;
         stream
             .write_all(
                 b"HTTP/1.1 426 Upgrade Required\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
@@ -105,11 +100,11 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
     });
 
     let socket_url = format!("ws://{websocket_address}/responses");
-    let provider = OpenAiSocket::with_authorization(
+    let provider = OpenAiSocket::from_authorization(
         Arc::new(ApiKeyAuthorization::new("test-key".into())),
         BaseUrl::new(format!("http://{http_address}")).unwrap(),
         &socket_url,
-        "gpt-6.1-sol",
+        "gpt-6.1-sol".into(),
         reqwest::Client::new(),
         crate::backend::model::ModelTransportSettings::default(),
     )

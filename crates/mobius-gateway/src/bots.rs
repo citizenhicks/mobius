@@ -12,7 +12,6 @@ pub(crate) use events::{
 use std::collections::BTreeSet;
 use std::fs::{File, TryLockError};
 use std::io::Read as _;
-#[cfg(unix)]
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Component, Path, PathBuf};
 use std::str::FromStr as _;
@@ -79,11 +78,8 @@ pub(crate) struct BotIdentity<'a> {
 pub(crate) struct BotStore {
     state_dir: PathBuf,
     routines_dir: PathBuf,
-    storage: BotStorage,
-    pub(crate) prepared: tokio::sync::Mutex<
-        std::collections::BTreeMap<Arc<str>, Arc<crate::harness::mobius::assembly::PreparedBot>>,
-    >,
-    pub(crate) preparation_generation: std::sync::atomic::AtomicU64,
+    pub(crate) storage: BotStorage,
+    pub(crate) prepared: crate::harness::mobius::assembly::PreparedBots,
     /// The last parsed catalog, reused until any connection commits.
     cache: std::sync::Mutex<Option<(CatalogStamp, Arc<BotState>)>>,
     /// The gateway's current voice routes, which Bot records resolve their voice against.
@@ -345,7 +341,7 @@ struct BotState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "PersistedBot")]
+#[serde(deny_unknown_fields)]
 struct StoredBot {
     id: Arc<str>,
     handle: Arc<str>,
@@ -353,10 +349,37 @@ struct StoredBot {
     description: Arc<str>,
     tint: ProviderTint,
     shape: BotShape,
-    config: Arc<VersionedAgentConfig>,
-    /// Parsed once from `config` when it was validated or read from disk.
-    #[serde(skip_serializing)]
+    config: BotConfig,
+}
+
+/// A Bot's agent configuration and the approval mode parsed once from it, when it was
+/// validated or read from disk. Only the configuration is written.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "Arc<VersionedAgentConfig>")]
+struct BotConfig {
+    versioned: Arc<VersionedAgentConfig>,
     approval: ApprovalMode,
+}
+
+impl TryFrom<Arc<VersionedAgentConfig>> for BotConfig {
+    type Error = Error;
+
+    fn try_from(versioned: Arc<VersionedAgentConfig>) -> Result<Self> {
+        let approval = crate::harness::validate_stored(&versioned.config)?;
+        Ok(Self {
+            versioned,
+            approval,
+        })
+    }
+}
+
+impl Serialize for BotConfig {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        self.versioned.serialize(serializer)
+    }
 }
 
 /// A möbius Bot record with the composition and approval policy it was validated to.
@@ -364,46 +387,6 @@ pub(crate) struct RuntimeBot {
     pub(crate) record: Arc<BotRecord>,
     pub(crate) composition: Arc<AgentComposition>,
     pub(crate) approval_policy: mobius::backend::sandbox::ApprovalPolicy,
-}
-
-/// One Bot as written to disk, before its composition is checked.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PersistedBot {
-    id: Arc<str>,
-    handle: Arc<str>,
-    name: Arc<str>,
-    description: Arc<str>,
-    tint: ProviderTint,
-    shape: BotShape,
-    config: Arc<VersionedAgentConfig>,
-}
-
-impl TryFrom<PersistedBot> for StoredBot {
-    type Error = Error;
-
-    fn try_from(bot: PersistedBot) -> Result<Self> {
-        let PersistedBot {
-            id,
-            handle,
-            name,
-            description,
-            tint,
-            shape,
-            config,
-        } = bot;
-        let approval = crate::harness::validate_stored(&config.config)?;
-        Ok(Self {
-            id,
-            handle,
-            name,
-            description,
-            tint,
-            shape,
-            config,
-            approval,
-        })
-    }
 }
 
 impl StoredBot {
@@ -419,10 +402,10 @@ impl StoredBot {
             description: Arc::clone(&self.description),
             tint: self.tint,
             shape: self.shape,
-            harness: self.config.config.kind(),
-            config: Arc::clone(&self.config),
-            capabilities: crate::harness::bot_capabilities(&self.config.config, voices)?,
-            routine_interaction_policy: self.approval.routine_interaction_policy(),
+            harness: self.config.versioned.config.kind(),
+            config: Arc::clone(&self.config.versioned),
+            capabilities: crate::harness::bot_capabilities(&self.config.versioned.config, voices)?,
+            routine_interaction_policy: self.config.approval.routine_interaction_policy(),
         })
     }
 }
@@ -437,9 +420,7 @@ impl From<&BotRecord> for StoredBot {
             description: Arc::clone(&bot.description),
             tint: bot.tint,
             shape: bot.shape,
-            config: Arc::clone(&bot.config),
-            approval: crate::harness::validate_stored(&bot.config.config)
-                .expect("valid test composition"),
+            config: BotConfig::try_from(Arc::clone(&bot.config)).expect("valid test composition"),
         }
     }
 }
@@ -456,14 +437,6 @@ impl Default for BotState {
 }
 
 impl BotStore {
-    pub(crate) fn attach_telemetry_notify(
-        &self,
-        notify: &std::sync::Arc<tokio::sync::Notify>,
-        activity: &std::sync::Arc<crate::host::WorkActivity>,
-    ) {
-        self.storage.attach_telemetry_notify(notify, activity);
-    }
-
     /// Opens or creates owner-only Bot state.
     pub(crate) fn open(state_dir: &Path) -> Result<Self> {
         let state_dir = std::fs::canonicalize(state_dir)?;
@@ -474,8 +447,7 @@ impl BotStore {
             state_dir,
             routines_dir,
             storage,
-            prepared: tokio::sync::Mutex::default(),
-            preparation_generation: std::sync::atomic::AtomicU64::default(),
+            prepared: crate::harness::mobius::assembly::PreparedBots::default(),
             cache: std::sync::Mutex::default(),
             voices: std::sync::RwLock::default(),
         };
@@ -536,11 +508,13 @@ impl BotStore {
             description: MOBIUS_DESCRIPTION.into(),
             tint: ProviderTint::default(),
             shape: BotShape::Circle,
-            config: Arc::new(VersionedAgentConfig {
-                revision: 1,
-                config: HarnessConfig::Mobius(Arc::new(config)),
-            }),
-            approval,
+            config: BotConfig {
+                versioned: Arc::new(VersionedAgentConfig {
+                    revision: 1,
+                    config: HarnessConfig::Mobius(Arc::new(config)),
+                }),
+                approval,
+            },
         };
         let record = bot.record(&*self.voice_routes()?)?;
         state.bots.push(bot);
@@ -571,11 +545,13 @@ impl BotStore {
                 description: description.into(),
                 tint,
                 shape,
-                config: Arc::new(VersionedAgentConfig {
-                    revision: 1,
-                    config,
-                }),
-                approval,
+                config: BotConfig {
+                    versioned: Arc::new(VersionedAgentConfig {
+                        revision: 1,
+                        config,
+                    }),
+                    approval,
+                },
             };
             let record = bot.record(&voices)?;
             state.bots.push(bot);
@@ -604,13 +580,7 @@ impl BotStore {
         self.update(|state| {
             let handle = next_handle(state, &name, id);
             let bot = find_bot_mut(state, id)?;
-            if bot.config.revision.checked_add(1) != Some(config.revision) {
-                return Err(Error::Config(format!(
-                    "Bot configuration revision changed from {} to {}",
-                    config.revision.saturating_sub(1),
-                    bot.config.revision
-                )));
-            }
+            check_revision(bot, config.revision.saturating_sub(1))?;
             if *bot.name != *name && &*bot.handle != MOBIUS_HANDLE {
                 bot.handle = handle.into();
             }
@@ -618,8 +588,10 @@ impl BotStore {
             bot.description = description.into();
             bot.tint = tint;
             bot.shape = shape;
-            bot.config = config;
-            bot.approval = approval;
+            bot.config = BotConfig {
+                versioned: config,
+                approval,
+            };
             bot.record(&voices)
         })
     }
@@ -631,22 +603,7 @@ impl BotStore {
     ) -> Result<BotDeletion> {
         let state_lock = self.lock_state()?;
         let state = self.fresh_state()?;
-        let bot = state
-            .bots
-            .iter()
-            .find(|bot| *bot.id == *id)
-            .ok_or_else(|| Error::Config(format!("unknown Bot `{id}`")))?;
-        if &*bot.handle == MOBIUS_HANDLE {
-            return Err(Error::Config(
-                "the built-in @mobius Bot cannot be deleted".into(),
-            ));
-        }
-        if bot.config.revision != expected_revision {
-            return Err(Error::Config(format!(
-                "Bot configuration revision changed from {expected_revision} to {}",
-                bot.config.revision
-            )));
-        }
+        check_deletable(stored_bot(&state, id)?, expected_revision)?;
         let routines = state
             .routines
             .into_iter()
@@ -696,13 +653,10 @@ impl BotStore {
             instruction_paths: deletion.instructions.iter().cloned().collect(), // rules-allow: the deletion keeps its identity for delete_bot; the durable intent owns a copy
         };
         let mut state = self.fresh_state()?;
-        let bot = find_bot_mut(&mut state, &intent.bot_id)?;
-        if bot.config.revision != intent.expected_revision {
-            return Err(Error::Config(format!(
-                "Bot configuration revision changed from {} to {}",
-                intent.expected_revision, bot.config.revision
-            )));
-        }
+        check_revision(
+            stored_bot(&state, &intent.bot_id)?,
+            intent.expected_revision,
+        )?;
         if let Some(pending) = &state.pending_bot_deletion
             && pending != &intent
         {
@@ -779,23 +733,12 @@ impl BotStore {
                     "a different Bot deletion is awaiting recovery".into(),
                 ));
             }
-            let (index, bot) = state
+            let index = state
                 .bots
                 .iter()
-                .enumerate()
-                .find(|(_, bot)| *bot.id == *bot_id)
-                .ok_or_else(|| Error::Config(format!("unknown Bot `{bot_id}`")))?;
-            if &*bot.handle == MOBIUS_HANDLE {
-                return Err(Error::Config(
-                    "the built-in @mobius Bot cannot be deleted".into(),
-                ));
-            }
-            if bot.config.revision != expected_revision {
-                return Err(Error::Config(format!(
-                    "Bot configuration revision changed from {expected_revision} to {}",
-                    bot.config.revision
-                )));
-            }
+                .position(|bot| *bot.id == *bot_id)
+                .ok_or_else(|| unknown_bot(&bot_id))?;
+            check_deletable(stored_bot(&state, &bot_id)?, expected_revision)?;
             let current_routine_ids = state
                 .routines
                 .iter()
@@ -848,9 +791,13 @@ impl BotStore {
             .collect()
     }
 
+    /// Fails unless Bot `id` exists, without building its record.
+    pub(crate) fn require_bot(&self, id: &str) -> Result<()> {
+        stored_bot(&*self.current_state()?, id).map(|_| ())
+    }
+
     pub(crate) fn bot(&self, id: &str) -> Result<BotRecord> {
-        self.find_bot(id)?
-            .ok_or_else(|| Error::Config(format!("unknown Bot `{id}`")))
+        self.find_bot(id)?.ok_or_else(|| unknown_bot(id))
     }
 
     pub(crate) fn find_bot(&self, id: &str) -> Result<Option<BotRecord>> {
@@ -867,13 +814,9 @@ impl BotStore {
     pub(crate) fn runtime_bot(&self, id: &str) -> Result<RuntimeBot> {
         let voices = self.voice_routes()?;
         let state = self.current_state()?;
-        let bot = state
-            .bots
-            .iter()
-            .find(|bot| *bot.id == *id)
-            .ok_or_else(|| Error::Config(format!("unknown Bot `{id}`")))?;
+        let bot = stored_bot(&state, id)?;
         let (HarnessConfig::Mobius(composition), ApprovalMode::Mobius(approval_policy)) =
-            (&bot.config.config, bot.approval)
+            (&bot.config.versioned.config, bot.config.approval)
         else {
             return Err(Error::Config(format!("Bot `{id}` does not run on möbius")));
         };
@@ -894,16 +837,7 @@ impl BotStore {
     ) -> Result<StoredRoutine> {
         validate_definition(definition, 0, Some(MAX_SCHEDULE_TIMESTAMP))?;
         let workspace = workspace.into_path();
-        let path = self.new_instruction_path();
-        if let Err(error) =
-            crate::publication::publish(&path, definition.instructions.trim().as_bytes(), true)
-        {
-            if matches!(error, Error::PublicationApplied { .. }) {
-                // No catalog references this newly allocated path yet; remove the applied but unconfirmed staging file.
-                remove_if_present(&path)?;
-            }
-            return Err(error);
-        }
+        let path = self.stage_instructions(&definition.instructions)?;
         let prepared = (|| {
             let state_lock = self.lock_state()?;
             let mut state = self.fresh_state()?;
@@ -966,21 +900,8 @@ impl BotStore {
     }
 
     pub(crate) fn routine_record(&self, id: &str, now: i64) -> Result<Routine> {
-        let state = self.fresh_state()?;
-        let stored = state
-            .routines
-            .into_iter()
-            .find(|routine| *routine.id == *id)
-            .ok_or_else(|| Error::Config(format!("unknown routine `{id}`")))?;
+        let stored = take_routine(self.fresh_state()?.routines, id)?;
         self.routine_record_from(stored, now)
-    }
-
-    pub(crate) fn running_routine_count(&self) -> Result<u64> {
-        self.storage.running_routine_count()
-    }
-
-    pub(crate) fn has_running_routines(&self) -> Result<bool> {
-        self.storage.has_running_routines()
     }
 
     pub(crate) fn next_routine_at(&self, now: i64) -> Result<Option<chrono::DateTime<Utc>>> {
@@ -1039,16 +960,7 @@ impl BotStore {
                 existing.id
             )));
         };
-        let path = self.new_instruction_path();
-        if let Err(error) =
-            crate::publication::publish(&path, definition.instructions.trim().as_bytes(), true)
-        {
-            if matches!(error, Error::PublicationApplied { .. }) {
-                // No catalog references this newly allocated path yet; remove the applied but unconfirmed staging file.
-                remove_if_present(&path)?;
-            }
-            return Err(error);
-        }
+        let path = self.stage_instructions(&definition.instructions)?;
         let stored = match routine_at_mut(&mut state.routines, index) {
             Ok(stored) => stored,
             Err(error) => return Err(discard_staged(&path, error)),
@@ -1238,12 +1150,7 @@ impl BotStore {
     }
 
     pub(crate) fn routine_input(&self, id: &str) -> Result<(StoredRoutine, String)> {
-        let state = self.fresh_state()?;
-        let routine = state
-            .routines
-            .into_iter()
-            .find(|routine| *routine.id == *id)
-            .ok_or_else(|| Error::Config(format!("unknown routine `{id}`")))?;
+        let routine = take_routine(self.fresh_state()?.routines, id)?;
         let instructions = self.read_routine_instructions(&routine)?;
         let input = format!("{ROUTINE_SUBMISSION_PREFIX}\n\n{instructions}");
         Ok((routine, input))
@@ -1380,26 +1287,12 @@ impl BotStore {
         command_id: &str,
         cause: Option<&HookEvent>,
     ) -> Result<BeginRun> {
-        self.begin_run_inner(id, command_id, cause, || {})
-    }
-    fn begin_run_inner(
-        &self,
-        id: &str,
-        command_id: &str,
-        cause: Option<&HookEvent>,
-        after_resolve: impl FnOnce(),
-    ) -> Result<BeginRun> {
-        let resolved = self.stored_routine(id)?;
-        after_resolve();
-        let lock = self.try_routine_lock(&resolved.id)?;
+        // Resolving under the state lock keeps a concurrent delete from orphaning history.
         let _state_lock = self.lock_state()?;
         let state = self.fresh_state()?;
         reject_bot_mutation_if_deleting(&state)?;
-        let routine = state
-            .routines
-            .into_iter()
-            .find(|stored| stored.id == resolved.id)
-            .ok_or_else(|| Error::Config("routine was deleted".into()))?;
+        let routine = take_routine(state.routines, id)?;
+        let lock = self.try_routine_lock(&routine.id)?;
         if let Some(run) = self.storage.command_run(command_id)? {
             if run.routine_id != routine.id {
                 return Err(Error::Config(
@@ -1441,17 +1334,6 @@ impl BotStore {
     pub(crate) fn begin_run(&self, id: &str) -> Result<BeginRun> {
         self.begin_run_with_cause(id, &Uuid::new_v4().to_string(), None)
     }
-    pub(crate) fn request_run_stop(
-        &self,
-        run_id: &str,
-        command_id: &str,
-        cause: Option<&HookEvent>,
-    ) -> Result<()> {
-        self.storage.request_run_stop(run_id, command_id, cause)
-    }
-    pub(crate) fn run_cancel_requested(&self, run_id: &str) -> Result<bool> {
-        self.storage.run_cancel_requested(run_id)
-    }
 
     /// Completes a running invocation and releases its overlap lock.
     pub(crate) fn finish_run(
@@ -1476,7 +1358,7 @@ impl BotStore {
 
     /// Returns newest-first run history for one routine.
     pub(crate) fn history(&self, id: Option<&str>) -> Result<Vec<RoutineRun>> {
-        let state = self.fresh_state()?;
+        let state = self.current_state()?;
         let routine_id = id
             .map(|id| self.resolve_history_routine(&state, id))
             .transpose()?;
@@ -1508,7 +1390,7 @@ impl BotStore {
     }
 
     pub(crate) fn run(&self, id: &str) -> Result<RoutineRun> {
-        let _state = self.fresh_state()?;
+        self.current_state()?;
         self.storage.run(id)
     }
 
@@ -1524,26 +1406,8 @@ impl BotStore {
     }
 
     pub(crate) fn subscriptions(&self, bot_id: &str) -> Result<Vec<crate::wire::BotSubscription>> {
-        self.bot(bot_id)?;
+        self.require_bot(bot_id)?;
         self.storage.subscriptions(bot_id)
-    }
-    pub(crate) fn record_hook(&self, event: &HookEvent) -> Result<bool> {
-        self.storage.record_hook(event)
-    }
-    pub(crate) fn hook_event(&self, id: &str) -> Result<Option<HookEvent>> {
-        self.storage.hook_event(id)
-    }
-    pub(crate) fn unpublished_events(&self, limit: usize) -> Result<Vec<HookEvent>> {
-        self.storage.unpublished_events(limit)
-    }
-    pub(crate) fn event_published(&self, id: &str) -> Result<()> {
-        self.storage.event_published(id)
-    }
-    pub(crate) fn pending_actions(&self, now: i64, limit: usize) -> Result<Vec<PendingHookAction>> {
-        self.storage.pending_actions(now, limit)
-    }
-    pub(crate) fn has_monitored_sessions(&self) -> Result<bool> {
-        self.storage.has_monitored_sessions()
     }
     pub(crate) fn close_session_sources(&self, events: &[HookEvent]) -> Result<()> {
         let _state_lock = self.lock_state()?;
@@ -1572,18 +1436,9 @@ impl BotStore {
         now: i64,
     ) -> Result<()> {
         let _state_lock = self.lock_state()?;
-        self.bot(&subscription.bot_id)?;
+        self.require_bot(&subscription.bot_id)?;
         self.storage
             .set_subscription(subscription, after_sequence, now)
-    }
-    pub(crate) fn advance_source_cursor(
-        &self,
-        session_id: &SessionId,
-        bot_id: &str,
-        sequence: u64,
-    ) -> Result<()> {
-        self.storage
-            .advance_source_cursor(session_id, bot_id, sequence)
     }
     pub(crate) fn resume_run(&self, id: &str) -> Result<ActiveRoutineRun> {
         let run = self.storage.run(id)?;
@@ -1601,41 +1456,6 @@ impl BotStore {
             _lock: lock,
         })
     }
-    pub(crate) fn source_cursor(&self, session_id: &SessionId) -> Result<(u64, Option<Arc<str>>)> {
-        self.storage.source_cursor(session_id)
-    }
-    pub(crate) fn project_session(&self, event: &HookEvent, sequence: u64) -> Result<bool> {
-        self.storage.project_session(event, sequence)
-    }
-    pub(crate) fn action_pending(&self, id: &str) -> Result<bool> {
-        self.storage.action_pending(id)
-    }
-    pub(crate) fn action_accepted(&self, id: &str) -> Result<()> {
-        self.storage.action_accepted(id)
-    }
-    pub(crate) fn action_failed(&self, id: &str, error: &str, retry_at: Option<i64>) -> Result<()> {
-        self.storage.action_failed(id, error, retry_at)
-    }
-    pub(crate) fn has_pending_deliveries(&self) -> Result<bool> {
-        self.storage.has_pending_deliveries()
-    }
-    pub(crate) fn recover_run(
-        &self,
-        id: &str,
-        status: RoutineRunStatus,
-        finished_at: i64,
-        message: Option<Arc<str>>,
-    ) -> Result<RoutineRun> {
-        self.storage.finish_run(id, status, finished_at, message)
-    }
-
-    fn stored_routine(&self, id: &str) -> Result<StoredRoutine> {
-        self.fresh_state()?
-            .routines
-            .into_iter()
-            .find(|routine| *routine.id == *id)
-            .ok_or_else(|| Error::Config(format!("unknown routine `{id}`")))
-    }
 
     fn try_routine_lock(&self, id: &str) -> Result<Option<RoutineLock>> {
         let file = open_private_lock(&self.state_dir.join(format!("routine-{id}.lock")))?;
@@ -1646,9 +1466,20 @@ impl BotStore {
         }
     }
 
-    fn new_instruction_path(&self) -> PathBuf {
-        self.routines_dir
-            .join(format!("{}.md", Uuid::new_v4().as_hyphenated()))
+    /// Writes `instructions` to a new private path that no catalog references yet.
+    fn stage_instructions(&self, instructions: &str) -> Result<PathBuf> {
+        let path = self
+            .routines_dir
+            .join(format!("{}.md", Uuid::new_v4().as_hyphenated()));
+        if let Err(error) = crate::publication::publish(&path, instructions.trim().as_bytes(), true)
+        {
+            if matches!(error, Error::PublicationApplied { .. }) {
+                // Remove the applied but unconfirmed staging file.
+                remove_if_present(&path)?;
+            }
+            return Err(error);
+        }
+        Ok(path)
     }
 
     fn update<T>(&self, mutate: impl FnOnce(&mut BotState) -> Result<T>) -> Result<T> {
@@ -1703,8 +1534,6 @@ impl BotStore {
     }
 
     fn parse_state(&self, contents: Option<String>) -> Result<BotState> {
-        #[cfg(test)]
-        CATALOG_PARSES.with(|count| count.set(count.get() + 1));
         let state = contents
             .map(|contents| serde_json::from_str(&contents))
             .transpose()?
@@ -1712,11 +1541,6 @@ impl BotStore {
         validate_records(&state, &self.routines_dir)?;
         Ok(state)
     }
-}
-
-#[cfg(test)]
-thread_local! {
-    static CATALOG_PARSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 fn catalog_json(state: &BotState) -> Result<String> {
@@ -1757,7 +1581,8 @@ fn next_handle(state: &BotState, name: &str, id: &str) -> String {
     {
         return base;
     }
-    for index in 2_u64.. {
+    let mut index = 2_u64;
+    loop {
         let suffix = format!("-{index}");
         let prefix_len = MAX_HANDLE_BYTES.saturating_sub(suffix.len());
         let prefix = base
@@ -1773,8 +1598,8 @@ fn next_handle(state: &BotState, name: &str, id: &str) -> String {
         {
             return candidate;
         }
+        index += 1;
     }
-    unreachable!("the Bot handle suffix space is unbounded")
 }
 
 fn next_tint(state: &BotState) -> ProviderTint {
@@ -2030,7 +1855,7 @@ fn validate_records(state: &BotState, routines_dir: &Path) -> Result<()> {
                 "persisted Bot identity is not normalized".into(),
             ));
         }
-        if bot.config.revision == 0 {
+        if bot.config.versioned.revision == 0 {
             return Err(Error::Config(
                 "persisted Bot revision must be positive".into(),
             ));
@@ -2121,7 +1946,7 @@ fn validate_state(state: &BotState) -> Result<()> {
     }
     if let Some(pending) = &state.pending_bot_deletion
         && let Some(bot) = state.bots.iter().find(|bot| *bot.id == *pending.bot_id)
-        && bot.config.revision != pending.expected_revision
+        && bot.config.versioned.revision != pending.expected_revision
     {
         return Err(Error::Config(
             "pending Bot deletion revision changed".into(),
@@ -2213,19 +2038,51 @@ fn find_bot_mut<'a>(state: &'a mut BotState, id: &str) -> Result<&'a mut StoredB
         .bots
         .iter_mut()
         .find(|bot| *bot.id == *id)
-        .ok_or_else(|| Error::Config(format!("unknown Bot `{id}`")))
+        .ok_or_else(|| unknown_bot(id))
+}
+
+fn stored_bot<'a>(state: &'a BotState, id: &str) -> Result<&'a StoredBot> {
+    state
+        .bots
+        .iter()
+        .find(|bot| *bot.id == *id)
+        .ok_or_else(|| unknown_bot(id))
+}
+
+fn unknown_bot(id: &str) -> Error {
+    Error::Config(format!("unknown Bot `{id}`"))
+}
+
+/// Fails unless `bot` is still at the revision the caller saw.
+fn check_revision(bot: &StoredBot, expected: u64) -> Result<()> {
+    if bot.config.versioned.revision != expected {
+        return Err(Error::Config(format!(
+            "Bot configuration revision changed from {expected} to {}",
+            bot.config.versioned.revision
+        )));
+    }
+    Ok(())
+}
+
+fn check_deletable(bot: &StoredBot, expected_revision: u64) -> Result<()> {
+    if &*bot.handle == MOBIUS_HANDLE {
+        return Err(Error::Config(
+            "the built-in @mobius Bot cannot be deleted".into(),
+        ));
+    }
+    check_revision(bot, expected_revision)
+}
+
+/// The routine whose full ID is `id`.
+fn take_routine(routines: Vec<StoredRoutine>, id: &str) -> Result<StoredRoutine> {
+    routines
+        .into_iter()
+        .find(|routine| *routine.id == *id)
+        .ok_or_else(|| Error::Config(format!("unknown routine `{id}`")))
 }
 
 fn open_private_lock(path: &Path) -> Result<File> {
-    #[cfg(unix)]
     let file = mobius::owner_only::open(path)?;
-    #[cfg(not(unix))]
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(path)?;
     Ok(file)
 }
 
@@ -2238,7 +2095,6 @@ fn private_routines_dir(state_dir: &Path) -> Result<PathBuf> {
             "gateway routine directory must be a real directory inside gateway state".into(),
         ));
     }
-    #[cfg(unix)]
     std::fs::set_permissions(&path, mobius::owner_only::dir())?;
     Ok(path)
 }
@@ -2251,14 +2107,8 @@ fn remove_if_present(path: &Path) -> Result<()> {
     }
 }
 
-#[cfg(unix)]
 fn same_file(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
     left.dev() == right.dev() && left.ino() == right.ino()
-}
-
-#[cfg(not(unix))]
-fn same_file(_left: &std::fs::Metadata, _right: &std::fs::Metadata) -> bool {
-    true
 }
 
 #[cfg(test)]

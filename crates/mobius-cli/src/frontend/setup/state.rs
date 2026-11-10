@@ -48,10 +48,13 @@ pub(super) enum Flow {
     Cancel,
 }
 
+/// Where setup saves its settings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ApplyTarget {
+pub(in crate::frontend) enum SaveTarget {
+    /// One existing Bot.
     Bot,
-    Default,
+    /// The template new Bots start from.
+    Template,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,8 +95,7 @@ pub(super) struct SetupState {
     pub(super) selected_extensions: BTreeSet<String>,
     pub(super) expanded_features: BTreeSet<usize>,
     pub(super) middleware: MiddlewareConfig,
-    pub(super) target: ApplyTarget,
-    pub(super) default_only: bool,
+    pub(super) save_to: SaveTarget,
     pub(super) start_chat: bool,
     pub(super) row: usize,
     pub(super) error: Option<String>,
@@ -107,7 +109,7 @@ impl SetupState {
         preferred_provider: Option<&str>,
         gateway: &ReadyPayload,
         original: AgentComposition,
-        default_only: bool,
+        save_to: SaveTarget,
     ) -> Result<Self> {
         let mut state = Self::from_parts(
             mode,
@@ -115,7 +117,7 @@ impl SetupState {
             gateway.agent_catalog.middleware_features.clone(), // rules-allow: setup edits a snapshot while events update the gateway payload
             gateway.agent_catalog.extensions.clone(), // rules-allow: setup edits a snapshot while events update the gateway payload
             original,
-            default_only,
+            save_to,
         )?;
         state.set_original_model_choice(
             &gateway.agent_catalog.models,
@@ -139,7 +141,7 @@ impl SetupState {
         features: Vec<MiddlewareFeature>,
         available_extensions: Vec<ExtensionRecord>,
         original: AgentComposition,
-        default_only: bool,
+        save_to: SaveTarget,
     ) -> Result<Self> {
         if providers.is_empty() {
             return Err(Error::Config("the gateway advertises no providers".into()));
@@ -187,12 +189,7 @@ impl SetupState {
             selected_extensions,
             expanded_features: BTreeSet::new(),
             middleware,
-            target: if default_only {
-                ApplyTarget::Default
-            } else {
-                ApplyTarget::Bot
-            },
-            default_only,
+            save_to,
             start_chat: false,
             row: 0,
             error: None,
@@ -253,9 +250,7 @@ impl SetupState {
         if self.definition().auth == ProviderAuthKind::ApiKey {
             fields.push(AuthField::Credential);
         }
-        if self.definition().configurable_base_url() {
-            fields.push(AuthField::Endpoint);
-        }
+        fields.push(AuthField::Endpoint);
         fields
     }
 
@@ -504,16 +499,12 @@ impl SetupState {
         }
     }
 
-    pub(super) fn apply_target_for_row(&self) -> Option<ApplyTarget> {
-        let start = match self.page {
-            Page::Models => self.models_action_start(),
-            Page::Agent => self.agent_action_start(),
-            Page::Provider | Page::Authentication => return None,
-        };
-        match (self.default_only, self.row.checked_sub(start)) {
-            (true, Some(0)) => Some(ApplyTarget::Default),
-            (false, Some(0)) => Some(ApplyTarget::Bot),
-            _ => None,
+    /// Whether the focused row is the page's apply action.
+    pub(super) fn on_apply_row(&self) -> bool {
+        match self.page {
+            Page::Models => self.row == self.models_action_start(),
+            Page::Agent => self.row == self.agent_action_start(),
+            Page::Provider | Page::Authentication => false,
         }
     }
 
@@ -670,8 +661,7 @@ impl SetupState {
             KeyCode::Up | KeyCode::BackTab => self.move_selection(-1),
             KeyCode::Down | KeyCode::Tab => self.move_selection(1),
             KeyCode::Char(' ') | KeyCode::Enter => {
-                if let Some(target) = self.apply_target_for_row() {
-                    self.target = target;
+                if self.on_apply_row() {
                     return self.finish();
                 }
                 self.select_model_row();
@@ -719,11 +709,8 @@ impl SetupState {
                     .err()
                     .map(|error| error.to_string());
             }
-            (KeyCode::Enter | KeyCode::Char(' '), _) => {
-                if let Some(target) = self.apply_target_for_row() {
-                    self.target = target;
-                    return self.finish();
-                }
+            (KeyCode::Enter | KeyCode::Char(' '), _) if self.on_apply_row() => {
+                return self.finish();
             }
             _ => {}
         }
@@ -911,11 +898,10 @@ impl SetupState {
             current
                 .base_url
                 .as_deref()
-                .or(definition.default_base_url.as_deref())
+                .unwrap_or(&definition.default_base_url)
         } else {
-            definition.default_base_url.as_deref()
+            &definition.default_base_url
         }
-        .unwrap_or_default()
         .into();
         self.model = if definition.model_ids_configurable {
             0
@@ -999,14 +985,12 @@ impl SetupState {
             .collect()
     }
 
-    pub(super) fn selected_base_url(&self) -> Option<&str> {
-        self.definition()
-            .configurable_base_url()
-            .then(|| self.endpoint.trim())
+    pub(super) fn selected_base_url(&self) -> &str {
+        self.endpoint.trim()
     }
 
     fn authentication_target(&self) -> (&str, Option<&str>) {
-        (&self.definition().provider, self.selected_base_url())
+        (&self.definition().provider, Some(self.selected_base_url()))
     }
 
     pub(super) fn authentication_succeeded(&mut self) {
@@ -1064,11 +1048,7 @@ impl SetupState {
         if self.mode != SetupMode::Login {
             return Ok(());
         }
-        if self.definition().configurable_base_url()
-            && self
-                .selected_base_url()
-                .is_none_or(|url| url.trim().is_empty())
-        {
+        if self.selected_base_url().is_empty() {
             return Err(Error::Config("base URL is required".into()));
         }
         Ok(())
@@ -1175,7 +1155,7 @@ impl SetupState {
             .ok_or_else(|| Error::Config("hosted web-search selection is invalid".into()))?
             .value
             .parse::<HostedWebSearch>()?;
-        let base_url = self.selected_base_url();
+        let base_url = Some(self.selected_base_url());
         let endpoint_auth = if self.api_key_entered {
             ProviderEndpointAuth::ProviderDefault
         } else if current.instance == self.target_instance()

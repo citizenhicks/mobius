@@ -174,16 +174,6 @@ impl GatewayHost {
         configured.map_err(internal)
     }
 
-    #[expect(
-        clippy::unused_async,
-        reason = "server dispatch awaits this like the other telemetry requests"
-    )]
-    pub(crate) async fn schedule_telemetry(&self, id: String) -> Result<()> {
-        self.telemetry.request_manual(id)?;
-        self.telemetry.notify.notify_one();
-        Ok(())
-    }
-
     pub(crate) async fn telemetry_pending(&self) -> Result<bool> {
         let config = self.telemetry.config()?;
         let state = self.state.lock().await;
@@ -278,7 +268,7 @@ impl GatewayHost {
             snapshot.insert("resources".into(), self.telemetry.resources().await);
         }
         if sections.contains(&TelemetrySection::Context) {
-            snapshot.insert("context".into(), self.telemetry.contexts());
+            snapshot.insert("context".into(), self.telemetry.contexts()?);
         }
         if sections.contains(&TelemetrySection::Storage) {
             let mut usage = self.storage_usage().await?;
@@ -286,17 +276,13 @@ impl GatewayHost {
             snapshot.insert("storage".into(), serde_json::to_value(usage)?);
         }
         if sections.contains(&TelemetrySection::Usage) {
-            let state = self.state.lock().await;
-            let config = crate::config::lock(&state.config)?;
+            let usage = Arc::clone(&self.state.lock().await.usage);
             let cutoff = crate::config::unix_day(std::time::SystemTime::now()).unwrap_or_default();
-            let usage = config
-                .profile()
-                .daily_usage
+            let usage = usage
+                .daily_usage()?
                 .into_iter()
                 .filter(|day| day.unix_day >= cutoff.saturating_sub(30))
                 .collect::<Vec<_>>();
-            drop(config);
-            drop(state);
             snapshot.insert("usage".into(), serde_json::to_value(usage)?);
         }
         if sections.contains(&TelemetrySection::Runs) {

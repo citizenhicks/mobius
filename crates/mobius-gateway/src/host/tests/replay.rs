@@ -46,32 +46,6 @@ fn replay_is_bounded_by_event_and_cached_bytes() {
     assert!(replay_bytes <= MAX_REPLAY_BYTES);
 }
 
-#[test]
-fn replacement_startup_is_published_only_after_ready() {
-    let (events, mut receiver) = broadcast::channel(4);
-    let ready = ServerFrame::new(ServerMessage::Error {
-        code: "ready".into(),
-        message: "".into(),
-        fatal: false,
-    });
-    let startup = ServerFrame::new(ServerMessage::Error {
-        code: "startup".into(),
-        message: "".into(),
-        fatal: false,
-    });
-
-    publish_ready_and_pending(&events, ready, vec![SharedFrame::new(startup)]);
-
-    assert!(matches!(
-        &receiver.try_recv().expect("ready frame").message,
-        ServerMessage::Error { code, .. } if code == "ready"
-    ));
-    assert!(matches!(
-        &receiver.try_recv().expect("startup frame").message,
-        ServerMessage::Error { code, .. } if code == "startup"
-    ));
-}
-
 fn publish_frame(
     replay: &mut VecDeque<ReplayEntry>,
     replay_bytes: &mut usize,

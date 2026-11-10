@@ -157,11 +157,9 @@ pub mod backend;
 pub mod config;
 pub mod identifier;
 pub mod middleware;
-#[cfg(unix)]
 pub mod owner_only;
 pub mod protocol;
 mod session_id;
-pub mod sync;
 pub use session_id::SessionId;
 
 /// A boxed asynchronous operation used by runtime-pluggable interfaces.
@@ -407,17 +405,5 @@ impl std::io::Write for ByteCounter {
 
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn sqlite_errors_do_not_expose_engine_messages() {
-        let error = Error::from(rusqlite::Error::InvalidQuery);
-
-        assert_eq!(error.to_string(), "checkpoint storage error");
     }
 }

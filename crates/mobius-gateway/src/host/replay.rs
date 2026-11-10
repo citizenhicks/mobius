@@ -3,8 +3,8 @@ use super::{
     Arc, CheckpointStore, Error, Event, EventMsg, EventPageRequest, FrontendEvent,
     FrontendExtensions, JournalDelivery, JournalEvent, JournalSequence, LoadedReplay,
     MAX_REPLAY_BYTES, REPLAY_CAPACITY, REPLAY_LOAD_PAGE_SIZE, RecordedEvent, Rejection,
-    RenderedBlock, RenderedPreview, Result, ServerFrame, ServerMessage, SessionHistoryPage,
-    SessionWidgets, SharedFrame, VecDeque, broadcast, event_turn_page, internal,
+    RenderedBlock, Result, ServerFrame, ServerMessage, SessionHistoryPage, SessionWidget,
+    SessionWidgets, SharedFrame, TranscriptPage, VecDeque, broadcast, event_turn_page, internal,
 };
 use crate::wire::{HistoryCursor, TranscriptOp};
 use mobius::SessionId;
@@ -20,18 +20,11 @@ pub(super) struct ReplayEntry {
 
 impl ReplayEntry {
     pub(super) fn new(frame: ServerFrame) -> Result<Self> {
-        #[cfg(test)]
-        FRAME_SIZE_MEASUREMENTS.with(|count| count.set(count.get() + 1));
         let frame = SharedFrame::encoded(frame)?;
         // Charge both the logical event (estimated by its JSON size) and cached bytes.
         let bytes = frame.encoded_len().saturating_mul(2);
         Ok(Self { frame, bytes })
     }
-}
-
-#[cfg(test)]
-thread_local! {
-    pub(super) static FRAME_SIZE_MEASUREMENTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 pub(super) async fn load_replay(
@@ -122,13 +115,14 @@ pub(super) async fn load_replay(
     let mut replay_bytes = 0_usize;
     let mut truncated = false;
     for journal in events {
-        let (record, blocks) = project_record(frontend, journal);
+        let (mut record, blocks) = project_record(frontend, journal);
         let ops = transcript.apply(
             record.sequence,
             record.recorded_at_ms,
             &record.event,
             blocks,
         );
+        strip_streamed_text(&mut record, &ops);
         let frame = ServerFrame::new(ServerMessage::AgentEvent {
             session_id: session_id.share(),
             record,
@@ -338,23 +332,9 @@ async fn fork_depth(
     Ok(depth)
 }
 
-/// Renders the preview and reduces its nested events out of the journal event.
-fn take_preview(frontend: &dyn RenderEvents, event: &mut EventMsg) -> Option<RenderedPreview> {
-    let EventMsg::Frontend(FrontendEvent::Preview {
-        kind,
-        state,
-        symbol,
-        duration_ms,
-        started_at_ms,
-        id,
-        title,
-        subtitle,
-        page_id,
-        update,
-        events,
-        next,
-    }) = event
-    else {
+/// Reduces a preview's nested events out of the journal event into the page sent beside it.
+fn take_preview(frontend: &dyn RenderEvents, event: &mut EventMsg) -> Option<TranscriptPage> {
+    let EventMsg::Frontend(FrontendEvent::Preview { events, .. }) = event else {
         return None;
     };
     let mut transcript = TranscriptReducer::new(0);
@@ -368,20 +348,19 @@ fn take_preview(frontend: &dyn RenderEvents, event: &mut EventMsg) -> Option<Ren
             event.event,
         );
     }
-    Some(RenderedPreview {
-        kind: *kind,
-        state: *state,
-        symbol: symbol.clone(), // rules-allow: the journal event keeps its preview fields
-        duration_ms: *duration_ms,
-        started_at_ms: *started_at_ms,
-        id: Arc::clone(id),
-        title: Arc::clone(title),
-        subtitle: Arc::clone(subtitle),
-        page_id: Arc::clone(page_id),
-        update: *update,
-        transcript: transcript.page(),
-        next: next.clone(), // rules-allow: the journal event keeps its preview fields
-    })
+    Some(transcript.page())
+}
+
+/// Clears streamed text the event's transcript ops already carry, so a frame sends it once.
+pub(super) fn strip_streamed_text(record: &mut RecordedEvent, transcript: &[TranscriptOp]) {
+    if transcript.is_empty() {
+        return;
+    }
+    match &mut record.event.msg {
+        EventMsg::AssistantContentDelta(delta) => delta.delta.clear(),
+        EventMsg::MessageDelta(message) => message.text.clear(),
+        _ => {}
+    }
 }
 
 /// Renders the record's blocks once, before its preview events move out, and returns
@@ -475,7 +454,7 @@ fn reduce_preview_event(
     }
 }
 
-pub(super) fn event_sequence(frame: &ServerFrame) -> Option<u64> {
+pub(crate) fn event_sequence(frame: &ServerFrame) -> Option<u64> {
     match frame.message {
         ServerMessage::AgentEvent { ref record, .. } => Some(record.sequence),
         _ => None,
@@ -485,7 +464,7 @@ pub(super) fn event_sequence(frame: &ServerFrame) -> Option<u64> {
 pub(super) fn attention_count(widgets: &SessionWidgets) -> u32 {
     let count = widgets
         .iter()
-        .flat_map(|(_, widget)| widget.pending_attention_items())
+        .flat_map(|widget| widget.item.pending_attention_items())
         .count();
     u32::try_from(count).unwrap_or(u32::MAX)
 }
@@ -505,17 +484,20 @@ pub(super) fn update_token_usage(
 pub(super) fn update_widgets(widgets: &mut SessionWidgets, event: &EventMsg) {
     match event {
         EventMsg::Frontend(FrontendEvent::Widget { capability, item }) => {
-            if let Some((_, current)) = widgets
+            if let Some(current) = widgets
                 .iter_mut()
-                .find(|(owner, widget)| owner == capability && widget.id == item.id)
+                .find(|widget| widget.capability == *capability && widget.item.id == item.id)
             {
-                *current = Arc::clone(item);
+                current.item = Arc::clone(item);
             } else {
-                widgets.push((Arc::clone(capability), Arc::clone(item)));
+                widgets.push(SessionWidget {
+                    capability: Arc::clone(capability),
+                    item: Arc::clone(item),
+                });
             }
         }
         EventMsg::Frontend(FrontendEvent::RemoveWidget { capability, id }) => {
-            widgets.retain(|(owner, widget)| owner != capability || *widget.id != **id);
+            widgets.retain(|widget| widget.capability != *capability || *widget.item.id != **id);
         }
         _ => {}
     }

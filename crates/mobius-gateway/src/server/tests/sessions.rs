@@ -2,7 +2,6 @@ use super::*;
 use mobius::SessionId;
 use mobius::backend::model::provider::BaseUrl;
 
-#[cfg(unix)]
 #[tokio::test]
 async fn slow_git_diff_does_not_block_chat_history() {
     use crate::wire::GitDiffScope;
@@ -73,6 +72,7 @@ async fn slow_git_diff_does_not_block_chat_history() {
             request_id: "diff".into(),
             session_id: session_id.clone(),
             scope: GitDiffScope::Unstaged,
+            totals: false,
         })
         .await
         .expect("request diff");
@@ -142,35 +142,11 @@ async fn slow_git_diff_does_not_block_chat_history() {
 }
 
 #[tokio::test]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the flagged value moves into the gateway task; the lint misses that move"
-)]
 async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
     let root = tempfile::tempdir().expect("temporary directory");
     let workspace = root.path().join("workspace");
     fs::create_dir(&workspace).expect("workspace");
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
-    let listen = listener.local_addr().expect("listen address");
-    let (store, config) = ConfigStore::initialize(root.path().join("state"), listen, None)
-        .expect("initialize gateway");
-    let config = config
-        .registering_provider(
-            crate::wire::AgentComposition::default().provider,
-            "Test".into(),
-            Default::default(),
-            Vec::new(),
-            Vec::new(),
-        )
-        .expect("register provider");
-    store
-        .save(&config.clone().validated().expect("valid config"))
-        .expect("save provider");
-    let (_, grant) =
-        AuthStore::initialize(store.auth_path(), config.auth).expect("initialize auth");
-    let server = GatewayServer::assemble(store, config, listener)
-        .await
-        .expect("assemble gateway");
+    let (server, grant) = configured_test_server(root.path().join("state")).await;
     let listen = server.config.listen;
     let (shutdown, signal) = tokio::sync::oneshot::channel();
     let serving = tokio::spawn(server.serve_until(async move {
@@ -550,10 +526,6 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
 
 #[tokio::test]
 async fn unpairing_disconnects_the_client_and_rejects_its_token() {
-    assert_unpairing_disconnects(false).await;
-}
-
-async fn assert_unpairing_disconnects(sync_fails: bool) {
     let root = tempfile::tempdir().expect("temporary directory");
     let (server, grant) = GatewayServer::bootstrap(
         root.path().join("state"),
@@ -596,9 +568,6 @@ async fn assert_unpairing_disconnects(sync_fails: bool) {
     let (_device_sender, mut device_events) = device.into_parts();
     wait_gateway_ready(&mut device_events).await;
 
-    if sync_fails {
-        crate::publication::fail_next_directory_sync(&root.path().join("state/auth.json"));
-    }
     let request_id = Uuid::new_v4().to_string();
     dashboard_sender
         .send(ClientMessage::UnpairClient {
@@ -613,17 +582,6 @@ async fn assert_unpairing_disconnects(sync_fails: bool) {
             .await
             .expect("inventory frame")
             .expect("dashboard open");
-        if sync_fails
-            && let ServerMessage::Rejected {
-                request_id: actual,
-                message,
-                ..
-            } = &frame.message
-            && **actual == *request_id
-        {
-            assert!(message.contains("state replacement was applied"));
-            break (dashboard_identity.client_id.clone(), Vec::new());
-        }
         if let ServerMessage::Clients {
             request_id: actual,
             current_client_id,

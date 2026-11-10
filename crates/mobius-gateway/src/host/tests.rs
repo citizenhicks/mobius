@@ -4,7 +4,6 @@ use mobius::protocol::TokenUsage;
 
 use super::session::{HostCommand, HostInner, ProviderCutoverStatus};
 use super::*;
-use mobius::backend::checkpoint::ExecutionStats;
 
 mod activity;
 mod bots;

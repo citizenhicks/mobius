@@ -51,10 +51,10 @@ pub mod voice;
 
 pub use context::{
     ActiveCommandContext, CompactContext, FrontendEventSink, MessageQueue, MessageRouteContext,
-    MessageSubmitContext, MiddlewareCommandContext, ModelContext, ModelRequestContext,
-    PermissionRequestContext, PostToolUseContext, PreToolUseContext, QueuedMessageSnapshot,
-    QueuedMessageView, RuntimeContext, SessionStartContext, SessionStartSource, StopContext,
-    SubmissionResult, ToolExposureContext, TurnEndContext, TurnIdentity,
+    MessageSubmitContext, MiddlewareCommandContext, ModelContext, PermissionRequestContext,
+    PostToolUseContext, PreToolUseContext, QueuedMessageSnapshot, QueuedMessageView,
+    RuntimeContext, SessionStartContext, SessionStartSource, StopContext, SubmissionResult,
+    ToolExposureContext, TurnEndContext, TurnIdentity,
 };
 pub(crate) use context::{MessageSubmitResult, PreparationNotices, PreparedMessage, StagedInput};
 pub(crate) use idle::IdleSchedule;
@@ -247,11 +247,6 @@ pub trait Middleware: Send + Sync {
     /// Stable ID used to reject duplicate registrations.
     fn name(&self) -> &'static str;
 
-    /// Middleware IDs that cannot share a stack with this configured capability.
-    fn incompatible_middleware(&self) -> &'static [&'static str] {
-        &[]
-    }
-
     /// Returns the input-token limit this capability enforces for a model context window.
     fn context_limit(&self, _context_window: i64) -> Option<i64> {
         None
@@ -355,14 +350,6 @@ pub trait Middleware: Send + Sync {
 
     /// Mutates durable context before the next model request is assembled.
     fn pre_model<'a>(&'a self, _context: &'a mut ModelContext<'_>) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async { Ok(()) })
-    }
-
-    /// Applies request-only context after every durable transform has completed.
-    fn model_request<'a>(
-        &'a self,
-        _context: &'a mut ModelRequestContext<'_>,
-    ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async { Ok(()) })
     }
 
@@ -493,10 +480,8 @@ impl PromptSection {
 /// A validated, declaration-ordered middleware pipeline.
 ///
 /// Registration, prompt sections, and forward hooks follow declaration order;
-/// only [`Middleware::session_end`] unwinds in reverse. All
-/// [`Middleware::pre_model`] hooks finish before any [`Middleware::model_request`]
-/// hook runs. Prompt sections are composed once at agent creation; dynamic
-/// durable state belongs in `pre_model`, request-only decoration in `model_request`.
+/// only [`Middleware::session_end`] unwinds in reverse. Prompt sections are composed
+/// once at agent creation; dynamic durable state belongs in `pre_model`.
 #[derive(Clone)]
 pub struct MiddlewareStack {
     entries: Vec<Arc<dyn Middleware>>,
@@ -534,18 +519,6 @@ impl MiddlewareStack {
             {
                 return Err(Error::Config(format!(
                     "conversation messages are owned by both `{owner}` and `{}`",
-                    entry.name()
-                )));
-            }
-        }
-        for entry in &entries {
-            if let Some(other) = entry
-                .incompatible_middleware()
-                .iter()
-                .find(|name| names.contains(**name))
-            {
-                return Err(Error::Config(format!(
-                    "middleware `{}` is incompatible with `{other}`",
                     entry.name()
                 )));
             }
@@ -687,6 +660,15 @@ impl MiddlewareStack {
             .ok_or_else(|| Error::Config("conversation message middleware is not installed".into()))
     }
 
+    /// The message handler with the queue scoped to it.
+    fn handler_queue<'q>(
+        &self,
+        queued_messages: &'q mut Vec<DurableQueuedMessage>,
+    ) -> Result<(&Arc<dyn Middleware>, MessageQueue<'q>)> {
+        let entry = self.message_handler_required()?;
+        Ok((entry, MessageQueue::scoped(queued_messages, entry.name())))
+    }
+
     pub(crate) fn require_message_handler(&self) -> Result<()> {
         self.message_handler_required().map(|_| ())
     }
@@ -730,9 +712,7 @@ impl MiddlewareStack {
         queued_messages: &mut Vec<DurableQueuedMessage>,
         turn_id: &str,
     ) -> Result<Vec<PreparedMessage>> {
-        let entry = self.message_handler_required()?;
-        let mut queue = MessageQueue::new(queued_messages);
-        queue.scope(entry.name());
+        let (entry, mut queue) = self.handler_queue(queued_messages)?;
         let mut messages = queue.stage_model_messages(turn_id)?;
         for message in &mut messages {
             message.boundary_events = entry.message_boundary_events(&message.submission_id);
@@ -761,9 +741,7 @@ impl MiddlewareStack {
         &self,
         queued_messages: &mut Vec<DurableQueuedMessage>,
     ) -> Result<Option<PreparedMessage>> {
-        let entry = self.message_handler_required()?;
-        let mut queue = MessageQueue::new(queued_messages);
-        queue.scope(entry.name());
+        let (entry, queue) = self.handler_queue(queued_messages)?;
         Ok(queue.next_turn()?.map(|mut message| {
             message.boundary_events = entry.message_boundary_events(&message.submission_id);
             message
@@ -775,9 +753,7 @@ impl MiddlewareStack {
         queued_messages: &mut Vec<DurableQueuedMessage>,
         submission_id: &str,
     ) -> Result<(usize, DurableQueuedMessage)> {
-        let entry = self.message_handler_required()?;
-        let mut queue = MessageQueue::new(queued_messages);
-        queue.scope(entry.name());
+        let (_, mut queue) = self.handler_queue(queued_messages)?;
         queue.consume_next_turn(submission_id)
     }
 
@@ -818,12 +794,10 @@ impl MiddlewareStack {
         turn_id: &str,
         outcome: ExecutionOutcome,
     ) -> Result<()> {
-        let entry = self.message_handler_required()?;
+        let (_, mut queue) = self.handler_queue(queued_messages)?;
         if outcome == ExecutionOutcome::Completed {
             return Ok(());
         }
-        let mut queue = MessageQueue::new(queued_messages);
-        queue.scope(entry.name());
         queue.promote_failed_turn(turn_id)
     }
 
@@ -884,13 +858,12 @@ impl MiddlewareStack {
         &self,
         mut context: ModelContext<'_>,
         idle: Option<&[&str]>,
-    ) -> Result<Option<Vec<Value>>> {
+    ) -> Result<()> {
         let supports_tool_image_input =
             context.model.supports_tool_image_input(context.provider)?;
         self.resolve_tool_exposure(
             context.session_id,
             supports_tool_image_input,
-            context.durable_input.input(),
             context.available_tools,
         )
         .await?;
@@ -902,36 +875,18 @@ impl MiddlewareStack {
             {
                 entry.idle(&mut context).await?;
             }
-            return Ok(None);
+            return Ok(());
         }
         for entry in &self.entries {
             entry.pre_model(&mut context).await?;
         }
-        if context.turn_stopped() {
-            return Ok(None);
-        }
-        let mut request_context = ModelRequestContext {
-            author: context.author,
-            role: &context.runtime.role,
-            model: context.model,
-            provider: context.provider,
-            session_id: context.session_id,
-            turn_id: context.turn_id,
-            model_step: context.model_step,
-            input: context.input(),
-            replacement: None,
-        };
-        for entry in &self.entries {
-            entry.model_request(&mut request_context).await?;
-        }
-        Ok(request_context.replacement)
+        Ok(())
     }
 
     pub(crate) async fn resolve_tool_exposure(
         &self,
         session_id: &SessionId,
         supports_tool_image_input: bool,
-        input: crate::backend::model::ModelInput<'_>,
         available: &mut BTreeSet<String>,
     ) -> Result<()> {
         for entry in &self.entries {
@@ -939,7 +894,6 @@ impl MiddlewareStack {
                 .tool_exposure(&mut ToolExposureContext {
                     session_id,
                     supports_tool_image_input,
-                    input,
                     available,
                 })
                 .await?;
@@ -1222,6 +1176,20 @@ fn validate_actions(actions: &[crate::protocol::FrontendAction]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Loads one middleware state record, or the default when none is saved.
+pub(crate) async fn load_state_or_default<T: serde::de::DeserializeOwned + Default>(
+    checkpoints: &dyn crate::backend::checkpoint::CheckpointStore,
+    scope: &str,
+    key: &str,
+) -> Result<T> {
+    Ok(checkpoints
+        .load_state(scope, key)
+        .await?
+        .map(serde_json::from_value)
+        .transpose()?
+        .unwrap_or_default())
 }
 
 fn approximate_item_tokens(item: &Value, estimate: TokenEstimate) -> usize {

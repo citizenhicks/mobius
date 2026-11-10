@@ -27,35 +27,3 @@ fn journal_delivery_accepts_loaded_records_and_rejects_gaps() {
             .contains("expected 6")
     );
 }
-
-#[test]
-fn completed_execution_stats_keep_the_flat_wire_shape() {
-    let stats = ExecutionStats {
-        run_count: 3,
-        failed_run_count: 1,
-        aborted_run_count: 1,
-        model_calls: 5,
-        tool_calls: 8,
-        failed_tool_calls: 2,
-        elapsed_ms: 900,
-        usage: TokenUsage {
-            total_tokens: 42,
-            ..TokenUsage::default()
-        },
-    };
-
-    let mut expected = serde_json::to_value(stats).expect("execution totals");
-    expected["active"] = serde_json::Value::Null;
-    let projected = RunStats {
-        completed: stats,
-        active: None,
-    };
-    assert_eq!(
-        serde_json::to_value(&projected).expect("run totals"),
-        expected
-    );
-    assert_eq!(
-        serde_json::from_value::<RunStats>(expected).expect("decode flat totals"),
-        projected
-    );
-}

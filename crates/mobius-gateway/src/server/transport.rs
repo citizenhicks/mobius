@@ -1,14 +1,14 @@
 use super::{
     AccessLease, Arc, AsyncRead, AsyncWrite, AuthStore, AuthenticatedClient, BTreeMap, BTreeSet,
     BotStore, Callback, CatalogHint, CertificateDer, ClientCapabilities, ClientFrame,
-    ClientIdentity, ClientMessage, ClientStatus, ClientView, ConnectionSessionState, Error,
-    ErrorResponse, FrameReader, Future, GatewayHost, GatewayNotification, HOST, Instant, JoinSet,
-    Mutex, ORIGIN, Path, PendingSessionFileWrite, PrivateKeyDer, ProfileSnapshot, Rejection,
-    Request, Response, Result, SEC_WEBSOCKET_PROTOCOL, SelectedChat, ServerConfig, ServerFrame,
-    ServerMessage, SharedFrame, StatusCode, TcpStream, TlsAcceptor, TlsConfig, Utc, Uuid,
-    WEBSOCKET_BRIDGE_BYTES, WebSocketConfig, accept_hdr_async_with_config, broadcast,
-    handle_message, read_frame, read_frame_with_limit, selected_broadcast, validate_version,
-    websocket_error, write_frame, write_rejection, write_server_error,
+    ClientIdentity, ClientStatus, ClientView, ConnectionSessionState, Error, ErrorResponse,
+    FrameReader, Future, GatewayHost, GatewayNotification, HOST, Instant, JoinSet, Mutex, ORIGIN,
+    Path, PendingSessionFileWrite, PrivateKeyDer, ProfileSnapshot, Rejection, Request, Response,
+    Result, SEC_WEBSOCKET_PROTOCOL, SelectedChat, ServerConfig, ServerFrame, ServerMessage,
+    SharedFrame, StatusCode, TcpStream, TlsAcceptor, TlsConfig, Utc, Uuid, WEBSOCKET_BRIDGE_BYTES,
+    WebSocketConfig, accept_hdr_async_with_config, broadcast, handle_message, read_frame,
+    read_frame_with_limit, selected_broadcast, validate_version, websocket_error, write_frame,
+    write_rejection, write_server_error,
 };
 use mobius::SessionId;
 
@@ -57,7 +57,7 @@ pub(super) struct ConnectionContext {
     pub(super) access_lease: Option<AccessLease>,
 }
 
-struct PendingProfile {
+pub(super) struct PendingProfile {
     request_id: Arc<str>,
     future: Pin<Box<dyn Future<Output = std::result::Result<ProfileSnapshot, Rejection>> + Send>>,
 }
@@ -343,7 +343,7 @@ fn record_client_presence(bots: &BotStore, client_id: &str, connected: bool) -> 
                 client_id: client_id.into(),
             }
         };
-        bots.record_hook(&HookEvent {
+        bots.storage.record_hook(&HookEvent {
             id: format!("client-{transition}-{}", bot.id).into(),
             source: HookSource::Client {
                 client_id: client_id.into(),
@@ -817,9 +817,9 @@ async fn serve_authenticated_connection(
                 browser: &mut browser,
                 remote_desktop: &mut remote_desktop,
                 pending_desktop_control: &mut pending_desktop_control,
+                pending_profile: &mut pending_profile,
+                queued_profile: &mut queued_profile_request,
             },
-            &mut pending_profile,
-            &mut queued_profile_request,
             &mut writer,
         )
         .await?
@@ -834,33 +834,21 @@ async fn dispatch_authenticated_frame(
     client: &AuthenticatedClient<'_>,
     host: &Arc<GatewayHost>,
     connection: ConnectionSessionState<'_>,
-    pending_profile: &mut Option<PendingProfile>,
-    queued_profile_request: &mut Option<(Arc<str>, bool)>,
     writer: &mut (impl AsyncWrite + Unpin),
 ) -> Result<bool> {
     if client.access_lease.is_some_and(AccessLease::expired) {
         return Ok(false);
     }
-    if let Some(message) = handle_profile_message(
+    handle_message(
         frame.message,
+        client.auth,
         host,
-        pending_profile,
-        queued_profile_request,
+        client.bots,
+        client,
+        connection,
         writer,
     )
-    .await?
-    {
-        handle_message(
-            message,
-            client.auth,
-            host,
-            client.bots,
-            client,
-            connection,
-            writer,
-        )
-        .await?;
-    }
+    .await?;
     Ok(true)
 }
 
@@ -983,26 +971,21 @@ async fn authenticate_client(
     }
 }
 
-async fn handle_profile_message(
-    message: ClientMessage,
+/// Starts a profile snapshot, or queues one behind the snapshot in flight.
+pub(super) async fn request_profile(
+    request_id: Arc<str>,
+    include_provider_usage: bool,
     host: &Arc<GatewayHost>,
     pending: &mut Option<PendingProfile>,
     queued_request: &mut Option<(Arc<str>, bool)>,
     writer: &mut (impl AsyncWrite + Unpin),
-) -> Result<Option<ClientMessage>> {
-    let ClientMessage::GetProfile {
-        request_id,
-        include_provider_usage,
-    } = message
-    else {
-        return Ok(Some(message));
-    };
+) -> Result<()> {
     if pending.is_some() {
-        queue_profile_request(writer, queued_request, request_id, include_provider_usage).await?;
+        queue_profile_request(writer, queued_request, request_id, include_provider_usage).await
     } else {
         *pending = Some(profile_request(host, request_id, include_provider_usage));
+        Ok(())
     }
-    Ok(None)
 }
 
 async fn next_profile(

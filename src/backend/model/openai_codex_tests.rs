@@ -54,7 +54,6 @@ fn token_failures_explain_expired_sessions_without_exposing_response_bodies() {
     }
 }
 
-#[cfg(unix)]
 #[test]
 fn saved_auth_is_owner_only() {
     use std::os::unix::fs::PermissionsExt as _;
@@ -105,7 +104,11 @@ async fn codex_requests_include_session_and_thread_identity() {
     .expect("save credential")
     .1
     .expect("durable credential");
-    let auth = ChatGptAuth::load(path).expect("load auth");
+    let auth = ChatGptAuth::load_with_transport(
+        path,
+        crate::backend::model::ModelTransportSettings::default(),
+    )
+    .expect("load auth");
 
     let http = auth
         .authorize_http(false, Some("session-123"))
@@ -159,43 +162,6 @@ fn header<'a>(authorization: &'a ResolvedAuthorization<'_>, name: &str) -> Optio
         .headers
         .iter()
         .find_map(|(header, value)| header.eq_ignore_ascii_case(name).then_some(value.as_ref()))
-}
-
-#[tokio::test]
-async fn callback_rejects_wrong_state_then_accepts_the_expected_state() {
-    let listener = TcpListener::bind(("127.0.0.1", 0))
-        .await
-        .expect("callback listener");
-    let address = listener.local_addr().expect("callback address");
-    let callback = tokio::spawn(wait_for_callback(listener, "expected"));
-
-    let mut wrong = TcpStream::connect(address).await.expect("wrong callback");
-    wrong
-        .write_all(b"GET /auth/callback?code=wrong&state=other HTTP/1.1\r\nHost: localhost\r\n\r\n")
-        .await
-        .expect("write wrong callback");
-    let mut response = Vec::new();
-    wrong
-        .read_to_end(&mut response)
-        .await
-        .expect("read wrong response");
-    assert!(response.starts_with(b"HTTP/1.1 400"));
-
-    let mut correct = TcpStream::connect(address).await.expect("correct callback");
-    correct
-        .write_all(
-            b"GET /auth/callback?code=accepted&state=expected HTTP/1.1\r\nHost: localhost\r\n\r\n",
-        )
-        .await
-        .expect("write correct callback");
-
-    assert_eq!(
-        callback
-            .await
-            .expect("callback task")
-            .expect("callback result"),
-        "accepted"
-    );
 }
 
 #[test]

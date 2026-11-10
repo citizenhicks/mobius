@@ -1,17 +1,68 @@
 use super::*;
+use crate::middleware::tools::patch::PatchDocument;
 use diffy::Patch;
 
-#[test]
-fn apply_patch_preserves_crlf_line_endings() {
-    let patch = parse_patch_document(
-        "*** Begin Patch\n*** Update File: note.txt\n@@\n-old\n+new\n*** End Patch\n",
-    )
-    .expect("patch document");
+fn patch_document(changes: &str) -> PatchDocument {
+    parse_patch_document(&format!(
+        "*** Begin Patch\n*** Update File: a.py\n{changes}*** End Patch\n"
+    ))
+    .expect("patch document")
+}
 
-    assert_eq!(
-        apply_patch_document("first\r\nold\r\nlast\r\n", &patch).expect("applied patch"),
-        "first\r\nnew\r\nlast\r\n"
-    );
+#[test]
+fn apply_patch_keeps_line_endings_and_anchors_end_of_file() {
+    for (changes, content, expected) in [
+        (
+            "@@\n-old\n+new\n",
+            "first\r\nold\r\nlast\r\n",
+            "first\r\nnew\r\nlast\r\n",
+        ),
+        (
+            "@@\n-old\n+new\n*** End of File\n\n",
+            "old\nmiddle\nold\n",
+            "old\nmiddle\nnew\n",
+        ),
+    ] {
+        assert_eq!(
+            apply_patch_document(content, &patch_document(changes)).expect("applied patch"),
+            expected
+        );
+    }
+}
+
+#[test]
+fn apply_patch_reports_the_failed_change_and_its_divergent_file_line() {
+    for (changes, content, expected) in [
+        (
+            "@@\n-x = 1\n+x = 2\n@@\n elif co:\n     # second\n     # first\n-    y = 1\n+    y = 2\n",
+            "x = 1\nelif co:\npad\nelif co:\n    # first\n    # second\n    y = 1\n",
+            &[
+                "change 2 of 2",
+                "No changes were written",
+                "line 5 should be \"    # second\"",
+                "the file has \"    # first\"",
+            ][..],
+        ),
+        // After an earlier insertion, the line number is still the original file's.
+        (
+            "@@\n first\n+inserted\n@@\n second\n-wrong\n+replacement\n",
+            "first\nsecond\nactual\n",
+            &["line 3 should be \"wrong\"", "the file has \"actual\""][..],
+        ),
+        // A close match reports its first mismatching line.
+        (
+            "@@\n expected\n same\n-old\n+new\n",
+            "actual\nsame\nold\n",
+            &["line 1 should be \"expected\"", "the file has \"actual\""][..],
+        ),
+    ] {
+        let error = apply_patch_document(content, &patch_document(changes))
+            .expect_err("mismatch")
+            .to_string();
+        for fragment in expected {
+            assert!(error.contains(fragment), "{fragment} in {error}");
+        }
+    }
 }
 
 #[tokio::test]
@@ -21,13 +72,7 @@ async fn apply_patch_uses_the_active_sandbox_policy() {
     let path = outside.path().join("note.txt");
     let patch_path = path.to_str().expect("UTF-8 outside path");
     std::fs::write(&path, "old\n").expect("write fixture");
-    let sandbox = Arc::new(Sandbox::new(
-        Arc::new(
-            crate::backend::sandbox::local::LocalSandbox::new(workspace.path())
-                .expect("local sandbox"),
-        ),
-        crate::backend::sandbox::ApprovalPolicy::Ask,
-    ));
+    let sandbox = test_sandbox_at(workspace.path());
     let patch = serde_json::json!({
         "patch": format!("*** Begin Patch\n*** Update File: {patch_path}\n@@\n-old\n+new\n*** End Patch\n")
     });
@@ -76,66 +121,6 @@ async fn apply_patch_uses_the_active_sandbox_policy() {
     assert_eq!(
         std::fs::read_to_string(path).expect("patched file"),
         "new\n"
-    );
-}
-
-#[test]
-fn apply_patch_reports_the_failed_change_and_its_divergent_file_line() {
-    let patch = parse_patch_document(
-        "*** Begin Patch\n*** Update File: a.py\n@@\n-x = 1\n+x = 2\n@@\n elif co:\n     # second\n     # first\n-    y = 1\n+    y = 2\n*** End Patch\n",
-    )
-    .expect("patch document");
-    let content = "x = 1\nelif co:\npad\nelif co:\n    # first\n    # second\n    y = 1\n";
-
-    let error = apply_patch_document(content, &patch)
-        .expect_err("mismatch")
-        .to_string();
-
-    assert!(error.contains("change 2 of 2"), "{error}");
-    assert!(error.contains("No changes were written"), "{error}");
-    assert!(
-        error.contains("line 5 should be \"    # second\""),
-        "{error}"
-    );
-    assert!(error.contains("the file has \"    # first\""), "{error}");
-}
-
-#[test]
-fn apply_patch_reports_original_line_after_an_earlier_insertion() {
-    let patch = parse_patch_document(
-        "*** Begin Patch\n*** Update File: a.py\n@@\n first\n+inserted\n@@\n second\n-wrong\n+replacement\n*** End Patch\n",
-    )
-    .expect("patch document");
-    let error = apply_patch_document("first\nsecond\nactual\n", &patch)
-        .expect_err("mismatch")
-        .to_string();
-    assert!(error.contains("line 3 should be \"wrong\""), "{error}");
-    assert!(error.contains("the file has \"actual\""), "{error}");
-}
-
-#[test]
-fn apply_patch_reports_a_mismatch_at_the_start_of_a_close_match() {
-    let patch = parse_patch_document(
-        "*** Begin Patch\n*** Update File: a.py\n@@\n expected\n same\n-old\n+new\n*** End Patch\n",
-    )
-    .expect("patch document");
-    let error = apply_patch_document("actual\nsame\nold\n", &patch)
-        .expect_err("mismatch")
-        .to_string();
-    assert!(error.contains("line 1 should be \"expected\""), "{error}");
-    assert!(error.contains("the file has \"actual\""), "{error}");
-}
-
-#[test]
-fn apply_patch_end_of_file_changes_the_final_duplicate() {
-    let patch = parse_patch_document(
-        "*** Begin Patch\n*** Update File: note.txt\n@@\n-old\n+new\n*** End of File\n\n*** End Patch\n",
-    )
-    .expect("patch document");
-
-    assert_eq!(
-        apply_patch_document("old\nmiddle\nold\n", &patch).expect("applied patch"),
-        "old\nmiddle\nnew\n"
     );
 }
 

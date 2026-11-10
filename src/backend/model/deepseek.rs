@@ -8,16 +8,13 @@ use super::provider::ProviderBuildConfig;
 use super::provider::ProviderDefinition;
 use super::responses::OpenAi;
 use crate::Result;
+use crate::protocol::ToolDiscoveryMode;
 
 pub(super) static MANIFEST: std::sync::LazyLock<super::provider::ProviderMetadata> =
     std::sync::LazyLock::new(|| crate::config::embedded(include_str!("deepseek_provider.toml")));
 pub(super) static CATALOG: std::sync::LazyLock<super::provider::ModelCatalog> =
     std::sync::LazyLock::new(|| {
-        crate::config::overridable(
-            "deepseek.toml",
-            include_str!("deepseek.toml"),
-            super::provider::ModelCatalog::validate,
-        )
+        super::provider::ModelCatalog::load("deepseek.toml", include_str!("deepseek.toml"))
     });
 
 pub(super) fn provider() -> ProviderDefinition {
@@ -31,13 +28,14 @@ pub(super) fn provider() -> ProviderDefinition {
     .with_credentialless_endpoints()
 }
 
-fn build_provider(config: ProviderBuildConfig, base_url: BaseUrl) -> Result<Arc<dyn Model>> {
+fn build_provider(
+    config: ProviderBuildConfig,
+    base_url: BaseUrl,
+    tool_discovery: ToolDiscoveryMode,
+) -> Result<Arc<dyn Model>> {
     let image_input = CATALOG.image_input_models.contains(&config.model);
-    let tool_discovery = config
-        .tool_discovery
-        .unwrap_or_else(|| provider().tool_discovery(&config.model, Some(base_url.as_str())));
     let api_key = config.credential.into_optional_api_key("deepseek")?;
-    let provider = OpenAi::with_client(
+    let provider = OpenAi::from_api_key(
         api_key,
         base_url,
         config.model,
@@ -47,11 +45,8 @@ fn build_provider(config: ProviderBuildConfig, base_url: BaseUrl) -> Result<Arc<
     .with_tool_discovery(tool_discovery)
     .with_service_tier(config.service_tier)
     .with_image_input(image_input)
-    .with_image_api(None);
-    let provider = match config.reasoning_effort {
-        Some(effort) => provider.with_reasoning_effort(effort)?,
-        None => provider,
-    };
+    .with_image_api(None)
+    .with_selected_effort(config.reasoning_effort)?;
     Ok(Arc::new(provider))
 }
 

@@ -43,8 +43,11 @@ struct BoundedStream {
 
 impl BoundedStream {
     fn remaining(&self) -> io::Result<Duration> {
-        let remaining =
-            mobius::sync::recover_lock(&self.deadline).saturating_duration_since(Instant::now());
+        let remaining = self
+            .deadline
+            .lock()
+            .map_err(|_poisoned| io::Error::other("X11 desktop deadline is poisoned"))?
+            .saturating_duration_since(Instant::now());
         if self.failed.load(Ordering::Relaxed) || remaining.is_zero() {
             self.failed.store(true, Ordering::Relaxed);
             return Err(io::Error::new(
@@ -298,7 +301,6 @@ impl Desktop {
         self.connection.stream().failed.load(Ordering::Relaxed)
     }
 
-    #[cfg(target_os = "linux")]
     pub(super) fn input_submitted(&self) -> bool {
         self.input_submitted.get()
     }
@@ -314,7 +316,12 @@ impl Desktop {
             return Err(failure("X11 desktop timed out"));
         }
         self.input_submitted.set(false);
-        *mobius::sync::recover_lock(&self.connection.stream().deadline) =
+        *self
+            .connection
+            .stream()
+            .deadline
+            .lock()
+            .map_err(|_poisoned| failure("X11 desktop deadline is poisoned"))? =
             Instant::now() + X11_TIMEOUT;
         if begin {
             self.begin(session);
@@ -864,7 +871,7 @@ impl Desktop {
                 self.pointer_ready(shot.window)?;
                 self.motion(shot, point, control)
             })?,
-            _ => unreachable!("pointer requests were validated"),
+            _ => return Err(failure("not a pointer request")),
         }
         self.last_action = Some(shot.window);
         Ok(json!(true))

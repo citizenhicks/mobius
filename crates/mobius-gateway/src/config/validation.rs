@@ -1,4 +1,10 @@
-use super::*;
+use super::{
+    AgentComposition, BTreeMap, BTreeSet, ConfiguredProvider, Error, GatewayConfig,
+    MAX_CLOUDFLARE_TOKEN_BYTES, MAX_CUSTOM_MODEL_ROUTES, MAX_PROVIDER_CATALOG_BYTES,
+    MAX_PROVIDER_CATALOG_ENTRIES, MAX_PROVIDER_CATALOG_ENTRY_BYTES, MAX_PROVIDER_LABEL_BYTES,
+    MAX_SYSTEM_PROMPT_BYTES, ProviderConfig, ProviderDefinition, ProviderEndpointAuth, Result,
+    provider,
+};
 
 /// Validates one Bot against its exact selected model route and capabilities, returning its
 /// approval policy.
@@ -105,11 +111,8 @@ pub(super) fn validate_provider_config(config: &ProviderConfig) -> Result<()> {
     if config.model.trim().is_empty() || config.model.len() > 1024 {
         return Err(Error::Config("model must be 1–1024 bytes".into()));
     }
-    provider(&config.provider)?.model_config_is_valid(
-        &config.model,
-        config.base_url.as_ref(),
-        config.reasoning_effort.as_deref(),
-    )?;
+    provider(&config.provider)?
+        .model_config_is_valid(&config.model, config.reasoning_effort.as_deref())?;
     Ok(())
 }
 
@@ -141,8 +144,7 @@ fn validate_provider_endpoint_auth(
 pub(super) fn validate_configured_provider(configured: &ConfiguredProvider) -> Result<()> {
     if configured.selection.model.is_empty() {
         validate_provider_transport(&configured.selection)?;
-        provider(&configured.selection.provider)?
-            .validate_base_url(configured.selection.base_url.as_ref())?;
+        provider(&configured.selection.provider)?;
         if !configured.models.is_empty() || configured.selection.reasoning_effort.is_some() {
             return Err(Error::Config(
                 "a chat catalog requires a selected chat model".into(),
@@ -356,13 +358,17 @@ pub(super) fn validate_configured_provider_selection(
         definition.auth(),
         mobius::backend::model::provider::ProviderAuth::Browser(_)
     ) && !mobius::backend::model::provider::uses_default_endpoint(
-        crate::harness::mobius::provider_catalog::selected_base_url(
-            definition,
-            &configured.selection,
-        )
-        .map(BaseUrl::as_str),
-        crate::harness::mobius::provider_catalog::selected_base_url(definition, selection)
-            .map(BaseUrl::as_str),
+        Some(
+            crate::harness::mobius::provider_catalog::selected_base_url(
+                definition,
+                &configured.selection,
+            )
+            .as_str(),
+        ),
+        Some(
+            crate::harness::mobius::provider_catalog::selected_base_url(definition, selection)
+                .as_str(),
+        ),
     ) {
         return Err(Error::Config(
             "browser-auth provider selection must use its operator-registered endpoint".into(),

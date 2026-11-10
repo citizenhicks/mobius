@@ -1,4 +1,5 @@
 use super::super::*;
+use super::support::*;
 use super::support::{completed_events, model_request};
 use crate::backend::model::{ImageInputLimits, MediaPreparation};
 use crate::backend::session_files::{SessionFileStore, grant_context};
@@ -64,11 +65,11 @@ async fn continuation_skips_old_pixels_and_preparation_failure_preserves_connect
             }
         }
     });
-    let provider = OpenAiSocket::with_authorization(
+    let provider = OpenAiSocket::from_authorization(
         Arc::new(ApiKeyAuthorization::new("test".into())),
         BaseUrl::new("http://127.0.0.1:1").unwrap(),
         format!("ws://{address}/responses"),
-        "test-model",
+        "test-model".into(),
         reqwest::Client::new(),
         crate::backend::model::ModelTransportSettings::default(),
     )

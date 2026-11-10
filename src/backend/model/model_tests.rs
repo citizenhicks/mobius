@@ -504,3 +504,52 @@ async fn fallback_cancellation_does_not_inherit_source_credential_expiry() {
         ]
     );
 }
+
+#[test]
+fn route_replay_strips_private_reasoning_without_copying_untouched_items() {
+    let visible = Arc::new(serde_json::json!({
+        "type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Visible"}]
+    }));
+    let call = Arc::new(serde_json::json!({
+        "type": "function_call", "call_id": "call", "name": "read", "arguments": "{}"
+    }));
+    let result = Arc::new(serde_json::json!({
+        "type": "function_call_output", "call_id": "call", "output": []
+    }));
+    let mut private = Vec::new();
+    for field in provider::providers()
+        .iter()
+        .filter_map(|provider| provider.replay_reasoning_field)
+    {
+        let mut item = (*visible).clone();
+        set_field(&mut item, REPLAY_REASONING_FIELD, "summary".into());
+        set_field(&mut item, field, serde_json::json!([{"type": "thinking"}]));
+        private.push(Arc::new(item));
+    }
+    assert!(
+        private.len() >= 2,
+        "each provider-private replay field is covered"
+    );
+    let mut input: Vec<Arc<Value>> = private.iter().map(Arc::clone).collect();
+    input.extend([
+        Arc::new(serde_json::json!({"type": "reasoning", "summary": []})),
+        Arc::clone(&call),
+        Arc::clone(&result),
+        Arc::clone(&visible),
+    ]);
+    assert!(strip_shared_provider_reasoning(&mut input));
+    assert_eq!(
+        input.len(),
+        private.len() + 3,
+        "reasoning items are dropped"
+    );
+    for (stripped, original) in input.iter().zip(&private) {
+        assert_eq!(**stripped, *visible);
+        assert!(has_provider_reasoning(original));
+    }
+    let shared = &input[private.len()..];
+    assert!(Arc::ptr_eq(&shared[0], &call));
+    assert!(Arc::ptr_eq(&shared[1], &result));
+    assert!(Arc::ptr_eq(&shared[2], &visible));
+    assert!(!strip_shared_provider_reasoning(&mut input));
+}

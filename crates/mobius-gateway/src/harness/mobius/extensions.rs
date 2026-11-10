@@ -56,6 +56,13 @@ pub(crate) struct InstalledExtension {
     pub(crate) trusted_hook_digest: Option<Arc<str>>,
 }
 
+impl InstalledExtension {
+    /// Whether the owner trusted this exact snapshot's hooks, or it declares none.
+    fn hooks_trusted(&self) -> bool {
+        self.hooks.is_empty() || self.trusted_hook_digest.as_ref() == Some(&self.digest)
+    }
+}
+
 pub(crate) struct StagedExtension {
     pub(crate) id: Arc<str>,
     pub(crate) installed: InstalledExtension,
@@ -141,29 +148,7 @@ impl ExtensionStore {
         let inspected = inspect_package(&package)?;
         let kind = inspected.kind.into();
         let id = extension_id(kind, &inspected.name);
-        let digest = tree_digest(&package)?;
-        let snapshot = self.snapshot_root(&digest);
-        let parent = snapshot
-            .parent()
-            .ok_or_else(|| Error::Config("extension snapshot has no parent directory".into()))?;
-        let created = !snapshot.exists();
-        if created {
-            fs::create_dir_all(parent)?;
-            fs::rename(&package, &snapshot)?;
-        } else {
-            verify_snapshot(&snapshot, &digest)?;
-        }
-        if let Err(error) = freeze_tree(parent) {
-            if created {
-                if let Err(cleanup) = thaw_tree(parent) {
-                    tracing::warn!(path = %parent.display(), %cleanup, "failed to unfreeze the unfinished extension snapshot");
-                }
-                if let Err(cleanup) = fs::remove_dir_all(parent) {
-                    tracing::warn!(path = %parent.display(), %cleanup, "failed to remove the unfinished extension snapshot");
-                }
-            }
-            return Err(error);
-        }
+        let (digest, created) = self.commit_snapshot(&package)?;
         Ok(StagedExtension {
             id: id.into(),
             installed: InstalledExtension {
@@ -207,8 +192,7 @@ impl ExtensionStore {
                     id: Arc::clone(id),
                     digest: Arc::clone(&installed.digest),
                     root: package,
-                    hooks_trusted: installed.hooks.is_empty()
-                        || installed.trusted_hook_digest.as_ref() == Some(&installed.digest),
+                    hooks_trusted: installed.hooks_trusted(),
                 }),
             }
         }
@@ -286,18 +270,39 @@ impl ExtensionStore {
         self.root.join("snapshots").join(digest)
     }
 
-    #[cfg(test)]
-    pub(crate) fn commit_test_snapshot(&self, package: &Path) -> Result<String> {
-        prepare_private_directory(&self.root)?;
+    /// Moves `package` into the frozen snapshot named by its digest, or verifies the one
+    /// already there; reports the digest and whether this call created the snapshot.
+    fn commit_snapshot(&self, package: &Path) -> Result<(String, bool)> {
         let digest = tree_digest(package)?;
         let snapshot = self.snapshot_root(&digest);
         let parent = snapshot
             .parent()
             .ok_or_else(|| Error::Config("extension snapshot has no parent directory".into()))?;
-        fs::create_dir_all(parent)?;
-        fs::rename(package, &snapshot)?;
-        freeze_tree(parent)?;
-        Ok(digest)
+        let created = !snapshot.exists();
+        if created {
+            fs::create_dir_all(parent)?;
+            fs::rename(package, &snapshot)?;
+        } else {
+            verify_snapshot(&snapshot, &digest)?;
+        }
+        if let Err(error) = freeze_tree(parent) {
+            if created {
+                if let Err(cleanup) = thaw_tree(parent) {
+                    tracing::warn!(path = %parent.display(), %cleanup, "failed to unfreeze the unfinished extension snapshot");
+                }
+                if let Err(cleanup) = fs::remove_dir_all(parent) {
+                    tracing::warn!(path = %parent.display(), %cleanup, "failed to remove the unfinished extension snapshot");
+                }
+            }
+            return Err(error);
+        }
+        Ok((digest, created))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn commit_test_snapshot(&self, package: &Path) -> Result<String> {
+        prepare_private_directory(&self.root)?;
+        Ok(self.commit_snapshot(package)?.0)
     }
 }
 
@@ -404,8 +409,7 @@ pub(crate) fn records(config: &GatewayConfig) -> Vec<ExtensionRecord> {
             digest: Arc::clone(&installed.digest),
             skills: Arc::clone(&installed.skills),
             hooks: Arc::clone(&installed.hooks),
-            hooks_trusted: installed.hooks.is_empty()
-                || installed.trusted_hook_digest.as_ref() == Some(&installed.digest),
+            hooks_trusted: installed.hooks_trusted(),
         })
         .collect()
 }
@@ -780,7 +784,6 @@ fn prepare_private_directory(path: &Path) -> Result<()> {
         ));
     }
     fs::create_dir_all(path)?;
-    #[cfg(unix)]
     {
         fs::set_permissions(path, mobius::owner_only::dir())?;
     }
@@ -788,7 +791,6 @@ fn prepare_private_directory(path: &Path) -> Result<()> {
 }
 
 fn preserve_executable(source: &fs::Metadata, destination: &Path) -> Result<()> {
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
         let permissions = if source.permissions().mode() & 0o111 == 0 {
@@ -827,7 +829,6 @@ fn thaw_tree(path: &Path) -> Result<()> {
 }
 
 fn set_read_only(path: &Path, read_only: bool) -> Result<()> {
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
         let metadata = fs::symlink_metadata(path)?;
@@ -840,24 +841,12 @@ fn set_read_only(path: &Path, read_only: bool) -> Result<()> {
         };
         fs::set_permissions(path, permissions)?;
     }
-    #[cfg(not(unix))]
-    {
-        let mut permissions = fs::metadata(path)?.permissions();
-        permissions.set_readonly(read_only);
-        fs::set_permissions(path, permissions)?;
-    }
     Ok(())
 }
 
-#[cfg(unix)]
 fn is_executable(metadata: &fs::Metadata) -> bool {
     use std::os::unix::fs::PermissionsExt as _;
     metadata.permissions().mode() & 0o111 != 0
-}
-
-#[cfg(not(unix))]
-fn is_executable(_metadata: &fs::Metadata) -> bool {
-    false
 }
 
 pub(crate) fn extensions_path(state_dir: &Path) -> PathBuf {

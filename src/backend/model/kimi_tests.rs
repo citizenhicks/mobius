@@ -3,20 +3,28 @@ use serde_json::json;
 use std::sync::Arc;
 
 use super::*;
+use crate::backend::model::ModelRequest;
+use crate::backend::model::ModelTransportSettings;
 use crate::backend::model::PromptCacheIdentity;
-use crate::backend::model::transport::capture_http_request;
+use crate::backend::model::chat_completions::request_body;
+use crate::backend::model::provider::BaseUrl;
+use crate::backend::model::test_support::capture_http_request;
+use crate::backend::model::transport::ApiKeyModel;
 use crate::backend::model::user_message;
 
 #[tokio::test]
 async fn credentialless_post_uses_custom_path_and_omits_authorization() {
     let (address, server) = capture_http_request().await;
-    let provider = Kimi::with_client(
-        None,
-        BaseUrl::new(format!("http://{address}/proxy")).unwrap(),
-        "test-model",
-        reqwest::Client::new(),
-    )
-    .expect("credentialless provider");
+    let provider = Kimi::from_config(
+        ApiKeyModel::new(
+            None,
+            BaseUrl::new(format!("http://{address}/proxy")).unwrap(),
+            "test-model".into(),
+            reqwest::Client::new(),
+            ModelTransportSettings::default(),
+        )
+        .expect("credentialless provider"),
+    );
 
     super::super::chat_completions::post(
         &provider.config.client,
@@ -91,7 +99,8 @@ fn responses_history_becomes_kimi_messages_and_tools() {
         allow_continuation: true,
     };
 
-    let body = provider.request_body_value(&request).expect("request body");
+    let body = serde_json::to_value(request_body(&provider, request).expect("request body"))
+        .expect("JSON body");
 
     assert_eq!(body["model"], "kimi-k3.1-pro");
     assert_eq!(body["reasoning_effort"], "high");
@@ -149,7 +158,7 @@ async fn stream_normalizes_deltas_tools_usage_and_errors() {
         sink_seen.lock().expect("events lock").push(event);
         Box::pin(async { Ok(()) })
     });
-    let mut stream = StreamState::default();
+    let mut stream = KimiStream::default();
     stream
         .apply_data(
             &json!({
@@ -205,7 +214,7 @@ async fn stream_normalizes_deltas_tools_usage_and_errors() {
         [ModelEvent::ReasoningDelta(_), ModelEvent::TextDelta(_)]
     ));
 
-    let mut failed = StreamState::default();
+    let mut failed = KimiStream::default();
     let error = failed
         .apply_data(r#"{"error":{"message":"quota"}} "#, &events)
         .await

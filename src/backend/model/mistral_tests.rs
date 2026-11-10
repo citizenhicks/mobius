@@ -1,10 +1,17 @@
 use std::fmt::Write as _;
 
 use serde_json::json;
-use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use tokio::io::AsyncWriteExt as _;
 
 use super::*;
-use crate::backend::model::{PromptCacheIdentity, ToolDefinition, user_message};
+use crate::backend::model::Model as _;
+use crate::backend::model::chat_completions::request_body;
+use crate::backend::model::provider::BaseUrl;
+use crate::backend::model::transport::ApiKeyModel;
+use crate::backend::model::{
+    ModelRequest, ModelTransportSettings, PromptCacheIdentity, ToolDefinition, user_message,
+};
+use std::sync::Arc;
 
 fn model() -> Mistral {
     Mistral::new("test-key", MANIFEST.base_url.share(), "mistral-large-4-0")
@@ -53,33 +60,12 @@ async fn mock_response(
     );
     let server = tokio::spawn(async move {
         let (mut socket, _) = listener.accept().await.expect("HTTP connection");
-        let mut bytes = Vec::new();
-        loop {
-            let mut buffer = [0; 4_096];
-            let read = socket.read(&mut buffer).await.expect("request bytes");
-            assert_ne!(read, 0);
-            bytes.extend_from_slice(&buffer[..read]);
-            let Some(end) = bytes.windows(4).position(|bytes| bytes == b"\r\n\r\n") else {
-                continue;
-            };
-            let length = std::str::from_utf8(&bytes[..end])
-                .expect("headers")
-                .lines()
-                .find_map(|line| {
-                    line.to_ascii_lowercase()
-                        .strip_prefix("content-length:")
-                        .map(|length| length.trim().parse::<usize>().expect("content length"))
-                })
-                .expect("request content length");
-            if bytes.len() >= end + 4 + length {
-                break;
-            }
-        }
+        let request = crate::backend::model::test_support::read_http_request(&mut socket).await;
         socket
             .write_all(response.as_bytes())
             .await
             .expect("HTTP response");
-        String::from_utf8(bytes).expect("request UTF-8")
+        request
     });
     (root, server)
 }
@@ -101,10 +87,8 @@ fn request_borrows_native_thinking_tools_and_arguments_without_kimi_fields() {
         parameters: json!({"type": "object", "properties": {"path": {"type": "string"}}}),
     })];
     let model = model();
-    let body = model
-        .request_body(request(&input, &tools))
-        .expect("request");
-    let MessageContent::Thinking(content) = &message_content(MessageSource::History {
+    let body = request_body(&model, request(&input, &tools)).expect("request");
+    let MessageContent::Thinking(content) = &MistralDialect::message(MessageSource::History {
         role: "assistant",
         item: &input[1],
     })
@@ -119,7 +103,7 @@ fn request_borrows_native_thinking_tools_and_arguments_without_kimi_fields() {
     ));
     assert!(matches!(&content.text, Cow::Borrowed("Reading.")));
     assert!(matches!(
-        &message_content(MessageSource::History {
+        &MistralDialect::message(MessageSource::History {
             role: "user",
             item: &input[0]
         })
@@ -172,13 +156,16 @@ async fn native_stream_round_trip_preserves_thinking_signatures_tools_and_usage(
     body.push_str("data: [DONE]\n\n");
     let (root, server) =
         mock_response("200 OK", "Content-Type: text/event-stream\r\n", &body).await;
-    let model = Mistral::with_client(
-        Some("test-key".into()),
-        BaseUrl::new(root.as_str()).unwrap(),
-        "mistral-large-4-0",
-        Client::new(),
-    )
-    .unwrap();
+    let model = Mistral::from_config(
+        ApiKeyModel::new(
+            Some("test-key".into()),
+            BaseUrl::new(root.as_str()).unwrap(),
+            "mistral-large-4-0".into(),
+            reqwest::Client::new(),
+            ModelTransportSettings::default(),
+        )
+        .unwrap(),
+    );
     let input = [user_message("Read a.rs.")];
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let capture = Arc::clone(&seen);
@@ -219,7 +206,8 @@ async fn native_stream_round_trip_preserves_thinking_signatures_tools_and_usage(
     let mut history = input.to_vec();
     history.extend_from_slice(output.output());
     history.push(json!({"type": "function_call_output", "call_id": "call-a", "output": [{"type": "input_text", "text": "A"}]}));
-    let replay = serde_json::to_value(model.request_body(request(&history, &[])).unwrap()).unwrap();
+    let replay =
+        serde_json::to_value(request_body(&model, request(&history, &[])).unwrap()).unwrap();
     assert_eq!(
         replay["messages"][2]["content"][0]["signature"],
         "sig-final"
@@ -228,33 +216,9 @@ async fn native_stream_round_trip_preserves_thinking_signatures_tools_and_usage(
     assert_eq!(replay["messages"][3]["tool_call_id"], "call-a");
 }
 
-#[test]
-fn route_replay_strips_native_thinking_without_copying_unaffected_history() {
-    let user = Arc::new(user_message("Read it."));
-    let call = Arc::new(
-        json!({"type": "function_call", "call_id": "a", "name": "read", "arguments": "{}"}),
-    );
-    let mut input = vec![
-        Arc::clone(&user),
-        Arc::new(json!({
-            "type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Reading."}],
-            (REPLAY_REASONING_FIELD): "Read it.",
-            (RAW_THINKING): [{"type": "thinking", "thinking": [{"type": "text", "text": "Read it."}], "signature": "opaque", "closed": true}]
-        })),
-        Arc::clone(&call),
-    ];
-    assert!(super::super::strip_shared_provider_reasoning(&mut input));
-    assert!(Arc::ptr_eq(&input[0], &user));
-    assert!(Arc::ptr_eq(&input[2], &call));
-    assert!(input[1].get(RAW_THINKING).is_none());
-    assert!(input[1].get(REPLAY_REASONING_FIELD).is_none());
-    assert_eq!(input[1]["content"][0]["text"], "Reading.");
-    assert!(!super::super::strip_shared_provider_reasoning(&mut input));
-}
-
 #[tokio::test]
 async fn generation_error_never_commits_partial_tools_or_text() {
-    let mut stream = StreamState::default();
+    let mut stream = MistralStream::default();
     let error = stream.apply_data(&json!({
         "choices": [{"finish_reason": "error", "delta": {
             "content": "Partial",
@@ -264,7 +228,7 @@ async fn generation_error_never_commits_partial_tools_or_text() {
     assert!(error.to_string().contains("Mistral generation failed"));
     assert!(stream.text.is_empty());
     assert!(stream.tools.finish("Mistral").unwrap().is_empty());
-    let mut stream = StreamState::default();
+    let mut stream = MistralStream::default();
     assert!(
         stream
             .apply_data(r#"{"choices":[{"finish_reason":"error"}]}"#, &sink())

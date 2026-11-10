@@ -1,14 +1,13 @@
 use super::{
     AuthStore, CONNECTION_POLL_INTERVAL, ClientCapabilities, ClientMessage, CloudflareConfig,
     ConfigStore, ConnectOptions, Duration, Endpoint, Error, GatewayClient, GatewayConfig, Instant,
-    MAX_PENDING_FRAMES, PROCESS_FILE, PairingGrant, PairingStatus, PathBuf, Result, Serialize,
-    ServerMessage, SignalKind, StartupGuard, SystemTime, UNIX_EPOCH, Write,
-    direct_loopback_endpoint, loopback_endpoint, new_request_id, print_line, reuse_current_gateway,
-    running_process_pid, running_process_record, runtime_endpoint, shutdown_signal, signal,
-    start_background_gateway, stop_gateway,
+    PROCESS_FILE, PairingGrant, PairingStatus, PathBuf, Result, Serialize, ServerMessage,
+    SignalKind, StartupGuard, SystemTime, UNIX_EPOCH, Write, direct_loopback_endpoint,
+    loopback_endpoint, print_line, reuse_current_gateway, running_process_pid,
+    running_process_record, runtime_endpoint, shutdown_signal, signal, start_background_gateway,
+    stop_gateway,
 };
 
-#[cfg(unix)]
 pub(super) async fn connect(
     options: ConnectOptions,
     load_local_client: fn(&Endpoint) -> Result<Option<String>>,
@@ -42,7 +41,7 @@ pub(super) async fn connect(
     let mut interrupts = signal(SignalKind::interrupt())?;
     let mut terminations = signal(SignalKind::terminate())?;
 
-    let auth = AuthStore::open_validated(store.auth_path(), config.auth)?;
+    let auth = AuthStore::open(store.auth_path(), config.auth)?;
     let grant = auth.create_pairing_code()?;
     let deadline = pairing_deadline(grant.expires_at)?;
     let process = match start_background_gateway(
@@ -55,13 +54,12 @@ pub(super) async fn connect(
     {
         Ok(Some(process)) => process,
         Ok(None) => {
-            AuthStore::open_validated(store.auth_path(), config.auth)?
-                .revoke_pairing_code(&grant.code)?;
+            AuthStore::open(store.auth_path(), config.auth)?.revoke_pairing_code(&grant.code)?;
             return Ok(print_line(format_args!("connection cancelled"))?);
         }
         Err(error) => {
-            if let Err(revoke) = AuthStore::open_validated(store.auth_path(), config.auth)?
-                .revoke_pairing_code(&grant.code)
+            if let Err(revoke) =
+                AuthStore::open(store.auth_path(), config.auth)?.revoke_pairing_code(&grant.code)
             {
                 return Err(Error::Config(format!(
                     "{error}; failed to revoke one-time code: {revoke}"
@@ -135,7 +133,7 @@ pub(super) async fn connect(
             }
         }
 
-        let pairing = match AuthStore::open_validated(store.auth_path(), config.auth)
+        let pairing = match AuthStore::open(store.auth_path(), config.auth)
             .and_then(|auth| auth.pairing_status(&grant.code))
         {
             Ok(pairing) => pairing,
@@ -177,17 +175,8 @@ pub(super) async fn connect(
     }
 }
 
-#[cfg(not(unix))]
-pub(super) async fn connect(
-    _options: ConnectOptions,
-    _load_local_client: fn(&Endpoint) -> Result<Option<String>>,
-) -> Result<()> {
-    Err(unsupported_lifecycle())
-}
-
 /// Returns the separate local client endpoint of a tunneled gateway, if any, and the
 /// endpoint clients pair with.
-#[cfg(unix)]
 pub(super) async fn running_connection_endpoints<'a>(
     store: &ConfigStore,
     config: &GatewayConfig,
@@ -216,33 +205,21 @@ pub(super) async fn request_running_pairing_code(
     let client =
         GatewayClient::connect(client_endpoint, token, ClientCapabilities::default()).await?;
     let (sender, mut events) = client.into_parts();
-    let mut request_id = [0; uuid::fmt::Hyphenated::LENGTH];
-    let request_id = new_request_id(&mut request_id);
-    sender
-        .send(ClientMessage::CreatePairingCode {
-            request_id: request_id.into(),
-        })
-        .await?;
-
-    for _ in 0..MAX_PENDING_FRAMES {
-        let frame = events.next().await?.ok_or_else(|| {
-            Error::Protocol("gateway disconnected before returning a pairing code".into())
-        })?;
-        if let Some(error) = frame.message.response_error(Some(request_id)) {
-            return Err(Error::Protocol(error.message.into()));
-        }
-        match frame.message {
+    crate::client::request(
+        &sender,
+        &mut events,
+        "pairing code",
+        |request_id| ClientMessage::CreatePairingCode { request_id },
+        |request_id, message| match message {
             ServerMessage::PairingCode {
                 request_id: actual,
                 code,
                 expires_at,
-            } if *actual == *request_id => return Ok(PairingGrant { code, expires_at }),
-            _ => {}
-        }
-    }
-    Err(Error::Protocol(format!(
-        "gateway sent {MAX_PENDING_FRAMES} unrelated frames before the pairing response"
-    )))
+            } if *actual == *request_id => Some(PairingGrant { code, expires_at }),
+            _ => None,
+        },
+    )
+    .await
 }
 
 pub(super) async fn pairing_code(
@@ -298,7 +275,6 @@ pub(super) fn connection_endpoint(
     }
 }
 
-#[cfg(unix)]
 pub(super) fn ensure_gateway_stopped(store: &ConfigStore, config: &GatewayConfig) -> Result<()> {
     if running_process_pid(&store.state_dir().join(PROCESS_FILE))?.is_some() {
         return Err(Error::Config(
@@ -315,7 +291,6 @@ pub(super) fn ensure_gateway_stopped(store: &ConfigStore, config: &GatewayConfig
     Ok(())
 }
 
-#[cfg(unix)]
 pub(super) fn pairing_deadline(expires_at: i64) -> Result<Instant> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -332,7 +307,6 @@ pub(super) fn pairing_deadline(expires_at: i64) -> Result<Instant> {
         .ok_or_else(|| Error::Config("pairing deadline overflow".into()))
 }
 
-#[cfg(unix)]
 pub(super) fn stop_connect_gateway<T>(
     store: &ConfigStore,
     policy: crate::auth::AuthConfig,
@@ -348,7 +322,6 @@ pub(super) fn stop_connect_gateway<T>(
     }
 }
 
-#[cfg(unix)]
 pub(super) fn cleanup_connect(
     store: &ConfigStore,
     policy: crate::auth::AuthConfig,
@@ -356,10 +329,9 @@ pub(super) fn cleanup_connect(
     code: &str,
 ) -> Result<()> {
     stop_gateway(store.state_dir(), Some(pid))?;
-    AuthStore::open_validated(store.auth_path(), policy)?.revoke_pairing_code(code)
+    AuthStore::open(store.auth_path(), policy)?.revoke_pairing_code(code)
 }
 
-#[cfg(unix)]
 pub(super) fn print_connection(
     endpoint: &Endpoint,
     local_endpoint: Option<&Endpoint>,
@@ -369,7 +341,6 @@ pub(super) fn print_connection(
     write_connection(stdout.lock(), endpoint, local_endpoint, code)
 }
 
-#[cfg(any(unix, test))]
 pub(super) fn write_connection(
     mut output: impl Write,
     endpoint: &Endpoint,
@@ -399,7 +370,6 @@ pub(super) fn write_connection(
     output.flush()
 }
 
-#[cfg(any(unix, test))]
 pub(super) fn pairing_setup_payload(endpoint: &Endpoint, code: &str) -> String {
     format!("mobius-pair:v1|{endpoint}|{code}")
 }

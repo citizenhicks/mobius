@@ -5,21 +5,18 @@ mod bot_events;
 mod catalog;
 mod deletion;
 mod desktop;
-#[path = "harness/mobius/host/extensions.rs"]
 mod extensions;
 mod files;
-mod git;
+pub(crate) mod git;
 mod harnesses;
-#[path = "harness/mobius/host/live_chats.rs"]
 mod live_chats;
 mod memory;
 mod profile;
-#[path = "harness/mobius/host/providers.rs"]
 mod providers;
 mod replay;
 mod routines;
 mod session;
-mod ssh;
+pub(crate) mod ssh;
 mod telemetry;
 mod transcript;
 
@@ -63,10 +60,10 @@ use crate::harness::mobius::provider_catalog::{
 use crate::sandbox::GatewaySandbox;
 use crate::wire::{
     AgentComposition, GitDiffScope, HarnessConfig, MAX_FRAME_BYTES, ProfileSnapshot,
-    ProviderConfig, ReadyPayload, RecordedEvent, RenderedPreview, RoutineRunStatus, RunStats,
-    RunSummary, ServerFrame, ServerMessage, SessionActivity, SessionActivityState,
-    SessionReadyPayload, SessionRecord, SessionRunGroup, SessionWidget, SharedFrame,
-    SshIdentityRecord, VersionedAgentConfig, WorkspaceFileScope,
+    ProviderConfig, ReadyPayload, RecordedEvent, RoutineRunStatus, RunStats, RunSummary,
+    ServerFrame, ServerMessage, SessionActivity, SessionActivityState, SessionReadyPayload,
+    SessionRecord, SessionRunGroup, SessionWidget, SharedFrame, TranscriptPage,
+    VersionedAgentConfig, WorkspaceFileScope,
 };
 use crate::{Error, Result};
 
@@ -80,25 +77,23 @@ use self::files::{
     remove as delete_workspace_file, write as write_workspace_file,
 };
 use self::git::{
-    approve_credential as approve_git_credential_on_host, diff as workspace_git_diff,
-    diff_totals as workspace_git_diff_totals, probe_credential as probe_git_credential_on_host,
-    status as git_status, switch_branch as switch_workspace_branch,
+    diff as workspace_git_diff, diff_totals as workspace_git_diff_totals, status as git_status,
+    switch_branch as switch_workspace_branch,
 };
 use self::profile::{
     active_run_summary, gateway_ready, gateway_run_stats, gateway_session_summaries,
     local_machine_name, provider_usage, recent_run_groups, session_tree_ids,
 };
-pub(crate) use self::replay::RenderEvents;
 use self::replay::{
     FrameworkPresentation, ReplayEntry, classify_journal_sequence, compact_replay_deltas,
-    durable_history_page, event_sequence, load_replay, project_record, publish_ready_and_pending,
+    durable_history_page, load_replay, project_record, publish_ready_and_pending,
     record_and_publish, update_widgets, validate_gateway_event,
 };
+pub(crate) use self::replay::{RenderEvents, event_sequence};
 pub(crate) use self::session::{HostHandle, SessionRuntimeState};
 use self::session::{
     JournalDelivery, JournalSequence, LoadedReplay, SessionWidgets, TurnLifecycle, turn_lifecycle,
 };
-use self::ssh::{generate as generate_ssh_identity_on_host, identities as ssh_identities_on_host};
 
 const COMMAND_CAPACITY: usize = 128;
 const BROADCAST_CAPACITY: usize = 512;
@@ -160,6 +155,7 @@ pub(crate) struct RuntimeActivity {
 struct GatewayState {
     store: ConfigStore,
     config: Arc<StdMutex<GatewayConfig>>,
+    usage: Arc<crate::config::UsageStore>,
     credentials: Arc<CredentialStore>,
     bots: Arc<BotStore>,
     checkpoints: Arc<dyn CheckpointStore>,
@@ -355,7 +351,9 @@ impl GatewayHost {
             store.state_dir(),
         ));
         let work_activity = Arc::new(WorkActivity::new());
-        bots.attach_telemetry_notify(&telemetry.notify, &work_activity);
+        bots.storage
+            .attach_telemetry_notify(&telemetry.notify, &work_activity);
+        let usage = Arc::new(crate::config::UsageStore::open(store.usage_path())?);
         let config = Arc::new(StdMutex::new(config));
         let (events, _) = broadcast::channel(BROADCAST_CAPACITY);
         let activities = Arc::new(Mutex::new(catalog::SessionCatalog::default()));
@@ -366,6 +364,7 @@ impl GatewayHost {
             state: Arc::new(Mutex::new(GatewayState {
                 store,
                 config,
+                usage,
                 credentials,
                 bots,
                 checkpoints,
@@ -444,8 +443,16 @@ impl GatewayHost {
             .map_err(|error| internal(format!("session startup lock is poisoned: {error}")))?
             .is_empty();
         let mut idle = !starting
-            && !state.bots.has_running_routines().map_err(internal)?
-            && !state.bots.has_pending_deliveries().map_err(internal)?;
+            && !state
+                .bots
+                .storage
+                .has_running_routines()
+                .map_err(internal)?
+            && !state
+                .bots
+                .storage
+                .has_pending_deliveries()
+                .map_err(internal)?;
         let resident: Vec<_> = state
             .sessions
             .values()
@@ -461,12 +468,20 @@ impl GatewayHost {
         idle &= active_sessions == 0;
         // Routine reservations happen outside the registry lock; observe them
         // again and reject an idle result if any work changed during this query.
-        let running_routines = state.bots.running_routine_count().map_err(internal)?;
+        let running_routines = state
+            .bots
+            .storage
+            .running_routine_count()
+            .map_err(internal)?;
         let now = Utc::now().timestamp();
         let next_routine_at = state.bots.next_routine_at(now).map_err(internal)?;
         idle &= running_routines == 0
             && next_routine_at.is_none_or(|at| at.timestamp() > now)
-            && !state.bots.has_pending_deliveries().map_err(internal)?;
+            && !state
+                .bots
+                .storage
+                .has_pending_deliveries()
+                .map_err(internal)?;
         drop(state);
         let after = *self.work_activity.revision.borrow();
         Ok(RuntimeActivity {
@@ -590,22 +605,6 @@ impl GatewayHost {
         session_catalog(&checkpoints, &activities)
             .await
             .map_err(internal)
-    }
-
-    pub(crate) async fn probe_git_credential(
-        &self,
-        target: &str,
-    ) -> std::result::Result<Option<String>, Rejection> {
-        probe_git_credential_on_host(target).await
-    }
-
-    pub(crate) async fn approve_git_credential(
-        &self,
-        target: &str,
-        username: &str,
-        token: &str,
-    ) -> std::result::Result<String, Rejection> {
-        approve_git_credential_on_host(target, username, token).await
     }
 
     pub(crate) async fn bots(&self) -> std::result::Result<Vec<crate::wire::BotRecord>, Rejection> {
@@ -739,34 +738,12 @@ impl GatewayHost {
         );
         if let Some(mut prepared) = prepared {
             prepared.bot = Arc::clone(&bot);
-            let previous = state
-                .bots
-                .prepared
-                .lock()
-                .await
-                .insert(id.into(), Arc::new(prepared));
-            if let Some(previous) = previous {
-                previous.invalidate();
-            }
+            state.bots.prepared.replace(prepared).await;
         }
         let bots = state.bots.bots().map_err(internal)?;
         drop(state);
         self.broadcast_bots(&bots);
         Ok(bot)
-    }
-
-    pub(crate) async fn ssh_identities(
-        &self,
-    ) -> std::result::Result<Vec<SshIdentityRecord>, Rejection> {
-        tokio::task::spawn_blocking(ssh_identities_on_host)
-            .await
-            .map_err(internal)?
-    }
-
-    pub(crate) async fn generate_ssh_identity(
-        &self,
-    ) -> std::result::Result<(SshIdentityRecord, String), Rejection> {
-        generate_ssh_identity_on_host().await
     }
 
     pub(crate) async fn create_session(
@@ -791,7 +768,7 @@ impl GatewayHost {
         let _access = self.begin_mutation().await?;
         let (checkpoints, activities) = {
             let state = self.state.lock().await;
-            state.bots.bot(bot_id).map_err(invalid_bot)?;
+            state.bots.require_bot(bot_id).map_err(invalid_bot)?;
             (
                 Arc::clone(&state.checkpoints),
                 Arc::clone(&state.activities),
@@ -863,6 +840,7 @@ impl GatewayHost {
             let harness = Arc::new(crate::harness::HarnessContext {
                 store: state.store.clone(), // rules-allow: the chat actor owns its config store
                 gateway: Arc::clone(&state.config),
+                usage: Arc::clone(&state.usage),
                 credentials: Arc::clone(&state.credentials),
                 bots: Arc::clone(&state.bots),
                 checkpoints: Arc::clone(&state.checkpoints),
@@ -1165,7 +1143,13 @@ impl GatewayHost {
             let state = self.state.lock().await;
             let config = state.config()?;
             (
-                config.profile(),
+                ProfileSnapshot {
+                    user_name: crate::config::local_user_name(),
+                    daily_usage: state.usage.daily_usage().map_err(internal)?,
+                    provider_usage: Vec::new(),
+                    run_stats: RunStats::default(),
+                    recent_run_groups: Vec::new(),
+                },
                 Arc::clone(&state.checkpoints),
                 include_provider_usage.then(|| provider_usage(&config, &state.store)),
             )
@@ -1295,7 +1279,7 @@ fn validate_bot_workspace(
     bot_id: &str,
     workspace: &Path,
 ) -> std::result::Result<crate::config::CanonicalWorkspace, Rejection> {
-    state.bots.bot(bot_id).map_err(invalid_bot)?;
+    state.bots.require_bot(bot_id).map_err(invalid_bot)?;
     crate::config::validate_chat_workspace(
         workspace,
         state.store.state_dir(),
@@ -1311,7 +1295,10 @@ struct SessionStartGuard {
 
 impl Drop for SessionStartGuard {
     fn drop(&mut self) {
-        mobius::sync::recover_lock(&self.starting).remove(&self.id);
+        // A poisoned start map is never read; the gateway reports it on the next start.
+        if let Ok(mut starting) = self.starting.lock() {
+            starting.remove(&self.id);
+        }
     }
 }
 
@@ -1351,10 +1338,10 @@ impl GatewayState {
         id: &SessionId,
         bot_id: &str,
     ) -> std::result::Result<SessionStartGuard, Rejection> {
-        if self.resident_sessions() >= self.session_capacity()? {
+        if self.resident_sessions()? >= self.session_capacity()? {
             return Err(session_limit(self.session_capacity()?));
         }
-        let mut starting = mobius::sync::recover_lock(&self.starting_sessions);
+        let mut starting = self.starting_sessions()?;
         if starting.contains_key(id) {
             return Err(Rejection::new(
                 "session_starting",
@@ -1369,8 +1356,18 @@ impl GatewayState {
         })
     }
 
-    fn resident_sessions(&self) -> usize {
-        self.sessions.len() + mobius::sync::recover_lock(&self.starting_sessions).len()
+    fn resident_sessions(&self) -> std::result::Result<usize, Rejection> {
+        Ok(self.sessions.len() + self.starting_sessions()?.len())
+    }
+
+    /// Locks the chats that are starting; a poisoned map fails the request.
+    pub(super) fn starting_sessions(
+        &self,
+    ) -> std::result::Result<std::sync::MutexGuard<'_, HashMap<SessionId, String>>, Rejection> {
+        self.starting_sessions
+            .lock()
+            .map_err(crate::poisoned("starting chats"))
+            .map_err(internal)
     }
 
     fn session_capacity(&self) -> std::result::Result<usize, Rejection> {
@@ -1389,7 +1386,7 @@ impl GatewayHost {
         for attempt in 0..2 {
             let candidates = {
                 let state = self.state.lock().await;
-                if state.resident_sessions() < state.session_capacity()? {
+                if state.resident_sessions()? < state.session_capacity()? {
                     return Ok(capacity);
                 }
                 state
@@ -1413,7 +1410,7 @@ impl GatewayHost {
                 };
                 if host.stop_if_idle().await {
                     let state = self.state.lock().await;
-                    if state.resident_sessions() < state.session_capacity()? {
+                    if state.resident_sessions()? < state.session_capacity()? {
                         return Ok(capacity);
                     }
                 } else {
@@ -1479,7 +1476,15 @@ pub(crate) fn finish_publication<T>(
     }
 }
 
-fn internal(error: impl std::fmt::Display) -> Rejection {
+/// Checks a client submission once, at the gateway boundary.
+pub(crate) fn validated(
+    submission: Submission,
+) -> std::result::Result<ValidatedSubmission, Rejection> {
+    ValidatedSubmission::new(submission)
+        .map_err(|error| Rejection::new("invalid_submission", error.to_string()))
+}
+
+pub(crate) fn internal(error: impl std::fmt::Display) -> Rejection {
     Rejection::new("gateway_error", error.to_string())
 }
 
@@ -1574,7 +1579,7 @@ fn invalid_bot(error: impl std::fmt::Display) -> Rejection {
     Rejection::new("invalid_bot", error.to_string())
 }
 
-fn invalid_routine(error: impl std::fmt::Display) -> Rejection {
+pub(crate) fn invalid_routine(error: impl std::fmt::Display) -> Rejection {
     Rejection::new("invalid_routine", error.to_string())
 }
 
@@ -1613,7 +1618,10 @@ impl GatewayHost {
     pub(crate) async fn is_resident(&self, session_id: &SessionId) -> bool {
         let state = self.state.lock().await;
         state.sessions.contains_key(session_id)
-            || mobius::sync::recover_lock(&state.starting_sessions).contains_key(session_id)
+            || state
+                .starting_sessions
+                .lock()
+                .is_ok_and(|starting| starting.contains_key(session_id))
     }
 
     pub(crate) async fn checkpoint_store(&self) -> Arc<dyn CheckpointStore> {

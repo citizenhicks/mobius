@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    Component, Error, MAX_WORKSPACE_DIRECTORY_NAME_BYTES, Path, PathBuf, Result, TlsConfig, env, fs,
+};
+use sha2::Digest as _;
 
 /// A canonical workspace directory checked against the gateway's private boundaries.
 #[derive(Debug)]

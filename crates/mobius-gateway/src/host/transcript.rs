@@ -369,14 +369,7 @@ impl TranscriptReducer {
 
     /// Everything reduced, for a page that is read once.
     pub fn page(self) -> TranscriptPage {
-        let mut items = self.items.into_values().collect::<Vec<_>>();
-        items.sort_by_key(|slot| slot.position);
-        let mut rows = self.rows.into_values().collect::<Vec<_>>();
-        rows.sort_by(|a, b| row_order(a, b));
-        TranscriptPage {
-            items: items.into_iter().map(|slot| slot.item).collect(),
-            rows,
-        }
+        self.snapshot()
     }
 
     const fn quiet_step(sequence: u64, at: i64) -> Step {

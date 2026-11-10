@@ -31,6 +31,8 @@ use super::RuntimeContext;
 use super::SessionStartContext;
 use super::SessionStartSource;
 use super::StopContext;
+use super::TurnIdentity;
+use super::tools::HookTool;
 use crate::BoxFuture;
 use crate::Error;
 use crate::Result;
@@ -357,21 +359,13 @@ impl Extensions {
             count: Some(count),
             count_label: None,
             commands: Vec::new(),
-            widgets: vec![Arc::new(FrontendWidget {
-                id: "count".into(),
-                count: None,
-                priority: crate::protocol::FrontendPriority::Primary,
-                slot: FrontendSlot::Header,
-                text: text::DEFINITION
+            widgets: vec![Arc::new(FrontendWidget::new(
+                "count",
+                FrontendSlot::Header,
+                text::DEFINITION
                     .widget_count
                     .replace("{count}", &count.to_string()),
-                tone: FrontendTone::Neutral,
-                symbol: None,
-                icon_only: false,
-                progress: None,
-                content: None,
-                action: None,
-            })],
+            ))],
             references: self
                 .skills
                 .iter()
@@ -423,6 +417,52 @@ impl Extensions {
             },
             None => Vec::new(),
         }
+    }
+
+    /// Runs a hook inside an active turn, with the turn's shared input fields plus
+    /// `fields`, and reports its notices to `events`.
+    async fn run_turn_hook(
+        &self,
+        event: hooks::HookEvent,
+        turn: TurnIdentity<'_>,
+        fields: impl IntoIterator<Item = (String, Value)>,
+        subjects: &[&str],
+        events: &mut Vec<EventMsg>,
+    ) -> Vec<hooks::HookOutcome> {
+        let mut input = hook_input(
+            turn.session_id,
+            turn.model,
+            Some(turn.approval_policy),
+            Some(turn.turn_id),
+        );
+        input.extend(fields);
+        let outcomes = self.run_hooks(event, Value::Object(input), subjects).await;
+        push_hook_notices(events, &outcomes);
+        outcomes
+    }
+
+    /// Runs a tool hook: `tool` supplies the tool name, input and matcher subjects.
+    async fn run_tool_hook(
+        &self,
+        event: hooks::HookEvent,
+        turn: TurnIdentity<'_>,
+        tool: HookTool,
+        fields: impl IntoIterator<Item = (String, Value)>,
+        events: &mut Vec<EventMsg>,
+    ) -> Vec<hooks::HookOutcome> {
+        let subjects: Vec<&str> = tool.subjects.iter().map(AsRef::as_ref).collect();
+        let tool_fields = [
+            ("tool_name".into(), Value::String(tool.name)),
+            ("tool_input".into(), tool.input),
+        ];
+        self.run_turn_hook(
+            event,
+            turn,
+            tool_fields.into_iter().chain(fields),
+            &subjects,
+            events,
+        )
+        .await
     }
 
     async fn run_compact_hook(
@@ -657,7 +697,6 @@ fn installed_skill_roots_from(home: Option<PathBuf>, codex_home: Option<PathBuf>
         roots.push(codex_home.join("skills"));
         roots.push(codex_home.join("skills/.system"));
     }
-    #[cfg(unix)]
     roots.push(PathBuf::from("/etc/codex/skills"));
     roots
 }
@@ -874,21 +913,15 @@ impl Middleware for Extensions {
             if !matches!(context.author, crate::protocol::MessageAuthor::User) {
                 return Ok(());
             }
-            let mut input = hook_input(
-                context.turn.session_id,
-                context.turn.model,
-                Some(context.turn.approval_policy),
-                Some(context.turn.turn_id),
-            );
-            input.extend([("prompt".into(), Value::String(context.message.into()))]);
             let outcomes = self
-                .run_hooks(
+                .run_turn_hook(
                     hooks::HookEvent::UserPromptSubmit,
-                    Value::Object(input),
+                    context.turn,
+                    [("prompt".into(), Value::String(context.message.into()))],
                     &[],
+                    context.events,
                 )
                 .await;
-            push_hook_notices(context.events, &outcomes);
             if let Some(outcome) = outcomes.iter().find(|outcome| {
                 outcome.decision == Some(hooks::HookDecision::Block)
                     || outcome.continue_session == Some(false)
@@ -916,33 +949,16 @@ impl Middleware for Extensions {
                 return Ok(());
             }
             let tool = context.tools.hook_tool(context.call(), None);
-            let mut input = hook_input(
-                context.turn.session_id,
-                context.turn.model,
-                Some(context.turn.approval_policy),
-                Some(context.turn.turn_id),
-            );
-            input.extend([
-                ("tool_name".into(), Value::String(tool.name)),
-                (
-                    "tool_use_id".into(),
-                    Value::String(context.call().call_id.to_string()), // rules-allow: the hook input owns its JSON values
-                ),
-                ("tool_input".into(), tool.input),
-            ]);
-            let subjects = tool
-                .subjects
-                .iter()
-                .map(AsRef::as_ref)
-                .collect::<Vec<&str>>();
+            let call_id = Value::String(context.call().call_id.to_string());
             let outcomes = self
-                .run_hooks(
+                .run_tool_hook(
                     hooks::HookEvent::PreToolUse,
-                    Value::Object(input),
-                    &subjects,
+                    context.turn,
+                    tool,
+                    [("tool_use_id".into(), call_id)],
+                    context.events,
                 )
                 .await;
-            push_hook_notices(context.events, &outcomes);
             deliver_hook_context(&outcomes, |outcome, additional| {
                 context.delivery_once.deliver(
                     &mut context.input,
@@ -994,29 +1010,15 @@ impl Middleware for Extensions {
                     .find(|call| call.call_id == *call_id)
                     .ok_or_else(|| Error::Config("approval hook call is missing".into()))?;
                 let tool = context.tools.hook_tool(call, Some(context.reason));
-                let mut input = hook_input(
-                    context.turn.session_id,
-                    context.turn.model,
-                    Some(context.turn.approval_policy),
-                    Some(context.turn.turn_id),
-                );
-                input.extend([
-                    ("tool_name".into(), Value::String(tool.name)),
-                    ("tool_input".into(), tool.input),
-                ]);
-                let subjects = tool
-                    .subjects
-                    .iter()
-                    .map(AsRef::as_ref)
-                    .collect::<Vec<&str>>();
                 let outcomes = self
-                    .run_hooks(
+                    .run_tool_hook(
                         hooks::HookEvent::PermissionRequest,
-                        Value::Object(input),
-                        &subjects,
+                        context.turn,
+                        tool,
+                        [],
+                        context.events,
                     )
                     .await;
-                push_hook_notices(context.events, &outcomes);
                 if let Some(outcome) = outcomes.iter().find(|outcome| {
                     outcome.failure.is_some()
                         || outcome.permission_decision == Some(hooks::PermissionDecision::Deny)
@@ -1043,37 +1045,25 @@ impl Middleware for Extensions {
                 return Ok(());
             }
             let tool = context.tools.hook_tool(context.call, None);
-            let mut input = hook_input(
-                context.turn.session_id,
-                context.turn.model,
-                Some(context.turn.approval_policy),
-                Some(context.turn.turn_id),
-            );
-            input.extend([
-                ("tool_name".into(), Value::String(tool.name)),
+            let fields = [
                 (
                     "tool_use_id".into(),
-                    Value::String(context.call.call_id.to_string()), // rules-allow: the hook input owns its JSON values
+                    Value::String(context.call.call_id.to_string()),
                 ),
-                ("tool_input".into(), tool.input),
                 (
                     "tool_response".into(),
                     serde_json::to_value(&context.result().output)?,
                 ),
-            ]);
-            let subjects = tool
-                .subjects
-                .iter()
-                .map(AsRef::as_ref)
-                .collect::<Vec<&str>>();
+            ];
             let outcomes = self
-                .run_hooks(
+                .run_tool_hook(
                     hooks::HookEvent::PostToolUse,
-                    Value::Object(input),
-                    &subjects,
+                    context.turn,
+                    tool,
+                    fields,
+                    context.events,
                 )
                 .await;
-            push_hook_notices(context.events, &outcomes);
             if let Some(outcome) = outcomes.iter().find(|outcome| {
                 outcome.decision == Some(hooks::HookDecision::Block)
                     || outcome.continue_session == Some(false)
@@ -1473,7 +1463,6 @@ mod tests {
         assert!(error.to_string().contains("must not overlap"));
     }
 
-    #[cfg(unix)]
     #[test]
     fn plugin_data_root_rejects_symlink_without_writing_outside() {
         use std::os::unix::fs::symlink;
@@ -1499,7 +1488,6 @@ mod tests {
         assert!(!outside.join("extensions").exists());
     }
 
-    #[cfg(unix)]
     #[test]
     fn skill_resource_rejects_symlink_escape() {
         use std::os::unix::fs::symlink;

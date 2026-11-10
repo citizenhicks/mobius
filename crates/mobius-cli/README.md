@@ -11,8 +11,8 @@ Download one `mobius-cli` archive and checksum from
 - Apple Silicon macOS: `aarch64-apple-darwin`
 - x86_64 Linux: `x86_64-unknown-linux-gnu`
 
-Verify with `shasum -a 256 -c FILE.sha256`, extract the included `mobius` and
-`mobius-gateway` binaries into one directory, and put it on your `PATH`. Rust users and other
+Verify with `shasum -a 256 -c FILE.sha256`, extract the included `mobius`,
+`mobius-gateway`, and `cloudflared` binaries into one directory, and put it on your `PATH`. Rust users and other
 macOS or Linux architectures can install both commands with Rust 1.99.0 or newer:
 
 ```sh
@@ -118,7 +118,7 @@ mobius extensions
 ```
 
 The same lifecycle screen is available as `/extensions` from an idle chat. Installation accepts
-an HTTPS Git URL or a GitHub tree URL; update, uninstall, and digest-bound hook trust operate on
+an HTTPS or SSH Git URL, or a GitHub tree URL; update, uninstall, and digest-bound hook trust operate on
 the selected installed extension.
 
 `/login` is the single provider setup path. It opens the guided provider screen, where API keys
@@ -138,9 +138,11 @@ API-key providers use their standard environment variables:
 
 ```sh
 export OPENAI_API_KEY=...
-export MOONSHOT_API_KEY=...
-export OPENROUTER_API_KEY=...
 export ANTHROPIC_API_KEY=...
+export DEEPSEEK_API_KEY=...
+export MOONSHOT_API_KEY=...
+export MISTRAL_API_KEY=...
+export OPENROUTER_API_KEY=...
 ```
 
 The CLI stores only an owner-readable selected endpoint and endpoint-token map at
@@ -160,7 +162,8 @@ The TUI is a thin subscriber to the framework capability catalog:
 The CLI owns only shell lifecycle and presentation commands: `/help`, `/gateway`, `/extensions`,
 `/bot`, `/login`, `/pair`, `/profile`, `/events`, `/new`, `/clear`, `/rename`, `/pin`, `/unpin`,
 `/reassign`, `/attach`, `/delete`, `/files`, `/diff`, `/branch`, `/queued`, `/status`, `/interrupt`,
-and `/exit`. Capabilities contribute commands such as `/artifacts`, so the menu changes with the
+`/attention`, `/conversation`, `/workspace`, and `/exit`. Capabilities contribute commands such as
+`/memory` or `/tasks`, so the menu changes with the
 installed gateway capabilities. The gateway always contributes `/resume` as the saved-chat picker;
 it lists chats across every workspace. Bot → Conversations opens the same chats grouped by Bot.
 

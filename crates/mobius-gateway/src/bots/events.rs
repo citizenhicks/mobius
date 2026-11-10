@@ -115,11 +115,11 @@ impl BotStorage {
         })
     }
 
-    pub(super) fn record_hook(&self, event: &HookEvent) -> Result<bool> {
+    pub(crate) fn record_hook(&self, event: &HookEvent) -> Result<bool> {
         self.transaction(|tx| record_event(tx, event, None))
     }
 
-    pub(super) fn hook_event(&self, id: &str) -> Result<Option<HookEvent>> {
+    pub(crate) fn hook_event(&self, id: &str) -> Result<Option<HookEvent>> {
         let connection = self.lock()?;
         connection
             .query_row(
@@ -132,7 +132,7 @@ impl BotStorage {
             .transpose()
     }
 
-    pub(super) fn unpublished_events(&self, limit: usize) -> Result<Vec<HookEvent>> {
+    pub(crate) fn unpublished_events(&self, limit: usize) -> Result<Vec<HookEvent>> {
         let connection = self.lock()?;
         let mut query = connection.prepare(
             "SELECT event_json FROM hook_events WHERE published=0 ORDER BY occurred_at,rowid LIMIT ?1",
@@ -149,14 +149,14 @@ impl BotStorage {
         drop(connection);
         events
     }
-    pub(super) fn event_published(&self, id: &str) -> Result<()> {
+    pub(crate) fn event_published(&self, id: &str) -> Result<()> {
         self.transaction(|tx| {
             tx.execute("UPDATE hook_events SET published=1 WHERE id=?1", [id])?;
             Ok(())
         })
     }
 
-    pub(super) fn source_cursor(&self, session_id: &SessionId) -> Result<(u64, Option<Arc<str>>)> {
+    pub(crate) fn source_cursor(&self, session_id: &SessionId) -> Result<(u64, Option<Arc<str>>)> {
         let connection = self.lock()?;
         let Some((sequence, owner)) = connection
             .query_row(
@@ -173,7 +173,7 @@ impl BotStorage {
             .map_err(|error| Error::Config(format!("negative session cursor: {error}")))?;
         Ok((sequence, Some(owner.into())))
     }
-    pub(super) fn advance_source_cursor(
+    pub(crate) fn advance_source_cursor(
         &self,
         session_id: &SessionId,
         bot_id: &str,
@@ -184,7 +184,7 @@ impl BotStorage {
             Ok(())
         })
     }
-    pub(super) fn project_session(&self, event: &HookEvent, sequence: u64) -> Result<bool> {
+    pub(crate) fn project_session(&self, event: &HookEvent, sequence: u64) -> Result<bool> {
         let HookSource::Session { session_id } = &event.source else {
             return Err(Error::Config(
                 "session projection requires a session source".into(),
@@ -198,7 +198,7 @@ impl BotStorage {
         })
     }
 
-    pub(super) fn pending_actions(&self, now: i64, limit: usize) -> Result<Vec<PendingHookAction>> {
+    pub(crate) fn pending_actions(&self, now: i64, limit: usize) -> Result<Vec<PendingHookAction>> {
         let connection = self.lock()?;
         let limit = i64::try_from(limit)
             .map_err(|error| Error::Config(format!("hook page is too large: {error}")))?;
@@ -227,7 +227,7 @@ impl BotStorage {
         actions
     }
 
-    pub(super) fn action_accepted(&self, id: &str) -> Result<()> {
+    pub(crate) fn action_accepted(&self, id: &str) -> Result<()> {
         self.transaction(|tx| {
             tx.execute(
                 "UPDATE hook_outbox SET accepted=1,retry_at=NULL,last_error=NULL WHERE id=?1",
@@ -236,7 +236,7 @@ impl BotStorage {
             Ok(())
         })
     }
-    pub(super) fn action_failed(&self, id: &str, error: &str, retry_at: Option<i64>) -> Result<()> {
+    pub(crate) fn action_failed(&self, id: &str, error: &str, retry_at: Option<i64>) -> Result<()> {
         self.transaction(|tx| {
             tx.execute(
                 "UPDATE hook_outbox SET last_error=?1,retry_at=?2 WHERE id=?3 AND accepted=0",
@@ -245,11 +245,11 @@ impl BotStorage {
             Ok(())
         })
     }
-    pub(super) fn action_pending(&self, id: &str) -> Result<bool> {
+    pub(crate) fn action_pending(&self, id: &str) -> Result<bool> {
         let connection = self.lock()?;
         Ok(connection.query_row("SELECT EXISTS(SELECT 1 FROM hook_outbox WHERE id=?1 AND accepted=0 AND retry_at IS NOT NULL)",[id],|row|row.get(0))?)
     }
-    pub(super) fn has_pending_deliveries(&self) -> Result<bool> {
+    pub(crate) fn has_pending_deliveries(&self) -> Result<bool> {
         let connection = self.lock()?;
         Ok(connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM hook_outbox WHERE accepted=0 AND retry_at IS NOT NULL)",
@@ -257,7 +257,7 @@ impl BotStorage {
             |row| row.get(0),
         )?)
     }
-    pub(super) fn has_monitored_sessions(&self) -> Result<bool> {
+    pub(crate) fn has_monitored_sessions(&self) -> Result<bool> {
         let connection = self.lock()?;
         Ok(connection.query_row("SELECT EXISTS(SELECT 1 FROM hook_bindings WHERE enabled=1 AND json_extract(selector_json,'$.source.type')='session')",[],|row|row.get(0))?)
     }

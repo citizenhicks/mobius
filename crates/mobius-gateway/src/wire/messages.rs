@@ -1,7 +1,18 @@
 use mobius::SessionId;
 use std::sync::Arc;
 
-use super::*;
+use super::{
+    AgentComposition, BTreeSet, BackgroundApproval, BotRecord, BotShape, CatalogHint,
+    CliHarnessConfig, ClientCapabilities, ClientStatus, ConfiguredModel, Deserialize, DiffTotals,
+    DirectoryListing, FrontendContribution, GatewayNotification, GitDiffScope, HarnessConfig,
+    HarnessKind, HistoryCursor, MemoryRecord, MessageTarget, Op, PROTOCOL_VERSION, PathBuf,
+    ProfileSnapshot, ProviderConfig, ProviderTint, ReadyPayload, RecordedEvent, Routine,
+    RoutineDefinition, RoutineRun, RoutineRunPreview, Serialize, SessionFileRecord,
+    SessionFileReference, SessionReadyPayload, SessionRecord, SessionSlot, SshIdentityRecord,
+    Submission, TranscriptOp, TranscriptPage, Value, WorkspaceFileRecord, WorkspaceFileScope,
+    base64_bytes, deserialize_frame, desktop_bytes,
+};
+use serde::de::Error as _;
 
 const MAX_REQUEST_ID_BYTES: usize = 256;
 
@@ -87,7 +98,7 @@ pub enum ClientMessage {
     },
     /// Ordered RFB bytes for this connection's desktop stream.
     DesktopData {
-        /// The raw RFB data, limited to [`MAX_DESKTOP_CHUNK_BYTES`].
+        /// The raw RFB data, limited to [`MAX_DESKTOP_CHUNK_BYTES`](crate::wire::MAX_DESKTOP_CHUNK_BYTES).
         #[serde(with = "desktop_bytes")]
         data: Vec<u8>,
     },
@@ -115,15 +126,6 @@ pub enum ClientMessage {
         request_id: Arc<str>,
         /// The session identifier.
         session_id: SessionId,
-    },
-    /// Asks for the line totals of a Git diff, as Git counts them.
-    GetGitDiffTotals {
-        /// The request identifier.
-        request_id: Arc<str>,
-        /// The session identifier.
-        session_id: SessionId,
-        /// The scope.
-        scope: GitDiffScope,
     },
     /// Registers the local Mac renderer for gateway-assigned browser pages.
     SetBrowserRuntime {
@@ -210,13 +212,6 @@ pub enum ClientMessage {
         /// IDs whose existing credential sources must survive a redacted report edit.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         preserve_auth: Vec<String>,
-    },
-    /// Deliver a snapshot immediately.
-    SendTelemetry {
-        /// Correlates this response with its request.
-        request_id: Arc<str>,
-        /// Collector to send now.
-        sink_id: String,
     },
     /// Selects the unpair client case.
     UnpairClient {
@@ -562,15 +557,8 @@ pub enum ClientMessage {
         id: Arc<str>,
         /// The expected digest.
         expected_digest: Arc<str>,
-    },
-    /// Selects the revoke extension hooks trust case.
-    RevokeExtensionHooksTrust {
-        /// The request identifier.
-        request_id: Arc<str>,
-        /// The identifier.
-        id: Arc<str>,
-        /// The expected digest.
-        expected_digest: Arc<str>,
+        /// Whether to trust (`true`) or revoke trust in (`false`) the package's hooks.
+        trusted: bool,
     },
     /// Selects the probe git credential case.
     ProbeGitCredential {
@@ -608,6 +596,8 @@ pub enum ClientMessage {
         session_id: SessionId,
         /// The scope.
         scope: GitDiffScope,
+        /// Answer with Git's own line counts (`git_diff_totals`) instead of the display diff.
+        totals: bool,
     },
     /// Selects the switch git branch case.
     SwitchGitBranch {
@@ -684,21 +674,8 @@ pub enum ClientMessage {
         instance: String,
         /// The provider.
         provider: String,
-        /// The API key.
-        api_key: String,
-        /// The expires at.
-        expires_at: Option<u64>,
-    },
-    /// Selects the set provider endpoint credential case.
-    SetProviderEndpointCredential {
-        /// The request identifier.
-        request_id: Arc<str>,
-        /// The instance.
-        instance: String,
-        /// The provider.
-        provider: String,
-        /// The base URL.
-        base_url: mobius::backend::model::provider::BaseUrl,
+        /// A custom endpoint the credential is bound to; omitted for the default endpoint.
+        base_url: Option<mobius::backend::model::provider::BaseUrl>,
         /// The API key.
         api_key: String,
         /// The expires at.
@@ -860,7 +837,7 @@ pub enum ServerMessage {
     },
     /// Ordered RFB bytes from the gateway desktop.
     DesktopData {
-        /// The raw RFB data, limited to [`MAX_DESKTOP_CHUNK_BYTES`].
+        /// The raw RFB data, limited to [`MAX_DESKTOP_CHUNK_BYTES`](crate::wire::MAX_DESKTOP_CHUNK_BYTES).
         #[serde(with = "desktop_bytes")]
         data: Vec<u8>,
     },

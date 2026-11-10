@@ -11,7 +11,6 @@ use std::sync::atomic::Ordering;
 use super::Agent;
 use super::AgentConfig;
 use super::create_agent;
-use super::send_event;
 use crate::BoxFuture;
 use crate::Error;
 use crate::Result;

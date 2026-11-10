@@ -1,12 +1,8 @@
 use std::sync::OnceLock;
-use std::time::Duration;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use ratatui::style::Color;
-use ratatui::style::Modifier;
-use ratatui::style::Style;
-use ratatui::text::Line;
-use ratatui::text::Span;
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
 
 static PROCESS_START: OnceLock<Instant> = OnceLock::new();
 

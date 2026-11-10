@@ -1,10 +1,34 @@
 use std::ops::ControlFlow;
+use std::sync::Arc;
 
 use mobius::{Error, Result};
-use mobius_gateway::client::GatewayEvents;
-use mobius_gateway::wire::{ReadyPayload, ServerFrame, ServerMessage, apply_session_changes};
+use mobius_gateway::client::{GatewayEvents, GatewaySender};
+use mobius_gateway::wire::{
+    ClientMessage, ReadyPayload, ServerFrame, ServerMessage, apply_session_changes,
+};
 
 use crate::gateway_error;
+
+/// Sends the request `message` builds under a fresh request id and waits for its response.
+/// # Errors
+/// Returns send failures and everything [`await_response`] returns.
+pub(crate) async fn request<T>(
+    sender: &GatewaySender,
+    events: &mut GatewayEvents,
+    gateway: Option<&mut ReadyPayload>,
+    message: impl FnOnce(Arc<str>) -> ClientMessage,
+    mut response: impl FnMut(&str, ServerMessage) -> ControlFlow<T, ServerMessage>,
+) -> Result<T> {
+    let request_id = crate::fresh_id();
+    sender
+        .send(message(Arc::clone(&request_id)))
+        .await
+        .map_err(gateway_error)?;
+    await_response(events, Some(&request_id), gateway, |message| {
+        response(&request_id, message)
+    })
+    .await
+}
 
 /// Waits for one correlated response while preserving unrelated events and catalog updates.
 /// # Errors

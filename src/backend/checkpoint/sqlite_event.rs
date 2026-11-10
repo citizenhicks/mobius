@@ -160,7 +160,6 @@ pub(super) fn store_event(
     );
     let discard_after_delivery = is_transient_event(&event.msg);
     let index = event_index(&event.msg)?;
-    let event_json = serde_json::to_string(&stored_event(&event, transcript))?;
     let latest = transaction
         .prepare_cached("SELECT latest_event_sequence FROM sessions WHERE session_id = ?1")?
         .query_row([session_id], |row| row.get::<_, i64>(0))
@@ -178,25 +177,29 @@ pub(super) fn store_event(
     } else {
         Vec::new()
     };
-    let stream_metrics_json = serde_json::to_string(&stream_metrics)?;
-    transaction
-        .prepare_cached(
-            "INSERT INTO event_journal (
-             session_id, sequence, recorded_at_ms, event_kind, model_step_id,
-             stream_phase, delta_bytes, event_json, stream_metrics_json
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-        )?
-        .execute(params![
-            session_id,
-            sequence,
-            recorded_at_ms,
-            index.kind,
-            index.model_step_id,
-            index.stream_phase.map(stream_phase_name),
-            index.delta_bytes,
-            event_json,
-            stream_metrics_json,
-        ])?;
+    // A transient event takes a sequence for delivery but never reaches the journal.
+    if !discard_after_delivery {
+        let event_json = serde_json::to_string(&stored_event(&event, transcript))?;
+        let stream_metrics_json = serde_json::to_string(&stream_metrics)?;
+        transaction
+            .prepare_cached(
+                "INSERT INTO event_journal (
+                 session_id, sequence, recorded_at_ms, event_kind, model_step_id,
+                 stream_phase, delta_bytes, event_json, stream_metrics_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            )?
+            .execute(params![
+                session_id,
+                sequence,
+                recorded_at_ms,
+                index.kind,
+                index.model_step_id,
+                index.stream_phase.map(stream_phase_name),
+                index.delta_bytes,
+                event_json,
+                stream_metrics_json,
+            ])?;
+    }
     transaction
         .prepare_cached("UPDATE sessions SET latest_event_sequence = ?2 WHERE session_id = ?1")?
         .execute(params![session_id, sequence])?;
@@ -223,11 +226,6 @@ pub(super) fn store_event(
                 "DELETE FROM event_journal
              WHERE session_id = ?1 AND event_kind = 'token_count' AND sequence < ?2",
             )?
-            .execute(params![session_id, sequence])?;
-    }
-    if discard_after_delivery {
-        transaction
-            .prepare_cached("DELETE FROM event_journal WHERE session_id = ?1 AND sequence = ?2")?
             .execute(params![session_id, sequence])?;
     }
     Ok(JournalEvent {

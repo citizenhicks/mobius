@@ -1,100 +1,41 @@
 use std::sync::Arc;
 
-use super::BlockKey;
-use super::MAX_ENTRY_BYTES;
-use super::PickerState;
-use super::PreviewContent;
-use super::PreviewState;
-use super::TranscriptTone;
-use super::TuiState;
-use super::attachment_label;
 use super::view::bounded_terminal_text;
+use super::{
+    BlockKey, MAX_ENTRY_BYTES, PickerState, PreviewContent, PreviewState, TranscriptTone, TuiState,
+    attachment_label,
+};
 use crate::frontend::terminal::terminal_text;
-use mobius::protocol::AssistantMessageEvent;
-use mobius::protocol::EventMsg;
-use mobius::protocol::FrontendEvent;
-use mobius::protocol::FrontendPreviewUpdate;
-use mobius::protocol::FrontendTone;
-use mobius::protocol::MessageAuthor;
-use mobius::protocol::MessageEvent;
-use mobius::protocol::ModelStepCompletedEvent;
-use mobius::protocol::ModelStepContentPhase;
-use mobius::protocol::ModelStepOutcome;
-use mobius::protocol::RenderedBlock;
-use mobius::protocol::TokenUsageInfo;
-use mobius_gateway::wire::RecordedEvent;
-use mobius_gateway::wire::RenderedPreview;
-use mobius_gateway::wire::TranscriptItem;
-use mobius_gateway::wire::TranscriptItemContent;
-use mobius_gateway::wire::TranscriptOp;
-use mobius_gateway::wire::TranscriptPage;
+use mobius::protocol::{
+    EventMsg, FrontendEvent, FrontendPreviewUpdate, FrontendTone, MessageAuthor, MessageEvent,
+    ModelStepCompletedEvent, ModelStepContentPhase, ModelStepOutcome, RenderedBlock,
+    TokenUsageInfo,
+};
+use mobius_gateway::wire::{
+    RecordedEvent, RenderedPreview, TranscriptItem, TranscriptItemContent, TranscriptOp,
+    TranscriptPage,
+};
 
 impl TuiState {
     #[cfg(test)]
     pub(super) fn handle_agent_event(&mut self, event: EventMsg, blocks: Vec<RenderedBlock>) {
-        self.handle_event(event, blocks, None, true);
+        self.handle_event(event, blocks, true);
     }
 
-    fn handle_event(
-        &mut self,
-        event: EventMsg,
-        blocks: Vec<RenderedBlock>,
-        submission_id: Option<Arc<str>>,
-        live: bool,
-    ) {
-        self.prepare_agent_event(&event);
+    fn handle_event(&mut self, event: EventMsg, blocks: Vec<RenderedBlock>, live: bool) {
         let was_rendered = !blocks.is_empty();
         for block in blocks {
             self.apply_block(block);
         }
         match event {
             EventMsg::TurnStarted(turn) => {
-                self.commit_reasoning();
-                self.commit_stream();
                 self.reasoning_title = None;
                 if live {
                     self.start_turn(turn.turn_id);
                 }
             }
-            EventMsg::Message(message) => {
-                self.handle_message(message, submission_id);
-            }
-            EventMsg::MessageDelta(message) => {
-                if let Some(id) = submission_id {
-                    let key = BlockKey {
-                        capability: "message".into(),
-                        value: id.to_string(),
-                    };
-                    let text = if self
-                        .transcript
-                        .iter()
-                        .any(|entry| entry.id.as_ref() == Some(&key))
-                    {
-                        message.text
-                    } else {
-                        format!("› {}", message.text)
-                    };
-                    self.upsert_text(key, &text, true, TranscriptTone::User);
-                }
-            }
-            EventMsg::AssistantContentDelta(delta) => {
-                self.remember_streamed_phase(delta.model_step_id, delta.phase);
-                if delta.phase == ModelStepContentPhase::Reasoning {
-                    self.append_reasoning(&delta.delta);
-                } else {
-                    self.append_stream(&delta.delta, delta.phase);
-                }
-            }
-            EventMsg::ModelStepStarted(step) => {
-                self.streamed_step_phases
-                    .entry(Arc::clone(&step.model_step_id))
-                    .or_default();
-            }
             EventMsg::ModelStepCompleted(step) => {
                 self.handle_model_step_completed(&step);
-            }
-            EventMsg::AssistantMessage(message) => {
-                self.handle_assistant_message(message, was_rendered);
             }
             EventMsg::ExecApprovalRequest(request) => {
                 if live {
@@ -118,15 +59,11 @@ impl TuiState {
                 self.requested_resume = Some(request);
             }
             EventMsg::TurnComplete(turn) => {
-                self.commit_reasoning();
-                self.commit_stream();
                 if live {
                     self.finish_turn(&turn.turn_id);
                 }
             }
             EventMsg::TurnAborted(turn) => {
-                self.commit_reasoning();
-                self.commit_stream();
                 if live {
                     self.finish_turn(&turn.turn_id);
                 }
@@ -138,7 +75,6 @@ impl TuiState {
                 }
             }
             EventMsg::Error(error) => {
-                self.commit_stream();
                 if !was_rendered {
                     self.push(format!("error: {}", error.message), TranscriptTone::Error);
                 }
@@ -162,31 +98,6 @@ impl TuiState {
             EventMsg::Frontend(update) => self.handle_frontend_event(update),
             // Web search actions, among others, present through the canonical block list.
             _ => {}
-        }
-    }
-
-    fn prepare_agent_event(&mut self, event: &EventMsg) {
-        let preserves_commentary_stream = match event {
-            EventMsg::AssistantContentDelta(delta) => {
-                delta.phase == ModelStepContentPhase::Commentary
-            }
-            EventMsg::AssistantMessage(message) => self.streaming_phase.is_some_and(|phase| {
-                self.streamed_step_phases
-                    .get(&message.model_step_id)
-                    .is_some_and(|streamed| streamed.contains(phase))
-            }),
-            _ => false,
-        };
-        if !preserves_commentary_stream {
-            self.commit_commentary_stream();
-        }
-        if matches!(
-            event,
-            EventMsg::ModelStepCompleted(step)
-                if !matches!(step.outcome, ModelStepOutcome::Completed { .. })
-        ) {
-            self.commit_reasoning();
-            self.commit_stream();
         }
     }
 
@@ -231,7 +142,6 @@ impl TuiState {
                     value: id.to_string(),
                 },
                 &text,
-                false,
                 tone,
             );
         } else {
@@ -239,28 +149,20 @@ impl TuiState {
         }
     }
 
-    fn upsert_text(&mut self, id: BlockKey, text: &str, partial: bool, tone: TranscriptTone) {
+    fn upsert_text(&mut self, id: BlockKey, text: &str, tone: TranscriptTone) {
         if let Some(entry) = self
             .transcript
             .iter_mut()
             .find(|entry| entry.id.as_ref() == Some(&id))
         {
-            if partial {
-                if !entry.pending {
-                    return;
-                }
-                entry.text.push_str(&terminal_text(text));
-                super::view::truncate_display_text(&mut entry.text, MAX_ENTRY_BYTES);
-            } else {
-                entry.text = bounded_terminal_text(text, MAX_ENTRY_BYTES);
-            }
-            entry.pending = partial;
+            entry.text = bounded_terminal_text(text, MAX_ENTRY_BYTES);
+            entry.pending = false;
             entry.rendered = None;
+            entry.stream = None;
         } else if !text.is_empty() {
             self.push(text, tone);
             if let Some(entry) = self.transcript.back_mut() {
                 entry.id = Some(id);
-                entry.pending = partial;
             }
         }
     }
@@ -271,7 +173,6 @@ impl TuiState {
             ModelStepOutcome::Failed
             | ModelStepOutcome::Interrupted
             | ModelStepOutcome::Retrying => {
-                self.streamed_step_phases.remove(&step.model_step_id);
                 // Block ids are namespaced by model step, so a step that ends
                 // without completing can never finish its pending blocks. The
                 // backend closes live ones with its own end events; this sweep
@@ -290,45 +191,6 @@ impl TuiState {
                     }
                 }
             }
-        }
-    }
-
-    fn handle_assistant_message(&mut self, message: AssistantMessageEvent, was_rendered: bool) {
-        let streamed = self
-            .streamed_step_phases
-            .remove(&message.model_step_id)
-            .unwrap_or_default();
-        let buffered_stream = self
-            .streaming_phase
-            .filter(|phase| streamed.contains(*phase));
-        if buffered_stream.is_some() {
-            self.streaming.clear();
-            self.streaming_markdown.clear();
-            self.streaming_phase = None;
-        }
-        let buffered_reasoning =
-            !self.reasoning.is_empty() && streamed.contains(ModelStepContentPhase::Reasoning);
-        if buffered_reasoning {
-            self.reasoning.clear();
-            self.reasoning_markdown.clear();
-        }
-        for item in &message.content {
-            if item.phase == ModelStepContentPhase::Reasoning
-                && let Some(title) = super::latest_summary_line(&terminal_text(&item.text))
-            {
-                self.reasoning_title = Some(title);
-            }
-        }
-        if was_rendered {
-            return;
-        }
-        for item in message.content {
-            let replaces_buffer = buffered_stream == Some(item.phase)
-                || (buffered_reasoning && item.phase == ModelStepContentPhase::Reasoning);
-            if item.text.is_empty() || (streamed.contains(item.phase) && !replaces_buffer) {
-                continue;
-            }
-            self.push(item.text, narrative_tone(item.phase));
         }
     }
 
@@ -366,12 +228,11 @@ impl TuiState {
             FrontendEvent::Picker { title, options } => {
                 self.preview = None;
                 self.capability_overlay = None;
-                self.picker = Some(PickerState {
-                    title: terminal_text(&title),
-                    options: options.into_iter().map(Into::into).collect(),
-                    selected: 0,
-                    query: String::new(),
-                });
+                self.picker = Some(PickerState::new(
+                    terminal_text(&title),
+                    options.into_iter().map(Into::into).collect(),
+                    0,
+                ));
             }
             // The gateway has already projected renders into `blocks`, and preview
             // transcripts arrive as gateway-rendered records; nested previews are control
@@ -430,7 +291,7 @@ impl UsageStatus {
 /// event's control state. The terminal draws items in arrival order without row grouping.
 pub(super) fn handle_gateway_event(
     state: &mut TuiState,
-    record: RecordedEvent,
+    mut record: RecordedEvent,
     transcript: Vec<TranscriptOp>,
     live: bool,
 ) {
@@ -448,7 +309,7 @@ pub(super) fn handle_gateway_event(
     {
         state.preview_request_id = None;
     }
-    if let Some(preview) = record.preview {
+    if let Some(preview) = record.take_preview() {
         apply_preview(state, preview, requested);
     } else {
         let mut blocks = Vec::new();
@@ -482,6 +343,8 @@ pub(super) fn handle_gateway_event(
                     {
                         entry.text.push_str(&terminal_text(&text));
                         super::view::truncate_display_text(&mut entry.text, MAX_ENTRY_BYTES);
+                        // Appends only extend the text, so the stream cache reparses just its tail.
+                        entry.stream.get_or_insert_with(Box::default);
                         entry.rendered = None;
                         if matches!(entry.tone, TranscriptTone::Reasoning) {
                             state.reasoning_title = super::latest_summary_line(&entry.text);
@@ -501,7 +364,7 @@ pub(super) fn handle_gateway_event(
                     state.apply_block(block);
                 }
             }
-            event => state.handle_event(event, blocks, record.event.submission_id, live),
+            event => state.handle_event(event, blocks, live),
         }
     }
 }
@@ -615,8 +478,6 @@ impl TuiState {
         for item in page.items {
             self.apply_item(Arc::unwrap_or_clone(item));
         }
-        self.commit_reasoning();
-        self.commit_stream();
     }
 
     fn apply_item(&mut self, item: TranscriptItem) {
@@ -634,7 +495,6 @@ impl TuiState {
                         value: item.id.to_string(),
                     },
                     &text,
-                    false,
                     narrative_tone(phase),
                 );
             }

@@ -224,6 +224,7 @@ async fn start(
         gateway_sandbox,
     } = assemble(
         Arc::clone(&context.gateway),
+        Arc::clone(&context.usage),
         spec,
         &context.store,
         Arc::clone(&context.checkpoints),
@@ -232,11 +233,11 @@ async fn start(
         Arc::clone(&context.discovery_gate),
         Arc::clone(&context.desktop),
         Arc::clone(&context.remote_desktop),
-        Some(session_id.share()),
+        session_id.share(),
         origin_label,
         Arc::clone(&prepared),
-        Some(Arc::clone(&context.live_chats)),
-        Some(Arc::clone(&context.host_access)),
+        Arc::clone(&context.live_chats),
+        Arc::clone(&context.host_access),
     )
     .await?;
     let frontend_sink = agent.frontend_sink();
@@ -261,18 +262,11 @@ async fn start(
 async fn prepared_bot(context: &HarnessContext, spec: &ChatSpec) -> Result<Arc<PreparedBot>> {
     let bots = &context.bots;
     loop {
-        let generation = bots.preparation_generation.load(Ordering::Acquire);
+        let generation = bots.prepared.generation();
         let runtime_bot = bots.runtime_bot(&spec.bot_id)?;
         let bot = Arc::clone(&runtime_bot.record);
         let epoch = context.provider_epoch.load(Ordering::Acquire);
-        let cached = bots
-            .prepared
-            .lock()
-            .await
-            .get(&*bot.id)
-            .filter(|prepared| prepared.matches_runtime(&bot) && prepared.epoch == epoch)
-            .map(Arc::clone);
-        if let Some(prepared) = cached {
+        if let Some(prepared) = bots.prepared.current(&bot, epoch).await {
             return Ok(prepared);
         }
         let preparation = {
@@ -288,33 +282,22 @@ async fn prepared_bot(context: &HarnessContext, spec: &ChatSpec) -> Result<Arc<P
             )
         };
         let prepared = preparation.await;
-        let mut cache = bots.prepared.lock().await;
-        let current_bot = bots.bot(&spec.bot_id)?;
         // A refresh can finish while preparation waits for external resources.
-        if generation != bots.preparation_generation.load(Ordering::Acquire)
-            || epoch != context.provider_epoch.load(Ordering::Acquire)
-            || !crate::harness::same_runtime(
-                &bot,
-                &current_bot.description,
-                &current_bot.config.config,
-            )
-        {
-            continue;
-        }
-        let cached = cache
-            .get(&*bot.id)
-            .filter(|cached| cached.matches_runtime(&bot) && cached.epoch == epoch)
-            .map(Arc::clone);
-        let prepared = if let Some(cached) = cached {
-            cached
-        } else {
-            let prepared = Arc::new(prepared?);
-            if let Some(previous) = cache.insert(Arc::clone(&bot.id), Arc::clone(&prepared)) {
-                previous.invalidate();
-            }
-            prepared
+        let still_current = || {
+            let current_bot = bots.bot(&spec.bot_id)?;
+            Ok(epoch == context.provider_epoch.load(Ordering::Acquire)
+                && crate::harness::same_runtime(
+                    &bot,
+                    &current_bot.description,
+                    &current_bot.config.config,
+                ))
         };
-        drop(cache);
-        return Ok(prepared);
+        if let Some(prepared) = bots
+            .prepared
+            .store(generation, epoch, &bot, prepared, still_current)
+            .await?
+        {
+            return Ok(prepared);
+        }
     }
 }

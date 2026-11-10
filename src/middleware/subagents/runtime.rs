@@ -210,13 +210,12 @@ impl Shared {
                 "a subagent must be resumed through its parent".into(),
             ));
         }
-        let mut tree: Tree = context
-            .checkpoints
-            .load_state(&root_id, STATE_KEY)
-            .await?
-            .map(serde_json::from_value)
-            .transpose()?
-            .unwrap_or_default();
+        let mut tree: Tree = crate::middleware::load_state_or_default(
+            context.checkpoints.as_ref(),
+            &root_id,
+            STATE_KEY,
+        )
+        .await?;
         validate_tree(&tree, self.max_agents)?;
         let mut changed = false;
         for entry in tree.agents.values_mut() {
@@ -529,16 +528,11 @@ impl Shared {
         };
         let page = event_turn_page(checkpoints.as_ref(), &session_id, before_sequence).await?;
         let next = page.next_before_sequence;
-        let mut events = page
+        let mut events: Vec<FrontendPreviewEvent> = page
             .into_chronological()
             .into_iter()
-            .map(|record| FrontendPreviewEvent {
-                sequence: record.sequence,
-                submission_id: record.event.submission_id,
-                recorded_at_ms: record.recorded_at_ms,
-                event: record.event.msg,
-            })
-            .collect::<Vec<_>>();
+            .map(FrontendPreviewEvent::from)
+            .collect();
         if let Some(message) = terminal_error {
             let last = events.last();
             events.push(FrontendPreviewEvent {
@@ -787,11 +781,8 @@ fn status_widget(tree: &Tree) -> FrontendWidget {
         &super::text::DEFINITION.status_label_other
     };
     FrontendWidget {
-        id: "status".into(),
         count: Some(count),
         priority: crate::protocol::FrontendPriority::Secondary,
-        slot: FrontendSlot::ComposerFooter,
-        text: label.replace("{count}", &count.to_string()),
         tone: if failed {
             FrontendTone::Error
         } else if active > 0 {
@@ -800,14 +791,16 @@ fn status_widget(tree: &Tree) -> FrontendWidget {
             FrontendTone::Neutral
         },
         symbol: Some(FrontendSymbol::Agent),
-        icon_only: false,
-        progress: None,
         content: Some(FrontendWidgetContent::ActionList {
             title: super::text::DEFINITION.status_title.as_str().into(),
             items: agent_items(tree),
             actions: Vec::new(),
         }),
-        action: None,
+        ..FrontendWidget::new(
+            "status",
+            FrontendSlot::ComposerFooter,
+            label.replace("{count}", &count.to_string()),
+        )
     }
 }
 
@@ -821,7 +814,7 @@ fn agent_items(tree: &Tree) -> Vec<FrontendActionListItem> {
             text: path.rsplit('/').next().unwrap_or(path).into(),
             state: entry.status.list_state(),
             actions: vec![FrontendAction {
-                id: super::Command::Open.as_str().into(),
+                id: super::OPEN_COMMAND.into(),
                 label: super::text::DEFINITION.render_open.as_str().into(),
                 symbol: if entry.status.is_active() {
                     FrontendSymbol::Progress
@@ -835,7 +828,7 @@ fn agent_items(tree: &Tree) -> Vec<FrontendActionListItem> {
                 },
                 op: Op::command(
                     super::MANIFEST.id,
-                    super::Command::Open.as_str(),
+                    super::OPEN_COMMAND,
                     path.clone(), // rules-allow: the action owns its path from the borrowed tree
                 ),
                 input_from_label: false,
@@ -859,10 +852,9 @@ fn picker_options(tree: &Tree) -> Vec<FrontendPickerOption> {
             } else {
                 FrontendSymbol::Agent
             }),
-            shows_detail: false,
             op: Op::command(
                 super::MANIFEST.id,
-                super::Command::Open.as_str(),
+                super::OPEN_COMMAND,
                 path.clone(), // rules-allow: the option owns its path from the borrowed tree
             ),
         })

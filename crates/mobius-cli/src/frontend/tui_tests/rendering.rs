@@ -206,8 +206,6 @@ fn transcript_viewport_matches_full_paragraph_for_unicode_scroll_and_resize() {
         }
         state.push("› user e\u{301} 👩‍💻", TranscriptTone::User);
         state.push("- **A long item with enough words to wrap onto the next line**\n\n> a quote with enough words to wrap in a narrow terminal\n\n| Name | Count |\n|---|---:|\n| long table value | 12345 |\n\n```rust\nfn main() {\n\n    println!(\"hello\");\n}\n```", TranscriptTone::Assistant);
-        state.streaming = "streaming λ界 ".repeat(8);
-        state.reasoning = "reasoning e\u{301} 👩‍💻".into();
         state.widgets.push((
             "test".into(),
             Arc::new(FrontendWidget {

@@ -75,8 +75,12 @@ async fn runtime_activity_tracks_reservations_and_pending_deliveries() {
         !gateway.runtime_activity().await.unwrap().idle,
         "a durable report is pending admission"
     );
-    for delivery in bots.pending_actions(Utc::now().timestamp(), 100).unwrap() {
-        bots.action_accepted(&delivery.id).unwrap();
+    for delivery in bots
+        .storage
+        .pending_actions(Utc::now().timestamp(), 100)
+        .unwrap()
+    {
+        bots.storage.action_accepted(&delivery.id).unwrap();
     }
     let activity = gateway.runtime_activity().await.unwrap();
     assert!(activity.idle);

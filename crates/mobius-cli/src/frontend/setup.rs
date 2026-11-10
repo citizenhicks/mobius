@@ -4,20 +4,16 @@ mod runtime;
 mod state;
 pub(in crate::frontend) mod view;
 
-use std::io;
-
 use mobius::{Error, Result};
 use mobius_gateway::client::{GatewayEvents, GatewaySender};
 use mobius_gateway::config::{
     MAX_PROVIDER_API_KEY_BYTES as MAX_API_KEY_BYTES, MAX_PROVIDER_LABEL_BYTES,
 };
-use mobius_gateway::wire::{ReadyPayload, SessionReadyPayload};
-use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
+use mobius_gateway::wire::ReadyPayload;
 
 use self::runtime::{apply, apply_gateway, edit};
-use self::state::SetupState;
-use super::terminal::{MAX_ENDPOINT_BYTES, TerminalGuard};
+use self::state::{SaveTarget, SetupState};
+use super::terminal::{MAX_ENDPOINT_BYTES, Screen, open_screen};
 
 const MAX_MODEL_IDS_BYTES: usize = 16 * 1024;
 const MIN_INLINE_DESCRIPTION_WIDTH: usize = 20;
@@ -27,8 +23,6 @@ const UPDATE_BOT_DESCRIPTION: &str = "Apply these settings to every chat owned b
 const SAVE_DEFAULT_LABEL: &str = "Save Bot template";
 const SAVE_DEFAULT_DESCRIPTION: &str = "Use these settings when creating Bots";
 
-pub(in crate::frontend) type SetupTerminal = Terminal<CrosstermBackend<io::Stdout>>;
-
 /// The focused setup flow requested by the CLI shell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SetupMode {
@@ -37,31 +31,9 @@ pub(crate) enum SetupMode {
     BotModel,
 }
 
-/// Runs one gateway-backed setup flow and updates its machine and chat snapshots.
-pub(crate) async fn run(
-    terminal: &mut SetupTerminal,
-    mode: SetupMode,
-    preferred_provider: Option<&str>,
-    sender: &GatewaySender,
-    events: &mut GatewayEvents,
-    gateway: &mut ReadyPayload,
-    session: &SessionReadyPayload,
-) -> Result<()> {
-    run_bot(
-        terminal,
-        mode,
-        preferred_provider,
-        sender,
-        events,
-        gateway,
-        &session.session.context.owner_id,
-    )
-    .await
-}
-
 /// Edits one durable Bot without requiring an open chat.
 pub(in crate::frontend) async fn run_bot(
-    terminal: &mut SetupTerminal,
+    terminal: &mut Screen,
     mode: SetupMode,
     preferred_provider: Option<&str>,
     sender: &GatewaySender,
@@ -79,7 +51,7 @@ pub(in crate::frontend) async fn run_bot(
         preferred_provider,
         gateway,
         (**runtime::mobius_composition(bot)?).clone(), // rules-allow: setup edits a snapshot while events update the gateway payload
-        false,
+        SaveTarget::Bot,
     )?;
     terminal.clear()?;
 
@@ -92,35 +64,16 @@ pub(in crate::frontend) async fn run_bot(
     Ok(())
 }
 
-/// Runs provider or Bot-template setup without creating or changing a chat.
+/// Runs provider setup without creating or changing a chat.
+/// Returns `false` when setup is cancelled.
 pub(crate) async fn run_gateway(
-    terminal: &mut SetupTerminal,
-    mode: SetupMode,
-    preferred_provider: Option<&str>,
+    terminal: &mut Screen,
     sender: &GatewaySender,
     events: &mut GatewayEvents,
     gateway: &mut ReadyPayload,
-) -> Result<()> {
-    let original = gateway
-        .agent_catalog
-        .bot_defaults
-        .as_ref()
-        .map(|default| default.config.clone()) // rules-allow: setup edits a snapshot while events update the gateway payload
-        .unwrap_or_default();
-    if mode == SetupMode::Bot && gateway.agent_catalog.bot_defaults.is_none() {
-        return Err(Error::Config(
-            "configure a provider before changing the Bot template".into(),
-        ));
-    }
-    let mut state = SetupState::new(mode, preferred_provider, gateway, original, true)?;
-    terminal.clear()?;
-    while edit(terminal, &mut state, sender, events, gateway).await? {
-        match apply_gateway(terminal, &mut state, sender, events, gateway).await {
-            Ok(()) => return Ok(()),
-            Err(error) => state.recover_error(error)?,
-        }
-    }
-    Ok(())
+) -> Result<bool> {
+    let state = login_state(gateway)?;
+    login(terminal, state, sender, events, gateway).await
 }
 
 /// Runs gateway-scoped provider setup before any chat exists.
@@ -133,25 +86,38 @@ pub async fn run_gateway_login(
     events: &mut GatewayEvents,
     gateway: &mut ReadyPayload,
 ) -> Result<bool> {
-    let mut guard = TerminalGuard::alternate()?;
-    guard.set_mouse_capture(false)?;
-    let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
-    let mut state = SetupState::new(
+    let (_guard, mut terminal) = open_screen()?;
+    let mut state = login_state(gateway)?;
+    state.start_chat = true;
+    login(&mut terminal, state, sender, events, gateway).await
+}
+
+fn login_state(gateway: &ReadyPayload) -> Result<SetupState> {
+    let original = gateway
+        .agent_catalog
+        .bot_defaults
+        .as_ref()
+        .map(|defaults| defaults.config.clone()) // rules-allow: setup edits a snapshot while events update the gateway payload
+        .unwrap_or_default();
+    SetupState::new(
         SetupMode::Login,
         None,
         gateway,
-        gateway
-            .agent_catalog
-            .bot_defaults
-            .as_ref()
-            .map(|defaults| defaults.config.clone()) // rules-allow: setup edits a snapshot while events update the gateway payload
-            .unwrap_or_default(),
-        true,
-    )?;
-    state.start_chat = true;
+        original,
+        SaveTarget::Template,
+    )
+}
+
+async fn login(
+    terminal: &mut Screen,
+    mut state: SetupState,
+    sender: &GatewaySender,
+    events: &mut GatewayEvents,
+    gateway: &mut ReadyPayload,
+) -> Result<bool> {
     terminal.clear()?;
-    while edit(&mut terminal, &mut state, sender, events, gateway).await? {
-        match apply_gateway(&mut terminal, &mut state, sender, events, gateway).await {
+    while edit(terminal, &mut state, sender, events, gateway).await? {
+        match apply_gateway(terminal, &mut state, sender, events, gateway).await {
             Ok(()) => return Ok(true),
             Err(error) => state.recover_error(error)?,
         }

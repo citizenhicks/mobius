@@ -1,5 +1,35 @@
-# Provider-owned model catalog.
+# Provider-owned model catalog. A model without `reasoning` accepts every listed effort.
 default_model = "gpt-6.1-sol"
+
+[[reasoning]]
+id = "none"
+label = "None"
+description = "Skip reasoning for the lowest latency"
+
+[[reasoning]]
+id = "low"
+label = "Low"
+description = "Faster answers for straightforward work"
+
+[[reasoning]]
+id = "medium"
+label = "Medium"
+description = "Balanced reasoning and latency"
+
+[[reasoning]]
+id = "high"
+label = "High"
+description = "Deeper reasoning for complex work"
+
+[[reasoning]]
+id = "xhigh"
+label = "Extra high"
+description = "Extended reasoning for demanding work"
+
+[[reasoning]]
+id = "max"
+label = "Maximum"
+description = "Maximum reasoning for the hardest work"
 
 [[models]]
 id = "gpt-6.1-sol"
@@ -8,31 +38,7 @@ description = "Complex coding and agentic workflows"
 default_reasoning = "medium"
 context_window = 1050000
 tool_discovery = "native"
-
-[[models.reasoning]]
-id = "low"
-label = "Low"
-description = "Faster answers for straightforward work"
-
-[[models.reasoning]]
-id = "medium"
-label = "Medium"
-description = "Balanced reasoning and latency"
-
-[[models.reasoning]]
-id = "high"
-label = "High"
-description = "Deeper reasoning for complex work"
-
-[[models.reasoning]]
-id = "xhigh"
-label = "Extra high"
-description = "Extended reasoning for demanding work"
-
-[[models.reasoning]]
-id = "max"
-label = "Maximum"
-description = "Maximum reasoning for the hardest work"
+reasoning = ["low", "medium", "high", "xhigh", "max"]
 
 [[models]]
 id = "gpt-6-luna"
@@ -42,36 +48,6 @@ default_reasoning = "medium"
 context_window = 1050000
 tool_discovery = "native"
 
-[[models.reasoning]]
-id = "none"
-label = "None"
-description = "Skip reasoning for the lowest latency"
-
-[[models.reasoning]]
-id = "low"
-label = "Low"
-description = "Faster answers for straightforward work"
-
-[[models.reasoning]]
-id = "medium"
-label = "Medium"
-description = "Balanced reasoning and latency"
-
-[[models.reasoning]]
-id = "high"
-label = "High"
-description = "Deeper reasoning for complex work"
-
-[[models.reasoning]]
-id = "xhigh"
-label = "Extra high"
-description = "Extended reasoning for demanding work"
-
-[[models.reasoning]]
-id = "max"
-label = "Maximum"
-description = "Maximum reasoning for the hardest work"
-
 [[models]]
 id = "gpt-6-astra"
 label = "6 Astra"
@@ -79,31 +55,7 @@ description = "Advanced reasoning and complex end-to-end work"
 default_reasoning = "medium"
 context_window = 1050000
 tool_discovery = "native"
-
-[[models.reasoning]]
-id = "low"
-label = "Low"
-description = "Faster answers for straightforward work"
-
-[[models.reasoning]]
-id = "medium"
-label = "Medium"
-description = "Balanced reasoning and latency"
-
-[[models.reasoning]]
-id = "high"
-label = "High"
-description = "Deeper reasoning for complex work"
-
-[[models.reasoning]]
-id = "xhigh"
-label = "Extra high"
-description = "Extended reasoning for demanding work"
-
-[[models.reasoning]]
-id = "max"
-label = "Maximum"
-description = "Maximum reasoning for the hardest work"
+reasoning = ["low", "medium", "high", "xhigh", "max"]
 
 [[image_models]]
 id = "gpt-image-2.6-sunburst"

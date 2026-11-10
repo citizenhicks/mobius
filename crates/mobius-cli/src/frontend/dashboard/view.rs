@@ -7,14 +7,14 @@ use mobius::protocol::{
 };
 use mobius_gateway::wire::{DailyUsage, ProfileSnapshot, SessionActivityState};
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, HighlightSpacing, List, ListState, Paragraph, Wrap};
 
 use super::runtime::{ordered_clients, ordered_sessions};
 use super::state::{ActionInput, CapabilityOverlay, DashboardFocus, DashboardState};
 use crate::frontend::terminal::terminal_text;
-use crate::frontend::theme::{Role, current};
+use crate::frontend::theme::{Role, current, selectable_list};
 
 pub(super) struct DashboardAreas {
     pub(super) header: Rect,
@@ -167,14 +167,7 @@ pub(super) fn render_navigation_widgets(
             })
             .collect()
     };
-    frame.render_stateful_widget(
-        List::new(lines)
-            .highlight_symbol("› ")
-            .highlight_spacing(HighlightSpacing::Always)
-            .highlight_style(Style::default().add_modifier(Modifier::BOLD)),
-        area,
-        &mut overlay.widget_list,
-    );
+    frame.render_stateful_widget(selectable_list(lines), area, &mut overlay.widget_list);
 }
 
 fn widget_title(widget: &FrontendWidget) -> &str {
@@ -416,14 +409,11 @@ pub(super) fn render_devices(
             .collect()
     };
     frame.render_stateful_widget(
-        List::new(lines)
+        selectable_list(lines)
             .block(panel("Devices", state.focus == DashboardFocus::Devices))
-            .highlight_symbol("› ")
-            .highlight_spacing(HighlightSpacing::Always)
-            .highlight_style(Style::default().add_modifier(Modifier::BOLD))
             .scroll_padding(1),
         area,
-        &mut state.device_list,
+        &mut state.devices.list,
     );
 }
 
@@ -465,14 +455,11 @@ pub(super) fn render_chats(frame: &mut ratatui::Frame<'_>, area: Rect, state: &m
             .collect()
     };
     frame.render_stateful_widget(
-        List::new(lines)
+        selectable_list(lines)
             .block(panel("Chats", state.focus == DashboardFocus::Chats))
-            .highlight_symbol("› ")
-            .highlight_spacing(HighlightSpacing::Always)
-            .highlight_style(Style::default().add_modifier(Modifier::BOLD))
             .scroll_padding(1),
         area,
-        &mut state.chat_list,
+        &mut state.chats.list,
     );
 }
 
@@ -520,14 +507,11 @@ pub(super) fn render_bots(frame: &mut ratatui::Frame<'_>, area: Rect, state: &mu
             .collect()
     };
     frame.render_stateful_widget(
-        List::new(lines)
+        selectable_list(lines)
             .block(panel("Bots", state.focus == DashboardFocus::Bots))
-            .highlight_symbol("› ")
-            .highlight_spacing(HighlightSpacing::Always)
-            .highlight_style(Style::default().add_modifier(Modifier::BOLD))
             .scroll_padding(1),
         area,
-        &mut state.bot_list,
+        &mut state.bots.list,
     );
 }
 

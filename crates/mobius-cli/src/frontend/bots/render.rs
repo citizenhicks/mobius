@@ -1,9 +1,9 @@
 use mobius::protocol::ModelStepContentPhase;
 use mobius_gateway::wire::{BotRecord, ReadyPayload, RoutineScheduleKind, TranscriptItemContent};
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, HighlightSpacing, List, ListState, Paragraph, Wrap};
+use ratatui::style::Modifier;
+use ratatui::text::Line;
+use ratatui::widgets::{Block, ListState, Paragraph, Wrap};
 use std::borrow::Cow;
 
 use super::form::{BotFormMode, Form, RoutineForm};
@@ -12,7 +12,7 @@ use super::state::{
     sessions_for_bot,
 };
 use crate::frontend::terminal_text;
-use crate::frontend::theme::{Role, current};
+use crate::frontend::theme::{Role, brand_header, current, selectable_list};
 
 pub(super) fn render(frame: &mut ratatui::Frame<'_>, state: &BotsState, gateway: &ReadyPayload) {
     let theme = current();
@@ -30,14 +30,7 @@ pub(super) fn render(frame: &mut ratatui::Frame<'_>, state: &BotsState, gateway:
     .areas(area);
     frame.render_widget(
         Paragraph::new(vec![
-            Line::from(vec![
-                Span::styled("◉ ", theme.style(Role::AccentStrong)),
-                Span::styled(
-                    "MÖBIUS",
-                    theme.style(Role::Accent).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" Bots", theme.style(Role::Muted)),
-            ]),
+            brand_header("Bots"),
             Line::styled(
                 format!("  {}", terminal_text(&gateway.machine_name)),
                 theme.style(Role::Muted),
@@ -228,11 +221,7 @@ fn render_root(
     let mut list_state =
         ListState::default().with_selected((!gateway.bots.is_empty()).then_some(state.selected));
     frame.render_stateful_widget(
-        List::new(rows)
-            .block(panel("Bots"))
-            .highlight_symbol("› ")
-            .highlight_spacing(HighlightSpacing::Always)
-            .highlight_style(Style::default().add_modifier(Modifier::BOLD)),
+        selectable_list(rows).block(panel("Bots")),
         catalog,
         &mut list_state,
     );
@@ -502,12 +491,7 @@ fn render_list_page<'a>(
 ) {
     let mut list_state = ListState::default().with_selected((length > 0).then_some(selected));
     frame.render_stateful_widget(
-        List::new(rows)
-            .block(panel(title))
-            .highlight_symbol("› ")
-            .highlight_spacing(HighlightSpacing::Always)
-            .highlight_style(Style::default().add_modifier(Modifier::BOLD))
-            .scroll_padding(1),
+        selectable_list(rows).block(panel(title)).scroll_padding(1),
         area,
         &mut list_state,
     );

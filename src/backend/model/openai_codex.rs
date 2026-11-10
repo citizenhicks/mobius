@@ -5,18 +5,19 @@ use std::sync::Arc;
 use self::auth::BROWSER_AUTH;
 use self::auth::ChatGptAuth;
 use super::provider::BaseUrl;
-use super::provider::HostedWebSearch;
 use super::provider::ProviderAuth;
 use super::provider::ProviderBuildConfig;
 use super::provider::ProviderDefinition;
 use super::responses::CATALOG;
 use super::responses_socket::OpenAiSocket;
 use crate::Result;
+use crate::protocol::ToolDiscoveryMode;
 
 #[path = "openai_codex_auth.rs"]
 mod auth;
 
-pub use self::auth::{BrowserLogin, DeviceLogin};
+pub use self::auth::BrowserAuth;
+pub use self::auth::DeviceLogin;
 
 pub(super) static MANIFEST: std::sync::LazyLock<super::provider::ProviderMetadata> =
     std::sync::LazyLock::new(|| {
@@ -40,14 +41,15 @@ pub(super) fn provider() -> ProviderDefinition {
     )
 }
 
-fn build_provider(config: ProviderBuildConfig, base_url: BaseUrl) -> Result<Arc<dyn super::Model>> {
-    let tool_discovery = config
-        .tool_discovery
-        .unwrap_or_else(|| provider().tool_discovery(&config.model, Some(base_url.as_str())));
+fn build_provider(
+    config: ProviderBuildConfig,
+    base_url: BaseUrl,
+    tool_discovery: ToolDiscoveryMode,
+) -> Result<Arc<dyn super::Model>> {
     let auth = config.credential.into_browser::<ChatGptAuth>(PROVIDER_ID)?;
     let socket_url = super::responses_socket::responses_socket_url(&base_url)?;
     let default_endpoint = provider().uses_default_endpoint(Some(base_url.as_str()));
-    let provider = OpenAiSocket::with_authorization(
+    let provider = OpenAiSocket::from_authorization(
         auth,
         base_url,
         socket_url.as_str(),
@@ -58,15 +60,7 @@ fn build_provider(config: ProviderBuildConfig, base_url: BaseUrl) -> Result<Arc<
     .with_tool_discovery(tool_discovery)
     .with_service_tier(config.service_tier)
     .with_codex_realtime_voice(default_endpoint)?
-    .with_image_api(Some(super::image_generation::image_api("codex")?));
-    let provider = match config.reasoning_effort {
-        Some(effort) => provider.with_reasoning_effort(effort)?,
-        None => provider,
-    };
-    let provider = match config.web_search {
-        HostedWebSearch::Off => provider,
-        HostedWebSearch::Cached => provider.with_cached_web_search(),
-        HostedWebSearch::Live => provider.with_web_search(),
-    };
+    .with_image_api(Some(super::image_generation::image_api("codex")?))
+    .with_selection(config.reasoning_effort, config.web_search)?;
     Ok(Arc::new(provider))
 }

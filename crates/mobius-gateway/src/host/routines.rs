@@ -44,7 +44,7 @@ impl GatewayHost {
     ) -> std::result::Result<serde_json::Value, Rejection> {
         let _access = self.begin_mutation().await?;
         let state = self.state.lock().await;
-        state.bots.bot(bot_id).map_err(invalid_bot)?;
+        state.bots.require_bot(bot_id).map_err(invalid_bot)?;
         let routines = state
             .bots
             .routine_records(Some(bot_id), Utc::now().timestamp())
@@ -152,6 +152,7 @@ impl GatewayHost {
                     .lock()
                     .await
                     .bots
+                    .storage
                     .request_run_stop(run_id, command_id, cause)
                     .map_err(internal)?;
                 drop(mutation);

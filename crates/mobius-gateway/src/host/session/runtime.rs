@@ -7,7 +7,7 @@ use super::{
     ServerMessage, SessionHistoryPage, SharedFrame, SourceAdmission, Submission, Uuid,
     ValidatedSubmission, delete_workspace_file, durable_history_page, event_sequence,
     fail_active_routine, internal, invalid_config, invalid_workspace, list_workspace_files, mpsc,
-    oneshot, read_workspace_file, shutdown_agent, stopped, try_begin_session_mutation,
+    oneshot, read_workspace_file, shutdown_agent, stopped, try_begin_session_mutation, validated,
     write_workspace_file,
 };
 use crate::harness::{MessageAcceptance, RealtimeCall};
@@ -611,10 +611,7 @@ impl HostState {
     }
 
     pub(super) fn submit(&mut self, submission: Submission) -> std::result::Result<(), Rejection> {
-        self.submit_validated(
-            ValidatedSubmission::new(submission)
-                .map_err(|error| Rejection::new("invalid_submission", error.to_string()))?,
-        )
+        self.submit_validated(validated(submission)?)
     }
 
     fn submit_validated(

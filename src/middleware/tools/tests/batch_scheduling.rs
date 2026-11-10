@@ -146,18 +146,7 @@ fn spawn_test_batch(
 ) -> tokio::task::JoinHandle<Vec<ToolResult>> {
     let sandbox = test_sandbox();
     let calls = finalize_and_bind(&mut catalog, calls);
-    tokio::spawn(async move {
-        execute_batch(
-            &catalog,
-            calls,
-            sandbox,
-            &permissions,
-            &"turn".into(),
-            &"test".into(),
-            &crate::protocol::MessageAuthor::User.into(),
-        )
-        .await
-    })
+    tokio::spawn(async move { run_calls(&catalog, calls, sandbox, &permissions).await })
 }
 
 async fn next_scheduler_event(

@@ -38,6 +38,33 @@ fn test_git_executable(path: &Path, label: &str) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("executable");
 }
 
+/// Runs `/usr/bin/git --version` read-only, bypassing the read-only command's Git lookup.
+#[cfg(target_os = "macos")]
+async fn launcher_baseline(
+    sandbox: &LocalSandbox,
+    environment: &[(&str, &str)],
+) -> Option<CommandOutput> {
+    sandbox
+        .execute_invocation(
+            Invocation::Argv {
+                executable: Path::new("/usr/bin/git"),
+                arguments: &["--version"],
+                piped_input: false,
+            },
+            CommandIsolation {
+                sandbox_mode: SandboxMode::WorkspaceWrite,
+                network_access: NetworkAccess::Denied,
+                workspace_access: WorkspaceAccess::ReadOnly,
+            },
+            CommandMode::Foreground,
+            CommandOutputSink::default(),
+            (environment, &[]),
+            None,
+        )
+        .await
+        .expect("original launcher")
+}
+
 #[cfg(target_os = "macos")]
 #[tokio::test]
 async fn apple_git_read_operations_share_selection_and_resolve_again_for_the_next_operation() {
@@ -137,25 +164,8 @@ async fn apple_git_read_operations_revalidate_cached_targets_and_preserve_launch
         .execute(&["--version"])
         .await
         .expect("launcher fallback");
-    let baseline = sandbox
-        .execute_invocation(
-            Invocation::Argv {
-                executable: Path::new("/usr/bin/git"),
-                arguments: &["--version"],
-                piped_input: false,
-            },
-            CommandIsolation {
-                sandbox_mode: SandboxMode::WorkspaceWrite,
-                network_access: NetworkAccess::Denied,
-                workspace_access: WorkspaceAccess::ReadOnly,
-            },
-            CommandMode::Foreground,
-            CommandOutputSink::default(),
-            (&environment, &[]),
-            None,
-        )
+    let baseline = launcher_baseline(&sandbox, &environment)
         .await
-        .expect("original launcher")
         .expect("launcher output");
     assert_ne!(actual.exit_code, 0);
     assert_eq!(
@@ -245,29 +255,12 @@ async fn apple_git_resolution_does_not_bypass_protected_paths() {
     // The first cold lookup can emit timestamped Xcode warnings even on success.
     let mut baseline = None;
     for _ in 0..2 {
-        baseline = sandbox
-            .execute_invocation(
-                Invocation::Argv {
-                    executable: Path::new("/usr/bin/git"),
-                    arguments: &["--version"],
-                    piped_input: false,
-                },
-                CommandIsolation {
-                    sandbox_mode: SandboxMode::WorkspaceWrite,
-                    network_access: NetworkAccess::Denied,
-                    workspace_access: WorkspaceAccess::ReadOnly,
-                },
-                CommandMode::Foreground,
-                CommandOutputSink::default(),
-                (&[], &[]),
-                None,
-            )
-            .await
-            .expect("original launcher");
+        baseline = launcher_baseline(&sandbox, &[]).await;
     }
     let baseline = baseline.expect("launcher output");
     let result = sandbox
-        .execute_read_only("git", &["--version"], &[])
+        .read_only_command("git", &[], &[])
+        .execute(&["--version"])
         .await
         .expect("resolved Git");
     assert_eq!(
@@ -422,17 +415,8 @@ sleep 30;
 ' &
 sleep 30"#;
 
-    let execution = tokio::spawn(async move {
-        sandbox
-            .execute(
-                script,
-                sandbox_mode,
-                network_access,
-                CommandMode::Foreground,
-                CommandOutputSink::default(),
-            )
-            .await
-    });
+    let execution =
+        tokio::spawn(async move { run(&sandbox, script, sandbox_mode, network_access).await });
     let pid = tokio::task::spawn_blocking(move || {
         for _ in 0..500 {
             if let Ok(pid) = std::fs::read_to_string(&pid_path)
@@ -496,6 +480,24 @@ async fn command_cleanup_reaps_daemonized_descendants() {
 
 fn local_sandbox(workspace: &Path) -> LocalSandbox {
     LocalSandbox::new(workspace).expect("sandbox")
+}
+
+/// Runs one foreground shell command without streaming its output.
+async fn run(
+    sandbox: &LocalSandbox,
+    script: &str,
+    sandbox_mode: SandboxMode,
+    network_access: NetworkAccess,
+) -> Result<CommandOutput> {
+    sandbox
+        .execute(
+            script,
+            sandbox_mode,
+            network_access,
+            CommandMode::Foreground,
+            CommandOutputSink::default(),
+        )
+        .await
 }
 
 #[tokio::test]
@@ -570,7 +572,6 @@ async fn absolute_reads_and_writes_are_confined_to_workspace_roots() {
     assert!(!blocked.exists());
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn absolute_read_roots_reject_symlink_escapes() {
     use std::os::unix::fs::symlink;
@@ -600,7 +601,6 @@ async fn absolute_read_roots_reject_symlink_escapes() {
     );
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn absolute_workspace_roots_reject_replaced_roots() {
     let workspace = tempfile::tempdir().expect("workspace");
@@ -638,16 +638,14 @@ async fn absolute_workspace_roots_reject_replaced_roots() {
             .is_err()
     );
     assert!(
-        sandbox
-            .execute(
-                "true",
-                SandboxMode::WorkspaceWrite,
-                NetworkAccess::Denied,
-                CommandMode::Foreground,
-                CommandOutputSink::default(),
-            )
-            .await
-            .is_err()
+        run(
+            &sandbox,
+            "true",
+            SandboxMode::WorkspaceWrite,
+            NetworkAccess::Denied
+        )
+        .await
+        .is_err()
     );
     assert_eq!(
         std::fs::read_to_string(attached.join("bait.txt")).expect("replacement file"),
@@ -666,16 +664,14 @@ async fn commands_cannot_write_outside_the_workspace_through_symlinks() {
     symlink(outside.path(), workspace.path().join("outside")).expect("outside symlink");
     let sandbox = local_sandbox(workspace.path());
 
-    let output = sandbox
-        .execute(
-            "touch outside/escaped",
-            SandboxMode::WorkspaceWrite,
-            NetworkAccess::Allowed,
-            CommandMode::Foreground,
-            CommandOutputSink::default(),
-        )
-        .await
-        .expect("sandboxed command");
+    let output = run(
+        &sandbox,
+        "touch outside/escaped",
+        SandboxMode::WorkspaceWrite,
+        NetworkAccess::Allowed,
+    )
+    .await
+    .expect("sandboxed command");
 
     assert_ne!(output.exit_code, 0);
     assert!(!outside.path().join("escaped").exists());
@@ -726,7 +722,8 @@ async fn read_only_argv_cannot_modify_the_workspace() {
     let sandbox = local_sandbox(workspace.path());
 
     let output = sandbox
-        .execute_read_only("touch", &["blocked"], &[])
+        .read_only_command("touch", &[], &[])
+        .execute(&["blocked"])
         .await
         .expect("read-only command");
 
@@ -791,7 +788,6 @@ async fn network_policy_changes_command_isolation() {
     }
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn filesystem_handles_reject_symlink_escapes_and_aliases() {
     use std::os::unix::fs::symlink;
@@ -861,7 +857,6 @@ async fn filesystem_handles_reject_symlink_escapes_and_aliases() {
     assert!(!workspace.join(".git/new").exists());
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn writes_replace_files_without_partial_state_or_permission_drift() {
     use std::os::unix::fs::PermissionsExt;
@@ -913,16 +908,14 @@ async fn temporary_files_survive_calls_and_are_isolated_from_child_execution() {
     let child = sandbox.isolated_execution().expect("child");
     let path = sandbox.temporary_directory().join("observation.txt");
     let name = path.to_str().expect("path");
-    let output = sandbox
-        .execute(
-            "printf before > \"$TMPDIR/observation.txt\"",
-            SandboxMode::WorkspaceWrite,
-            NetworkAccess::Denied,
-            CommandMode::Foreground,
-            CommandOutputSink::default(),
-        )
-        .await
-        .expect("write");
+    let output = run(
+        &sandbox,
+        "printf before > \"$TMPDIR/observation.txt\"",
+        SandboxMode::WorkspaceWrite,
+        NetworkAccess::Denied,
+    )
+    .await
+    .expect("write");
     assert_eq!(output.exit_code, 0, "{}", output.stderr);
     assert_eq!(
         sandbox
@@ -936,16 +929,14 @@ async fn temporary_files_survive_calls_and_are_isolated_from_child_execution() {
         .await
         .expect("replace");
     for mode in [SandboxMode::WorkspaceWrite, SandboxMode::DangerFullAccess] {
-        let output = sandbox
-            .execute(
-                "cat \"$TMPDIR/observation.txt\"",
-                mode,
-                NetworkAccess::Denied,
-                CommandMode::Foreground,
-                CommandOutputSink::default(),
-            )
-            .await
-            .expect("read command");
+        let output = run(
+            &sandbox,
+            "cat \"$TMPDIR/observation.txt\"",
+            mode,
+            NetworkAccess::Denied,
+        )
+        .await
+        .expect("read command");
         assert_eq!(output.exit_code, 0, "{}", output.stderr);
         assert_eq!(output.stdout, "after");
     }
@@ -961,19 +952,17 @@ async fn temporary_files_survive_calls_and_are_isolated_from_child_execution() {
         (&child, SandboxMode::DangerFullAccess),
         (&guarded_child, SandboxMode::DangerFullAccess),
     ] {
-        let output = child
-            .execute(
-                &format!(
-                    "cat '{}'",
-                    sandbox.temp.path().join("observation.txt").display()
-                ),
-                mode,
-                NetworkAccess::Denied,
-                CommandMode::Foreground,
-                CommandOutputSink::default(),
-            )
-            .await
-            .expect("child command");
+        let output = run(
+            child,
+            &format!(
+                "cat '{}'",
+                sandbox.temp.path().join("observation.txt").display()
+            ),
+            mode,
+            NetworkAccess::Denied,
+        )
+        .await
+        .expect("child command");
         if mode == SandboxMode::DangerFullAccess {
             assert_eq!(output.exit_code, 0, "{}", output.stderr);
             assert_eq!(output.stdout, "after");
@@ -992,7 +981,6 @@ async fn temporary_files_survive_calls_and_are_isolated_from_child_execution() {
             .await
             .is_err()
     );
-    #[cfg(unix)]
     {
         std::os::unix::fs::symlink(workspace.path(), sandbox.temp.path().join("escape"))
             .expect("symlink");

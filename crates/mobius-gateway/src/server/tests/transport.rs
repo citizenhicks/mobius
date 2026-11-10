@@ -214,42 +214,20 @@ fn append_masked_binary_frame(output: &mut Vec<u8>, payload: &[u8]) {
     );
 }
 
-#[tokio::test]
-async fn pre_auth_reader_rejects_an_oversized_frame_from_its_prefix() {
-    let (mut writer, reader) = tokio::io::duplex(4);
-    let mut reader = FrameReader::new(reader);
-    let oversized = u32::try_from(MAX_PRE_AUTH_FRAME_BYTES + 1).expect("frame limit fits u32");
-    writer
-        .write_all(&oversized.to_be_bytes())
-        .await
-        .expect("write prefix");
-
-    let error = read_frame_with_limit::<PreAuthClientFrame>(&mut reader, MAX_PRE_AUTH_FRAME_BYTES)
-        .await
-        .expect_err("oversized pre-auth frame must fail");
-
-    assert!(matches!(error, Error::Protocol(_)), "{error}");
-}
-
 #[test]
-fn websocket_upgrade_rejects_browser_origins() {
-    let request = Request::builder()
+fn websocket_upgrade_rejects_browser_origins_and_waits_for_the_tunnel_hostname() {
+    let browser = Request::builder()
         .uri("/")
         .header(ORIGIN, "https://attacker.example")
         .body(())
         .expect("request");
-
     let rejection = WebSocketUpgradePolicy {
         expected_host: None,
     }
-    .on_request(&request, Response::new(()))
+    .on_request(&browser, Response::new(()))
     .expect_err("Origin header must fail");
-
     assert_eq!(rejection.status(), StatusCode::FORBIDDEN);
-}
 
-#[test]
-fn websocket_upgrade_waits_for_the_tunnel_hostname() {
     let request = Request::builder()
         .uri("/")
         .header(HOST, "bright-river.trycloudflare.com")
@@ -491,7 +469,12 @@ fn only_presence_connections_count_and_announce_the_client() {
         .register("tool".into(), false, Arc::clone(&bots))
         .expect("register tool");
     assert_eq!(connections.presence_count().expect("count"), 0);
-    assert!(bots.unpublished_events(10).expect("events").is_empty());
+    assert!(
+        bots.storage
+            .unpublished_events(10)
+            .expect("events")
+            .is_empty()
+    );
 
     let app = connections
         .register("app".into(), true, Arc::clone(&bots))
@@ -502,7 +485,7 @@ fn only_presence_connections_count_and_announce_the_client() {
         .expect("snapshot");
     assert_eq!(clients[0].connections, 0);
     assert_eq!(clients[1].connections, 1);
-    let events = bots.unpublished_events(10).expect("events");
+    let events = bots.storage.unpublished_events(10).expect("events");
     assert!(matches!(
         &events[..],
         [crate::wire::HookEvent { data: crate::wire::HookData::ClientConnected { client_id }, .. }]

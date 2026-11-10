@@ -7,9 +7,8 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
 use super::transport::ApiKeyModel;
-use reqwest::Client;
+use serde::Serialize;
 use serde::ser::SerializeSeq as _;
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::Model;
@@ -48,11 +47,7 @@ pub(super) static MANIFEST: std::sync::LazyLock<super::provider::ProviderMetadat
     std::sync::LazyLock::new(|| crate::config::embedded(include_str!("anthropic_provider.toml")));
 pub(super) static CATALOG: std::sync::LazyLock<super::provider::ModelCatalog> =
     std::sync::LazyLock::new(|| {
-        crate::config::overridable(
-            "anthropic.toml",
-            include_str!("anthropic.toml"),
-            super::provider::ModelCatalog::validate,
-        )
+        super::provider::ModelCatalog::load("anthropic.toml", include_str!("anthropic.toml"))
     });
 
 const MAX_CONTENT_BLOCKS: usize = 1_024;
@@ -102,28 +97,13 @@ impl Anthropic {
         model: impl Into<String>,
         settings: super::ModelTransportSettings,
     ) -> Result<Self> {
-        let model = model.into();
-        if model.trim().is_empty() {
-            return Err(Error::Config("model is empty".into()));
-        }
-        Ok(Self::with_client(
-            Some(api_key.into()),
-            base_url,
-            model,
-            settings.streaming_client()?,
-        )?
-        .with_transport_settings(settings))
-    }
-
-    fn with_client(
-        api_key: Option<String>,
-        base_url: BaseUrl,
-        model: impl Into<String>,
-        client: Client,
-    ) -> Result<Self> {
-        let config = ApiKeyModel::new(api_key, base_url, model, client)?;
+        let config = ApiKeyModel::from_settings(api_key.into(), base_url, model.into(), settings)?;
         let tool_discovery =
             provider().tool_discovery(&config.model, Some(config.base_url.as_str()));
+        Self::from_config(config, tool_discovery)
+    }
+
+    fn from_config(config: ApiKeyModel, tool_discovery: ToolDiscoveryMode) -> Result<Self> {
         Ok(Self {
             config,
             max_output_tokens: MANIFEST
@@ -132,26 +112,6 @@ impl Anthropic {
             tool_discovery,
             web_search: false,
         })
-    }
-
-    /// Applies validated operational transport policy.
-    #[must_use]
-    pub fn with_transport_settings(mut self, settings: super::ModelTransportSettings) -> Self {
-        self.config.transport = settings;
-        self
-    }
-
-    /// Chooses the output-token budget independently from the advertised model context.
-    /// # Errors
-    /// Returns an error for a zero budget or a budget above the transport safety bound.
-    pub fn with_max_output_tokens(mut self, tokens: u64) -> Result<Self> {
-        if tokens == 0 || tokens > 1_048_576 {
-            return Err(Error::Config(
-                "Anthropic output token budget must be in 1..=1048576".into(),
-            ));
-        }
-        self.max_output_tokens = tokens;
-        Ok(self)
     }
 
     /// Enables adaptive thinking at the configured Anthropic effort level.
@@ -231,26 +191,6 @@ impl Anthropic {
         })
     }
 
-    #[cfg(test)]
-    fn request_body_value(
-        &self,
-        instructions: &str,
-        input: ModelInput<'_>,
-        catalog_revision: &str,
-        tools: &[Arc<ToolDefinition>],
-        deferred_tools: &[Arc<ToolDefinition>],
-        allow_hosted_tools: bool,
-    ) -> Result<Value> {
-        Ok(serde_json::to_value(self.request_body(
-            instructions,
-            input,
-            catalog_revision,
-            tools,
-            deferred_tools,
-            allow_hosted_tools,
-        )?)?)
-    }
-
     fn apply_reasoning(&self, body: &mut Value) {
         if let Some(effort) = &self.config.reasoning_effort {
             body["thinking"] = serde_json::json!({"type": "adaptive"});
@@ -315,17 +255,6 @@ impl Model for Anthropic {
         media: super::MediaPreparation<'a>,
     ) -> BoxFuture<'a, Result<ModelOutput>> {
         Box::pin(self.send_response(request, events, Some(media)))
-    }
-
-    fn request_size(&self, request: ModelRequest<'_>) -> Result<usize> {
-        super::media::serialized_size(&self.request_body(
-            request.instructions,
-            request.input,
-            request.catalog_revision,
-            request.tools,
-            request.deferred_tools,
-            request.allow_hosted_tools,
-        )?)
     }
 
     fn respond<'a>(
@@ -616,15 +545,7 @@ impl<'a> StreamState<'a> {
             if block.get("type").and_then(Value::as_str) != Some("tool_use") {
                 continue;
             }
-            let empty = serde_json::json!({});
-            let input = block.get("input").unwrap_or(&empty);
-            let item = serde_json::json!({
-                "type": "function_call",
-                "call_id": required_string(block, "id")?,
-                "name": required_string(block, "name")?,
-                "arguments": serde_json::to_string(&input)?
-            });
-            let call = super::decode_tool_call(&item)?;
+            let call = super::decode_tool_call(&tool_use_call(block)?)?;
             events(ModelEvent::ToolCallReady(call)).await?;
         }
         Ok(())
@@ -645,16 +566,7 @@ impl<'a> StreamState<'a> {
         let calls = content
             .iter()
             .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_use"))
-            .map(|block| {
-                let empty = serde_json::json!({});
-                let arguments = block.get("input").unwrap_or(&empty);
-                Ok(serde_json::json!({
-                    "type": "function_call",
-                    "call_id": required_string(block, "id")?,
-                    "name": required_string(block, "name")?,
-                    "arguments": serde_json::to_string(&arguments)?
-                }))
-            })
+            .map(tool_use_call)
             .collect::<Result<Vec<_>>>()?;
         let visible = content
             .iter()
@@ -690,6 +602,19 @@ impl<'a> StreamState<'a> {
             step_content,
         )
     }
+}
+
+/// Normalizes a completed `tool_use` block into a function-call output item.
+fn tool_use_call(block: &Value) -> Result<Value> {
+    let arguments = match block.get("input") {
+        Some(input) => serde_json::to_string(input)?,
+        None => "{}".to_owned(),
+    };
+    Ok(super::function_call_item(
+        required_string(block, "id")?,
+        required_string(block, "name")?,
+        &arguments,
+    ))
 }
 
 fn hosted_result_fingerprint(name: &str, content: &Value) -> Option<u64> {
@@ -776,141 +701,35 @@ fn normalized_step_content(blocks: &BTreeMap<usize, Value>) -> Result<Vec<ModelS
 }
 
 fn normalize_citations(block: &Value) -> Result<Vec<ModelStepAnnotation>> {
-    let Some(citations) = block.get("citations") else {
+    let invalid = |error: &dyn std::fmt::Display| {
+        Error::Provider(format!("invalid Anthropic citation: {error}").into())
+    };
+    let Some(citations) = block
+        .get("citations")
+        .filter(|citations| !citations.is_null())
+    else {
         return Ok(Vec::new());
     };
-    if citations.is_null() {
-        return Ok(Vec::new());
-    }
-    let citations: Vec<AnthropicCitation> = serde::Deserialize::deserialize(citations)
-        .map_err(|error| Error::Provider(format!("invalid Anthropic citation: {error}").into()))?;
-    Ok(citations.into_iter().map(Into::into).collect())
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "type", deny_unknown_fields)]
-enum AnthropicCitation {
-    #[serde(rename = "char_location")]
-    Character {
-        cited_text: String,
-        document_index: usize,
-        document_title: Option<String>,
-        file_id: Option<String>,
-        start_char_index: usize,
-        end_char_index: usize,
-    },
-    #[serde(rename = "page_location")]
-    Page {
-        cited_text: String,
-        document_index: usize,
-        document_title: Option<String>,
-        file_id: Option<String>,
-        start_page_number: usize,
-        end_page_number: usize,
-    },
-    #[serde(rename = "content_block_location")]
-    ContentBlock {
-        cited_text: String,
-        document_index: usize,
-        document_title: Option<String>,
-        file_id: Option<String>,
-        start_block_index: usize,
-        end_block_index: usize,
-    },
-    #[serde(rename = "search_result_location")]
-    SearchResult {
-        cited_text: String,
-        search_result_index: usize,
-        source: String,
-        title: Option<String>,
-        start_block_index: usize,
-        end_block_index: usize,
-    },
-    #[serde(rename = "web_search_result_location")]
-    WebSearchResult {
-        cited_text: String,
-        encrypted_index: String,
-        title: Option<String>,
-        url: String,
-    },
-}
-
-impl From<AnthropicCitation> for ModelStepAnnotation {
-    fn from(citation: AnthropicCitation) -> Self {
-        match citation {
-            AnthropicCitation::Character {
-                cited_text,
-                document_index,
-                document_title,
-                file_id,
-                start_char_index,
-                end_char_index,
-            } => Self::DocumentCharacterCitation {
-                cited_text,
-                document_index,
-                document_title,
-                file_id,
-                start_char_index,
-                end_char_index,
-            },
-            AnthropicCitation::Page {
-                cited_text,
-                document_index,
-                document_title,
-                file_id,
-                start_page_number,
-                end_page_number,
-            } => Self::DocumentPageCitation {
-                cited_text,
-                document_index,
-                document_title,
-                file_id,
-                start_page_number,
-                end_page_number,
-            },
-            AnthropicCitation::ContentBlock {
-                cited_text,
-                document_index,
-                document_title,
-                file_id,
-                start_block_index,
-                end_block_index,
-            } => Self::DocumentContentBlockCitation {
-                cited_text,
-                document_index,
-                document_title,
-                file_id,
-                start_block_index,
-                end_block_index,
-            },
-            AnthropicCitation::SearchResult {
-                cited_text,
-                search_result_index,
-                source,
-                title,
-                start_block_index,
-                end_block_index,
-            } => Self::SearchResultCitation {
-                cited_text,
-                search_result_index,
-                source,
-                title,
-                start_block_index,
-                end_block_index,
-            },
-            AnthropicCitation::WebSearchResult {
-                cited_text,
-                encrypted_index,
-                title,
-                url,
-            } => Self::WebSearchResultCitation {
-                cited_text,
-                encrypted_index,
-                title,
-                url,
-            },
-        }
-    }
+    let citations = citations
+        .as_array()
+        .ok_or_else(|| invalid(&"citations were not an array"))?;
+    citations
+        .iter()
+        .map(|citation| {
+            let kind = match citation.get("type").and_then(Value::as_str) {
+                Some("char_location") => "document_character_citation",
+                Some("page_location") => "document_page_citation",
+                Some("content_block_location") => "document_content_block_citation",
+                Some("search_result_location") => "search_result_citation",
+                Some("web_search_result_location") => "web_search_result_citation",
+                kind => return Err(invalid(&format_args!("unknown variant {kind:?}"))),
+            };
+            // The protocol record names Anthropic's fields; only the tag differs.
+            let mut citation = citation.clone(); // rules-allow: replay keeps the provider block, the annotation owns its fields
+            super::set_field(&mut citation, "type", Value::from(kind));
+            serde_json::from_value(citation).map_err(|error| invalid(&error))
+        })
+        .collect()
 }
 
 #[derive(Default)]
@@ -962,7 +781,121 @@ impl Usage {
 #[derive(Serialize)]
 struct WireMessage<'a> {
     role: &'a str,
-    content: Vec<Cow<'a, Value>>,
+    content: Vec<Block<'a>>,
+}
+
+/// One request content block; history text and image data stay borrowed.
+enum Block<'a> {
+    Value(Cow<'a, Value>),
+    Text {
+        text: Cow<'a, str>,
+        cache: bool,
+    },
+    Image {
+        media_type: &'a str,
+        data: &'a str,
+        cache: bool,
+    },
+    ToolResult {
+        tool_use_id: &'a str,
+        content: Vec<Self>,
+        is_error: bool,
+        cache: bool,
+    },
+}
+
+impl Block<'_> {
+    /// Anthropic rejects cache markers on thinking blocks and empty text blocks.
+    fn accepts_cache_control(&self) -> bool {
+        match self {
+            Self::Value(block) => {
+                !matches!(
+                    block.get("type").and_then(Value::as_str),
+                    Some("thinking" | "redacted_thinking")
+                ) && block.get("text").and_then(Value::as_str) != Some("")
+            }
+            Self::Text { text, .. } => !text.is_empty(),
+            Self::Image { .. } | Self::ToolResult { .. } => true,
+        }
+    }
+
+    fn mark_cache_endpoint(&mut self) {
+        match self {
+            Self::Value(block) => {
+                block.to_mut()["cache_control"] = serde_json::json!({"type": "ephemeral"});
+            }
+            Self::Text { cache, .. }
+            | Self::Image { cache, .. }
+            | Self::ToolResult { cache, .. } => {
+                *cache = true;
+            }
+        }
+    }
+}
+
+impl Serialize for Block<'_> {
+    /// Writes keys in sorted order, the order the equivalent JSON object serializes in.
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap as _;
+
+        #[derive(Serialize)]
+        struct Ephemeral {
+            #[serde(rename = "type")]
+            kind: &'static str,
+        }
+        #[derive(Serialize)]
+        struct Source<'a> {
+            data: &'a str,
+            media_type: &'a str,
+            #[serde(rename = "type")]
+            kind: &'static str,
+        }
+        let cache = match self {
+            Self::Value(block) => return block.serialize(serializer),
+            Self::Text { cache, .. }
+            | Self::Image { cache, .. }
+            | Self::ToolResult { cache, .. } => *cache,
+        };
+        let mut map = serializer.serialize_map(None)?;
+        if cache {
+            map.serialize_entry("cache_control", &Ephemeral { kind: "ephemeral" })?;
+        }
+        match self {
+            Self::Text { text, .. } => {
+                map.serialize_entry("text", text)?;
+                map.serialize_entry("type", "text")?;
+            }
+            Self::Image {
+                media_type, data, ..
+            } => {
+                map.serialize_entry(
+                    "source",
+                    &Source {
+                        data,
+                        media_type,
+                        kind: "base64",
+                    },
+                )?;
+                map.serialize_entry("type", "image")?;
+            }
+            Self::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+                ..
+            } => {
+                map.serialize_entry("content", content)?;
+                map.serialize_entry("is_error", is_error)?;
+                map.serialize_entry("tool_use_id", tool_use_id)?;
+                map.serialize_entry("type", "tool_result")?;
+            }
+            Self::Value(_) => {}
+        }
+        map.end()
+    }
 }
 
 fn translate_messages<'a>(
@@ -999,7 +932,13 @@ fn translate_messages<'a>(
                             .filter_map(|block| block.get("id").and_then(Value::as_str))
                             .map(str::to_owned),
                     );
-                    push_message(&mut messages, role, content.iter().map(Cow::Borrowed));
+                    push_message(
+                        &mut messages,
+                        role,
+                        content
+                            .iter()
+                            .map(|block| Block::Value(Cow::Borrowed(block))),
+                    );
                 } else {
                     let blocks = item
                         .get("content")
@@ -1009,7 +948,7 @@ fn translate_messages<'a>(
                         .map(content_block)
                         .filter_map(Result::transpose)
                         .collect::<Result<Vec<_>>>()?;
-                    push_message(&mut messages, role, blocks.into_iter().map(Cow::Owned));
+                    push_message(&mut messages, role, blocks);
                 }
             }
             Some("function_call") => {
@@ -1020,26 +959,26 @@ fn translate_messages<'a>(
                     push_message(
                         &mut messages,
                         "assistant",
-                        [Cow::Owned(serde_json::json!({
+                        [Block::Value(Cow::Owned(serde_json::json!({
                             "type": "tool_use",
                             "id": call_id,
                             "name": name,
                             "input": serde_json::from_str::<Value>(required_string(item, "arguments")?)?
-                        }))],
+                        })))],
                     );
                 }
             }
             Some("function_call_output") => push_message(
                 &mut messages,
                 "user",
-                [Cow::Owned(tool_result_block(
+                [tool_result_block(
                     item,
                     input.get(index + 1),
                     discovery,
                     catalog_revision,
                     &search_calls,
                     &deferred_tool_names,
-                )?)],
+                )?],
             ),
             Some("tool_load") => replay_standalone_tool_load(
                 &mut messages,
@@ -1070,19 +1009,11 @@ fn mark_latest_cache_endpoint(messages: &mut [WireMessage<'_>]) {
             content
                 .iter_mut()
                 .rev()
-                .find(|block| accepts_cache_control(block))
+                .find(|block| block.accepts_cache_control())
         })
     {
-        block.to_mut()["cache_control"] = serde_json::json!({"type": "ephemeral"});
+        block.mark_cache_endpoint();
     }
-}
-
-/// Anthropic rejects cache markers on thinking blocks and empty text blocks.
-fn accepts_cache_control(block: &Value) -> bool {
-    !matches!(
-        block.get("type").and_then(Value::as_str),
-        Some("thinking" | "redacted_thinking")
-    ) && block.get("text").and_then(Value::as_str) != Some("")
 }
 
 fn remember_search_call(search_calls: &mut BTreeSet<String>, call_id: &str, name: &str) {
@@ -1091,37 +1022,35 @@ fn remember_search_call(search_calls: &mut BTreeSet<String>, call_id: &str, name
     }
 }
 
-fn content_block(part: &Value) -> Result<Option<Value>> {
-    let mut block = match part.get("type").and_then(Value::as_str) {
-        Some("input_text" | "output_text") => {
-            serde_json::json!({"type":"text", "text": required_string(part, "text")?})
-        }
+fn content_block(part: &Value) -> Result<Option<Block<'_>>> {
+    let cache = part
+        .get(PROMPT_CACHE_BREAKPOINT_FIELD)
+        .and_then(Value::as_bool)
+        == Some(true);
+    Ok(Some(match part.get("type").and_then(Value::as_str) {
+        Some("input_text" | "output_text") => Block::Text {
+            text: Cow::Borrowed(required_string(part, "text")?),
+            cache,
+        },
         Some("input_image") => {
             let Some((media_type, data)) = image_input(part, "Anthropic")? else {
                 return Ok(None);
             };
-            serde_json::json!({"type":"image", "source":{"type":"base64", "media_type":media_type,"data":data}})
+            Block::Image {
+                media_type,
+                data,
+                cache,
+            }
         }
-        Some("file") => {
-            serde_json::json!({"type":"text", "text":format!("Stored file: {}", part["file"])})
-        }
+        Some("file") => Block::Text {
+            text: Cow::Owned(super::StoredFile(&part["file"]).to_string()),
+            cache,
+        },
         _ => return Ok(None),
-    };
-    if part
-        .get(PROMPT_CACHE_BREAKPOINT_FIELD)
-        .and_then(Value::as_bool)
-        == Some(true)
-    {
-        super::set_field(
-            &mut block,
-            "cache_control",
-            serde_json::json!({"type":"ephemeral"}),
-        );
-    }
-    Ok(Some(block))
+    }))
 }
 
-fn tool_content_blocks(output: &Value) -> Result<Vec<Value>> {
+fn tool_content_blocks(output: &Value) -> Result<Vec<Block<'_>>> {
     output
         .as_array()
         .ok_or_else(|| Error::Provider("tool result content must be an array".into()))?
@@ -1133,14 +1062,14 @@ fn tool_content_blocks(output: &Value) -> Result<Vec<Value>> {
         .collect()
 }
 
-fn tool_result_block(
-    item: &Value,
+fn tool_result_block<'a>(
+    item: &'a Value,
     next: Option<&Value>,
     discovery: ToolDiscoveryMode,
     catalog_revision: &str,
     search_calls: &BTreeSet<String>,
     deferred_tool_names: &BTreeSet<&str>,
-) -> Result<Value> {
+) -> Result<Block<'a>> {
     let call_id = required_string(item, "call_id")?;
     let load = next.map(ToolLoad::from_input).transpose()?.flatten();
     let references = load
@@ -1149,18 +1078,25 @@ fn tool_result_block(
             tool_references(load, catalog_revision, deferred_tool_names)
         });
     let content = if references.is_empty() {
-        Value::Array(tool_content_blocks(item.get("output").ok_or_else(
-            || Error::Provider("tool result omitted content".into()),
-        )?)?)
+        tool_content_blocks(
+            item.get("output")
+                .ok_or_else(|| Error::Provider("tool result omitted content".into()))?,
+        )?
     } else {
-        Value::Array(references)
+        references
+            .into_iter()
+            .map(|reference| Block::Value(Cow::Owned(reference)))
+            .collect()
     };
-    Ok(serde_json::json!({
-        "type": "tool_result",
-        "tool_use_id": call_id,
-        "content": content,
-        "is_error": item.get(TOOL_ERROR_FIELD).and_then(Value::as_bool).unwrap_or(false)
-    }))
+    Ok(Block::ToolResult {
+        tool_use_id: call_id,
+        content,
+        is_error: item
+            .get(TOOL_ERROR_FIELD)
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        cache: false,
+    })
 }
 
 fn follows_search_result(previous: Option<&Value>, search_calls: &BTreeSet<String>) -> bool {
@@ -1193,22 +1129,22 @@ fn replay_standalone_tool_load(
     push_message(
         messages,
         "assistant",
-        [Cow::Owned(serde_json::json!({
+        [Block::Value(Cow::Owned(serde_json::json!({
             "type": "tool_use",
             "id": call_id,
             "name": TOOLS_SEARCH_NAME,
             "input": {"query": "restore loaded session tools"}
-        }))],
+        })))],
     );
     push_message(
         messages,
         "user",
-        [Cow::Owned(serde_json::json!({
+        [Block::Value(Cow::Owned(serde_json::json!({
             "type": "tool_result",
             "tool_use_id": call_id,
             "content": references,
             "is_error": false
-        }))],
+        })))],
     );
 }
 
@@ -1235,7 +1171,7 @@ fn tool_references(
 fn push_message<'a>(
     messages: &mut Vec<WireMessage<'a>>,
     role: &'a str,
-    blocks: impl IntoIterator<Item = Cow<'a, Value>>,
+    blocks: impl IntoIterator<Item = Block<'a>>,
 ) {
     let mut blocks = blocks.into_iter().peekable();
     if blocks.peek().is_none() {
@@ -1381,27 +1317,34 @@ pub(super) fn provider() -> ProviderDefinition {
     .with_replay_reasoning_field(RAW_CONTENT)
 }
 
-fn build_provider(config: ProviderBuildConfig, base_url: BaseUrl) -> Result<Arc<dyn Model>> {
-    let tool_discovery = config
-        .tool_discovery
-        .unwrap_or_else(|| provider().tool_discovery(&config.model, Some(base_url.as_str())));
+fn build_provider(
+    config: ProviderBuildConfig,
+    base_url: BaseUrl,
+    tool_discovery: ToolDiscoveryMode,
+) -> Result<Arc<dyn Model>> {
     let api_key = config.credential.into_optional_api_key("anthropic")?;
-    let mut provider = Anthropic::with_client(api_key, base_url, config.model, config.http)?
-        .with_transport_settings(config.transport);
-    provider.tool_discovery = tool_discovery;
-    let provider = match config.reasoning_effort {
-        Some(effort) => provider.with_reasoning_effort(effort)?,
-        None => provider,
-    };
-    let provider = match config.web_search {
-        HostedWebSearch::Off => provider,
+    let mut provider = Anthropic::from_config(
+        ApiKeyModel::new(
+            api_key,
+            base_url,
+            config.model,
+            config.http,
+            config.transport,
+        )?,
+        tool_discovery,
+    )?;
+    if let Some(effort) = config.reasoning_effort {
+        provider = provider.with_reasoning_effort(effort)?;
+    }
+    match config.web_search {
+        HostedWebSearch::Off => {}
         HostedWebSearch::Cached => {
             return Err(Error::Config(
                 "Anthropic does not support cached web search".into(),
             ));
         }
-        HostedWebSearch::Live => provider.with_web_search(),
-    };
+        HostedWebSearch::Live => provider = provider.with_web_search(),
+    }
     Ok(Arc::new(provider))
 }
 

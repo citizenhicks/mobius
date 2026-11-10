@@ -19,13 +19,15 @@ mobius-gateway --state-dir /srv/agent/state serve
 ```
 
 `print-default-config` prints complete default TOML without creating state or exposing
-credentials. Optional paths are omitted until configured. New operator sections use
-Serde defaults allow omitted operator sections to use their documented defaults.
+credentials. Optional paths are omitted until configured. Omitted operator sections use
+their documented defaults.
 Unknown fields fail, so typos cannot silently select defaults. The current configuration
-version is 29. The gateway does not migrate older files: it rejects them without rewriting
+version is 30. The gateway does not migrate older files: it rejects them without rewriting
 them.
 
 ## Execution and capacity
+
+Example overrides (these are not the defaults, which follow the block):
 
 ```toml
 [execution]
@@ -72,11 +74,14 @@ Pairing lifetime defaults to 600 seconds (1–86400). Lowering the client limit 
 existing identities and blocks new pairing beyond that limit.
 
 Bot middleware settings expose `sandbox.tool_output_bytes` (40000; maximum 1048576)
-and `sandbox.background_commands` (4; maximum 256). Command capture and final tool
+and `sandbox.background_commands` (12; maximum 256). Command capture and final tool
 rendering share the output budget. Tools expose `repeat_warning_calls` (12) and
 `repeat_stop_calls` (21): identical calls with identical results in one turn first warn
 the model, then stop the turn with a warning. Polling tools are not counted. Compaction exposes `at_tokens` (250000),
-`reserve_tokens` (16384), and `allow_model_compaction` (`off` or `on`, default `off`).
+`reserve_tokens` (16384), `checkpoint_percent` (20; maximum 50), `model_route` (unset uses
+the chat's model), and `allow_model_compaction` (`off` or `on`, default `off`). Idle
+compaction is on by default: `idle_compaction` (`on`), `idle_minutes` (4; maximum 1440),
+and `idle_min_tokens` (100000) compact a large chat while it sits idle.
 Automatic compaction saves a plaintext checkpoint and resets context when the
 token threshold or destination model budget requires it. Enabling
 `allow_model_compaction` also lets the model request an early reset. Original
@@ -107,8 +112,6 @@ serialized outgoing model request, including images, text and tool schemas:
 | `voice_io_timeout_ms` | 5000 |
 | `voice_call_timeout_ms` | 3600000 |
 | `oauth_request_timeout_ms` | 30000 |
-| `oauth_callback_timeout_ms` | 900000 |
-| `oauth_callback_request_timeout_ms` | 5000 |
 | `device_code_timeout_ms` | 900000 |
 
 Base URLs are configurable per provider instance, including native Codex routes. Custom
@@ -125,7 +128,8 @@ realtime endpoints/voices and model catalogs. Middleware prompts, labels and def
 live beside their owners. Distributors can edit those source defaults without changing
 execution logic; runtime policy uses the fields above. No global provider registry is added.
 
-Model catalogs (`anthropic.toml`, `openai.toml`, `kimi.toml`, `deepseek.toml`) can be
+Model catalogs (`anthropic.toml`, `openai.toml`, `kimi.toml`, `deepseek.toml`,
+`mistral.toml`) can be
 replaced without a rebuild: a file with the same name in `<state dir>/models/` is read at
 gateway start instead of the bundled copy. A file that fails to parse or names an
 unlisted default model or reasoning effort is ignored with a warning. For editable
@@ -136,7 +140,7 @@ stored model records to change that setup.
 
 Every provider uses the same setup and registration path. Only Codex and OpenAI
 socket lock their model catalogs; their setup `models` arrays remain empty.
-Anthropic, Kimi and DeepSeek seed a new setup from their bundled catalogs.
+Anthropic, Kimi, DeepSeek and Mistral seed a new setup from their bundled catalogs.
 OpenRouter and Local start empty. After saving, an editable setup's `models` array
 is authoritative: changing the bundled catalog does not add removed models back.
 
@@ -166,7 +170,7 @@ The setup's `selection.base_url`, `selection.web_search`, and optional
 `selection.tool_discovery` apply to its models. Discovery accepts `native` or
 `rebuild`; omission uses each model's default and any provider endpoint policy.
 The gateway advertises supported modes and rejects unsupported choices before
-saving. Kimi supports `rebuild` only. Choosing `native` for a custom endpoint
+saving. Kimi and Mistral support `rebuild` only. Choosing `native` for a custom endpoint
 requires that endpoint to implement the provider's native discovery protocol.
 
 App registration edits model IDs, reasoning choices/defaults and provider-level
@@ -207,8 +211,8 @@ catalogs, labels, tint, selected model, reasoning effort and web search while up
 credentials or endpoint settings. Supplied model/image lists only seed a new setup;
 ordinary registration without this flag applies intentional catalog edits.
 `--if-configured` skips registration of a missing optional setup. Both decisions
-are made against live gateway state under the mutation lock. Cloud uses this same
-command for all providers; it does not rebuild catalogs or call a separate wire
+are made against live gateway state under the mutation lock. Hosts can use this one
+command for every provider; it does not rebuild catalogs or call a separate wire
 registration script.
 
 ### Independent text, image and live catalogs
@@ -328,9 +332,8 @@ use bundled defaults. No hosting-provider theme or lifecycle API is required.
 `[runtime]` owns `idle_exit_seconds` (259200; 0 disables), optional `ingress`, optional
 `storage_limit_bytes`, `require_access_lease` (false), `access_grace_seconds` (0).
 Supervisors own restart and volume policy. An optional telemetry activity hook can
-hold the host awake while the gateway has work.
-Existing files that explicitly set the removed `runtime.hold_socket` field must drop
-that field before validation; no hosting-provider hold path is built into the gateway.
+hold the host awake while the gateway has work. No hosting-provider hold path is built
+into the gateway.
 
 ```sh
 mobius-gateway set-runtime --idle-exit-seconds 0
@@ -392,10 +395,12 @@ After validation, an operator can add a private collector with `telemetry add`.
 
 `[telemetry.policy]` contains `allow_insecure_http` (false), `request_timeout_seconds`
 and `upload_admission_timeout_seconds` (both 10, range 1–3600). Admission's deadline
-includes its fresh measurement. Each sink owns its interval, snapshot sections, hook
-events and safe envelope fields. Revisions prevent stale configuration updates.
+includes its fresh measurement. Each sink owns its interval, snapshot sections
+(`activity`, `usage`, `runs`, `storage`, `resources`, `context`), hook events and safe
+envelope fields. `context` reports the last input-token breakdown for up to 64 recent
+chats: counts and chat identifiers, never message text. Revisions prevent stale configuration updates.
 
-### Resource measurements (0.16.20)
+### Resource measurements
 
 Add `resources` to an operator-configured POST collector's `sections` to collect
 local hardware measurements on macOS and Linux. For workload correlation, request
@@ -504,10 +509,11 @@ retains its explicit authorization contract.
 | `MOBIUS_GATEWAY_ENDPOINT` | Client endpoint override, including TLS hostname |
 | `MOBIUS_GATEWAY_TOKEN` | Explicit client credential |
 | `MOBIUS_GATEWAY_TOKEN_FILE` | Saved client-token file location |
+| `MOBIUS_GATEWAY_BEARER_ENDPOINT`, `MOBIUS_GATEWAY_BEARER_TOKEN` | Terminal client: WebSocket admission bearer for one `wss://` endpoint; set both or neither |
 | `MOBIUS_COMPUTER_RUNTIME` | Pre-provisioned resources when `computer.directory` is omitted |
 | `MOBIUS_GATEWAY_ACCESS_EXPIRES_AT` | Explicit access expiry, Unix seconds |
 | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` | Default-endpoint provider credentials |
-| `DEEPSEEK_API_KEY`, `MOONSHOT_API_KEY`, `OPENROUTER_API_KEY` | Other default-endpoint provider credentials |
+| `DEEPSEEK_API_KEY`, `MOONSHOT_API_KEY`, `MISTRAL_API_KEY`, `OPENROUTER_API_KEY` | Other default-endpoint provider credentials |
 | `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY` | Proxy policy; installer and extension Git also forward lowercase variants |
 | `SSL_CERT_FILE`, `SSL_CERT_DIR` | Trust settings; PEM file added to download trust |
 | `NODE_EXTRA_CA_CERTS`, `NODE_USE_SYSTEM_CA`, `npm_config_cafile` | Node/npm installer CA settings |

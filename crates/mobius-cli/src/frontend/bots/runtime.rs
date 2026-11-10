@@ -1,4 +1,3 @@
-use std::io;
 use std::sync::Arc;
 
 use mobius::{Error, Result};
@@ -6,23 +5,18 @@ use mobius_gateway::client::{GatewayEvents, GatewaySender};
 use mobius_gateway::wire::{
     ClientMessage, HookSource, ReadyPayload, ServerFrame, ServerMessage, apply_session_changes,
 };
-use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::Event;
 use tokio::time::MissedTickBehavior;
-use uuid::Uuid;
 
 use super::render::render;
 use super::state::{BotsState, Page};
 use super::{Action, FollowUp};
 use crate::frontend::setup;
-use crate::frontend::terminal::{INPUT_POLL, MAX_INPUT_BATCH, poll_event};
+use crate::frontend::terminal::{INPUT_POLL, Screen, input_batch};
 use crate::gateway_error;
 
-type BotsTerminal = Terminal<CrosstermBackend<io::Stdout>>;
-
 pub(in crate::frontend) async fn run(
-    terminal: &mut BotsTerminal,
+    terminal: &mut Screen,
     sender: &GatewaySender,
     events: &mut GatewayEvents,
     gateway: &mut ReadyPayload,
@@ -67,8 +61,8 @@ pub(in crate::frontend) async fn run(
                 dirty = true;
             }
             _ = tick.tick() => {
-                for _ in 0..MAX_INPUT_BATCH {
-                    let Some(event) = poll_event()? else { break; };
+                for event in input_batch() {
+                    let event = event?;
                     dirty = true;
                     let action = match event {
                         Event::Key(key) => state.handle_key(key, gateway),
@@ -225,14 +219,14 @@ fn pending_matches(state: &BotsState, request_id: &str) -> bool {
     state
         .pending
         .as_ref()
-        .is_some_and(|pending| Uuid::try_parse(request_id) == Ok(pending.request_id))
+        .is_some_and(|pending| *pending.request_id == *request_id)
 }
 
 async fn request_routines(sender: &GatewaySender, state: &mut BotsState) -> Result<()> {
-    let request_id = Uuid::new_v4();
+    let request_id = crate::fresh_id();
     sender
         .send(ClientMessage::ListRoutines {
-            request_id: request_id.to_string().into(),
+            request_id: Arc::clone(&request_id),
             bot_id: None,
         })
         .await
@@ -246,10 +240,10 @@ async fn request_runs(
     state: &mut BotsState,
     routine_id: Arc<str>,
 ) -> Result<()> {
-    let request_id = Uuid::new_v4();
+    let request_id = crate::fresh_id();
     sender
         .send(ClientMessage::ListRoutineHistory {
-            request_id: request_id.to_string().into(),
+            request_id: Arc::clone(&request_id),
             id: Some(routine_id),
         })
         .await

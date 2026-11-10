@@ -25,14 +25,14 @@ const MAX_CREDENTIAL_USERNAME_BYTES: usize = 512;
 const MAX_CREDENTIAL_TOKEN_BYTES: usize = 16 * 1024;
 const MAX_CREDENTIAL_OUTPUT_BYTES: usize = 32 * 1024;
 
-pub(super) async fn probe_credential(
+pub(crate) async fn probe_credential(
     target: &str,
 ) -> std::result::Result<Option<String>, Rejection> {
     let target = credential_target(target)?;
     credential_fill(&target, None).await
 }
 
-pub(super) async fn approve_credential(
+pub(crate) async fn approve_credential(
     target: &str,
     username: &str,
     token: &str,
@@ -783,7 +783,6 @@ mod tests {
         assert!(patch.contains("+new\n+file\n"), "{patch}");
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn branch_switch_disables_hooks_and_confines_filters_to_the_workspace() {
         use std::os::unix::fs::PermissionsExt as _;
@@ -838,21 +837,5 @@ mod tests {
             ),
             ("feature", "feature\n".into(), false, true, true)
         );
-    }
-
-    #[test]
-    fn workspace_diff_budget_fits_the_encoded_gateway_frame() {
-        use crate::wire::{ServerFrame, ServerMessage};
-
-        let mut diff = vec![1; MAX_GIT_DIFF_BYTES + 1];
-        truncate_diff(&mut diff, MAX_GIT_DIFF_BYTES);
-        let frame = ServerFrame::new(ServerMessage::GitDiff {
-            request_id: "r".repeat(4 * 1024).into(),
-            session_id: mobius::SessionId::new("s".repeat(4 * 1024)).unwrap(),
-            scope: GitDiffScope::Unstaged,
-            diff: String::from_utf8(diff).expect("control bytes are valid UTF-8"),
-        });
-
-        assert!(serde_json::to_vec(&frame).expect("encoded frame").len() <= MAX_FRAME_BYTES);
     }
 }

@@ -218,7 +218,6 @@ pub(crate) enum Trigger {
     Start,
     Interval,
     Events,
-    Manual,
     Stop(StopCause),
 }
 
@@ -230,7 +229,6 @@ pub(crate) struct Telemetry {
     state_dir: std::path::PathBuf,
     client: Result<HttpClient>,
     statuses: Mutex<BTreeMap<String, TelemetrySinkStatus>>,
-    manual: Mutex<std::collections::BTreeSet<String>>,
     sequence: AtomicU64,
     instance: String,
     started_at_ms: i64,
@@ -260,7 +258,10 @@ impl Telemetry {
         let Some(context) = &usage.context else {
             return;
         };
-        let mut contexts = mobius::sync::recover_lock(&self.contexts);
+        // Notes are best-effort; a poisoned store is never read and stops collecting.
+        let Ok(mut contexts) = self.contexts.lock() else {
+            return;
+        };
         let session = contexts
             .iter()
             .position(|(id, _)| id == session)
@@ -278,13 +279,15 @@ impl Telemetry {
         }
     }
 
-    pub(crate) fn contexts(&self) -> Value {
-        Value::Array(
-            mobius::sync::recover_lock(&self.contexts)
+    pub(crate) fn contexts(&self) -> Result<Value> {
+        Ok(Value::Array(
+            self.contexts
+                .lock()
+                .map_err(crate::poisoned("chat contexts"))?
                 .iter()
                 .map(|(session, chat)| json!({"session_id": session, "context": chat}))
                 .collect(),
-        )
+        ))
     }
 
     pub(crate) fn new(config: &TelemetryConfig, state_dir: &std::path::Path) -> Self {
@@ -309,7 +312,6 @@ impl Telemetry {
                     .map(|sink| (sink.id.clone(), TelemetrySinkStatus::default())) // rules-allow: the status map owns its keys
                     .collect(),
             ),
-            manual: Mutex::default(),
             sequence: AtomicU64::new(0),
             instance: uuid::Uuid::new_v4().to_string(),
             started_at_ms: chrono::Utc::now().timestamp_millis(),
@@ -362,21 +364,6 @@ impl Telemetry {
         drop(statuses);
         drop(live);
         publication.confirm()
-    }
-    pub(crate) fn request_manual(&self, id: String) -> Result<()> {
-        if !self
-            .config()?
-            .sinks
-            .iter()
-            .any(|sink| sink.id == id && sink.enabled)
-        {
-            return Err(Error::Config("unknown or disabled telemetry sink".into()));
-        }
-        self.manual
-            .lock()
-            .map_err(crate::poisoned("telemetry manual request"))?
-            .insert(id);
-        Ok(())
     }
     pub(crate) fn status(&self, id: &str) -> Result<TelemetrySinkStatus> {
         // The report owns its diagnostic strings after the short lock is released.
@@ -523,12 +510,6 @@ impl Telemetry {
             .sinks
             .get(index)
             .ok_or_else(|| Error::Config("telemetry sink disappeared".into()))?;
-        let manual = host
-            .telemetry
-            .manual
-            .lock()
-            .map_err(crate::poisoned("telemetry manual request"))?
-            .contains(&sink.id);
         let (snapshot_due, retry_due) = {
             let statuses = host
                 .telemetry
@@ -552,8 +533,8 @@ impl Telemetry {
             }
             let snapshot_due = match trigger {
                 Trigger::Events => false,
-                Trigger::Interval => manual || next_due,
-                Trigger::Start | Trigger::Manual | Trigger::Stop(_) => true,
+                Trigger::Interval => next_due,
+                Trigger::Start | Trigger::Stop(_) => true,
             };
             (snapshot_due, retry_due)
         };
@@ -583,12 +564,10 @@ impl Telemetry {
                 .insert("events".into(), json!(events));
             header
         };
-        let reason = if !snapshot_due {
-            Trigger::Events
-        } else if manual && matches!(trigger, Trigger::Interval) {
-            Trigger::Manual
-        } else {
+        let reason = if snapshot_due {
             trigger
+        } else {
+            Trigger::Events
         };
         let header = host.telemetry.header(sink, now);
         let object = envelope
@@ -616,13 +595,6 @@ impl Telemetry {
                 status.next_at = Some(now.saturating_add(i64::from(sink.every_seconds)));
             }
             drop(statuses);
-        }
-        if manual {
-            host.telemetry
-                .manual
-                .lock()
-                .map_err(crate::poisoned("telemetry manual request"))?
-                .remove(&sink.id);
         }
         let host = host.clone(); // rules-allow: the delivery task owns its host handle
         tasks.spawn(async move {
@@ -835,7 +807,7 @@ mod context_tests {
             telemetry.note_context(&SessionId::new(format!("chat-{chat}")).unwrap(), &usage(10));
         }
         telemetry.note_context(&SessionId::new("chat-1").unwrap(), &usage(20));
-        let contexts = telemetry.contexts();
+        let contexts = telemetry.contexts().unwrap();
         let chats = contexts.as_array().expect("chats");
         assert_eq!(chats.len(), MAX_CHAT_CONTEXTS);
         assert!(!chats.iter().any(|chat| chat["session_id"] == "chat-0"));

@@ -6,7 +6,7 @@ use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::{Mutex, MutexGuard, TryLockError};
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use rusqlite::Connection;
@@ -167,26 +167,16 @@ struct CachedConnection {
     context: HashMap<SessionId, ContextCache>,
 }
 
-/// Locks the warm connection, or returns `None` when a reader must not wait for it.
+/// Locks the warm connection, or returns `None` when a reader must not wait for it or a
+/// panic poisoned it. A poisoned connection is never reused; callers open a fresh one.
 fn warm_connection(
     connection: &Mutex<CachedConnection>,
     wait: bool,
 ) -> Option<MutexGuard<'_, CachedConnection>> {
-    let locked = if wait {
-        connection.lock().map_err(TryLockError::Poisoned)
+    if wait {
+        connection.lock().ok()
     } else {
-        connection.try_lock()
-    };
-    match locked {
-        Ok(cached) => Some(cached),
-        Err(TryLockError::WouldBlock) => None,
-        Err(TryLockError::Poisoned(poisoned)) => {
-            // Unwinding rolled the panicked operation's transaction back; only its hints are suspect.
-            connection.clear_poison();
-            let mut cached = poisoned.into_inner();
-            cached.context.clear();
-            Some(cached)
-        }
+        connection.try_lock().ok()
     }
 }
 
@@ -511,25 +501,8 @@ impl CheckpointStore for SqliteCheckpoint {
     ) -> BoxFuture<'a, Result<EventPage>> {
         let session_id = session_id.share();
         Box::pin(async move {
-            if request.limit == 0 {
-                return Err(Error::Checkpoint(
-                    "event journal page limit must be positive".into(),
-                ));
-            }
-            let query_limit = request
-                .limit
-                .checked_add(1)
-                .and_then(|limit| i64::try_from(limit).ok())
-                .ok_or_else(|| Error::Checkpoint("event journal page limit is too large".into()))?;
-            let before_sequence = request
-                .before_sequence
-                .map(i64::try_from)
-                .transpose()
-                .map_err(|error| {
-                    Error::Checkpoint(format!(
-                        "event journal cursor exceeds SQLite INTEGER: {error}"
-                    ))
-                })?;
+            let (query_limit, before_sequence) =
+                page_bounds("event journal", request.limit, request.before_sequence)?;
             self.run(move |connection, _cache| {
                 // Event references and transcript payloads must share one read snapshot.
                 let transaction = connection.transaction()?;
@@ -624,14 +597,7 @@ impl CheckpointStore for SqliteCheckpoint {
         session_id: &'a SessionId,
     ) -> BoxFuture<'a, Result<Option<SessionSummary>>> {
         let session_id = session_id.share();
-        Box::pin(self.run(move |connection, _cache| {
-            connection.query_row(
-                "SELECT session_id, parent_session_id, parent_sequence, latest_sequence,
-                        catalog_visible, first_user_message, session_context_json, execution_stats_json,
-                        created_at, updated_at FROM sessions WHERE session_id = ?1",
-                [&session_id], session_row,
-            ).optional()?.map(summary_from_row).transpose()
-        }))
+        Box::pin(self.run(move |connection, _cache| load_session_summary(connection, &session_id)))
     }
 
     fn list_sessions_page(
@@ -639,11 +605,7 @@ impl CheckpointStore for SqliteCheckpoint {
         request: SessionPageRequest,
     ) -> BoxFuture<'_, Result<SessionPage>> {
         Box::pin(async move {
-            if request.limit == 0 {
-                return Err(Error::Checkpoint(
-                    "session page limit must be positive".into(),
-                ));
-            }
+            let (query_limit, _) = page_bounds("session", request.limit, None)?;
             if let Some(owner_id) = &request.owner_id {
                 crate::validate_identifier(
                     "session owner filter",
@@ -655,11 +617,6 @@ impl CheckpointStore for SqliteCheckpoint {
                     error => error,
                 })?;
             }
-            let query_limit = request
-                .limit
-                .checked_add(1)
-                .and_then(|limit| i64::try_from(limit).ok())
-                .ok_or_else(|| Error::Checkpoint("session page limit is too large".into()))?;
             let (cursor_updated_at, cursor_sequence, cursor_session_id) = match request.cursor {
                 Some(cursor) => (
                     Some(cursor.updated_at),
@@ -673,39 +630,26 @@ impl CheckpointStore for SqliteCheckpoint {
                 None => (None, None, None),
             };
             self.run(move |connection, _cache| {
-                let mut statement = connection.prepare_cached(
-                    "SELECT sessions.session_id, sessions.parent_session_id,
-                            sessions.parent_sequence, sessions.latest_sequence,
-                            sessions.catalog_visible, sessions.first_user_message,
-                            sessions.session_context_json, sessions.execution_stats_json,
-                            sessions.created_at, sessions.updated_at
+                let mut statement = connection.prepare_cached(&format!(
+                    "SELECT {SESSION_COLUMNS}
                      FROM sessions
-                     WHERE (?5 IS NULL OR json_extract(sessions.session_context_json, '$.owner_id') = ?5)
+                     WHERE (?5 IS NULL OR json_extract(session_context_json, '$.owner_id') = ?5)
                        AND (?1 IS NULL
-                        OR (
-                            sessions.updated_at,
-                            sessions.latest_sequence,
-                            sessions.session_id
-                        ) < (?1, ?2, ?3))
-                     ORDER BY sessions.updated_at DESC, sessions.latest_sequence DESC,
-                              sessions.session_id DESC
-                     LIMIT ?4",
-                )?;
-                let mut sessions = statement
-                    .query_map(
-                        params![
-                            cursor_updated_at,
-                            cursor_sequence,
-                            cursor_session_id,
-                            query_limit,
-                            request.owner_id
-                        ],
-                        session_row,
-                    )?
-                    .collect::<std::result::Result<Vec<_>, _>>()?
-                    .into_iter()
-                    .map(summary_from_row)
-                    .collect::<Result<Vec<_>>>()?;
+                        OR (updated_at, latest_sequence, session_id) < (?1, ?2, ?3))
+                     ORDER BY updated_at DESC, latest_sequence DESC, session_id DESC
+                     LIMIT ?4"
+                ))?;
+                let mut rows = statement.query(params![
+                    cursor_updated_at,
+                    cursor_sequence,
+                    cursor_session_id,
+                    query_limit,
+                    request.owner_id
+                ])?;
+                let mut sessions = Vec::new();
+                while let Some(row) = rows.next()? {
+                    sessions.push(session_summary_row(row)?);
+                }
                 let has_more = sessions.len() > request.limit;
                 sessions.truncate(request.limit);
                 let next_cursor = has_more
@@ -727,23 +671,8 @@ impl CheckpointStore for SqliteCheckpoint {
     ) -> BoxFuture<'a, Result<TranscriptPage>> {
         let session_id = session_id.share();
         Box::pin(async move {
-            if request.max_batches == 0 {
-                return Err(Error::Checkpoint(
-                    "transcript page limit must be positive".into(),
-                ));
-            }
-            let query_limit = request
-                .max_batches
-                .checked_add(1)
-                .and_then(|limit| i64::try_from(limit).ok())
-                .ok_or_else(|| Error::Checkpoint("transcript page limit is too large".into()))?;
-            let before_sequence = request
-                .before_sequence
-                .map(i64::try_from)
-                .transpose()
-                .map_err(|error| {
-                    Error::Checkpoint(format!("transcript cursor exceeds SQLite INTEGER: {error}"))
-                })?;
+            let (query_limit, before_sequence) =
+                page_bounds("transcript", request.max_batches, request.before_sequence)?;
             self.run(move |connection, _cache| {
                 let mut statement = connection.prepare_cached(
                     "SELECT sequence, created_at, items_json
@@ -797,23 +726,8 @@ impl CheckpointStore for SqliteCheckpoint {
     ) -> BoxFuture<'a, Result<ExecutionPage>> {
         let session_id = session_id.share();
         Box::pin(async move {
-            if request.limit == 0 {
-                return Err(Error::Checkpoint(
-                    "execution page limit must be positive".into(),
-                ));
-            }
-            let query_limit = request
-                .limit
-                .checked_add(1)
-                .and_then(|limit| i64::try_from(limit).ok())
-                .ok_or_else(|| Error::Checkpoint("execution page limit is too large".into()))?;
-            let before_sequence = request
-                .before_sequence
-                .map(i64::try_from)
-                .transpose()
-                .map_err(|error| {
-                    Error::Checkpoint(format!("execution cursor exceeds SQLite INTEGER: {error}"))
-                })?;
+            let (query_limit, before_sequence) =
+                page_bounds("execution", request.limit, request.before_sequence)?;
             self.run(move |connection, _cache| {
                 let mut statement = connection.prepare_cached(
                     "SELECT sequence, record_json
@@ -965,18 +879,8 @@ impl CheckpointStore for SqliteCheckpoint {
                         params![session_id, sequence, context_json,],
                     )?;
                 }
-                let row = transaction.query_row(
-                    "SELECT sessions.session_id, sessions.parent_session_id,
-                            sessions.parent_sequence, sessions.latest_sequence,
-                            sessions.catalog_visible, sessions.first_user_message,
-                            sessions.session_context_json, sessions.execution_stats_json,
-                            sessions.created_at, sessions.updated_at
-                     FROM sessions
-                     WHERE sessions.session_id = ?1",
-                    [&session_id],
-                    session_row,
-                )?;
-                let summary = summary_from_row(row)?;
+                let summary = load_session_summary(&transaction, session_id)?
+                    .ok_or_else(|| Error::Checkpoint("forked session was not stored".into()))?;
                 transaction.commit()?;
                 ContextCache::record(cache, &checkpoint, data_version);
                 Ok(summary)
@@ -1036,23 +940,6 @@ impl CheckpointStore for SqliteCheckpoint {
                 params![scope, key, json],
             )?;
             Ok(())
-        }))
-    }
-
-    fn list_state<'a>(&'a self, scope: &'a str) -> BoxFuture<'a, Result<Vec<(String, Value)>>> {
-        let scope = scope.to_owned();
-        Box::pin(self.run(move |connection, _cache| {
-            let mut statement = connection.prepare_cached(
-                "SELECT key, value_json FROM middleware_state WHERE scope = ?1 ORDER BY key",
-            )?;
-            let rows = statement.query_map([scope], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })?;
-            rows.map(|row| {
-                let (key, json) = row?;
-                Ok((key, serde_json::from_str(&json)?))
-            })
-            .collect()
         }))
     }
 }
@@ -1158,54 +1045,75 @@ fn store_checkpoint(
     Ok(())
 }
 
-type SessionRow = (
-    SessionId,
-    Option<SessionId>,
-    Option<i64>,
-    i64,
-    bool,
-    Option<String>,
-    String,
-    String,
-    i64,
-    i64,
-);
+/// The `sessions` columns `session_summary_row` decodes, in its order.
+const SESSION_COLUMNS: &str = "session_id, parent_session_id, parent_sequence, latest_sequence,
+    catalog_visible, first_user_message, session_context_json, execution_stats_json,
+    created_at, updated_at";
 
-fn session_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> {
-    Ok((
-        row.get(0)?,
-        row.get(1)?,
-        row.get(2)?,
-        row.get(3)?,
-        row.get(4)?,
-        row.get(5)?,
-        row.get(6)?,
-        row.get(7)?,
-        row.get(8)?,
-        row.get(9)?,
-    ))
+fn load_session_summary(
+    connection: &Connection,
+    session_id: &SessionId,
+) -> Result<Option<SessionSummary>> {
+    connection
+        .prepare_cached(&format!(
+            "SELECT {SESSION_COLUMNS} FROM sessions WHERE session_id = ?1"
+        ))?
+        .query([session_id])?
+        .next()?
+        .map(session_summary_row)
+        .transpose()
 }
 
-fn summary_from_row(row: SessionRow) -> Result<SessionSummary> {
-    let session_context: SessionContext = serde_json::from_str(&row.6)?;
+fn session_summary_row(row: &rusqlite::Row<'_>) -> Result<SessionSummary> {
+    let session_context: SessionContext = serde_json::from_str(&row.get::<_, String>(6)?)?;
     validate_session_context(&session_context)?;
-    let execution_stats: ExecutionStats = serde_json::from_str(&row.7)?;
+    let execution_stats: ExecutionStats = serde_json::from_str(&row.get::<_, String>(7)?)?;
+    let parent_sequence: Option<i64> = row.get(2)?;
+    let sequence: i64 = row.get(3)?;
     Ok(SessionSummary {
-        session_id: row.0,
+        session_id: row.get(0)?,
         session_context,
-        parent_session_id: row.1,
-        parent_sequence: row.2.map(u64::try_from).transpose().map_err(|error| {
-            Error::Checkpoint(format!("session has a negative parent sequence: {error}"))
-        })?,
-        sequence: u64::try_from(row.3).map_err(|error| {
+        parent_session_id: row.get(1)?,
+        parent_sequence: parent_sequence
+            .map(u64::try_from)
+            .transpose()
+            .map_err(|error| {
+                Error::Checkpoint(format!("session has a negative parent sequence: {error}"))
+            })?,
+        sequence: u64::try_from(sequence).map_err(|error| {
             Error::Checkpoint(format!("session has a negative sequence: {error}"))
         })?,
-        catalog_visible: row.4,
-        first_user_message: row.5,
+        catalog_visible: row.get(4)?,
+        first_user_message: row.get(5)?,
         execution_stats,
-        created_at: row.8,
-        updated_at: row.9,
+        created_at: row.get(8)?,
+        updated_at: row.get(9)?,
     })
+}
+
+/// Checks a page request and returns its SQLite `LIMIT`, one past the page to detect more
+/// rows, and its exclusive upper cursor.
+fn page_bounds(
+    name: &str,
+    limit: usize,
+    before_sequence: Option<u64>,
+) -> Result<(i64, Option<i64>)> {
+    if limit == 0 {
+        return Err(Error::Checkpoint(format!(
+            "{name} page limit must be positive"
+        )));
+    }
+    let query_limit = limit
+        .checked_add(1)
+        .and_then(|limit| i64::try_from(limit).ok())
+        .ok_or_else(|| Error::Checkpoint(format!("{name} page limit is too large")))?;
+    let before_sequence = before_sequence
+        .map(i64::try_from)
+        .transpose()
+        .map_err(|error| {
+            Error::Checkpoint(format!("{name} cursor exceeds SQLite INTEGER: {error}"))
+        })?;
+    Ok((query_limit, before_sequence))
 }
 
 fn session_cursor(session: &SessionSummary) -> SessionCursor {
@@ -1295,7 +1203,6 @@ fn prepare_path(path: &Path) -> Result<()> {
     {
         fs::create_dir_all(parent)?;
     }
-    #[cfg(unix)]
     {
         crate::owner_only::open(path)?;
     }

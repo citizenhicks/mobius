@@ -11,7 +11,7 @@ use mobius_gateway::wire::{
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::{Action, FollowUp, request_action};
-use crate::frontend::terminal::append_bounded;
+use crate::frontend::terminal::TextForm;
 use crate::frontend::wrap_step;
 
 pub(super) enum Form {
@@ -23,43 +23,6 @@ pub(super) enum FormFlow {
     Stay,
     Cancel,
     Send(Action),
-}
-
-pub(super) struct TextForm {
-    pub(super) value: String,
-    pub(super) limit: usize,
-    pub(super) multiline: bool,
-    pub(super) error: Option<String>,
-}
-
-impl TextForm {
-    pub(super) fn new(value: impl Into<String>, limit: usize) -> Self {
-        Self {
-            value: value.into(),
-            limit,
-            multiline: false,
-            error: None,
-        }
-    }
-
-    fn multiline(value: impl Into<String>, limit: usize) -> Self {
-        Self {
-            value: value.into(),
-            limit,
-            multiline: true,
-            error: None,
-        }
-    }
-
-    fn push(&mut self, value: &str) {
-        self.error = append_bounded(&mut self.value, value, self.limit, self.multiline)
-            .then(|| format!("input is limited to {} bytes", self.limit));
-    }
-
-    fn backspace(&mut self) {
-        self.value.pop();
-        self.error = None;
-    }
 }
 
 pub(super) enum BotFormMode {

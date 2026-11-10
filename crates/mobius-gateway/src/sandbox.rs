@@ -84,11 +84,9 @@ impl std::fmt::Debug for GatewaySandbox {
 }
 
 impl GatewaySandbox {
-    /// Creates protected and full-access command delegates for a gateway host.
-    /// # Errors
-    ///
-    /// Returns an error if configuration is invalid or a required resource cannot be initialized.
-    pub fn new(
+    /// Creates delegates without operator execution policy, for tests.
+    #[cfg(test)]
+    pub(crate) fn new(
         workspace: &Path,
         state_dir: &Path,
         tls_key: Option<&Path>,
@@ -208,7 +206,7 @@ impl GatewaySandbox {
         Ok(())
     }
 
-    async fn use_desktop(&self) {
+    async fn use_desktop(&self) -> Result<()> {
         if let Some(remote) = self
             .remote_desktop
             .as_ref()
@@ -216,9 +214,14 @@ impl GatewaySandbox {
         {
             let mut desktop_use = self.desktop_use.lock().await;
             if desktop_use.is_none() {
-                *desktop_use = Some(remote.acquire_use().await);
+                let acquired = remote
+                    .acquire_use()
+                    .await
+                    .map_err(|error| Error::Sandbox(error.to_string()))?;
+                *desktop_use = Some(acquired);
             }
         }
+        Ok(())
     }
 
     pub(crate) async fn release_desktop_use(&self) {
@@ -431,7 +434,7 @@ impl SandboxBackend for GatewaySandbox {
                     .as_ref()
                     .filter(|remote| remote.browser_available())
             {
-                self.use_desktop().await;
+                self.use_desktop().await?;
                 let native = self.desktop.as_ref().map_or_else(
                     || {
                         std::sync::Arc::new(
@@ -455,7 +458,7 @@ impl SandboxBackend for GatewaySandbox {
     ) -> BoxFuture<'a, Result<Option<mobius::backend::sandbox::DesktopBrowserPage>>> {
         Box::pin(async move {
             self.check_execution()?;
-            self.use_desktop().await;
+            self.use_desktop().await?;
             match &self.remote_desktop {
                 Some(remote) => remote
                     .page(session_id)

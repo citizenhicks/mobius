@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 use std::env;
-#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
@@ -152,7 +151,6 @@ impl GatewayAccounts {
         if !metadata.is_file() {
             return Err(Error::Config("gateway token path is not a file".into()));
         }
-        #[cfg(unix)]
         if metadata.permissions().mode() & 0o077 != 0 {
             return Err(Error::Config(
                 "gateway token file must be readable only by its owner".into(),
@@ -322,7 +320,6 @@ fn parent(path: &Path) -> Result<&Path> {
 }
 
 fn secure(file: &tempfile::NamedTempFile) -> Result<()> {
-    #[cfg(unix)]
     file.as_file().set_permissions(mobius::owner_only::file())?;
     Ok(())
 }

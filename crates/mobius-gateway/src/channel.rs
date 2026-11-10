@@ -45,7 +45,6 @@ impl Identity {
                 "gateway channel key must be a 32-byte private file".into(),
             ));
         }
-        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
             if metadata.permissions().mode() & 0o077 != 0 {

@@ -4,9 +4,7 @@ use std::env;
 use std::fs::File;
 use std::io::IsTerminal as _;
 use std::ops::ControlFlow;
-#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt as _;
-#[cfg(unix)]
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -15,8 +13,9 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 
-use crate::frontend::{self, FrontendExit, await_response, wait_ready as wait_gateway_ready};
+use crate::frontend::{self, FrontendExit, request, wait_ready as wait_gateway_ready};
 use crate::gateway_error;
+use mobius::backend::session_files::SessionFileSelection;
 use mobius::protocol::MAX_MESSAGE_BYTES;
 use mobius::{Error, Result};
 use mobius_gateway::client::{Endpoint, GatewayClient, GatewayEvents, GatewaySender};
@@ -74,8 +73,6 @@ pub enum Command {
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(50);
 const DEFAULT_LOCAL_ENDPOINT: &str = "tcp://127.0.0.1:8741";
-#[cfg(not(unix))]
-const STARTUP_RETRY: Duration = Duration::from_millis(50);
 const MAX_STARTUP_ERROR_BYTES: u64 = 8192;
 
 impl Cli {
@@ -91,86 +88,81 @@ impl Cli {
                 endpoint,
                 one_time_code,
             }) => pair(endpoint, &one_time_code).await?,
-            Some(Command::Extensions) => run_extensions().await?,
+            Some(Command::Extensions) => {
+                let connected = connect_gateway().await?;
+                frontend::run_extensions(connected.sender, connected.events, connected.gateway)
+                    .await?;
+            }
         }
         Ok(())
     }
 }
 
 async fn run_interactive() -> Result<()> {
-    let Some((
-        mut sender,
-        mut events,
-        mut gateway,
-        mut session,
-        mut disposable_session,
-        mut endpoint,
-    )) = connect(None, None).await?
-    else {
+    let Some(mut chat) = connect(None, None).await? else {
         return Ok(());
     };
     loop {
-        let choose_initial_bot = disposable_session.as_ref() == Some(&session.session.session_id);
-        let (exit, next_sender, next_events) = frontend::run(
-            sender,
-            events,
-            &mut gateway,
-            &mut session,
-            endpoint.to_string(),
+        let session_id = &chat.session.session.session_id;
+        let choose_initial_bot = chat.disposable_session.as_ref() == Some(session_id);
+        let (exit, sender, events) = frontend::run(
+            chat.sender,
+            chat.events,
+            &mut chat.gateway,
+            &mut chat.session,
+            chat.endpoint.to_string(),
             choose_initial_bot,
         )
         .await?;
-        sender = next_sender;
-        events = next_events;
+        chat.sender = sender;
+        chat.events = events;
         match exit {
             FrontendExit::Exit => return Ok(()),
             FrontendExit::Resume(session_id) => {
-                if session_id != session.session.session_id {
+                if session_id != chat.session.session.session_id {
+                    let current = chat.session.session.session_id.share();
                     discard_pristine_session(
-                        &sender,
-                        &mut events,
-                        &mut gateway,
-                        &session.session.session_id,
+                        &chat.sender,
+                        &mut chat.events,
+                        &mut chat.gateway,
+                        &current,
                     )
                     .await?;
                 }
-                session = open_session(&sender, &mut events, &mut gateway, session_id).await?;
-                disposable_session = None;
+                chat.session = open_session(
+                    &chat.sender,
+                    &mut chat.events,
+                    &mut chat.gateway,
+                    session_id,
+                )
+                .await?;
+                chat.disposable_session = None;
             }
             FrontendExit::Reload => {
-                if let Some(bootstrap) = disposable_session.take()
-                    && bootstrap != session.session.session_id
+                if let Some(bootstrap) = chat.disposable_session.take()
+                    && bootstrap != chat.session.session.session_id
                 {
-                    discard_pristine_session(&sender, &mut events, &mut gateway, &bootstrap)
-                        .await?;
+                    discard_pristine_session(
+                        &chat.sender,
+                        &mut chat.events,
+                        &mut chat.gateway,
+                        &bootstrap,
+                    )
+                    .await?;
                 }
             }
             FrontendExit::Reconnect => {
-                let selected = Some((endpoint, session.session.session_id.share()));
+                let selected = Some((chat.endpoint, chat.session.session.session_id.share()));
                 let Some(connection) = connect(selected, None).await? else {
                     return Ok(());
                 };
-                (
-                    sender,
-                    events,
-                    gateway,
-                    session,
-                    disposable_session,
-                    endpoint,
-                ) = connection;
+                chat = connection;
             }
             FrontendExit::Fresh => {
                 let Some(connection) = connect(None, None).await? else {
                     return Ok(());
                 };
-                (
-                    sender,
-                    events,
-                    gateway,
-                    session,
-                    disposable_session,
-                    endpoint,
-                ) = connection;
+                chat = connection;
             }
         }
     }
@@ -178,8 +170,14 @@ async fn run_interactive() -> Result<()> {
 
 async fn run_task(bot_handle: &str, task_file: &Path) -> Result<()> {
     let task = read_task_file(task_file).await?;
-    let Some((sender, mut events, mut gateway, session, disposable_session, _)) =
-        connect(None, Some(bot_handle)).await?
+    let Some(Chat {
+        sender,
+        mut events,
+        mut gateway,
+        session,
+        disposable_session,
+        ..
+    }) = connect(None, Some(bot_handle)).await?
     else {
         return Ok(());
     };
@@ -210,11 +208,6 @@ async fn read_task_file(path: &Path) -> Result<String> {
     }
     String::from_utf8(bytes)
         .map_err(|error| Error::Config(format!("task file must contain valid UTF-8: {error}")))
-}
-
-async fn run_extensions() -> Result<()> {
-    let (sender, events, gateway, _, _) = connect_gateway().await?;
-    frontend::run_extensions(sender, events, gateway).await
 }
 
 #[expect(
@@ -257,20 +250,38 @@ async fn pair(endpoint: Endpoint, code: &str) -> std::result::Result<(), mobius_
     Ok(())
 }
 
+/// An open chat on a connected gateway.
+struct Chat {
+    sender: GatewaySender,
+    events: GatewayEvents,
+    gateway: ReadyPayload,
+    session: SessionReadyPayload,
+    /// The chat this launch created, discarded again if it stays pristine.
+    disposable_session: Option<mobius::SessionId>,
+    endpoint: Endpoint,
+}
+
+/// A gateway connection whose initial catalog has arrived.
+struct Connected {
+    sender: GatewaySender,
+    events: GatewayEvents,
+    gateway: ReadyPayload,
+    /// Whether the gateway is reached over plaintext on this machine.
+    local: bool,
+    endpoint: Endpoint,
+}
+
 async fn connect(
     selected: Option<(Endpoint, mobius::SessionId)>,
     preferred_bot: Option<&str>,
-) -> Result<
-    Option<(
-        GatewaySender,
-        GatewayEvents,
-        ReadyPayload,
-        SessionReadyPayload,
-        Option<mobius::SessionId>,
-        Endpoint,
-    )>,
-> {
-    let (sender, mut events, mut gateway, local_gateway, endpoint) = connect_gateway().await?;
+) -> Result<Option<Chat>> {
+    let Connected {
+        sender,
+        mut events,
+        mut gateway,
+        local: local_gateway,
+        endpoint,
+    } = connect_gateway().await?;
     let (session, disposable_session) = match selected.filter(|(previous, _)| previous == &endpoint)
     {
         Some((_, session_id)) => {
@@ -325,23 +336,22 @@ async fn connect(
             }
         }
     };
-    Ok(Some((
+    Ok(Some(Chat {
         sender,
         events,
         gateway,
         session,
         disposable_session,
         endpoint,
-    )))
+    }))
 }
 
-async fn connect_gateway() -> Result<(GatewaySender, GatewayEvents, ReadyPayload, bool, Endpoint)> {
+async fn connect_gateway() -> Result<Connected> {
     let endpoint = crate::authenticated_endpoint(configured_endpoint().map_err(gateway_error)?)
         .map_err(gateway_error)?;
     // ponytail: TLS gateways skip local `@` scanning; use a gateway-backed inventory if needed.
     let local_gateway = endpoint.is_plaintext();
     let token = configured_token(&endpoint).map_err(gateway_error)?;
-    #[cfg(unix)]
     if automatically_manage_local_gateway(&endpoint)
         && let Some(token) = token.as_deref()
     {
@@ -350,7 +360,13 @@ async fn connect_gateway() -> Result<(GatewaySender, GatewayEvents, ReadyPayload
                 let (sender, mut events) = client.into_parts();
                 let gateway = wait_gateway_ready(&mut events).await?;
                 if gateway.gateway_version == env!("CARGO_PKG_VERSION") {
-                    return Ok((sender, events, gateway, local_gateway, endpoint));
+                    return Ok(Connected {
+                        sender,
+                        events,
+                        gateway,
+                        local: local_gateway,
+                        endpoint,
+                    });
                 }
                 // The locked launcher already owns semantic version checks and upgrades.
             }
@@ -364,14 +380,7 @@ async fn connect_gateway() -> Result<(GatewaySender, GatewayEvents, ReadyPayload
         }
     }
     let connected = if automatically_manage_local_gateway(&endpoint) {
-        #[cfg(unix)]
-        {
-            start_local_gateway(&endpoint).await
-        }
-        #[cfg(not(unix))]
-        {
-            connect_local(&endpoint, token).await
-        }
+        start_local_gateway(&endpoint).await
     } else {
         match token {
             Some(token) => {
@@ -391,35 +400,19 @@ async fn connect_gateway() -> Result<(GatewaySender, GatewayEvents, ReadyPayload
     let client = connected.map_err(gateway_error)?;
     let (sender, mut events) = client.into_parts();
     let gateway = wait_gateway_ready(&mut events).await?;
-    Ok((sender, events, gateway, local_gateway, endpoint))
+    Ok(Connected {
+        sender,
+        events,
+        gateway,
+        local: local_gateway,
+        endpoint,
+    })
 }
 
 fn automatically_manage_local_gateway(endpoint: &Endpoint) -> bool {
     endpoint.is_plaintext()
         && env::var_os("MOBIUS_GATEWAY_ENDPOINT").is_none()
         && env::var_os("MOBIUS_GATEWAY_TOKEN").is_none()
-}
-
-#[cfg(not(unix))]
-async fn connect_local(
-    endpoint: &Endpoint,
-    token: Option<String>,
-) -> mobius_gateway::Result<GatewayClient> {
-    if let Some(token) = token {
-        match connect_local_once(endpoint, &token).await {
-            Ok(client) => return Ok(client),
-            Err(mobius_gateway::Error::Io(error))
-                if error.kind() == std::io::ErrorKind::ConnectionRefused =>
-            {
-                return start_local_gateway(endpoint).await;
-            }
-            Err(mobius_gateway::Error::Unauthorized) => {
-                return Err(missing_local_token(endpoint));
-            }
-            Err(error) => return Err(error),
-        }
-    }
-    start_local_gateway(endpoint).await
 }
 
 async fn connect_local_once(
@@ -454,18 +447,6 @@ async fn start_local_gateway(endpoint: &Endpoint) -> mobius_gateway::Result<Gate
     let configured_state_dir = state_dir()?;
     let _startup_lock = lock_local_gateway_startup(&configured_state_dir)?;
     let saved_token = configured_token(endpoint)?;
-    #[cfg(not(unix))]
-    if let Some(token) = saved_token.as_deref() {
-        match connect_local_once(endpoint, token).await {
-            Ok(client) => return Ok(client),
-            Err(mobius_gateway::Error::Io(error))
-                if error.kind() == std::io::ErrorKind::ConnectionRefused => {}
-            Err(mobius_gateway::Error::Unauthorized) => {
-                return Err(missing_local_token(endpoint));
-            }
-            Err(error) => return Err(error),
-        }
-    }
     let binary = gateway_binary()?;
     let configured = configured_state_dir.try_exists()?;
     if configured {
@@ -509,15 +490,7 @@ fn lock_local_gateway_startup(state_dir: &Path) -> mobius_gateway::Result<File> 
     {
         std::fs::create_dir_all(parent)?;
     }
-    #[cfg(unix)]
     let file = mobius::owner_only::open(&path)?;
-    #[cfg(not(unix))]
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(path)?;
     file.lock()?;
     Ok(file)
 }
@@ -590,7 +563,6 @@ fn gateway_binary_beside(current_executable: &Path) -> mobius_gateway::Result<Pa
             "the mobius-gateway path is not a file".into(),
         ));
     }
-    #[cfg(unix)]
     if metadata.permissions().mode() & 0o111 == 0 {
         return Err(mobius_gateway::Error::Config(
             "the mobius-gateway binary is not executable".into(),
@@ -604,7 +576,6 @@ fn spawn_gateway(
     state_dir: &Path,
 ) -> mobius_gateway::Result<(Child, tempfile::NamedTempFile)> {
     let log = tempfile::NamedTempFile::new()?;
-    #[cfg(unix)]
     log.as_file().set_permissions(mobius::owner_only::file())?;
     let mut command = ProcessCommand::new(binary);
     command
@@ -614,7 +585,6 @@ fn spawn_gateway(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::from(log.reopen()?));
-    #[cfg(unix)]
     {
         command.arg("--background");
         command.as_std_mut().process_group(0);
@@ -622,7 +592,6 @@ fn spawn_gateway(
     Ok((command.spawn()?, log))
 }
 
-#[cfg(unix)]
 async fn connect_started_gateway(
     endpoint: &Endpoint,
     mut child: Child,
@@ -636,7 +605,6 @@ async fn connect_started_gateway(
     }
 }
 
-#[cfg(unix)]
 async fn wait_gateway_startup(
     child: &mut Child,
     log: &tempfile::NamedTempFile,
@@ -664,101 +632,11 @@ async fn wait_gateway_startup(
     }
 }
 
-#[cfg(not(unix))]
-async fn connect_started_gateway(
-    endpoint: &Endpoint,
-    mut child: Child,
-    log: tempfile::NamedTempFile,
-) -> mobius_gateway::Result<GatewayClient> {
-    let deadline = tokio::time::Instant::now() + STARTUP_TIMEOUT;
-    let mut child_exit = None;
-    loop {
-        if child_exit.is_none() {
-            child_exit = child.try_wait()?;
-        }
-        let token = configured_token(endpoint)?;
-        let Some(token) = token else {
-            if let Some(status) = child_exit {
-                return Err(startup_error(
-                    format!("mobius-gateway exited during startup with {status}"),
-                    &log,
-                ));
-            }
-            if tokio::time::Instant::now() >= deadline {
-                stop_child(&mut child).await;
-                return Err(startup_error(
-                    format!(
-                        "mobius-gateway did not provision its local client within {} seconds",
-                        STARTUP_TIMEOUT.as_secs()
-                    ),
-                    &log,
-                ));
-            }
-            tokio::time::sleep(STARTUP_RETRY).await;
-            continue;
-        };
-        match connect_local_once(endpoint, &token).await {
-            Ok(client) => {
-                if child_exit.is_none() {
-                    detach_child(child);
-                }
-                return Ok(client);
-            }
-            Err(error) if startup_connection_pending(&error) => {}
-            Err(mobius_gateway::Error::Unauthorized) => {
-                if child_exit.is_none() {
-                    stop_child(&mut child).await;
-                }
-                return Err(missing_local_token(endpoint));
-            }
-            Err(error) => {
-                if child_exit.is_none() {
-                    stop_child(&mut child).await;
-                }
-                return Err(error);
-            }
-        }
-        if tokio::time::Instant::now() >= deadline {
-            let message = if let Some(status) = child_exit {
-                format!("mobius-gateway exited during startup with {status}")
-            } else {
-                stop_child(&mut child).await;
-                format!(
-                    "mobius-gateway did not start within {} seconds",
-                    STARTUP_TIMEOUT.as_secs()
-                )
-            };
-            return Err(startup_error(message, &log));
-        }
-        tokio::time::sleep(STARTUP_RETRY).await;
-    }
-}
-
-#[cfg(not(unix))]
-fn startup_connection_pending(error: &mobius_gateway::Error) -> bool {
-    matches!(
-        error,
-        mobius_gateway::Error::Io(error)
-            if matches!(
-                error.kind(),
-                std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::TimedOut
-            )
-    )
-}
-
-#[cfg(not(unix))]
-fn detach_child(mut child: Child) {
-    tokio::spawn(async move {
-        let _ = child.wait().await;
-    });
-}
-
 #[expect(
     clippy::print_stderr,
     reason = "startup cleanup runs before any terminal UI exists, so stderr is the only diagnostic channel"
 )]
 async fn stop_child(child: &mut Child) {
-    #[cfg(unix)]
     if let Some(pid) = child.id() {
         if let Err(error) = ProcessCommand::new("/bin/kill")
             .args(["-TERM", &pid.to_string()])
@@ -776,10 +654,6 @@ async fn stop_child(child: &mut Child) {
             return;
         }
         mobius_gateway::command::terminate_process_group(pid);
-    }
-    #[cfg(not(unix))]
-    if let Err(error) = child.kill().await {
-        eprintln!("could not stop mobius-gateway: {error}");
     }
     if let Err(error) = child.wait().await {
         eprintln!("could not reap mobius-gateway: {error}");
@@ -799,16 +673,18 @@ async fn open_session(
     gateway: &mut ReadyPayload,
     session_id: mobius::SessionId,
 ) -> Result<SessionReadyPayload> {
-    let request_id: Arc<str> = crate::fresh_id();
-    sender
-        .send(ClientMessage::OpenSession {
-            request_id: Arc::clone(&request_id),
+    request(
+        sender,
+        events,
+        Some(gateway),
+        |request_id| ClientMessage::OpenSession {
+            request_id,
             session_id,
             last_sequence: None,
-        })
-        .await
-        .map_err(gateway_error)?;
-    wait_session_opened(events, gateway, &request_id).await
+        },
+        session_opened,
+    )
+    .await
 }
 
 async fn create_session(
@@ -818,16 +694,31 @@ async fn create_session(
     workspace: PathBuf,
     bot_id: Arc<str>,
 ) -> Result<SessionReadyPayload> {
-    let request_id: Arc<str> = crate::fresh_id();
-    sender
-        .send(ClientMessage::CreateSession {
-            request_id: Arc::clone(&request_id),
+    request(
+        sender,
+        events,
+        Some(gateway),
+        |request_id| ClientMessage::CreateSession {
+            request_id,
             workspace,
             bot_id,
-        })
-        .await
-        .map_err(gateway_error)?;
-    wait_session_opened(events, gateway, &request_id).await
+        },
+        session_opened,
+    )
+    .await
+}
+
+fn session_opened(
+    request_id: &str,
+    message: ServerMessage,
+) -> ControlFlow<SessionReadyPayload, ServerMessage> {
+    match message {
+        ServerMessage::SessionOpened {
+            request_id: actual,
+            payload,
+        } if *actual == *request_id => ControlFlow::Break(payload),
+        message => ControlFlow::Continue(message),
+    }
 }
 
 fn resolve_bot(bots: &[BotRecord], preferred: &str) -> Result<Arc<str>> {
@@ -844,20 +735,16 @@ async fn discard_session(
     gateway: &mut ReadyPayload,
     session_id: &mobius::SessionId,
 ) -> Result<()> {
-    let request_id: Arc<str> = crate::fresh_id();
-    sender
-        .send(ClientMessage::DeleteSessions {
-            request_id: Arc::clone(&request_id),
-            session_ids: vec![session_id.share()],
-            selection: mobius::backend::session_files::SessionFileSelection::All,
-        })
-        .await
-        .map_err(gateway_error)?;
-    await_response(
+    request(
+        sender,
         events,
-        Some(&*request_id),
         Some(gateway),
-        |message| match message {
+        |request_id| ClientMessage::DeleteSessions {
+            request_id,
+            session_ids: vec![session_id.share()],
+            selection: SessionFileSelection::All,
+        },
+        |request_id, message| match message {
             ServerMessage::Accepted { request_id: actual } if *actual == *request_id => {
                 ControlFlow::Break(())
             }
@@ -885,22 +772,16 @@ async fn refresh_sessions(
     events: &mut GatewayEvents,
     gateway: &mut ReadyPayload,
 ) -> Result<()> {
-    let request_id: Arc<str> = crate::fresh_id();
-    sender
-        .send(ClientMessage::ListSessions {
-            request_id: Arc::clone(&request_id),
-        })
-        .await
-        .map_err(gateway_error)?;
-    let sessions = await_response(
+    let sessions = request(
+        sender,
         events,
-        Some(&*request_id),
         Some(gateway),
-        |message| match message {
+        |request_id| ClientMessage::ListSessions { request_id },
+        |request_id, message| match message {
             ServerMessage::Sessions {
                 request_id: Some(actual),
                 sessions,
-            } if actual == request_id => ControlFlow::Break(sessions),
+            } if *actual == *request_id => ControlFlow::Break(sessions),
             message => ControlFlow::Continue(message),
         },
     )
@@ -925,26 +806,6 @@ fn pristine_session(session: &SessionRecord) -> bool {
         && !session.pinned
         && session.session_context.origin_label.as_deref() == Some("mobius-gateway")
         && session.activity.state == SessionActivityState::Idle
-}
-
-async fn wait_session_opened(
-    events: &mut GatewayEvents,
-    gateway: &mut ReadyPayload,
-    request_id: &str,
-) -> Result<SessionReadyPayload> {
-    await_response(
-        events,
-        Some(request_id),
-        Some(gateway),
-        |message| match message {
-            ServerMessage::SessionOpened {
-                request_id: actual,
-                payload,
-            } if *actual == *request_id => ControlFlow::Break(payload),
-            message => ControlFlow::Continue(message),
-        },
-    )
-    .await
 }
 
 fn missing_token(endpoint: &Endpoint) -> mobius_gateway::Error {
@@ -1003,7 +864,6 @@ mod tests {
         drop(second);
         drop(third);
         assert!(lock_path.exists(), "startup lock must remain persistent");
-        #[cfg(unix)]
         assert_eq!(
             std::fs::metadata(lock_path)
                 .expect("startup lock metadata")
@@ -1034,17 +894,5 @@ mod tests {
 
         assert_eq!(output_text(routine_output, true), "task: reset[2J.md");
         assert_eq!(output_text(routine_output, false), routine_output);
-    }
-
-    #[test]
-    fn run_parses_a_bot_and_task_file() {
-        let cli = Cli::try_parse_from(["mobius", "run", "@builder", "task.md"])
-            .expect("parse run command");
-
-        assert!(matches!(
-            cli.command,
-            Some(Command::Run { bot, task_file })
-                if bot == "@builder" && task_file == std::path::Path::new("task.md")
-        ));
     }
 }

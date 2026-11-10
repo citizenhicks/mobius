@@ -349,7 +349,7 @@ pub(crate) fn output_text(value: &Value) -> Result<String> {
                     .ok_or_else(|| Error::Provider("invalid tool text".into()))?,
             ),
             Some("file") => {
-                write!(text, "Stored file: {}", part["file"])
+                write!(text, "{}", super::StoredFile(&part["file"]))
                     .map_err(|error| Error::Provider(error.to_string().into()))?;
             }
             _ => {
@@ -697,10 +697,11 @@ mod tests {
                 image: observation.clone(),
             },
         ]);
-        let mut input = vec![super::super::tool_output("call", &content, true)];
-        super::super::reset_prompt_cache_breakpoint(&mut input);
-        input.push(super::super::user_message("retained text beside the image"));
-        let mut input = input.into_iter().map(Arc::new).collect::<Vec<_>>();
+        let mut input = vec![Arc::new(super::super::tool_output("call", &content, true))];
+        super::super::reset_shared_prompt_cache_breakpoint(&mut input);
+        input.push(Arc::new(super::super::user_message(
+            "retained text beside the image",
+        )));
         let prepared = hydrate(
             Some(&store),
             &parent,
@@ -721,24 +722,16 @@ mod tests {
         assert!(super::super::has_prompt_cache_breakpoint(
             (&prepared).into()
         ));
-        let wired = super::super::responses::wire_input_with_cache(
-            (&prepared).into(),
-            true,
-            true,
-            "catalog",
-            &[],
+        let wired = serde_json::to_value(
+            super::super::responses_wire::WireInput::new((&prepared).into(), true, "catalog", &[])
+                .expect("native result"),
         )
-        .expect("native result");
+        .expect("wire JSON");
         assert!(
             wired[0]["output"][1]["image_url"]
                 .as_str()
                 .expect("image url")
                 .starts_with("data:image/jpeg;base64,")
-        );
-        assert!(
-            wired[0]["output"][3]
-                .get("prompt_cache_breakpoint")
-                .is_some()
         );
         input.push(Arc::new(super::super::tool_output(
             "next",

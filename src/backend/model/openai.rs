@@ -3,6 +3,7 @@
 use super::Model;
 use super::provider::{BaseUrl, ProviderBuildConfig, ProviderDefinition};
 use crate::Result;
+use crate::protocol::ToolDiscoveryMode;
 
 pub use super::responses::OpenAi;
 
@@ -28,17 +29,15 @@ pub(super) fn generic_provider() -> ProviderDefinition {
 fn build_generic(
     config: ProviderBuildConfig,
     base_url: BaseUrl,
+    tool_discovery: ToolDiscoveryMode,
 ) -> Result<std::sync::Arc<dyn Model>> {
-    let tool_discovery = config.tool_discovery.unwrap_or_else(|| {
-        generic_provider().tool_discovery(&config.model, Some(base_url.as_str()))
-    });
     let api_key = config.credential.into_optional_api_key("responses")?;
     let native_voice = config.capability == Some(crate::protocol::ModelCapability::RealtimeVoice)
         || generic_provider().supports_at(
             crate::protocol::ModelCapability::RealtimeVoice,
             Some(base_url.as_str()),
         );
-    let provider = OpenAi::with_client(
+    let provider = OpenAi::from_api_key(
         api_key,
         base_url,
         config.model,
@@ -52,9 +51,7 @@ fn build_generic(
     } else {
         provider
     };
-    let provider = match config.reasoning_effort {
-        Some(effort) => provider.with_reasoning_effort(effort)?,
-        None => provider,
-    };
-    Ok(std::sync::Arc::new(provider))
+    Ok(std::sync::Arc::new(
+        provider.with_selected_effort(config.reasoning_effort)?,
+    ))
 }

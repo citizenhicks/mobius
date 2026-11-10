@@ -32,8 +32,6 @@ pub(super) struct RequestMetadata<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     prompt_cache_key: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    prompt_cache_options: Option<CacheBreakpoint>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     reasoning: Option<Reasoning<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) service_tier: Option<&'a str>,
@@ -57,7 +55,6 @@ impl<'a> RequestMetadata<'a> {
     pub(super) fn new(
         model: &'a str,
         request: super::ModelRequest<'a>,
-        explicit_prompt_cache: bool,
         effort: Option<&'a str>,
         summary: bool,
     ) -> Self {
@@ -69,8 +66,6 @@ impl<'a> RequestMetadata<'a> {
             parallel_tool_calls: true,
             previous_response_id: None,
             prompt_cache_key: request.prompt_cache.map(|cache| cache.key),
-            prompt_cache_options: explicit_prompt_cache
-                .then_some(CacheBreakpoint { mode: "explicit" }),
             reasoning: (effort.is_some() || summary).then_some(Reasoning {
                 effort,
                 summary: summary.then_some("auto"),
@@ -128,7 +123,6 @@ impl Serialize for WireTools<'_> {
 #[derive(Debug, Clone, Copy)]
 pub(super) struct WireInput<'a> {
     input: ModelInput<'a>,
-    explicit_prompt_cache: bool,
     catalog_revision: &'a str,
     additional_tools: &'a [Arc<ToolDefinition>],
 }
@@ -137,7 +131,6 @@ impl<'a> WireInput<'a> {
     pub(super) fn new(
         input: ModelInput<'a>,
         allow_images: bool,
-        explicit_prompt_cache: bool,
         catalog_revision: &'a str,
         additional_tools: &'a [Arc<ToolDefinition>],
     ) -> Result<Self> {
@@ -158,7 +151,6 @@ impl<'a> WireInput<'a> {
         }
         Ok(Self {
             input,
-            explicit_prompt_cache,
             catalog_revision,
             additional_tools,
         })
@@ -202,10 +194,7 @@ impl Serialize for WireInput<'_> {
                 }
                 continue;
             }
-            sequence.serialize_element(&WireItem {
-                item,
-                explicit_prompt_cache: self.explicit_prompt_cache,
-            })?;
+            sequence.serialize_element(&WireItem { item })?;
         }
         sequence.end()
     }
@@ -239,7 +228,6 @@ impl<'a> FunctionTool<'a> {
 
 struct WireItem<'a> {
     item: &'a Value,
-    explicit_prompt_cache: bool,
 }
 
 impl Serialize for WireItem<'_> {
@@ -251,12 +239,6 @@ impl Serialize for WireItem<'_> {
             return self.item.serialize(serializer);
         };
         let kind = self.item.get("type").and_then(Value::as_str);
-        let cache_endpoint = self.explicit_prompt_cache
-            && (kind == Some("function_call_output")
-                || matches!(
-                    self.item.get("role").and_then(Value::as_str),
-                    Some("user" | "developer" | "system")
-                ));
         let content_field = if kind == Some("function_call_output") {
             "output"
         } else {
@@ -271,28 +253,11 @@ impl Serialize for WireItem<'_> {
             {
                 continue;
             }
-            if key == content_field {
-                if let Some(parts) = value.as_array() {
-                    map.serialize_entry(
-                        key,
-                        &WireContent {
-                            parts,
-                            cache_endpoint,
-                        },
-                    )?;
-                    continue;
-                }
-                if cache_endpoint && let Some(text) = value.as_str() {
-                    map.serialize_entry(
-                        key,
-                        &[TextPart {
-                            kind: "input_text",
-                            text,
-                            prompt_cache_breakpoint: Some(CacheBreakpoint { mode: "explicit" }),
-                        }],
-                    )?;
-                    continue;
-                }
+            if key == content_field
+                && let Some(parts) = value.as_array()
+            {
+                map.serialize_entry(key, &WireContent { parts })?;
+                continue;
             }
             map.serialize_entry(key, value)?;
         }
@@ -300,23 +265,8 @@ impl Serialize for WireItem<'_> {
     }
 }
 
-#[derive(Serialize)]
-struct CacheBreakpoint {
-    mode: &'static str,
-}
-
-#[derive(Serialize)]
-struct TextPart<'a> {
-    #[serde(rename = "type")]
-    kind: &'a str,
-    text: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    prompt_cache_breakpoint: Option<CacheBreakpoint>,
-}
-
 struct WireContent<'a> {
     parts: &'a [Value],
-    cache_endpoint: bool,
 }
 
 impl Serialize for WireContent<'_> {
@@ -324,23 +274,9 @@ impl Serialize for WireContent<'_> {
         &self,
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error> {
-        let endpoint = self
-            .cache_endpoint
-            .then(|| {
-                self.parts.iter().rposition(|part| {
-                    matches!(
-                        part.get("type").and_then(Value::as_str),
-                        Some("input_text" | "input_image" | "file")
-                    )
-                })
-            })
-            .flatten();
         let mut sequence = serializer.serialize_seq(Some(self.parts.len()))?;
-        for (index, part) in self.parts.iter().enumerate() {
-            sequence.serialize_element(&WirePart {
-                part,
-                cache_endpoint: endpoint == Some(index),
-            })?;
+        for part in self.parts {
+            sequence.serialize_element(&WirePart { part })?;
         }
         sequence.end()
     }
@@ -348,7 +284,6 @@ impl Serialize for WireContent<'_> {
 
 struct WirePart<'a> {
     part: &'a Value,
-    cache_endpoint: bool,
 }
 
 impl Serialize for WirePart<'_> {
@@ -363,7 +298,7 @@ impl Serialize for WirePart<'_> {
         match self.part.get("type").and_then(Value::as_str) {
             Some("file") => {
                 map.serialize_entry("type", "input_text")?;
-                map.serialize_entry("text", &format!("Stored file: {}", self.part["file"]))?;
+                map.serialize_entry("text", &super::StoredFile(&self.part["file"]).to_string())?;
             }
             Some("input_image") => {
                 let Some((media_type, data)) =
@@ -381,19 +316,11 @@ impl Serialize for WirePart<'_> {
             }
             _ => {
                 for (key, value) in fields {
-                    if !key.starts_with('_')
-                        && (!self.cache_endpoint || key != "prompt_cache_breakpoint")
-                    {
+                    if !key.starts_with('_') {
                         map.serialize_entry(key, value)?;
                     }
                 }
             }
-        }
-        if self.cache_endpoint {
-            map.serialize_entry(
-                "prompt_cache_breakpoint",
-                &CacheBreakpoint { mode: "explicit" },
-            )?;
         }
         map.end()
     }

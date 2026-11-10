@@ -1,6 +1,22 @@
 # Provider-owned model catalog, verified 2026-10-06 against api-docs.deepseek.com.
+# A model without `reasoning` accepts every listed effort.
 default_model = "deepseek-flash"
 image_input_models = ["deepseek-flash"]
+
+[[reasoning]]
+id = "low"
+label = "Low"
+description = "Prefer speed and lower cost"
+
+[[reasoning]]
+id = "high"
+label = "High"
+description = "DeepSeek's default reasoning effort"
+
+[[reasoning]]
+id = "max"
+label = "Maximum"
+description = "Use maximum available reasoning"
 
 [[models]]
 id = "deepseek-flash"
@@ -10,21 +26,6 @@ default_reasoning = "high"
 context_window = 1000000
 tool_discovery = "rebuild"
 
-[[models.reasoning]]
-id = "low"
-label = "Low"
-description = "Prefer speed and lower cost"
-
-[[models.reasoning]]
-id = "high"
-label = "High"
-description = "DeepSeek's default reasoning effort"
-
-[[models.reasoning]]
-id = "max"
-label = "Maximum"
-description = "Use maximum available reasoning"
-
 [[models]]
 id = "deepseek-v4-pro"
 label = "DeepSeek V4 Pro"
@@ -32,18 +33,3 @@ description = "DeepSeek's highest-capability model"
 default_reasoning = "high"
 context_window = 1000000
 tool_discovery = "rebuild"
-
-[[models.reasoning]]
-id = "low"
-label = "Low"
-description = "Prefer speed and lower cost"
-
-[[models.reasoning]]
-id = "high"
-label = "High"
-description = "DeepSeek's default reasoning effort"
-
-[[models.reasoning]]
-id = "max"
-label = "Maximum"
-description = "Use maximum available reasoning"

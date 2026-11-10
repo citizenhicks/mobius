@@ -5,8 +5,6 @@ use mobius_gateway::wire::{ClientMessage, ProfileSnapshot, ProviderInstance, Ser
 use super::catalog::GatewayAction;
 use super::provider_instance_label;
 
-pub(super) type PreparedAction = Box<ClientMessage>;
-
 pub(super) struct RenderedResponse {
     pub(super) text: String,
     pub(super) severity: ResponseSeverity,
@@ -19,61 +17,63 @@ pub(super) enum ResponseSeverity {
     Fatal,
 }
 
-pub(super) fn prepare(action: GatewayAction, session_id: &mobius::SessionId) -> PreparedAction {
+/// The gateway request for `action`, correlated by `request_id`.
+pub(super) fn prepare(
+    action: GatewayAction,
+    session_id: &mobius::SessionId,
+    request_id: Arc<str>,
+) -> ClientMessage {
     match action {
-        GatewayAction::Pair => send(|request_id| ClientMessage::CreatePairingCode { request_id }),
-        GatewayAction::Profile => send(|request_id| ClientMessage::GetProfile {
+        GatewayAction::Pair => ClientMessage::CreatePairingCode { request_id },
+        GatewayAction::Profile => ClientMessage::GetProfile {
             request_id,
             include_provider_usage: true,
-        }),
-        GatewayAction::Rename(title) => send(|request_id| ClientMessage::RenameSession {
+        },
+        GatewayAction::Rename(title) => ClientMessage::RenameSession {
             request_id,
             session_id: session_id.share(),
             title,
-        }),
-        GatewayAction::SetPinned(pinned) => send(|request_id| ClientMessage::SetSessionPinned {
+        },
+        GatewayAction::SetPinned(pinned) => ClientMessage::SetSessionPinned {
             request_id,
             session_id: session_id.share(),
             pinned,
-        }),
-        GatewayAction::Reassign(bot_id) => send(|request_id| ClientMessage::ReassignSession {
+        },
+        GatewayAction::Reassign(bot_id) => ClientMessage::ReassignSession {
             request_id,
             session_id: session_id.share(),
             bot_id,
-        }),
-        GatewayAction::AttachFolder(folder) => {
-            send(|request_id| ClientMessage::AttachSessionFolder {
-                request_id,
-                session_id: session_id.share(),
-                folder,
-            })
-        }
-        GatewayAction::DeleteCurrent => send(|request_id| ClientMessage::DeleteSessions {
+        },
+        GatewayAction::AttachFolder(folder) => ClientMessage::AttachSessionFolder {
+            request_id,
+            session_id: session_id.share(),
+            folder,
+        },
+        GatewayAction::DeleteCurrent => ClientMessage::DeleteSessions {
             request_id,
             session_ids: vec![session_id.share()],
             selection: mobius::backend::session_files::SessionFileSelection::All,
-        }),
-        GatewayAction::ListSessionFiles => send(|request_id| ClientMessage::ListSessionFiles {
+        },
+        GatewayAction::ListSessionFiles => ClientMessage::ListSessionFiles {
             request_id,
             session_id: session_id.share(),
-        }),
-        GatewayAction::DeleteStoredFile(file_id) => {
-            send(|request_id| ClientMessage::DeleteSessions {
-                request_id,
-                session_ids: vec![session_id.share()],
-                selection: mobius::backend::session_files::SessionFileSelection::Ids(vec![file_id]),
-            })
-        }
-        GatewayAction::GitDiff(scope) => send(|request_id| ClientMessage::GetGitDiff {
+        },
+        GatewayAction::DeleteStoredFile(file_id) => ClientMessage::DeleteSessions {
+            request_id,
+            session_ids: vec![session_id.share()],
+            selection: mobius::backend::session_files::SessionFileSelection::Ids(vec![file_id]),
+        },
+        GatewayAction::GitDiff(scope) => ClientMessage::GetGitDiff {
             request_id,
             session_id: session_id.share(),
             scope,
-        }),
-        GatewayAction::SwitchBranch(branch) => send(|request_id| ClientMessage::SwitchGitBranch {
+            totals: false,
+        },
+        GatewayAction::SwitchBranch(branch) => ClientMessage::SwitchGitBranch {
             request_id,
             session_id: session_id.share(),
             branch,
-        }),
+        },
     }
 }
 
@@ -120,10 +120,6 @@ pub(super) fn render_response(
         ),
         _ => None,
     }
-}
-
-fn send(build: impl FnOnce(Arc<str>) -> ClientMessage) -> PreparedAction {
-    Box::new(build(crate::fresh_id()))
 }
 
 fn render_profile(profile: &ProfileSnapshot, provider_instances: &[ProviderInstance]) -> String {

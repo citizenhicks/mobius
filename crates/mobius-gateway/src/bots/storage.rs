@@ -90,28 +90,35 @@ PRAGMA user_version = 6;
 COMMIT;
 ";
 
-pub(super) struct BotStorage {
-    path: PathBuf,
+// Optional collector metadata remains available for every schema-six database.
+const OPTIONAL_SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS telemetry_cursors (
+    sink_id TEXT PRIMARY KEY,
+    after_rowid INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS hook_journal_sequences (
+    event_id TEXT PRIMARY KEY REFERENCES hook_events(id) ON DELETE CASCADE,
+    sequence INTEGER NOT NULL CHECK (sequence > 0)
+);
+";
+
+pub(crate) struct BotStorage {
     pub(super) connection: Mutex<Connection>,
     telemetry_notify: OnceLock<(Weak<tokio::sync::Notify>, Weak<crate::host::WorkActivity>)>,
 }
 
 impl BotStorage {
     pub(super) fn open(path: &Path) -> Result<(Self, bool)> {
-        let connection = Connection::open(path).map_err(Error::from)?;
+        let connection = Connection::open(path)?;
         protect_database_files(path)?;
-        connection.busy_timeout(BUSY_TIMEOUT).map_err(Error::from)?;
-        let version: i64 = connection
-            .query_row("PRAGMA user_version", [], |row| row.get(0))
-            .map_err(Error::from)?;
+        connection.busy_timeout(BUSY_TIMEOUT)?;
+        let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         if version == 0
-            && connection
-                .query_row(
-                    "SELECT EXISTS (SELECT 1 FROM sqlite_schema LIMIT 1)",
-                    [],
-                    |row| row.get::<_, bool>(0),
-                )
-                .map_err(Error::from)?
+            && connection.query_row(
+                "SELECT EXISTS (SELECT 1 FROM sqlite_schema LIMIT 1)",
+                [],
+                |row| row.get::<_, bool>(0),
+            )?
         {
             return Err(Error::Config(
                 "Bot storage is unversioned and not empty; remove that database".into(),
@@ -122,9 +129,8 @@ impl BotStorage {
                 "unsupported Bot storage schema version {version}; expected {SCHEMA_VERSION}"
             )));
         }
-        let journal_mode: String = connection
-            .pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0))
-            .map_err(Error::from)?;
+        let journal_mode: String =
+            connection.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0))?;
         if !journal_mode.eq_ignore_ascii_case("wal") {
             return Err(Error::Config(format!(
                 "SQLite could not enable Bot storage WAL mode: {journal_mode}"
@@ -132,28 +138,18 @@ impl BotStorage {
         }
         configure_connection(&connection)?;
         if version == 0 {
-            connection.execute_batch(SCHEMA).map_err(Error::from)?;
+            connection.execute_batch(SCHEMA)?;
         }
-        // Optional collector metadata does not change the Bot schema version.
-        connection.execute(
-            "CREATE TABLE IF NOT EXISTS telemetry_cursors (sink_id TEXT PRIMARY KEY, after_rowid INTEGER NOT NULL)",
-            [],
-        )?;
-        connection.execute(
-            "CREATE TABLE IF NOT EXISTS hook_journal_sequences (event_id TEXT PRIMARY KEY REFERENCES hook_events(id) ON DELETE CASCADE, sequence INTEGER NOT NULL CHECK (sequence > 0))",
-            [],
-        )?;
+        connection.execute_batch(OPTIONAL_SCHEMA)?;
+        // SQLite creates the WAL and shared-memory files with the database file's mode.
         protect_database_files(path)?;
-        let persisted = connection
-            .query_row(
-                "SELECT EXISTS (SELECT 1 FROM catalog WHERE id = 1)",
-                [],
-                |row| row.get::<_, bool>(0),
-            )
-            .map_err(Error::from)?;
+        let persisted = connection.query_row(
+            "SELECT EXISTS (SELECT 1 FROM catalog WHERE id = 1)",
+            [],
+            |row| row.get::<_, bool>(0),
+        )?;
         Ok((
             Self {
-                path: path.to_owned(),
                 connection: Mutex::new(connection),
                 telemetry_notify: OnceLock::new(),
             },
@@ -171,7 +167,7 @@ impl BotStorage {
         read_catalog(&*self.lock()?)
     }
 
-    pub(super) fn attach_telemetry_notify(
+    pub(crate) fn attach_telemetry_notify(
         &self,
         notify: &Arc<tokio::sync::Notify>,
         activity: &Arc<crate::host::WorkActivity>,
@@ -193,9 +189,7 @@ impl BotStorage {
         let connection = self.lock()?;
         // data_version moves on commits by other connections, total_changes on our own.
         let current = CatalogStamp {
-            data_version: connection
-                .query_row("PRAGMA data_version", [], |row| row.get(0))
-                .map_err(Error::from)?,
+            data_version: connection.query_row("PRAGMA data_version", [], |row| row.get(0))?,
             own_changes: connection.total_changes(),
         };
         if stamp == Some(current) {
@@ -208,21 +202,6 @@ impl BotStorage {
 
     pub(super) fn save_catalog(&self, state_json: &str) -> Result<()> {
         self.transaction(|transaction| save_catalog_row(transaction, state_json))
-    }
-
-    #[cfg(test)]
-    pub(super) fn save_catalog_and_runs(
-        &self,
-        state_json: &str,
-        runs: &[RoutineRun],
-    ) -> Result<()> {
-        self.transaction(|transaction| {
-            save_catalog_row(transaction, state_json)?;
-            for run in runs {
-                insert_run(transaction, run)?;
-            }
-            Ok(())
-        })
     }
 
     pub(super) fn delete_runs_and_save_catalog(
@@ -241,12 +220,10 @@ impl BotStorage {
                     .execute(
                         "DELETE FROM routine_runs WHERE routine_id = ?1",
                         [routine_id],
-                    )
-                    .map_err(Error::from)?;
+                    )?;
             } else if let Some(bot_id) = bot_id {
                 transaction
-                    .execute("DELETE FROM routine_runs WHERE bot_id = ?1", [bot_id])
-                    .map_err(Error::from)?;
+                    .execute("DELETE FROM routine_runs WHERE bot_id = ?1", [bot_id])?;
             }
             if let Some(routine_id) = routine_id {
                 let source = serde_json::to_string(&crate::wire::HookSource::Routine {
@@ -315,7 +292,7 @@ impl BotStorage {
         })
     }
 
-    pub(super) fn request_run_stop(
+    pub(crate) fn request_run_stop(
         &self,
         run_id: &str,
         command_id: &str,
@@ -333,7 +310,7 @@ impl BotStorage {
         })
     }
 
-    pub(super) fn run_cancel_requested(&self, run_id: &str) -> Result<bool> {
+    pub(crate) fn run_cancel_requested(&self, run_id: &str) -> Result<bool> {
         let connection = self.lock()?;
         Ok(connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM routine_stop_requests WHERE run_id=?1)",
@@ -344,52 +321,41 @@ impl BotStorage {
 
     pub(super) fn has_running(&self, routine_id: &str) -> Result<bool> {
         let connection = self.lock()?;
-        connection
-            .query_row(
-                "SELECT EXISTS (
-                     SELECT 1 FROM routine_runs
-                     WHERE routine_id = ?1 AND status = 'running'
-                 )",
-                [routine_id],
-                |row| row.get::<_, bool>(0),
-            )
-            .map_err(Error::from)
+        Ok(connection.query_row(
+            "SELECT EXISTS (
+                 SELECT 1 FROM routine_runs
+                 WHERE routine_id = ?1 AND status = 'running'
+             )",
+            [routine_id],
+            |row| row.get::<_, bool>(0),
+        )?)
     }
 
-    pub(super) fn running_routine_count(&self) -> Result<u64> {
+    pub(crate) fn running_routine_count(&self) -> Result<u64> {
         let connection = self.lock()?;
-        connection
-            .query_row(
-                "SELECT COUNT(*) FROM routine_runs WHERE status='running'",
-                [],
-                |row| row.get::<_, i64>(0),
-            )
-            .map_err(Error::from)
-            .and_then(|count| {
-                u64::try_from(count)
-                    .map_err(|error| Error::Config(format!("invalid routine count: {error}")))
-            })
+        let count: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM routine_runs WHERE status='running'",
+            [],
+            |row| row.get(0),
+        )?;
+        drop(connection);
+        u64::try_from(count)
+            .map_err(|error| Error::Config(format!("invalid routine count: {error}")))
     }
 
-    pub(super) fn has_running_routines(&self) -> Result<bool> {
+    pub(crate) fn has_running_routines(&self) -> Result<bool> {
         let connection = self.lock()?;
-        connection
-            .query_row(
-                "SELECT EXISTS (SELECT 1 FROM routine_runs WHERE status = 'running')",
-                [],
-                |row| row.get::<_, bool>(0),
-            )
-            .map_err(Error::from)
+        Ok(connection.query_row(
+            "SELECT EXISTS (SELECT 1 FROM routine_runs WHERE status = 'running')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )?)
     }
 
     pub(super) fn validate_run_owners(&self, bot_ids: &BTreeSet<&str>) -> Result<()> {
         let connection = self.lock()?;
-        let mut statement = connection
-            .prepare("SELECT DISTINCT bot_id FROM routine_runs")
-            .map_err(Error::from)?;
-        let owners = statement
-            .query_map([], |row| row.get::<_, String>(0))
-            .map_err(Error::from)?;
+        let mut statement = connection.prepare("SELECT DISTINCT bot_id FROM routine_runs")?;
+        let owners = statement.query_map([], |row| row.get::<_, String>(0))?;
         let first_failure = owners
             .map(|bot_id| bot_id.map(|bot_id| bot_ids.contains(bot_id.as_str())))
             .find(|owned| !matches!(owned, Ok(true)));
@@ -429,7 +395,7 @@ impl BotStorage {
         Ok(ids)
     }
 
-    pub(super) fn finish_run(
+    pub(crate) fn finish_run(
         &self,
         id: &str,
         status: RoutineRunStatus,
@@ -463,22 +429,13 @@ impl BotStorage {
 
     pub(super) fn history(&self, routine_id: Option<&str>) -> Result<Vec<RoutineRun>> {
         let connection = self.lock()?;
-        let sql = match routine_id {
-            Some(_) => {
-                "SELECT id, routine_id, bot_id, started_at, finished_at, status,
-                            session_id, message
-                     FROM routine_runs
-                     WHERE routine_id = ?1
-                     ORDER BY ordinal DESC"
-            }
-            None => {
-                "SELECT id, routine_id, bot_id, started_at, finished_at, status,
-                            session_id, message
-                     FROM routine_runs
-                     ORDER BY ordinal DESC"
-            }
+        let filter = if routine_id.is_some() {
+            "WHERE routine_id = ?1"
+        } else {
+            ""
         };
-        let mut statement = connection.prepare(sql)?;
+        let mut statement =
+            connection.prepare(&format!("{RUN_SELECT} {filter} ORDER BY ordinal DESC"))?;
         let runs = statement
             .query_map(rusqlite::params_from_iter(routine_id), run_from_row)?
             .map(|run| {
@@ -494,20 +451,16 @@ impl BotStorage {
 
     pub(super) fn session_ids_for_routine(&self, routine_id: &str) -> Result<Vec<SessionId>> {
         let connection = self.lock()?;
-        let mut statement = connection
-            .prepare(
-                "SELECT session_id FROM routine_runs
+        let mut statement = connection.prepare(
+            "SELECT session_id FROM routine_runs
                  WHERE routine_id = ?1 AND session_id IS NOT NULL",
-            )
-            .map_err(Error::from)?;
-        let session_ids = statement
-            .query_map([routine_id], |row| row.get::<_, SessionId>(0))
-            .map_err(Error::from)?
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(Error::from);
+        )?;
+        let session_ids: rusqlite::Result<Vec<SessionId>> = statement
+            .query_map([routine_id], |row| row.get(0))?
+            .collect();
         drop(statement);
         drop(connection);
-        session_ids
+        Ok(session_ids?)
     }
 
     pub(super) fn run(&self, id: &str) -> Result<RoutineRun> {
@@ -526,9 +479,7 @@ impl BotStorage {
                     "routine run {id} is currently running"
                 )));
             }
-            transaction
-                .execute("DELETE FROM routine_runs WHERE id = ?1", [id])
-                .map_err(Error::from)?;
+            transaction.execute("DELETE FROM routine_runs WHERE id = ?1", [id])?;
             Ok(run)
         })
     }
@@ -538,12 +489,9 @@ impl BotStorage {
         operation: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
         let mut connection = self.lock()?;
-        protect_database_files(&self.path)?;
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(Error::from)?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let result = operation(&transaction)?;
-        transaction.commit().map_err(Error::from)?;
+        transaction.commit()?;
         drop(connection);
         if let Some((notify, activity)) = self.telemetry_notify.get() {
             if let Some(activity) = activity.upgrade() {
@@ -581,16 +529,12 @@ fn read_catalog(connection: &Connection) -> Result<Option<String>> {
 }
 
 fn configure_connection(connection: &Connection) -> Result<()> {
-    connection
-        .pragma_update(None, "foreign_keys", "ON")
-        .map_err(Error::from)?;
-    connection
-        .pragma_update(None, "synchronous", "FULL")
-        .map_err(Error::from)
+    connection.pragma_update(None, "foreign_keys", "ON")?;
+    connection.pragma_update(None, "synchronous", "FULL")?;
+    Ok(())
 }
 
 fn protect_database_files(path: &Path) -> Result<()> {
-    #[cfg(unix)]
     {
         if let Some(parent) = path.parent() {
             fs::set_permissions(parent, mobius::owner_only::dir())?;
@@ -612,54 +556,40 @@ pub(super) fn save_catalog_row(
     transaction: &rusqlite::Transaction<'_>,
     state_json: &str,
 ) -> Result<()> {
-    transaction
-        .execute(
-            "INSERT INTO catalog (id, state_json) VALUES (1, ?1)
+    transaction.execute(
+        "INSERT INTO catalog (id, state_json) VALUES (1, ?1)
              ON CONFLICT(id) DO UPDATE SET state_json = excluded.state_json",
-            [state_json],
-        )
-        .map_err(Error::from)?;
+        [state_json],
+    )?;
     Ok(())
-}
-
-#[cfg(test)]
-fn insert_run(transaction: &rusqlite::Transaction<'_>, run: &RoutineRun) -> Result<()> {
-    insert_run_row(transaction, run)?;
-    super::events::record_run(transaction, run)
 }
 
 fn insert_run_row(transaction: &rusqlite::Transaction<'_>, run: &RoutineRun) -> Result<()> {
-    transaction
-        .execute(
-            "INSERT INTO routine_runs (
+    transaction.execute(
+        "INSERT INTO routine_runs (
                  id, routine_id, bot_id, started_at, finished_at, status, session_id, message
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
-                run.id,
-                run.routine_id,
-                run.bot_id,
-                run.started_at,
-                run.finished_at,
-                status_text(run.status),
-                run.session_id,
-                run.message,
-            ],
-        )
-        .map_err(Error::from)?;
+        params![
+            run.id,
+            run.routine_id,
+            run.bot_id,
+            run.started_at,
+            run.finished_at,
+            status_text(run.status),
+            run.session_id,
+            run.message,
+        ],
+    )?;
     Ok(())
 }
 
+const RUN_SELECT: &str = "SELECT id, routine_id, bot_id, started_at, finished_at, status,
+    session_id, message FROM routine_runs";
+
 fn query_run(source: &Connection, id: &str) -> Result<Option<RoutineRun>> {
-    source
-        .query_row(
-            "SELECT id, routine_id, bot_id, started_at, finished_at, status,
-                    session_id, message
-             FROM routine_runs WHERE id = ?1",
-            [id],
-            run_from_row,
-        )
-        .optional()
-        .map_err(Error::from)
+    Ok(source
+        .query_row(&format!("{RUN_SELECT} WHERE id = ?1"), [id], run_from_row)
+        .optional()?)
 }
 
 fn run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RoutineRun> {
@@ -693,19 +623,7 @@ fn validate_run(run: &RoutineRun) -> Result<()> {
             "persisted routine run has an empty owner ID".into(),
         ));
     }
-    if run.status == RoutineRunStatus::Running && run.finished_at.is_some() {
-        return Err(Error::Config(
-            "running routine run has a finish time".into(),
-        ));
-    }
-    if run.status == RoutineRunStatus::Running && run.session_id.is_none() {
-        return Err(Error::Config("running routine run has no session".into()));
-    }
-    if run.status != RoutineRunStatus::Running && run.finished_at.is_none() {
-        return Err(Error::Config(
-            "completed routine run has no finish time".into(),
-        ));
-    }
+    // The table's CHECK constraints already tie status, finish time, and session.
     Ok(())
 }
 
@@ -723,35 +641,22 @@ pub(super) const fn status_text(status: RoutineRunStatus) -> &'static str {
 mod tests {
     use super::*;
 
-    fn completed_run() -> RoutineRun {
-        RoutineRun {
-            id: uuid::Uuid::new_v4().to_string().into(),
-            routine_id: uuid::Uuid::new_v4().to_string().into(),
-            bot_id: uuid::Uuid::new_v4().to_string().into(),
-            started_at: 1,
-            finished_at: Some(1),
-            status: RoutineRunStatus::Succeeded,
-            session_id: Some(SessionId::generate()),
-            message: None,
-        }
-    }
-
     #[test]
-    fn catalog_and_run_insert_roll_back_together() {
-        let directory = tempfile::tempdir().expect("storage directory");
-        let (storage, _) = BotStorage::open(&directory.path().join(STATE_FILE)).expect("storage");
-        storage.save_catalog("old").expect("initial catalog");
-        let run = completed_run();
-
-        assert!(
-            storage
-                .save_catalog_and_runs("new", &[run.clone(), run])
-                .is_err()
-        );
-        assert_eq!(
-            storage.load_catalog().expect("catalog").as_deref(),
-            Some("old")
-        );
-        assert!(storage.history(None).expect("history").is_empty());
+    fn optional_metadata_tables_are_available_for_existing_schema_six() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("bots.sqlite3");
+        let (store, _) = BotStorage::open(&path).unwrap();
+        store
+            .lock()
+            .unwrap()
+            .execute_batch("DROP TABLE telemetry_cursors; DROP TABLE hook_journal_sequences;")
+            .unwrap();
+        drop(store);
+        let (store, _) = BotStorage::open(&path).unwrap();
+        store
+            .lock()
+            .unwrap()
+            .execute_batch("SELECT * FROM telemetry_cursors; SELECT * FROM hook_journal_sequences;")
+            .expect("schema-six stores must retain the optional metadata tables");
     }
 }

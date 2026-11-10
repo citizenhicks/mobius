@@ -2,16 +2,17 @@ use super::{
     AccessLease, Arc, AsyncWrite, AuthStore, BTreeMap, BTreeSet, BotStore, ClientCapabilities,
     ClientConnections, ClientMessage, ClientView, Error, GatewayHost, GatewayNotification,
     HostHandle, JoinSet, Op, PathBuf, PendingSessionFileWrite, Rejection, Result, ServerFrame,
-    ServerMessage, SessionFileStore, SharedFrame, Utc, Uuid, ValidatedSubmission, broadcast,
-    directory_rejection, internal_rejection, list_directories, open_selected, require_selected,
-    require_uploads_enabled, routine_rejection, sequence, session_file_rejection,
-    uploads_disabled_rejection, write_client_inventory, write_frame, write_gateway_result,
-    write_rejection, write_result, write_server_error, write_session_history,
+    ServerMessage, SessionFileStore, SharedFrame, Utc, Uuid, broadcast, directory_rejection,
+    list_directories, open_selected, require_selected, require_uploads_enabled,
+    session_file_rejection, uploads_disabled_rejection, write_client_inventory, write_frame,
+    write_gateway_result, write_rejection, write_result, write_server_error, write_session_history,
 };
+use crate::host::{event_sequence, internal, invalid_routine};
 use mobius::SessionId;
 use mobius::backend::session_files::session_file_limits;
 use mobius::backend::session_files::{SessionFileOrigin as StoredFileOrigin, SessionFileSelection};
 use mobius::protocol::{MessageAuthor, MessageTarget, Submission};
+use std::future::Future;
 
 use crate::wire::{GitDiffScope, WorkspaceFileScope};
 
@@ -52,6 +53,8 @@ pub(super) struct ConnectionSessionState<'a> {
     pub(super) remote_desktop:
         &'a mut Option<crate::computer_runtime::remote_desktop::DesktopStream>,
     pub(super) pending_desktop_control: &'a mut Option<super::desktop::PendingControl>,
+    pub(super) pending_profile: &'a mut Option<super::transport::PendingProfile>,
+    pub(super) queued_profile: &'a mut Option<(Arc<str>, bool)>,
 }
 
 pub(super) async fn selected_broadcast(
@@ -67,7 +70,7 @@ pub(super) async fn selected_broadcast(
     };
     loop {
         let frame = broadcasts.recv().await?;
-        let sequence = sequence(&frame);
+        let sequence = event_sequence(&frame);
         if sequence.is_none_or(|value| value > *delivered_sequence) {
             *delivered_sequence = sequence.unwrap_or(*delivered_sequence);
             return Ok(frame);
@@ -75,69 +78,39 @@ pub(super) async fn selected_broadcast(
     }
 }
 
-/// Answers memory page and chat memory requests; passes every other message on.
-async fn handle_memory_message(
-    message: ClientMessage,
-    gateway: &GatewayHost,
-    selected: Option<&SelectedChat>,
+/// Writes the frame `build` makes from a success, or the rejection.
+async fn respond<T>(
     writer: &mut (impl AsyncWrite + Unpin),
-) -> Result<Option<ClientMessage>> {
-    let (request_id, result) = match message {
-        ClientMessage::SetSessionMemory {
-            request_id,
-            session_id,
-            memory,
-        } => {
-            let result = match require_selected(selected, &session_id) {
-                Ok(host) => host.set_memory(memory).await,
-                Err(rejection) => Err(rejection),
-            };
-            write_result(writer, request_id, result).await?;
-            return Ok(None);
-        }
-        ClientMessage::ListMemories { request_id } => (request_id, gateway.list_memories().await),
-        ClientMessage::EditMemory {
-            request_id,
-            id,
-            description,
-            text,
-        } => (
-            request_id,
-            gateway.edit_memory(&id, &description, &text).await,
-        ),
-        ClientMessage::ForgetMemory { request_id, id } => {
-            (request_id, gateway.forget_memory(&id).await)
-        }
-        message => return Ok(Some(message)),
-    };
-    write_memories(writer, request_id, result).await?;
-    Ok(None)
+    request_id: Arc<str>,
+    result: std::result::Result<T, Rejection>,
+    build: impl FnOnce(Arc<str>, T) -> ServerMessage,
+) -> Result<()> {
+    match result {
+        Ok(value) => write_frame(writer, &ServerFrame::new(build(request_id, value))).await,
+        Err(rejection) => write_rejection(writer, request_id, rejection).await,
+    }
 }
 
-/// Answers harness configuration and refresh requests; passes every other message on.
-async fn handle_harness_message(
-    message: ClientMessage,
-    gateway: &GatewayHost,
-    view: &mut ClientView,
-    writer: &mut (impl AsyncWrite + Unpin),
-) -> Result<Option<ClientMessage>> {
-    match message {
-        ClientMessage::ConfigureHarness {
-            request_id,
-            kind,
-            cli_path,
-            defaults,
-        } => {
-            let configured = gateway.configure_harness(kind, cli_path, defaults).await;
-            write_gateway_result(writer, view, request_id, configured).await?;
-        }
-        ClientMessage::RefreshHarnesses { request_id } => {
-            let refreshed = gateway.refresh_harnesses().await;
-            write_gateway_result(writer, view, request_id, refreshed).await?;
-        }
-        message => return Ok(Some(message)),
+/// Messages answered before pending Bot deletion recovery runs.
+const fn answers_before_recovery(message: &ClientMessage) -> bool {
+    matches!(
+        message,
+        ClientMessage::GetStorageUsage { .. }
+            | ClientMessage::GetTelemetry { .. }
+            | ClientMessage::ConfigureTelemetry { .. }
+            | ClientMessage::GetProfile { .. }
+            | ClientMessage::OpenComputer { .. }
+            | ClientMessage::SetDesktopStream { .. }
+            | ClientMessage::DesktopData { .. }
+            | ClientMessage::SetDesktopControl { .. }
+    )
+}
+
+fn memories(request_id: Arc<str>, memories: Vec<crate::wire::MemoryRecord>) -> ServerMessage {
+    ServerMessage::Memories {
+        request_id,
+        memories,
     }
-    Ok(None)
 }
 
 pub(super) async fn handle_message(
@@ -150,30 +123,13 @@ pub(super) async fn handle_message(
     writer: &mut (impl AsyncWrite + Unpin),
 ) -> Result<()> {
     let operator = client.local && crate::auth::is_local_operator(client.id);
-    let Some(message) = handle_runtime_message(message, gateway, operator, writer).await? else {
-        return Ok(());
-    };
-    let Some(message) =
-        super::desktop::handle_message(message, gateway, client, &mut connection, writer).await?
-    else {
-        return Ok(());
-    };
-    if let Err(rejection) = gateway.reconcile_pending_bot_deletion().await {
-        return write_server_error(writer, "bot_deletion_recovery", rejection.message, false).await;
+    if !answers_before_recovery(&message) {
+        if let Err(rejection) = gateway.reconcile_pending_bot_deletion().await {
+            return write_server_error(writer, "bot_deletion_recovery", rejection.message, false)
+                .await;
+        }
+        super::voice::end_on_switch(&message, connection.voice).await;
     }
-    let Some(message) = super::voice::handle_message(message, &mut connection, writer).await?
-    else {
-        return Ok(());
-    };
-    let Some(message) = handle_harness_message(message, gateway, connection.view, writer).await?
-    else {
-        return Ok(());
-    };
-    let Some(message) =
-        handle_memory_message(message, gateway, connection.selected.as_ref(), writer).await?
-    else {
-        return Ok(());
-    };
     match message {
         ClientMessage::InvalidRequest {
             request_id,
@@ -186,11 +142,38 @@ pub(super) async fn handle_message(
             )
             .await;
         }
-        ClientMessage::GetStorageUsage { .. }
-        | ClientMessage::GetTelemetry { .. }
-        | ClientMessage::ConfigureTelemetry { .. }
-        | ClientMessage::SendTelemetry { .. } => {
-            unreachable!("runtime control was handled above")
+        ClientMessage::GetStorageUsage { request_id } => {
+            return storage_usage(writer, request_id, gateway).await;
+        }
+        ClientMessage::GetTelemetry { request_id } => {
+            return write_telemetry(writer, request_id, gateway).await;
+        }
+        ClientMessage::ConfigureTelemetry {
+            request_id,
+            expected_revision,
+            sinks,
+            preserve_auth,
+        } => {
+            let update = TelemetryUpdate {
+                expected_revision,
+                sinks,
+                preserve_auth,
+            };
+            return configure_telemetry(writer, request_id, update, operator, gateway).await;
+        }
+        ClientMessage::GetProfile {
+            request_id,
+            include_provider_usage,
+        } => {
+            return super::transport::request_profile(
+                request_id,
+                include_provider_usage,
+                gateway,
+                connection.pending_profile,
+                connection.queued_profile,
+                writer,
+            )
+            .await;
         }
         ClientMessage::SetNotifications {
             request_id,
@@ -206,20 +189,19 @@ pub(super) async fn handle_message(
             return select_session(writer, connection.selected, request_id, session_id, gateway)
                 .await;
         }
-        ClientMessage::GetGitDiffTotals {
+        ClientMessage::GetGitDiff {
             request_id,
             session_id,
             scope,
+            totals,
         } => {
-            return get_git_diff(
+            return git_diff(
                 writer,
                 &mut connection,
-                GitDiffRequest {
-                    request_id,
-                    session_id,
-                    scope,
-                    totals: true,
-                },
+                request_id,
+                session_id,
+                scope,
+                totals,
             )
             .await;
         }
@@ -287,8 +269,15 @@ pub(super) async fn handle_message(
             session_id,
             before,
         } => {
-            return get_session_history(writer, &mut connection, request_id, session_id, before)
-                .await;
+            return session_history(
+                writer,
+                connection.selected.as_ref(),
+                gateway,
+                request_id,
+                session_id,
+                before,
+            )
+            .await;
         }
         ClientMessage::ReassignSession {
             request_id,
@@ -307,7 +296,8 @@ pub(super) async fn handle_message(
             session_id,
             title,
         } => {
-            return rename_session(writer, gateway, request_id, session_id, title).await;
+            let renamed = gateway.rename_session(&session_id, &title);
+            return answer(writer, request_id, renamed).await;
         }
         ClientMessage::AttachSessionFolder {
             request_id,
@@ -328,7 +318,8 @@ pub(super) async fn handle_message(
             session_id,
             pinned,
         } => {
-            return set_session_pinned(writer, gateway, request_id, session_id, pinned).await;
+            let pinned = gateway.set_session_pinned(&session_id, pinned);
+            return answer(writer, request_id, pinned).await;
         }
         ClientMessage::SetMessagePinned {
             request_id,
@@ -364,7 +355,16 @@ pub(super) async fn handle_message(
         ClientMessage::Submit {
             session_id,
             submission,
-        } => return submit(writer, &mut connection, session_id, submission).await,
+        } => {
+            return submit(
+                writer,
+                connection.selected.as_ref(),
+                connection.session_files,
+                session_id,
+                submission,
+            )
+            .await;
+        }
         ClientMessage::GetContributions { request_id } => {
             let contributions = gateway.contributions().await;
             return contribution_response(writer, connection.view, request_id, contributions).await;
@@ -429,7 +429,11 @@ pub(super) async fn handle_message(
         ClientMessage::ListSessionFiles {
             request_id,
             session_id,
-        } => return list_session_files(writer, &mut connection, request_id, session_id).await,
+        } => {
+            let selected = connection.selected.as_ref();
+            let files = connection.session_files;
+            return list_session_files(writer, selected, files, request_id, session_id).await;
+        }
         ClientMessage::ReadSessionFile {
             request_id,
             session_id,
@@ -437,16 +441,14 @@ pub(super) async fn handle_message(
             offset,
             max_bytes,
         } => {
-            return read_session_file(
-                writer,
-                &mut connection,
-                request_id,
-                session_id,
+            let read = SessionFileRead {
                 file_id,
                 offset,
                 max_bytes,
-            )
-            .await;
+            };
+            let selected = connection.selected.as_ref();
+            let files = connection.session_files;
+            return read_session_file(writer, selected, files, request_id, session_id, read).await;
         }
         ClientMessage::CreateBot {
             request_id,
@@ -508,14 +510,47 @@ pub(super) async fn handle_message(
                 .await;
             return write_gateway_result(writer, connection.view, request_id, configured).await;
         }
-        ClientMessage::ConfigureHarness { .. } | ClientMessage::RefreshHarnesses { .. } => {
-            unreachable!("harness requests were handled above")
+        ClientMessage::ConfigureHarness {
+            request_id,
+            kind,
+            cli_path,
+            defaults,
+        } => {
+            let configured = gateway.configure_harness(kind, cli_path, defaults);
+            return answer_gateway(writer, connection.view, request_id, configured).await;
         }
-        ClientMessage::SetSessionMemory { .. }
-        | ClientMessage::ListMemories { .. }
-        | ClientMessage::EditMemory { .. }
-        | ClientMessage::ForgetMemory { .. } => {
-            unreachable!("memory requests were handled above")
+        ClientMessage::RefreshHarnesses { request_id } => {
+            let refreshed = gateway.refresh_harnesses();
+            return answer_gateway(writer, connection.view, request_id, refreshed).await;
+        }
+        ClientMessage::SetSessionMemory {
+            request_id,
+            session_id,
+            memory,
+        } => {
+            return set_session_memory(
+                writer,
+                connection.selected.as_ref(),
+                request_id,
+                session_id,
+                memory,
+            )
+            .await;
+        }
+        ClientMessage::ListMemories { request_id } => {
+            return answer_memories(writer, request_id, gateway.list_memories()).await;
+        }
+        ClientMessage::EditMemory {
+            request_id,
+            id,
+            description,
+            text,
+        } => {
+            let edited = gateway.edit_memory(&id, &description, &text);
+            return answer_memories(writer, request_id, edited).await;
+        }
+        ClientMessage::ForgetMemory { request_id, id } => {
+            return answer_memories(writer, request_id, gateway.forget_memory(&id)).await;
         }
         ClientMessage::InstallExtension {
             request_id,
@@ -540,24 +575,15 @@ pub(super) async fn handle_message(
             request_id,
             id,
             expected_digest,
+            trusted,
         } => {
-            let trusted = gateway
-                .set_extension_hooks_trusted(id, expected_digest, true)
+            let changed = gateway
+                .set_extension_hooks_trusted(id, expected_digest, trusted)
                 .await;
-            return write_gateway_result(writer, connection.view, request_id, trusted).await;
-        }
-        ClientMessage::RevokeExtensionHooksTrust {
-            request_id,
-            id,
-            expected_digest,
-        } => {
-            let revoked = gateway
-                .set_extension_hooks_trusted(id, expected_digest, false)
-                .await;
-            return write_gateway_result(writer, connection.view, request_id, revoked).await;
+            return write_gateway_result(writer, connection.view, request_id, changed).await;
         }
         ClientMessage::ProbeGitCredential { request_id, target } => {
-            return probe_git_credential(writer, request_id, target, gateway).await;
+            return probe_git_credential(writer, request_id, &target).await;
         }
         ClientMessage::ApproveGitCredential {
             request_id,
@@ -565,47 +591,41 @@ pub(super) async fn handle_message(
             username,
             token,
         } => {
-            return approve_git_credential(writer, request_id, target, username, token, gateway)
-                .await;
+            return approve_git_credential(writer, request_id, &target, &username, &token).await;
         }
         ClientMessage::ListSshIdentities { request_id } => {
-            return list_ssh_identities(writer, request_id, gateway).await;
+            return list_ssh_identities(writer, request_id).await;
         }
         ClientMessage::GenerateSshIdentity { request_id } => {
-            return generate_ssh_identity(writer, request_id, gateway).await;
-        }
-        ClientMessage::GetGitDiff {
-            request_id,
-            session_id,
-            scope,
-        } => {
-            return get_git_diff(
-                writer,
-                &mut connection,
-                GitDiffRequest {
-                    request_id,
-                    session_id,
-                    scope,
-                    totals: false,
-                },
-            )
-            .await;
+            return generate_ssh_identity(writer, request_id).await;
         }
         ClientMessage::SwitchGitBranch {
             request_id,
             session_id,
             branch,
         } => {
-            return switch_git_branch(writer, &mut connection, request_id, session_id, branch)
-                .await;
+            return switch_git_branch(
+                writer,
+                connection.selected.as_ref(),
+                request_id,
+                session_id,
+                branch,
+            )
+            .await;
         }
         ClientMessage::ListWorkspaceFiles {
             request_id,
             session_id,
             scope,
         } => {
-            return list_workspace_files(writer, &mut connection, request_id, session_id, scope)
-                .await;
+            return list_workspace_files(
+                writer,
+                connection.selected.as_ref(),
+                request_id,
+                session_id,
+                scope,
+            )
+            .await;
         }
         ClientMessage::ReadWorkspaceFile {
             request_id,
@@ -616,7 +636,7 @@ pub(super) async fn handle_message(
         } => {
             return read_workspace_file(
                 writer,
-                &mut connection,
+                connection.selected.as_ref(),
                 request_id,
                 session_id,
                 path,
@@ -644,7 +664,7 @@ pub(super) async fn handle_message(
         } => {
             return write_workspace_file(
                 writer,
-                &mut connection,
+                connection.selected.as_ref(),
                 request_id,
                 session_id,
                 path,
@@ -669,31 +689,12 @@ pub(super) async fn handle_message(
             request_id,
             instance,
             provider,
-            api_key,
-            expires_at,
-        } => {
-            return set_provider_credential(
-                writer, request_id, instance, provider, api_key, None, expires_at, gateway,
-            )
-            .await;
-        }
-        ClientMessage::SetProviderEndpointCredential {
-            request_id,
-            instance,
-            provider,
             base_url,
             api_key,
             expires_at,
         } => {
             return set_provider_credential(
-                writer,
-                request_id,
-                instance,
-                provider,
-                api_key,
-                Some(base_url),
-                expires_at,
-                gateway,
+                writer, request_id, instance, provider, api_key, base_url, expires_at, gateway,
             )
             .await;
         }
@@ -742,9 +743,6 @@ pub(super) async fn handle_message(
             return start_provider_login(writer, request_id, provider, client.id, auth, gateway)
                 .await;
         }
-        ClientMessage::GetProfile { .. } => {
-            unreachable!("profile messages are handled by connection transport")
-        }
         ClientMessage::CreateRoutine {
             request_id,
             bot_id,
@@ -783,23 +781,41 @@ pub(super) async fn handle_message(
             id,
             before,
         } => {
-            get_routine_run_preview(writer, request_id, id, before, gateway).await?;
+            routine_run_preview(writer, request_id, &id, before, gateway).await?;
         }
-        ClientMessage::SetBrowserRuntime { .. } | ClientMessage::BrowserPageReply { .. } => {
-            return crate::computer_runtime::browser::handle_message(
-                message,
+        ClientMessage::SetBrowserRuntime {
+            request_id,
+            enabled,
+        } => {
+            return crate::computer_runtime::browser::set_runtime(
+                crate::computer_runtime::browser::Registration {
+                    request_id,
+                    enabled,
+                    local: client.local,
+                    client: client.client,
+                    available: gateway.remote_desktop.browser_available(),
+                },
                 &gateway.remote_desktop.browser,
                 connection.browser,
-                client.local,
-                client.client,
-                gateway.remote_desktop.browser_available(),
                 writer,
             )
             .await;
         }
-        ClientMessage::SetDesktopRuntime { .. } | ClientMessage::DesktopControlReply { .. } => {
-            return crate::computer_runtime::desktop::handle_message(
-                message,
+        ClientMessage::BrowserPageReply {
+            request_id,
+            endpoint,
+        } => {
+            let browser = connection.browser.as_ref();
+            return crate::computer_runtime::browser::reply(request_id, endpoint, browser, writer)
+                .await;
+        }
+        ClientMessage::SetDesktopRuntime {
+            request_id,
+            enabled,
+        } => {
+            return crate::computer_runtime::desktop::set_runtime(
+                request_id,
+                enabled,
                 &gateway.desktop,
                 connection.desktop,
                 client.local,
@@ -808,14 +824,80 @@ pub(super) async fn handle_message(
             )
             .await;
         }
-        ClientMessage::OpenComputer { .. }
-        | ClientMessage::SetDesktopStream { .. }
-        | ClientMessage::DesktopData { .. }
-        | ClientMessage::SetDesktopControl { .. } => {
-            unreachable!("desktop messages were handled above")
+        ClientMessage::DesktopControlReply {
+            request_id,
+            response,
+        } => {
+            let desktop = connection.desktop.as_ref();
+            return crate::computer_runtime::desktop::reply(request_id, response, desktop, writer)
+                .await;
         }
-        ClientMessage::StartRealtimeVoice { .. } | ClientMessage::EndRealtimeVoice { .. } => {
-            unreachable!("voice messages are handled before general dispatch")
+        ClientMessage::OpenComputer {
+            request_id,
+            session_id,
+        } => {
+            return super::desktop::open_computer(
+                request_id,
+                session_id,
+                gateway,
+                client,
+                &mut connection,
+                writer,
+            )
+            .await;
+        }
+        ClientMessage::SetDesktopStream {
+            request_id,
+            enabled,
+        } => {
+            return super::desktop::set_stream(
+                request_id,
+                enabled,
+                gateway,
+                client,
+                &mut connection,
+                writer,
+            )
+            .await;
+        }
+        ClientMessage::DesktopData { data } => {
+            return super::desktop::forward_data(&data, client, &mut connection, writer).await;
+        }
+        ClientMessage::SetDesktopControl {
+            request_id,
+            enabled,
+            session_id,
+        } => {
+            return super::desktop::set_control(
+                request_id,
+                enabled,
+                session_id,
+                gateway,
+                client,
+                &mut connection,
+                writer,
+            )
+            .await;
+        }
+        ClientMessage::StartRealtimeVoice {
+            request_id,
+            session_id,
+            offer_sdp,
+        } => {
+            return super::voice::start_call(
+                request_id,
+                session_id,
+                offer_sdp,
+                &mut connection,
+                writer,
+            )
+            .await;
+        }
+        ClientMessage::EndRealtimeVoice {
+            session_id,
+            voice_id,
+        } => {
+            return super::voice::end_call(session_id, voice_id, connection.voice, writer).await;
         }
         ClientMessage::ListBotSessions { request_id, bot_id } => {
             return list_bot_sessions(writer, request_id, bot_id, gateway).await;
@@ -874,7 +956,7 @@ async fn unpair_client(
             return write_rejection(
                 writer,
                 request_id,
-                internal_rejection("failed to update paired devices".into()),
+                internal("failed to update paired devices"),
             )
             .await;
         }
@@ -915,20 +997,15 @@ async fn list_bot_sessions(
     bot_id: Arc<str>,
     gateway: &GatewayHost,
 ) -> Result<()> {
-    match gateway.hidden_bot_sessions(&bot_id).await {
-        Ok(sessions) => {
-            write_frame(
-                writer,
-                &ServerFrame::new(ServerMessage::BotSessions {
-                    request_id,
-                    bot_id,
-                    sessions,
-                }),
-            )
-            .await
+    let sessions = gateway.hidden_bot_sessions(&bot_id).await;
+    respond(writer, request_id, sessions, |request_id, sessions| {
+        ServerMessage::BotSessions {
+            request_id,
+            bot_id,
+            sessions,
         }
-        Err(rejection) => write_rejection(writer, request_id, rejection).await,
-    }
+    })
+    .await
 }
 
 async fn create_session(
@@ -1005,40 +1082,35 @@ async fn select_session(
     Ok(())
 }
 
-async fn get_session_history(
+async fn session_history(
     writer: &mut (impl AsyncWrite + Unpin),
-    connection: &mut ConnectionSessionState<'_>,
+    selected: Option<&SelectedChat>,
+    gateway: &GatewayHost,
     request_id: Arc<str>,
     session_id: SessionId,
     before: Option<crate::wire::HistoryCursor>,
 ) -> Result<()> {
-    let page = match connection.selected {
+    let page = match selected {
         Some(selected) if **selected.host.session_id() == *session_id => {
             selected.host.history_page(before).await
         }
-        _ => {
-            connection
-                .gateway
-                .read_session_history(&session_id, before)
-                .await
-        }
+        _ => gateway.read_session_history(&session_id, before).await,
     };
     write_session_history(writer, page, request_id, session_id).await
 }
 
-async fn rename_session(
+async fn set_session_memory(
     writer: &mut (impl AsyncWrite + Unpin),
-    gateway: &GatewayHost,
+    selected: Option<&SelectedChat>,
     request_id: Arc<str>,
     session_id: SessionId,
-    title: String,
+    memory: Option<bool>,
 ) -> Result<()> {
-    write_result(
-        writer,
-        request_id,
-        gateway.rename_session(&session_id, &title).await,
-    )
-    .await
+    let result = match require_selected(selected, &session_id) {
+        Ok(host) => host.set_memory(memory).await,
+        Err(rejection) => Err(rejection),
+    };
+    write_result(writer, request_id, result).await
 }
 
 async fn attach_session_folder(
@@ -1053,21 +1125,6 @@ async fn attach_session_folder(
         Err(rejection) => return write_rejection(writer, request_id, rejection).await,
     };
     write_result(writer, request_id, host.attach_folder(folder).await).await
-}
-
-async fn set_session_pinned(
-    writer: &mut (impl AsyncWrite + Unpin),
-    gateway: &GatewayHost,
-    request_id: Arc<str>,
-    session_id: SessionId,
-    pinned: bool,
-) -> Result<()> {
-    write_result(
-        writer,
-        request_id,
-        gateway.set_session_pinned(&session_id, pinned).await,
-    )
-    .await
 }
 
 async fn set_message_pinned(
@@ -1182,31 +1239,21 @@ fn forget_deleted_sessions(connection: &mut ConnectionSessionState<'_>, deleted:
     }
 }
 
-#[expect(
-    clippy::needless_pass_by_ref_mut,
-    reason = "a shared borrow would make the future !Send: ConnectionSessionState is not Sync"
-)]
 async fn submit(
     writer: &mut (impl AsyncWrite + Unpin),
-    connection: &mut ConnectionSessionState<'_>,
+    selected: Option<&SelectedChat>,
+    session_files: &SessionFileStore,
     session_id: SessionId,
     submission: Submission,
 ) -> Result<()> {
     let request_id = Arc::clone(&submission.id);
-    let host = match require_selected(connection.selected.as_ref(), &session_id) {
+    let host = match require_selected(selected, &session_id) {
         Ok(host) => host,
         Err(rejection) => return write_rejection(writer, request_id, rejection).await,
     };
-    let submission = match ValidatedSubmission::new(submission) {
+    let submission = match crate::host::validated(submission) {
         Ok(submission) => submission,
-        Err(error) => {
-            return write_rejection(
-                writer,
-                request_id,
-                Rejection::new("invalid_submission", error.to_string()),
-            )
-            .await;
-        }
+        Err(rejection) => return write_rejection(writer, request_id, rejection).await,
     };
     let user_message = match &submission.submission().op {
         Op::Message { message } => match &message.author {
@@ -1233,11 +1280,7 @@ async fn submit(
             Err(rejection) => return write_rejection(writer, request_id, rejection).await,
         }
         for reference in &message.attachments {
-            if let Err(error) = connection
-                .session_files
-                .verify_upload(&session_id, reference)
-                .await
-            {
+            if let Err(error) = session_files.verify_upload(&session_id, reference).await {
                 return write_rejection(writer, request_id, session_file_rejection(error)).await;
             }
         }
@@ -1251,40 +1294,16 @@ async fn contribution_response(
     request_id: Arc<str>,
     result: std::result::Result<Vec<mobius::protocol::FrontendContribution>, Rejection>,
 ) -> Result<()> {
-    match result {
-        Ok(contributions) => {
-            view.forget(crate::wire::ReadySection::Config);
-            write_frame(
-                writer,
-                &ServerFrame::new(ServerMessage::Contributions {
-                    request_id,
-                    contributions,
-                }),
-            )
-            .await
-        }
-        Err(rejection) => write_rejection(writer, request_id, rejection).await,
+    if result.is_ok() {
+        view.forget(crate::wire::ReadySection::Config);
     }
-}
-
-async fn write_memories(
-    writer: &mut (impl AsyncWrite + Unpin),
-    request_id: Arc<str>,
-    result: std::result::Result<Vec<crate::wire::MemoryRecord>, Rejection>,
-) -> Result<()> {
-    match result {
-        Ok(memories) => {
-            write_frame(
-                writer,
-                &ServerFrame::new(ServerMessage::Memories {
-                    request_id,
-                    memories,
-                }),
-            )
-            .await
+    respond(writer, request_id, result, |request_id, contributions| {
+        ServerMessage::Contributions {
+            request_id,
+            contributions,
         }
-        Err(rejection) => write_rejection(writer, request_id, rejection).await,
-    }
+    })
+    .await
 }
 
 async fn begin_session_file_upload(
@@ -1451,203 +1470,125 @@ async fn finish_session_file_upload(
     }
 }
 
-#[expect(
-    clippy::needless_pass_by_ref_mut,
-    reason = "a shared borrow would make the future !Send: ConnectionSessionState is not Sync"
-)]
 async fn list_session_files(
     writer: &mut (impl AsyncWrite + Unpin),
-    connection: &mut ConnectionSessionState<'_>,
+    selected: Option<&SelectedChat>,
+    session_files: &SessionFileStore,
     request_id: Arc<str>,
     session_id: SessionId,
 ) -> Result<()> {
-    if let Err(rejection) = require_selected(connection.selected.as_ref(), &session_id) {
-        return write_rejection(writer, request_id, rejection).await;
-    }
-    match connection
-        .session_files
-        .list_files(
-            &session_id,
-            &[StoredFileOrigin::Upload, StoredFileOrigin::Artifact],
-        )
-        .await
-    {
-        Ok(items) => {
-            write_frame(
-                writer,
-                &ServerFrame::new(ServerMessage::SessionFiles {
-                    request_id,
-                    session_id,
-                    files: items
-                        .into_iter()
-                        .map(|(origin, file)| mobius::protocol::SessionFileRecord {
-                            origin: match origin {
-                                StoredFileOrigin::Upload => {
-                                    mobius::protocol::SessionFileOrigin::User
-                                }
-                                StoredFileOrigin::Artifact | StoredFileOrigin::Observation => {
-                                    mobius::protocol::SessionFileOrigin::Agent
-                                }
-                            },
-                            file,
-                        })
-                        .collect(),
-                }),
+    let listed = match require_selected(selected, &session_id) {
+        Ok(_) => session_files
+            .list_files(
+                &session_id,
+                &[StoredFileOrigin::Upload, StoredFileOrigin::Artifact],
             )
             .await
+            .map_err(session_file_rejection),
+        Err(rejection) => Err(rejection),
+    };
+    respond(writer, request_id, listed, |request_id, items| {
+        ServerMessage::SessionFiles {
+            request_id,
+            session_id,
+            files: items
+                .into_iter()
+                .map(|(origin, file)| mobius::protocol::SessionFileRecord {
+                    origin: match origin {
+                        StoredFileOrigin::Upload => mobius::protocol::SessionFileOrigin::User,
+                        StoredFileOrigin::Artifact | StoredFileOrigin::Observation => {
+                            mobius::protocol::SessionFileOrigin::Agent
+                        }
+                    },
+                    file,
+                })
+                .collect(),
         }
-        Err(error) => write_rejection(writer, request_id, session_file_rejection(error)).await,
-    }
+    })
+    .await
 }
 
-#[expect(
-    clippy::needless_pass_by_ref_mut,
-    reason = "a shared borrow would make the future !Send: ConnectionSessionState is not Sync"
-)]
-async fn read_session_file(
-    writer: &mut (impl AsyncWrite + Unpin),
-    connection: &mut ConnectionSessionState<'_>,
-    request_id: Arc<str>,
-    session_id: SessionId,
+struct SessionFileRead {
     file_id: String,
     offset: u64,
     max_bytes: usize,
+}
+
+async fn read_session_file(
+    writer: &mut (impl AsyncWrite + Unpin),
+    selected: Option<&SelectedChat>,
+    session_files: &SessionFileStore,
+    request_id: Arc<str>,
+    session_id: SessionId,
+    read: SessionFileRead,
 ) -> Result<()> {
-    if let Err(rejection) = require_selected(connection.selected.as_ref(), &session_id) {
-        return write_rejection(writer, request_id, rejection).await;
-    }
-    match connection
-        .session_files
-        .read_chunk(&session_id, &file_id, offset, max_bytes)
-        .await
-    {
-        Ok(chunk) => {
-            write_frame(
-                writer,
-                &ServerFrame::new(ServerMessage::SessionFileChunk {
-                    request_id,
-                    session_id,
-                    file_id,
-                    offset: chunk.offset,
-                    data: chunk.data,
-                    next_offset: chunk.next_offset,
-                }),
-            )
+    let SessionFileRead {
+        file_id,
+        offset,
+        max_bytes,
+    } = read;
+    let chunk = match require_selected(selected, &session_id) {
+        Ok(_) => session_files
+            .read_chunk(&session_id, &file_id, offset, max_bytes)
             .await
+            .map_err(session_file_rejection),
+        Err(rejection) => Err(rejection),
+    };
+    respond(writer, request_id, chunk, |request_id, chunk| {
+        ServerMessage::SessionFileChunk {
+            request_id,
+            session_id,
+            file_id,
+            offset: chunk.offset,
+            data: chunk.data,
+            next_offset: chunk.next_offset,
         }
-        Err(error) => write_rejection(writer, request_id, session_file_rejection(error)).await,
-    }
+    })
+    .await
 }
 
 async fn probe_git_credential(
     writer: &mut (impl AsyncWrite + Unpin),
     request_id: Arc<str>,
-    target: String,
-    gateway: &GatewayHost,
+    target: &str,
 ) -> Result<()> {
-    match gateway.probe_git_credential(&target).await {
-        Ok(username) => {
-            write_frame(
-                writer,
-                &ServerFrame::new(ServerMessage::GitCredentialStatus {
-                    request_id,
-                    available: username.is_some(),
-                    username,
-                }),
-            )
-            .await
+    let probed = crate::host::git::probe_credential(target).await;
+    respond(writer, request_id, probed, |request_id, username| {
+        ServerMessage::GitCredentialStatus {
+            request_id,
+            available: username.is_some(),
+            username,
         }
-        Err(rejection) => write_rejection(writer, request_id, rejection).await,
-    }
-}
-
-async fn approve_git_credential(
-    writer: &mut (impl AsyncWrite + Unpin),
-    request_id: Arc<str>,
-    target: String,
-    username: String,
-    token: String,
-    gateway: &GatewayHost,
-) -> Result<()> {
-    match gateway
-        .approve_git_credential(&target, &username, &token)
-        .await
-    {
-        Ok(username) => {
-            write_frame(
-                writer,
-                &ServerFrame::new(ServerMessage::GitCredentialStatus {
-                    request_id,
-                    available: true,
-                    username: Some(username),
-                }),
-            )
-            .await
-        }
-        Err(rejection) => write_rejection(writer, request_id, rejection).await,
-    }
+    })
+    .await
 }
 
 async fn list_ssh_identities(
     writer: &mut (impl AsyncWrite + Unpin),
     request_id: Arc<str>,
-    gateway: &GatewayHost,
 ) -> Result<()> {
-    match gateway.ssh_identities().await {
-        Ok(identities) => {
-            write_frame(
-                writer,
-                &ServerFrame::new(ServerMessage::SshIdentities {
-                    request_id,
-                    identities,
-                }),
-            )
-            .await
+    let identities = tokio::task::spawn_blocking(crate::host::ssh::identities)
+        .await
+        .map_err(internal)
+        .and_then(std::convert::identity);
+    respond(writer, request_id, identities, |request_id, identities| {
+        ServerMessage::SshIdentities {
+            request_id,
+            identities,
         }
-        Err(rejection) => write_rejection(writer, request_id, rejection).await,
-    }
+    })
+    .await
 }
 
-async fn generate_ssh_identity(
+/// Answers with line totals when `totals` is set, otherwise with the diff text.
+async fn git_diff(
     writer: &mut (impl AsyncWrite + Unpin),
-    request_id: Arc<str>,
-    gateway: &GatewayHost,
-) -> Result<()> {
-    match gateway.generate_ssh_identity().await {
-        Ok((identity, public_key)) => {
-            write_frame(
-                writer,
-                &ServerFrame::new(ServerMessage::SshIdentityGenerated {
-                    request_id,
-                    identity,
-                    public_key,
-                }),
-            )
-            .await
-        }
-        Err(rejection) => write_rejection(writer, request_id, rejection).await,
-    }
-}
-
-struct GitDiffRequest {
+    connection: &mut ConnectionSessionState<'_>,
     request_id: Arc<str>,
     session_id: SessionId,
     scope: GitDiffScope,
-    /// Answer with line totals instead of the diff text.
     totals: bool,
-}
-
-async fn get_git_diff(
-    writer: &mut (impl AsyncWrite + Unpin),
-    connection: &mut ConnectionSessionState<'_>,
-    request: GitDiffRequest,
 ) -> Result<()> {
-    let GitDiffRequest {
-        request_id,
-        session_id,
-        scope,
-        totals,
-    } = request;
     let host = match require_selected(connection.selected.as_ref(), &session_id) {
         Ok(host) => host.clone(), // rules-allow: the background diff task owns a session handle
         Err(rejection) => return write_rejection(writer, request_id, rejection).await,
@@ -1695,108 +1636,81 @@ async fn get_git_diff(
     Ok(())
 }
 
-#[expect(
-    clippy::needless_pass_by_ref_mut,
-    reason = "a shared borrow would make the future !Send: ConnectionSessionState is not Sync"
-)]
 async fn switch_git_branch(
     writer: &mut (impl AsyncWrite + Unpin),
-    connection: &mut ConnectionSessionState<'_>,
+    selected: Option<&SelectedChat>,
     request_id: Arc<str>,
     session_id: SessionId,
     branch: String,
 ) -> Result<()> {
-    let host = match require_selected(connection.selected.as_ref(), &session_id) {
+    let host = match require_selected(selected, &session_id) {
         Ok(host) => host,
         Err(rejection) => return write_rejection(writer, request_id, rejection).await,
     };
     write_result(writer, request_id, host.switch_git_branch(branch).await).await
 }
 
-#[expect(
-    clippy::needless_pass_by_ref_mut,
-    reason = "a shared borrow would make the future !Send: ConnectionSessionState is not Sync"
-)]
 async fn list_workspace_files(
     writer: &mut (impl AsyncWrite + Unpin),
-    connection: &mut ConnectionSessionState<'_>,
+    selected: Option<&SelectedChat>,
     request_id: Arc<str>,
     session_id: SessionId,
     scope: WorkspaceFileScope,
 ) -> Result<()> {
-    let host = match require_selected(connection.selected.as_ref(), &session_id) {
+    let host = match require_selected(selected, &session_id) {
         Ok(host) => host,
         Err(rejection) => return write_rejection(writer, request_id, rejection).await,
     };
-    match host.workspace_files(scope).await {
-        Ok(catalog) => {
-            write_frame(
-                writer,
-                &ServerFrame::new(ServerMessage::WorkspaceFiles {
-                    request_id,
-                    session_id,
-                    files: catalog.files,
-                    truncated: catalog.truncated,
-                }),
-            )
-            .await
+    let catalog = host.workspace_files(scope).await;
+    respond(writer, request_id, catalog, |request_id, catalog| {
+        ServerMessage::WorkspaceFiles {
+            request_id,
+            session_id,
+            files: catalog.files,
+            truncated: catalog.truncated,
         }
-        Err(rejection) => write_rejection(writer, request_id, rejection).await,
-    }
+    })
+    .await
 }
 
-#[expect(
-    clippy::needless_pass_by_ref_mut,
-    reason = "a shared borrow would make the future !Send: ConnectionSessionState is not Sync"
-)]
 async fn read_workspace_file(
     writer: &mut (impl AsyncWrite + Unpin),
-    connection: &mut ConnectionSessionState<'_>,
+    selected: Option<&SelectedChat>,
     request_id: Arc<str>,
     session_id: SessionId,
     path: String,
     offset: u64,
     max_bytes: usize,
 ) -> Result<()> {
-    let host = match require_selected(connection.selected.as_ref(), &session_id) {
+    let host = match require_selected(selected, &session_id) {
         Ok(host) => host,
         Err(rejection) => return write_rejection(writer, request_id, rejection).await,
     };
-    match host
+    let chunk = host
         .read_workspace_file(path.clone(), offset, max_bytes) // rules-allow: the host takes the path and the chunk frame echoes it
-        .await
-    {
-        Ok(chunk) => {
-            write_frame(
-                writer,
-                &ServerFrame::new(ServerMessage::WorkspaceFileChunk {
-                    request_id,
-                    session_id,
-                    path,
-                    offset,
-                    data: chunk.data,
-                    next_offset: chunk.next_offset,
-                }),
-            )
-            .await
+        .await;
+    respond(writer, request_id, chunk, |request_id, chunk| {
+        ServerMessage::WorkspaceFileChunk {
+            request_id,
+            session_id,
+            path,
+            offset,
+            data: chunk.data,
+            next_offset: chunk.next_offset,
         }
-        Err(rejection) => write_rejection(writer, request_id, rejection).await,
-    }
+    })
+    .await
 }
 
-#[expect(
-    clippy::needless_pass_by_ref_mut,
-    reason = "a shared borrow would make the future !Send: ConnectionSessionState is not Sync"
-)]
 async fn write_workspace_file(
     writer: &mut (impl AsyncWrite + Unpin),
-    connection: &mut ConnectionSessionState<'_>,
+    selected: Option<&SelectedChat>,
     request_id: Arc<str>,
     session_id: SessionId,
     path: String,
     content: String,
 ) -> Result<()> {
-    let host = match require_selected(connection.selected.as_ref(), &session_id) {
+    let host = match require_selected(selected, &session_id) {
         Ok(host) => host,
         Err(rejection) => return write_rejection(writer, request_id, rejection).await,
     };
@@ -1820,21 +1734,15 @@ async fn list_directories_response(
     )
     .await
     .map_err(|elapsed| { tracing::debug!(%elapsed, "directory listing timed out"); directory_rejection("folder access timed out; check filesystem availability and allow any folder-access prompt on the gateway computer") })
-    .and_then(|result| result.map_err(|error| internal_rejection(error.to_string())))
+    .and_then(|result| result.map_err(internal))
     .and_then(std::convert::identity);
-    match result {
-        Ok(listing) => {
-            write_frame(
-                writer,
-                &ServerFrame::new(ServerMessage::Directories {
-                    request_id,
-                    listing,
-                }),
-            )
-            .await
+    respond(writer, request_id, result, |request_id, listing| {
+        ServerMessage::Directories {
+            request_id,
+            listing,
         }
-        Err(rejection) => write_rejection(writer, request_id, rejection).await,
-    }
+    })
+    .await
 }
 
 async fn clear_provider_credential(
@@ -1844,19 +1752,13 @@ async fn clear_provider_credential(
     gateway: &GatewayHost,
 ) -> Result<()> {
     let cleared = gateway.clear_credential(instance.clone()).await; // rules-allow: the host takes the instance and the response echoes it
-    match cleared {
-        Ok(()) => {
-            write_frame(
-                writer,
-                &ServerFrame::new(ServerMessage::ProviderCredentialCleared {
-                    request_id,
-                    instance,
-                }),
-            )
-            .await
+    respond(writer, request_id, cleared, |request_id, ()| {
+        ServerMessage::ProviderCredentialCleared {
+            request_id,
+            instance,
         }
-        Err(rejection) => write_rejection(writer, request_id, rejection).await,
-    }
+    })
+    .await
 }
 
 #[expect(
@@ -1873,7 +1775,7 @@ async fn set_provider_credential(
     expires_at: Option<u64>,
     gateway: &GatewayHost,
 ) -> Result<()> {
-    match gateway
+    let saved = gateway
         .set_credential(
             instance.clone(), // rules-allow: the host takes the instance and the response echoes it
             provider.clone(), // rules-allow: the host takes the provider and the response echoes it
@@ -1881,21 +1783,15 @@ async fn set_provider_credential(
             base_url,
             expires_at,
         )
-        .await
-    {
-        Ok(()) => {
-            write_frame(
-                writer,
-                &ServerFrame::new(ServerMessage::ProviderCredentialSaved {
-                    request_id,
-                    instance,
-                    provider,
-                }),
-            )
-            .await
+        .await;
+    respond(writer, request_id, saved, |request_id, ()| {
+        ServerMessage::ProviderCredentialSaved {
+            request_id,
+            instance,
+            provider,
         }
-        Err(rejection) => write_rejection(writer, request_id, rejection).await,
-    }
+    })
+    .await
 }
 
 async fn create_pairing_code(
@@ -1903,22 +1799,15 @@ async fn create_pairing_code(
     request_id: Arc<str>,
     auth: &AuthStore,
 ) -> Result<()> {
-    match auth.create_pairing_code() {
-        Ok(grant) => {
-            write_frame(
-                writer,
-                &ServerFrame::new(ServerMessage::PairingCode {
-                    request_id,
-                    code: grant.code,
-                    expires_at: grant.expires_at,
-                }),
-            )
-            .await
+    let grant = auth.create_pairing_code().map_err(internal);
+    respond(writer, request_id, grant, |request_id, grant| {
+        ServerMessage::PairingCode {
+            request_id,
+            code: grant.code,
+            expires_at: grant.expires_at,
         }
-        Err(error) => {
-            write_rejection(writer, request_id, internal_rejection(error.to_string())).await
-        }
-    }
+    })
+    .await
 }
 
 async fn list_routines(
@@ -1927,19 +1816,16 @@ async fn list_routines(
     bot_id: Option<Arc<str>>,
     bots: &BotStore,
 ) -> Result<()> {
-    match bots.routine_records(bot_id.as_deref(), Utc::now().timestamp()) {
-        Ok(routines) => {
-            write_frame(
-                writer,
-                &ServerFrame::new(ServerMessage::Routines {
-                    request_id,
-                    routines,
-                }),
-            )
-            .await
+    let routines = bots
+        .routine_records(bot_id.as_deref(), Utc::now().timestamp())
+        .map_err(invalid_routine);
+    respond(writer, request_id, routines, |request_id, routines| {
+        ServerMessage::Routines {
+            request_id,
+            routines,
         }
-        Err(error) => write_rejection(writer, request_id, routine_rejection(&error)).await,
-    }
+    })
+    .await
 }
 
 async fn list_routine_history(
@@ -1948,128 +1834,153 @@ async fn list_routine_history(
     id: Option<Arc<str>>,
     bots: &BotStore,
 ) -> Result<()> {
-    match bots.history(id.as_deref()) {
-        Ok(runs) => {
-            write_frame(
-                writer,
-                &ServerFrame::new(ServerMessage::RoutineHistory { request_id, runs }),
-            )
-            .await
-        }
-        Err(error) => write_rejection(writer, request_id, routine_rejection(&error)).await,
-    }
+    let runs = bots.history(id.as_deref()).map_err(invalid_routine);
+    respond(writer, request_id, runs, |request_id, runs| {
+        ServerMessage::RoutineHistory { request_id, runs }
+    })
+    .await
 }
 
-async fn get_routine_run_preview(
+/// Answers with an acceptance once `operation` succeeds.
+async fn answer(
     writer: &mut (impl AsyncWrite + Unpin),
     request_id: Arc<str>,
-    id: Arc<str>,
+    operation: impl Future<Output = std::result::Result<(), Rejection>>,
+) -> Result<()> {
+    write_result(writer, request_id, operation.await).await
+}
+
+async fn answer_gateway(
+    writer: &mut (impl AsyncWrite + Unpin),
+    view: &mut ClientView,
+    request_id: Arc<str>,
+    operation: impl Future<Output = std::result::Result<crate::wire::ReadyPayload, Rejection>>,
+) -> Result<()> {
+    write_gateway_result(writer, view, request_id, operation.await).await
+}
+
+async fn answer_memories(
+    writer: &mut (impl AsyncWrite + Unpin),
+    request_id: Arc<str>,
+    operation: impl Future<Output = std::result::Result<Vec<crate::wire::MemoryRecord>, Rejection>>,
+) -> Result<()> {
+    respond(writer, request_id, operation.await, memories).await
+}
+
+async fn storage_usage(
+    writer: &mut (impl AsyncWrite + Unpin),
+    request_id: Arc<str>,
+    gateway: &GatewayHost,
+) -> Result<()> {
+    let usage = gateway.storage_usage_request().await;
+    respond(writer, request_id, usage, |request_id, usage| {
+        ServerMessage::StorageUsage { request_id, usage }
+    })
+    .await
+}
+
+async fn approve_git_credential(
+    writer: &mut (impl AsyncWrite + Unpin),
+    request_id: Arc<str>,
+    target: &str,
+    username: &str,
+    token: &str,
+) -> Result<()> {
+    let approved = crate::host::git::approve_credential(target, username, token).await;
+    respond(writer, request_id, approved, |request_id, username| {
+        ServerMessage::GitCredentialStatus {
+            request_id,
+            available: true,
+            username: Some(username),
+        }
+    })
+    .await
+}
+
+async fn generate_ssh_identity(
+    writer: &mut (impl AsyncWrite + Unpin),
+    request_id: Arc<str>,
+) -> Result<()> {
+    let generated = crate::host::ssh::generate().await;
+    respond(
+        writer,
+        request_id,
+        generated,
+        |request_id, (identity, public_key)| ServerMessage::SshIdentityGenerated {
+            request_id,
+            identity,
+            public_key,
+        },
+    )
+    .await
+}
+
+async fn routine_run_preview(
+    writer: &mut (impl AsyncWrite + Unpin),
+    request_id: Arc<str>,
+    id: &str,
     before: Option<crate::wire::HistoryCursor>,
     gateway: &GatewayHost,
 ) -> Result<()> {
-    match gateway.routine_run_preview(&id, before).await {
-        Ok(preview) => {
-            write_frame(
-                writer,
-                &ServerFrame::new(ServerMessage::RoutineRunPreview {
-                    request_id,
-                    preview,
-                }),
+    let preview = gateway.routine_run_preview(id, before).await;
+    respond(writer, request_id, preview, |request_id, preview| {
+        ServerMessage::RoutineRunPreview {
+            request_id,
+            preview,
+        }
+    })
+    .await
+}
+
+pub(super) struct TelemetryUpdate {
+    pub(super) expected_revision: u64,
+    pub(super) sinks: Vec<crate::telemetry::TelemetrySink>,
+    pub(super) preserve_auth: Vec<String>,
+}
+
+/// Only the local operator may change telemetry collectors.
+pub(super) async fn configure_telemetry(
+    writer: &mut (impl AsyncWrite + Unpin),
+    request_id: Arc<str>,
+    update: TelemetryUpdate,
+    operator: bool,
+    gateway: &GatewayHost,
+) -> Result<()> {
+    let configured = if operator {
+        gateway
+            .configure_telemetry(
+                update.expected_revision,
+                update.sinks,
+                &update.preserve_auth,
             )
             .await
-        }
+    } else {
+        Err(Rejection::new(
+            "operator_required",
+            "telemetry collectors are configured locally by the gateway operator",
+        ))
+    };
+    match configured {
+        Ok(()) => write_telemetry(writer, request_id, gateway).await,
         Err(rejection) => write_rejection(writer, request_id, rejection).await,
     }
 }
 
-pub(super) async fn handle_runtime_message(
-    message: ClientMessage,
-    gateway: &GatewayHost,
-    operator: bool,
+async fn write_telemetry(
     writer: &mut (impl AsyncWrite + Unpin),
-) -> Result<Option<ClientMessage>> {
-    let request_id = match message {
-        ClientMessage::GetStorageUsage { request_id } => {
-            let usage = match gateway.storage_usage_request().await {
-                Ok(usage) => usage,
-                Err(rejection) => {
-                    return write_rejection(writer, request_id, rejection)
-                        .await
-                        .map(|()| None);
-                }
-            };
-            return write_frame(
-                writer,
-                &ServerFrame::new(ServerMessage::StorageUsage { request_id, usage }),
-            )
-            .await
-            .map(|()| None);
-        }
-        ClientMessage::GetTelemetry { request_id } => request_id,
-        ClientMessage::ConfigureTelemetry {
-            request_id,
-            expected_revision,
-            sinks,
-            preserve_auth,
-        } => {
-            if !operator {
-                return write_rejection(
-                    writer,
-                    request_id,
-                    Rejection {
-                        code: "operator_required",
-                        message:
-                            "telemetry collectors are configured locally by the gateway operator"
-                                .into(),
-                        fatal: false,
-                    },
-                )
-                .await
-                .map(|()| None);
-            }
-            if let Err(rejection) = gateway
-                .configure_telemetry(expected_revision, sinks, &preserve_auth)
-                .await
-            {
-                return write_rejection(writer, request_id, rejection)
-                    .await
-                    .map(|()| None);
-            }
-            request_id
-        }
-        ClientMessage::SendTelemetry {
-            request_id,
-            sink_id,
-        } => {
-            return write_result(
-                writer,
-                request_id,
-                gateway
-                    .schedule_telemetry(sink_id)
-                    .await
-                    .map_err(|error| internal_rejection(error.to_string())),
-            )
-            .await
-            .map(|()| None);
-        }
-        other => return Ok(Some(other)),
-    };
-    let (revision, sinks) = match gateway.telemetry_report().await {
-        Ok(report) => report,
-        Err(error) => {
-            return write_rejection(writer, request_id, internal_rejection(error.to_string()))
-                .await
-                .map(|()| None);
-        }
-    };
-    write_frame(
+    request_id: Arc<str>,
+    gateway: &GatewayHost,
+) -> Result<()> {
+    let report = gateway.telemetry_report().await.map_err(internal);
+    respond(
         writer,
-        &ServerFrame::new(ServerMessage::Telemetry {
+        request_id,
+        report,
+        |request_id, (revision, sinks)| ServerMessage::Telemetry {
             request_id,
             revision,
             sinks,
-        }),
+        },
     )
     .await
-    .map(|()| None)
 }

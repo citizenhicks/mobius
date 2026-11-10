@@ -104,21 +104,6 @@ fn strip_reasoning_fields(item: &mut Value) -> bool {
     changed
 }
 
-/// Removes provider-private reasoning before another model route replays context.
-/// Returns whether the active input changed; visible messages and tool pairs remain intact.
-pub(crate) fn strip_provider_reasoning(input: &mut Vec<Value>) -> bool {
-    let mut changed = false;
-    input.retain_mut(|item| {
-        if is_provider_reasoning(item) {
-            changed = true;
-            return false;
-        }
-        changed |= strip_reasoning_fields(item);
-        true
-    });
-    changed
-}
-
 /// Removes provider-private reasoning while sharing untouched durable items.
 pub(crate) fn strip_shared_provider_reasoning(input: &mut Vec<Arc<Value>>) -> bool {
     let mut changed = false;
@@ -654,82 +639,9 @@ fn normalize_output_text_annotations(part: &Value) -> Result<Vec<ModelStepAnnota
     if annotations.is_null() {
         return Ok(Vec::new());
     }
-    let annotations: Vec<OutputTextAnnotation> = serde::Deserialize::deserialize(annotations)
-        .map_err(|error| {
-            Error::Provider(format!("invalid output text annotation: {error}").into())
-        })?;
-    Ok(annotations.into_iter().map(Into::into).collect())
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-enum OutputTextAnnotation {
-    UrlCitation {
-        url: String,
-        title: String,
-        content: Option<String>,
-        start_index: usize,
-        end_index: usize,
-    },
-    FileCitation {
-        file_id: String,
-        filename: String,
-        index: usize,
-    },
-    ContainerFileCitation {
-        container_id: String,
-        file_id: String,
-        filename: String,
-        start_index: usize,
-        end_index: usize,
-    },
-    FilePath {
-        file_id: String,
-        index: usize,
-    },
-}
-
-impl From<OutputTextAnnotation> for ModelStepAnnotation {
-    fn from(annotation: OutputTextAnnotation) -> Self {
-        match annotation {
-            OutputTextAnnotation::UrlCitation {
-                url,
-                title,
-                content,
-                start_index,
-                end_index,
-            } => Self::UrlCitation {
-                url,
-                title,
-                content,
-                start_index,
-                end_index,
-            },
-            OutputTextAnnotation::FileCitation {
-                file_id,
-                filename,
-                index,
-            } => Self::FileCitation {
-                file_id,
-                filename,
-                index,
-            },
-            OutputTextAnnotation::ContainerFileCitation {
-                container_id,
-                file_id,
-                filename,
-                start_index,
-                end_index,
-            } => Self::ContainerFileCitation {
-                container_id,
-                file_id,
-                filename,
-                start_index,
-                end_index,
-            },
-            OutputTextAnnotation::FilePath { file_id, index } => Self::FilePath { file_id, index },
-        }
-    }
+    // Responses annotations are the protocol records, field for field.
+    Vec::deserialize(annotations)
+        .map_err(|error| Error::Provider(format!("invalid output text annotation: {error}").into()))
 }
 
 /// A model provider Adapter used by the agent loop.
@@ -940,6 +852,25 @@ impl Serialize for ImageDataUrl<'_> {
     ) -> std::result::Result<S::Ok, S::Error> {
         serializer.collect_str(&format_args!("data:{};base64,{}", self.0, self.1))
     }
+}
+
+/// Text a provider receives in place of a stored session file.
+pub(super) struct StoredFile<'a>(pub(super) &'a Value);
+
+impl std::fmt::Display for StoredFile<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "Stored file: {}", self.0)
+    }
+}
+
+/// Creates a provider-neutral function-call output item.
+pub(super) fn function_call_item(call_id: &str, name: &str, arguments: &str) -> Value {
+    serde_json::json!({
+        "type": "function_call",
+        "call_id": call_id,
+        "name": name,
+        "arguments": arguments
+    })
 }
 
 fn validate_usage(usage: &TokenUsage) -> Result<()> {
@@ -1209,25 +1140,6 @@ pub(crate) fn mark_prompt_cache_breakpoint(item: &mut Value) -> bool {
     true
 }
 
-pub(crate) fn reset_prompt_cache_breakpoint(input: &mut [Value]) {
-    for item in input.iter_mut() {
-        let Some(content) = crate::protocol::content_parts_mut(item) else {
-            continue;
-        };
-        for part in content {
-            if let Some(fields) = part.as_object_mut() {
-                fields.remove(PROMPT_CACHE_BREAKPOINT_FIELD);
-            }
-        }
-    }
-    for item in input.iter_mut().rev() {
-        if mark_prompt_cache_breakpoint(item) {
-            break;
-        }
-    }
-}
-
-/// Repositions cache markers without copying untouched shared history.
 pub(crate) fn reset_shared_prompt_cache_breakpoint(input: &mut [Arc<Value>]) {
     let endpoint = input
         .iter()
@@ -1345,3 +1257,7 @@ pub fn tool_output(call_id: &str, output: &crate::protocol::ToolContent, is_erro
 #[cfg(test)]
 #[path = "model_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "support_tests.rs"]
+mod test_support;

@@ -1,6 +1,21 @@
-use super::*;
+use super::{
+    Arc, AuthStore, BACKGROUND_START_POLL_INTERVAL, BACKGROUND_START_TIMEOUT,
+    CONNECTION_POLL_INTERVAL, Child, CloudflareConfig, CloudflareTunnel, ConfigStore, Deserialize,
+    Duration, EXIT_POLL_INTERVAL, EXIT_TIMEOUT, Endpoint, Error, File, GatewayConfig,
+    GatewayServer, Instant, MAX_BACKGROUND_ERROR_BYTES, MAX_PROCESS_RECORD_BYTES, OnceLock,
+    OpenOptions, PROCESS_FILE, PUBLIC_ENDPOINT_TIMEOUT, Path, PathBuf, Pid, Result, STARTUP_FILE,
+    SeekFrom, Serialize, Signal, SignalKind, Stdio, TokioCommand, TokioSignal, TryLockError,
+    ensure_gateway_stopped, eprint_line, fs, kill, loopback_endpoint, print_line,
+    provision_cloudflare_local_client, signal, terminate_process_group,
+};
 
-#[cfg(any(unix, test))]
+#[cfg(target_os = "macos")]
+use std::ffi::OsString;
+use std::io::Read as _;
+use std::io::Seek as _;
+use std::io::Write as _;
+use std::os::unix::process::CommandExt as _;
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ProcessRecord {
@@ -9,15 +24,12 @@ pub(super) struct ProcessRecord {
 }
 
 pub(super) struct ProcessRecordGuard {
-    #[cfg(unix)]
     pub(super) path: PathBuf,
-    #[cfg(unix)]
     pub(super) file: File,
 }
 
 #[derive(Debug)]
 pub(super) struct StartupGuard {
-    #[cfg(unix)]
     pub(super) file: File,
 }
 
@@ -35,9 +47,6 @@ pub(super) async fn serve(
     let startup = lock_startup
         .then(|| StartupGuard::create(store.state_dir()))
         .transpose()?;
-    #[cfg(not(unix))]
-    let _ = load_local_client;
-    #[cfg(unix)]
     if reuse_current_gateway(&store, &config, None, load_local_client)
         .await?
         .is_some()
@@ -46,9 +55,8 @@ pub(super) async fn serve(
             "gateway is already running at the same or a newer version"
         ))?);
     }
-    #[cfg(unix)]
     ensure_gateway_stopped(&store, &config)?;
-    let auth = AuthStore::open_validated(store.auth_path(), config.auth)?;
+    let auth = AuthStore::open(store.auth_path(), config.auth)?;
     if let Some((endpoint, token)) = provision_cloudflare_local_client(&auth, &config)? {
         save_local_client(&endpoint, token)?;
     }
@@ -102,7 +110,6 @@ pub(super) async fn serve(
     }
 }
 
-#[cfg(unix)]
 pub(super) async fn serve_in_background(
     state_dir: PathBuf,
     load_local_client: fn(&Endpoint) -> Result<Option<String>>,
@@ -126,7 +133,6 @@ pub(super) async fn serve_in_background(
 }
 
 /// Starts the configured detached gateway, replacing an older running release.
-#[cfg(unix)]
 /// # Errors
 ///
 /// Returns an error if the supplied value is invalid.
@@ -137,7 +143,6 @@ pub async fn ensure_background_gateway(
     serve_in_background(state_dir, load_local_client).await
 }
 
-#[cfg(unix)]
 pub(super) async fn start_background_gateway(
     state_dir: &Path,
     interrupts: &mut TokioSignal,
@@ -239,7 +244,6 @@ pub(super) fn macos_gateway_path(inherited: Option<&std::ffi::OsStr>) -> OsStrin
     path
 }
 
-#[cfg(unix)]
 pub(super) async fn shutdown_signal(interrupts: &mut TokioSignal, terminations: &mut TokioSignal) {
     tokio::select! {
         _ = interrupts.recv() => {}
@@ -247,23 +251,6 @@ pub(super) async fn shutdown_signal(interrupts: &mut TokioSignal, terminations: 
     }
 }
 
-#[cfg(not(unix))]
-pub(super) async fn serve_in_background(
-    _state_dir: PathBuf,
-    _load_local_client: fn(&Endpoint) -> Result<Option<String>>,
-) -> Result<()> {
-    Err(unsupported_lifecycle())
-}
-
-#[cfg(not(unix))]
-pub async fn ensure_background_gateway(
-    _state_dir: PathBuf,
-    _load_local_client: fn(&Endpoint) -> Result<Option<String>>,
-) -> Result<()> {
-    Err(unsupported_lifecycle())
-}
-
-#[cfg(unix)]
 pub(super) async fn reuse_current_gateway(
     store: &ConfigStore,
     config: &GatewayConfig,
@@ -308,7 +295,6 @@ pub(super) async fn reuse_current_gateway(
 
 /// The running gateway's public endpoint. A Quick Tunnel assigns it after the gateway is
 /// already serving locally, so this waits for `pid` to publish it.
-#[cfg(unix)]
 pub(super) async fn runtime_endpoint(
     store: &ConfigStore,
     config: &GatewayConfig,
@@ -344,7 +330,6 @@ pub(super) async fn runtime_endpoint(
     }
 }
 
-#[cfg(any(unix, test))]
 pub(super) fn gateway_version_is_older(running: &str, starting: &str) -> Result<bool> {
     let parse = |version: &str| {
         semver::Version::parse(version)
@@ -353,7 +338,6 @@ pub(super) fn gateway_version_is_older(running: &str, starting: &str) -> Result<
     Ok(parse(running)?.cmp_precedence(&parse(starting)?).is_lt())
 }
 
-#[cfg(unix)]
 pub(super) async fn stop_background_child(child: &mut Child, process_path: &Path) {
     if let Some(pid) = child.id() {
         terminate_process_group(pid);
@@ -364,7 +348,6 @@ pub(super) async fn stop_background_child(child: &mut Child, process_path: &Path
     remove_unlocked_process_record(process_path);
 }
 
-#[cfg(unix)]
 pub(super) fn remove_unlocked_process_record(path: &Path) {
     let Ok(file) = OpenOptions::new().read(true).write(true).open(path) else {
         return;
@@ -376,7 +359,6 @@ pub(super) fn remove_unlocked_process_record(path: &Path) {
     }
 }
 
-#[cfg(unix)]
 pub(super) fn background_startup_error(
     message: impl std::fmt::Display,
     log: &tempfile::NamedTempFile,
@@ -426,14 +408,12 @@ pub(super) fn print_listener(
     print_line(format_args!("listener: {scheme}://{}", config.listen))
 }
 
-#[cfg(unix)]
 pub(super) fn exit_gateway(state_dir: PathBuf) -> Result<()> {
     let (store, _) = ConfigStore::open(state_dir)?;
     let _startup = StartupGuard::create(store.state_dir())?;
     stop_gateway(store.state_dir(), None)
 }
 
-#[cfg(unix)]
 pub(super) fn stop_gateway(state_dir: &Path, expected_pid: Option<u32>) -> Result<()> {
     let path = state_dir.join(PROCESS_FILE);
     let Some((record, file)) = open_process_record(&path)? else {
@@ -475,12 +455,6 @@ pub(super) fn stop_gateway(state_dir: &Path, expected_pid: Option<u32>) -> Resul
     Ok(eprint_line(format_args!("gateway stopped"))?)
 }
 
-#[cfg(not(unix))]
-pub(super) fn exit_gateway(_state_dir: PathBuf) -> Result<()> {
-    Err(unsupported_lifecycle())
-}
-
-#[cfg(any(unix, test))]
 impl ProcessRecord {
     pub(super) fn validate(&self) -> Result<()> {
         if self.pid == 0 || i32::try_from(self.pid).is_err() {
@@ -502,7 +476,6 @@ impl ProcessRecord {
 }
 
 impl ProcessRecordGuard {
-    #[cfg(unix)]
     pub(super) fn create(state_dir: &Path, endpoint: Option<&Endpoint>) -> Result<Self> {
         let state_dir = fs::canonicalize(state_dir)?;
         let path = state_dir.join(PROCESS_FILE);
@@ -518,17 +491,10 @@ impl ProcessRecordGuard {
 
     /// Adds the tunnel's public endpoint once it is known; the record already stands for
     /// readiness, so clients that only need loopback never wait for it.
-    #[cfg(unix)]
     pub(super) fn publish(&mut self, endpoint: &Endpoint) -> Result<()> {
         self.write(Some(endpoint))
     }
 
-    #[cfg(not(unix))]
-    pub(super) fn publish(&mut self, _endpoint: &Endpoint) -> Result<()> {
-        Ok(())
-    }
-
-    #[cfg(unix)]
     fn write(&mut self, endpoint: Option<&Endpoint>) -> Result<()> {
         let record = ProcessRecord {
             pid: std::process::id(),
@@ -541,16 +507,10 @@ impl ProcessRecordGuard {
         self.file.flush()?;
         Ok(self.file.sync_all()?)
     }
-
-    #[cfg(not(unix))]
-    pub(super) fn create(_state_dir: &Path, _endpoint: Option<&Endpoint>) -> Result<Self> {
-        Ok(Self {})
-    }
 }
 
 impl Drop for ProcessRecordGuard {
     fn drop(&mut self) {
-        #[cfg(unix)]
         {
             if let Err(error) = fs::remove_file(&self.path) {
                 tracing::warn!(%error, path = %self.path.display(), "failed to remove process record");
@@ -563,7 +523,6 @@ impl Drop for ProcessRecordGuard {
 }
 
 impl StartupGuard {
-    #[cfg(unix)]
     pub(super) fn create(state_dir: &Path) -> Result<Self> {
         let path = fs::canonicalize(state_dir)?.join(STARTUP_FILE);
         let file = mobius::owner_only::open(&path)?;
@@ -575,23 +534,16 @@ impl StartupGuard {
         })?;
         Ok(Self { file })
     }
-
-    #[cfg(not(unix))]
-    fn create(_state_dir: &Path) -> Result<Self> {
-        Ok(Self {})
-    }
 }
 
 impl Drop for StartupGuard {
     fn drop(&mut self) {
-        #[cfg(unix)]
         if let Err(error) = self.file.unlock() {
             tracing::warn!(%error, "failed to unlock gateway startup lock");
         }
     }
 }
 
-#[cfg(any(unix, test))]
 pub(super) fn open_process_record(path: &Path) -> Result<Option<(ProcessRecord, File)>> {
     let mut file = match OpenOptions::new().read(true).write(true).open(path) {
         Ok(file) => file,
@@ -614,7 +566,6 @@ pub(super) fn open_process_record(path: &Path) -> Result<Option<(ProcessRecord, 
     Ok(Some((record, file)))
 }
 
-#[cfg(any(unix, test))]
 pub(super) fn process_is_running(file: &File) -> Result<bool> {
     match file.try_lock() {
         Ok(()) => {
@@ -626,20 +577,13 @@ pub(super) fn process_is_running(file: &File) -> Result<bool> {
     }
 }
 
-#[cfg(unix)]
 pub(super) fn running_process_pid(path: &Path) -> Result<Option<u32>> {
     Ok(running_process_record(path)?.map(|record| record.pid))
 }
 
-#[cfg(unix)]
 pub(super) fn running_process_record(path: &Path) -> Result<Option<ProcessRecord>> {
     let Some((record, file)) = open_process_record(path)? else {
         return Ok(None);
     };
     Ok(process_is_running(&file)?.then_some(record))
-}
-
-#[cfg(not(unix))]
-pub(super) fn unsupported_lifecycle() -> Error {
-    Error::Config("gateway process lifecycle commands require macOS or Linux".into())
 }

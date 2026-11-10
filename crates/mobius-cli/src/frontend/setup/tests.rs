@@ -12,32 +12,28 @@ use mobius_gateway::wire::{
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::SetupMode;
-use super::runtime::credential_saved;
 use super::state::{
-    AuthField, Authentication, Flow, MiddlewareRow, Page, SetupState, provider_rows,
+    AuthField, Authentication, Flow, MiddlewareRow, Page, SaveTarget, SetupState, provider_rows,
 };
 use super::view::{masked_credential, render_page};
 
 fn status(provider: &str) -> ProviderStatus {
-    let (auth, default_base_url, default_api_key_env, models, web_search) = match provider {
+    let (auth, default_base_url, models, web_search) = match provider {
         "responses" => (
             ProviderAuthKind::ApiKey,
-            Some(BaseUrl::new("https://api.openai.com/v1").unwrap()),
-            None,
+            BaseUrl::new("https://api.openai.com/v1").unwrap(),
             Vec::new(),
             vec![search(HostedWebSearch::Off)],
         ),
         "kimi" => (
             ProviderAuthKind::ApiKey,
-            None,
-            Some("MOONSHOT_API_KEY".into()),
+            BaseUrl::new("https://api.moonshot.ai/v1").unwrap(),
             vec![model("kimi-k3", "Kimi K3", Some("max"))],
             vec![search(HostedWebSearch::Off)],
         ),
         "openai_socket" => (
             ProviderAuthKind::ApiKey,
-            Some(BaseUrl::new("https://api.openai.com/v1").unwrap()),
-            None,
+            BaseUrl::new("https://api.openai.com/v1").unwrap(),
             vec![model("gpt-6-sol", "Sol", Some("medium"))],
             vec![
                 search(HostedWebSearch::Off),
@@ -60,7 +56,6 @@ fn status(provider: &str) -> ProviderStatus {
         voice_models: Default::default(),
         auth,
         default_base_url,
-        default_api_key_env,
         models,
         web_search,
         tool_discovery: ToolDiscoveryMode::Rebuild,
@@ -125,7 +120,7 @@ fn state(mode: SetupMode, provider: &str, configured: bool) -> SetupState {
             .reasoning_effort
             .clone_from(&model.default_reasoning);
     }
-    original.provider.base_url = statuses[0].default_base_url.clone();
+    original.provider.base_url = Some(statuses[0].default_base_url.clone());
     let instances = vec![ProviderInstance {
         operator_managed: false,
         label: provider.into(),
@@ -151,9 +146,15 @@ fn state(mode: SetupMode, provider: &str, configured: bool) -> SetupState {
     ));
     original.middleware.set_enabled("plain", true);
     original.middleware.set_enabled("configured", true);
-    let mut state =
-        SetupState::from_parts(mode, providers, features(), Vec::new(), original, false)
-            .expect("setup state");
+    let mut state = SetupState::from_parts(
+        mode,
+        providers,
+        features(),
+        Vec::new(),
+        original,
+        SaveTarget::Bot,
+    )
+    .expect("setup state");
     if mode == SetupMode::BotModel {
         let current = state.original.provider.clone();
         state
@@ -403,22 +404,4 @@ fn explicit_api_key_replaces_credentialless_auth() {
         config.provider.endpoint_auth,
         ProviderEndpointAuth::ProviderDefault
     );
-}
-
-#[test]
-fn credential_response_matches_instance_and_provider() {
-    let response = mobius_gateway::wire::ServerMessage::ProviderCredentialSaved {
-        request_id: "save".into(),
-        instance: "work".into(),
-        provider: "responses".into(),
-    };
-    assert!(credential_saved(&response, "save", "work", "responses"));
-    assert!(!credential_saved(&response, "other", "work", "responses"));
-    assert!(!credential_saved(
-        &response,
-        "save",
-        "personal",
-        "responses"
-    ));
-    assert!(!credential_saved(&response, "save", "work", "openrouter"));
 }

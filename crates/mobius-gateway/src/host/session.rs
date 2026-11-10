@@ -16,15 +16,15 @@ use super::{
     internal, invalid_config, invalid_workspace, list_workspace_files, load_replay, mpsc, oneshot,
     project_record, publish_ready_and_pending, read_workspace_file, receive, record_and_publish,
     reject_pending_bot_deletion, stopped, switch_workspace_branch, update_session_activity,
-    update_widgets, validate_gateway_event, workspace_git_diff, workspace_git_diff_totals,
-    write_workspace_file,
+    update_widgets, validate_gateway_event, validated, workspace_git_diff,
+    workspace_git_diff_totals, write_workspace_file,
 };
 use crate::harness::mobius::RealtimeModel;
 use crate::harness::{HarnessContext, HarnessSession};
 use mobius::backend::model::provider::provider;
 use mobius::protocol::MessageTarget;
 
-pub(super) type SessionWidgets = Vec<(Arc<str>, Arc<mobius::protocol::FrontendWidget>)>;
+pub(super) type SessionWidgets = Vec<SessionWidget>;
 
 #[derive(Clone)]
 pub(crate) struct HostHandle {
@@ -506,11 +506,7 @@ impl HostHandle {
         &self,
         submission: Submission,
     ) -> std::result::Result<(), Rejection> {
-        self.submit_validated(
-            ValidatedSubmission::new(submission)
-                .map_err(|error| Rejection::new("invalid_submission", error.to_string()))?,
-        )
-        .await
+        self.submit_validated(validated(submission)?).await
     }
 
     pub(crate) async fn submit_validated(
@@ -528,12 +524,8 @@ impl HostHandle {
         submission: Submission,
         bot_id: Arc<str>,
     ) -> std::result::Result<(), Rejection> {
-        self.deliver_validated_source(
-            ValidatedSubmission::new(submission)
-                .map_err(|error| Rejection::new("invalid_submission", error.to_string()))?,
-            bot_id,
-        )
-        .await
+        self.deliver_validated_source(validated(submission)?, bot_id)
+            .await
     }
 
     pub(super) async fn deliver_validated_source(
@@ -681,7 +673,7 @@ impl HostHandle {
             .await
         {
             let HostCommand::RunRoutine { run, .. } = error.0 else {
-                unreachable!("only a routine command was sent")
+                return Err(stopped());
             };
             bots.finish_run(
                 run,
@@ -817,7 +809,7 @@ pub(super) fn provider_refresh_matches(
             let definition = provider(&selection.provider)?;
             let selected_base_url =
                 crate::harness::mobius::provider_catalog::selected_base_url(definition, selection);
-            Ok(selected_base_url == *base_url)
+            Ok(Some(selected_base_url) == *base_url)
         }
         ProviderRefresh::Provider(provider) => Ok(selection.provider == *provider),
     }

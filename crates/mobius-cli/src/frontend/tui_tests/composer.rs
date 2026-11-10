@@ -5,15 +5,15 @@ use super::*;
 fn composer_dispatches_commands_and_active_turn_steering() {
     let catalog = default_catalog();
     let mut idle = state();
-    idle.input = "/exit".into();
-    idle.cursor = idle.input.len();
+    idle.composer.text = "/exit".into();
+    idle.composer.cursor = idle.composer.text.len();
 
     assert_eq!(idle.submit_input(&catalog), UiAction::Exit);
 
     let mut working = state();
     working.start_turn("turn".into());
-    working.input = "change direction".into();
-    working.cursor = working.input.len();
+    working.composer.text = "change direction".into();
+    working.composer.cursor = working.composer.text.len();
 
     assert_eq!(
         working.submit_input(&catalog),
@@ -85,7 +85,12 @@ fn composer_rejects_input_over_the_protocol_limit() {
 
     assert_eq!(
         (
-            state.pastes.values().map(String::len).sum::<usize>(),
+            state
+                .composer
+                .pastes
+                .values()
+                .map(String::len)
+                .sum::<usize>(),
             state.input_limit_reached,
         ),
         (mobius::protocol::MAX_MESSAGE_BYTES, true)
@@ -96,8 +101,8 @@ fn composer_rejects_input_over_the_protocol_limit() {
 fn ctrl_c_aborts_approval_and_restores_draft() {
     let catalog = default_catalog();
     let mut state = state();
-    state.input = "draft".into();
-    state.cursor = state.input.len();
+    state.composer.text = "draft".into();
+    state.composer.cursor = state.composer.text.len();
     state.begin_approval(mobius::protocol::ExecApprovalRequestEvent {
         id: "approval".into(),
         turn_id: "turn".into(),
@@ -119,20 +124,20 @@ fn ctrl_c_aborts_approval_and_restores_draft() {
             decision: ReviewDecision::Abort,
         })
     );
-    assert_eq!(state.input, "draft");
+    assert_eq!(state.composer.text, "draft");
 }
 
 #[test]
 fn active_turn_preserves_attachment_draft_instead_of_steering() {
     let mut state = state();
     state.start_turn("turn".into());
-    state.input = "next request".into();
-    state.cursor = state.input.len();
-    state.attachments.push(attachment("report.pdf"));
+    state.composer.text = "next request".into();
+    state.composer.cursor = state.composer.text.len();
+    state.composer.attachments.push(attachment("report.pdf"));
 
     assert_eq!(state.submit_input(&default_catalog()), UiAction::None);
-    assert_eq!(state.input, "next request");
-    assert_eq!(state.attachments, vec![attachment("report.pdf")]);
+    assert_eq!(state.composer.text, "next request");
+    assert_eq!(state.composer.attachments, vec![attachment("report.pdf")]);
 }
 
 fn attachment(name: &str) -> mobius::protocol::SessionFileReference {
@@ -155,8 +160,8 @@ fn attachment(name: &str) -> mobius::protocol::SessionFileReference {
 #[test]
 fn queued_approvals_keep_the_draft_until_the_last_decision() {
     let mut state = state();
-    state.input = "continue after both approvals".into();
-    state.cursor = state.input.len();
+    state.composer.text = "continue after both approvals".into();
+    state.composer.cursor = state.composer.text.len();
     for suffix in ["a", "b"] {
         state.handle_agent_event(
             EventMsg::ExecApprovalRequest(mobius::protocol::ExecApprovalRequestEvent {
@@ -176,7 +181,7 @@ fn queued_approvals_keep_the_draft_until_the_last_decision() {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(detail.contains(&format!("@bot-{suffix}: approve work")));
-        assert!(state.input.is_empty());
+        assert!(state.composer.text.is_empty());
         assert_eq!(
             state.handle_key(
                 KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
@@ -184,7 +189,7 @@ fn queued_approvals_keep_the_draft_until_the_last_decision() {
             ),
             UiAction::None,
         );
-        assert_eq!(state.input, "y");
+        assert_eq!(state.composer.text, "y");
         assert_eq!(
             state.handle_key(
                 KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
@@ -196,7 +201,7 @@ fn queued_approvals_keep_the_draft_until_the_last_decision() {
             }),
         );
     }
-    assert_eq!(state.input, "continue after both approvals");
+    assert_eq!(state.composer.text, "continue after both approvals");
     assert!(state.approval().is_none());
     assert!(state.is_working());
 }

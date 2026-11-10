@@ -108,7 +108,7 @@ impl GatewayHost {
         if let Some(deletion) = deletion {
             bot_store.delete_bot(deletion).map_err(invalid_bot)?;
         }
-        bot_store.prepared.lock().await.remove(&*intent.bot_id);
+        bot_store.prepared.remove(&intent.bot_id).await;
         let mut state = self.state.lock().await;
         let file_warning = remove_session_trees(
             &mut state,
@@ -163,7 +163,7 @@ impl GatewayHost {
             .map_err(invalid_bot)?;
         drop(state);
         bot_store.delete_bot(deletion).map_err(invalid_bot)?;
-        bot_store.prepared.lock().await.remove(id);
+        bot_store.prepared.remove(id).await;
         let bots = bot_store.bots().map_err(internal)?;
         let mut state = self.state.lock().await;
         let mut cleanup_errors = Vec::new();
@@ -320,7 +320,8 @@ pub(super) async fn prepare_bot_session_tree_deletion(
     state: &GatewayState,
     bot_id: &str,
 ) -> std::result::Result<(Vec<SessionId>, Vec<SessionId>, SessionFileDeletion), Rejection> {
-    if mobius::sync::recover_lock(&state.starting_sessions)
+    if state
+        .starting_sessions()?
         .values()
         .any(|starting_bot| starting_bot == bot_id)
     {
@@ -377,7 +378,8 @@ pub(super) async fn prepare_session_tree_deletion(
             .await
             .map_err(session_file_rejection);
     }
-    if mobius::sync::recover_lock(&state.starting_sessions)
+    if state
+        .starting_sessions()?
         .keys()
         .any(|starting| session_ids.contains(starting))
     {

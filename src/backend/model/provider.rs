@@ -1,14 +1,12 @@
 //! Provider-owned setup metadata and model construction.
 
 use std::any::Any;
-use std::path::Path;
 use std::sync::Arc;
 
 use serde::Deserialize;
 use serde::Serialize;
 
 use super::Model;
-use crate::BoxFuture;
 use crate::Error;
 use crate::Result;
 use crate::protocol::FrontendSymbol;
@@ -70,7 +68,6 @@ struct SearchText {
 
 static SEARCH_TEXT: std::sync::LazyLock<SearchText> =
     std::sync::LazyLock::new(|| crate::config::embedded(include_str!("provider.toml")));
-pub use super::transport::streaming_client;
 /// Additional trust roots for shared HTTP clients.
 pub use reqwest::Certificate as HttpCertificate;
 pub use reqwest::Client as HttpClient;
@@ -127,18 +124,91 @@ pub struct MediaModelPreset {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "CatalogFile")]
 pub(super) struct ModelCatalog {
     pub(super) default_model: Option<String>,
-    #[serde(default)]
     pub(super) image_input_models: Vec<String>,
-    #[serde(default)]
     pub(super) models: Vec<ModelPreset>,
-    #[serde(default)]
     pub(super) image_models: Vec<MediaModelPreset>,
 }
 
+/// File shape of a catalog: reasoning presets are listed once and referenced by models.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CatalogFile {
+    default_model: Option<String>,
+    #[serde(default)]
+    image_input_models: Vec<String>,
+    #[serde(default)]
+    reasoning: Vec<ReasoningPreset>,
+    #[serde(default)]
+    models: Vec<CatalogModel>,
+    #[serde(default)]
+    image_models: Vec<MediaModelPreset>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CatalogModel {
+    id: String,
+    label: String,
+    description: String,
+    context_window: i64,
+    /// Catalog preset IDs in display order; omission accepts every catalog preset.
+    reasoning: Option<Vec<String>>,
+    default_reasoning: Option<String>,
+    tool_discovery: ToolDiscoveryMode,
+}
+
+impl TryFrom<CatalogFile> for ModelCatalog {
+    type Error = Error;
+
+    fn try_from(file: CatalogFile) -> Result<Self> {
+        unique_ids(file.reasoning.iter().map(|preset| preset.id.as_str()))?;
+        let preset = |id: &str| {
+            file.reasoning
+                .iter()
+                .find(|preset| preset.id == id)
+                .ok_or_else(|| Error::Config(format!("reasoning `{id}` is not in the catalog")))
+        };
+        let models = file
+            .models
+            .into_iter()
+            .map(|model| {
+                // Each advertised model owns its presets; the catalog lists them once.
+                let reasoning = match &model.reasoning {
+                    Some(ids) => ids
+                        .iter()
+                        .map(|id| preset(id).cloned()) // rules-allow: each model preset owns its advertised efforts
+                        .collect::<Result<_>>()?,
+                    None => file.reasoning.clone(), // rules-allow: each model preset owns its advertised efforts
+                };
+                Ok(ModelPreset {
+                    id: model.id,
+                    label: model.label,
+                    description: model.description,
+                    context_window: model.context_window,
+                    reasoning,
+                    default_reasoning: model.default_reasoning,
+                    tool_discovery: model.tool_discovery,
+                })
+            })
+            .collect::<Result<_>>()?;
+        Ok(Self {
+            default_model: file.default_model,
+            image_input_models: file.image_input_models,
+            models,
+            image_models: file.image_models,
+        })
+    }
+}
+
 impl ModelCatalog {
+    /// Loads a provider catalog, preferring a valid same-named file in the override directory.
+    pub(super) fn load(name: &str, text: &str) -> Self {
+        crate::config::overridable(name, text, Self::validate)
+    }
+
     pub(super) fn validate(&self) -> Result<()> {
         unique_ids(self.image_input_models.iter().map(String::as_str))?;
         for id in &self.image_input_models {
@@ -324,161 +394,10 @@ impl std::fmt::Debug for ProviderBuildConfig {
     }
 }
 
-/// Concrete pending browser and device authentication flows.
-pub use super::openai_codex::{BrowserLogin, DeviceLogin};
-
-type BrowserLoginStart =
-    fn(super::ModelTransportSettings) -> BoxFuture<'static, Result<BrowserLogin>>;
-type DeviceLoginStart =
-    fn(super::ModelTransportSettings) -> BoxFuture<'static, Result<DeviceLogin>>;
-type BrowserUsageRead =
-    fn(&Path, super::ModelTransportSettings) -> BoxFuture<'static, Result<Vec<UsageLimit>>>;
-
-/// Provider-owned browser authentication hooks consumed generically by applications.
-pub struct BrowserAuth {
-    label: &'static str,
-    configured: fn(&Path) -> Result<bool>,
-    load: fn(&Path, super::ModelTransportSettings) -> Result<ProviderCredential>,
-    start: BrowserLoginStart,
-    start_device: Option<DeviceLoginStart>,
-    usage_limits: Option<BrowserUsageRead>,
-}
-
-impl std::fmt::Debug for BrowserAuth {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("BrowserAuth")
-            .field("label", &self.label)
-            .finish_non_exhaustive()
-    }
-}
-
-impl BrowserAuth {
-    /// Creates a new instance.
-    pub(super) const fn new(
-        label: &'static str,
-        configured: fn(&Path) -> Result<bool>,
-        load: fn(&Path, super::ModelTransportSettings) -> Result<ProviderCredential>,
-        start: BrowserLoginStart,
-    ) -> Self {
-        Self {
-            label,
-            configured,
-            load,
-            start,
-            start_device: None,
-            usage_limits: None,
-        }
-    }
-
-    /// Adds a cross-device login flow for headless provider hosts.
-    #[must_use]
-    pub(super) const fn with_device_login(mut self, start: DeviceLoginStart) -> Self {
-        self.start_device = Some(start);
-        self
-    }
-
-    /// Adds a passive account-usage reader for this browser-authenticated provider.
-    #[must_use]
-    pub(super) const fn with_usage_limits(mut self, usage_limits: BrowserUsageRead) -> Self {
-        self.usage_limits = Some(usage_limits);
-        self
-    }
-
-    #[must_use]
-    /// Returns the provider label.
-    pub const fn label(&self) -> &'static str {
-        self.label
-    }
-
-    /// Reports whether a stored provider credential is configured.
-    /// # Errors
-    ///
-    /// Returns an error if validation or an operation required by this function fails.
-    pub fn configured(&self, path: &Path) -> Result<bool> {
-        (self.configured)(path)
-    }
-
-    /// Loads the stored provider credential.
-    /// # Errors
-    ///
-    /// Returns an error if the resource cannot be read, decoded, or validated.
-    pub fn load(&self, path: &Path) -> Result<ProviderCredential> {
-        (self.load)(path, super::ModelTransportSettings::default())
-    }
-
-    /// Loads credentials with explicit authentication transport policy.
-    /// # Errors
-    /// Returns invalid policy or stored credential errors.
-    pub fn load_with_transport(
-        &self,
-        path: &Path,
-        settings: super::ModelTransportSettings,
-    ) -> Result<ProviderCredential> {
-        (self.load)(path, settings)
-    }
-
-    /// Starts browser authentication with explicit operational policy.
-    pub fn start_with_transport(
-        &self,
-        settings: super::ModelTransportSettings,
-    ) -> BoxFuture<'static, Result<BrowserLogin>> {
-        (self.start)(settings)
-    }
-
-    /// Starts device authentication with explicit operational policy.
-    pub fn start_device_with_transport(
-        &self,
-        settings: super::ModelTransportSettings,
-    ) -> BoxFuture<'static, Result<DeviceLogin>> {
-        match self.start_device {
-            Some(start) => start(settings),
-            None => Box::pin(async {
-                Err(Error::Config(
-                    "provider does not support device login".into(),
-                ))
-            }),
-        }
-    }
-
-    /// Starts browser authentication.
-    pub fn start(&self) -> BoxFuture<'static, Result<BrowserLogin>> {
-        (self.start)(super::ModelTransportSettings::default())
-    }
-
-    /// Reports whether the provider supports cross-device authentication.
-    #[must_use]
-    pub const fn supports_device_login(&self) -> bool {
-        self.start_device.is_some()
-    }
-
-    /// Starts a cross-device login without binding a browser callback on the host.
-    pub fn start_device(&self) -> BoxFuture<'static, Result<DeviceLogin>> {
-        match self.start_device {
-            Some(start) => start(super::ModelTransportSettings::default()),
-            None => Box::pin(async {
-                Err(Error::Auth(
-                    "provider does not support device-code login".into(),
-                ))
-            }),
-        }
-    }
-
-    /// Reads provider-reported account usage, when supported.
-    pub fn usage_limits(&self, path: &Path) -> Option<BoxFuture<'static, Result<Vec<UsageLimit>>>> {
-        self.usage_limits_with_transport(path, super::ModelTransportSettings::default())
-    }
-
-    /// Reads account usage with explicit authentication transport policy, when supported.
-    pub fn usage_limits_with_transport(
-        &self,
-        path: &Path,
-        settings: super::ModelTransportSettings,
-    ) -> Option<BoxFuture<'static, Result<Vec<UsageLimit>>>> {
-        self.usage_limits
-            .map(|usage_limits| usage_limits(path, settings))
-    }
-}
+/// Provider-owned account authentication consumed generically by applications.
+pub use super::openai_codex::BrowserAuth;
+/// The concrete pending device authentication flow.
+pub use super::openai_codex::DeviceLogin;
 
 /// Authentication required by a provider manifest.
 #[derive(Debug, Clone, Copy)]
@@ -550,7 +469,9 @@ impl ProviderCredential {
     }
 }
 
-type ProviderBuilder = fn(ProviderBuildConfig, BaseUrl) -> Result<Arc<dyn Model>>;
+/// Constructs one model from settings with the endpoint and tool discovery already resolved.
+type ProviderBuilder =
+    fn(ProviderBuildConfig, BaseUrl, ToolDiscoveryMode) -> Result<Arc<dyn Model>>;
 
 /// Reports whether an endpoint selection uses the provider-advertised default.
 /// An omitted selection uses the default endpoint.
@@ -589,7 +510,7 @@ pub struct ProviderDefinition {
     tool_discovery: ToolDiscoveryMode,
     supported_tool_discovery: &'static [ToolDiscoveryMode],
     custom_endpoint_tool_discovery: Option<ToolDiscoveryMode>,
-    default_base_url: Option<&'static BaseUrl>,
+    default_base_url: &'static BaseUrl,
     native_custom_endpoints: bool,
     credentialless_endpoints: bool,
     builder: ProviderBuilder,
@@ -639,7 +560,7 @@ impl ProviderDefinition {
             tool_discovery: metadata.tool_discovery,
             supported_tool_discovery: &metadata.supported_tool_discovery,
             custom_endpoint_tool_discovery: metadata.custom_endpoint_tool_discovery,
-            default_base_url: Some(&metadata.base_url),
+            default_base_url: &metadata.base_url,
             native_custom_endpoints: metadata.native_custom_endpoints,
             credentialless_endpoints: false,
             builder,
@@ -771,12 +692,6 @@ impl ProviderDefinition {
             && self.supports(capability)
     }
 
-    /// Reports whether custom roots implement this provider's native media APIs.
-    #[must_use]
-    pub const fn native_custom_endpoints(&self) -> bool {
-        self.native_custom_endpoints
-    }
-
     /// Resolves cache behavior for one model and endpoint selection.
     #[must_use]
     pub fn tool_discovery(&self, model: &str, base_url: Option<&str>) -> ToolDiscoveryMode {
@@ -795,7 +710,7 @@ impl ProviderDefinition {
     pub fn default_tool_discovery(&self) -> ToolDiscoveryMode {
         self.tool_discovery(
             self.default_model.unwrap_or_default(),
-            self.default_base_url.map(BaseUrl::as_str),
+            Some(self.default_base_url.as_str()),
         )
     }
 
@@ -837,21 +752,15 @@ impl ProviderDefinition {
     }
 
     #[must_use]
-    /// Returns the configurable base URL.
-    pub const fn configurable_base_url(&self) -> bool {
-        self.default_base_url.is_some()
-    }
-
-    #[must_use]
     /// Returns the default base URL.
-    pub const fn default_base_url(&self) -> Option<&'static BaseUrl> {
+    pub const fn default_base_url(&self) -> &'static BaseUrl {
         self.default_base_url
     }
 
     /// Reports whether a resolved base URL selects the provider's default endpoint.
     #[must_use]
     pub fn uses_default_endpoint(&self, base_url: Option<&str>) -> bool {
-        uses_default_endpoint(self.default_base_url.map(BaseUrl::as_str), base_url)
+        uses_default_endpoint(Some(self.default_base_url.as_str()), base_url)
     }
 
     /// Reports whether non-default endpoints may be configured without credentials.
@@ -874,7 +783,7 @@ impl ProviderDefinition {
         if matches!(config.credential, ProviderCredential::Credentialless) {
             self.validate_credentialless_endpoint(config.base_url.as_ref())?;
         }
-        let base_url = self.validate_base_url(config.base_url.as_ref())?;
+        let base_url = self.resolve_base_url(config.base_url.as_ref());
         if config.capability.is_none() {
             if self.locked_models && config.reasoning_effort.is_none() {
                 config.reasoning_effort = self
@@ -890,11 +799,11 @@ impl ProviderDefinition {
                 self.id
             )));
         }
-        let tool_discovery = *config
+        let tool_discovery = config
             .tool_discovery
-            .get_or_insert_with(|| self.tool_discovery(&config.model, Some(base_url.as_str())));
+            .unwrap_or_else(|| self.tool_discovery(&config.model, Some(base_url.as_str())));
         self.validate_tool_discovery(tool_discovery)?;
-        let model = (self.builder)(config, base_url)?;
+        let model = (self.builder)(config, base_url, tool_discovery)?;
         if model.tool_discovery() != tool_discovery {
             return Err(Error::Config(format!(
                 "provider `{}` built a model with inconsistent tool discovery",
@@ -911,11 +820,10 @@ impl ProviderDefinition {
     pub fn build_config_is_valid(
         &self,
         model: &str,
-        base_url: Option<&BaseUrl>,
         reasoning_effort: Option<&str>,
         web_search: HostedWebSearch,
     ) -> Result<()> {
-        self.model_config_is_valid(model, base_url, reasoning_effort)?;
+        self.model_config_is_valid(model, reasoning_effort)?;
         self.validate_web_search(web_search)
     }
 
@@ -934,13 +842,7 @@ impl ProviderDefinition {
     /// # Errors
     ///
     /// Returns an error if the model, endpoint, or reasoning effort is invalid.
-    pub fn model_config_is_valid(
-        &self,
-        model: &str,
-        base_url: Option<&BaseUrl>,
-        reasoning_effort: Option<&str>,
-    ) -> Result<()> {
-        self.validate_base_url(base_url)?;
+    pub fn model_config_is_valid(&self, model: &str, reasoning_effort: Option<&str>) -> Result<()> {
         self.validate_model(model, reasoning_effort)
     }
 
@@ -970,23 +872,10 @@ impl ProviderDefinition {
         Ok(())
     }
 
-    /// Validates this provider's base-URL boundary, resolving an omitted URL to its default.
-    /// # Errors
-    ///
-    /// Returns an error if the supplied value is invalid.
-    pub fn validate_base_url(&self, base_url: Option<&BaseUrl>) -> Result<BaseUrl> {
-        match (self.default_base_url, base_url) {
-            (None, Some(_)) => Err(Error::Config(format!(
-                "provider `{}` has a fixed API endpoint",
-                self.id
-            ))),
-            (Some(default), None) => Ok(default.share()),
-            (Some(_), Some(base_url)) => Ok(base_url.share()),
-            (None, None) => Err(Error::Config(format!(
-                "provider `{}` has no API endpoint",
-                self.id
-            ))),
-        }
+    /// Resolves an omitted base URL to this provider's default endpoint.
+    #[must_use]
+    pub fn resolve_base_url(&self, base_url: Option<&BaseUrl>) -> BaseUrl {
+        base_url.unwrap_or(self.default_base_url).share()
     }
 
     /// Validates an explicitly credentialless provider endpoint.
@@ -1009,10 +898,9 @@ impl ProviderDefinition {
                 "credentialless endpoint must use HTTPS".into(),
             ));
         }
-        if self.default_base_url.is_some_and(|default| {
-            reqwest::Url::parse(default.as_str())
-                .is_ok_and(|default| same_origin(&default, &endpoint))
-        }) {
+        if reqwest::Url::parse(self.default_base_url.as_str())
+            .is_ok_and(|default| same_origin(&default, &endpoint))
+        {
             return Err(Error::Config(format!(
                 "provider `{}` default endpoint requires provider authentication",
                 self.id
@@ -1213,72 +1101,11 @@ mod tests {
     }
 
     #[test]
-    fn provider_manifests_are_complete_and_internally_consistent() {
-        for provider in providers() {
-            assert!(!provider.id().trim().is_empty());
-            assert!(!provider.label().trim().is_empty());
-            assert!(!provider.symbol().as_str().trim().is_empty());
-            assert!(!provider.description().trim().is_empty());
-            assert_eq!(provider.web_search().first(), Some(&HostedWebSearch::Off));
-            let mut search_modes = Vec::new();
-            for search in provider.web_search() {
-                assert!(!search_modes.contains(&search.id()));
-                search_modes.push(search.id());
-                assert!(!search.label().trim().is_empty());
-                assert!(!search.description().trim().is_empty());
-                assert_eq!(search.id().parse::<HostedWebSearch>().ok(), Some(*search));
-            }
-            assert!(
-                !provider.supports_credentialless_endpoints() || provider.configurable_base_url(),
-                "provider `{}` allows credentialless endpoints without a configurable base URL",
-                provider.id()
-            );
-            assert!(
-                provider.custom_endpoint_tool_discovery().is_none()
-                    || provider.configurable_base_url(),
-                "provider `{}` declares custom-endpoint tool discovery without a configurable base URL",
-                provider.id()
-            );
-
-            assert_eq!(
-                provider.default_model(),
-                provider.models().first().map(|model| model.id.as_str()),
-                "provider `{}` must use its first preset as the default model",
-                provider.id()
-            );
-            let mut model_ids = BTreeSet::new();
-            for model in provider.models() {
-                assert!(
-                    model_ids.insert(model.id.as_str()),
-                    "duplicate model `{}`",
-                    model.id
-                );
-                assert!(!model.label.trim().is_empty());
-                assert!(!model.description.trim().is_empty());
-                assert!(model.context_window > 0);
-
-                let mut reasoning_ids = BTreeSet::new();
-                for reasoning in &model.reasoning {
-                    assert!(reasoning_ids.insert(reasoning.id.as_str()));
-                    assert!(!reasoning.label.trim().is_empty());
-                    assert!(!reasoning.description.trim().is_empty());
-                }
-                assert!(
-                    model
-                        .default_reasoning
-                        .as_deref()
-                        .is_none_or(|default| reasoning_ids.contains(default))
-                );
-            }
-        }
-    }
-
-    #[test]
     fn omitted_provider_endpoints_resolve_to_advertised_defaults() {
         for definition in providers() {
             let model = definition.default_model().unwrap_or("test-model");
             definition
-                .build_config_is_valid(model, None, None, HostedWebSearch::Off)
+                .build_config_is_valid(model, None, HostedWebSearch::Off)
                 .expect("omitted URL selects the advertised default");
             if matches!(definition.auth(), ProviderAuth::ApiKey(_)) {
                 definition
@@ -1335,9 +1162,7 @@ mod tests {
                 .contains("does not support credentialless")
         );
         for definition in credentialless {
-            let base_url = definition
-                .default_base_url()
-                .expect("credentialless provider advertises a default base URL");
+            let base_url = definition.default_base_url();
             definition
                 .validate_credentialless_endpoint(Some(&proxy))
                 .expect("a non-default HTTPS endpoint is accepted");

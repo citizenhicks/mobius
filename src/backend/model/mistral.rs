@@ -1,34 +1,26 @@
 //! Native Mistral Chat Completions provider.
 
 use std::borrow::Cow;
-use std::sync::Arc;
 
-use super::transport::ApiKeyModel;
-use reqwest::Client;
 use serde::ser::SerializeSeq as _;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::chat_completions::{
-    MessageSource, RequestBody, ToolCalls, WireContent, content_text, decode_usage,
+    ChatCompletions, ChatStream, Dialect, MessageSource, ToolCalls, WireContent, content_text,
+    decode_usage,
 };
-use super::provider::{BaseUrl, ProviderBuildConfig, ProviderDefinition};
+use super::provider::ProviderDefinition;
 use super::transport::SseHandler;
-use super::{
-    Model, ModelEventSink, ModelOutput, ModelRequest, PromptCacheMode, REPLAY_REASONING_FIELD,
-};
-use crate::protocol::{ModelEvent, ModelInfo, TokenUsage};
-use crate::{BoxFuture, Error, Result};
+use super::{ModelEventSink, ModelOutput, REPLAY_REASONING_FIELD};
+use crate::protocol::{ModelEvent, TokenUsage};
+use crate::{Error, Result};
 
 pub(super) static MANIFEST: std::sync::LazyLock<super::provider::ProviderMetadata> =
     std::sync::LazyLock::new(|| crate::config::embedded(include_str!("mistral_provider.toml")));
 pub(super) static CATALOG: std::sync::LazyLock<super::provider::ModelCatalog> =
     std::sync::LazyLock::new(|| {
-        crate::config::overridable(
-            "mistral.toml",
-            include_str!("mistral.toml"),
-            super::provider::ModelCatalog::validate,
-        )
+        super::provider::ModelCatalog::load("mistral.toml", include_str!("mistral.toml"))
     });
 
 const RAW_THINKING: &str = "_mistral_thinking";
@@ -46,143 +38,46 @@ const MAX_THINKING_BLOCKS: usize = 1_024;
 ///     .with_reasoning_effort("high")?;
 /// # Ok::<(), mobius::Error>(())
 /// ```
+pub type Mistral = ChatCompletions<MistralDialect>;
+
+/// Mistral's Chat Completions wire dialect: typed thinking blocks and tool-result images.
 #[derive(Debug)]
-pub struct Mistral {
-    config: ApiKeyModel,
-}
+pub struct MistralDialect;
 
-impl Mistral {
-    /// Creates a provider for a Mistral API root or compatible endpoint.
-    /// # Errors
-    /// Returns invalid credentials, endpoint or model configuration.
-    pub fn new(
-        api_key: impl Into<String>,
-        base_url: BaseUrl,
-        model: impl Into<String>,
-    ) -> Result<Self> {
-        Self::new_with_transport(
-            api_key,
-            base_url,
-            model,
-            super::ModelTransportSettings::default(),
-        )
-    }
+impl Dialect for MistralDialect {
+    const NAME: &'static str = "Mistral";
+    const ID: &'static str = "mistral";
+    const STREAM_USAGE: bool = false;
+    const TOOL_IMAGES: bool = true;
+    type Message<'a> = MistralMessage<'a>;
+    type Stream = MistralStream;
 
-    /// Creates a provider with explicit HTTP and retry policy.
-    /// # Errors
-    /// Returns invalid provider configuration or transport policy.
-    pub fn new_with_transport(
-        api_key: impl Into<String>,
-        base_url: BaseUrl,
-        model: impl Into<String>,
-        transport: super::ModelTransportSettings,
-    ) -> Result<Self> {
-        let model = model.into();
-        if model.trim().is_empty() {
-            return Err(Error::Config("model is empty".into()));
-        }
-        Self::with_client(
-            Some(api_key.into()),
-            base_url,
-            model,
-            transport.streaming_client()?,
-        )
-        .map(|mut provider| {
-            provider.config.transport = transport;
-            provider
-        })
-    }
-
-    fn with_client(
-        api_key: Option<String>,
-        base_url: BaseUrl,
-        model: impl Into<String>,
-        client: Client,
-    ) -> Result<Self> {
-        let config = ApiKeyModel::new(api_key, base_url, model, client)?;
-        Ok(Self { config })
-    }
-
-    /// Selects an operator-configured reasoning effort.
-    /// # Errors
-    /// Returns an error when the effort is empty.
-    pub fn with_reasoning_effort(mut self, effort: impl Into<String>) -> Result<Self> {
-        self.config.set_reasoning(effort)?;
-        Ok(self)
-    }
-
-    fn request_body<'a>(
-        &'a self,
-        request: ModelRequest<'a>,
-    ) -> Result<RequestBody<'a, MistralMessage<'a>>> {
-        RequestBody::new(
-            &self.config.model,
-            self.config.reasoning_effort.as_deref(),
-            request,
-            "Mistral",
-            message_content,
-        )
-    }
-}
-impl Mistral {
-    async fn send_response(
-        &self,
-        request: ModelRequest<'_>,
-        events: ModelEventSink,
-        media: Option<super::MediaPreparation<'_>>,
-    ) -> Result<ModelOutput> {
-        super::chat_completions::respond::<StreamState>(
-            self,
-            &self.config,
-            "Mistral",
-            request,
-            events,
-            media,
-            |request| Ok(serde_json::to_vec(&self.request_body(request)?)?),
-        )
-        .await?
-        .finish()
+    fn message(source: MessageSource<'_>) -> Result<MistralMessage<'_>> {
+        let content = match source {
+            MessageSource::System(text) => MessageContent::Text(Cow::Borrowed(text)),
+            MessageSource::Tool(output) => {
+                MessageContent::Neutral(WireContent::tool_result(output, "Mistral")?)
+            }
+            MessageSource::History { role, item } => {
+                if role == "assistant"
+                    && let Some(blocks) = item.get(RAW_THINKING).and_then(Value::as_array)
+                {
+                    MessageContent::Thinking(ThinkingContent {
+                        blocks,
+                        text: content_text(item.get("content")),
+                    })
+                } else {
+                    MessageContent::Neutral(WireContent::new(item.get("content"), "Mistral")?)
+                }
+            }
+        };
+        Ok(MistralMessage { content })
     }
 }
 
-impl Model for Mistral {
-    fn transport_settings(&self) -> super::ModelTransportSettings {
-        self.config.transport
-    }
-    fn info(&self) -> ModelInfo {
-        self.config.info()
-    }
-    fn supports_image_input(&self) -> bool {
-        true
-    }
-    fn supports_tool_image_input(&self) -> bool {
-        true
-    }
-    fn prompt_cache_capability(&self) -> PromptCacheMode {
-        PromptCacheMode::Implicit
-    }
-    fn request_size(&self, request: ModelRequest<'_>) -> Result<usize> {
-        super::media::serialized_size(&self.request_body(request)?)
-    }
-    fn respond<'a>(
-        &'a self,
-        request: ModelRequest<'a>,
-        events: ModelEventSink,
-    ) -> BoxFuture<'a, Result<ModelOutput>> {
-        Box::pin(self.send_response(request, events, None))
-    }
-    fn respond_prepared<'a>(
-        &'a self,
-        request: ModelRequest<'a>,
-        events: ModelEventSink,
-        media: super::MediaPreparation<'a>,
-    ) -> BoxFuture<'a, Result<ModelOutput>> {
-        Box::pin(self.send_response(request, events, Some(media)))
-    }
-}
-
+/// Mistral message fields.
 #[derive(Default, Serialize)]
-struct MistralMessage<'a> {
+pub(super) struct MistralMessage<'a> {
     content: MessageContent<'a>,
 }
 
@@ -194,28 +89,6 @@ enum MessageContent<'a> {
     Thinking(ThinkingContent<'a>),
     #[default]
     Empty,
-}
-
-fn message_content(source: MessageSource<'_>) -> Result<MistralMessage<'_>> {
-    let content = match source {
-        MessageSource::System(text) => MessageContent::Text(Cow::Borrowed(text)),
-        MessageSource::Tool(output) => {
-            MessageContent::Neutral(WireContent::tool_result(output, "Mistral")?)
-        }
-        MessageSource::History { role, item } => {
-            if role == "assistant"
-                && let Some(blocks) = item.get(RAW_THINKING).and_then(Value::as_array)
-            {
-                MessageContent::Thinking(ThinkingContent {
-                    blocks,
-                    text: content_text(item.get("content")),
-                })
-            } else {
-                MessageContent::Neutral(WireContent::new(item.get("content"), "Mistral")?)
-            }
-        }
-    };
-    Ok(MistralMessage { content })
 }
 
 struct ThinkingContent<'a> {
@@ -249,8 +122,9 @@ impl Serialize for ThinkingContent<'_> {
     }
 }
 
+/// Accumulates one Mistral stream.
 #[derive(Default)]
-struct StreamState {
+pub(super) struct MistralStream {
     text: String,
     reasoning: String,
     thinking: Vec<ThinkingBlock>,
@@ -279,7 +153,7 @@ struct ThinkingChunk {
     closed: Option<bool>,
 }
 
-impl SseHandler for StreamState {
+impl SseHandler for MistralStream {
     async fn apply_data(&mut self, data: &str, events: &ModelEventSink) -> Result<()> {
         if data == "[DONE]" {
             self.done = true;
@@ -312,7 +186,7 @@ impl SseHandler for StreamState {
     }
 }
 
-impl StreamState {
+impl MistralStream {
     async fn append_content(&mut self, content: Value, events: &ModelEventSink) -> Result<()> {
         match content {
             Value::String(text) => self.append_text(&text, events).await?,
@@ -412,7 +286,9 @@ impl StreamState {
         }
         Ok(())
     }
+}
 
+impl ChatStream for MistralStream {
     fn finish(self) -> Result<ModelOutput> {
         if !self.done {
             return Err(Error::Provider(
@@ -454,21 +330,11 @@ pub(super) fn provider() -> ProviderDefinition {
         &MANIFEST,
         MANIFEST.api_key_auth(),
         Some(&CATALOG),
-        build_provider,
+        super::chat_completions::build::<MistralDialect>,
     )
     .with_image_input()
     .with_credentialless_endpoints()
     .with_replay_reasoning_field(RAW_THINKING)
-}
-
-fn build_provider(config: ProviderBuildConfig, base_url: BaseUrl) -> Result<Arc<dyn Model>> {
-    let api_key = config.credential.into_optional_api_key("mistral")?;
-    let mut provider = Mistral::with_client(api_key, base_url, config.model, config.http)?;
-    provider.config.transport = config.transport;
-    if let Some(effort) = config.reasoning_effort {
-        provider = provider.with_reasoning_effort(effort)?;
-    }
-    Ok(Arc::new(provider))
 }
 
 #[cfg(test)]

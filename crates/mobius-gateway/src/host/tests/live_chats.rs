@@ -104,6 +104,7 @@ async fn session_commands_and_chat_messages_preserve_sender_and_hook_ancestry() 
         .unwrap();
     let bots = Arc::clone(&gateway.state.lock().await.bots);
     let pending = bots
+        .storage
         .pending_actions(Utc::now().timestamp(), 10)
         .unwrap()
         .remove(0);

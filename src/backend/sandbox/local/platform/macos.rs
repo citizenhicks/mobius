@@ -32,39 +32,16 @@ pub(crate) fn protected_full_access_command(
     sandbox: &LocalSandbox,
     invocation: &Invocation<'_>,
 ) -> Result<Command> {
-    let executable = Path::new("/usr/bin/sandbox-exec");
-    if !executable.is_file() {
-        return Err(Error::Sandbox(
-            "/usr/bin/sandbox-exec is unavailable".into(),
-        ));
-    }
     let mut policy = String::from(
         "(version 1)\n(allow default)\n\
          (deny signal (require-not (target same-sandbox)))\n\
          (deny process-info* (require-not (target same-sandbox)))\n\
          (deny mach-task-name (require-not (target same-sandbox)))\n",
     );
-    for (index, denied) in sandbox.policy.denied_reads.iter().enumerate() {
-        write!(
-            policy,
-            "\n(deny file-read* file-write*\n  (literal (param \"DENIED_READ_{index}\"))"
-        )
-        .map_err(|error| Error::Sandbox(error.to_string()))?;
-        if denied.directory {
-            write!(policy, "\n  (subpath (param \"DENIED_READ_{index}\"))")
-                .map_err(|error| Error::Sandbox(error.to_string()))?;
-        }
-        policy.push_str("\n)");
-    }
-    let mut command = Command::new(executable);
+    append_denied_read_rules(&mut policy, sandbox, "file-read* file-write*")?;
+    let mut command = sandbox_exec()?;
     command.arg("-p").arg(policy);
-    for (index, denied) in sandbox.policy.denied_reads.iter().enumerate() {
-        let path = denied
-            .path
-            .to_str()
-            .ok_or_else(|| Error::Sandbox("sandbox path is not UTF-8".into()))?;
-        command.arg(format!("-DDENIED_READ_{index}={path}"));
-    }
+    append_denied_read_parameters(&mut command, sandbox)?;
     append_isolated_invocation(&mut command, invocation, sandbox.isolated_home);
     Ok(command)
 }
@@ -75,13 +52,7 @@ pub(crate) fn sandboxed_command(
     network_access: NetworkAccess,
     workspace_access: WorkspaceAccess,
 ) -> Result<Command> {
-    let executable = Path::new("/usr/bin/sandbox-exec");
-    if !executable.is_file() {
-        return Err(Error::Sandbox(
-            "/usr/bin/sandbox-exec is unavailable".into(),
-        ));
-    }
-    let mut command = Command::new(executable);
+    let mut command = sandbox_exec()?;
     let mut policy =
         format!("{MACOS_SEATBELT_BASE_POLICY}{SEATBELT_POLICY_SUFFIX}{PRIVATE_TEMP_POLICY}");
     for index in 0..sandbox.policy.workspace_roots.len() {
@@ -91,18 +62,7 @@ pub(crate) fn sandboxed_command(
         )
         .map_err(|error| Error::Sandbox(error.to_string()))?;
     }
-    for (index, denied) in sandbox.policy.denied_reads.iter().enumerate() {
-        write!(
-            policy,
-            "\n(deny file-read*\n  (literal (param \"DENIED_READ_{index}\"))"
-        )
-        .map_err(|error| Error::Sandbox(error.to_string()))?;
-        if denied.directory {
-            write!(policy, "\n  (subpath (param \"DENIED_READ_{index}\"))")
-                .map_err(|error| Error::Sandbox(error.to_string()))?;
-        }
-        policy.push_str("\n)");
-    }
+    append_denied_read_rules(&mut policy, sandbox, "file-read*")?;
     if network_access == NetworkAccess::Allowed {
         policy.push_str("\n(allow network-outbound)\n(allow network-inbound)\n");
         policy.push_str(MACOS_SEATBELT_NETWORK_POLICY);
@@ -136,6 +96,43 @@ pub(crate) fn sandboxed_command(
             .ok_or_else(|| Error::Sandbox("sandbox path is not UTF-8".into()))?;
         command.arg(format!("-DWORKSPACE_ROOT_{index}={path}"));
     }
+    append_denied_read_parameters(&mut command, sandbox)?;
+    append_isolated_invocation(&mut command, invocation, sandbox.isolated_home);
+    Ok(command)
+}
+
+fn sandbox_exec() -> Result<Command> {
+    let executable = Path::new("/usr/bin/sandbox-exec");
+    if !executable.is_file() {
+        return Err(Error::Sandbox(
+            "/usr/bin/sandbox-exec is unavailable".into(),
+        ));
+    }
+    Ok(Command::new(executable))
+}
+
+/// Denies `operations` on each denied path, bound later by `append_denied_read_parameters`.
+fn append_denied_read_rules(
+    policy: &mut String,
+    sandbox: &LocalSandbox,
+    operations: &str,
+) -> Result<()> {
+    for (index, denied) in sandbox.policy.denied_reads.iter().enumerate() {
+        write!(
+            policy,
+            "\n(deny {operations}\n  (literal (param \"DENIED_READ_{index}\"))"
+        )
+        .map_err(|error| Error::Sandbox(error.to_string()))?;
+        if denied.directory {
+            write!(policy, "\n  (subpath (param \"DENIED_READ_{index}\"))")
+                .map_err(|error| Error::Sandbox(error.to_string()))?;
+        }
+        policy.push_str("\n)");
+    }
+    Ok(())
+}
+
+fn append_denied_read_parameters(command: &mut Command, sandbox: &LocalSandbox) -> Result<()> {
     for (index, denied) in sandbox.policy.denied_reads.iter().enumerate() {
         let path = denied
             .path
@@ -143,8 +140,7 @@ pub(crate) fn sandboxed_command(
             .ok_or_else(|| Error::Sandbox("sandbox path is not UTF-8".into()))?;
         command.arg(format!("-DDENIED_READ_{index}={path}"));
     }
-    append_isolated_invocation(&mut command, invocation, sandbox.isolated_home);
-    Ok(command)
+    Ok(())
 }
 
 fn append_temporary_parameters(command: &mut Command, sandbox: &LocalSandbox) -> Result<()> {

@@ -1,23 +1,24 @@
+use std::ops::ControlFlow;
 use std::sync::Arc;
 
+use mobius::backend::model::provider::BaseUrl;
 use mobius::{Error, Result};
 use mobius_gateway::client::{GatewayEventScope, GatewayEvents, GatewaySender};
 use mobius_gateway::wire::{
-    AgentComposition, BotRecord, ClientMessage, ProviderConfig, ReadyPayload, ServerFrame,
-    ServerMessage,
+    AgentComposition, BotRecord, ClientMessage, HarnessConfig, ProviderConfig, ReadyPayload,
+    ServerFrame, ServerMessage,
 };
 use ratatui::crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use tokio::time::MissedTickBehavior;
-use uuid::Uuid;
 
+use super::SetupMode;
 use super::state::{Authentication, Flow, SetupState};
 use super::view::draw;
-use super::{SetupMode, SetupTerminal};
-use crate::frontend::terminal::{INPUT_POLL, MAX_INPUT_BATCH, poll_event};
+use crate::frontend::terminal::{INPUT_POLL, Screen, input_batch};
 use crate::gateway_error;
 
 pub(super) async fn edit(
-    terminal: &mut SetupTerminal,
+    terminal: &mut Screen,
     state: &mut SetupState,
     sender: &GatewaySender,
     events: &mut GatewayEvents,
@@ -32,10 +33,8 @@ pub(super) async fn edit(
             dirty = false;
         }
         tick.tick().await;
-        for _ in 0..MAX_INPUT_BATCH {
-            let Some(event) = poll_event()? else {
-                break;
-            };
+        for event in input_batch() {
+            let event = event?;
             dirty = true;
             let flow = match event {
                 Event::Key(key) => state.handle_key(key),
@@ -59,27 +58,14 @@ pub(super) async fn edit(
                 Flow::Remove(instance) => {
                     state.set_progress("Removing provider", "Updating the gateway catalog…");
                     draw(terminal, state)?;
-                    let mut request_id_buffer = Uuid::encode_buffer();
-                    let request_id: &str = Uuid::new_v4()
-                        .hyphenated()
-                        .encode_lower(&mut request_id_buffer);
-                    sender
-                        .send(ClientMessage::RemoveProvider {
-                            request_id: request_id.into(),
-                            instance,
-                        })
-                        .await
-                        .map_err(gateway_error)?;
-                    gateway.update(
-                        wait_gateway_configured(
-                            terminal,
-                            state,
-                            events,
+                    let configured = configure(terminal, state, sender, events, |request_id| {
+                        ClientMessage::RemoveProvider {
                             request_id,
-                            "removing a provider",
-                        )
-                        .await?,
-                    );
+                            instance,
+                        }
+                    })
+                    .await?;
+                    gateway.update(configured);
                     return Ok(false);
                 }
                 Flow::Finish => return Ok(true),
@@ -90,7 +76,7 @@ pub(super) async fn edit(
 }
 
 pub(super) async fn authenticate(
-    terminal: &mut SetupTerminal,
+    terminal: &mut Screen,
     state: &mut SetupState,
     sender: &GatewaySender,
     events: &mut GatewayEvents,
@@ -115,7 +101,7 @@ pub(super) async fn authenticate(
 }
 
 pub(super) async fn apply(
-    terminal: &mut SetupTerminal,
+    terminal: &mut Screen,
     state: &mut SetupState,
     sender: &GatewaySender,
     events: &mut GatewayEvents,
@@ -169,7 +155,7 @@ pub(super) async fn apply(
 }
 
 pub(super) async fn apply_gateway(
-    terminal: &mut SetupTerminal,
+    terminal: &mut Screen,
     state: &mut SetupState,
     sender: &GatewaySender,
     events: &mut GatewayEvents,
@@ -218,7 +204,7 @@ pub(super) async fn apply_gateway(
 }
 
 pub(super) async fn register_provider(
-    terminal: &mut SetupTerminal,
+    terminal: &mut Screen,
     state: &SetupState,
     sender: &GatewaySender,
     events: &mut GatewayEvents,
@@ -226,55 +212,38 @@ pub(super) async fn register_provider(
 ) -> Result<ReadyPayload> {
     let models = state.configured_models();
     let label = state.effective_label().into();
-    let mut request_id_buffer = Uuid::encode_buffer();
-    let request_id: &str = Uuid::new_v4()
-        .hyphenated()
-        .encode_lower(&mut request_id_buffer);
-    sender
-        .send(ClientMessage::RegisterProvider {
+    configure(terminal, state, sender, events, |request_id| {
+        ClientMessage::RegisterProvider {
             preserve_selection: false,
             if_configured: false,
-            request_id: request_id.into(),
+            request_id,
             config,
             label: Some(label),
             tint: None,
             models,
             image_model_ids: None,
             operator_managed: false,
-        })
-        .await
-        .map_err(gateway_error)?;
-    wait_gateway_configured(
-        terminal,
-        state,
-        events,
-        request_id,
-        "registering a provider",
-    )
+        }
+    })
     .await
 }
 
 pub(super) async fn configure_bot_defaults(
-    terminal: &mut SetupTerminal,
+    terminal: &mut Screen,
     state: &SetupState,
     sender: &GatewaySender,
     events: &mut GatewayEvents,
     expected_revision: u64,
     config: AgentComposition,
 ) -> Result<ReadyPayload> {
-    let mut request_id_buffer = Uuid::encode_buffer();
-    let request_id: &str = Uuid::new_v4()
-        .hyphenated()
-        .encode_lower(&mut request_id_buffer);
-    sender
-        .send(ClientMessage::ConfigureBotDefaults {
-            request_id: request_id.into(),
+    configure(terminal, state, sender, events, |request_id| {
+        ClientMessage::ConfigureBotDefaults {
+            request_id,
             expected_revision,
             config,
-        })
-        .await
-        .map_err(gateway_error)?;
-    wait_gateway_configured(terminal, state, events, request_id, "saving Bot defaults").await
+        }
+    })
+    .await
 }
 
 /// The composition setup edits; only möbius Bots are composed from providers and middleware.
@@ -285,7 +254,7 @@ pub(super) fn mobius_composition(bot: &BotRecord) -> Result<&Arc<AgentCompositio
 }
 
 pub(super) async fn update_bot(
-    terminal: &mut SetupTerminal,
+    terminal: &mut Screen,
     state: &SetupState,
     sender: &GatewaySender,
     events: &mut GatewayEvents,
@@ -293,99 +262,124 @@ pub(super) async fn update_bot(
     expected_revision: u64,
     config: AgentComposition,
 ) -> Result<BotRecord> {
-    let mut request_id_buffer = Uuid::encode_buffer();
-    let request_id: &str = Uuid::new_v4()
-        .hyphenated()
-        .encode_lower(&mut request_id_buffer);
+    let message = |request_id| ClientMessage::UpdateBot {
+        request_id,
+        id: Arc::clone(&bot.id),
+        expected_revision,
+        name: Arc::clone(&bot.name),
+        description: Arc::clone(&bot.description),
+        tint: bot.tint,
+        shape: bot.shape,
+        config: HarnessConfig::Mobius(Arc::new(config)),
+    };
+    let bots = exchange(
+        terminal,
+        state,
+        sender,
+        events,
+        Failure::Configuration,
+        message,
+        |request_id, message| match message {
+            ServerMessage::Bots {
+                request_id: Some(actual),
+                bots,
+            } if *actual == *request_id => ControlFlow::Break(bots),
+            message => ControlFlow::Continue(message),
+        },
+    )
+    .await?;
+    bots.into_iter()
+        .find(|updated| updated.id == bot.id)
+        .ok_or_else(|| Error::Stopped("gateway did not return the updated Bot".into()))
+}
+
+/// Sends one gateway configuration change and returns the updated catalog.
+async fn configure(
+    terminal: &mut Screen,
+    state: &SetupState,
+    sender: &GatewaySender,
+    events: &mut GatewayEvents,
+    message: impl FnOnce(Arc<str>) -> ClientMessage,
+) -> Result<ReadyPayload> {
+    exchange(
+        terminal,
+        state,
+        sender,
+        events,
+        Failure::Configuration,
+        message,
+        |request_id, message| match message {
+            ServerMessage::GatewayConfigured {
+                request_id: actual,
+                payload,
+            } if *actual == *request_id => ControlFlow::Break(payload),
+            message => ControlFlow::Continue(message),
+        },
+    )
+    .await
+}
+
+/// How a rejected setup request is reported.
+#[derive(Clone, Copy)]
+enum Failure {
+    /// A configuration change: a stale revision ends setup, anything else may be retried.
+    Configuration,
+    /// A credential or login step.
+    Auth,
+}
+
+/// Sends one request and waits for its correlated response, redrawing on resize meanwhile.
+async fn exchange<T>(
+    terminal: &mut Screen,
+    state: &SetupState,
+    sender: &GatewaySender,
+    events: &mut GatewayEvents,
+    failure: Failure,
+    message: impl FnOnce(Arc<str>) -> ClientMessage,
+    mut response: impl FnMut(&str, ServerMessage) -> ControlFlow<T, ServerMessage>,
+) -> Result<T> {
+    let request_id = crate::fresh_id();
     sender
-        .send(ClientMessage::UpdateBot {
-            request_id: request_id.into(),
-            id: Arc::clone(&bot.id),
-            expected_revision,
-            name: Arc::clone(&bot.name),
-            description: Arc::clone(&bot.description),
-            tint: bot.tint,
-            shape: bot.shape,
-            config: mobius_gateway::wire::HarnessConfig::Mobius(Arc::new(config)),
-        })
+        .send(message(Arc::clone(&request_id)))
         .await
         .map_err(gateway_error)?;
     let mut events = events.scoped();
     loop {
-        let frame = next_frame(terminal, state, &mut events, false)
-            .await?
-            .ok_or_else(|| Error::Stopped("Bot update cancelled".into()))?;
-        let ServerFrame { version, message } = frame;
-        if let Some(error) = configuration_error(&message, request_id) {
+        let Some(ServerFrame { version, message }) =
+            next_frame(terminal, state, &mut events, Cancel::Disabled).await?
+        else {
+            return Err(Error::Stopped("setup request cancelled".into()));
+        };
+        if let Some(error) = response_error(&message, &request_id, failure) {
             return Err(error);
         }
-        match message {
-            ServerMessage::Bots {
-                request_id: Some(actual),
-                bots,
-            } if *actual == *request_id => {
-                let updated = bots
-                    .into_iter()
-                    .find(|updated| updated.id == bot.id)
-                    .ok_or_else(|| Error::Stopped("gateway did not return the updated Bot".into()));
-                return updated;
-            }
-            message => events
+        match response(&request_id, message) {
+            ControlFlow::Break(value) => return Ok(value),
+            ControlFlow::Continue(ServerMessage::Accepted { request_id: actual })
+                if actual == request_id => {}
+            ControlFlow::Continue(message) => events
                 .defer(ServerFrame { version, message })
                 .map_err(gateway_error)?,
         }
     }
 }
 
-pub(super) async fn wait_gateway_configured(
-    terminal: &mut SetupTerminal,
-    state: &SetupState,
-    events: &mut GatewayEvents,
-    request_id: &str,
-    operation: &str,
-) -> Result<ReadyPayload> {
-    let mut events = events.scoped();
-    loop {
-        let frame = next_frame(terminal, state, &mut events, false)
-            .await?
-            .ok_or_else(|| Error::Stopped("gateway configuration cancelled".into()))?;
-        let ServerFrame { version, message } = frame;
-        if let Some(error) = configuration_error(&message, request_id) {
-            return Err(error);
-        }
-        match message {
-            ServerMessage::GatewayConfigured {
-                request_id: actual,
-                payload,
-            } if *actual == *request_id => return Ok(payload),
-            message => events
-                .defer(ServerFrame { version, message })
-                .map_err(|error| Error::Stopped(format!("{operation}: {error}")))?,
-        }
-    }
-}
-
-fn configuration_error(message: &ServerMessage, request_id: &str) -> Option<Error> {
+fn response_error(message: &ServerMessage, request_id: &str, failure: Failure) -> Option<Error> {
     let error = message.response_error(Some(request_id))?;
-    let stale = matches!(
-        message,
-        ServerMessage::Rejected {
-            request_id: actual,
-            code,
-            ..
-        } if actual.as_ref() == request_id && code == "revision_conflict"
-    );
-    Some(if stale {
-        Error::Stopped(format!("{}; reopen setup to refresh", error.message))
-    } else if error.fatal {
-        Error::Stopped(error.message.into())
-    } else {
-        Error::Config(error.message.into())
+    if error.fatal {
+        return Some(Error::Stopped(error.message.into()));
+    }
+    Some(match failure {
+        Failure::Auth => Error::Auth(error.message.into()),
+        Failure::Configuration if matches!(message, ServerMessage::Rejected { code, .. } if code == "revision_conflict") => {
+            Error::Stopped(format!("{}; reopen setup to refresh", error.message))
+        }
+        Failure::Configuration => Error::Config(error.message.into()),
     })
 }
 
 pub(super) async fn set_credential(
-    terminal: &mut SetupTerminal,
+    terminal: &mut Screen,
     state: &SetupState,
     sender: &GatewaySender,
     events: &mut GatewayEvents,
@@ -393,74 +387,41 @@ pub(super) async fn set_credential(
 ) -> Result<()> {
     let instance = state.target_instance().to_owned();
     let provider = state.definition().provider.clone(); // rules-allow: the request owns the provider id
-    let mut request_id_buffer = Uuid::encode_buffer();
-    let request_id: &str = Uuid::new_v4()
-        .hyphenated()
-        .encode_lower(&mut request_id_buffer);
-    let message = match state.selected_base_url() {
-        None => ClientMessage::SetProviderCredential {
-            request_id: request_id.into(),
-            instance,
-            provider,
-            api_key,
-            expires_at: None,
-        },
-        Some(base_url) => ClientMessage::SetProviderEndpointCredential {
-            request_id: request_id.into(),
-            instance,
-            provider,
-            base_url: mobius::backend::model::provider::BaseUrl::new(base_url)?,
-            api_key,
-            expires_at: None,
-        },
-    };
-    sender.send(message).await.map_err(gateway_error)?;
-    let mut events = events.scoped();
-    loop {
-        let frame = next_frame(terminal, state, &mut events, false)
-            .await?
-            .ok_or_else(|| Error::Stopped("credential update cancelled".into()))?;
-        auth_response_error(&frame.message, request_id)?;
-        if credential_saved(
-            &frame.message,
+    let base_url = Some(BaseUrl::new(state.selected_base_url())?);
+    exchange(
+        terminal,
+        state,
+        sender,
+        events,
+        Failure::Auth,
+        |request_id| ClientMessage::SetProviderCredential {
             request_id,
-            state.target_instance(),
-            &state.definition().provider,
-        ) {
-            return Ok(());
-        }
-        reject_invalid_setup_response(&frame.message, request_id)?;
-        if !matches!(&frame.message, ServerMessage::Accepted { request_id: actual } if actual.as_ref() == request_id)
-        {
-            events.defer(frame).map_err(gateway_error)?;
-        }
-    }
-}
-
-pub(super) fn credential_saved(
-    message: &ServerMessage,
-    request_id: &str,
-    instance: &str,
-    provider: &str,
-) -> bool {
-    matches!(message, ServerMessage::ProviderCredentialSaved {
-        request_id: actual, instance: actual_instance, provider: actual_provider,
-    } if **actual == *request_id && actual_instance == instance && actual_provider == provider)
+            instance,
+            provider,
+            base_url,
+            api_key,
+            expires_at: None,
+        },
+        |request_id, message| match message {
+            ServerMessage::ProviderCredentialSaved {
+                request_id: actual, ..
+            } if *actual == *request_id => ControlFlow::Break(()),
+            message => ControlFlow::Continue(message),
+        },
+    )
+    .await
 }
 
 pub(super) async fn device_login(
-    terminal: &mut SetupTerminal,
+    terminal: &mut Screen,
     state: &mut SetupState,
     sender: &GatewaySender,
     events: &mut GatewayEvents,
 ) -> Result<bool> {
-    let mut request_id_buffer = Uuid::encode_buffer();
-    let request_id: &str = Uuid::new_v4()
-        .hyphenated()
-        .encode_lower(&mut request_id_buffer);
+    let request_id = crate::fresh_id();
     sender
         .send(ClientMessage::StartProviderLogin {
-            request_id: request_id.into(),
+            request_id: Arc::clone(&request_id),
             provider: state.definition().provider.clone(), // rules-allow: the request owns the provider id
         })
         .await
@@ -468,82 +429,50 @@ pub(super) async fn device_login(
     let mut events = events.scoped();
     let mut accepted = false;
     let mut completed = false;
-    loop {
-        let Some(frame) = next_frame(terminal, state, &mut events, true).await? else {
+    while !(accepted && completed) {
+        let Some(frame) = next_frame(terminal, state, &mut events, Cancel::Enabled).await? else {
             return Ok(false);
         };
-        auth_response_error(&frame.message, request_id)?;
+        if let Some(error) = response_error(&frame.message, &request_id, Failure::Auth) {
+            return Err(error);
+        }
         match frame.message {
-            ServerMessage::Accepted {
-                request_id: ref actual,
-            } if actual.as_ref() == request_id => accepted = true,
+            ServerMessage::Accepted { request_id: actual } if actual == request_id => {
+                accepted = true;
+            }
             ServerMessage::ProviderLoginStarted {
                 request_id: actual,
-                provider: actual_provider,
                 verification_url,
                 user_code,
                 ..
-            } if *actual == *request_id && actual_provider == state.definition().provider => {
+            } if actual == request_id => {
                 state.show_device_code(verification_url, user_code);
                 draw(terminal, state)?;
             }
             ServerMessage::ProviderLoginFinished {
-                request_id: actual,
-                provider: actual_provider,
-                ..
-            } if *actual == *request_id && actual_provider == state.definition().provider => {
-                completed = true;
-            }
-            message => {
-                reject_invalid_setup_response(&message, request_id)?;
-                events
-                    .defer(ServerFrame { message, ..frame })
-                    .map_err(gateway_error)?;
-            }
-        }
-        if accepted && completed {
-            return Ok(true);
+                request_id: actual, ..
+            } if actual == request_id => completed = true,
+            message => events
+                .defer(ServerFrame { message, ..frame })
+                .map_err(gateway_error)?,
         }
     }
+    Ok(true)
 }
 
-fn auth_response_error(message: &ServerMessage, request_id: &str) -> Result<()> {
-    if let Some(error) = message.response_error(Some(request_id)) {
-        return Err(if error.fatal {
-            Error::Stopped(error.message.into())
-        } else {
-            Error::Auth(error.message.into())
-        });
-    }
-    Ok(())
+/// Whether Esc or Ctrl-C/D abandons a wait.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Cancel {
+    Enabled,
+    Disabled,
 }
 
-fn reject_invalid_setup_response(message: &ServerMessage, request_id: &str) -> Result<()> {
-    let (ServerMessage::ProviderCredentialSaved {
-        request_id: actual, ..
-    }
-    | ServerMessage::ProviderLoginStarted {
-        request_id: actual, ..
-    }
-    | ServerMessage::ProviderLoginFinished {
-        request_id: actual, ..
-    }) = message
-    else {
-        return Ok(());
-    };
-    if **actual == *request_id {
-        return Err(Error::Stopped(
-            "gateway returned an invalid setup response".into(),
-        ));
-    }
-    Ok(())
-}
-
-pub(super) async fn next_frame(
-    terminal: &mut SetupTerminal,
+/// The next gateway frame, or `None` when the user cancels a cancellable wait.
+async fn next_frame(
+    terminal: &mut Screen,
     state: &SetupState,
     events: &mut GatewayEventScope<'_>,
-    cancellable: bool,
+    cancel: Cancel,
 ) -> Result<Option<ServerFrame>> {
     loop {
         tokio::select! {
@@ -554,13 +483,11 @@ pub(super) async fn next_frame(
                     .ok_or_else(|| Error::Stopped("gateway disconnected during setup".into()));
             }
             () = tokio::time::sleep(INPUT_POLL) => {
-                for _ in 0..MAX_INPUT_BATCH {
-                    let Some(event) = poll_event()? else {
-                        break;
-                    };
+                for event in input_batch() {
+                    let event = event?;
                     match event {
                         Event::Key(key)
-                            if cancellable
+                            if cancel == Cancel::Enabled
                                 && matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
                                 && (key.code == KeyCode::Esc
                                     || key.modifiers.contains(KeyModifiers::CONTROL)
@@ -594,7 +521,7 @@ mod tests {
             fatal: false,
         };
         assert!(matches!(
-            configuration_error(&message, "save"),
+            response_error(&message, "save", Failure::Configuration),
             Some(Error::Stopped(message)) if message.contains("reopen setup")
         ));
     }

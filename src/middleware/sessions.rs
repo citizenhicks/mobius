@@ -261,13 +261,6 @@ impl Command {
             Self::Fork => "fork",
         }
     }
-
-    fn parse(value: &str) -> Result<Self> {
-        [Self::Resume, Self::Fork]
-            .into_iter()
-            .find(|command| command.as_str() == value)
-            .ok_or_else(|| Error::Unknown(format!("{} command `{value}`", MANIFEST.id)))
-    }
 }
 
 impl Middleware for Sessions {
@@ -329,21 +322,19 @@ impl Middleware for Sessions {
             })
             .collect(),
             widgets: vec![Arc::new(FrontendWidget {
-                id: Command::Fork.as_str().into(),
-                count: None,
                 priority: crate::protocol::FrontendPriority::Secondary,
-                slot: FrontendSlot::MessageActions,
-                text: text::DEFINITION.widget_fork_chat.clone(), // rules-allow: the widget record owns a copy of the embedded text
-                tone: FrontendTone::Neutral,
                 symbol: Some(FrontendSymbol::Branch),
                 icon_only: true,
-                progress: None,
-                content: None,
                 action: Some(Op::command(
                     MANIFEST.id,
                     Command::Fork.as_str(),
                     String::new(),
                 )),
+                ..FrontendWidget::new(
+                    Command::Fork.as_str(),
+                    FrontendSlot::MessageActions,
+                    text::DEFINITION.widget_fork_chat.as_str(),
+                )
             })],
             ..Default::default()
         }
@@ -365,9 +356,11 @@ impl Middleware for Sessions {
         context: MiddlewareCommandContext<'a>,
     ) -> BoxFuture<'a, Result<MiddlewareCommandOutput>> {
         Box::pin(async move {
-            match Command::parse(context.command)? {
-                Command::Resume => resume(context, self.page_size).await,
-                Command::Fork => fork(context, self.files.as_deref(), self.page_size).await,
+            // The stack admits only declared commands: `resume` and `fork`.
+            if context.command == Command::Fork.as_str() {
+                fork(context, self.files.as_deref(), self.page_size).await
+            } else {
+                resume(context, self.page_size).await
             }
         })
     }
@@ -1193,7 +1186,6 @@ fn fork_options(
                 description: description.into(),
                 detail: String::new(),
                 symbol: None,
-                shows_detail: false,
                 op: Op::CapabilityCommand {
                     capability: MANIFEST.id.into(),
                     command: Command::Fork.as_str().into(),
@@ -1350,7 +1342,6 @@ fn resume_page_options(
             description: String::new(),
             detail: String::new(),
             symbol: None,
-            shows_detail: false,
             op: Op::command(
                 MANIFEST.id,
                 Command::Resume.as_str(),
@@ -1385,7 +1376,6 @@ fn resume_option(
         description,
         detail: String::new(),
         symbol: None,
-        shows_detail: false,
         op: Op::ResumeSession {
             session_id: session.session_id,
         },

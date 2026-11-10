@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -29,14 +27,11 @@ use super::super::ModelCancellationReason;
 use super::super::ModelEventSink;
 use super::super::authorization::OpenAiAuthorization;
 use super::super::authorization::ResolvedAuthorization;
-use super::super::responses::attach_stream_output;
-use super::super::responses::collect_stream_output;
-use super::super::responses::emit_ready_tool_calls;
-use super::super::responses::emit_reasoning_event;
-use super::super::responses::emit_text_event;
-use super::super::responses::emit_web_event;
+use super::super::authorization::UnauthorizedRetry;
+use super::super::responses::CompletedResponse;
+use super::super::responses::ResponsesStream;
+use super::super::responses::StreamStep;
 use super::super::responses::response_error;
-use super::super::responses::validate_stream_output;
 use super::super::transport::account_stream_bytes;
 use super::super::transport::response_error_code;
 use crate::Error;
@@ -50,7 +45,7 @@ const SOCKET_COMMAND_CAPACITY: usize = 8;
 type RawSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 pub(super) enum Exchange {
-    Completed(Value),
+    Completed(CompletedResponse),
     PreviousMissing { output_delivered: bool },
     Retry { retry_after: Option<String> },
     ConnectionLimit { retry_after: Option<String> },
@@ -86,12 +81,10 @@ pub(super) enum SocketEvent {
 }
 
 impl OpenAiWsConnection {
-    #[cfg(test)]
-    pub(super) fn new(socket: RawSocket) -> Self {
-        Self::with_settings(socket, &super::super::ModelTransportSettings::default())
-    }
-
-    fn with_settings(socket: RawSocket, settings: &super::super::ModelTransportSettings) -> Self {
+    pub(super) fn with_settings(
+        socket: RawSocket,
+        settings: &super::super::ModelTransportSettings,
+    ) -> Self {
         let io_timeout = Duration::from_millis(settings.socket_io_timeout_ms);
         let (commands, command_receiver) = mpsc::channel(SOCKET_COMMAND_CAPACITY);
         // Keep reading and answering pings while the consumer persists events.
@@ -355,7 +348,8 @@ pub(super) async fn connect(
     session_id: &str,
     settings: &super::super::ModelTransportSettings,
 ) -> Result<OpenAiWsConnection> {
-    for attempt in 0..2 {
+    let mut retry = UnauthorizedRetry::default();
+    loop {
         let authorization = auth.authorize_websocket(session_id).await?;
         let request = connection_request(socket_url, &authorization)?;
         let config = WebSocketConfig::default()
@@ -372,13 +366,10 @@ pub(super) async fn connect(
         };
         match result {
             Ok((socket, _)) => return Ok(OpenAiWsConnection::with_settings(socket, settings)),
-            Err(error) if attempt == 0 && unauthorized(&error) => {
-                if auth.recover_unauthorized(&authorization.token).await? {
+            Err(error) if unauthorized(&error) => {
+                if retry.retry_unauthorized(auth, &authorization.token).await? {
                     continue;
                 }
-                return Err(Error::Auth("WebSocket authorization was rejected".into()));
-            }
-            Err(error) if unauthorized(&error) => {
                 return Err(Error::Auth("WebSocket authorization was rejected".into()));
             }
             Err(error) => {
@@ -387,26 +378,13 @@ pub(super) async fn connect(
             }
         }
     }
-    unreachable!("WebSocket authorization retry is bounded")
 }
 
 fn websocket_connect_error(error: WebSocketError) -> Error {
     if let WebSocketError::Http(response) = error {
-        let status = response.status();
-        let retry_after = response
-            .headers()
-            .get(tokio_tungstenite::tungstenite::http::header::RETRY_AFTER)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_owned);
-        let body = response.body().as_deref().unwrap_or_default();
-        let body = body
-            .get(..super::super::transport::MAX_ERROR_BYTES)
-            .unwrap_or(body);
-        return Error::Provider(super::super::transport::http_provider_error(
+        return Error::Provider(super::super::transport::handshake_error(
             "WebSocket",
-            status,
-            body,
-            retry_after,
+            &response,
         ));
     }
     Error::Provider(ProviderError::stream_interrupted(None))
@@ -496,31 +474,12 @@ impl Drop for CloseReasonOnDrop<'_> {
     }
 }
 
-#[cfg(test)]
-pub(super) async fn read_exchange(
-    messages: &mut mpsc::UnboundedReceiver<SocketEvent>,
-    events: &ModelEventSink,
-) -> Result<Exchange> {
-    read_exchange_with_timeout(
-        messages,
-        events,
-        Duration::from_millis(
-            super::super::ModelTransportSettings::default().socket_idle_timeout_ms,
-        ),
-    )
-    .await
-}
-
-async fn read_exchange_with_timeout(
+pub(super) async fn read_exchange_with_timeout(
     messages: &mut mpsc::UnboundedReceiver<SocketEvent>,
     events: &ModelEventSink,
     idle_timeout: Duration,
 ) -> Result<Exchange> {
-    let mut web_searches = BTreeSet::new();
-    let mut commentary = BTreeSet::new();
-    let mut reasoning_part = None;
-    let mut output = BTreeMap::new();
-    let mut next_output_index = 0;
+    let mut stream = ResponsesStream::new("web_search_call");
     let output_delivered = Arc::new(AtomicBool::new(false));
     let tracked_delivery = Arc::clone(&output_delivered);
     let downstream = Arc::clone(events);
@@ -545,7 +504,7 @@ async fn read_exchange_with_timeout(
                 return Ok(Exchange::Reconnect);
             }
         };
-        let mut event = match message {
+        let event = match message {
             Message::Text(text) => serde_json::from_str(text.as_ref())?,
             Message::Binary(bytes) => serde_json::from_slice(&bytes)?,
             Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => continue,
@@ -554,39 +513,12 @@ async fn read_exchange_with_timeout(
                 return Ok(Exchange::Reconnect);
             }
         };
-        let pending = validate_stream_output(&event, &output)?;
-        emit_ready_tool_calls(
-            &output,
-            pending.map(|index| (index, event.get("item").unwrap_or(&Value::Null))),
-            &mut next_output_index,
-            &tracked_events,
-        )
-        .await?;
-        let handled = emit_web_event(
-            &event,
-            &mut web_searches,
-            &tracked_events,
-            "web_search_call",
-        )
-        .await?
-            || emit_reasoning_event(&event, &mut reasoning_part, &tracked_events).await?
-            || emit_text_event(&event, &mut commentary, &tracked_events).await?;
-        collect_stream_output(&mut event, &mut output, pending);
-        if handled {
-            continue;
-        }
-        match event.get("type").and_then(Value::as_str) {
-            Some("response.completed") => {
-                let response = event
-                    .get_mut("response")
-                    .map(Value::take)
-                    .ok_or_else(|| Error::Provider("completion omitted response".into()))?;
-                return Ok(Exchange::Completed(attach_stream_output(response, output)));
-            }
-            Some("error" | "response.failed" | "response.incomplete") => {
+        match stream.apply(event, &tracked_events).await? {
+            StreamStep::Pending => {}
+            StreamStep::Completed(completed) => return Ok(Exchange::Completed(completed)),
+            StreamStep::Failed(mut event) => {
                 return failed_exchange(&mut event, output_delivered.load(Ordering::Acquire));
             }
-            _ => {}
         }
     }
 }

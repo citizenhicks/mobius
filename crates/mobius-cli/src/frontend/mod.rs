@@ -12,11 +12,14 @@ mod catalog;
 mod cloudflare_setup;
 mod dashboard;
 mod extensions;
+#[cfg(test)]
+mod fixtures;
 mod gateway;
 mod gateway_actions;
 mod headless;
 mod reinitialize;
 mod response;
+pub(crate) use response::request;
 pub use response::{await_response, wait_ready};
 mod setup;
 mod terminal;
@@ -28,20 +31,9 @@ pub use terminal::terminal_text;
 
 pub use cloudflare_setup::{CloudflareInit, run as run_cloudflare_setup};
 pub use dashboard::{run as run_gateway_dashboard, run_provider as run_gateway_provider};
+pub use extensions::standalone as run_extensions;
 pub use reinitialize::confirm as confirm_gateway_reinitialize;
 pub use setup::run_gateway_login;
-
-/// Returns the run extensions.
-/// # Errors
-///
-/// Returns an error if validation or an operation required to complete the request fails.
-pub async fn run_extensions(
-    sender: GatewaySender,
-    events: GatewayEvents,
-    gateway: ReadyPayload,
-) -> Result<()> {
-    extensions::standalone(sender, events, gateway).await
-}
 
 /// Moves `index` by `delta` within `0..len`, wrapping at both ends.
 fn wrap_step(index: usize, delta: isize, len: usize) -> usize {

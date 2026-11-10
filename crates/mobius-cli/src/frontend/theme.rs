@@ -1,6 +1,6 @@
-use ratatui::style::Color;
-use ratatui::style::Modifier;
-use ratatui::style::Style;
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{HighlightSpacing, List, ListItem};
 
 #[derive(Clone, Copy)]
 pub(crate) enum Role {
@@ -96,4 +96,27 @@ impl Theme {
     pub(crate) const fn diff_delete_background(&self) -> Color {
         self.diff_delete
     }
+}
+
+/// The "◉ MÖBIUS section" line that heads every full-screen view.
+pub(super) fn brand_header(section: &str) -> Line<'static> {
+    let theme = current();
+    Line::from(vec![
+        Span::styled("◉ ", theme.style(Role::AccentStrong)),
+        Span::styled(
+            "MÖBIUS",
+            theme.style(Role::Accent).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!(" {section}"), theme.style(Role::Muted)),
+    ])
+}
+
+/// A list whose selected row is bold behind a "› " marker.
+pub(super) fn selectable_list<'a>(
+    items: impl IntoIterator<Item = impl Into<ListItem<'a>>>,
+) -> List<'a> {
+    List::new(items)
+        .highlight_symbol("› ")
+        .highlight_spacing(HighlightSpacing::Always)
+        .highlight_style(Style::default().add_modifier(Modifier::BOLD))
 }

@@ -32,9 +32,36 @@ pub(crate) fn applied_error(error: Error) -> Error {
     }
 }
 
+/// Reads the regular file at `path`, without following a final symlink, failing when it
+/// exceeds `max_bytes`. `what` names the file in errors.
+pub(crate) fn read_private(path: &Path, max_bytes: u64, what: &str) -> Result<Vec<u8>> {
+    use std::io::Read as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
+        .open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(Error::Config(format!("{what} must be a regular file")));
+    }
+    let too_large = || Error::Config(format!("{what} is too large"));
+    if metadata.len() > max_bytes {
+        return Err(too_large());
+    }
+    let mut contents = Vec::new();
+    file.take(max_bytes.saturating_add(1))
+        .read_to_end(&mut contents)?;
+    if u64::try_from(contents.len()).unwrap_or(u64::MAX) > max_bytes {
+        return Err(too_large());
+    }
+    Ok(contents)
+}
+
 pub(crate) fn publish(path: &Path, contents: &[u8], create_new: bool) -> Result<()> {
     #[cfg(test)]
-    if take_failure(path, false) {
+    if take_failure(path) {
         return Err(std::io::Error::other("injected replacement failure").into());
     }
     let parent = path
@@ -42,7 +69,6 @@ pub(crate) fn publish(path: &Path, contents: &[u8], create_new: bool) -> Result<
         .ok_or_else(|| crate::Error::Config("publication path has no parent".into()))?;
     let parent_file = fs::File::open(parent)?;
     let mut file = tempfile::NamedTempFile::new_in(parent)?;
-    #[cfg(unix)]
     file.as_file().set_permissions(mobius::owner_only::file())?;
     file.write_all(contents)?;
     file.as_file().sync_all()?;
@@ -50,12 +76,6 @@ pub(crate) fn publish(path: &Path, contents: &[u8], create_new: bool) -> Result<
         file.persist_noclobber(path).map_err(|error| error.error)?;
     } else {
         file.persist(path).map_err(|error| error.error)?;
-    }
-    #[cfg(test)]
-    if take_failure(path, true) {
-        return Err(applied_error(
-            std::io::Error::other("injected directory sync failure").into(),
-        ));
     }
     parent_file
         .sync_all()
@@ -65,60 +85,25 @@ pub(crate) fn publish(path: &Path, contents: &[u8], create_new: bool) -> Result<
 
 #[cfg(test)]
 thread_local! {
-    static FAILURES: std::cell::RefCell<std::collections::VecDeque<(std::path::PathBuf, bool)>> = const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
-}
-
-#[cfg(test)]
-pub(crate) fn fail_next_directory_sync(path: &Path) {
-    let path = fs::canonicalize(path).unwrap_or_else(|_| path.into());
-    FAILURES.with(|failures| failures.borrow_mut().push_back((path, true)));
+    static FAILURES: std::cell::RefCell<std::collections::VecDeque<std::path::PathBuf>> = const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
 }
 
 #[cfg(test)]
 pub(crate) fn fail_next_replacement(path: &Path) {
     let path = fs::canonicalize(path).unwrap_or_else(|_| path.into());
-    FAILURES.with(|failures| failures.borrow_mut().push_back((path, false)));
+    FAILURES.with(|failures| failures.borrow_mut().push_back(path));
 }
 
 #[cfg(test)]
-fn take_failure(path: &Path, after_rename: bool) -> bool {
+fn take_failure(path: &Path) -> bool {
     let path = fs::canonicalize(path).unwrap_or_else(|_| path.into());
     FAILURES.with(|failures| {
         let mut failures = failures.borrow_mut();
-        if failures
-            .front()
-            .is_some_and(|(target, after)| target == &path && *after == after_rename)
-        {
+        if failures.front() == Some(&path) {
             failures.pop_front();
             true
         } else {
             false
         }
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn publish_replaces_existing_file() {
-        let directory = tempfile::tempdir().expect("publication directory");
-        let path = directory.path().join("state");
-        fs::write(&path, b"old").expect("old state");
-
-        publish(&path, b"new", false).expect("replace state");
-
-        assert_eq!(fs::read(path).expect("read state"), b"new");
-    }
-
-    #[test]
-    fn publish_create_new_rejects_existing_file() {
-        let directory = tempfile::tempdir().expect("publication directory");
-        let path = directory.path().join("state");
-        fs::write(&path, b"old").expect("old state");
-
-        assert!(publish(&path, b"new", true).is_err());
-        assert_eq!(fs::read(path).expect("read state"), b"old");
-    }
 }

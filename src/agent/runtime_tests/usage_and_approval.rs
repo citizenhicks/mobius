@@ -63,7 +63,8 @@ async fn rejected_prompt_aborts_without_persisting_or_wedging_the_next_turn() {
         .await
         .expect("load checkpoint")
         .expect("saved checkpoint");
-    let checkpoint = serde_json::to_string(&checkpoint).expect("serialize checkpoint");
+    let checkpoint =
+        serde_json::to_string(&(&checkpoint, &checkpoint.context)).expect("serialize checkpoint");
     assert!(!checkpoint.contains("do not persist this secret"));
     assert!(!checkpoint.contains("da913625-36d8-4624-815f-5523eb93b95f"));
 

@@ -101,10 +101,7 @@ pub(super) async fn install_model(
     prepared.test_models(Arc::new(ModelRouter::new(route, model)));
     let bots = Arc::clone(&state.bots);
     drop(state);
-    bots.prepared
-        .lock()
-        .await
-        .insert(Arc::clone(&bot.id), Arc::new(prepared));
+    bots.prepared.replace(prepared).await;
 }
 
 fn user_submission(id: &str, text: &str) -> Submission {
@@ -511,6 +508,7 @@ async fn canonical_chat_queues_sources_and_deduplicates_delivery_after_ack_gap()
         .unwrap();
     let bots = Arc::clone(&gateway.state.lock().await.bots);
     let pending = bots
+        .storage
         .pending_actions(Utc::now().timestamp(), 10)
         .unwrap()
         .remove(0);
@@ -531,7 +529,7 @@ async fn canonical_chat_queues_sources_and_deduplicates_delivery_after_ack_gap()
             .unwrap()
     );
     gateway.dispatch_bot_events().await.unwrap();
-    assert!(!bots.action_pending(&pending.id).unwrap());
+    assert!(!bots.storage.action_pending(&pending.id).unwrap());
     let history =
         mobius::backend::checkpoint::event_turn_page(checkpoints.as_ref(), main.session_id(), None)
             .await
@@ -553,6 +551,7 @@ async fn canonical_chat_queues_sources_and_deduplicates_delivery_after_ack_gap()
     for record in &history {
         if let EventMsg::TurnComplete(turn) = &record.event.msg {
             let hook = bots
+                .storage
                 .hook_event(&format!(
                     "session-{}-{}",
                     main.session_id(),
@@ -639,7 +638,10 @@ async fn session_closure_keeps_final_fact_and_revokes_old_source_authorization()
         .await
         .unwrap();
     let bots = Arc::clone(&gateway.state.lock().await.bots);
-    let pending = bots.pending_actions(Utc::now().timestamp(), 10).unwrap();
+    let pending = bots
+        .storage
+        .pending_actions(Utc::now().timestamp(), 10)
+        .unwrap();
     assert_eq!(pending.len(), 1);
     assert!(
         matches!(&pending[0].event.data, HookData::SessionOwnerChanged { previous_bot_id, .. } if previous_bot_id == &bot.id)
@@ -648,7 +650,7 @@ async fn session_closure_keeps_final_fact_and_revokes_old_source_authorization()
     // Exact replay keeps the captured final action, even after subscriptions are removed.
     bots.close_session_sources(std::slice::from_ref(&pending[0].event))
         .unwrap();
-    assert!(bots.action_pending(&pending[0].id).unwrap());
+    assert!(bots.storage.action_pending(&pending[0].id).unwrap());
     gateway
         .set_bot_subscription(subscription(
             &target.id,
@@ -666,7 +668,8 @@ async fn session_closure_keeps_final_fact_and_revokes_old_source_authorization()
         .await
         .unwrap();
     assert!(
-        bots.pending_actions(Utc::now().timestamp(), 10)
+        bots.storage
+            .pending_actions(Utc::now().timestamp(), 10)
             .unwrap()
             .iter()
             .any(
@@ -731,6 +734,7 @@ async fn deletion_hook_recovers_after_checkpoint_commit_before_bot_commit() {
     assert_eq!(
         state
             .bots
+            .storage
             .pending_actions(Utc::now().timestamp(), 10)
             .unwrap()
             .len(),

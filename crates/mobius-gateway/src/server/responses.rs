@@ -1,7 +1,7 @@
 use super::{
     Arc, AsyncWrite, AuthStore, ClientConnections, ClientView, DirectoryEntry, DirectoryListing,
-    Error, HostHandle, MAX_DIRECTORY_ENTRIES, Path, PathBuf, Rejection, Result, SelectedChat,
-    ServerFrame, ServerMessage, SessionHistoryPage, fs, write_frame,
+    HostHandle, MAX_DIRECTORY_ENTRIES, Path, PathBuf, Rejection, Result, SelectedChat, ServerFrame,
+    ServerMessage, SessionHistoryPage, fs, write_frame,
 };
 use crate::host::OpenReplay;
 use crate::wire::{encode_bounded_frame, write_encoded};
@@ -229,14 +229,6 @@ pub(super) async fn write_server_error(
     .await
 }
 
-pub(super) fn internal_rejection(message: String) -> Rejection {
-    Rejection::new("gateway_error", message)
-}
-
-pub(super) fn routine_rejection(error: &Error) -> Rejection {
-    Rejection::new("invalid_routine", error.to_string())
-}
-
 pub(super) fn list_directories(
     path: &Path,
     include_files: bool,
@@ -276,11 +268,4 @@ pub(super) fn list_directories(
 
 pub(super) fn directory_rejection(error: impl std::fmt::Display) -> Rejection {
     Rejection::new("invalid_directory", error.to_string())
-}
-
-pub(super) fn sequence(frame: &ServerFrame) -> Option<u64> {
-    match frame.message {
-        ServerMessage::AgentEvent { ref record, .. } => Some(record.sequence),
-        _ => None,
-    }
 }

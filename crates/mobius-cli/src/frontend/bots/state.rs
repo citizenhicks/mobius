@@ -1,11 +1,10 @@
 use std::sync::Arc;
 
 use mobius_gateway::wire::{
-    ClientMessage, ReadyPayload, Routine, RoutineAction, RoutineCommand, RoutineRun,
+    BotRecord, ClientMessage, ReadyPayload, Routine, RoutineAction, RoutineCommand, RoutineRun,
     RoutineRunPreview, RoutineRunStatus,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use uuid::Uuid;
 
 use super::form::{BotForm, Form, FormFlow, RoutineForm};
 use super::{Action, FollowUp, request_action};
@@ -78,7 +77,7 @@ pub(super) enum Confirmation {
 }
 
 pub(super) struct Pending {
-    pub(super) request_id: Uuid,
+    pub(super) request_id: Arc<str>,
     pub(super) label: &'static str,
     pub(super) follow_up: FollowUp,
 }
@@ -255,7 +254,7 @@ impl BotsState {
                 self.selected = 0;
             }
             KeyCode::Char('e') => {
-                self.form = Some(Form::Bot(Box::new(BotForm::update(bot))));
+                self.form = Some(edit_bot(bot));
             }
             KeyCode::Delete | KeyCode::Char('x') => {
                 if self.protected_bot_id.as_deref() == Some(&bot.id) {
@@ -279,34 +278,27 @@ impl BotsState {
         let Page::Bot(id) = &mut self.page else {
             return Action::None;
         };
-        if key.code == KeyCode::Char('e') {
-            if let Some(bot) = gateway.bots.iter().find(|bot| *bot.id == **id) {
-                self.form = Some(Form::Bot(Box::new(BotForm::update(bot))));
-            }
-            return Action::None;
-        }
-        if key.code != KeyCode::Enter {
-            return Action::None;
-        }
-        let Some(row) = BOT_ROWS.get(self.selected).copied() else {
-            return Action::None;
+        let bot = gateway.bots.iter().find(|bot| *bot.id == **id);
+        let row = match key.code {
+            KeyCode::Char('e') => BotRow::Identity,
+            KeyCode::Enter => match BOT_ROWS.get(self.selected) {
+                Some(row) => *row,
+                None => return Action::None,
+            },
+            _ => return Action::None,
         };
         match row {
             BotRow::Identity => {
-                if let Some(bot) = gateway.bots.iter().find(|bot| *bot.id == **id) {
-                    self.form = Some(Form::Bot(Box::new(BotForm::update(bot))));
+                if let Some(bot) = bot {
+                    self.form = Some(edit_bot(bot));
                 }
                 Action::None
             }
             BotRow::Model => Action::Setup(SetupMode::BotModel),
             BotRow::Capabilities => Action::Setup(SetupMode::Bot),
-            BotRow::Conversation => gateway
-                .bots
-                .iter()
-                .find(|bot| *bot.id == **id)
-                .map_or(Action::None, |bot| {
-                    Action::OpenSession(bot.conversation_session_id.share())
-                }),
+            BotRow::Conversation => bot.map_or(Action::None, |bot| {
+                Action::OpenSession(bot.conversation_session_id.share())
+            }),
             BotRow::Conversations => {
                 self.page = Page::Conversations(std::mem::take(id));
                 self.selected = 0;
@@ -348,19 +340,11 @@ impl BotsState {
                 Action::None
             }
             KeyCode::Char('e') => {
-                self.form = Some(Form::Routine(Box::new(RoutineForm::update(routine))));
+                self.form = Some(edit_routine(routine));
                 Action::None
             }
             KeyCode::Char(' ') => update_routine_action(routine, !routine.enabled),
-            KeyCode::Char('r') => request_action("Run routine", FollowUp::Routines, |request_id| {
-                ClientMessage::RoutineCommand {
-                    request_id,
-                    command: RoutineCommand {
-                        routine_id: Arc::clone(&routine.id),
-                        action: RoutineAction::Start,
-                    },
-                }
-            }),
+            KeyCode::Char('r') => run_routine_action(routine),
             KeyCode::Delete | KeyCode::Char('x') => {
                 self.confirmation = Some(Confirmation::Routine {
                     id: Arc::clone(&routine.id),
@@ -394,41 +378,25 @@ impl BotsState {
             return Action::None;
         };
         if key.code == KeyCode::Char('e') {
-            self.form = Some(Form::Routine(Box::new(RoutineForm::update(routine))));
+            self.form = Some(edit_routine(routine));
             return Action::None;
         }
         if key.code == KeyCode::Char(' ') {
             return update_routine_action(routine, !routine.enabled);
         }
         if key.code == KeyCode::Char('r') {
-            return request_action("Run routine", FollowUp::Routines, |request_id| {
-                ClientMessage::RoutineCommand {
-                    request_id,
-                    command: RoutineCommand {
-                        routine_id: Arc::clone(&routine.id),
-                        action: RoutineAction::Start,
-                    },
-                }
-            });
+            return run_routine_action(routine);
         }
         if key.code != KeyCode::Enter {
             return Action::None;
         }
         match row {
             RoutineRow::Edit => {
-                self.form = Some(Form::Routine(Box::new(RoutineForm::update(routine))));
+                self.form = Some(edit_routine(routine));
                 Action::None
             }
             RoutineRow::Toggle => update_routine_action(routine, !routine.enabled),
-            RoutineRow::Run => request_action("Run routine", FollowUp::Routines, |request_id| {
-                ClientMessage::RoutineCommand {
-                    request_id,
-                    command: RoutineCommand {
-                        routine_id: Arc::clone(&routine.id),
-                        action: RoutineAction::Start,
-                    },
-                }
-            }),
+            RoutineRow::Run => run_routine_action(routine),
             RoutineRow::History => {
                 self.page = Page::Runs {
                     bot_id: std::mem::take(bot_id),
@@ -556,7 +524,7 @@ impl BotsState {
         }
     }
 
-    pub(super) fn begin(&mut self, request_id: Uuid, label: &'static str, follow_up: FollowUp) {
+    pub(super) fn begin(&mut self, request_id: Arc<str>, label: &'static str, follow_up: FollowUp) {
         self.pending = Some(Pending {
             request_id,
             label,
@@ -614,6 +582,27 @@ impl BotsState {
         }
     }
 }
+fn edit_bot(bot: &BotRecord) -> Form {
+    Form::Bot(Box::new(BotForm::update(bot)))
+}
+
+fn edit_routine(routine: &Routine) -> Form {
+    Form::Routine(Box::new(RoutineForm::update(routine)))
+}
+
+fn run_routine_action(routine: &Routine) -> Action {
+    let routine_id = Arc::clone(&routine.id);
+    request_action("Run routine", FollowUp::Routines, |request_id| {
+        ClientMessage::RoutineCommand {
+            request_id,
+            command: RoutineCommand {
+                routine_id,
+                action: RoutineAction::Start,
+            },
+        }
+    })
+}
+
 pub(super) fn update_routine_action(routine: &Routine, enabled: bool) -> Action {
     let id = Arc::clone(&routine.id);
     request_action(

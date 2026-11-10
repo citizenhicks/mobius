@@ -387,35 +387,6 @@ impl SessionFileStore {
             .await
     }
 
-    /// Grants an authenticated chat's exact upload to one trusted agent execution.
-    /// # Errors
-    ///
-    /// Returns an error if validation or an operation required by this function fails.
-    pub async fn grant_upload(
-        &self,
-        source: &SessionId,
-        target: &SessionId,
-        file: &SessionFileReference,
-    ) -> Result<SessionFileReference> {
-        self.verify_upload(source, file).await?;
-        self.retain_reference(source, target, file, SessionFileOrigin::Upload)
-            .await
-    }
-
-    /// Publishes an execution's exact artifact in its owning chat without copying bytes.
-    /// # Errors
-    ///
-    /// Returns an error if validation or an operation required by this function fails.
-    pub async fn share_artifact(
-        &self,
-        source: &SessionId,
-        target: &SessionId,
-        file: &SessionFileReference,
-    ) -> Result<SessionFileReference> {
-        self.retain_reference(source, target, file, SessionFileOrigin::Artifact)
-            .await
-    }
-
     async fn retain_reference(
         &self,
         source: &SessionId,

@@ -35,82 +35,38 @@ async fn canceled_discovery_waiter_keeps_the_gate_until_the_batch_finishes() {
         .expect("second discovery");
 }
 
-#[test]
-fn failed_usage_save_keeps_committed_counters() {
-    let root = tempfile::tempdir().expect("root");
-    let state = root.path().join("state");
-    let (store, config) = ConfigStore::initialize(
-        state.clone(),
-        "127.0.0.1:8741".parse().expect("listen address"),
-        None,
-    )
-    .expect("config");
-    let gateway = Mutex::new(config);
-    let usage = TokenUsage {
-        input_tokens: 11,
-        total_tokens: 11,
-        ..TokenUsage::default()
-    };
-    persist_usage(&gateway, &store, "openai_socket", &usage).expect("initial usage");
-    let before = gateway.lock().unwrap().profile().daily_usage;
-    let path = state.join("gateway.toml");
-    std::fs::remove_file(&path).expect("remove test config");
-    std::fs::create_dir(&path).expect("block config replacement");
-
-    assert!(persist_usage(&gateway, &store, "openai_socket", &usage).is_err());
-    assert_eq!(gateway.lock().unwrap().profile().daily_usage, before);
-}
-
 #[tokio::test]
 async fn usage_publication_waits_off_executor_and_keeps_failed_totals() {
     let root = tempfile::tempdir().expect("root");
-    let state = root.path().join("state");
-    let (store, config) = ConfigStore::initialize(
-        state.clone(),
-        "127.0.0.1:8741".parse().expect("listen address"),
-        None,
-    )
-    .expect("config");
-    let gateway = Arc::new(Mutex::new(config));
+    let path = root.path().join("usage.json");
+    let store = Arc::new(crate::config::UsageStore::open(path.clone()).expect("usage"));
     let usage = TokenUsage {
         input_tokens: 11,
         total_tokens: 11,
         ..TokenUsage::default()
     };
-    let (locked, acquired) = tokio::sync::oneshot::channel();
-    let (release, released) = std::sync::mpsc::channel();
-    let blocking_gateway = Arc::clone(&gateway);
-    let blocker = tokio::task::spawn_blocking(move || {
-        let _guard = blocking_gateway.lock().expect("configuration lock");
-        locked.send(()).expect("signal lock");
-        released.recv().expect("release lock");
-    });
-    acquired.await.expect("lock acquired");
-    let publish = publish_usage(&gateway, &store, "openai_socket", &usage);
+    let admission = USAGE_PUBLICATION.lock().await;
+    let publish = publish_usage(Arc::clone(&store), "openai_socket", &usage);
     tokio::pin!(publish);
     assert!(
         tokio::time::timeout(Duration::from_millis(20), &mut publish)
             .await
-            .is_err()
+            .is_err(),
+        "publication waits for the one in flight"
     );
-    release.send(()).expect("release worker");
-    blocker.await.expect("blocking owner");
+    drop(admission);
     publish.await.expect("durable publication");
-    let (_, restored) = ConfigStore::open(state.clone()).expect("reopen config");
-    assert_eq!(restored.profile().daily_usage[0].usage, usage);
-    let before = gateway.lock().expect("gateway").profile().daily_usage;
-    let path = state.join("gateway.toml");
-    std::fs::remove_file(&path).expect("remove config");
+    let restored = crate::config::UsageStore::open(path.clone()).expect("reopen usage");
+    assert_eq!(restored.daily_usage().expect("usage")[0].usage, usage);
+    let before = store.daily_usage().expect("usage");
+    std::fs::remove_file(&path).expect("remove usage");
     std::fs::create_dir(&path).expect("block publication");
     assert!(
-        publish_usage(&gateway, &store, "openai_socket", &usage)
+        publish_usage(Arc::clone(&store), "openai_socket", &usage)
             .await
             .is_err()
     );
-    assert_eq!(
-        gateway.lock().expect("gateway").profile().daily_usage,
-        before
-    );
+    assert_eq!(store.daily_usage().expect("usage"), before);
 }
 
 #[test]
@@ -359,9 +315,11 @@ fn voice_capability_follows_the_router_rule_and_flags_unknown_saved_routes() {
             "openai_socket",
             "openai_socket",
             "test-voice-key",
-            provider("openai_socket")
-                .expect("provider")
-                .default_base_url(),
+            Some(
+                provider("openai_socket")
+                    .expect("provider")
+                    .default_base_url(),
+            ),
             None,
         )
         .expect("voice credential");

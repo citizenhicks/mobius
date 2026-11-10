@@ -11,18 +11,52 @@ pub(super) struct DashboardState {
     pub(super) gateway: ReadyPayload,
     pub(super) clients: Vec<ClientStatus>,
     pub(super) current_client_id: Option<String>,
-    pub(super) selected_client_id: Option<String>,
-    pub(super) selected_session_id: Option<mobius::SessionId>,
-    pub(super) selected_bot_id: Option<Arc<str>>,
-    pub(super) device_list: ListState,
-    pub(super) chat_list: ListState,
-    pub(super) bot_list: ListState,
+    pub(super) devices: Selection<String>,
+    pub(super) chats: Selection<mobius::SessionId>,
+    pub(super) bots: Selection<Arc<str>>,
     pub(super) focus: DashboardFocus,
     pub(super) pending_unpair: Option<(String, String)>,
     pub(super) profile: Option<ProfileSnapshot>,
-    pub(super) pending_open: Option<(uuid::Uuid, mobius::SessionId)>,
+    /// The request id of the chat being opened for its capability overlay.
+    pub(super) pending_open: Option<Arc<str>>,
     pub(super) overlay: Option<CapabilityOverlay>,
     pub(super) error: Option<String>,
+}
+
+/// One list's selection: the selected record's id, which survives reordering, and its row.
+pub(super) struct Selection<Id> {
+    pub(super) id: Option<Id>,
+    pub(super) list: ListState,
+}
+
+impl<Id> Default for Selection<Id> {
+    fn default() -> Self {
+        Self {
+            id: None,
+            list: ListState::default(),
+        }
+    }
+}
+
+impl<Id: PartialEq> Selection<Id> {
+    /// Selects the row `pick` chooses from the current row and the list length.
+    pub(super) fn update(
+        &mut self,
+        ids: &[&Id],
+        own: fn(&Id) -> Id,
+        pick: impl FnOnce(Option<usize>, usize) -> Option<usize>,
+    ) {
+        let current = self
+            .id
+            .as_ref()
+            .and_then(|id| ids.iter().position(|candidate| *candidate == id));
+        let selected = pick(current, ids.len());
+        let id = selected.and_then(|index| ids.get(index)).copied();
+        if self.id.as_ref() != id {
+            self.id = id.map(own);
+        }
+        self.list.select(selected);
+    }
 }
 
 pub(in crate::frontend) struct CapabilityOverlay {

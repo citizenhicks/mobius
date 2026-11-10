@@ -12,17 +12,14 @@ use crate::protocol::{
 
 pub(super) fn surface_widgets(memories: &[MemoryItem]) -> Vec<Arc<FrontendWidget>> {
     vec![Arc::new(FrontendWidget {
-        id: "navigation".into(),
-        count: None,
-        priority: crate::protocol::FrontendPriority::Primary,
-        slot: FrontendSlot::Navigation,
-        text: text::DEFINITION.widget_text.as_str().into(),
-        tone: FrontendTone::Neutral,
         symbol: Some(FrontendSymbol::Brain),
-        icon_only: false,
-        progress: None,
         content: Some(action_list_content(memories)),
         action: Some(Op::command(MANIFEST.id, "memory", "refresh")),
+        ..FrontendWidget::new(
+            "navigation",
+            FrontendSlot::Navigation,
+            text::DEFINITION.widget_text.as_str(),
+        )
     })]
 }
 

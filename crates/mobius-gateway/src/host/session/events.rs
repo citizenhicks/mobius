@@ -3,11 +3,11 @@ use super::{
     ActiveRoutine, Arc, Error, Event, EventMsg, ExecutionOutcome, FrontendEvent, HashSet,
     HostState, JournalDelivery, JournalEvent, JournalSequence, MessageTarget,
     ModelStepContentPhase, Rejection, ReplayEntry, Result, RoutineRunStatus, ServerFrame,
-    ServerMessage, SessionActivity, SessionActivityState, SessionReadyPayload, SessionWidget,
-    SharedFrame, TurnLifecycle, Utc, activity_catalog, classify_journal_sequence,
-    compact_replay_deltas, event_sequence, git_status, internal, project_record,
-    publish_ready_and_pending, record_and_publish, switch_workspace_branch, turn_lifecycle,
-    update_session_activity, update_widgets, validate_gateway_event,
+    ServerMessage, SessionActivity, SessionActivityState, SessionReadyPayload, SharedFrame,
+    TurnLifecycle, Utc, activity_catalog, classify_journal_sequence, compact_replay_deltas,
+    event_sequence, git_status, internal, project_record, publish_ready_and_pending,
+    record_and_publish, switch_workspace_branch, turn_lifecycle, update_session_activity,
+    update_widgets, validate_gateway_event,
 };
 use mobius::backend::checkpoint::TranscriptPageRequest;
 use serde_json::Value;
@@ -77,7 +77,7 @@ impl HostState {
         let routine_completion = self.observe_routine_event(event);
         if let Some((active, mut status, message)) = routine_completion {
             if matches!(event.msg, EventMsg::TurnAborted(_))
-                && self.bots.run_cancel_requested(active.run.id())?
+                && self.bots.storage.run_cancel_requested(active.run.id())?
             {
                 status = RoutineRunStatus::Cancelled;
             }
@@ -103,13 +103,14 @@ impl HostState {
         validate_gateway_event(&journal.event.msg)?;
         let sequence_kind = classify_journal_sequence(self.sequence, journal.sequence, delivery)?;
         let sequence = journal.sequence;
-        let (record, blocks) = project_record(&*self.running, journal);
+        let (mut record, blocks) = project_record(&*self.running, journal);
         let transcript = if sequence_kind == JournalSequence::Next {
             self.transcript
                 .apply(sequence, record.recorded_at_ms, &record.event, blocks)
         } else {
             Vec::new()
         };
+        super::super::replay::strip_streamed_text(&mut record, &transcript);
         let frame = ServerFrame::new(ServerMessage::AgentEvent {
             session_id: self.running.session_id().share(),
             record,
@@ -252,14 +253,7 @@ impl HostState {
             git,
             session: Arc::clone(self.running.session()),
             contributions: self.running.contributions()?,
-            widgets: self
-                .widgets
-                .iter()
-                .map(|(capability, item)| SessionWidget {
-                    capability: Arc::clone(capability),
-                    item: Arc::clone(item),
-                })
-                .collect(),
+            widgets: self.widgets.clone(), // rules-allow: the ready payload owns a snapshot of shared widget handles
             context_limit_tokens,
             token_usage: self.token_usage.as_ref().map(Arc::clone),
             active_message_delivery: self.running.active_message_delivery(),

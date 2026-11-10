@@ -23,30 +23,18 @@ use ratatui::text::Line;
 use self::events::UsageStatus;
 #[cfg(test)]
 use self::input::UiAction;
-use self::view::bounded_terminal_text;
-use self::view::initial_widgets;
+use self::view::{bounded_terminal_text, initial_widgets};
 use super::catalog::{GatewayAction, MenuItem, UiCatalog};
 use super::dashboard::CapabilityOverlay;
 use super::terminal::{terminal_text, truncate_bytes};
-use mobius::protocol::ActiveMessageDelivery;
 #[cfg(test)]
 use mobius::protocol::EventMsg;
-use mobius::protocol::ExecApprovalRequestEvent;
-use mobius::protocol::FrontendBlock;
-use mobius::protocol::FrontendBlockFormat;
-use mobius::protocol::FrontendBlockRole;
-use mobius::protocol::FrontendBlockState;
-use mobius::protocol::FrontendBlockUpdate;
-use mobius::protocol::FrontendPickerOption;
-use mobius::protocol::FrontendTone;
-use mobius::protocol::FrontendWidget;
-use mobius::protocol::ModelInfo;
-use mobius::protocol::ModelStepContentPhase;
-use mobius::protocol::Op;
-use mobius::protocol::RenderedBlock;
-use mobius::protocol::SessionFileReference;
-use mobius::protocol::SessionResumeRequestedEvent;
-use mobius::protocol::ToolContent;
+use mobius::protocol::{
+    ActiveMessageDelivery, ExecApprovalRequestEvent, FrontendBlock, FrontendBlockFormat,
+    FrontendBlockRole, FrontendBlockState, FrontendBlockUpdate, FrontendPickerOption, FrontendTone,
+    FrontendWidget, ModelInfo, Op, RenderedBlock, SessionFileReference,
+    SessionResumeRequestedEvent, ToolContent,
+};
 use mobius_gateway::wire::BlockDelta;
 
 const MAX_ENTRY_BYTES: usize = 40_000;
@@ -54,7 +42,6 @@ const MAX_COMPOSER_HISTORY_ENTRIES: usize = 100;
 const MAX_TOOL_DETAIL_BYTES: usize = 512;
 const MAX_TOOL_DETAIL_LINES: usize = 3;
 const MAX_TITLE_BYTES: usize = 160;
-const MAX_STREAM_BYTES: usize = 64 * 1024;
 const MAX_TRANSCRIPT_ENTRIES: usize = 512;
 
 fn attachment_label(file: &SessionFileReference) -> String {
@@ -95,42 +82,21 @@ struct TranscriptEntry {
     tone: TranscriptTone,
     pending: bool,
     rendered: Option<(u16, RenderedTranscript)>,
+    /// Incremental Markdown state while gateway text deltas extend this entry.
+    stream: Option<Box<markdown::StreamCache>>,
 }
 
 struct RenderedTranscript {
     lines: Vec<Line<'static>>,
     wrapped_heights: Vec<usize>,
+    /// The sum of `wrapped_heights`: the rows this entry fills.
+    height: usize,
 }
 
 #[derive(Clone, PartialEq, Eq)]
 struct BlockKey {
     capability: Arc<str>,
     value: String,
-}
-
-#[derive(Default)]
-struct StreamedStepPhases {
-    reasoning: bool,
-    commentary: bool,
-    final_answer: bool,
-}
-
-impl StreamedStepPhases {
-    fn insert(&mut self, phase: ModelStepContentPhase) {
-        match phase {
-            ModelStepContentPhase::Reasoning => self.reasoning = true,
-            ModelStepContentPhase::Commentary => self.commentary = true,
-            ModelStepContentPhase::FinalAnswer => self.final_answer = true,
-        }
-    }
-
-    const fn contains(&self, phase: ModelStepContentPhase) -> bool {
-        match phase {
-            ModelStepContentPhase::Reasoning => self.reasoning,
-            ModelStepContentPhase::Commentary => self.commentary,
-            ModelStepContentPhase::FinalAnswer => self.final_answer,
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -162,7 +128,7 @@ impl From<FrontendPickerOption> for PickerOption {
             label: option.label,
             description: option.description,
             detail: option.detail,
-            shows_detail: option.shows_detail,
+            shows_detail: false,
             action: PickerAction::Submit(Box::new(option.op)),
             secondary: None,
         }
@@ -174,34 +140,57 @@ struct PickerState {
     options: Vec<PickerOption>,
     selected: usize,
     query: String,
+    /// Indices of the options matching `query`, recomputed only when the query changes.
+    matches: Vec<usize>,
 }
 
 impl PickerState {
-    fn matching_indices(&self) -> impl Iterator<Item = usize> {
+    fn new(title: String, options: Vec<PickerOption>, selected: usize) -> Self {
+        let matches = (0..options.len()).collect();
+        Self {
+            title,
+            options,
+            selected,
+            query: String::new(),
+            matches,
+        }
+    }
+
+    /// Replaces the filter text and selects the first match.
+    fn edit_query(&mut self, edit: impl FnOnce(&mut String)) {
+        edit(&mut self.query);
+        self.selected = 0;
         let query = self.query.to_lowercase();
-        self.options
+        self.matches = self
+            .options
             .iter()
             .enumerate()
-            .filter(move |(_, option)| {
+            .filter(|(_, option)| {
                 query.is_empty()
                     || option.label.to_lowercase().contains(&query)
                     || option.description.to_lowercase().contains(&query)
                     || option.detail.to_lowercase().contains(&query)
             })
             .map(|(index, _)| index)
+            .collect();
     }
 
     fn matching_options(&self) -> impl Iterator<Item = &PickerOption> {
-        self.matching_indices()
-            .filter_map(|index| self.options.get(index))
+        self.matches
+            .iter()
+            .filter_map(|index| self.options.get(*index))
     }
 
     fn match_count(&self) -> usize {
-        self.matching_options().count()
+        self.matches.len()
+    }
+
+    fn selected_index(&self) -> Option<usize> {
+        self.matches.get(self.selected).copied()
     }
 
     fn selected_option(&self) -> Option<&PickerOption> {
-        self.matching_options().nth(self.selected)
+        self.options.get(self.selected_index()?)
     }
 }
 
@@ -305,11 +294,6 @@ enum PreviewContent {
     Diff(Box<diff::DiffBrowser>),
     LiveTranscript,
     Snapshot(Box<SnapshotPreview>),
-    Text {
-        text: String,
-        format: FrontendBlockFormat,
-        tone: TranscriptTone,
-    },
 }
 
 struct PendingFileDownload {
@@ -318,7 +302,6 @@ struct PendingFileDownload {
     file: SessionFileReference,
     destination: PathBuf,
     output: tokio::fs::File,
-    offset: u64,
     preview: Vec<u8>,
     preview_truncated: bool,
 }
@@ -360,6 +343,8 @@ impl SnapshotPreview {
     }
 }
 
+/// The composer's editable content, also kept as a draft while the composer holds something else.
+#[derive(Default, Clone)]
 struct InputDraft {
     text: String,
     cursor: usize,
@@ -372,20 +357,11 @@ struct TuiState {
     widgets: Vec<(Arc<str>, Arc<FrontendWidget>)>,
     transcript: VecDeque<TranscriptEntry>,
     transcript_viewport: Viewport,
-    streaming: String,
-    streaming_markdown: markdown::StreamCache,
-    streaming_phase: Option<ModelStepContentPhase>,
-    reasoning: String,
-    reasoning_markdown: markdown::StreamCache,
     reasoning_title: Option<String>,
     git_diff: [Option<String>; 2],
     git_diff_requests: BTreeMap<Arc<str>, usize>,
     git_diff_refresh: bool,
-    streamed_step_phases: BTreeMap<Arc<str>, StreamedStepPhases>,
-    input: String,
-    cursor: usize,
-    pastes: BTreeMap<char, String>,
-    attachments: Vec<SessionFileReference>,
+    composer: InputDraft,
     input_limit_reached: bool,
     upload_in_progress: bool,
     composer_history: VecDeque<String>,
@@ -438,36 +414,7 @@ impl TuiState {
             .map(|effort| terminal_text(&effort).into());
         Self {
             widgets: initial_widgets(catalog),
-            transcript: VecDeque::new(),
-            transcript_viewport: Viewport::default(),
-            streaming: String::new(),
-            streaming_markdown: markdown::StreamCache::default(),
-            streaming_phase: None,
-            reasoning: String::new(),
-            reasoning_markdown: markdown::StreamCache::default(),
-            reasoning_title: None,
-            git_diff: [None, None],
-            git_diff_requests: BTreeMap::new(),
-            git_diff_refresh: false,
-            streamed_step_phases: BTreeMap::new(),
-            input: String::new(),
-            cursor: 0,
-            pastes: BTreeMap::new(),
-            attachments: Vec::new(),
-            input_limit_reached: false,
-            upload_in_progress: false,
-            composer_history: VecDeque::new(),
-            composer_history_index: None,
-            composer_history_draft: None,
-            pending_message_drafts: BTreeMap::new(),
-            failed_message_drafts: VecDeque::new(),
-            approvals: VecDeque::new(),
-            approval_draft: None,
-            active_turns: Vec::new(),
             active_message_delivery: Some(ActiveMessageDelivery::Steer),
-            turn_started_at: None,
-            usage: UsageStatus::default(),
-            context_limit: None,
             cwd: cwd.map_or_else(
                 || "Bot conversation".into(),
                 |cwd| terminal_text(&cwd.display().to_string()),
@@ -475,23 +422,7 @@ impl TuiState {
             model,
             model_route,
             agent_summary,
-            disconnected: false,
-            slash_selection: 0,
-            slash_menu_dismissed: false,
-            reference_selection: 0,
-            reference_menu_dismissed: false,
-            reference_cache: None,
-            picker: None,
-            preview: None,
-            preview_request_id: None,
-            capability_overlay: None,
-            requested_resume: None,
-            background_approval_count: 0,
-            history_cursor: None,
-            history_request_id: None,
-            deletion_request_id: None,
-            file_download: None,
-            block_items: HashMap::new(),
+            ..Self::default()
         }
     }
 
@@ -553,9 +484,9 @@ impl TuiState {
     fn take_approval(&mut self) -> Option<Arc<str>> {
         let request = self.approvals.pop_front()?;
         self.sync_attention_approvals();
-        self.input.clear();
-        self.pastes.clear();
-        self.cursor = 0;
+        self.composer.text.clear();
+        self.composer.pastes.clear();
+        self.composer.cursor = 0;
         self.input_limit_reached = false;
         self.slash_menu_dismissed = false;
         self.reference_menu_dismissed = false;
@@ -572,23 +503,11 @@ impl TuiState {
     }
 
     fn take_input_draft(&mut self) -> InputDraft {
-        let draft = InputDraft {
-            text: std::mem::take(&mut self.input),
-            cursor: self.cursor,
-            pastes: std::mem::take(&mut self.pastes),
-            attachments: std::mem::take(&mut self.attachments),
-        };
-        self.cursor = 0;
-        draft
+        std::mem::take(&mut self.composer)
     }
 
     fn snapshot_input_draft(&self) -> InputDraft {
-        InputDraft {
-            text: self.input.clone(), // rules-allow: the snapshot restores the composer after a failed send
-            cursor: self.cursor,
-            pastes: self.pastes.clone(), // rules-allow: the snapshot restores the composer after a failed send
-            attachments: self.attachments.clone(), // rules-allow: the snapshot restores the composer after a failed send
-        }
+        self.composer.clone() // rules-allow: the snapshot restores the composer after a failed send
     }
 
     fn restore_failed_message(&mut self, draft: InputDraft) {
@@ -620,7 +539,10 @@ impl TuiState {
     }
 
     fn stash_message_draft(&mut self, draft: InputDraft) -> bool {
-        if self.input.is_empty() && self.attachments.is_empty() && self.approval().is_none() {
+        if self.composer.text.is_empty()
+            && self.composer.attachments.is_empty()
+            && self.approval().is_none()
+        {
             self.replace_input_draft(draft);
             false
         } else {
@@ -630,7 +552,7 @@ impl TuiState {
     }
 
     fn restore_input_draft(&mut self, mut draft: InputDraft) {
-        for attachment in std::mem::take(&mut self.attachments) {
+        for attachment in std::mem::take(&mut self.composer.attachments) {
             if !draft
                 .attachments
                 .iter()
@@ -639,20 +561,19 @@ impl TuiState {
                 draft.attachments.push(attachment);
             }
         }
-        self.input = draft.text;
-        self.cursor = draft.cursor.min(self.input.len());
-        self.pastes = draft.pastes;
-        self.attachments = draft.attachments;
+        self.set_composer(draft);
     }
 
     fn replace_input_draft(&mut self, draft: InputDraft) {
-        self.input = draft.text;
-        self.cursor = draft.cursor.min(self.input.len());
-        self.pastes = draft.pastes;
-        self.attachments = draft.attachments;
+        self.set_composer(draft);
         self.input_limit_reached = false;
         self.slash_menu_dismissed = false;
         self.reference_menu_dismissed = false;
+    }
+
+    fn set_composer(&mut self, mut draft: InputDraft) {
+        draft.cursor = draft.cursor.min(draft.text.len());
+        self.composer = draft;
     }
 
     fn remember_composer_input(&mut self, input: String) {
@@ -675,7 +596,7 @@ impl TuiState {
             index.saturating_sub(1)
         } else {
             let draft = self.take_input_draft();
-            self.attachments.clone_from(&draft.attachments);
+            self.composer.attachments.clone_from(&draft.attachments);
             self.composer_history_draft = Some(draft);
             self.composer_history.len() - 1
         };
@@ -686,7 +607,7 @@ impl TuiState {
         let Some(saved) = self.failed_message_drafts.pop_front() else {
             return;
         };
-        if !self.input.is_empty() || !self.attachments.is_empty() {
+        if !self.composer.text.is_empty() || !self.composer.attachments.is_empty() {
             let current = self.take_input_draft();
             self.failed_message_drafts.push_back(current);
         }
@@ -714,9 +635,9 @@ impl TuiState {
             return;
         };
         let input = std::mem::take(entry);
-        self.input.clear();
-        self.pastes.clear();
-        self.cursor = 0;
+        self.composer.text.clear();
+        self.composer.pastes.clear();
+        self.composer.cursor = 0;
         self.insert_paste(&input);
         if let Some(entry) = self.composer_history.get_mut(index) {
             *entry = input;
@@ -725,7 +646,6 @@ impl TuiState {
     }
 
     fn apply_block(&mut self, rendered: RenderedBlock) {
-        self.commit_reasoning();
         let capability = Arc::<str>::from(rendered.capability);
         let mut block = rendered.block;
         let title = bounded_title(&std::mem::take(&mut block.title));
@@ -770,6 +690,7 @@ impl TuiState {
             }
             entry.pending = block.state == FrontendBlockState::Pending;
             entry.rendered = None;
+            entry.stream = None;
             return;
         }
         self.transcript.push_back(TranscriptEntry {
@@ -783,6 +704,7 @@ impl TuiState {
             tone: block.tone.into(),
             pending: block.state == FrontendBlockState::Pending,
             rendered: None,
+            stream: None,
         });
         self.trim_transcript();
     }
@@ -800,7 +722,6 @@ impl TuiState {
 
     /// Applies a gateway block append to the entry its item draws into.
     fn apply_block_delta(&mut self, item: &str, delta: BlockDelta) {
-        self.commit_reasoning();
         let Some(key) = self.block_items.get(item) else {
             return;
         };
@@ -876,91 +797,32 @@ impl TuiState {
             entry.text = body;
         }
         entry.rendered = None;
-    }
-
-    fn remember_streamed_phase(&mut self, model_step_id: Arc<str>, phase: ModelStepContentPhase) {
-        self.streamed_step_phases
-            .entry(model_step_id)
-            .or_default()
-            .insert(phase);
-    }
-
-    fn append_stream(&mut self, delta: &str, phase: ModelStepContentPhase) {
-        self.commit_reasoning();
-        if self.streaming_phase.is_some_and(|current| current != phase) {
-            self.commit_stream();
-        }
-        self.streaming_phase = Some(phase);
-        if self.streaming.len() >= MAX_STREAM_BYTES {
-            return;
-        }
-        let mut delta = terminal_text(delta);
-        let available = MAX_STREAM_BYTES - self.streaming.len();
-        let truncated = delta.len() > available;
-        truncate_bytes(&mut delta, available);
-        self.streaming.push_str(&delta);
-        if truncated {
-            self.streaming.push_str("\n[message truncated]");
-        }
-    }
-
-    fn append_reasoning(&mut self, delta: &str) {
-        if self.reasoning.len() >= MAX_STREAM_BYTES {
-            return;
-        }
-        let mut delta = terminal_text(delta);
-        let available = MAX_STREAM_BYTES - self.reasoning.len();
-        let truncated = delta.len() > available;
-        truncate_bytes(&mut delta, available);
-        self.reasoning.push_str(&delta);
-        if let Some(title) = latest_summary_line(&self.reasoning) {
-            self.reasoning_title = Some(title);
-        }
-        if truncated {
-            self.reasoning.push_str("\n[reasoning truncated]");
-        }
-    }
-
-    fn commit_stream(&mut self) {
-        self.streaming_markdown.clear();
-        if self.streaming.is_empty() {
-            self.streaming_phase = None;
-            return;
-        }
-        let text = std::mem::take(&mut self.streaming);
-        self.streaming_phase = None;
-        self.push_entry(text, TranscriptTone::Assistant);
-    }
-
-    fn commit_commentary_stream(&mut self) {
-        if self.streaming_phase == Some(ModelStepContentPhase::Commentary) {
-            self.commit_stream();
-        }
-    }
-
-    fn commit_reasoning(&mut self) {
-        self.reasoning_markdown.clear();
-        if self.reasoning.is_empty() {
-            return;
-        }
-        let text = std::mem::take(&mut self.reasoning);
-        self.push_entry(text, TranscriptTone::Reasoning);
+        entry.stream = None;
     }
 
     fn push(&mut self, text: impl AsRef<str>, tone: TranscriptTone) {
-        self.commit_reasoning();
         let text = bounded_terminal_text(text.as_ref(), MAX_ENTRY_BYTES);
         self.push_entry(text, tone);
     }
 
     fn push_entry(&mut self, text: String, tone: TranscriptTone) {
+        self.push_titled_entry(None, text, tone);
+    }
+
+    /// Adds a titled block, such as a downloaded file's text under its name.
+    fn push_titled(&mut self, title: &str, text: &str, tone: TranscriptTone) {
+        let text = bounded_terminal_text(text, MAX_ENTRY_BYTES);
+        self.push_titled_entry(Some(bounded_title(title)), text, tone);
+    }
+
+    fn push_titled_entry(&mut self, title: Option<String>, text: String, tone: TranscriptTone) {
         if text.is_empty() {
             return;
         }
         self.transcript.push_back(TranscriptEntry {
             id: None,
             group: None,
-            title: None,
+            title,
             role: None,
             detail: None,
             text,
@@ -968,6 +830,7 @@ impl TuiState {
             tone,
             pending: false,
             rendered: None,
+            stream: None,
         });
         self.trim_transcript();
     }
@@ -986,14 +849,11 @@ impl TuiState {
     }
 
     fn finish_turn(&mut self, turn_id: &str) {
-        self.commit_reasoning();
-        self.commit_stream();
         self.active_turns.retain(|active| **active != *turn_id);
         self.approvals
             .retain(|request| *request.turn_id != *turn_id);
         self.sync_attention_approvals();
         if self.active_turns.is_empty() {
-            self.streamed_step_phases.clear();
             self.turn_started_at = None;
             self.reasoning_title = None;
         }
@@ -1007,23 +867,6 @@ impl TuiState {
             "Transcript",
             PreviewContent::LiveTranscript,
         ));
-    }
-
-    fn open_text_preview(
-        &mut self,
-        title: impl Into<String>,
-        text: String,
-        format: FrontendBlockFormat,
-        tone: TranscriptTone,
-    ) {
-        self.picker = None;
-        self.capability_overlay = None;
-        self.preview = Some(PreviewState {
-            title: bounded_title(&title.into()),
-            subtitle: String::new(),
-            content: PreviewContent::Text { text, format, tone },
-            viewport: Viewport::default(),
-        });
     }
 
     fn open_diff_preview(&mut self, title: &str, text: &str) {

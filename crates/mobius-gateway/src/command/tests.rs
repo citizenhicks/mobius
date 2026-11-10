@@ -1,5 +1,4 @@
 use super::init::initialize_auth;
-#[cfg(unix)]
 use super::lifecycle::{
     ProcessRecord, ProcessRecordGuard, open_process_record, process_is_running,
     remove_unlocked_process_record, stop_background_child,
@@ -12,7 +11,6 @@ fn reject_bootstrap_test_client(_endpoint: &Endpoint, _token: String) -> Result<
     Err(Error::Config("test token save failed".into()))
 }
 
-#[cfg(unix)]
 #[test]
 fn reset_gateway_state_preserves_an_unrelated_nonempty_directory() {
     let root = tempfile::tempdir().expect("state parent");
@@ -26,7 +24,6 @@ fn reset_gateway_state_preserves_an_unrelated_nonempty_directory() {
     assert!(error.to_string().contains("refusing to reset") && unrelated.exists());
 }
 
-#[cfg(unix)]
 #[test]
 fn reset_gateway_state_refuses_a_symlinked_directory() {
     let root = tempfile::tempdir().expect("state parent");
@@ -93,7 +90,6 @@ fn provider_credential_stdin_is_bounded() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn parse_init_loads_a_private_cloudflare_token_without_debugging_it() {
     let token = tempfile::NamedTempFile::new().expect("token file");
@@ -114,7 +110,6 @@ fn parse_init_loads_a_private_cloudflare_token_without_debugging_it() {
     assert!(!format!("{command:?}").contains("secret-tunnel-token"));
 }
 
-#[cfg(unix)]
 async fn report_gateway_version(
     listener: tokio::net::TcpListener,
     version: Option<&str>,
@@ -181,7 +176,6 @@ async fn report_gateway_version(
     }
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn gateway_reuse_evicts_only_a_confirmed_older_release() {
     use crate::wire::PROTOCOL_VERSION;
@@ -267,7 +261,6 @@ async fn gateway_reuse_evicts_only_a_confirmed_older_release() {
     }
 }
 
-#[cfg(unix)]
 #[test]
 fn startup_cleanup_removes_only_an_unlocked_process_record() {
     let directory = tempfile::tempdir().expect("process record directory");
@@ -283,7 +276,6 @@ fn startup_cleanup_removes_only_an_unlocked_process_record() {
     drop(guard);
 }
 
-#[cfg(unix)]
 #[test]
 fn process_record_lock_tracks_the_gateway_lifetime() {
     let directory = tempfile::tempdir().expect("process record directory");
@@ -313,7 +305,6 @@ fn process_record_lock_tracks_the_gateway_lifetime() {
     assert!(!directory.path().join(PROCESS_FILE).exists());
 }
 
-#[cfg(unix)]
 #[test]
 fn startup_lock_allows_only_one_lifecycle_operation() {
     let directory = tempfile::tempdir().expect("startup directory");
@@ -326,7 +317,6 @@ fn startup_lock_allows_only_one_lifecycle_operation() {
     StartupGuard::create(directory.path()).expect("released startup lock");
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn autostart_process_group_cleanup_kills_descendants() {
     use tokio::io::{AsyncBufReadExt, BufReader};
@@ -361,14 +351,12 @@ async fn autostart_process_group_cleanup_kills_descendants() {
     panic!("process-group descendant remained alive");
 }
 
-#[cfg(unix)]
 #[test]
 fn process_group_termination_ignores_reserved_pids() {
     terminate_process_group(0);
     terminate_process_group(1);
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn set_runtime_preserves_omitted_policy_fields() {
     let root = tempfile::tempdir().unwrap();

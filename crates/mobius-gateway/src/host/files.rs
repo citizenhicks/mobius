@@ -406,7 +406,6 @@ mod tests {
         assert!(read(&sandbox, root, &file, 9, 64).await.is_err());
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     #[expect(
         clippy::significant_drop_tightening,
@@ -496,7 +495,6 @@ mod tests {
         for path in ["../outside", ".git/config", "folder"] {
             assert!(remove(&sandbox, path).await.is_err(), "{path}");
         }
-        #[cfg(unix)]
         {
             std::os::unix::fs::symlink("file.txt", workspace.path().join("link")).unwrap();
             assert!(
@@ -528,7 +526,6 @@ mod tests {
         std::fs::write(workspace.path().join("target/artifact"), b"artifact").expect("artifact");
         let outside = tempfile::tempdir().expect("outside");
         std::fs::write(outside.path().join("private.txt"), b"private").expect("private");
-        #[cfg(unix)]
         {
             std::os::unix::fs::symlink(outside.path(), workspace.path().join("linked-directory"))
                 .expect("directory symlink");

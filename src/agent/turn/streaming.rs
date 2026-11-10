@@ -10,7 +10,7 @@ use tokio::sync::{RwLock, mpsc};
 use super::turn_event;
 use crate::agent::input::Wait;
 use crate::agent::tool_step::ToolCompletion;
-use crate::agent::{Runner, SubmissionInbox, send_event};
+use crate::agent::{Runner, SubmissionInbox};
 use crate::backend::model::ModelOutput;
 use crate::backend::sandbox::{SandboxAuthorization, SandboxPermissions};
 use crate::middleware::tools::{
@@ -89,7 +89,7 @@ impl Runner {
                     call = ready_calls.recv(), if calls_open => Progress::Call(call),
                 }
             };
-            let progress = match self.wait_active(inbox, &turn_id, progress).await? {
+            let progress = match self.wait_active(inbox, &turn_id, progress, || None).await? {
                 Wait::Ready {
                     value,
                     input_changed: changed,
@@ -225,11 +225,9 @@ impl Runner {
             } else {
                 (None, Some(gate.write().await))
             };
-            send_event(
-                &events,
-                turn_event(&submission_id, EventMsg::ToolCallBegin(begin)),
-            )
-            .await?;
+            events
+                .record(turn_event(&submission_id, EventMsg::ToolCallBegin(begin)))
+                .await?;
             Ok(execute_call(
                 &catalog,
                 bound,

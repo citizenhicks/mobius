@@ -270,52 +270,56 @@ pub(crate) async fn write_update(
     }
 }
 
-pub(crate) async fn handle_message(
-    message: crate::wire::ClientMessage,
+/// Registers or withdraws this connection as the gateway's local desktop host.
+pub(crate) async fn set_runtime(
+    request_id: Arc<str>,
+    enabled: bool,
     control: &Arc<DesktopControl>,
     connection: &mut Option<DesktopConnection>,
     local: bool,
     client: crate::wire::ClientCapabilities,
     writer: &mut (impl tokio::io::AsyncWrite + Unpin),
 ) -> crate::Result<()> {
-    use crate::wire::{ClientMessage, ServerFrame, write_frame};
-    let (request_id, result) = match message {
-        ClientMessage::SetDesktopRuntime {
-            request_id,
-            enabled,
-        } => {
-            let result = if !(cfg!(target_os = "macos") && local && client.desktop_host) {
-                Err(Error::Sandbox(
-                    "only a local desktop host can host desktop control on this gateway".into(),
-                ))
-            } else if !enabled {
-                *connection = None;
-                Ok(())
-            } else if connection.is_none() {
-                control
-                    .attach()
-                    .map(|attached| *connection = Some(attached))
-            } else {
-                Ok(())
-            };
-            (request_id, result)
-        }
-        ClientMessage::DesktopControlReply {
-            request_id,
-            response,
-        } => {
-            let result = connection
-                .as_ref()
-                .ok_or_else(unavailable)
-                .and_then(|connection| connection.reply(&request_id, response));
-            // Replies are already correlated to the request; do not acknowledge each image again.
-            if result.is_ok() {
-                return Ok(());
-            }
-            (request_id, result)
-        }
-        _ => unreachable!("desktop dispatch accepts only desktop messages"),
+    let result = if !(cfg!(target_os = "macos") && local && client.desktop_host) {
+        Err(Error::Sandbox(
+            "only a local desktop host can host desktop control on this gateway".into(),
+        ))
+    } else if !enabled {
+        *connection = None;
+        Ok(())
+    } else if connection.is_none() {
+        control
+            .attach()
+            .map(|attached| *connection = Some(attached))
+    } else {
+        Ok(())
     };
+    write_outcome(writer, request_id, result).await
+}
+
+/// Delivers the desktop host's answer to one control request.
+pub(crate) async fn reply(
+    request_id: Arc<str>,
+    response: serde_json::Value,
+    connection: Option<&DesktopConnection>,
+    writer: &mut (impl tokio::io::AsyncWrite + Unpin),
+) -> crate::Result<()> {
+    let result = connection
+        .ok_or_else(unavailable)
+        .and_then(|connection| connection.reply(&request_id, response));
+    // Replies are already correlated to the request; do not acknowledge each image again.
+    if result.is_ok() {
+        return Ok(());
+    }
+    write_outcome(writer, request_id, result).await
+}
+
+async fn write_outcome(
+    writer: &mut (impl tokio::io::AsyncWrite + Unpin),
+    request_id: Arc<str>,
+    result: Result<()>,
+) -> crate::Result<()> {
+    use crate::wire::{ServerFrame, write_frame};
     let response = match result {
         Ok(()) => ServerMessage::Accepted { request_id },
         Err(error) => ServerMessage::Rejected {
@@ -325,6 +329,5 @@ pub(crate) async fn handle_message(
             fatal: false,
         },
     };
-    write_frame(writer, &ServerFrame::new(response)).await?;
-    Ok(())
+    write_frame(writer, &ServerFrame::new(response)).await
 }

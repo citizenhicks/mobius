@@ -9,7 +9,7 @@ use tokio_tungstenite::tungstenite::protocol::Message;
 use tokio_tungstenite::tungstenite::protocol::Role;
 use uuid::Uuid;
 
-use super::transport::{PreAuthClientFrame, WebSocketUpgradePolicy};
+use super::transport::WebSocketUpgradePolicy;
 use crate::client::{Endpoint, GatewayClient, GatewayEvents, GatewaySender};
 use crate::wire::{MAX_PRE_AUTH_FRAME_BYTES, SessionActivity, SessionActivityState};
 
@@ -36,11 +36,19 @@ async fn next_gateway_message(events: &mut GatewayEvents) -> ServerMessage {
 }
 
 async fn configured_test_server(state_dir: PathBuf) -> (GatewayServer, PairingGrant) {
+    configured_test_server_with(state_dir, |_| {}).await
+}
+
+/// A paired-ready gateway with a test provider and `configure` applied to its config.
+async fn configured_test_server_with(
+    state_dir: PathBuf,
+    configure: impl FnOnce(&mut GatewayConfig),
+) -> (GatewayServer, PairingGrant) {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
     let listen = listener.local_addr().expect("listen address");
     let (store, config) =
         ConfigStore::initialize(state_dir, listen, None).expect("initialize gateway");
-    let config = config
+    let mut config = config
         .registering_provider(
             crate::wire::AgentComposition::default().provider,
             "Test".into(),
@@ -49,6 +57,7 @@ async fn configured_test_server(state_dir: PathBuf) -> (GatewayServer, PairingGr
             Vec::new(),
         )
         .expect("register provider");
+    configure(&mut config);
     store
         .save(&config.clone().validated().expect("valid config"))
         .expect("save provider");

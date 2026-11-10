@@ -1,7 +1,6 @@
 use super::{
-    Arc, ConfigStore, Error, GatewayConfig, GatewayHost, GatewayState, Ordering, ReadyPayload,
-    Rejection, ServerMessage, finish_publication, gateway_ready_after_unlock, internal,
-    invalid_config,
+    Arc, ConfigStore, Error, GatewayConfig, GatewayHost, GatewayState, ReadyPayload, Rejection,
+    ServerMessage, finish_publication, gateway_ready_after_unlock, internal, invalid_config,
 };
 use crate::harness::mobius::extensions::ExtensionStore;
 
@@ -266,17 +265,12 @@ impl GatewayHost {
         _sessions_guard: tokio::sync::OwnedRwLockWriteGuard<()>,
     ) -> std::result::Result<ReadyPayload, Rejection> {
         let state = self.state.lock().await;
-        let cache = state.bots.prepared.lock().await;
-        state
+        let invalidated: std::result::Result<(), Rejection> = state
             .bots
-            .preparation_generation
-            .fetch_add(1, Ordering::Release);
-        for prepared in cache.values() {
-            if prepared.uses_extension(id) {
-                prepared.invalidate();
-            }
-        }
-        drop(cache);
+            .prepared
+            .invalidate(|prepared| Ok(prepared.uses_extension(id)))
+            .await;
+        invalidated?;
         let payload = gateway_ready_after_unlock(state).await?;
         super::send_event(
             &self.events,

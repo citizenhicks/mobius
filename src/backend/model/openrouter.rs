@@ -28,12 +28,13 @@ pub(super) fn provider() -> ProviderDefinition {
     .with_credentialless_endpoints()
 }
 
-fn build_provider(config: ProviderBuildConfig, base_url: BaseUrl) -> Result<Arc<dyn Model>> {
-    let tool_discovery = config
-        .tool_discovery
-        .unwrap_or_else(|| provider().tool_discovery(&config.model, Some(base_url.as_str())));
+fn build_provider(
+    config: ProviderBuildConfig,
+    base_url: BaseUrl,
+    tool_discovery: ToolDiscoveryMode,
+) -> Result<Arc<dyn Model>> {
     let api_key = config.credential.into_optional_api_key("openrouter")?;
-    let provider = OpenAi::with_client(
+    let provider = OpenAi::from_api_key(
         api_key,
         base_url,
         config.model,
@@ -58,10 +59,7 @@ fn build_provider(config: ProviderBuildConfig, base_url: BaseUrl) -> Result<Arc<
         }
         ToolDiscoveryMode::Rebuild => provider.with_tool_discovery(ToolDiscoveryMode::Rebuild),
     };
-    let provider = match config.reasoning_effort {
-        Some(effort) => provider.with_reasoning_effort(effort)?,
-        None => provider,
-    };
+    let provider = provider.with_selected_effort(config.reasoning_effort)?;
     let provider = match config.web_search {
         HostedWebSearch::Off => provider,
         HostedWebSearch::Cached => {

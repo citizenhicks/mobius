@@ -36,11 +36,11 @@ async fn context_rows_append_without_rewriting_previous_items() {
         .unwrap();
     let header: Value = serde_json::from_str(&json).unwrap();
     assert!(header.get("context").is_none());
-    assert!(
-        serde_json::to_value(&state)
-            .unwrap()
-            .get("context")
-            .is_some()
+    let encoded = serde_json::to_vec(&state).unwrap();
+    let decoded: Checkpoint = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(
+        decoded, state,
+        "public checkpoint JSON must preserve model context"
     );
     assert_eq!(Arc::strong_count(&state.context), 1);
     assert_eq!(Arc::strong_count(&state.context[0]), 1);

@@ -11,8 +11,8 @@ use crate::backend::checkpoint::{CheckpointStore, EventPageRequest, QueuedMessag
 use crate::backend::model::internal_user_message;
 use crate::protocol::{
     ActiveMessageDelivery, EventMsg, FrontendBlock, FrontendContribution, FrontendEvent,
-    FrontendSlot, FrontendSymbol, FrontendTone, FrontendWidget, MessageAuthor, MessageDelivery,
-    MessageEvent, MessageReply, Op,
+    FrontendSlot, FrontendSymbol, FrontendWidget, MessageAuthor, MessageDelivery, MessageEvent,
+    MessageReply, Op,
 };
 use crate::{BoxFuture, Result};
 
@@ -113,21 +113,13 @@ impl Messages {
         FrontendEvent::Widget {
             capability: self.name().into(),
             item: Arc::new(FrontendWidget {
-                id: id.into(),
-                count: None,
-                priority: crate::protocol::FrontendPriority::Primary,
-                slot: FrontendSlot::TranscriptTail,
-                text: text.into(),
-                tone: FrontendTone::Neutral,
                 symbol: Some(match delivery {
                     MessageDelivery::Turn => FrontendSymbol::Chat,
                     MessageDelivery::Steer => FrontendSymbol::Steer,
                     MessageDelivery::Queue => FrontendSymbol::Queue,
                 }),
-                icon_only: false,
-                progress: None,
-                content: None,
                 action,
+                ..FrontendWidget::new(id, FrontendSlot::TranscriptTail, text)
             }),
         }
     }

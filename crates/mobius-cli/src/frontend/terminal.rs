@@ -2,6 +2,8 @@ use std::io;
 use std::time::Duration;
 
 use mobius::Result;
+use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::cursor::{Hide, Show};
 use ratatui::crossterm::event::{
     self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
@@ -14,7 +16,7 @@ use ratatui::crossterm::terminal::{
 use ratatui::text::{Line, Span};
 
 pub(super) const INPUT_POLL: Duration = Duration::from_millis(16);
-pub(super) const MAX_INPUT_BATCH: usize = 64;
+const MAX_INPUT_BATCH: usize = 64;
 /// Terminal input cap for gateway and provider endpoint fields.
 pub(super) const MAX_ENDPOINT_BYTES: usize = 4 * 1024;
 
@@ -55,11 +57,26 @@ pub(super) fn borrow_line<'a>(line: &'a Line<'_>) -> Line<'a> {
     }
 }
 
-pub(super) fn poll_event() -> Result<Option<Event>> {
+/// The alternate-screen terminal every full-screen view draws on.
+pub(super) type Screen = Terminal<CrosstermBackend<io::Stdout>>;
+
+/// Opens a full-screen view without mouse capture, so the terminal keeps native text selection.
+pub(super) fn open_screen() -> Result<(TerminalGuard, Screen)> {
+    let mut guard = TerminalGuard::alternate()?;
+    guard.set_mouse_capture(false)?;
+    Ok((guard, Terminal::new(CrosstermBackend::new(io::stdout()))?))
+}
+
+fn poll_event() -> Result<Option<Event>> {
     event::poll(Duration::ZERO)?
         .then(event::read)
         .transpose()
         .map_err(Into::into)
+}
+
+/// The terminal events already waiting, at most one bounded batch per call.
+pub(super) fn input_batch() -> impl Iterator<Item = Result<Event>> {
+    (0..MAX_INPUT_BATCH).map_while(|_| poll_event().transpose())
 }
 
 pub(super) struct TerminalGuard {
@@ -158,6 +175,44 @@ pub(super) fn append_bounded(
         target.push(character);
     }
     false
+}
+
+/// One bounded text input; it drops control characters other than newlines in multiline input.
+pub(super) struct TextForm {
+    pub(super) value: String,
+    pub(super) limit: usize,
+    pub(super) multiline: bool,
+    pub(super) error: Option<String>,
+}
+
+impl TextForm {
+    pub(super) fn new(value: impl Into<String>, limit: usize) -> Self {
+        Self {
+            value: value.into(),
+            limit,
+            multiline: false,
+            error: None,
+        }
+    }
+
+    pub(super) fn multiline(value: impl Into<String>, limit: usize) -> Self {
+        Self {
+            value: value.into(),
+            limit,
+            multiline: true,
+            error: None,
+        }
+    }
+
+    pub(super) fn push(&mut self, value: &str) {
+        self.error = append_bounded(&mut self.value, value, self.limit, self.multiline)
+            .then(|| format!("input is limited to {} bytes", self.limit));
+    }
+
+    pub(super) fn backspace(&mut self) {
+        self.value.pop();
+        self.error = None;
+    }
 }
 
 pub(super) fn truncate_bytes(value: &mut String, limit: usize) {

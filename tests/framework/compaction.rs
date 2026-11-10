@@ -128,11 +128,13 @@ async fn checkpoint_preparation_retries_are_bounded_and_interruptible() {
             fallbacks: AtomicUsize::new(0),
             entered: Notify::new(),
         });
-        let checkpoints = Arc::new(MemoryCheckpoints::default());
+        let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
+            SqliteCheckpoint::new(workspace.path().join("checkpoint.sqlite3")).expect("store"),
+        );
         let mut agent = create_agent(config_with_store(
             workspace.path(),
             Arc::clone(&model),
-            Arc::<MemoryCheckpoints>::clone(&checkpoints),
+            Arc::clone(&checkpoints),
             "checkpoint-retry",
         ))
         .await
@@ -378,7 +380,9 @@ async fn oversized_history_summarizes_a_complete_prefix_and_preserves_parallel_r
         checkpoint_response("old task completed"),
         text_response("continued"),
     ]));
-    let checkpoints = Arc::new(MemoryCheckpoints::default());
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
+        SqliteCheckpoint::new(workspace.path().join("checkpoint.sqlite3")).expect("store"),
+    );
     let mut checkpoint = Checkpoint::empty(SessionId::new("over-budget").unwrap());
     checkpoint.session_context = test_session_context().into();
     checkpoint.model_route = Some("test".into());
@@ -393,10 +397,9 @@ async fn oversized_history_summarizes_a_complete_prefix_and_preserves_parallel_r
         mobius::backend::model::tool_output("b", &second_result.as_str().into(), false),
     ].into_iter().map(Arc::new).collect());
     checkpoints
-        .sessions
-        .lock()
-        .expect("sessions")
-        .insert(checkpoint.session_id.share(), checkpoint);
+        .save(checkpoint, Vec::new(), None)
+        .await
+        .expect("seed checkpoint");
     let mut agent = create_agent(
         config_with_store(
             workspace.path(),

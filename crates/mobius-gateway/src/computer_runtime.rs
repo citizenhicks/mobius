@@ -17,7 +17,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use mobius::backend::model::provider::{HttpCertificate, HttpClient, HttpResponse};
-#[cfg(unix)]
 use mobius::backend::sandbox::ProcessGroupGuard;
 use mobius::middleware::computer_control::{self, ComputerRuntime};
 use sha2::{Digest, Sha256};
@@ -556,10 +555,8 @@ async fn run(mut command: Command, path: &Path, config: &ComputerConfig) -> Resu
             .env("NODE_EXTRA_CA_CERTS", path)
             .env("npm_config_cafile", path);
     }
-    #[cfg(unix)]
     command.process_group(0);
     let mut child = command.spawn()?;
-    #[cfg(unix)]
     let _group = ProcessGroupGuard::new(&child)?;
     if !child.wait().await?.success() {
         // npm/download errors can contain authenticated proxy URLs. Keep them

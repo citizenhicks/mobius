@@ -23,7 +23,6 @@ use super::EventRecorder;
 use super::FRONTEND_DISCONNECTED_REASON;
 use super::Runner;
 use super::SubmissionInbox;
-use super::send_event;
 use super::{AdmissionReply, MessageAcceptance, ReceivedSubmission};
 
 pub(super) enum Wait<T> {
@@ -69,14 +68,19 @@ enum AdmissionOutcome {
     Rejected(String),
 }
 
+/// What routing any message needs, whether or not a turn is active.
+struct MessageRouter<'a> {
+    checkpoints: &'a dyn crate::backend::checkpoint::CheckpointStore,
+    middleware: &'a MiddlewareStack,
+    session_id: &'a SessionId,
+    events: &'a EventRecorder,
+}
+
 struct ActiveTurnRouter<'a> {
-    pub checkpoints: &'a dyn crate::backend::checkpoint::CheckpointStore,
-    pub middleware: &'a MiddlewareStack,
-    pub session_id: &'a SessionId,
+    pub router: MessageRouter<'a>,
     pub metadata: &'a std::collections::BTreeMap<String, serde_json::Value>,
     pub turn_id: &'a str,
-    pub queued_messages: &'a mut Vec<QueuedMessage>,
-    pub events: &'a EventRecorder,
+    pub queued_messages: &'a [QueuedMessage],
     pub expected_approval: Option<&'a str>,
 }
 
@@ -107,32 +111,12 @@ impl Runner {
     async fn route_idle_message(
         &mut self,
         submission_id: Arc<str>,
-        mut message: MessageSubmission,
+        message: MessageSubmission,
     ) -> Result<AdmissionOutcome> {
-        // Admission hooks stage edits; rejection or publication failure must retain the live queue.
-        let mut pending_messages = self.state.pending_messages.clone(); // rules-allow: hooks edit a staged queue so failure keeps the live one
-        let mut messages = Vec::new();
-        let result = self
-            .config
-            .middleware
-            .route_message(&mut MessageRouteContext {
-                checkpoints: self.config.checkpoints.as_ref(),
-                session_id: &self.runtime.session_id,
-                submission_id: &submission_id,
-                message: &mut message,
-                active_turn_id: None,
-                queued_messages: MessageQueue::new(&mut pending_messages),
-                events: &mut messages,
-            })
-            .await?;
-        match route_submission_result(
-            &self.events,
-            submission_id,
-            result,
-            pending_messages,
-            messages,
-        )
-        .await?
+        match self
+            .message_router()
+            .route_message(&self.state.pending_messages, None, submission_id, message)
+            .await?
         {
             UncommittedRoute::Changed(change) => {
                 self.persist_submission_change(change).await?;
@@ -145,11 +129,14 @@ impl Runner {
         }
     }
 
+    /// Drives `future` while routing submissions for the active turn. Newer input ends the
+    /// wait early with `on_input`'s value whenever it returns one.
     pub(super) async fn wait_active<F, T>(
         &mut self,
         inbox: &mut SubmissionInbox,
         turn_id: &Arc<str>,
         future: F,
+        on_input: impl Fn() -> Option<T>,
     ) -> Result<Wait<T>>
     where
         F: Future<Output = T>,
@@ -158,17 +145,30 @@ impl Runner {
         let mut input_changed = false;
         loop {
             let drained = self.drain_submissions(inbox, turn_id).await?;
-            input_changed |= drained.input_changed;
             if let Some(submission_id) = drained.interrupted {
                 return Ok(Wait::Interrupted { submission_id });
+            }
+            if drained.input_changed {
+                if let Some(value) = on_input() {
+                    return Ok(Wait::Ready {
+                        value,
+                        input_changed: true,
+                    });
+                }
+                input_changed = true;
             }
             tokio::select! {
                 biased;
                 value = &mut future => {
                     let drained = self.drain_submissions(inbox, turn_id).await?;
-                    input_changed |= drained.input_changed;
                     if let Some(submission_id) = drained.interrupted {
                         return Ok(Wait::Interrupted { submission_id });
+                    }
+                    if drained.input_changed {
+                        if let Some(value) = on_input() {
+                            return Ok(Wait::Ready { value, input_changed: true });
+                        }
+                        input_changed = true;
                     }
                     return Ok(Wait::Ready { value, input_changed });
                 }
@@ -180,13 +180,25 @@ impl Runner {
                         ActiveRoute::Interrupted { submission_id } => {
                             return Ok(Wait::Interrupted { submission_id });
                         }
-                        ActiveRoute::Continue { input_changed: changed } => {
-                            input_changed |= changed;
+                        ActiveRoute::Continue { input_changed: true } => {
+                            if let Some(value) = on_input() {
+                                return Ok(Wait::Ready { value, input_changed: true });
+                            }
+                            input_changed = true;
                         }
-                        ActiveRoute::Approval { .. } => {}
+                        ActiveRoute::Continue { input_changed: false } | ActiveRoute::Approval { .. } => {}
                     }
                 }
             }
+        }
+    }
+
+    fn message_router(&self) -> MessageRouter<'_> {
+        MessageRouter {
+            checkpoints: self.config.checkpoints.as_ref(),
+            middleware: &self.config.middleware,
+            session_id: &self.runtime.session_id,
+            events: &self.events,
         }
     }
 
@@ -197,10 +209,7 @@ impl Runner {
             events,
             ..
         } = change;
-        let events = events
-            .into_iter()
-            .map(|msg| crate::agent::turn::turn_event(&submission_id, msg))
-            .collect();
+        let events = crate::agent::turn::turn_events(&submission_id, events).collect();
         let previous = std::mem::replace(
             &mut self.state.make_mut().pending_messages,
             pending_messages,
@@ -247,13 +256,10 @@ impl Runner {
         expected_approval: Option<&str>,
     ) -> Result<(ActiveRoute, AdmissionOutcome)> {
         let route = (ActiveTurnRouter {
-            checkpoints: self.config.checkpoints.as_ref(),
-            middleware: &self.config.middleware,
-            session_id: &self.runtime.session_id,
+            router: self.message_router(),
             metadata: &self.runtime.metadata,
             turn_id,
-            queued_messages: &mut self.state.make_mut().pending_messages,
-            events: &self.events,
+            queued_messages: &self.state.pending_messages,
             expected_approval,
         })
         .route(submission)
@@ -327,33 +333,55 @@ fn finish_admission<T>(
     }
 }
 
+impl MessageRouter<'_> {
+    /// Routes one message through the message handler against a staged copy of the queue.
+    async fn route_message(
+        &self,
+        queued_messages: &[QueuedMessage],
+        active_turn_id: Option<&str>,
+        submission_id: Arc<str>,
+        mut message: MessageSubmission,
+    ) -> Result<UncommittedRoute> {
+        // Hooks stage edits; rejection or publication failure must retain the live queue.
+        let mut pending_messages = queued_messages.to_vec(); // rules-allow: hooks edit a staged queue so failure keeps the live one
+        let mut messages = Vec::new();
+        let result = self
+            .middleware
+            .route_message(&mut MessageRouteContext {
+                checkpoints: self.checkpoints,
+                session_id: self.session_id,
+                submission_id: &submission_id,
+                message: &mut message,
+                active_turn_id,
+                queued_messages: MessageQueue::new(&mut pending_messages),
+                events: &mut messages,
+            })
+            .await?;
+        route_submission_result(
+            self.events,
+            submission_id,
+            result,
+            pending_messages,
+            messages,
+        )
+        .await
+    }
+}
+
 impl ActiveTurnRouter<'_> {
     async fn route(&self, submission: Submission) -> Result<UncommittedRoute> {
         let Submission { id, op } = submission;
         match op {
-            Op::Message { mut message } => {
-                // Stage hook mutations until the accepted route is durably committed.
-                let mut pending_messages = self.queued_messages.clone(); // rules-allow: hooks edit a staged queue so failure keeps the live one
-                let mut messages = Vec::new();
-                let result = self
-                    .middleware
-                    .route_message(&mut MessageRouteContext {
-                        checkpoints: self.checkpoints,
-                        session_id: self.session_id,
-                        submission_id: &id,
-                        message: &mut message,
-                        active_turn_id: Some(self.turn_id),
-                        queued_messages: MessageQueue::new(&mut pending_messages),
-                        events: &mut messages,
-                    })
-                    .await?;
-                route_submission_result(self.events, id, result, pending_messages, messages).await
+            Op::Message { message } => {
+                self.router
+                    .route_message(self.queued_messages, Some(self.turn_id), id, message)
+                    .await
             }
             Op::Interrupt { turn_id } if *turn_id == *self.turn_id => {
                 Ok(UncommittedRoute::Interrupted { submission_id: id })
             }
             Op::Interrupt { .. } => {
-                warn(self.events, id, "interrupt targeted a stale turn").await?;
+                warn(self.router.events, id, "interrupt targeted a stale turn").await?;
                 Ok(UncommittedRoute::Continue)
             }
             Op::ExecApproval {
@@ -365,7 +393,7 @@ impl ActiveTurnRouter<'_> {
             }),
             Op::ExecApproval { .. } => {
                 warn(
-                    self.events,
+                    self.router.events,
                     id,
                     "approval response targeted a stale request",
                 )
@@ -380,16 +408,17 @@ impl ActiveTurnRouter<'_> {
                 target,
             } => {
                 // Commands can fail after modifying their queue; keep those changes provisional.
-                let mut pending_messages = self.queued_messages.clone(); // rules-allow: hooks edit a staged queue so failure keeps the live one
+                let mut pending_messages = self.queued_messages.to_vec(); // rules-allow: hooks edit a staged queue so failure keeps the live one
                 let mut messages = Vec::new();
                 let result = self
+                    .router
                     .middleware
                     .active_command(
                         &capability,
                         &mut ActiveCommandContext {
-                            checkpoints: self.checkpoints,
+                            checkpoints: self.router.checkpoints,
                             submission_id: &id,
-                            session_id: self.session_id,
+                            session_id: self.router.session_id,
                             metadata: self.metadata,
                             active_turn_id: self.turn_id,
                             command: &command,
@@ -403,18 +432,19 @@ impl ActiveTurnRouter<'_> {
                     .await?;
                 let Some(result) = result else {
                     warn(
-                        self.events,
+                        self.router.events,
                         id,
                         "command is unavailable during an active turn",
                     )
                     .await?;
                     return Ok(UncommittedRoute::Continue);
                 };
-                route_submission_result(self.events, id, result, pending_messages, messages).await
+                route_submission_result(self.router.events, id, result, pending_messages, messages)
+                    .await
             }
             Op::SetModel { .. } | Op::ResumeSession { .. } => {
                 warn(
-                    self.events,
+                    self.router.events,
                     id,
                     "operation is unavailable during an active turn",
                 )
@@ -447,16 +477,14 @@ async fn route_submission_result(
         }
         SubmissionResult::Rejected(message) => {
             send_messages(events, &submission_id, messages).await?;
-            send_event(
-                events,
-                Event {
+            events
+                .record(Event {
                     submission_id: Some(submission_id),
                     msg: EventMsg::SubmissionRejected(SubmissionRejectedEvent {
                         message: message.clone(), // rules-allow: the rejection event and the returned outcome both own the reason
                     }),
-                },
-            )
-            .await?;
+                })
+                .await?;
             Ok(UncommittedRoute::Rejected(message))
         }
     }
@@ -468,22 +496,22 @@ async fn send_messages(
     messages: Vec<EventMsg>,
 ) -> Result<()> {
     for msg in messages {
-        send_event(events, crate::agent::turn::turn_event(submission_id, msg)).await?;
+        events
+            .record(crate::agent::turn::turn_event(submission_id, msg))
+            .await?;
     }
     Ok(())
 }
 
 async fn warn(events: &EventRecorder, id: Arc<str>, message: &str) -> Result<()> {
-    send_event(
-        events,
-        Event {
+    events
+        .record(Event {
             submission_id: Some(id),
             msg: EventMsg::Warning(WarningEvent {
                 message: message.into(),
             }),
-        },
-    )
-    .await
+        })
+        .await
 }
 
 #[cfg(test)]
@@ -576,16 +604,18 @@ mod tests {
             let middleware =
                 MiddlewareStack::new(vec![Arc::new(MutatingMessageMiddleware(outcome))])
                     .expect("middleware stack");
-            let mut queued = Vec::new();
+            let queued = Vec::new();
             let (_directory, checkpoints, events, mut receiver) = event_recorder().await;
             let result = (ActiveTurnRouter {
-                middleware: &middleware,
-                checkpoints: checkpoints.as_ref(),
-                session_id: &"session-1".parse().expect("session ID"),
+                router: MessageRouter {
+                    middleware: &middleware,
+                    checkpoints: checkpoints.as_ref(),
+                    session_id: &"session-1".parse().expect("session ID"),
+                    events: &events,
+                },
                 metadata: &std::collections::BTreeMap::new(),
                 turn_id: "turn-1",
-                queued_messages: &mut queued,
-                events: &events,
+                queued_messages: &queued,
                 expected_approval: None,
             })
             .route(Submission {

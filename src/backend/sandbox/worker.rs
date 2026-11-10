@@ -3,8 +3,8 @@
 use crate::SessionId;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-#[cfg(unix)]
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -42,7 +42,6 @@ pub struct WorkerProcess {
 
 impl WorkerProcess {
     /// Launches a command already configured with the backend's filesystem and network policy.
-    #[cfg(unix)]
     /// # Errors
     ///
     /// Returns an error if validation or an operation required by this function fails.
@@ -75,14 +74,6 @@ impl WorkerProcess {
             #[cfg(target_os = "macos")]
             _cleanup_lease: cleanup_lease,
         })
-    }
-
-    /// Persistent process isolation is unavailable on this platform.
-    #[cfg(not(unix))]
-    pub fn spawn(_: &mut Command) -> Result<Self> {
-        Err(Error::Sandbox(
-            "persistent execution is unavailable on this platform".into(),
-        ))
     }
 
     async fn exchange(
@@ -173,10 +164,13 @@ struct Entry {
     process: Option<WorkerProcess>,
 }
 
+/// One session's worker; `None` until it launches or after an explicit reset.
+type Slot = Arc<Mutex<Option<Entry>>>;
+
 #[derive(Default)]
 pub(super) struct Workers {
-    // ponytail: all sessions serialize through one map lock; per-session locks if concurrency matters.
-    entries: Mutex<BTreeMap<SessionId, Entry>>,
+    // The map lock is held only to find a slot; each exchange holds its own session's slot.
+    entries: Mutex<BTreeMap<SessionId, Slot>>,
 }
 
 impl Workers {
@@ -192,33 +186,60 @@ impl Workers {
         if request.is_empty() || request.len() > MAX_FRAME_BYTES {
             return Err(Error::Sandbox("invalid worker request".into()));
         }
-        let mut entries = self.entries.lock().await;
-        if reset {
-            entries.remove(&permissions.session_id);
-        }
-        if !entries.contains_key(&permissions.session_id) {
-            if entries.len() >= 4 {
-                return Err(Error::Sandbox("worker session limit reached".into()));
+        let session_id = &permissions.session_id;
+        let (slot, mut guard) = loop {
+            let slot = {
+                let mut entries = self.entries.lock().await;
+                if let Some(slot) = entries.get(session_id) {
+                    Arc::clone(slot)
+                } else {
+                    if entries.len() >= 4 {
+                        return Err(Error::Sandbox("worker session limit reached".into()));
+                    }
+                    let slot = Slot::default();
+                    entries.insert(session_id.share(), Arc::clone(&slot));
+                    slot
+                }
+            };
+            let guard = Arc::clone(&slot).lock_owned().await;
+            // Shutdown may have retired this slot while the call waited for it.
+            if self.is_registered(session_id, &slot).await {
+                break (slot, guard);
             }
-            let process = backend.start_worker(
+        };
+        if reset {
+            *guard = None;
+        }
+        if guard.is_none() {
+            match backend.start_worker(
                 command,
                 permissions.sandbox_mode,
                 permissions.network_access,
-            )?;
-            entries.insert(
-                permissions.session_id.share(),
-                Entry {
-                    // The persistent worker retains its launch contract to reject policy drift on later requests.
-                    command: command.clone(), // rules-allow: the worker keeps its launch contract
-                    sandbox_mode: permissions.sandbox_mode,
-                    network_access: permissions.network_access,
-                    process: Some(process),
-                },
-            );
+            ) {
+                Ok(process) => {
+                    *guard = Some(Entry {
+                        // The persistent worker retains its launch contract to reject policy drift on later requests.
+                        command: command.clone(), // rules-allow: the worker keeps its launch contract
+                        sandbox_mode: permissions.sandbox_mode,
+                        network_access: permissions.network_access,
+                        process: Some(process),
+                    });
+                }
+                Err(error) => {
+                    // A session whose worker never launched does not hold one of the slots.
+                    let mut entries = self.entries.lock().await;
+                    if entries
+                        .get(session_id)
+                        .is_some_and(|registered| Arc::ptr_eq(registered, &slot))
+                    {
+                        entries.remove(session_id);
+                    }
+                    drop(entries);
+                    return Err(error);
+                }
+            }
         }
-        let entry = entries
-            .get_mut(&permissions.session_id)
-            .ok_or_else(state_lost)?;
+        let entry = guard.as_mut().ok_or_else(state_lost)?;
         if entry.command != *command
             || entry.sandbox_mode != permissions.sandbox_mode
             || entry.network_access != permissions.network_access
@@ -235,12 +256,24 @@ impl Workers {
             .map_err(|elapsed| Error::Sandbox(format!("overall evaluation deadline expired ({elapsed}); session state: lost (worker terminated); action outcome unknown; reset explicitly before continuing; do not repeat automatically")))?
             .map_err(|error| Error::Sandbox(format!("worker/interpreter lost; session state: lost; action outcome unknown; reset before continuing: {error}")))?;
         entry.process = Some(process);
-        drop(entries);
+        drop(guard);
         Ok(response)
     }
 
+    async fn is_registered(&self, session_id: &SessionId, slot: &Slot) -> bool {
+        self.entries
+            .lock()
+            .await
+            .get(session_id)
+            .is_some_and(|registered| Arc::ptr_eq(registered, slot))
+    }
+
+    /// Retires the session's slot, waiting for an exchange in flight before the worker drops.
     pub(super) async fn shutdown(&self, session_id: &SessionId) {
-        self.entries.lock().await.remove(session_id);
+        let slot = self.entries.lock().await.remove(session_id);
+        if let Some(slot) = slot {
+            slot.lock().await.take();
+        }
     }
 }
 
@@ -258,9 +291,7 @@ fn state_lost_by(error: &dyn std::fmt::Display) -> Error {
 mod tests {
     use super::*;
     use crate::BoxFuture;
-    use crate::backend::sandbox::{
-        ApprovalPolicy, CommandMode, CommandOutput, CommandOutputSink, Sandbox, SandboxPermissions,
-    };
+    use crate::backend::sandbox::{ApprovalPolicy, Sandbox, SandboxPermissions};
     use std::sync::Arc;
 
     struct TestBackend;
@@ -297,35 +328,8 @@ mod tests {
             })
         }
 
-        fn read<'a>(&'a self, _: &'a str, _: SandboxMode) -> BoxFuture<'a, Result<String>> {
-            Box::pin(async { unreachable!() })
-        }
-        fn read_bytes<'a>(
-            &'a self,
-            _: &'a str,
-            _: usize,
-            _: SandboxMode,
-        ) -> BoxFuture<'a, Result<Vec<u8>>> {
-            Box::pin(async { unreachable!() })
-        }
-        fn write<'a>(
-            &'a self,
-            _: &'a str,
-            _: &'a str,
-            _: SandboxMode,
-        ) -> BoxFuture<'a, Result<()>> {
-            Box::pin(async { unreachable!() })
-        }
-        fn execute<'a>(
-            &'a self,
-            _: &'a str,
-            _: SandboxMode,
-            _: NetworkAccess,
-            _: CommandMode,
-            _: CommandOutputSink,
-        ) -> BoxFuture<'a, Result<CommandOutput>> {
-            Box::pin(async { unreachable!() })
-        }
+        crate::backend::sandbox::unreachable_backend_methods!(execute);
+
         fn start_worker(
             &self,
             spec: &WorkerCommand,

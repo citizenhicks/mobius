@@ -1,5 +1,6 @@
 use super::super::*;
 use super::support::model_request;
+use super::support::*;
 use tokio_tungstenite::connect_async;
 
 #[tokio::test]
@@ -45,11 +46,11 @@ async fn cancelled_request_flushes_reason_and_reconnects() {
                 socket.send(Message::text(event.to_string())).await.unwrap();
             }
         });
-        let provider = OpenAiSocket::with_authorization(
+        let provider = OpenAiSocket::from_authorization(
             Arc::new(ApiKeyAuthorization::new("test-key".into())),
             BaseUrl::new(format!("http://{address}")).unwrap(),
             format!("ws://{address}/responses"),
-            "test-model",
+            "test-model".into(),
             reqwest::Client::new(),
             crate::backend::model::ModelTransportSettings::default(),
         )
@@ -151,7 +152,8 @@ async fn active_connection_pump_forwards_bursts_without_blocking_ping() {
     let (socket, _) = connect_async(format!("ws://{address}"))
         .await
         .expect("client connection");
-    let mut connection = OpenAiWsConnection::new(socket);
+    let mut connection =
+        OpenAiWsConnection::with_settings(socket, &ModelTransportSettings::default());
     connection
         .start(Message::text("request"))
         .await
@@ -226,11 +228,11 @@ async fn connection_limit_closes_other_idle_connections() {
         }
     });
     let socket_url = format!("ws://{address}/responses");
-    let provider = OpenAiSocket::with_authorization(
+    let provider = OpenAiSocket::from_authorization(
         Arc::new(ApiKeyAuthorization::new("test-key".into())),
         BaseUrl::new(format!("http://{address}")).unwrap(),
         &socket_url,
-        "test-model",
+        "test-model".into(),
         reqwest::Client::new(),
         crate::backend::model::ModelTransportSettings::default(),
     )
@@ -242,7 +244,10 @@ async fn connection_limit_closes_other_idle_connections() {
         .session("idle-session")
         .await
         .expect("idle session");
-    idle_session.lock().await.connection = Some(OpenAiWsConnection::new(idle_socket));
+    idle_session.lock().await.connection = Some(OpenAiWsConnection::with_settings(
+        idle_socket,
+        &ModelTransportSettings::default(),
+    ));
     drop(idle_session);
     let events: ModelEventSink = Arc::new(|_| Box::pin(async { Ok(()) }));
 

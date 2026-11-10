@@ -111,22 +111,8 @@ static DEFAULT_WAIT_MS: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
     wait
 });
 
-#[derive(Clone, Copy)]
-enum Command {
-    Open,
-}
-
-impl Command {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Open => "subagents",
-        }
-    }
-
-    fn parse(value: &str) -> Option<Self> {
-        (value == Self::Open.as_str()).then_some(Self::Open)
-    }
-}
+/// The one declared command, which opens a subagent preview.
+const OPEN_COMMAND: &str = "subagents";
 /// Trusted operator ceilings for the per-Bot subagent settings.
 /// These govern resource policy, while Rust's integer representation remains a safety bound.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -619,7 +605,7 @@ impl Subagents {
             .map(|before_sequence| -> Result<Op> {
                 Ok(Op::command(
                     MANIFEST.id,
-                    Command::Open.as_str(),
+                    OPEN_COMMAND,
                     serde_json::to_string(&PreviewCursor {
                         path: path.into(),
                         before_sequence,
@@ -691,7 +677,7 @@ impl Middleware for Subagents {
             count: None,
             count_label: None,
             commands: vec![FrontendCommand {
-                name: Command::Open.as_str().into(),
+                name: OPEN_COMMAND.into(),
                 arguments: String::new().into(),
                 description: text::DEFINITION.command_description.clone().into(), // rules-allow: the command owns its description from the static definition
                 requires_idle: false,
@@ -725,20 +711,12 @@ impl Middleware for Subagents {
         context: MiddlewareCommandContext<'a>,
     ) -> BoxFuture<'a, Result<MiddlewareCommandOutput>> {
         Box::pin(async move {
-            match Command::parse(context.command) {
-                Some(Command::Open) => {
-                    self.read_command(
-                        context.session_id,
-                        &context.checkpoint.metadata,
-                        context.arguments,
-                    )
-                    .await
-                }
-                None => Err(Error::Unknown(format!(
-                    "subagents command `{}`",
-                    context.command
-                ))),
-            }
+            self.read_command(
+                context.session_id,
+                &context.checkpoint.metadata,
+                context.arguments,
+            )
+            .await
         })
     }
 
@@ -747,14 +725,14 @@ impl Middleware for Subagents {
         context: &'a mut ActiveCommandContext<'_>,
     ) -> BoxFuture<'a, Result<Option<SubmissionResult>>> {
         Box::pin(async move {
-            let output = match Command::parse(context.command) {
-                Some(Command::Open) => {
-                    self.read_command(context.session_id, context.metadata, context.arguments)
-                        .await
-                }
-                None => return Ok(None),
-            };
-            match output {
+            // Active commands reach every capability unchecked, so match the name here.
+            if context.command != OPEN_COMMAND {
+                return Ok(None);
+            }
+            match self
+                .read_command(context.session_id, context.metadata, context.arguments)
+                .await
+            {
                 Ok(output) => {
                     context
                         .events

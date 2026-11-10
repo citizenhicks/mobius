@@ -56,9 +56,7 @@ async fn recorder_persists_an_event_before_delivery() {
         }),
     };
 
-    send_event(&events, event.clone())
-        .await
-        .expect("record event");
+    events.record(event.clone()).await.expect("record event");
     let page = checkpoints
         .event_page(
             &"session".parse().expect("session ID"),
@@ -87,17 +85,15 @@ async fn recorder_stops_without_delivering_when_persistence_fails() {
         "missing".parse().expect("session ID"),
     );
 
-    let error = send_event(
-        &events,
-        Event {
+    let error = events
+        .record(Event {
             submission_id: None,
             msg: EventMsg::Warning(WarningEvent {
                 message: "durable".into(),
             }),
-        },
-    )
-    .await
-    .expect_err("missing session");
+        })
+        .await
+        .expect_err("missing session");
 
     assert!(matches!(error, Error::Checkpoint(_)));
     assert!(receiver.recv().await.is_none());

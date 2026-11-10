@@ -1,5 +1,30 @@
-# Provider-owned model catalog.
+# Provider-owned model catalog. A model without `reasoning` accepts every listed effort.
 default_model = "claude-sonnet-5-5"
+
+[[reasoning]]
+id = "low"
+label = "Low"
+description = "Prefer speed and lower cost"
+
+[[reasoning]]
+id = "medium"
+label = "Medium"
+description = "Balance reasoning and latency"
+
+[[reasoning]]
+id = "high"
+label = "High"
+description = "Deeper reasoning for complex work"
+
+[[reasoning]]
+id = "xhigh"
+label = "Extra high"
+description = "Extended effort for long-horizon work"
+
+[[reasoning]]
+id = "max"
+label = "Maximum"
+description = "Use maximum available reasoning"
 
 [[models]]
 id = "claude-sonnet-5-5"
@@ -9,31 +34,6 @@ default_reasoning = "high"
 context_window = 1000000
 tool_discovery = "native"
 
-[[models.reasoning]]
-id = "low"
-label = "Low"
-description = "Prefer speed and lower cost"
-
-[[models.reasoning]]
-id = "medium"
-label = "Medium"
-description = "Balance reasoning and latency"
-
-[[models.reasoning]]
-id = "high"
-label = "High"
-description = "Deeper reasoning for complex work"
-
-[[models.reasoning]]
-id = "xhigh"
-label = "Extra high"
-description = "Extended effort for long-horizon work"
-
-[[models.reasoning]]
-id = "max"
-label = "Maximum"
-description = "Use maximum available reasoning"
-
 [[models]]
 id = "claude-opus-5-5"
 label = "Claude Opus 5.5"
@@ -41,31 +41,6 @@ description = "Highest-capability Opus model"
 default_reasoning = "medium"
 context_window = 1000000
 tool_discovery = "native"
-
-[[models.reasoning]]
-id = "low"
-label = "Low"
-description = "Prefer speed and lower cost"
-
-[[models.reasoning]]
-id = "medium"
-label = "Medium"
-description = "Balance reasoning and latency"
-
-[[models.reasoning]]
-id = "high"
-label = "High"
-description = "Deeper reasoning for complex work"
-
-[[models.reasoning]]
-id = "xhigh"
-label = "Extra high"
-description = "Extended effort for long-horizon work"
-
-[[models.reasoning]]
-id = "max"
-label = "Maximum"
-description = "Use maximum available reasoning"
 
 [[models]]
 id = "claude-fable-5-1"
@@ -75,31 +50,6 @@ default_reasoning = "high"
 context_window = 1000000
 tool_discovery = "native"
 
-[[models.reasoning]]
-id = "low"
-label = "Low"
-description = "Prefer speed and lower cost"
-
-[[models.reasoning]]
-id = "medium"
-label = "Medium"
-description = "Balance reasoning and latency"
-
-[[models.reasoning]]
-id = "high"
-label = "High"
-description = "Deeper reasoning for complex work"
-
-[[models.reasoning]]
-id = "xhigh"
-label = "Extra high"
-description = "Extended effort for long-horizon work"
-
-[[models.reasoning]]
-id = "max"
-label = "Maximum"
-description = "Use maximum available reasoning"
-
 [[models]]
 id = "claude-haiku-5-5"
 label = "Claude Haiku 5.5"
@@ -107,28 +57,3 @@ description = "Fast, economical Anthropic model"
 default_reasoning = "medium"
 context_window = 1000000
 tool_discovery = "native"
-
-[[models.reasoning]]
-id = "low"
-label = "Low"
-description = "Prefer speed and lower cost"
-
-[[models.reasoning]]
-id = "medium"
-label = "Medium"
-description = "Balance reasoning and latency"
-
-[[models.reasoning]]
-id = "high"
-label = "High"
-description = "Deeper reasoning for complex work"
-
-[[models.reasoning]]
-id = "xhigh"
-label = "Extra high"
-description = "Extended effort for long-horizon work"
-
-[[models.reasoning]]
-id = "max"
-label = "Maximum"
-description = "Use maximum available reasoning"

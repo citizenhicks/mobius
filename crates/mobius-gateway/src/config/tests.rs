@@ -1,4 +1,5 @@
 use super::*;
+use std::os::unix::fs::PermissionsExt as _;
 
 fn test_bot() -> crate::wire::BotRecord {
     crate::wire::BotRecord {
@@ -221,7 +222,6 @@ fn saved_search_options_do_not_prevent_loading_but_fail_when_built() {
             .unwrap()
             .build_config_is_valid(
                 &selection.model,
-                selection.base_url.as_ref(),
                 selection.reasoning_effort.as_deref(),
                 selection.web_search,
             )
@@ -276,32 +276,13 @@ fn saving_defaults_is_revisioned_and_does_not_change_existing_chat_specs() {
         .expect("register provider");
     let workspace = tempfile::tempdir().expect("workspace");
     let state = tempfile::tempdir().expect("state");
+    let defaults = registered.bot_defaults.clone().expect("Bot defaults");
     let bot = crate::wire::BotRecord {
-        id: "bot-fixture".into(),
-        conversation_session_id: mobius::SessionId::new("persistent-test").unwrap(),
-        handle: "fixture".into(),
-        name: "Fixture".into(),
-        description: "Own fixture work.".into(),
-        tint: ProviderTint::default(),
-        shape: crate::wire::BotShape::Circle,
-        harness: crate::wire::HarnessKind::Mobius,
-        config: Arc::new({
-            let defaults = registered.bot_defaults.clone().expect("Bot defaults");
-            VersionedAgentConfig {
-                revision: defaults.revision,
-                config: crate::wire::HarnessConfig::Mobius(Arc::new(defaults.config)),
-            }
+        config: Arc::new(VersionedAgentConfig {
+            revision: defaults.revision,
+            config: crate::wire::HarnessConfig::Mobius(Arc::new(defaults.config)),
         }),
-        capabilities: crate::wire::BotCapabilities {
-            attachments: false,
-            computer: false,
-            voice: crate::wire::VoiceCapability::Off,
-            memory: crate::wire::BotMemory {
-                enabled: false,
-                global: false,
-            },
-        },
-        routine_interaction_policy: RoutineInteractionPolicy::Unattended,
+        ..test_bot()
     };
     let chat = ChatSpec::for_bot(workspace.path(), &bot, state.path(), None).expect("chat spec");
     let mut replacement = registered
@@ -526,7 +507,6 @@ fn chat_spec_metadata_round_trips_and_revalidates_tampering() {
     assert!(error.to_string().contains("must not overlap"));
 }
 
-#[cfg(unix)]
 #[test]
 fn provider_credentials_are_owner_only_and_absent_from_agent_snapshots() {
     let directory = tempfile::tempdir().expect("state directory");
@@ -670,7 +650,6 @@ fn provider_credential_write_limit_is_atomic_and_reopenable() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn cloudflare_token_is_owner_only_and_absent_from_gateway_config() {
     let state_parent = tempfile::tempdir().expect("state parent");
@@ -693,7 +672,6 @@ fn cloudflare_token_is_owner_only_and_absent_from_gateway_config() {
     assert!(!config.contains("secret-tunnel-token"));
 }
 
-#[cfg(unix)]
 #[test]
 fn cloudflare_token_loader_rejects_a_symlink() {
     let directory = tempfile::tempdir().expect("token directory");
@@ -708,7 +686,6 @@ fn cloudflare_token_loader_rejects_a_symlink() {
     assert!(error.to_string().contains("regular file"));
 }
 
-#[cfg(unix)]
 #[test]
 fn opening_state_rejects_a_public_state_directory() {
     let state_parent = tempfile::tempdir().expect("state parent");
@@ -817,7 +794,6 @@ fn failed_credential_publication_preserves_secrets_and_revocation() {
     assert!(store.get("other", "openai_socket", None).unwrap().is_none());
 }
 
-#[cfg(unix)]
 #[test]
 fn persisted_config_and_credentials_reject_fifos_without_a_writer() {
     let directory = tempfile::tempdir().unwrap();

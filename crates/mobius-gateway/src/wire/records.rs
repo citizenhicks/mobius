@@ -7,7 +7,13 @@ pub use mobius::backend::model::provider::{
     ModelPreset as ProviderModel, ReasoningPreset as ReasoningChoice,
 };
 
-use super::*;
+use super::{
+    BTreeMap, BTreeSet, BotMemory, Deserialize, Event, FrontendContribution, FrontendPreviewUpdate,
+    FrontendSettingOption, FrontendSettingValue, FrontendSymbol, FrontendWidget, HarnessConfig,
+    HarnessDescriptor, HarnessKind, HistoryCursor, HostedWebSearch, MessageTarget,
+    MiddlewareFeature, ModelChoice, Op, PathBuf, Serialize, SessionConfiguredEvent,
+    SessionFileLimits, StreamMetrics, TokenUsage, ToolDiscoveryMode, TranscriptPage, UsageLimit,
+};
 
 /// Optional gateway broadcasts a client may suppress on its connection.
 /// Approvals, session events, errors, and request responses cannot be suppressed.
@@ -206,7 +212,7 @@ impl CatalogHint {
     }
 }
 
-/// One position of the session catalog in a [`ServerMessage::SessionsChanged`].
+/// One position of the session catalog in a [`ServerMessage::SessionsChanged`](crate::wire::ServerMessage::SessionsChanged).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum SessionSlot {
@@ -216,7 +222,7 @@ pub enum SessionSlot {
     Changed(Box<SessionRecord>),
 }
 
-/// Rebuilds the catalog `sessions` held from a [`ServerMessage::SessionsChanged`].
+/// Rebuilds the catalog `sessions` held from a [`ServerMessage::SessionsChanged`](crate::wire::ServerMessage::SessionsChanged).
 pub fn apply_session_changes(sessions: &mut Vec<SessionRecord>, changes: Vec<SessionSlot>) {
     let mut held: Vec<_> = std::mem::take(sessions).into_iter().map(Some).collect();
     *sessions = changes
@@ -327,7 +333,7 @@ pub struct SessionRecord {
 }
 
 /// Gateway-observed lifecycle state for one session.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionActivity {
     /// Pending capability attention items, independent of turn activity.
@@ -346,25 +352,12 @@ pub struct SessionActivity {
     pub message: Option<Arc<str>>,
 }
 
-impl Default for SessionActivity {
-    fn default() -> Self {
-        Self {
-            attention: 0,
-            state: SessionActivityState::Idle,
-            turn_id: None,
-            approval_request_id: None,
-            started_at: None,
-            last_outcome: None,
-            message: None,
-        }
-    }
-}
-
 /// Current work state advertised in the session catalog.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionActivityState {
     /// Selects the idle case.
+    #[default]
     Idle,
     /// Selects the running case.
     Running,
@@ -606,9 +599,7 @@ pub struct ProviderStatus {
     /// The auth.
     pub auth: ProviderAuthKind,
     /// The default base URL.
-    pub default_base_url: Option<BaseUrl>,
-    /// The default API key env.
-    pub default_api_key_env: Option<String>,
+    pub default_base_url: BaseUrl,
     /// The models.
     pub models: Vec<ProviderModel>,
     /// Image models the provider advertises; empty when setups list their own.
@@ -741,12 +732,6 @@ pub struct ClientStatus {
 
 impl ProviderStatus {
     #[must_use]
-    /// Returns the configurable base URL.
-    pub fn configurable_base_url(&self) -> bool {
-        self.default_base_url.is_some()
-    }
-
-    #[must_use]
     /// Returns the default model.
     pub fn default_model(&self) -> Option<&ProviderModel> {
         self.models.first()
@@ -788,30 +773,11 @@ pub enum ProviderAuthKind {
 
 /// Enabled optional middleware IDs and their schema-backed settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(from = "StoredMiddlewareConfig")]
+#[serde(deny_unknown_fields)]
 pub struct MiddlewareConfig {
     pub(crate) enabled: BTreeSet<String>,
     /// The settings.
     pub settings: BTreeMap<String, BTreeMap<String, FrontendSettingValue>>,
-}
-
-/// The stored shape; loading completes it so a newly declared setting needs no state change.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StoredMiddlewareConfig {
-    enabled: BTreeSet<String>,
-    settings: BTreeMap<String, BTreeMap<String, FrontendSettingValue>>,
-}
-
-impl From<StoredMiddlewareConfig> for MiddlewareConfig {
-    fn from(stored: StoredMiddlewareConfig) -> Self {
-        let mut config = Self {
-            enabled: stored.enabled,
-            settings: stored.settings,
-        };
-        crate::harness::mobius::middleware_manifest::fill_defaults(&mut config);
-        config
-    }
 }
 
 impl MiddlewareConfig {
@@ -914,8 +880,9 @@ impl MiddlewareConfig {
     }
 }
 
-/// Capability-rendered preview whose inner events remain provider-neutral.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// A capability preview as a client sees it: the header the event carries plus the
+/// gateway-reduced page sent beside it. Built with [`RecordedEvent::take_preview`].
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenderedPreview {
     /// What the preview shows.
     pub kind: mobius::protocol::FrontendPreviewKind,
@@ -954,8 +921,71 @@ pub struct RecordedEvent {
     pub event: Event,
     /// The stream metrics.
     pub stream_metrics: Vec<StreamMetrics>,
-    /// The preview.
-    pub preview: Option<RenderedPreview>,
+    /// The reduced page of a `Preview` event, whose header stays in `event`.
+    pub preview: Option<TranscriptPage>,
+}
+
+impl RecordedEvent {
+    /// Joins a preview event's header with its reduced page, leaving the event's
+    /// `next` operation empty. Returns `None` for events without a preview page.
+    pub fn take_preview(&mut self) -> Option<RenderedPreview> {
+        let mobius::protocol::EventMsg::Frontend(mobius::protocol::FrontendEvent::Preview {
+            kind,
+            state,
+            symbol,
+            duration_ms,
+            started_at_ms,
+            id,
+            title,
+            subtitle,
+            page_id,
+            update,
+            next,
+            ..
+        }) = &mut self.event.msg
+        else {
+            return None;
+        };
+        Some(RenderedPreview {
+            kind: *kind,
+            state: *state,
+            symbol: symbol.take(),
+            duration_ms: *duration_ms,
+            started_at_ms: *started_at_ms,
+            id: Arc::clone(id),
+            title: Arc::clone(title),
+            subtitle: Arc::clone(subtitle),
+            page_id: Arc::clone(page_id),
+            update: *update,
+            transcript: self.preview.take()?,
+            next: next.take(),
+        })
+    }
+}
+
+impl RenderedPreview {
+    /// Splits a preview into the event that carries its header and the page sent beside
+    /// it, the inverse of [`RecordedEvent::take_preview`].
+    #[must_use]
+    pub fn into_parts(self) -> (mobius::protocol::EventMsg, TranscriptPage) {
+        (
+            mobius::protocol::EventMsg::Frontend(mobius::protocol::FrontendEvent::Preview {
+                kind: self.kind,
+                state: self.state,
+                symbol: self.symbol,
+                duration_ms: self.duration_ms,
+                started_at_ms: self.started_at_ms,
+                id: self.id,
+                title: self.title,
+                subtitle: self.subtitle,
+                page_id: self.page_id,
+                update: self.update,
+                events: Vec::new(),
+                next: self.next,
+            }),
+            self.transcript,
+        )
+    }
 }
 
 /// Gateway-owned profile and aggregate usage information.

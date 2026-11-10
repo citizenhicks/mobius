@@ -2,7 +2,7 @@ use super::*;
 use crate::BoxFuture;
 use crate::backend::model::authorization::ResolvedAuthorization;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 
 const SDP: &str = "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n";
@@ -124,34 +124,11 @@ impl tokio_tungstenite::tungstenite::handshake::server::Callback for InspectUpgr
 }
 
 async fn read_request(socket: &mut TcpStream) -> (String, String) {
-    let mut bytes = Vec::new();
-    let header_end = loop {
-        let mut buf = [0; 4096];
-        let n = socket.read(&mut buf).await.unwrap();
-        assert_ne!(n, 0);
-        bytes.extend_from_slice(&buf[..n]);
-        if let Some(end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
-            break end + 4;
-        }
-    };
-    let headers = String::from_utf8(bytes[..header_end].to_vec()).unwrap();
-    let length = headers
-        .lines()
-        .find_map(|line| {
-            let (key, value) = line.split_once(':')?;
-            key.eq_ignore_ascii_case("content-length")
-                .then(|| value.trim().parse::<usize>().unwrap())
-        })
-        .unwrap_or(0);
-    while bytes.len() < header_end + length {
-        let mut buf = [0; 4096];
-        let n = socket.read(&mut buf).await.unwrap();
-        assert_ne!(n, 0);
-        bytes.extend_from_slice(&buf[..n]);
-    }
+    let request = crate::backend::model::test_support::read_http_request(socket).await;
+    let (headers, body) = request.split_once("\r\n\r\n").expect("HTTP request");
     (
-        headers.to_lowercase(),
-        String::from_utf8(bytes[header_end..].to_vec()).unwrap(),
+        format!("{}\r\n\r\n", headers.to_lowercase()),
+        body.to_owned(),
     )
 }
 

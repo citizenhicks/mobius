@@ -118,6 +118,7 @@ pub(crate) struct RealtimeCall {
 pub(crate) struct HarnessContext {
     pub(crate) store: ConfigStore,
     pub(crate) gateway: Arc<std::sync::Mutex<GatewayConfig>>,
+    pub(crate) usage: Arc<crate::config::UsageStore>,
     pub(crate) credentials: Arc<CredentialStore>,
     pub(crate) bots: Arc<BotStore>,
     pub(crate) checkpoints: Arc<dyn CheckpointStore>,

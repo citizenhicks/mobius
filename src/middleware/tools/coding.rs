@@ -23,7 +23,20 @@ struct Definition {
     write_file: super::ToolSpec,
     apply_patch: super::ToolSpec,
 }
-crate::embedded_config! { static DEFINITION: Definition = include_str!("coding.toml"); }
+crate::embedded_config! { static DEFINITION: Definition = include_str!("coding.toml") => fill_limits; }
+
+fn fill_limits(definition: &mut Definition) {
+    super::fill_max_bytes(
+        &mut definition.write_file.tool,
+        "/properties/content/description",
+        MAX_MUTATION_BYTES,
+    );
+    super::fill_max_bytes(
+        &mut definition.apply_patch.tool,
+        "/properties/patch/description",
+        MAX_MUTATION_BYTES,
+    );
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

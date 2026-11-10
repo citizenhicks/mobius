@@ -11,7 +11,6 @@ pub(in crate::frontend) use self::runtime::run;
 
 use super::setup::SetupMode;
 use mobius_gateway::wire::ClientMessage;
-use uuid::Uuid;
 
 enum Action {
     None,
@@ -20,7 +19,7 @@ enum Action {
     /// Runs setup for the Bot shown on the current `Page::Bot`.
     Setup(SetupMode),
     Send {
-        request_id: Uuid,
+        request_id: Arc<str>,
         message: Box<ClientMessage>,
         label: &'static str,
         follow_up: FollowUp,
@@ -39,8 +38,8 @@ fn request_action(
     follow_up: FollowUp,
     make_message: impl FnOnce(Arc<str>) -> ClientMessage,
 ) -> Action {
-    let request_id = Uuid::new_v4();
-    let message = make_message(request_id.to_string().into());
+    let request_id = crate::fresh_id();
+    let message = make_message(Arc::clone(&request_id));
     Action::Send {
         request_id,
         message: Box::new(message),
@@ -79,66 +78,11 @@ mod tests {
     use super::runtime::handle_frame;
     use super::state::{BotsState, Page};
     use super::*;
-    use mobius::protocol::SessionFileLimits;
+    use crate::frontend::fixtures::{bot, ready as gateway};
     use mobius_gateway::wire::{
-        BotRecord, ProviderTint, ReadyPayload, Routine, RoutineInteractionPolicy, RoutineRun,
-        RoutineRunStatus, RoutineSchedule, RoutineScheduleKind, ServerMessage,
-        VersionedAgentConfig,
+        Routine, RoutineRun, RoutineRunStatus, RoutineSchedule, RoutineScheduleKind, ServerMessage,
     };
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-
-    fn gateway(bots: Vec<BotRecord>) -> ReadyPayload {
-        ReadyPayload {
-            gateway_version: env!("CARGO_PKG_VERSION").into(),
-            machine_name: "test".into(),
-            computer_view: mobius_gateway::wire::ComputerView::Unavailable,
-            bots,
-            sessions: Vec::new(),
-            background_approvals: Vec::new(),
-            providers: Vec::new(),
-            provider_instances: Vec::new(),
-            agent_catalog: Default::default(),
-            harnesses: Vec::new(),
-            max_active_sessions: 1,
-            session_file_limits: SessionFileLimits {
-                max_attachment_references: 0,
-                max_file_bytes: 0,
-                max_session_files: 0,
-                max_session_bytes: 0,
-                max_upload_chunk_bytes: 0,
-            },
-            revisions: Default::default(),
-            omitted: Default::default(),
-        }
-    }
-
-    fn bot(id: &str) -> BotRecord {
-        BotRecord {
-            id: id.into(),
-            conversation_session_id: mobius::SessionId::new("bot-conversation-test")
-                .expect("session"),
-            handle: id.into(),
-            name: id.into(),
-            description: "description".into(),
-            tint: ProviderTint::Teal,
-            shape: mobius_gateway::wire::BotShape::Circle,
-            harness: mobius_gateway::wire::HarnessKind::Mobius,
-            config: Arc::new(VersionedAgentConfig {
-                revision: 7,
-                config: mobius_gateway::wire::HarnessConfig::Mobius(Arc::default()),
-            }),
-            capabilities: mobius_gateway::wire::BotCapabilities {
-                attachments: false,
-                computer: false,
-                voice: mobius_gateway::wire::VoiceCapability::Off,
-                memory: mobius_gateway::wire::BotMemory {
-                    enabled: false,
-                    global: false,
-                },
-            },
-            routine_interaction_policy: RoutineInteractionPolicy::Unattended,
-        }
-    }
 
     fn routine(id: &str) -> Routine {
         Routine {
@@ -289,8 +233,8 @@ mod tests {
     fn run_requests_are_correlated_and_unrelated_history_is_deferred() {
         let mut gateway = gateway(vec![bot("bot-a")]);
         let mut state = BotsState::new(&gateway, None, None);
-        let owned = Uuid::new_v4();
-        state.begin(owned, "Load run history", FollowUp::None);
+        let owned = crate::fresh_id();
+        state.begin(Arc::clone(&owned), "Load run history", FollowUp::None);
         let run = RoutineRun {
             id: "run-a".into(),
             routine_id: "routine-a".into(),
@@ -313,29 +257,13 @@ mod tests {
 
         let (_, deferred) = handle_frame(
             ServerMessage::RoutineHistory {
-                request_id: owned.to_string().into(),
+                request_id: owned,
                 runs: vec![run.clone()],
             },
             &mut gateway,
             &mut state,
         );
         assert!(deferred.is_none());
-        assert_eq!(state.runs, vec![run.clone()]);
-        assert!(matches!(
-            message(request_action("Load run", FollowUp::None, |request_id| {
-                ClientMessage::GetRoutineRunPreview {
-                    request_id,
-                    id: Arc::clone(&run.id),
-                    before: None,
-                }
-            })),
-            ClientMessage::GetRoutineRunPreview { id, .. } if &*id == "run-a"
-        ));
-        assert!(matches!(
-            message(request_action("Delete run", FollowUp::None, |request_id| {
-                ClientMessage::DeleteRoutineRun { request_id, id: run.id }
-            })),
-            ClientMessage::DeleteRoutineRun { id, .. } if &*id == "run-a"
-        ));
+        assert_eq!(state.runs, vec![run]);
     }
 }

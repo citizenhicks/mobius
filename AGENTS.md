@@ -37,7 +37,7 @@ module.
 - Keep dependencies explicit. Registries assemble objects; they are not service locators.
 - Middleware declaration order is observable hook and prompt-section order;
   `session_end` alone unwinds in reverse.
-- `prompt_section` is composed once at agent creation; use `pre_model` for dynamic durable state and `model_request` for request-only decoration.
+- `prompt_section` is composed once at agent creation; use `pre_model` for dynamic durable state.
 - Keep prompt sections short and capability-local. Do not repeat tool schemas or
   eagerly inject full skill instructions.
 - Expose meaningful policy as middleware construction options. The middleware owns
@@ -81,8 +81,8 @@ module.
 Follow the [Google Rust style guide](https://google.github.io/styleguide/rustguide.html).
 `mobius` (`src/`) is library code, so the guide's API rules bind there. `mobius-gateway`
 and `mobius-cli` are application code: prefer the direct solution over a general one.
-The rules below are the ones that apply here and that the lints in `Cargo.toml` do not
-already enforce. Where another section of this file is stricter, that section wins.
+The rules below are the ones that apply here; the lints in `Cargo.toml` already enforce
+some of them. Where another section of this file is stricter, that section wins.
 
 Modules and imports:
 
@@ -169,8 +169,9 @@ Implement `middleware::Middleware` in one vertical module. Register tools in
 `register`, lifecycle behavior in the relevant hook, and UI metadata in
 `frontend` or `render`. Handle declared commands in `command`.
 
-Only middleware shipped by `mobius-gateway` needs one composition setting and one
-construction branch in `crates/mobius-gateway/src/harness/mobius/assembly.rs`. Do not edit the
+Only middleware shipped by `mobius-gateway` needs one registry entry in
+`crates/mobius-gateway/src/harness/mobius/middleware_manifest.rs` and one construction
+branch in `crates/mobius-gateway/src/harness/mobius/assembly.rs`. Do not edit the
 agent loop or any frontend for capability-specific behavior.
 
 Approval-required tools are always handled by the sandbox.
@@ -215,19 +216,29 @@ cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --locked --no-deps
 cargo test --workspace --all-targets --all-features --locked
 RUSTDOCFLAGS="-D warnings" cargo test --workspace --doc --all-features --locked
+sh .github/rules.sh
+python3 .github/sync-gateway-contract.py --check
 ```
 
-Run `just complexity` for the Rust complexity gate. Simplify touched code
-before handoff; do not raise thresholds or suppress warnings to make a change pass.
-Audit findings should identify the owning seam and the smallest behavior-preserving fix.
+`.github/rules.sh` checks the rules in this file that Clippy cannot express (no clones,
+no hosted-service names, no serde aliases, provider and middleware names only in their
+owners). CI runs all of the above, checks the minimum toolchain with
+`cargo +1.99.0 check --workspace --all-targets --all-features --locked`, and lints the
+generated manual pages.
 
-Linux sandbox tests require Bubblewrap. `just test` and `just fmt` are shortcuts
-for local iteration.
+Shortcuts: `just test` runs the test command, `just complexity` runs the Clippy command
+(`cognitive_complexity` is one of its lints), `just rules` runs `rules.sh`, and `just fmt`
+formats in place. Simplify touched code before handoff; do not suppress warnings to make
+a change pass. Audit findings should identify the owning seam and the smallest
+behavior-preserving fix.
+
+Linux sandbox tests require Bubblewrap.
 
 ## Releases
 
-`mobius`, `mobius-gateway`, and `mobius-cli` have separate versions and releases.
-Publish them in that order because each depends on the previous published crate.
+`mobius`, `mobius-gateway`, and `mobius-cli` share one version number and are published
+separately, each from its own tag. Publish them in that order because each depends on
+the previous published crate.
 Release automation belongs in `.github/workflows/`; do not mix it into capability
 code.
 

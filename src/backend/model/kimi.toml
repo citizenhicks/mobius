@@ -1,5 +1,20 @@
-# Provider-owned model catalog.
+# Provider-owned model catalog. A model without `reasoning` accepts every listed effort.
 default_model = "kimi-k3.1-pro"
+
+[[reasoning]]
+id = "low"
+label = "Low"
+description = "Prefer speed and lower cost"
+
+[[reasoning]]
+id = "high"
+label = "High"
+description = "Use deeper reasoning"
+
+[[reasoning]]
+id = "max"
+label = "Maximum"
+description = "Use K3.1 Pro's maximum reasoning effort"
 
 [[models]]
 id = "kimi-k3.1-pro"
@@ -8,21 +23,6 @@ description = "Moonshot's agentic coding model"
 default_reasoning = "max"
 context_window = 1048576
 tool_discovery = "rebuild"
-
-[[models.reasoning]]
-id = "low"
-label = "Low"
-description = "Prefer speed and lower cost"
-
-[[models.reasoning]]
-id = "high"
-label = "High"
-description = "Use deeper reasoning"
-
-[[models.reasoning]]
-id = "max"
-label = "Maximum"
-description = "Use K3.1 Pro's maximum reasoning effort"
 
 [[models]]
 id = "kimi-k2.7-code"

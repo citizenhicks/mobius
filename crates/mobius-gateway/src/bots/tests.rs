@@ -83,7 +83,7 @@ impl BotStore {
     fn take_due(&self, now: i64) -> Result<Vec<(Arc<str>, ActiveRoutineRun)>> {
         self.poll_due(now)?;
         let mut runs = Vec::new();
-        for pending in self.pending_actions(now, 1000)? {
+        for pending in self.storage.pending_actions(now, 1000)? {
             let BotAction::Routine { command } = &pending.action else {
                 continue;
             };
@@ -98,7 +98,7 @@ impl BotStore {
                 BeginRun::Started(run) => runs.push((Arc::clone(&command.routine_id), run)),
                 BeginRun::Skipped | BeginRun::AlreadyRecorded => {}
             }
-            self.action_accepted(&pending.id)?;
+            self.storage.action_accepted(&pending.id)?;
         }
         Ok(runs)
     }
@@ -155,6 +155,7 @@ fn clock_records_only_due_facts_and_start_commands_deduplicate_after_completion(
     );
     assert!(store.poll_due(now).expect("no replay").events.is_empty());
     let action = store
+        .storage
         .pending_actions(now, 10)
         .expect("start command")
         .into_iter()
@@ -309,44 +310,6 @@ async fn routine_creation_cannot_commit_after_its_bot_is_deleted() {
     );
 }
 
-#[test]
-fn routine_start_does_not_orphan_history_behind_a_delete_lock() {
-    let (_root, store, workspace) = fixture();
-    let bot = create_bot(&store, "locked_delete");
-    let routine = store
-        .create_scheduled(
-            &bot.id,
-            &workspace,
-            "delete while locked",
-            once(Utc::now().timestamp() + 60),
-            None,
-        )
-        .expect("routine");
-    let held_lock = std::cell::RefCell::new(None);
-
-    let error = store
-        .begin_run_inner(&routine.id, &Uuid::new_v4().to_string(), None, || {
-            let lock = store
-                .try_routine_lock(&routine.id)
-                .expect("routine lock")
-                .expect("uncontended routine lock");
-            store
-                .update(|state| {
-                    let index = resolve_routine(&state.routines, &routine.id)?;
-                    state.routines.remove(index);
-                    Ok(())
-                })
-                .expect("interleaved delete");
-            held_lock.replace(Some(lock));
-        })
-        .err()
-        .expect("deleted routine must not append history");
-
-    assert!(error.to_string().contains("routine was deleted"));
-    assert!(store.history(None).expect("history").is_empty());
-}
-
-#[cfg(unix)]
 #[test]
 fn managed_instructions_cannot_be_replaced_with_an_outside_symlink() {
     let (root, store, workspace) = fixture();

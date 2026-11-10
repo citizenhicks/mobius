@@ -1,7 +1,17 @@
-use super::*;
+use super::{
+    BTreeMap, BaseUrl, CLOUDFLARE_TOKEN_FILE, CONFIG_FILE, CloudflareConfig, DailyUsage,
+    Deserialize, Error, GatewayConfig, MAX_CLOUDFLARE_TOKEN_BYTES, MAX_CONFIG_BYTES,
+    MAX_CREDENTIAL_STATE_BYTES, MAX_PROVIDER_API_KEY_BYTES, Mutex, NamedTunnel, Path, PathBuf,
+    ProviderAuth, Result, SECONDS_PER_DAY, Serialize, SocketAddr, SystemTime, TlsConfig,
+    TokenUsage, UNIX_EPOCH, USAGE_HISTORY_DAYS, ValidatedGatewayConfig, env, fs, provider,
+    validate_cloudflare_token,
+};
 use mobius::backend::model::ModelCredentialLifetime;
+use std::io::Read as _;
+use std::os::unix::fs::OpenOptionsExt as _;
+use std::os::unix::fs::PermissionsExt as _;
 
-/// File owner for gateway configuration and aggregate usage.
+/// File owner for gateway configuration.
 #[derive(Debug, Clone)]
 pub struct ConfigStore {
     state_dir: std::sync::Arc<Path>,
@@ -53,8 +63,85 @@ struct StoredCredential {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct UsageHistory {
-    pub(super) days: BTreeMap<u64, BTreeMap<String, TokenUsage>>,
+struct UsageHistory {
+    days: BTreeMap<u64, BTreeMap<String, TokenUsage>>,
+}
+
+const MAX_USAGE_BYTES: u64 = 1024 * 1024;
+
+/// Owner-only daily token usage. It lives apart from the configuration, so recording
+/// a model response neither rewrites `gateway.toml` nor waits for the config lock.
+#[derive(Debug)]
+pub(crate) struct UsageStore {
+    path: PathBuf,
+    history: Mutex<UsageHistory>,
+}
+
+impl UsageStore {
+    /// Opens recorded usage, treating a missing file as no usage yet.
+    pub(crate) fn open(path: PathBuf) -> Result<Self> {
+        let history =
+            match crate::publication::read_private(&path, MAX_USAGE_BYTES, "usage history") {
+                Ok(contents) => {
+                    let history: UsageHistory = serde_json::from_slice(&contents)?;
+                    for (provider, usage) in history.days.values().flatten() {
+                        validate_usage_provider(provider)?;
+                        validate_usage(usage)?;
+                    }
+                    history
+                }
+                Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                    UsageHistory::default()
+                }
+                Err(error) => return Err(error),
+            };
+        Ok(Self {
+            path,
+            history: Mutex::new(history),
+        })
+    }
+
+    /// Adds `usage` to today's total for `provider` and saves it; a failed save leaves the
+    /// totals as they were.
+    pub(crate) fn record(&self, provider: &str, usage: &TokenUsage) -> Result<()> {
+        let mut history = self
+            .history
+            .lock()
+            .map_err(crate::poisoned("usage history"))?;
+        let Some(update) = history.stage(provider, usage, SystemTime::now())? else {
+            return Ok(());
+        };
+        let saved = serde_json::to_vec(&*history)
+            .map_err(Error::from)
+            .and_then(|contents| crate::publication::publish(&self.path, &contents, false));
+        if let Err(error) = saved {
+            if !matches!(error, Error::PublicationApplied { .. }) {
+                update.rollback(&mut history, provider);
+            }
+            return Err(error);
+        }
+        drop(history);
+        Ok(())
+    }
+
+    /// Every recorded daily total, oldest day first.
+    pub(crate) fn daily_usage(&self) -> Result<Vec<DailyUsage>> {
+        let history = self
+            .history
+            .lock()
+            .map_err(crate::poisoned("usage history"))?;
+        Ok(history
+            .days
+            .iter()
+            .flat_map(|(unix_day, providers)| {
+                providers.iter().map(|(provider, usage)| DailyUsage {
+                    unix_day: *unix_day,
+                    provider: provider.clone(), // rules-allow: the profile snapshot is sent to clients
+                    usage: *usage,
+                })
+            })
+            .collect())
+    }
 }
 
 /// Owns only the values changed by one usage publication.
@@ -143,27 +230,11 @@ impl ConfigStore {
         let state_dir = fs::canonicalize(state_dir)?;
         validate_private_state_dir(&state_dir)?;
         let store = Self::at(state_dir);
-        let mut options = fs::OpenOptions::new();
-        options.read(true);
-        #[cfg(unix)]
-        options.custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK);
-        let mut file = options.open(&store.path)?;
-        let metadata = file.metadata()?;
-        if !metadata.is_file() {
-            return Err(Error::Config(
-                "gateway configuration must be a regular file".into(),
-            ));
-        }
-        if metadata.len() > MAX_CONFIG_BYTES {
-            return Err(Error::Config("gateway configuration is too large".into()));
-        }
-        let mut contents = Vec::new();
-        std::io::Read::by_ref(&mut file)
-            .take(MAX_CONFIG_BYTES + 1)
-            .read_to_end(&mut contents)?;
-        if u64::try_from(contents.len()).unwrap_or(u64::MAX) > MAX_CONFIG_BYTES {
-            return Err(Error::Config("gateway configuration is too large".into()));
-        }
+        let contents = crate::publication::read_private(
+            &store.path,
+            MAX_CONFIG_BYTES,
+            "gateway configuration",
+        )?;
         let config: GatewayConfig = toml::from_slice(&contents).map_err(|error| {
             Error::Config(format!(
                 "gateway configuration at {} could not be read; preserve the state directory and correct the configuration or follow the release upgrade instructions: {error}",
@@ -190,22 +261,10 @@ impl ConfigStore {
         self.publish_config(config, false)
     }
 
-    pub(crate) fn record_usage(
-        &self,
-        config: &mut GatewayConfig,
-        provider: &str,
-        usage: &TokenUsage,
-    ) -> Result<()> {
-        let Some(update) = config.usage.stage(provider, usage, SystemTime::now())? else {
-            return Ok(());
-        };
-        if let Err(error) = self.publish_config(config, false) {
-            if !matches!(error, Error::PublicationApplied { .. }) {
-                update.rollback(&mut config.usage, provider);
-            }
-            return Err(error);
-        }
-        Ok(())
+    /// Returns the daily token usage path.
+    #[must_use]
+    pub(crate) fn usage_path(&self) -> PathBuf {
+        self.state_dir.join("usage.json")
     }
 
     /// Returns the protected state directory.
@@ -281,35 +340,16 @@ impl CredentialStore {
     ///
     /// Returns an error if the resource cannot be read, decoded, or validated.
     pub fn open(path: PathBuf) -> Result<Self> {
-        let mut options = fs::OpenOptions::new();
-        options.read(true);
-        #[cfg(unix)]
-        options.custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK);
-        let values = match options.open(&path) {
-            Ok(file) => {
-                let metadata = file.metadata()?;
-                if !metadata.is_file() {
-                    return Err(Error::Config(
-                        "provider credential state must be a regular file".into(),
-                    ));
-                }
-                if metadata.len() > MAX_CREDENTIAL_STATE_BYTES as u64 {
-                    return Err(Error::Config(
-                        "provider credential state is too large".into(),
-                    ));
-                }
-                let mut contents = Vec::new();
-                file.take(MAX_CREDENTIAL_STATE_BYTES as u64 + 1)
-                    .read_to_end(&mut contents)?;
-                if contents.len() > MAX_CREDENTIAL_STATE_BYTES {
-                    return Err(Error::Config(
-                        "provider credential state is too large".into(),
-                    ));
-                }
-                serde_json::from_slice(&contents)?
+        let values = match crate::publication::read_private(
+            &path,
+            MAX_CREDENTIAL_STATE_BYTES as u64,
+            "provider credential state",
+        ) {
+            Ok(contents) => serde_json::from_slice(&contents)?,
+            Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                BTreeMap::new()
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
-            Err(error) => return Err(error.into()),
+            Err(error) => return Err(error),
         };
         validate_credential_state(&values)?;
         Ok(Self {
@@ -331,7 +371,7 @@ impl CredentialStore {
         expires_at: Option<u64>,
     ) -> Result<()> {
         let api_key = api_key.trim();
-        validate_credential(instance, provider_id, api_key, base_url, expires_at)?;
+        validate_credential(instance, provider_id, api_key, expires_at)?;
         let credential = StoredCredential {
             provider: provider_id.into(),
             api_key: api_key.into(),
@@ -485,7 +525,6 @@ pub fn state_dir() -> Result<PathBuf> {
 ///
 /// Returns an error if the resource cannot be read, decoded, or validated.
 pub fn load_secret_file(path: &Path) -> Result<String> {
-    #[cfg(unix)]
     let file = fs::OpenOptions::new()
         .read(true)
         .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
@@ -497,23 +536,12 @@ pub fn load_secret_file(path: &Path) -> Result<String> {
                 error.into()
             }
         })?;
-    #[cfg(not(unix))]
-    let file = {
-        let metadata = fs::symlink_metadata(path)?;
-        if !metadata.file_type().is_file() {
-            return Err(Error::Config(
-                "secret must be stored in a regular file".into(),
-            ));
-        }
-        fs::File::open(path)?
-    };
     let metadata = file.metadata()?;
     if !metadata.file_type().is_file() {
         return Err(Error::Config(
             "secret must be stored in a regular file".into(),
         ));
     }
-    #[cfg(unix)]
     if metadata.permissions().mode() & 0o077 != 0 {
         return Err(Error::Config(
             "secret file must not be accessible by group or others (use mode 0600)".into(),
@@ -551,7 +579,6 @@ fn prepare_state_dir(path: &Path) -> Result<PathBuf> {
         }
         Err(error) => return Err(error.into()),
     }
-    #[cfg(unix)]
     fs::set_permissions(&path, mobius::owner_only::dir())?;
     Ok(path)
 }
@@ -563,7 +590,6 @@ fn validate_private_state_dir(path: &Path) -> Result<()> {
             "gateway state path must be a directory".into(),
         ));
     }
-    #[cfg(unix)]
     if metadata.permissions().mode() & 0o077 != 0 {
         return Err(Error::Config(
             "gateway state directory must not be accessible by group or others (use mode 0700)"
@@ -577,7 +603,6 @@ fn validate_credential(
     instance: &str,
     provider_id: &str,
     api_key: &str,
-    base_url: Option<&BaseUrl>,
     expires_at: Option<u64>,
 ) -> Result<()> {
     if expires_at.is_some_and(|seconds| seconds == 0 || seconds > 253_402_300_799) {
@@ -602,7 +627,6 @@ fn validate_credential(
             "API key must contain only visible ASCII characters without whitespace".into(),
         ));
     }
-    definition.validate_base_url(base_url)?;
     Ok(())
 }
 
@@ -612,7 +636,6 @@ fn validate_credential_state(values: &BTreeMap<String, StoredCredential>) -> Res
             instance,
             &credential.provider,
             &credential.api_key,
-            credential.base_url.as_ref(),
             credential.expires_at,
         )?;
     }
@@ -630,15 +653,6 @@ fn save_private_map(path: &Path, values: &BTreeMap<String, StoredCredential>) ->
 }
 
 impl UsageHistory {
-    pub(super) fn observe(
-        &mut self,
-        provider: &str,
-        usage: &TokenUsage,
-        now: SystemTime,
-    ) -> Result<bool> {
-        Ok(self.stage(provider, usage, now)?.is_some())
-    }
-
     fn stage(
         &mut self,
         provider: &str,
@@ -716,14 +730,14 @@ pub fn unix_day(now: SystemTime) -> Result<u64> {
         / SECONDS_PER_DAY)
 }
 
-pub(super) fn validate_usage(usage: &TokenUsage) -> Result<()> {
+fn validate_usage(usage: &TokenUsage) -> Result<()> {
     if !usage_nonnegative(usage) {
         return Err(Error::Config("token usage cannot be negative".into()));
     }
     Ok(())
 }
 
-pub(super) fn validate_usage_provider(provider: &str) -> Result<()> {
+fn validate_usage_provider(provider: &str) -> Result<()> {
     if provider.trim().is_empty()
         || provider != provider.trim()
         || provider.len() > 256
@@ -795,21 +809,16 @@ mod usage_tests {
     #[test]
     fn failed_usage_publication_restores_usage_and_retained_expired_days() {
         let root = tempfile::tempdir().unwrap();
-        let state = root.path().join("state");
-        let (store, mut config) =
-            ConfigStore::initialize(state.clone(), DEFAULT_LISTEN, None).unwrap();
-        config.usage = expired_history();
-        store
-            .save(&config.clone().validated().expect("valid config"))
-            .unwrap();
-        let before = config.usage.clone();
-        crate::publication::fail_next_replacement(&store.path);
-        assert!(
-            store
-                .record_usage(&mut config, "provider", &usage(7))
-                .is_err()
+        let path = root.path().join("usage.json");
+        std::fs::write(&path, serde_json::to_vec(&expired_history()).unwrap()).unwrap();
+        let store = UsageStore::open(path.clone()).unwrap();
+        let before = store.daily_usage().unwrap();
+        crate::publication::fail_next_replacement(&path);
+        assert!(store.record("provider", &usage(7)).is_err());
+        assert_eq!(store.daily_usage().unwrap(), before);
+        assert_eq!(
+            UsageStore::open(path).unwrap().daily_usage().unwrap(),
+            before
         );
-        assert_eq!(config.usage, before);
-        assert_eq!(ConfigStore::open(state).unwrap().1.usage, before);
     }
 }

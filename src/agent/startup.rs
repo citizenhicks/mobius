@@ -7,9 +7,7 @@ use super::ChildAgents;
 use super::Runner;
 use super::SUBMISSION_QUEUE_CAPACITY;
 use super::TURN_RESTARTED_REASON;
-use super::send_event;
 use super::submission_channel;
-use super::try_send_event;
 use super::unix_timestamp_ms;
 use crate::Error;
 use crate::Result;
@@ -206,13 +204,10 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
                 return Ok(());
             }
             drop(queued);
-            try_send_event(
-                &middleware_events,
-                Event {
-                    submission_id: None,
-                    msg: EventMsg::Frontend(update),
-                },
-            )
+            middleware_events.try_record(Event {
+                submission_id: None,
+                msg: EventMsg::Frontend(update),
+            })
         }),
     };
     let (system_prompt, prompt_sizes) = config
@@ -222,7 +217,6 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
     let prompt_estimate =
         super::context_estimate::ContextEstimate::prompt(&prompt_sizes, config.token_estimate);
     let catalog = config.middleware.catalog(&runtime)?;
-    let tool_count = catalog.registered_definitions().len();
     let frontend = FrontendExtensions::new(Arc::clone(&config.middleware), session_id.share())?;
     let mut state_changed = metadata_changed || state.model_route.as_ref() != Some(&route);
     state.model_route = Some(route);
@@ -350,8 +344,6 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
             .turn_end(TurnEndContext {
                 session_id: &session_id,
                 turn_id: &execution.turn_id,
-                outcome: ExecutionOutcome::Aborted,
-                queued_messages: &state.pending_messages,
                 owner: None,
                 idle: recovery_idle,
                 events: &mut messages,
@@ -360,11 +352,10 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
         {
             return Err(failed_start(&config, &runtime, error).await);
         }
-        recovery_events.extend(
-            messages
-                .into_iter()
-                .map(|msg| crate::agent::turn::turn_event(&execution.submission_id, msg)),
-        );
+        recovery_events.extend(crate::agent::turn::turn_events(
+            &execution.submission_id,
+            messages,
+        ));
         recovery_events.push(crate::agent::turn::turn_event(
             &execution.submission_id,
             EventMsg::TurnAborted(TurnAbortedEvent {
@@ -378,10 +369,7 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
     let finish_start = async {
         if is_new || state_changed {
             if !is_new {
-                state.make_mut().sequence = state
-                    .sequence
-                    .checked_add(1)
-                    .ok_or_else(|| Error::Checkpoint("checkpoint sequence overflow".into()))?;
+                state.make_mut().sequence = state.next_sequence()?;
             }
             let mut startup_events = vec![session_event];
             startup_events.append(&mut recovery_events);
@@ -394,7 +382,7 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
                 )
                 .await?;
         } else {
-            send_event(&event_tx, session_event).await?;
+            event_tx.record(session_event).await?;
         }
         let frontend_events = pending_frontend
             .lock()
@@ -404,41 +392,33 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
             .take()
             .ok_or_else(|| Error::Stopped("middleware frontend queue already drained".into()))?;
         for update in frontend_events {
-            send_event(
-                &event_tx,
-                Event {
+            event_tx
+                .record(Event {
                     submission_id: None,
                     msg: EventMsg::Frontend(update),
-                },
-            )
-            .await?;
+                })
+                .await?;
         }
         if !replay.is_empty() {
-            try_send_event(
-                &event_tx,
-                Event {
-                    submission_id: None,
-                    msg: EventMsg::SessionHistory(SessionHistoryEvent { events: replay }),
-                },
-            )?;
+            event_tx.try_record(Event {
+                submission_id: None,
+                msg: EventMsg::SessionHistory(SessionHistoryEvent { events: replay }),
+            })?;
         }
         let last_usage = state.last_usage;
         if let Some(last_token_usage) = last_usage {
-            try_send_event(
-                &event_tx,
-                Event {
-                    submission_id: None,
-                    msg: EventMsg::TokenCount(TokenCountEvent {
-                        info: Some(TokenUsageInfo {
-                            context: None,
-                            total_token_usage: state.total_usage,
-                            last_token_usage,
-                            model_context_window: Some(config.context_window),
-                        }),
-                        rate_limits: None,
+            event_tx.try_record(Event {
+                submission_id: None,
+                msg: EventMsg::TokenCount(TokenCountEvent {
+                    info: Some(TokenUsageInfo {
+                        context: None,
+                        total_token_usage: state.total_usage,
+                        last_token_usage,
+                        model_context_window: Some(config.context_window),
                     }),
-                },
-            )?;
+                    rate_limits: None,
+                }),
+            })?;
         }
         event_tx.flush().await
     }
@@ -481,14 +461,13 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
             (Ok(()), Ok(())) => None,
         };
         if let Some(error) = error
-            && let Err(send_error) = send_event(
-                &runner.events,
-                Event {
+            && let Err(send_error) = runner
+                .events
+                .record(Event {
                     submission_id: None,
                     msg: EventMsg::Error(ErrorEvent::from_error(&error)),
-                },
-            )
-            .await
+                })
+                .await
         {
             tracing::warn!(%error, %send_error, "agent runtime failed and its error event could not be recorded");
         }
@@ -500,8 +479,6 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
         frontend,
         frontend_sink,
         session,
-        model,
-        tool_count,
         next_before_sequence,
     })
 }

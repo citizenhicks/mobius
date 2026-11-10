@@ -47,13 +47,13 @@ async fn last_use_waits_for_execution_and_rechecks_a_new_consumer() {
         true,
         ComputerConfig::default(),
     ));
-    let agent = remote.acquire_use().await;
+    let agent = remote.acquire_use().await.unwrap();
     sleeping_runtime(&remote).await;
     let execution = remote.execution_lease().await.unwrap();
     drop(agent);
     tokio::task::yield_now().await;
     assert!(remote.runtime.lock().await.is_some());
-    let reopened = remote.acquire_use().await;
+    let reopened = remote.acquire_use().await.unwrap();
     drop(execution);
     // The queued stop writer runs before this new read lease.
     drop(remote.execution_lease().await.unwrap());
@@ -192,7 +192,10 @@ async fn dropping_a_pending_grant_never_starts_a_late_controller() {
     drop(execution);
     remote.cancel_takeover().await;
     assert!(remote.runtime.lock().await.is_none());
-    assert_eq!(remote.control_state(Uuid::new_v4()), (false, false, None));
+    assert_eq!(
+        remote.control_state(Uuid::new_v4()).unwrap(),
+        (false, false, None)
+    );
     assert!(remote.check_execution().is_ok());
     drop(remote);
 }

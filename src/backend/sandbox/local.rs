@@ -198,14 +198,6 @@ impl LocalSandbox {
     ///
     /// Returns an error if configuration is invalid or a required resource cannot be initialized.
     pub fn new(root: impl AsRef<Path>) -> Result<Self> {
-        #[cfg(not(unix))]
-        {
-            let _ = root;
-            Err(Error::Config(
-                "the local sandbox requires a Unix platform".into(),
-            ))
-        }
-        #[cfg(unix)]
         {
             let root = std::fs::canonicalize(root)?;
             if !root.is_dir() {
@@ -418,39 +410,8 @@ impl LocalSandbox {
     /// # Errors
     ///
     /// Returns an error if validation or an operation required by this function fails.
-    pub fn allow_workspace_root(mut self, path: impl AsRef<Path>) -> Result<Self> {
-        let path = std::fs::canonicalize(path)?;
-        validate_public_root(&path)?;
-        if !path.is_dir() {
-            return Err(Error::Config(format!(
-                "workspace root is not a directory: {}",
-                path.display()
-            )));
-        }
-        if self
-            .policy
-            .denied_reads
-            .iter()
-            .any(|denied| paths_overlap(&path, &denied.path))
-        {
-            return Err(Error::Config(
-                "workspace root and denied read path must not overlap".into(),
-            ));
-        }
-        if path == self.root
-            || self
-                .policy
-                .workspace_roots
-                .iter()
-                .any(|root| root.path == path)
-        {
-            return Ok(self);
-        }
-        let directory = pin_directory(&path)?;
-        Arc::make_mut(&mut self.policy)
-            .workspace_roots
-            .push(PinnedRoot { path, directory });
-        Ok(self)
+    pub fn allow_workspace_root(self, path: impl AsRef<Path>) -> Result<Self> {
+        self.allow_root(path.as_ref(), WorkspaceAccess::Writable)
     }
 
     /// Allows file tools and workspace-isolated commands to read one additional directory.
@@ -459,12 +420,20 @@ impl LocalSandbox {
     /// # Errors
     ///
     /// Returns an error if validation or an operation required by this function fails.
-    pub fn allow_read_root(mut self, path: impl AsRef<Path>) -> Result<Self> {
+    pub fn allow_read_root(self, path: impl AsRef<Path>) -> Result<Self> {
+        self.allow_root(path.as_ref(), WorkspaceAccess::ReadOnly)
+    }
+
+    fn allow_root(mut self, path: &Path, access: WorkspaceAccess) -> Result<Self> {
+        let kind = match access {
+            WorkspaceAccess::Writable => "workspace root",
+            WorkspaceAccess::ReadOnly => "read root",
+        };
         let path = std::fs::canonicalize(path)?;
         validate_public_root(&path)?;
         if !path.is_dir() {
             return Err(Error::Config(format!(
-                "read root is not a directory: {}",
+                "{kind} is not a directory: {}",
                 path.display()
             )));
         }
@@ -474,17 +443,25 @@ impl LocalSandbox {
             .iter()
             .any(|denied| paths_overlap(&path, &denied.path))
         {
-            return Err(Error::Config(
-                "read root and denied read path must not overlap".into(),
-            ));
+            return Err(Error::Config(format!(
+                "{kind} and denied read path must not overlap"
+            )));
         }
-        if self.policy.read_roots.iter().any(|root| root.path == path) {
+        let roots = match access {
+            WorkspaceAccess::Writable => &self.policy.workspace_roots,
+            WorkspaceAccess::ReadOnly => &self.policy.read_roots,
+        };
+        let workspace_root = access == WorkspaceAccess::Writable && path == self.root;
+        if workspace_root || roots.iter().any(|root| root.path == path) {
             return Ok(self);
         }
         let directory = pin_directory(&path)?;
-        Arc::make_mut(&mut self.policy)
-            .read_roots
-            .push(PinnedRoot { path, directory });
+        let policy = Arc::make_mut(&mut self.policy);
+        let roots = match access {
+            WorkspaceAccess::Writable => &mut policy.workspace_roots,
+            WorkspaceAccess::ReadOnly => &mut policy.read_roots,
+        };
+        roots.push(PinnedRoot { path, directory });
         Ok(self)
     }
 
@@ -514,42 +491,6 @@ impl LocalSandbox {
         self
     }
 
-    /// Runs one argv command with a read-only workspace and no network access.
-    /// # Errors
-    ///
-    /// Returns an error if validation or an operation required to complete the request fails.
-    pub async fn execute_read_only(
-        &self,
-        executable: &str,
-        arguments: &[&str],
-        environment: &[(&str, &str)],
-    ) -> Result<CommandOutput> {
-        self.execute_read_only_with_environment_removals(executable, arguments, environment, &[])
-            .await
-    }
-
-    /// Runs one argv command without selected inherited environment variables.
-    /// # Errors
-    ///
-    /// Returns an error if validation or an operation required to complete the request fails.
-    pub async fn execute_read_only_with_environment_removals(
-        &self,
-        executable: &str,
-        arguments: &[&str],
-        environment: &[(&str, &str)],
-        removed_environment: &[&str],
-    ) -> Result<CommandOutput> {
-        self.execute_argv(
-            executable,
-            arguments,
-            WorkspaceAccess::ReadOnly,
-            (environment, removed_environment),
-            #[cfg(target_os = "macos")]
-            None,
-        )
-        .await
-    }
-
     /// Shares validated macOS Git selection across one logical read operation.
     /// Each call still validates and runs its executable in the sandbox.
     #[must_use]
@@ -566,29 +507,6 @@ impl LocalSandbox {
             #[cfg(target_os = "macos")]
             resolved: tokio::sync::OnceCell::new(),
         }
-    }
-
-    /// Reads one bounded binary range through the sandbox's pinned workspace root.
-    /// # Errors
-    ///
-    /// Returns an error if the resource cannot be read, decoded, or validated.
-    pub async fn read_range(
-        &self,
-        path: &str,
-        offset: u64,
-        max_bytes: usize,
-    ) -> Result<(Vec<u8>, Option<u64>)> {
-        if max_bytes == 0 || max_bytes > MAX_FILE_BYTES {
-            return Err(Error::Sandbox(format!(
-                "file read size must be 1–{MAX_FILE_BYTES} bytes"
-            )));
-        }
-        let (root, relative) = self.read_target(path)?;
-        let requested = path.to_owned();
-        blocking_file("file reader", move || {
-            read_file_range(root, &relative, &requested, offset, max_bytes)
-        })
-        .await
     }
 
     /// Reads one bounded host file range while preserving denied read paths.
@@ -625,25 +543,12 @@ impl LocalSandbox {
     /// # Errors
     /// Rejects unsafe paths, symlinks, directories and filesystem failures.
     pub async fn remove_file(&self, path: &str) -> Result<()> {
-        let (root, relative) = self.write_target(path)?;
+        let (root, relative) = self.target(path, WorkspaceAccess::Writable)?;
         let requested = path.to_owned();
         blocking_file("file deletion", move || {
             files::remove_file(root, &relative, &requested)
         })
         .await
-    }
-
-    /// Runs Git argv with a writable workspace and no network access.
-    /// # Errors
-    ///
-    /// Returns an error if validation or an operation required to complete the request fails.
-    pub async fn execute_git_mutation(
-        &self,
-        arguments: &[&str],
-        environment: &[(&str, &str)],
-    ) -> Result<CommandOutput> {
-        self.execute_git_mutation_with_environment_removals(arguments, environment, &[])
-            .await
     }
 
     /// Runs Git argv without selected inherited environment variables.
@@ -684,7 +589,7 @@ impl LocalSandbox {
         &self,
         path: &str,
         sandbox_mode: SandboxMode,
-        target: fn(&Self, &str) -> Result<(Dir, PathBuf)>,
+        access: WorkspaceAccess,
         work: &'static str,
         operation: impl FnOnce(Dir, &Path, &str) -> Result<T> + Send + 'static,
     ) -> Result<T> {
@@ -698,11 +603,12 @@ impl LocalSandbox {
             })
             .await;
         }
-        let (root, relative) = target(self, path)?;
+        let (root, relative) = self.target(path, access)?;
         blocking_file(work, move || operation(root, &relative, &requested)).await
     }
 
-    fn read_target(&self, path: &str) -> Result<(Dir, PathBuf)> {
+    /// Resolves a file-tool path to its pinned root; reads also reach the read-only roots.
+    fn target(&self, path: &str, access: WorkspaceAccess) -> Result<(Dir, PathBuf)> {
         let requested = Path::new(path);
         if let Some(target) = self.temporary_target(requested)? {
             return Ok(target);
@@ -711,41 +617,15 @@ impl LocalSandbox {
             validate_root(&self.root, &self.policy.root_dir)?;
             return Ok((self.policy.root_dir.try_clone()?, Self::relative(path)?));
         }
+        let read_roots: &[PinnedRoot] = match access {
+            WorkspaceAccess::ReadOnly => &self.policy.read_roots,
+            WorkspaceAccess::Writable => &[],
+        };
         for (path, directory) in std::iter::once((&self.root, &self.policy.root_dir)).chain(
             self.policy
                 .workspace_roots
                 .iter()
-                .chain(&self.policy.read_roots)
-                .map(|root| (&root.path, &root.directory)),
-        ) {
-            let Ok(relative) = requested.strip_prefix(path) else {
-                continue;
-            };
-            if relative
-                .components()
-                .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
-            {
-                break;
-            }
-            validate_root(path, directory)?;
-            return Ok((directory.try_clone()?, relative.to_path_buf()));
-        }
-        Err(Rejected::OutsideRoots.path(path))
-    }
-
-    fn write_target(&self, path: &str) -> Result<(Dir, PathBuf)> {
-        let requested = Path::new(path);
-        if let Some(target) = self.temporary_target(requested)? {
-            return Ok(target);
-        }
-        if !requested.is_absolute() {
-            validate_root(&self.root, &self.policy.root_dir)?;
-            return Ok((self.policy.root_dir.try_clone()?, Self::relative(path)?));
-        }
-        for (path, directory) in std::iter::once((&self.root, &self.policy.root_dir)).chain(
-            self.policy
-                .workspace_roots
-                .iter()
+                .chain(read_roots)
                 .map(|root| (&root.path, &root.directory)),
         ) {
             let Ok(relative) = requested.strip_prefix(path) else {
@@ -972,6 +852,34 @@ printf '%s/usr/bin/git\n' "$developer"
         Ok(command)
     }
 
+    /// Runs one shell script with writable workspace access.
+    async fn execute_shell(
+        &self,
+        script: &str,
+        sandbox_mode: SandboxMode,
+        network_access: NetworkAccess,
+        mode: CommandMode,
+        output_sink: CommandOutputSink,
+        authorization: Option<&CommandAuthorization>,
+    ) -> Result<Option<CommandOutput>> {
+        self.execute_invocation(
+            Invocation::Shell {
+                script,
+                executable: &self.policy.shell_executable,
+            },
+            CommandIsolation {
+                sandbox_mode,
+                network_access,
+                workspace_access: WorkspaceAccess::Writable,
+            },
+            mode,
+            output_sink,
+            (&[], &[]),
+            authorization,
+        )
+        .await
+    }
+
     async fn execute_invocation(
         &self,
         invocation: Invocation<'_>,
@@ -1180,7 +1088,7 @@ impl SandboxBackend for LocalSandbox {
             self.file_operation(
                 path,
                 sandbox_mode,
-                Self::read_target,
+                WorkspaceAccess::ReadOnly,
                 "file reader",
                 read_file,
             )
@@ -1198,7 +1106,7 @@ impl SandboxBackend for LocalSandbox {
             self.file_operation(
                 path,
                 sandbox_mode,
-                Self::read_target,
+                WorkspaceAccess::ReadOnly,
                 "file reader",
                 move |root, relative, requested| {
                     read_binary_file(root, relative, requested, max_bytes)
@@ -1219,7 +1127,7 @@ impl SandboxBackend for LocalSandbox {
             self.file_operation(
                 path,
                 sandbox_mode,
-                Self::write_target,
+                WorkspaceAccess::Writable,
                 "file writer",
                 move |root, relative, requested| atomic_write(root, relative, &content, requested),
             )
@@ -1236,19 +1144,12 @@ impl SandboxBackend for LocalSandbox {
         output_sink: CommandOutputSink,
     ) -> BoxFuture<'a, Result<CommandOutput>> {
         Box::pin(async move {
-            self.execute_invocation(
-                Invocation::Shell {
-                    script,
-                    executable: &self.policy.shell_executable,
-                },
-                CommandIsolation {
-                    sandbox_mode,
-                    network_access,
-                    workspace_access: WorkspaceAccess::Writable,
-                },
+            self.execute_shell(
+                script,
+                sandbox_mode,
+                network_access,
                 mode,
                 output_sink,
-                (&[], &[]),
                 None,
             )
             .await?
@@ -1265,19 +1166,12 @@ impl SandboxBackend for LocalSandbox {
         output_sink: CommandOutputSink,
         authorization: &'a CommandAuthorization,
     ) -> BoxFuture<'a, Result<Option<CommandOutput>>> {
-        Box::pin(self.execute_invocation(
-            Invocation::Shell {
-                script,
-                executable: &self.policy.shell_executable,
-            },
-            CommandIsolation {
-                sandbox_mode,
-                network_access,
-                workspace_access: WorkspaceAccess::Writable,
-            },
+        Box::pin(self.execute_shell(
+            script,
+            sandbox_mode,
+            network_access,
             mode,
             output_sink,
-            (&[], &[]),
             Some(authorization),
         ))
     }
@@ -1390,7 +1284,6 @@ struct BoundedOutput {
     truncated: bool,
 }
 
-#[cfg(unix)]
 fn validate_root(path: &Path, directory: &Dir) -> Result<()> {
     let path = std::fs::metadata(path).map_err(|error| {
         Error::Sandbox(format!(
@@ -1409,13 +1302,6 @@ fn validate_root(path: &Path, directory: &Dir) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(unix))]
-fn validate_root(_path: &Path, _directory: &Dir) -> Result<()> {
-    Err(Error::Sandbox(
-        "the local sandbox requires a Unix platform".into(),
-    ))
-}
-
 fn validated_executable(executable: &Path) -> Result<PathBuf> {
     if !executable.is_absolute() {
         return Err(Error::Config("executable path must be absolute".into()));
@@ -1425,7 +1311,6 @@ fn validated_executable(executable: &Path) -> Result<PathBuf> {
     if !metadata.is_file() {
         return Err(Error::Config("executable path must be a file".into()));
     }
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         if metadata.permissions().mode() & 0o111 == 0 {

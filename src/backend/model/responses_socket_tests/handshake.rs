@@ -1,8 +1,8 @@
 use super::super::*;
+use crate::backend::model::test_support::{RefreshingAuthorization, read_http_request};
 
 #[tokio::test]
 async fn handshake_rejection_preserves_status_and_payment_message() {
-    use tokio::io::AsyncReadExt as _;
     use tokio::io::AsyncWriteExt as _;
 
     for (status, body) in [
@@ -23,13 +23,7 @@ async fn handshake_rejection_preserves_status_and_payment_message() {
         let address = listener.local_addr().expect("WebSocket address");
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.expect("WebSocket connection");
-            let mut request = Vec::new();
-            while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
-                let mut chunk = [0; 1_024];
-                let count = stream.read(&mut chunk).await.expect("handshake request");
-                assert_ne!(count, 0, "request ended before its headers");
-                request.extend_from_slice(&chunk[..count]);
-            }
+            read_http_request(&mut stream).await;
             stream
             .write_all(
                 format!("HTTP/1.1 {status} Rejected\r\nRetry-After: 7\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes(),
@@ -74,66 +68,8 @@ async fn handshake_rejection_preserves_status_and_payment_message() {
     }
 }
 
-struct RefreshingAuthorization {
-    token: Mutex<String>,
-    authorizations: Mutex<Vec<String>>,
-    refreshes: std::sync::atomic::AtomicUsize,
-}
-
-impl RefreshingAuthorization {
-    fn new() -> Self {
-        Self {
-            token: Mutex::new("rejected-token".into()),
-            authorizations: Mutex::new(Vec::new()),
-            refreshes: std::sync::atomic::AtomicUsize::new(0),
-        }
-    }
-
-    fn resolve(&self) -> BoxFuture<'_, Result<ResolvedAuthorization<'_>>> {
-        Box::pin(async move {
-            let token = self.token.lock().await.clone();
-            self.authorizations.lock().await.push(token.clone());
-            Ok(ResolvedAuthorization {
-                token: token.into(),
-                headers: Vec::new(),
-            })
-        })
-    }
-}
-
-impl OpenAiAuthorization for RefreshingAuthorization {
-    fn authorize_http<'a>(
-        &'a self,
-        _streaming: bool,
-        _session_id: Option<&'a str>,
-    ) -> BoxFuture<'a, Result<ResolvedAuthorization<'a>>> {
-        self.resolve()
-    }
-
-    fn authorize_websocket<'a>(
-        &'a self,
-        _session_id: &'a str,
-    ) -> BoxFuture<'a, Result<ResolvedAuthorization<'a>>> {
-        self.resolve()
-    }
-
-    fn recover_unauthorized<'a>(&'a self, rejected_token: &'a str) -> BoxFuture<'a, Result<bool>> {
-        Box::pin(async move {
-            let mut token = self.token.lock().await;
-            if token.as_str() == rejected_token {
-                *token = "fresh-token".into();
-                drop(token);
-                self.refreshes
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
-            Ok(true)
-        })
-    }
-}
-
 #[tokio::test]
 async fn websocket_unauthorized_refreshes_and_retries_once() {
-    use tokio::io::AsyncReadExt as _;
     use tokio::io::AsyncWriteExt as _;
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
@@ -142,15 +78,9 @@ async fn websocket_unauthorized_refreshes_and_retries_once() {
     let address = listener.local_addr().expect("WebSocket address");
     let server = tokio::spawn(async move {
         let (mut rejected, _) = listener.accept().await.expect("rejected connection");
-        let mut request = Vec::new();
-        while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
-            let mut chunk = [0; 1_024];
-            let count = rejected.read(&mut chunk).await.expect("handshake request");
-            assert_ne!(count, 0, "handshake ended before its headers");
-            request.extend_from_slice(&chunk[..count]);
-        }
+        let request = read_http_request(&mut rejected).await;
         assert!(
-            String::from_utf8_lossy(&request).contains("Bearer rejected-token"),
+            request.contains("Bearer rejected-token"),
             "first handshake should use the rejected token"
         );
         rejected
@@ -183,5 +113,5 @@ async fn websocket_unauthorized_refreshes_and_retries_once() {
         auth.authorizations.lock().await.as_slice(),
         ["rejected-token", "fresh-token"]
     );
-    assert_eq!(auth.refreshes.load(std::sync::atomic::Ordering::Relaxed), 1);
+    assert_eq!(auth.refreshes(), 1);
 }

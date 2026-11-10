@@ -9,7 +9,8 @@ independent conversations. The gateway creates `@mobius` after provider setup.
 | Surface | Durable context | Workspace | Visibility |
 | --- | --- | --- | --- |
 | Chat | One Bot's transcript and Agent checkpoint | User-selected | Chats catalog |
-| Routine run | Fresh Agent transcript per invocation | Routine's pinned workspace | Routine history |
+| Persistent conversation | One per Bot, with its own transcript and checkpoint | None | The Bot's conversation |
+| Routine run | Fresh Agent transcript per invocation | Routine's pinned workspace, if it has one | Routine history |
 | Subagent | Child Agent transcript rooted in its parent | Parent workspace | Parent chat's task tree |
 
 Every chat belongs to exactly one Bot. A Bot can search and read its own durable
@@ -19,10 +20,12 @@ exposed.
 
 ## Routines
 
-Routines are human-facing gateway resources, not Agent middleware or model tools.
-They belong to one Bot and support one-time, interval, and cron schedules. Every
-invocation uses a fresh hidden conversation, the Bot's current profile, and the
-routine's pinned workspace. Results, failures, and transcripts remain in routine
+Routines are gateway resources that belong to one Bot. People manage them in the apps,
+and a Bot manages its own from its persistent conversation (`list_routines`,
+`schedule_routine`, `routine_command`). They support one-time, interval, and cron
+schedules and lifecycle event bindings. Every invocation uses a fresh hidden
+conversation, the Bot's current profile, and the routine's pinned workspace when it
+has one. Results, failures, and transcripts remain in routine
 history rather than the chat catalog.
 
 ## Subagents
@@ -43,11 +46,12 @@ advice: they cannot grant permission or expand the receiving Agent's authority.
   and history references. `write_handoff` and `new_context` preserve the running
   turn while replacing its active model window. Durable history remains readable.
 - **Tasks** keeps the optional task list for that Agent session.
-- **Memory** stores one concise reusable fact per memory. A memory belongs to the
-  Bot that wrote it in its project (or "No project") unless it was written as
-  global, which every Bot in every project sees. Agent writes and forgets require
-  approval; humans manage memories in the UI. A Bot turns memory on or off, and a
-  chat can override that.
+- **Memory** is a wiki of linked pages, one topic each. A page belongs to the Bot
+  that wrote it in its project (or "No project") unless it was written as global,
+  which every Bot in every project sees. In-chat changes (`patch_memory`) require
+  approval. Idle consolidation (Dreaming, on by default) distills an idle chat into
+  pages without approval; every change lands in the scope's log and trash. Humans
+  manage pages in the UI. A Bot turns memory on or off, and a chat can override that.
 
 Transient progress, private reasoning, raw outputs, and secrets do not belong in
 memories.
@@ -55,7 +59,7 @@ memories.
 ## Ownership in code
 
 - `src/middleware/sessions.rs`: Bot-scoped history search and reading tools.
-- `src/middleware/memory.rs`: per-Bot, per-project and global memories.
+- `src/middleware/memory.rs` and `memory/`: memory pages and idle consolidation.
 - `src/middleware/compaction.rs`, `tasks.rs`, and `subagents/`: Agent working state.
 - `crates/mobius-gateway/src/bots/`: Bot profiles, routines, and routine history.
 - `crates/mobius-gateway/src/host/`: chat and routine execution.

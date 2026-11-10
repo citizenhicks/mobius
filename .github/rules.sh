@@ -60,7 +60,7 @@ report "No compatibility code: no serde aliases." \
     "$(production_matches 'serde[(][^)]*alias')"
 
 report "Provider IDs are matched only in provider code." \
-    "$(production_matches '"(claude|kimi|deepseek|mistral|chat_gpt|open_router)"' \
+    "$(production_matches '"(anthropic|claude|kimi|deepseek|mistral|openai|openai_codex|openrouter|chat_gpt|open_router)"' \
         '^src/backend/model/|^crates/mobius-gateway/src/harness/mobius/assembly[.]rs$')"
 
 middleware='"(artifacts|attachments|compaction|computer_control|extensions|image_generation|instructions|intelligent_ui|memory|questions|subagents|tasks)"'
