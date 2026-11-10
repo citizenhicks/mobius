@@ -76,6 +76,80 @@ module.
 - Do not add compatibility code. This project has no legacy contract: no old
   names, aliases, dual reads or writes, fallback state discovery, or migrations.
 
+## Rust style
+
+Follow the [Google Rust style guide](https://google.github.io/styleguide/rustguide.html).
+`mobius` (`src/`) is library code, so the guide's API rules bind there. `mobius-gateway`
+and `mobius-cli` are application code: prefer the direct solution over a general one.
+The rules below are the ones that apply here and that the lints in `Cargo.toml` do not
+already enforce. Where another section of this file is stricter, that section wins.
+
+Modules and imports:
+
+- A module that declares submodules holds only `mod` lines, re-exports, and a little
+  glue. Implement in leaf modules, and name a leaf after its primary item.
+- One module per `use`: no `::` inside braces. No glob imports except `use super::*` in
+  an inline test module and `pub use child::*` in the parent that re-exports it.
+- Import types and write them unqualified (`Arc`, not `std::sync::Arc`). Call free
+  functions through their module (`mem::take`, `fs::read`). Qualify a type only to
+  disambiguate it (`io::Error`, `fmt::Result`).
+- Import a trait inside the function that calls its methods unless the whole file uses it.
+
+Ownership and failure:
+
+- Borrow first, then move. `Arc` and `Rc` are for state several tasks really own; they
+  are not a way around the no-clone rule.
+- Never read state out of a poisoned mutex, and do not call `catch_unwind`. A panic is a
+  bug: fail the operation and report it.
+- Return `Option` when absence is the whole story and `Result` when the caller needs the
+  cause. Panic only on a broken invariant.
+
+Signatures and types:
+
+- In the public API of `src/`, return `impl Iterator` when callers only iterate and accept
+  `impl IntoIterator` when the function only iterates. Use `impl Into<T>` parameters only
+  there, and only where call sites clearly benefit. Application code takes concrete types.
+- A `bool` parameter whose meaning is not obvious at the call site becomes a two-variant enum.
+- Use named fields instead of tuples and multi-field tuple structs.
+- Define a trait only for generic code, `dyn Trait` or `impl Trait`, or an extension trait
+  named `FooExt`. A trait with one implementation and no second one planned is an
+  inherent `impl`.
+- Implement the standard trait rather than a look-alike method (`FromStr`, `Display`,
+  `Default`, `From`), and derive rather than hand-write. Options structs with public
+  fields implement `Default`.
+- In `src/`, mark public enums and public-field structs that can grow `#[non_exhaustive]`,
+  and mark a function `#[must_use]` when dropping its result is a bug.
+
+Naming:
+
+- Constructors are `new`, `try_new` when fallible, and `from_foo`. Accessors are `foo()`,
+  `foo_mut()`, `set_foo()`, and `take_foo()`, never `get_foo()`.
+- Do not abbreviate where a newcomer would have to look the word up. Give lifetimes on
+  types descriptive names (`'session`).
+
+Inside functions:
+
+- Put the type on the binding instead of a turbofish (`let ids: Vec<Id> = ….collect();`),
+  and annotate the result of `.into()` and `.parse()`.
+- Keep iterator chains short. Bind a chain to a name before looping over it, and write a
+  `for` loop instead of `Iterator::for_each`.
+- Build strings with `format!` or `write!`. Templates loaded from owner TOML at run time
+  are the exception.
+- Reach for a function, generic, or trait before `macro_rules!`. Do not add proc macros.
+- In tests, give a bare `assert!(condition)` a message that says what should have held.
+  `assert_eq!` already prints both sides.
+
+Comments and docs:
+
+- Document every public item in `src/` with `///`, including when it panics. Use `//!`
+  for module and crate docs.
+- A comment states what the code cannot: a reason, an invariant, or a constraint. Delete
+  comments that restate the code.
+
+Not adopted: the guide's Chromium, Fuchsia, and Android rules (no `async`, no standard
+threads, flat single-directory crates, one abstraction per crate, their mutex types, test
+frameworks, and import macro) and its unstable rustfmt options.
+
 ## Adding a capability
 
 ### Model provider
