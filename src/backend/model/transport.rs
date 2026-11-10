@@ -330,6 +330,8 @@ impl SseDecoder {
 }
 
 pub(super) fn frame_data(frame: &str) -> Option<Cow<'_, str>> {
+    // SSE streams may open with a UTF-8 BOM; stripping it per frame also covers the first one.
+    let frame = frame.strip_prefix('\u{feff}').unwrap_or(frame);
     let mut data = frame
         .lines()
         .filter_map(|line| line.strip_prefix("data:").map(str::trim_start));
@@ -732,8 +734,8 @@ mod tests {
     }
 
     #[test]
-    fn sse_framing_handles_one_byte_chunks_and_fragmented_utf8() {
-        let input = "data: héllo\r\n\r\ndata: [DONE]\n\n".as_bytes();
+    fn sse_framing_handles_one_byte_chunks_fragmented_utf8_and_a_leading_bom() {
+        let input = "\u{feff}data: héllo\r\n\r\ndata: [DONE]\n\n".as_bytes();
         let mut decoder = SseDecoder::default();
         for chunk in input.chunks(1) {
             decoder.push(chunk, "test").expect("valid chunk");
