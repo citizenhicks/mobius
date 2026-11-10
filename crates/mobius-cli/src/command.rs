@@ -239,8 +239,7 @@ fn output_text(value: &str, terminal: bool) -> String {
 )]
 async fn pair(endpoint: Endpoint, code: &str) -> std::result::Result<(), mobius_gateway::Error> {
     let endpoint = crate::authenticated_endpoint(endpoint)?;
-    let mut accounts = GatewayAccounts::load()?;
-    accounts.prepare()?;
+    GatewayAccounts::load()?.prepare()?;
     let (_client, paired) = GatewayClient::pair(
         &endpoint,
         code,
@@ -251,6 +250,7 @@ async fn pair(endpoint: Endpoint, code: &str) -> std::result::Result<(), mobius_
         },
     )
     .await?;
+    let mut accounts = GatewayAccounts::load()?;
     accounts.add(&endpoint, paired.token)?;
     accounts.save()?;
     println!("paired {} · token saved", paired.client_id);
