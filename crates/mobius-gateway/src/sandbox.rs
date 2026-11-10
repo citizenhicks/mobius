@@ -603,6 +603,7 @@ mod tests {
         assert_eq!(
             provider_credential_environment().collect::<BTreeSet<_>>(),
             BTreeSet::from([
+                "A2AGENT_API_KEY",
                 "ANTHROPIC_API_KEY",
                 "DEEPSEEK_API_KEY",
                 "MISTRAL_API_KEY",

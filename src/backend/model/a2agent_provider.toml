@@ -1,0 +1,8 @@
+symbol = "a2agent"
+label = "A2Agent"
+description = "A2Agent Responses API"
+base_url = "https://api.a2agent.me/v1"
+credential_env = "A2AGENT_API_KEY"
+tool_discovery = "rebuild"
+supported_tool_discovery = ["rebuild"]
+search = ["off"]

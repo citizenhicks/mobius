@@ -239,6 +239,14 @@ per-workspace plugin data under `.mobius/extensions` is retained.
 
 ## Register a provider from automation
 
+Built-in API-key providers include OpenAI, Anthropic, DeepSeek, Kimi, Mistral,
+OpenRouter, and [A2Agent](https://a2agent.me/). A2Agent uses the Responses transport
+at `https://api.a2agent.me/v1` with `A2AGENT_API_KEY`. Register an available model
+from your account; this provider does not bundle a static model catalog. It
+requires credentials, uses rebuilt local tool discovery, and does not advertise
+image input/generation or hosted web search. Native hosted tool search is not
+enabled. These conservative capabilities do not certify every upstream model.
+
 Automation may register OpenRouter with a direct credential read from bounded
 standard input, keeping the key out of arguments and URLs:
 

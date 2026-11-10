@@ -62,8 +62,8 @@ The first launch starts a local gateway in the background and opens provider set
 Connect a provider, choose a model, and start a conversation with the default `@mobius`
 Bot. Use `/login` to change providers and `/bot` to edit the Bot.
 
-Built-in providers are **OpenAI, Codex, Anthropic, DeepSeek, Kimi, Mistral, and
-OpenRouter**, plus any endpoint that implements the OpenAI Responses API.
+Built-in providers are **OpenAI, Codex, Anthropic, DeepSeek, Kimi, Mistral,
+OpenRouter, and A2Agent**, plus any endpoint that implements the OpenAI Responses API.
 
 Other ways to install (the [CLI guide](https://github.com/citizenhicks/mobius/blob/main/crates/mobius-cli/README.md) has the details):
 
