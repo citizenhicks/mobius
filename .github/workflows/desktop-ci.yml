@@ -34,7 +34,7 @@ jobs:
   quality:
     name: Desktop Rust and native checks
     runs-on: macos-26
-    timeout-minutes: 120
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: apps/macos
@@ -43,6 +43,9 @@ jobs:
       - name: Install Rust
         run: |
           rustup toolchain install --profile minimal --component clippy --component rustfmt
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: apps/macos -> target
       - name: Install the Metal Toolchain for SwiftTerm
         run: xcodebuild -downloadComponent MetalToolchain
       - name: Install the build tools for Chromium's bindings

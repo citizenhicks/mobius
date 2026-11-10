@@ -511,10 +511,12 @@ mod tests {
 
     #[tokio::test]
     async fn completed_command_is_not_evicted_before_initial_delivery() {
-        let workspace = tempfile::tempdir().expect("workspace");
-        let backend: Arc<dyn SandboxBackend> = Arc::new(
-            crate::backend::sandbox::local::LocalSandbox::new(workspace.path()).expect("sandbox"),
-        );
+        let finish = Arc::new(Notify::new());
+        let backend: Arc<dyn SandboxBackend> = Arc::new(PendingBackend {
+            started: Arc::default(),
+            cancelled: Arc::default(),
+            finish: Some(Arc::clone(&finish)),
+        });
         let commands = BackgroundCommands::new(1);
         let session: SessionId = "session".parse().expect("session ID");
         let (notices, mut received) = tokio::sync::mpsc::unbounded_channel();
@@ -536,6 +538,7 @@ mod tests {
             )
         };
         let first = start().expect("first command");
+        finish.notify_one();
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             while !commands.entries.lock().expect("entries")[&first.id]
                 .task
@@ -553,7 +556,7 @@ mod tests {
             .await
             .expect("first result");
         assert_eq!(output.status, BackgroundCommandStatus::Exited);
-        assert_eq!(output.stdout, "first");
+        assert_eq!(output.stdout, "finished");
         assert!(
             received.try_recv().is_err(),
             "collected command sent a notice"

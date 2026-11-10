@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -16,58 +17,36 @@ env:
 
 jobs:
   verify:
-    name: Verify release (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os:
-          - ubuntu-22.04
-          - macos-latest
+    name: Require verified release source
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Verify release notes
         run: test -s ".github/release-notes/${GITHUB_REF_NAME}.md"
-      - name: Install pinned Rust toolchain
-        run: |
-          rustup toolchain install --profile minimal --component clippy --component rustfmt
-      - run: cargo fmt --all -- --check
-      - run: sh .github/rules.sh
-      - name: Check Rust 1.99.0
-        run: |
-          cargo +1.99.0 check --workspace --all-targets --all-features --locked
-      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-      - name: Build documentation
+      - name: Require successful main CI for this exact commit
         env:
-          RUSTDOCFLAGS: -D warnings
-        run: cargo doc --workspace --all-features --locked --no-deps
-      - name: Install Linux verification tools
-        if: runner.os == 'Linux'
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes bubblewrap mandoc
-      - name: Generate and lint manual pages
-        if: runner.os == 'Linux'
-        run: |
-          cargo run --locked -p mobius-cli --example generate-man -- \
-            target/man --date "$(date -u +%F)"
-          mandoc -T lint -W warning target/man/*.1
-      - run: cargo test --workspace --all-targets --all-features --locked
-      - name: Test documentation examples
-        env:
-          RUSTDOCFLAGS: -D warnings
-        run: cargo test --workspace --doc --all-features --locked
+          gh run list --workflow ci.yml --branch main --commit "$GITHUB_SHA" \
+            --status completed --json conclusion \
+            --jq 'any(.[]; .conclusion == "success")' | grep -Fxq true
 
   publish-framework:
     name: Publish mobius
     if: startsWith(github.ref_name, 'mobius-v')
     needs: verify
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install pinned Rust toolchain
         run: |
           rustup toolchain install --profile minimal --component clippy --component rustfmt
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          shared-key: core-${{ runner.os }}-${{ runner.arch }}-ubuntu-latest
       - name: Verify tag version
         run: |
           version="${GITHUB_REF_NAME#mobius-v}"
@@ -84,11 +63,15 @@ jobs:
     if: startsWith(github.ref_name, 'mobius-cli-v')
     needs: verify
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install pinned Rust toolchain
         run: |
           rustup toolchain install --profile minimal --component clippy --component rustfmt
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          shared-key: core-${{ runner.os }}-${{ runner.arch }}-ubuntu-latest
       - name: Verify tag version
         run: |
           version="${GITHUB_REF_NAME#mobius-cli-v}"
@@ -114,11 +97,15 @@ jobs:
     if: startsWith(github.ref_name, 'mobius-gateway-v')
     needs: verify
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install pinned Rust toolchain
         run: |
           rustup toolchain install --profile minimal --component clippy --component rustfmt
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          shared-key: core-${{ runner.os }}-${{ runner.arch }}-ubuntu-latest
       - name: Verify tag version
         run: |
           version="${GITHUB_REF_NAME#mobius-gateway-v}"
@@ -141,6 +128,7 @@ jobs:
     if: startsWith(github.ref_name, 'mobius-gateway-v')
     needs: verify
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -152,6 +140,9 @@ jobs:
       - name: Install pinned Rust toolchain
         run: |
           rustup toolchain install --profile minimal --component clippy --component rustfmt
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          shared-key: core-${{ runner.os }}-${{ runner.arch }}-${{ matrix.os }}
       - name: Verify tag version
         run: |
           version="${GITHUB_REF_NAME#mobius-gateway-v}"
@@ -225,6 +216,7 @@ jobs:
     if: startsWith(github.ref_name, 'mobius-cli-v')
     needs: verify
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -236,6 +228,9 @@ jobs:
       - name: Install pinned Rust toolchain
         run: |
           rustup toolchain install --profile minimal --component clippy --component rustfmt
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          shared-key: core-${{ runner.os }}-${{ runner.arch }}-${{ matrix.os }}
       - name: Verify tag version
         run: |
           version="${GITHUB_REF_NAME#mobius-cli-v}"
@@ -309,6 +304,7 @@ jobs:
     if: startsWith(github.ref_name, 'mobius-v')
     needs: publish-framework
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: write
     steps:
@@ -331,6 +327,7 @@ jobs:
       - publish-gateway
       - gateway-binaries
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: write
     steps:
@@ -357,6 +354,7 @@ jobs:
       - publish-cli
       - cli-binaries
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: write
     steps:

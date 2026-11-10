@@ -723,7 +723,13 @@ async fn a_message_steered_into_the_idle_turn_is_answered_after_compaction() {
                 .await
                 .expect("load")
                 .expect("checkpoint");
-            assert!(saved.active_execution.is_none());
+            assert!(
+                saved
+                    .active_execution
+                    .as_ref()
+                    .is_none_or(|active| { active.idle && active.turn_id != idle_turn }),
+                "the completed execution is cleared even if the next idle turn has started"
+            );
             assert!(saved.pending_messages.is_empty());
             assert_eq!(
                 saved.context.iter().any(|item| {

@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: desktop-release
@@ -19,7 +20,19 @@ env:
 
 jobs:
   quality:
-    uses: ./.github/workflows/desktop-ci.yml
+    name: Require verified release source
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require successful core and desktop CI for this exact commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          for workflow in ci.yml desktop-ci.yml; do
+            gh run list --workflow "$workflow" --branch main --commit "$GITHUB_SHA" \
+              --status completed --json conclusion \
+              --jq 'any(.[]; .conclusion == "success")' | grep -Fxq true
+          done
   release:
     needs: quality
     name: Build, notarize and publish
@@ -35,6 +48,9 @@ jobs:
       - name: Install Rust
         run: |
           rustup toolchain install --profile minimal
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: apps/macos -> target
       - name: Install the Metal Toolchain for SwiftTerm
         run: xcodebuild -downloadComponent MetalToolchain
       - name: Install the build tools for Chromium's bindings

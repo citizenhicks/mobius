@@ -232,11 +232,13 @@ final class NativeDictation {
             let output = AVAudioPCMBuffer(
                 pcmFormat: converter.outputFormat, frameCapacity: capacity)
         else { return nil }
-        var supplied = false
-        let status = converter.convert(to: output, error: nil) { _, inputStatus in
+        // The converter pulls synchronously; these captures never leave this call.
+        nonisolated(unsafe) var supplied = false
+        nonisolated(unsafe) let input = buffer
+        let status = converter.convert(to: output, error: nil) { @Sendable _, inputStatus in
             inputStatus.pointee = supplied ? .noDataNow : .haveData
             defer { supplied = true }
-            return supplied ? nil : buffer
+            return supplied ? nil : input
         }
         return status == .error || output.frameLength == 0 ? nil : output
     }

@@ -19,11 +19,15 @@ jobs:
   quality:
     name: Format, lint, and docs
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install pinned Rust toolchain
         run: |
           rustup toolchain install --profile minimal --component clippy --component rustfmt
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          shared-key: core-${{ runner.os }}-${{ runner.arch }}-ubuntu-latest
       - run: python3 .github/sync-gateway-contract.py --check --swift apps/macos/platform/desktop/GatewayWire.swift
       - run: sh .github/rules.sh
       - run: cargo fmt --all -- --check
@@ -53,6 +57,7 @@ jobs:
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -64,6 +69,9 @@ jobs:
       - name: Install pinned Rust toolchain
         run: |
           rustup toolchain install --profile minimal --component clippy --component rustfmt
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          shared-key: core-${{ runner.os }}-${{ runner.arch }}-${{ matrix.os }}
       - name: Install bubblewrap
         if: runner.os == 'Linux'
         run: |

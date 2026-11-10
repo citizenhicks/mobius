@@ -241,6 +241,9 @@ async fn apple_git_launcher_resolves_to_the_trusted_tool_without_changing_other_
 #[cfg(target_os = "macos")]
 #[tokio::test]
 async fn apple_git_resolution_does_not_bypass_protected_paths() {
+    if run_with_system_git("apple_git_resolution_does_not_bypass_protected_paths") {
+        return;
+    }
     let workspace = tempfile::tempdir().expect("workspace");
     let sandbox = local_sandbox(workspace.path());
     let git = sandbox
@@ -284,6 +287,9 @@ async fn apple_git_resolution_does_not_bypass_protected_paths() {
 #[cfg(target_os = "macos")]
 #[tokio::test]
 async fn apple_git_lookup_uses_command_environment_overrides_and_removals() {
+    if run_with_system_git("apple_git_lookup_uses_command_environment_overrides_and_removals") {
+        return;
+    }
     let workspace = tempfile::tempdir().expect("workspace");
     let sandbox = local_sandbox(workspace.path());
     let environment = [("DEVELOPER_DIR", "/nonexistent-mobius-developer-directory")];
