@@ -1,0 +1,3 @@
+Model errors are now explained in plain words instead of the provider's raw message. When your möbius Cloud allowance is used up, the chat says so, shows when it renews and offers Manage subscription. Used-up Live minutes, a busy or unavailable model, a request the provider declined, a chat too long for the model and a rejected API key each get a short explanation, and your own provider's errors offer Open Providers. The original message is still available under Details, and the repeated "Turn aborted" line under an error is gone.
+
+Bundles gateway 0.16.31; protocol 92 and gateway config version 28 are unchanged. Build 18.

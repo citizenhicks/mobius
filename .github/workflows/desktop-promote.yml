@@ -1,0 +1,59 @@
+name: Desktop promote
+
+# Run only when matching clients and gateways are ready.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Desktop version to promote (X.Y.Z)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-release
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: macos-26
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: apps/macos
+    env:
+      GH_TOKEN: ${{ github.token }}
+      FEED_TAG: mobius-desktop-appcast
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: mobius-desktop-v${{ inputs.version }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Verify the immutable release
+        run: |
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          tag="mobius-desktop-v$VERSION"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir dist \
+            --pattern "mobius-desktop-$VERSION.zip" \
+            --pattern "mobius-desktop-$VERSION.zip.sha256" \
+            --pattern "mobius-desktop-$VERSION.dmg" \
+            --pattern "mobius-desktop-$VERSION.dmg.sha256" --pattern appcast.xml
+          signature="$(python3 scripts/verify-release.py dist "$VERSION")"
+          (cd dist && shasum -a 256 -c "mobius-desktop-$VERSION.dmg.sha256")
+          key="$(plutil -extract SUPublicEDKey raw platform/Info.plist)"
+          swift scripts/verify-update.swift "$key" "$signature" "dist/mobius-desktop-$VERSION.zip"
+      - name: Promote the release and download channels
+        run: |
+          gh release edit "mobius-desktop-v$VERSION" --repo "$GITHUB_REPOSITORY" --prerelease=false --latest=false
+          # This feed already exists; fail rather than create a second update channel.
+          gh release view "$FEED_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
+          cp "dist/mobius-desktop-$VERSION.zip" dist/mobius-desktop-macos.zip
+          cp "dist/mobius-desktop-$VERSION.dmg" dist/mobius-desktop-macos.dmg
+          gh release upload "$FEED_TAG" dist/mobius-desktop-macos.zip --repo "$GITHUB_REPOSITORY" --clobber
+          gh release upload "$FEED_TAG" dist/mobius-desktop-macos.dmg --repo "$GITHUB_REPOSITORY" --clobber
+          gh release upload "$FEED_TAG" dist/appcast.xml --repo "$GITHUB_REPOSITORY" --clobber

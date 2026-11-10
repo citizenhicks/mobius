@@ -1,11 +1,12 @@
 <p align="center">
-  <img src="assets/MobiusMark.svg" width="120" height="120" alt="möbius logo">
+  <img src="assets/MobiusMark.svg" width="14%" align="middle" alt="möbius logo">&nbsp;
+  <img src="assets/screenshots/macos-dark.png" width="82%" align="middle" alt="The möbius macOS app: a chat beside its diff, with other chats in the sidebar">
 </p>
 
 <h1 align="center">möbius</h1>
 
 <p align="center"><strong>An open-source runtime for coding agents.</strong></p>
-<p align="center">A Rust framework, a gateway that runs your agents, and a terminal client.<br>Run it on your own machine and pick up the same conversation from your terminal, iPhone, or iPad.</p>
+<p align="center">A Rust framework, a gateway that runs your agents, a terminal client, and a native macOS app.<br>Run it on your own machine and pick up the same conversation from your Mac, terminal, iPhone, or iPad.</p>
 
 <p align="center">
   <a href="https://github.com/citizenhicks/mobius/actions/workflows/ci.yml"><img src="https://github.com/citizenhicks/mobius/actions/workflows/ci.yml/badge.svg?branch=main" alt="Rust CI"></a>
@@ -27,12 +28,12 @@
 | --- | --- | --- | --- |
 | [`mobius`](https://crates.io/crates/mobius) | `src/` | The agent framework: one session and its model and tool loop, with pluggable models, sandboxes, storage, and capabilities | You are building your own agent or frontend in Rust |
 | [`mobius-gateway`](https://crates.io/crates/mobius-gateway) | `crates/mobius-gateway/` | The headless server that runs the agents: pairing, Bots, chats, and scheduled routines | You are hosting agents for one or more clients |
-| [`mobius-cli`](https://crates.io/crates/mobius-cli) | `crates/mobius-cli/` | The `mobius` terminal client, packaged with the `mobius-gateway` executable | You want to use möbius |
+| [`mobius-cli`](https://crates.io/crates/mobius-cli) | `crates/mobius-cli/` | The `mobius` terminal client, packaged with the `mobius-gateway` executable | You want to use möbius in a terminal |
+| `mobius-desktop` | [`apps/macos/`](apps/macos/) | The native macOS app (Rust and GPUI), shipped as a signed app, not on crates.io | You want to use möbius on a Mac |
 
-The macOS, iPhone, and iPad apps connect to the same gateway. They are maintained in
-separate private repositories.
+The iPhone and iPad app connects to the same gateway and is maintained separately.
 
-The current release is **0.17.0** for all three crates. It requires protocol **100**
+The current release is **0.17.0** for all four packages. It requires protocol **100**
 clients and gateway configuration version **30**. This release removes public Rust
 APIs; applications embedding the framework must update their integrations. Existing
 gateways require an offline configuration conversion that preserves usage history
@@ -47,6 +48,7 @@ Install with [Homebrew](https://github.com/citizenhicks/homebrew-mobius) on macO
 brew tap citizenhicks/mobius
 brew trust citizenhicks/mobius
 brew install mobius-cli
+brew install --cask mobius-app   # the macOS app, optional
 ```
 
 Then open a project:
@@ -129,7 +131,7 @@ explains these boundaries, computer control, and the Linux desktop.
 
 ```toml
 [dependencies]
-mobius = "0.16"
+mobius = "0.17"
 ```
 
 You compose an `AgentConfig` from a model router, a sandbox, a checkpoint store, and an
@@ -168,6 +170,7 @@ Rust 1.99.0 is pinned in `rust-toolchain.toml`. Linux sandbox tests need Bubblew
 | `src/protocol/` | Frontend-neutral operations, events, and presentation records |
 | `crates/mobius-gateway/` | Composition, authentication, Bots, sessions, routines, and the wire protocol |
 | `crates/mobius-cli/` | The terminal client and its rendering |
+| `apps/macos/` | The macOS app, its own Cargo workspace; see [its README](apps/macos/README.md) |
 | `tests/` | Framework integration tests |
 
 Read [AGENTS.md](https://github.com/citizenhicks/mobius/blob/main/AGENTS.md) before you
@@ -188,7 +191,8 @@ and contributions are welcome.
 | [Rust API](https://docs.rs/mobius/latest/mobius/) | The `mobius` crate |
 | [Privacy](https://github.com/citizenhicks/mobius/blob/main/PRIVACY.md) | What leaves your machine |
 
-The three crates share one version number and are published one at a time; see
+The four packages share one version number. The three crates are published to
+crates.io one at a time and the macOS app is released as a signed build; see
 [Releases in AGENTS.md](https://github.com/citizenhicks/mobius/blob/main/AGENTS.md#releases).
 
 ## License

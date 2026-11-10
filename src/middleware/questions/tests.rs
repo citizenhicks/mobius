@@ -6,7 +6,8 @@ use crate::backend::sandbox::local::LocalSandbox;
 use crate::backend::sandbox::{
     ApprovalPolicy, NetworkAccess, Sandbox, SandboxMode, SandboxPermissions,
 };
-use crate::middleware::{MiddlewareStack, messages::Messages};
+use crate::middleware::MiddlewareStack;
+use crate::middleware::messages::Messages;
 use crate::protocol::{MessageDelivery, SessionContext, TokenUsage};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::Notify;

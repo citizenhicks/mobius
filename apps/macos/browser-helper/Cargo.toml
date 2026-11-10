@@ -1,0 +1,13 @@
+[package]
+name = "mobius-browser-helper"
+version = "0.2.1"
+edition = "2024"
+rust-version = "1.99.0"
+publish = false
+license = "Apache-2.0"
+
+[dependencies]
+cef.workspace = true
+
+[lints]
+workspace = true

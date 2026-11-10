@@ -1,0 +1,1 @@
+Adds an attention pill with the open-item count, a shared approval and question list, yellow pending and green completed icons, and inline freeform answers with a Send button. Suggested answers use selection circles. Requires gateway protocol 91.

@@ -13,7 +13,8 @@ use tokio::process::{Child, ChildStdin};
 use tokio::task::JoinSet;
 use tokio::time::Instant;
 
-use crate::{Error, Result, host::GatewayHost};
+use crate::host::GatewayHost;
+use crate::{Error, Result};
 
 #[derive(Clone, Copy, Deserialize)]
 #[serde(deny_unknown_fields)]

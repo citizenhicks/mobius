@@ -16,6 +16,7 @@ layers, parallel registries, or speculative extension points.
 | `src/protocol/` | Frontend-neutral operations, events, and presentation records |
 | `crates/mobius-gateway/` | Headless composition, auth, Bots, sessions, routines, artifacts, and usage |
 | `crates/mobius-cli/src/frontend/` | Thin terminal gateway client and rendering |
+| `apps/macos/` | The macOS app, a separate Cargo workspace; see [its AGENTS.md](apps/macos/AGENTS.md) |
 
 `mobius-gateway` is the only shipped owner of an `Agent`. The CLI sends gateway
 operations and renders gateway events; capability behavior remains in its framework
@@ -64,11 +65,12 @@ module.
   single check produce a validated type that only valid data can construct. A later check
   is allowed only for different input: newly arrived data, a hook-rewritten value, state
   observed after waiting on a lock or an await, or a re-read from disk.
-- Keep hosted-service specifics out of this repository. Behavior that exists only for
-  möbius Cloud lives in the Cloud codebase; this code exposes neutral operator hooks
-  (access expiry, storage limits, telemetry collectors, endpoints) and never names Cloud,
-  plans, subscriptions, billing, or hosted-service domains in code, defaults, tests, or
-  operator docs. User-facing README links and privacy disclosures are the exception.
+- Keep hosted-service specifics out of the framework, gateway and CLI. Behavior that exists
+  only for möbius Cloud lives in the Cloud codebase; these crates expose neutral operator
+  hooks (access expiry, storage limits, telemetry collectors, endpoints) and never name
+  Cloud, plans, subscriptions, billing, or hosted-service domains in code, defaults, tests,
+  or operator docs. The exceptions are user-facing README links, privacy disclosures, and
+  the macOS app's Cloud sign-in (`apps/macos`).
 - Do not `.clone()` in production code. Borrow, move, use `std::mem::take`/`replace`, or
   share an `Arc`/`Rc` handle instead; restructure before reaching for a copy, and name any
   copy that remains unavoidable. Tests may clone.
@@ -236,9 +238,12 @@ Linux sandbox tests require Bubblewrap.
 
 ## Releases
 
-`mobius`, `mobius-gateway`, and `mobius-cli` share one version number and are published
-separately, each from its own tag. Publish them in that order because each depends on
-the previous published crate.
+`mobius`, `mobius-gateway`, `mobius-cli` and the macOS app `mobius-desktop` share one
+version number. The three crates are published separately, each from its own tag, in
+that order because each depends on the previous published crate. The macOS app is not
+on crates.io: its `mobius-desktop-v<version>` tag builds, notarizes and publishes a
+prerelease (`desktop-release.yml`), and `desktop-promote.yml` moves a verified release to
+the update feed. Bump `build-number` in `apps/macos/Cargo.toml` with every app release.
 Release automation belongs in `.github/workflows/`; do not mix it into capability
 code.
 

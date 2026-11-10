@@ -1,6 +1,8 @@
 //! The gateway's per-chat browser assignment rendered by the local Mac app.
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
 
 use mobius::{Error, Result, SessionId};
 use tokio::sync::oneshot;

@@ -16,11 +16,9 @@ use tokio::sync::Mutex;
 use tokio_rustls::TlsConnector;
 use tokio_tungstenite::connect_async_with_config;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
+use tokio_tungstenite::tungstenite::http::header::{AUTHORIZATION, SEC_WEBSOCKET_PROTOCOL};
 use tokio_tungstenite::tungstenite::http::uri::Authority;
-use tokio_tungstenite::tungstenite::http::{
-    HeaderValue, Request,
-    header::{AUTHORIZATION, SEC_WEBSOCKET_PROTOCOL},
-};
+use tokio_tungstenite::tungstenite::http::{HeaderValue, Request};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 
 use crate::wire::read_frame_with_limit;

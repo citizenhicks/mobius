@@ -2,11 +2,13 @@ use super::*;
 use crate::bots::BotStore;
 use crate::config::{ConfigStore, CredentialStore};
 use crate::host::GatewayHost;
-use mobius::backend::checkpoint::{CheckpointStore, sqlite::SqliteCheckpoint};
+use mobius::backend::checkpoint::CheckpointStore;
+use mobius::backend::checkpoint::sqlite::SqliteCheckpoint;
+use mobius::backend::model::openai::OpenAi;
 use mobius::backend::model::provider::BaseUrl;
 use mobius::backend::model::{
     ModelRouter, RawModelTransportSettings, RealtimeVoiceCall, RealtimeVoiceCommand,
-    RealtimeVoiceEvent, openai::OpenAi,
+    RealtimeVoiceEvent,
 };
 use mobius::middleware::voice::VoiceCallContext;
 use mobius::middleware::voice::transcript::VoiceTranscript;

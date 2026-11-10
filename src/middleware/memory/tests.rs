@@ -2,10 +2,12 @@ use super::*;
 use crate::agent::{AgentConfig, create_agent};
 use crate::backend::checkpoint::sqlite::SqliteCheckpoint;
 use crate::backend::model::{Model, ModelEventSink, ModelOutput, ModelRequest, ModelRouter};
-use crate::backend::sandbox::{ApprovalPolicy, Sandbox, local::LocalSandbox};
-use crate::middleware::{
-    CompactContext, MiddlewareStack, compaction::Compaction, messages::Messages, tools::Tools,
-};
+use crate::backend::sandbox::local::LocalSandbox;
+use crate::backend::sandbox::{ApprovalPolicy, Sandbox};
+use crate::middleware::compaction::Compaction;
+use crate::middleware::messages::Messages;
+use crate::middleware::tools::Tools;
+use crate::middleware::{CompactContext, MiddlewareStack};
 use crate::protocol::{MessageSubmission, Op as ClientOp};
 
 fn session_context() -> SessionContext {

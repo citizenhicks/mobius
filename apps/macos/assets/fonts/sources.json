@@ -1,0 +1,339 @@
+{
+  "repository": "https://github.com/google/fonts",
+  "revision": "23e54b51ddffbc7713c583748e3bd86f62b1fa4a",
+  "font_sets": {
+    "geist": [
+      "geist",
+      "geistmono"
+    ],
+    "ibm_plex": [
+      "ibmplexsans",
+      "ibmplexmono"
+    ],
+    "roboto": [
+      "roboto",
+      "robotomono"
+    ],
+    "space": [
+      "spacegrotesk",
+      "spacemono"
+    ]
+  },
+  "files": [
+    {
+      "path": "geist/Geist-Italic[wght].ttf",
+      "bytes": 174584,
+      "sha256": "a464348abe41a6392f18d04c0ac2ad3c26619357ff5fdd76aff3059116f45e62",
+      "git_blob_sha": "63c3c6c2154421e6eb445e328fb17734593fad7a",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/geist/Geist-Italic%5Bwght%5D.ttf"
+    },
+    {
+      "path": "geist/Geist[wght].ttf",
+      "bytes": 169056,
+      "sha256": "73894e0448cae90a92b6c2f8732b7bb9acb7b94c418bff559dad4a18e1de9659",
+      "git_blob_sha": "f63f0afc6390323715972b6645115485f37cc9f4",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/geist/Geist%5Bwght%5D.ttf"
+    },
+    {
+      "path": "geist/METADATA.pb",
+      "bytes": 1348,
+      "sha256": "62d302155bfbf778e9c488ef00671a4ad71a8a4cdc808ec66ceb668373afe900",
+      "git_blob_sha": "e9ba1c28356f1fc1a1373a98feb9b6fb948a7763",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/geist/METADATA.pb"
+    },
+    {
+      "path": "geist/OFL.txt",
+      "bytes": 4387,
+      "sha256": "1781d2806a07d91c4edf4740b88449fab7d0eadad53f7c351b94cd4d4eb8c00f",
+      "git_blob_sha": "61f6f4b7853081236aec6407f2dd3c7170997f84",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/geist/OFL.txt"
+    },
+    {
+      "path": "geistmono/GeistMono-Italic[wght].ttf",
+      "bytes": 182656,
+      "sha256": "70c15be47d55f637197f7e38570dbca16b35777ea647dc3598f61bf3961d2b0d",
+      "git_blob_sha": "9a0d8997e9686aafcbef468b7b985b310d5a4202",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/geistmono/GeistMono-Italic%5Bwght%5D.ttf"
+    },
+    {
+      "path": "geistmono/GeistMono[wght].ttf",
+      "bytes": 171948,
+      "sha256": "d00e590b8eb3a59acc329b2d044fd143ae935090b7da33199ebee27cc7de8196",
+      "git_blob_sha": "173867dce0580ea751e4b9c558740d34f20ce549",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/geistmono/GeistMono%5Bwght%5D.ttf"
+    },
+    {
+      "path": "geistmono/METADATA.pb",
+      "bytes": 1473,
+      "sha256": "55d2fe9078cf7debb333b4d294e945586e6b1c3b2bc68225f88a2e01d87a69a3",
+      "git_blob_sha": "f40ef77deec00cc31f7ed1c44145e44ed8fcaccb",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/geistmono/METADATA.pb"
+    },
+    {
+      "path": "geistmono/OFL.txt",
+      "bytes": 4387,
+      "sha256": "1781d2806a07d91c4edf4740b88449fab7d0eadad53f7c351b94cd4d4eb8c00f",
+      "git_blob_sha": "61f6f4b7853081236aec6407f2dd3c7170997f84",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/geistmono/OFL.txt"
+    },
+    {
+      "path": "ibmplexmono/IBMPlexMono-Bold.ttf",
+      "bytes": 137784,
+      "sha256": "ac27abd6450a64dd94467580a02fe6235156d5b92f2926ebbc8e7489df64e0be",
+      "git_blob_sha": "17b406d221e7f27179344707bd543fb8470728ac",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/ibmplexmono/IBMPlexMono-Bold.ttf"
+    },
+    {
+      "path": "ibmplexmono/IBMPlexMono-BoldItalic.ttf",
+      "bytes": 144512,
+      "sha256": "af4e05a761e98c1adf064c48a6352c9bec1a6ad70982cd2a544149323391f98e",
+      "git_blob_sha": "f0291778c969fca0c255fe7e06c90eb97b34770d",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/ibmplexmono/IBMPlexMono-BoldItalic.ttf"
+    },
+    {
+      "path": "ibmplexmono/IBMPlexMono-ExtraLight.ttf",
+      "bytes": 135980,
+      "sha256": "826b765bd5173b97d521053330a66277edc224f8cc5f1e0035df1d995d5f003c",
+      "git_blob_sha": "26877b8175e03ac26581afb2bf0eb4f7b9190594",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/ibmplexmono/IBMPlexMono-ExtraLight.ttf"
+    },
+    {
+      "path": "ibmplexmono/IBMPlexMono-ExtraLightItalic.ttf",
+      "bytes": 144672,
+      "sha256": "8ae22766094bd04c2808a3c9dec812dcf061786c26ebd25eea211ae685eb2c39",
+      "git_blob_sha": "bd50df2f9d7397e9772c75836277023d6e8e95b1",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/ibmplexmono/IBMPlexMono-ExtraLightItalic.ttf"
+    },
+    {
+      "path": "ibmplexmono/IBMPlexMono-Italic.ttf",
+      "bytes": 143920,
+      "sha256": "3362fc791b0652193328b862c1c5f23a789bc7288b1617fa63302f88689a2a34",
+      "git_blob_sha": "d7f69134614ebdcaa10ebd36b0be1a44a035e157",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/ibmplexmono/IBMPlexMono-Italic.ttf"
+    },
+    {
+      "path": "ibmplexmono/IBMPlexMono-Light.ttf",
+      "bytes": 135216,
+      "sha256": "780bcf65509d72a35ec114b57bcbe220dc6b77d8ea2e9b25e294be3c570c5025",
+      "git_blob_sha": "61d43577842179cdffeb38b6c1928786981db0da",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/ibmplexmono/IBMPlexMono-Light.ttf"
+    },
+    {
+      "path": "ibmplexmono/IBMPlexMono-LightItalic.ttf",
+      "bytes": 143432,
+      "sha256": "2bb4dd18abb03cb8a0a1ae69a0a10b194e02027b817c7b13126ef4724a7f5c73",
+      "git_blob_sha": "ecb1f6f52575afd8296df722ed4e7b395f9847b0",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/ibmplexmono/IBMPlexMono-LightItalic.ttf"
+    },
+    {
+      "path": "ibmplexmono/IBMPlexMono-Medium.ttf",
+      "bytes": 136704,
+      "sha256": "a9b4c49bb299e05b5f6c481e7fb5e78943d2793249a0c8874ab574a2d1ea6755",
+      "git_blob_sha": "33c546f68b6007a45a3f10e845523abb2db25399",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/ibmplexmono/IBMPlexMono-Medium.ttf"
+    },
+    {
+      "path": "ibmplexmono/IBMPlexMono-MediumItalic.ttf",
+      "bytes": 144004,
+      "sha256": "de6e0f805a15a2a1538be5d1074741298a07ffcba6fa1f4cd93983ff73155a7d",
+      "git_blob_sha": "d08961658e199bcabdb2fcb4f59abf06ab599fb3",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/ibmplexmono/IBMPlexMono-MediumItalic.ttf"
+    },
+    {
+      "path": "ibmplexmono/IBMPlexMono-Regular.ttf",
+      "bytes": 135580,
+      "sha256": "6a3412f058c7d8dfd9170c41e85ade48e5156ecb89356110ca57a0a27734af46",
+      "git_blob_sha": "0c9770d5183ba60dc4350d3e011b782a320761ae",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/ibmplexmono/IBMPlexMono-Regular.ttf"
+    },
+    {
+      "path": "ibmplexmono/IBMPlexMono-SemiBold.ttf",
+      "bytes": 140216,
+      "sha256": "d3c38e55c78f5b0f28009fddba4834ec503278936a5986032424c9bd2d23aa46",
+      "git_blob_sha": "8f8998a139d8f61d3b96bdd3b512fca501a1f6b9",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/ibmplexmono/IBMPlexMono-SemiBold.ttf"
+    },
+    {
+      "path": "ibmplexmono/IBMPlexMono-SemiBoldItalic.ttf",
+      "bytes": 147368,
+      "sha256": "391ef0e273eb52571eccaab6a6dbddeec48e1d282cb7bf153043512b797ed6f0",
+      "git_blob_sha": "50e47fa895a99c816061ad3b2bf433850a5f713b",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/ibmplexmono/IBMPlexMono-SemiBoldItalic.ttf"
+    },
+    {
+      "path": "ibmplexmono/IBMPlexMono-Thin.ttf",
+      "bytes": 137900,
+      "sha256": "c44c820c14b4f1b818344e5f5dc189cee98b1d5e56b4e80055496c228f3cc7ea",
+      "git_blob_sha": "44475c9d3e39e6f7e211ff7ce8a6fa711ab307ea",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/ibmplexmono/IBMPlexMono-Thin.ttf"
+    },
+    {
+      "path": "ibmplexmono/IBMPlexMono-ThinItalic.ttf",
+      "bytes": 146100,
+      "sha256": "3782f01f12b444c62be712676646c552fc23443e8fd02d5b5619c6c4b975516d",
+      "git_blob_sha": "89eac6d51d5fb51874f1404980d64bd3f482f4a5",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/ibmplexmono/IBMPlexMono-ThinItalic.ttf"
+    },
+    {
+      "path": "ibmplexmono/METADATA.pb",
+      "bytes": 6309,
+      "sha256": "2eb58f75e032cc5e021887aa7b02bf11bf548710fc5b6f23eb19c440df101a0b",
+      "git_blob_sha": "9d42887da3bdf9d6d0f0556371b64b8c93b53511",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/ibmplexmono/METADATA.pb"
+    },
+    {
+      "path": "ibmplexmono/OFL.txt",
+      "bytes": 4456,
+      "sha256": "7e6b2818edbd8f6a01ae80641cc8f16a51080d08fb4e532be3a0b6f74adb07da",
+      "git_blob_sha": "c35c4c618fab33da8695177b3a6cefe0810b7b28",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/ibmplexmono/OFL.txt"
+    },
+    {
+      "path": "ibmplexsans/IBMPlexSans-Italic[wdth,wght].ttf",
+      "bytes": 599624,
+      "sha256": "0b94c5e981993764db32bf9c610ecc60cbd34ad77ec2f10ba03c64ab75124d8e",
+      "git_blob_sha": "35722e5e79e3616407f479ece5c60c39c1efd68f",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/ibmplexsans/IBMPlexSans-Italic%5Bwdth%2Cwght%5D.ttf"
+    },
+    {
+      "path": "ibmplexsans/IBMPlexSans[wdth,wght].ttf",
+      "bytes": 537244,
+      "sha256": "3b031aa4216174205bd8471f88a49b91f093169e9e87bd5262242bc5967fe2e3",
+      "git_blob_sha": "30f837e8b02e8ecddce6cbebc425b1f422392515",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/ibmplexsans/IBMPlexSans%5Bwdth%2Cwght%5D.ttf"
+    },
+    {
+      "path": "ibmplexsans/METADATA.pb",
+      "bytes": 1554,
+      "sha256": "85f7e73668461cfacc4d9ecf94a7b67dd14dc24a71c0ae2cecd36215f0ca856c",
+      "git_blob_sha": "ccfb809905fe8f3133b5ea2937b8abdce1134f02",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/ibmplexsans/METADATA.pb"
+    },
+    {
+      "path": "ibmplexsans/OFL.txt",
+      "bytes": 4456,
+      "sha256": "7e6b2818edbd8f6a01ae80641cc8f16a51080d08fb4e532be3a0b6f74adb07da",
+      "git_blob_sha": "c35c4c618fab33da8695177b3a6cefe0810b7b28",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/ibmplexsans/OFL.txt"
+    },
+    {
+      "path": "roboto/METADATA.pb",
+      "bytes": 1463,
+      "sha256": "6fef19da54fb62d152f0c7b21710e6849950db7ecf852ea29511c593dad462f0",
+      "git_blob_sha": "9ae795d676a683ce135be1835797e3ad8968ec02",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/roboto/METADATA.pb"
+    },
+    {
+      "path": "roboto/OFL.txt",
+      "bytes": 4394,
+      "sha256": "061402327a96aadb0bfb694a960ed289ecd38d383e396243831ab81feb109c41",
+      "git_blob_sha": "9c48e05a24fa2267e207ecf17560291b5621c197",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/roboto/OFL.txt"
+    },
+    {
+      "path": "roboto/Roboto-Italic[wdth,wght].ttf",
+      "bytes": 530944,
+      "sha256": "9725a847af6b460ffca162ae66d20dad48b01876137947180b42d7dcd7887182",
+      "git_blob_sha": "a122c13964daac37f1186a22603a5180d2dba5d6",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/roboto/Roboto-Italic%5Bwdth%2Cwght%5D.ttf"
+    },
+    {
+      "path": "roboto/Roboto[wdth,wght].ttf",
+      "bytes": 488584,
+      "sha256": "d7598e12c5dbef095ff8272cfc55da0250bd07fbdecbac8a530b9b277872a134",
+      "git_blob_sha": "5522a368d9072fd88c299916e61fcff369949061",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/roboto/Roboto%5Bwdth%2Cwght%5D.ttf"
+    },
+    {
+      "path": "robotomono/METADATA.pb",
+      "bytes": 1353,
+      "sha256": "8aa7709a44aa1f10bc5f4710af9440e364d2fb4e6056cc05a0e9d0d40826a9b5",
+      "git_blob_sha": "fb058554c38e34d7694c0b0f40d238e225175031",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/robotomono/METADATA.pb"
+    },
+    {
+      "path": "robotomono/OFL.txt",
+      "bytes": 4395,
+      "sha256": "50ab8dd54680d3473f649c9db86fece88434d097c7834475c1c72d2f8c429215",
+      "git_blob_sha": "8e7df338d36eb52c49548ecc58afcb7eb3f73898",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/robotomono/OFL.txt"
+    },
+    {
+      "path": "robotomono/RobotoMono-Italic[wght].ttf",
+      "bytes": 196792,
+      "sha256": "49ac343bb7b070071e53f0a8a501d68d140ed98ebd0a43b6b8fb96cf22f09ff7",
+      "git_blob_sha": "414a5121f4ca743f0c64e82e22d91e426aa7d432",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/robotomono/RobotoMono-Italic%5Bwght%5D.ttf"
+    },
+    {
+      "path": "robotomono/RobotoMono[wght].ttf",
+      "bytes": 183700,
+      "sha256": "66a80e79d17e4c7cabd162e2916578a4cc08fd19eef6e2a643305eae9c567b2b",
+      "git_blob_sha": "f21d1d716bce3cc756bc618d32be71ce6f733f81",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/robotomono/RobotoMono%5Bwght%5D.ttf"
+    },
+    {
+      "path": "spacegrotesk/METADATA.pb",
+      "bytes": 1509,
+      "sha256": "3713adf5c1a21affdbede103b6bb23f551d4195771fa8bc1b91ce813bd1623ee",
+      "git_blob_sha": "5086d39302540c03bae9512d54554c90cbbca616",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/spacegrotesk/METADATA.pb"
+    },
+    {
+      "path": "spacegrotesk/OFL.txt",
+      "bytes": 4495,
+      "sha256": "564ce565c371c5e5bbf286006565a7c9aa55a9f56e7ca58d56e05d649dd61a72",
+      "git_blob_sha": "cb512b9af44ff61e75e1aad387b7424cdfab36a3",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/spacegrotesk/OFL.txt"
+    },
+    {
+      "path": "spacegrotesk/SpaceGrotesk[wght].ttf",
+      "bytes": 136676,
+      "sha256": "acad6de1fc93436f5c0f1f4137751ef04f1aea3063e7036535970ffcfbd79f72",
+      "git_blob_sha": "a1b2e6c26093066510a31147e7aec9abdc8d6c5e",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/spacegrotesk/SpaceGrotesk%5Bwght%5D.ttf"
+    },
+    {
+      "path": "spacemono/METADATA.pb",
+      "bytes": 1951,
+      "sha256": "5dadfea714098a304264ff8c2e8420d04a457a62caf3685ad01c9abdb7fddb45",
+      "git_blob_sha": "6360fea33141439e47daa21d85f5f054a73fe70d",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/spacemono/METADATA.pb"
+    },
+    {
+      "path": "spacemono/OFL.txt",
+      "bytes": 4392,
+      "sha256": "8e4ee42b2553e1e01504e61cb0d46d148cd8c9e5eacaa3622a7df2d4f2955b9f",
+      "git_blob_sha": "a72b0a7845bec3214559673ffeba60c816a21841",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/spacemono/OFL.txt"
+    },
+    {
+      "path": "spacemono/SpaceMono-Bold.ttf",
+      "bytes": 98232,
+      "sha256": "405e73d41afb7e5906efce206a326af5c956f38e255f35421c260e861e599c59",
+      "git_blob_sha": "2c4f2682f915d988e7314544ff7c9e38c8c733f5",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/spacemono/SpaceMono-Bold.ttf"
+    },
+    {
+      "path": "spacemono/SpaceMono-BoldItalic.ttf",
+      "bytes": 111904,
+      "sha256": "cdcc95eddee312879a9728494e595f591cb159f3f276d79bc58673dec7e57138",
+      "git_blob_sha": "94fe471ca44eae0cf5a5760df7da25856e39a781",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/spacemono/SpaceMono-BoldItalic.ttf"
+    },
+    {
+      "path": "spacemono/SpaceMono-Italic.ttf",
+      "bytes": 121396,
+      "sha256": "eca264c8690a91fe837d19a6badf2d88961610c4c8aafcb196526192a9f258c5",
+      "git_blob_sha": "9bca1029bf05a1912b7b7732567b54a186e1cdaa",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/spacemono/SpaceMono-Italic.ttf"
+    },
+    {
+      "path": "spacemono/SpaceMono-Regular.ttf",
+      "bytes": 99356,
+      "sha256": "95837e182baeeada83368f7748db28357f0a1b75c6b84ff7065b5edf933c8e18",
+      "git_blob_sha": "1cfa3653dc8ddb7aa9f4ef1c9c581e9516137e6e",
+      "source": "https://raw.githubusercontent.com/google/fonts/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/spacemono/SpaceMono-Regular.ttf"
+    }
+  ]
+}

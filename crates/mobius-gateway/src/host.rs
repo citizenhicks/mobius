@@ -30,9 +30,10 @@ use std::sync::{Arc, Mutex as StdMutex};
 
 use chrono::Utc;
 use futures_util::future::{OptionFuture, try_join_all};
+use mobius::backend::checkpoint::sqlite::SqliteCheckpoint;
 use mobius::backend::checkpoint::{
     ActiveExecution, CheckpointStore, EventPageRequest, ExecutionOutcome, ExecutionRecord,
-    JournalEvent, SessionPageRequest, SessionSummary, event_turn_page, sqlite::SqliteCheckpoint,
+    JournalEvent, SessionPageRequest, SessionSummary, event_turn_page,
 };
 use mobius::backend::session_files::SessionFileStore;
 use mobius::middleware::FrontendExtensions;
@@ -46,7 +47,8 @@ use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use crate::bots::{ActiveRoutineRun, BeginRun, BotStore};
-use crate::computer_runtime::{desktop::DesktopControl, remote_desktop::RemoteDesktop};
+use crate::computer_runtime::desktop::DesktopControl;
+use crate::computer_runtime::remote_desktop::RemoteDesktop;
 use crate::config::{
     ChatSpec, ConfigStore, CredentialStore, GatewayConfig,
     create_workspace_directory as create_workspace_directory_on_disk,

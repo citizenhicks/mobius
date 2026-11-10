@@ -559,7 +559,9 @@ mod tests {
 
     #[tokio::test]
     async fn model_transports_classify_send_failures_before_and_after_authorization() {
-        use crate::backend::model::{Model, ModelRequest, anthropic::Anthropic, responses::OpenAi};
+        use crate::backend::model::anthropic::Anthropic;
+        use crate::backend::model::responses::OpenAi;
+        use crate::backend::model::{Model, ModelRequest};
 
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
         let address = listener.local_addr().expect("address");

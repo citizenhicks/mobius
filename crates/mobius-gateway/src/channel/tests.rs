@@ -3,7 +3,8 @@ use std::time::Duration;
 
 use futures_util::SinkExt as _;
 use tokio_tungstenite::WebSocketStream;
-use tokio_tungstenite::tungstenite::{Message, protocol::Role};
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::protocol::Role;
 
 use crate::wire::{FrameReader, MAX_FRAME_BYTES, read_frame, write_frame};
 

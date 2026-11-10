@@ -4,18 +4,17 @@ mod policy;
 mod resources;
 mod upload;
 mod validation;
+use crate::host::GatewayHost;
 use crate::wire::HookKind;
-use crate::{Error, Result, host::GatewayHost};
+use crate::{Error, Result};
 pub(crate) use activity::ActivityHook;
 pub use activity::ActivityHookConfig;
 use mobius::SessionId;
 use mobius::backend::model::provider::{HttpClient, HttpRedirectPolicy};
 pub use policy::TelemetryPolicy;
 use serde_json::{Value, json};
-use std::sync::{
-    Arc, Mutex, RwLock,
-    atomic::{AtomicU64, Ordering},
-};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};

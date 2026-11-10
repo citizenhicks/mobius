@@ -59,3 +59,11 @@ https://www.gnu.org/licenses/lgpl-3.0.html.
 Provider marks (ChatGPT, Claude, DeepSeek, Kimi) identify the provider a route belongs
 to. They are used nominatively to refer to those services; the underlying
 trademarks remain with their respective owners.
+
+--------------------------------------------------------------------------------
+
+The macOS app in apps/macos includes third-party fonts, icon artwork and the noVNC
+viewer, listed with their licenses in apps/macos/assets/NOTICE, and the LiveKit WebRTC
+SDK, licensed as in apps/macos/platform/resources/WebRTC-LICENSE.txt. Its builds also
+download Chromium through CEF (BSD-style licenses) and Sparkle (MIT License), which
+ship under their own license terms.

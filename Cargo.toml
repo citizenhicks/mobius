@@ -25,6 +25,8 @@ workspace = true
 
 [workspace]
 members = ["crates/mobius-cli", "crates/mobius-gateway"]
+# The macOS app is its own workspace: CEF and the native Swift build are macOS-only.
+exclude = ["apps/macos"]
 default-members = ["crates/mobius-cli"]
 resolver = "3"
 

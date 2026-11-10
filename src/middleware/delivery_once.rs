@@ -129,10 +129,8 @@ pub(crate) fn rollback<T: std::borrow::Borrow<Value>>(receipts: &mut Receipts, i
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::{
-        checkpoint::Checkpoint,
-        model::{internal_user_message, user_message},
-    };
+    use crate::backend::checkpoint::Checkpoint;
+    use crate::backend::model::{internal_user_message, user_message};
 
     #[test]
     fn guidance_keeps_order_scopes_receipts_and_survives_context_compaction() {

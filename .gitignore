@@ -11,3 +11,9 @@ xcuserdata/
 *.profraw
 __pycache__/
 /.wrangler/
+
+# macOS app: build output and private maintainer docs.
+/apps/macos/target/
+/apps/macos/dist/
+/apps/macos/platform/.build/
+/apps/macos/docs/

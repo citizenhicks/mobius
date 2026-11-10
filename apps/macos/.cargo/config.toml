@@ -1,0 +1,4 @@
+# The pinned CEF (Chromium) download, kept once per checkout instead of once per build
+# profile. An exported CEF_PATH takes precedence.
+[env]
+CEF_PATH = { value = "target/cef", relative = true }

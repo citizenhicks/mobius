@@ -1,0 +1,111 @@
+name: Desktop release
+
+# Builds, notarizes and publishes möbius for macOS as a prerelease of this repository.
+# Promote separately after the coordinated gateway cutover.
+on:
+  push:
+    tags:
+      - mobius-desktop-v*
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  quality:
+    uses: ./.github/workflows/desktop-ci.yml
+  release:
+    needs: quality
+    name: Build, notarize and publish
+    runs-on: macos-26
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: apps/macos
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust
+        run: |
+          rustup toolchain install --profile minimal
+      - name: Install the Metal Toolchain for SwiftTerm
+        run: xcodebuild -downloadComponent MetalToolchain
+      - name: Install the build tools for Chromium's bindings
+        run: brew install cmake ninja uv
+      - name: Verify tag version and release notes
+        run: |
+          version="${GITHUB_REF_NAME#mobius-desktop-v}"
+          manifest_version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "mobius-desktop") | .version')"
+          test "$version" = "$manifest_version"
+          test -s "../../.github/release-notes/${GITHUB_REF_NAME}.md"
+      - name: Import the Developer ID certificate
+        env:
+          CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          umask 077
+          keychain="$RUNNER_TEMP/release.keychain-db"
+          password="$(uuidgen)"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          printf '%s' "$CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" \
+            -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/certificate.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain"
+          security list-keychains -d user -s "$keychain" login.keychain-db
+      # P12, P8 and provisioning-profile secrets contain base64-encoded file bytes.
+      - name: Write the notarization key and provisioning profile
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          MACOS_PROVISIONING_PROFILE: ${{ secrets.MACOS_PROVISIONING_PROFILE }}
+        run: |
+          umask 077
+          printf '%s' "$APPLE_API_KEY_P8" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+          printf '%s' "$MACOS_PROVISIONING_PROFILE" | base64 --decode > "$RUNNER_TEMP/mobius.provisionprofile"
+      - name: Build, notarize and sign the update
+        env:
+          MOBIUS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          MOBIUS_PROVISIONING_PROFILE: ${{ runner.temp }}/mobius.provisionprofile
+          MOBIUS_NOTARY_KEY: ${{ runner.temp }}/notary.p8
+          MOBIUS_NOTARY_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          MOBIUS_NOTARY_ISSUER: ${{ secrets.APPLE_API_ISSUER_ID }}
+          MOBIUS_RELEASE_REPOSITORY: ${{ github.repository }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: scripts/release.sh
+      - name: Record release provenance
+        run: |
+          jq -n --arg revision "$GITHUB_SHA" --arg tag "$GITHUB_REF_NAME" \
+            --arg xcode "$(xcodebuild -version)" --arg rust "$(rustc --version)" \
+            '{revision: $revision, tag: $tag, xcode: $xcode, rust: $rust}' \
+            > dist/release.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mobius-desktop
+          path: apps/macos/dist/*
+          if-no-files-found: error
+      # The archive is published before the feed, so the feed never names a missing file.
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#mobius-desktop-v}"
+          gh release create "$GITHUB_REF_NAME" "dist/mobius-desktop-$version.dmg" \
+            "dist/mobius-desktop-$version.dmg.sha256" "dist/mobius-desktop-$version.zip" \
+            "dist/mobius-desktop-$version.zip.sha256" dist/appcast.xml dist/release.json \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "möbius for macOS $version" \
+            --notes-file "../../.github/release-notes/${GITHUB_REF_NAME}.md" --prerelease --latest=false
+      - name: Remove signing material
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/release.keychain-db" || true
+          rm -f "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/certificate.p12" "$RUNNER_TEMP/mobius.provisionprofile"

@@ -1,0 +1,79 @@
+name: Desktop Chromium update
+
+# The bundled browser is Chromium through the pinned `cef` crate, which follows CEF's
+# stable builds. Chromium ships security fixes about weekly, so each week this proposes the
+# newest pin as a pull request, built and tested like any other change.
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  update:
+    name: Propose the newest Chromium
+    runs-on: macos-26
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: apps/macos
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Find the newest CEF
+        id: cef
+        run: |
+          current="$(cargo metadata --locked --format-version 1 | jq -r '.packages[] | select(.name == "cef") | .version')"
+          latest="$(curl --fail --silent --user-agent 'mobius chromium update' \
+            https://crates.io/api/v1/crates/cef | jq -r '.crate.max_stable_version')"
+          {
+            echo "current=$current"
+            echo "latest=$latest"
+            echo "branch=chromium/${latest//+/-}"
+          } >> "$GITHUB_OUTPUT"
+      - name: Skip a proposal that already exists
+        id: open
+        if: steps.cef.outputs.current != steps.cef.outputs.latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if git ls-remote --exit-code --heads origin "${{ steps.cef.outputs.branch }}" >/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install Rust
+        if: steps.cef.outputs.current != steps.cef.outputs.latest && steps.open.outputs.exists != 'true'
+        run: |
+          rustup toolchain install --profile minimal
+      - name: Install the Metal Toolchain and Chromium's build tools
+        if: steps.cef.outputs.current != steps.cef.outputs.latest && steps.open.outputs.exists != 'true'
+        run: |
+          xcodebuild -downloadComponent MetalToolchain
+          brew install cmake ninja
+      - name: Pin the newest CEF and test it
+        if: steps.cef.outputs.current != steps.cef.outputs.latest && steps.open.outputs.exists != 'true'
+        run: |
+          latest="${{ steps.cef.outputs.latest }}"
+          sed -i '' -E "s/^cef = \{ version = \"=[^\"]+\"/cef = { version = \"=${latest%%+*}\"/" Cargo.toml
+          cargo update -p cef
+          cargo test --all-targets --all-features --locked
+          MOBIUS_BUILD_PROFILE=dev scripts/bundle.sh
+          python3 scripts/check-native.py
+      - name: Open the pull request
+        if: steps.cef.outputs.current != steps.cef.outputs.latest && steps.open.outputs.exists != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          latest="${{ steps.cef.outputs.latest }}"
+          branch="${{ steps.cef.outputs.branch }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git commit -am "Update Chromium to CEF $latest"
+          git push -u origin "$branch"
+          gh pr create --head "$branch" --title "Update Chromium to CEF $latest" \
+            --body "Pins \`cef\` $latest (was ${{ steps.cef.outputs.current }}). Tests and a development bundle passed on this runner; ship it in the next release for Chromium's security fixes."

@@ -1,0 +1,1 @@
+The transcript glides instead of jumping: replies stream in smoothly, finished steps fold into Worked for, and opened steps and new messages slide into place. Dictation keeps your last words when you stop or pause and listens in the language of your selected keyboard layout. Bundles gateway 0.16.38. Requires gateway protocol 95.

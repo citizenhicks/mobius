@@ -21,7 +21,8 @@ use tokio::sync::{Mutex, mpsc};
 
 pub(crate) use self::mobius::{MessageAcceptance, ValidatedSubmission};
 use crate::bots::BotStore;
-use crate::computer_runtime::{desktop::DesktopControl, remote_desktop::RemoteDesktop};
+use crate::computer_runtime::desktop::DesktopControl;
+use crate::computer_runtime::remote_desktop::RemoteDesktop;
 use crate::config::{ChatSpec, ConfigStore, CredentialStore, GatewayConfig};
 use crate::harness::mobius::middleware_manifest::MobiusSettings;
 use crate::host::{HostAccess, Rejection, RenderEvents, SessionRuntimeState};

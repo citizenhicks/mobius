@@ -1,0 +1,50 @@
+[
+  {
+    "title": "Weekend in Lisbon",
+    "blocks": [
+      {"type": "text", "markdown": "Three neighbourhoods, walkable in a day. Prices are **per person** and checked this week."},
+      {"type": "section", "title": "Where to eat"},
+      {"type": "list", "items": [
+        {"title": "Taberna da Rua das Flores", "subtitle": "Chiado · petiscos, no reservations", "trailing": "€25", "image_url": "https://picsum.photos/id/292/200/200", "url": "https://www.tripadvisor.com"},
+        {"title": "Cervejaria Ramiro", "subtitle": "Intendente · seafood institution", "trailing": "€40", "image_url": "https://picsum.photos/id/429/200/200", "url": "https://www.cervejariaramiro.com"},
+        {"title": "Manteigaria", "subtitle": "Bairro Alto · pastéis de nata", "trailing": "€1.30", "image_url": "https://picsum.photos/id/431/200/200"}
+      ]},
+      {"type": "section", "title": "Read before you go"},
+      {"type": "link", "url": "https://www.visitlisboa.com", "title": "Visit Lisboa — official city guide", "description": "Opening hours, the Lisboa Card and tram routes, updated by the tourism board.", "image_url": "https://picsum.photos/id/1040/800/420"},
+      {"type": "link", "url": "https://en.wikipedia.org/wiki/Lisbon", "title": "Lisbon — Wikipedia", "description": "History of the seven hills, from the 1755 earthquake to the Pombaline rebuild."}
+    ]
+  },
+  {
+    "title": "Running this quarter",
+    "blocks": [
+      {"type": "stats", "items": [
+        {"label": "Distance", "value": "412 km", "detail": "+18% vs Q2", "trend": "up"},
+        {"label": "Avg pace", "value": "5:12 /km", "detail": "−9 s", "trend": "up"},
+        {"label": "Resting HR", "value": "52 bpm", "detail": "no change", "trend": "flat"}
+      ]},
+      {"type": "chart", "kind": "line", "title": "Weekly distance", "labels": ["W1","W2","W3","W4","W5","W6","W7","W8","W9","W10","W11","W12"], "unit": "km",
+       "series": [
+         {"name": "This quarter", "values": [24, 28, 31, 27, 35, 38, 30, 41, 39, 44, 36, 47]},
+         {"name": "Last quarter", "values": [22, 25, 23, 29, 26, 30, 28, 31, 27, 33, 30, 34]}
+       ]},
+      {"type": "chart", "kind": "bar", "title": "Runs by weekday", "labels": ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"],
+       "series": [{"name": "Runs", "values": [4, 7, 3, 8, 2, 11, 9]}]},
+      {"type": "chart", "kind": "area", "title": "Elevation gain", "labels": ["Jul","Aug","Sep"], "unit": "m",
+       "series": [{"name": "Gain", "values": [1840, 2310, 2975]}]}
+    ]
+  },
+  {
+    "title": "Choosing a 14-inch laptop",
+    "blocks": [
+      {"type": "image", "url": "https://picsum.photos/id/0/1200/600", "alt": "A laptop on a wooden desk", "caption": "All three weigh under 1.6 kg."},
+      {"type": "table", "columns": ["Model", "Chip", "Battery", "Weight", "Price"], "rows": [
+        ["MacBook Pro 14", "M5 Pro", "22 h", "1.55 kg", "$1,999"],
+        ["XPS 14", "Core Ultra 9", "15 h", "1.68 kg", "$1,699"],
+        ["ThinkPad X1", "Core Ultra 7", "17 h", "1.10 kg", "$1,849"]
+      ]},
+      {"type": "chart", "kind": "pie", "title": "Where the budget goes", "unit": "%", "labels": ["Laptop", "Dock", "Monitor", "Care plan"],
+       "series": [{"name": "Share", "values": [64, 8, 21, 7]}]},
+      {"type": "text", "markdown": "The MacBook wins on battery; the ThinkPad if weight matters most."}
+    ]
+  }
+]

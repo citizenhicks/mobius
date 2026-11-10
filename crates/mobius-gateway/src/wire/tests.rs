@@ -129,7 +129,8 @@ fn session_file_bytes_use_standard_base64_and_round_trip() {
 
 #[tokio::test]
 async fn websocket_diagnostics_preserve_safe_metadata_not_peer_details() {
-    use tokio_tungstenite::tungstenite::{error::UrlError, http::Response};
+    use tokio_tungstenite::tungstenite::error::UrlError;
+    use tokio_tungstenite::tungstenite::http::Response;
 
     let details = "private-peer-data";
     for (error, expected) in [

@@ -8,10 +8,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use mobius::backend::model::provider::{ProviderAuth, providers};
+use mobius::backend::sandbox::local::{LocalSandbox, ReadOnlyCommand};
 use mobius::backend::sandbox::{
     CommandAuthorization, CommandMode, CommandOutput, CommandOutputSink, NetworkAccess,
     OutputLimit, SandboxBackend, SandboxMode,
-    local::{LocalSandbox, ReadOnlyCommand},
 };
 use mobius::{BoxFuture, Error, Result, SessionId};
 

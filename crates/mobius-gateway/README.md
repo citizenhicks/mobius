@@ -106,8 +106,7 @@ browser or remote desktop surface.
 
 On macOS 26+, the native desktop app adds voice and native computer control.
 It shares the gateway's chats and workspaces and leaves background tasks running
-when closed. The desktop app is maintained in the separate private `mobius-app`
-repository. Native control uses the same authenticated connection and requires
+when closed. Its source is in [`apps/macos`](../../apps/macos/). Native control uses the same authenticated connection and requires
 **Allow Mac control**, macOS Accessibility and Screen Recording access, and the
 Bot's **Full access** policy.
 

@@ -1,0 +1,1 @@
+Full view keeps the chat as a tab beside your documents, the file explorer opens closed, and the composer ring is softer. The session card now shows what fills the context, holds the access setting, and lists run totals; subagents are grouped by state, each with its own face. Bundles gateway 0.16.38. Requires gateway protocol 95.

@@ -382,7 +382,8 @@ fn retain_catalog_page(sessions: &mut Vec<SessionRecord>) {
 
 #[cfg(test)]
 mod tests {
-    use mobius::backend::checkpoint::{Checkpoint, sqlite::SqliteCheckpoint};
+    use mobius::backend::checkpoint::Checkpoint;
+    use mobius::backend::checkpoint::sqlite::SqliteCheckpoint;
 
     use super::*;
 

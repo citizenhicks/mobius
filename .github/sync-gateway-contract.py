@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Synchronize native protocol constants and exact desktop crate requirements.
+"""Synchronize native protocol constants and package version requirements.
 
 The gateway wire constant and package manifest are authoritative. Build scripts
 use --check; maintainers run without it when updating the gateway contract.
@@ -25,7 +25,6 @@ def main():
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--swift", type=Path, action="append", default=[])
     parser.add_argument("--python-fixture", type=Path, action="append", default=[])
-    parser.add_argument("--desktop-manifest", type=Path)
     args = parser.parse_args()
     core = Path(__file__).resolve().parents[1]
     wire = (core / "crates/mobius-gateway/src/wire.rs").read_text()
@@ -38,9 +37,8 @@ def main():
         replace(swift, r"(let gatewayProtocolVersion = )\d+()", protocol, args.check)
     for fixture in args.python_fixture:
         replace(fixture, r"(?m)^(PROTOCOL_VERSION = )\d+()$", protocol, args.check)
-    if args.desktop_manifest:
-        for crate, version in (("mobius", core_version), ("mobius-gateway", gateway_version)):
-            replace(args.desktop_manifest, rf'(?m)^({crate} = \{{ version = ")[^"]+(".*)$', "=" + version, args.check)
+    desktop = core / "apps/macos/Cargo.toml"
+    replace(desktop, r'(?m)^(version = ")[^"]+(".*)$', core_version, args.check)
     cli = core / "crates/mobius-cli/Cargo.toml"
     replace(cli, r'(?m)^(mobius-gateway = \{ version = ")[^"]+(".*)$', "=" + gateway_version, args.check)
     print(f"Gateway contract: protocol {protocol}, core {core_version}, gateway {gateway_version}")

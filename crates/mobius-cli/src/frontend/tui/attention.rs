@@ -2,7 +2,8 @@
 
 use std::sync::Arc;
 
-use super::{TuiState, input::UiAction};
+use super::TuiState;
+use super::input::UiAction;
 use mobius::protocol::{
     FrontendAction, FrontendActionListItem, FrontendEditor, FrontendEvent, FrontendListItemState,
     FrontendSlot, FrontendSymbol, FrontendTone, FrontendWidget, FrontendWidgetContent, Op,

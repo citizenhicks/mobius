@@ -1,0 +1,82 @@
+möbius
+
+The möbius color palettes use Nord
+(https://github.com/nordtheme/nord), licensed under the MIT License.
+Copyright (c) 2016-present Sven Greb
+
+The MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without
+limitation the rights to use, copy, modify, merge, publish, distribute,
+sublicense, and/or sell copies of the Software, and to permit persons to whom
+the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+--------------------------------------------------------------------------------
+
+The hi.*.svg icon artwork is copied from the Mobius Apple client or directly
+from Hugeicons Core Free Icons, preserving the official path data.
+The hi.*.fill.svg variants are first-party filled edits of those Hugeicons paths
+(made under the same MIT License), and bot.face.line.svg is the outline twin of the
+first-party Bot face.
+
+Hugeicons Core Free Icons — https://hugeicons.com
+Copyright (c) Hugeicons
+Licensed under the MIT License reproduced above.
+
+MistralIcon and ArrowTurnBackwardIcon preserve the official paths from
+@hugeicons/core-free-icons 4.3.5, package/dist/esm/MistralIcon.js and
+package/dist/esm/ArrowTurnBackwardIcon.js:
+https://registry.npmjs.org/@hugeicons/core-free-icons/-/core-free-icons-4.3.5.tgz
+Copyright (c) 2025 Hugeicons
+
+OpenRouter artwork — https://lobehub.com/icons/openrouter
+Copyright (c) 2023 LobeHub
+Licensed under the MIT License reproduced above.
+Source: https://github.com/lobehub/lobe-icons/blob/c385b2b8d1f9e19aa86e628d4e23c91ee1111a47/packages/static-svg/icons/openrouter.svg
+The SVG keeps the official path; web-only sizing and style attributes are omitted.
+
+Mobius logos, bot face, composer gauges, and spinner are first-party Mobius artwork.
+
+--------------------------------------------------------------------------------
+
+The embedded desktop viewer includes unchanged noVNC 1.6.0 source files.
+noVNC — https://github.com/novnc/noVNC/releases/tag/v1.6.0
+Copyright the noVNC authors.
+Licensed under the Mozilla Public License 2.0, supplied as noVNC-LICENSE.txt.
+Source: https://github.com/novnc/noVNC/tree/v1.6.0
+The included pako files retain their upstream MIT notice,
+supplied as pako-LICENSE.txt.
+
+--------------------------------------------------------------------------------
+
+The background pictures in backgrounds/ are cropped and resized from public-domain
+prints in The Metropolitan Museum of Art's Open Access collection (CC0):
+
+Utagawa Hiroshige, Panorama of the Eight Views of Kanasawa under a Full Moon, 1857.
+The Metropolitan Museum of Art, Open Access (CC0).
+https://www.metmuseum.org/art/collection/search/56591
+
+Utagawa Hiroshige, The Autumn Moon at Ishiyama on Lake Biwa, ca. 1835.
+The Metropolitan Museum of Art, Open Access (CC0).
+https://www.metmuseum.org/art/collection/search/36527
+
+Utagawa Hiroshige, Twilight Moon at Ryōgoku Bridge, 1797–1858.
+The Metropolitan Museum of Art, Open Access (CC0).
+https://www.metmuseum.org/art/collection/search/45294
+
+Utagawa Hiroshige, Autumn Moon on the Tama River, ca. 1838.
+The Metropolitan Museum of Art, Open Access (CC0).
+https://www.metmuseum.org/art/collection/search/56519

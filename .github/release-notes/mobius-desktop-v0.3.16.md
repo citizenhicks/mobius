@@ -1,0 +1,1 @@
+Polishes attention questions with clearer status lines, inline answer choices, a Recommended label on the first choice, and a quieter Skip action. Expanded questions no longer repeat their title. Requires gateway protocol 91.

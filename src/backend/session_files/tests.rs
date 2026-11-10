@@ -1,6 +1,7 @@
 use super::*;
 use crate::SessionId;
-use cap_std::{ambient_authority, fs::Dir};
+use cap_std::ambient_authority;
+use cap_std::fs::Dir;
 
 fn session(value: &str) -> SessionId {
     SessionId::new(value).unwrap()

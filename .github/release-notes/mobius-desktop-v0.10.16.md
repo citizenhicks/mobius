@@ -1,0 +1,1 @@
+On-device chat titles and "While you were away" recaps, updated dictation with sound cues, and a refined palette, sidebar, tabs and transcript layout. Bundles gateway 0.16.38 with passive chat-history reads and unified file/image inspection. Requires gateway protocol 95.

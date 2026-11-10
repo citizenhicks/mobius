@@ -733,7 +733,8 @@ mod tests {
 
     #[tokio::test]
     async fn count_settlement_retries_storage_failures_without_counting_rollbacks_twice() {
-        use crate::backend::checkpoint::{Checkpoint, sqlite::SqliteCheckpoint};
+        use crate::backend::checkpoint::Checkpoint;
+        use crate::backend::checkpoint::sqlite::SqliteCheckpoint;
 
         for fail_load in [true, false] {
             let directory = tempfile::tempdir().expect("directory");
