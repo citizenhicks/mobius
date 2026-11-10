@@ -239,16 +239,10 @@ per-workspace plugin data under `.mobius/extensions` is retained.
 
 ## Register a provider from automation
 
-Built-in API-key providers include OpenAI, Anthropic, DeepSeek, Kimi, Mistral,
-OpenRouter, and [A2Agent](https://a2agent.me/). A2Agent uses the Responses transport
-at `https://api.a2agent.me/v1` with `A2AGENT_API_KEY`. Register an available model
-from your account; this provider does not bundle a static model catalog. It
-requires credentials, uses rebuilt local tool discovery, and does not advertise
-image input/generation or hosted web search. Native hosted tool search is not
-enabled. These conservative capabilities do not certify every upstream model.
-
-Automation may register OpenRouter with a direct credential read from bounded
-standard input, keeping the key out of arguments and URLs:
+Automation may register an API-key provider by its ID (`openai_socket`, `anthropic`,
+`deepseek`, `kimi`, `mistral`, `openrouter`, `a2agent`, or `responses`) with a direct
+credential read from bounded standard input, keeping the key out of arguments and
+URLs. For example, OpenRouter:
 
 ```sh
 printf %s "$OPENROUTER_API_KEY" | mobius-gateway register-provider \
@@ -267,8 +261,9 @@ mobius-gateway register-provider --provider openrouter --model MODEL \
 ```
 
 The command authenticates over the running loopback gateway, is idempotent, and
-prints `{"provider":"openrouter"}` on success. Credentialless mode is rejected
-for the direct OpenRouter endpoint and for providers that do not advertise it.
+prints the provider ID, such as `{"provider":"openrouter"}`, on success.
+Credentialless mode is rejected for the direct OpenRouter endpoint and for
+providers that do not advertise it.
 A provider catalog change is rejected when it would invalidate a Bot profile or
 the Bot-creation template. Register the replacement under a new instance, move
 affected Bots and defaults explicitly, then remove the old instance.

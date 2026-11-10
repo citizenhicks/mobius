@@ -48,6 +48,12 @@ Licensed under the MIT License reproduced above.
 Source: https://github.com/lobehub/lobe-icons/blob/c385b2b8d1f9e19aa86e628d4e23c91ee1111a47/packages/static-svg/icons/openrouter.svg
 The SVG keeps the official path; web-only sizing and style attributes are omitted.
 
+A2Agent artwork — https://a2agent.me/
+Source: https://a2agent.me/logo.png, supplied by A2Agent in
+https://github.com/citizenhicks/mobius/pull/5
+provider.a2agent.svg is a single-colour trace of the logo's "A2" mark; the wordmark
+and colours are omitted.
+
 Mobius logos, bot face, composer gauges, and spinner are first-party Mobius artwork.
 
 --------------------------------------------------------------------------------

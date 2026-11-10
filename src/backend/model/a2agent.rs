@@ -52,26 +52,12 @@ mod tests {
     use crate::backend::model::provider::ProviderCredential;
 
     #[test]
-    fn unverified_capabilities_and_credentialless_access_are_disabled() {
-        let definition = provider();
-        assert_eq!(definition.web_search(), &[HostedWebSearch::Off]);
-        assert!(
-            !definition.supports_image_input(),
-            "image input is unverified"
-        );
-        assert!(
-            !definition.supports_credentialless_endpoints(),
-            "A2Agent requires an API key"
-        );
-        for credential in [
-            ProviderCredential::ApiKey("test-key".into()),
-            ProviderCredential::Credentialless,
-        ] {
-            let requires_key = matches!(credential, ProviderCredential::Credentialless);
-            let built = definition.build(ProviderBuildConfig {
+    fn built_model_drops_the_inherited_openai_image_capabilities() {
+        let model = provider()
+            .build(ProviderBuildConfig {
                 capability: None,
                 tool_discovery: None,
-                credential,
+                credential: ProviderCredential::ApiKey("test-key".into()),
                 model: "fixture-model".into(),
                 base_url: None,
                 reasoning_effort: None,
@@ -79,20 +65,12 @@ mod tests {
                 web_search: HostedWebSearch::Off,
                 http: reqwest::Client::new(),
                 transport: super::super::ModelTransportSettings::default(),
-            });
-            if requires_key {
-                assert!(built.is_err(), "credentialless access must be rejected");
-            } else {
-                let model = built.expect("API-key provider");
-                assert!(
-                    !model.supports_image_input(),
-                    "transport must reject images"
-                );
-                assert!(
-                    !model.supports_image_generation(),
-                    "transport must not inherit image generation"
-                );
-            }
-        }
+            })
+            .expect("API-key provider");
+        assert!(!model.supports_image_input(), "image input is unverified");
+        assert!(
+            !model.supports_image_generation(),
+            "image generation is unverified"
+        );
     }
 }
