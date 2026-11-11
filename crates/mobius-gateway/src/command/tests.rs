@@ -71,6 +71,27 @@ fn command_definition_is_valid() {
     GatewayCli::command().debug_assert();
 }
 
+#[tokio::test]
+async fn telemetry_readiness_rejects_stopped_or_unauthenticated_gateways() {
+    let directory = tempfile::tempdir().expect("gateway state parent");
+    let state = directory.path().join("gateway");
+    ConfigStore::initialize(state.clone(), DEFAULT_LISTEN, None).expect("gateway config");
+    let stopped = telemetry::run(state.clone(), args::TelemetryCommand::Ready, |_| Ok(None))
+        .await
+        .expect_err("saved configuration cannot prove readiness");
+    assert!(stopped.to_string().contains("not running"), "{stopped}");
+    let _process = ProcessRecordGuard::create(&state, None).expect("locked process record");
+    let unauthenticated = telemetry::run(state, args::TelemetryCommand::Ready, |_| Ok(None))
+        .await
+        .expect_err("a running process cannot replace authenticated control");
+    assert!(
+        unauthenticated
+            .to_string()
+            .contains("credential unavailable"),
+        "{unauthenticated}"
+    );
+}
+
 #[test]
 fn provider_credential_stdin_is_bounded() {
     assert_eq!(

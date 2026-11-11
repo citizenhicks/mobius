@@ -103,6 +103,8 @@ pub(super) enum GatewaySubcommand {
 
 #[derive(Debug, Subcommand)]
 pub(super) enum TelemetryCommand {
+    /// Verify the running gateway answers authenticated local control; print readiness and collector status as JSON.
+    Ready,
     /// Print delivery status and safe endpoint configuration as JSON.
     List,
     /// Upsert an endpoint by ID.

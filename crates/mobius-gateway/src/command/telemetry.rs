@@ -19,22 +19,30 @@ pub(super) async fn run(
     if !running {
         ensure_gateway_stopped(&store, &config)?;
     }
-    if matches!(command, TelemetryCommand::List) && running {
+    if matches!(command, TelemetryCommand::List | TelemetryCommand::Ready) && running {
         let token = load(&endpoint)?
             .ok_or_else(|| Error::Config("local control credential unavailable".into()))?;
         let response = request(&endpoint, &token, |request_id| {
             ClientMessage::GetTelemetry { request_id }
         })
         .await?;
+        if matches!(command, TelemetryCommand::Ready) {
+            return Ok(print_line(format_args!(
+                "{}",
+                serde_json::json!({"ready": true, "telemetry": response})
+            ))?);
+        }
         return Ok(print_line(format_args!(
             "{}",
             serde_json::to_string_pretty(&response)?
         ))?);
     }
     let expected_revision = config.telemetry.revision;
-    let previous =
-        (!running && !matches!(command, TelemetryCommand::List)).then(|| config.telemetry.clone()); // rules-allow: the persisted sinks are kept to roll back a failed cursor sync
+    let previous = (!running
+        && !matches!(command, TelemetryCommand::List | TelemetryCommand::Ready))
+    .then(|| config.telemetry.clone()); // rules-allow: the persisted sinks are kept to roll back a failed cursor sync
     match command {
+        TelemetryCommand::Ready => return Err(Error::Config("gateway is not running".into())),
         TelemetryCommand::List => {
             for sink in &mut config.telemetry.sinks {
                 sink.redact_report()?;

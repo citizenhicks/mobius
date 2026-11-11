@@ -374,6 +374,12 @@ to five seconds. Upload commits, purge, workspace edits and catalog changes
 invalidate that result. Telemetry snapshots and upload admission measure fresh usage.
 
 Outbound telemetry is disabled until a destination is configured. Operators can use
+`mobius-gateway telemetry ready` to verify authenticated local readiness and read
+collector delivery status without waiting for an outbound report. It fails when
+the gateway is stopped or authentication fails; it does not start the gateway.
+Use an external connection check as well when verifying a hosted route.
+
+Operators configure collectors with
 `mobius-gateway telemetry add --id ID --url HTTPS_URL --sections activity,storage`
 and `mobius-gateway telemetry list` or `telemetry remove --id ID`. An endpoint can
 request sections (`activity`, `usage`, `runs`, `storage`, `resources`, `context`) and
