@@ -20,6 +20,10 @@ use crate::Result;
 use crate::preview_json;
 use crate::protocol::EventMsg;
 use crate::protocol::FrontendBlock;
+use crate::protocol::FrontendBlockFormat;
+use crate::protocol::FrontendBlockRole;
+use crate::protocol::FrontendBlockState;
+use crate::protocol::FrontendBlockUpdate;
 use crate::protocol::FrontendContribution;
 use crate::protocol::FrontendEvent;
 use crate::protocol::FrontendSlot;
@@ -27,6 +31,7 @@ use crate::protocol::FrontendTone;
 use crate::protocol::FrontendWidget;
 use crate::protocol::ReviewDecision;
 use crate::protocol::ToolCall;
+use crate::protocol::ToolContent;
 
 const CAPABILITY: &str = "sandbox";
 const MAX_SESSION_APPROVALS: usize = 64;
@@ -116,15 +121,43 @@ impl Approval {
     pub(super) fn render(event: &EventMsg) -> Option<FrontendBlock> {
         match event {
             EventMsg::ExecApprovalRequest(request) => Some(FrontendBlock {
-                update: crate::protocol::FrontendBlockUpdate::Replace,
-                state: crate::protocol::FrontendBlockState::Complete,
-                role: crate::protocol::FrontendBlockRole::Approval,
+                id: Some(approval_block_id(&request.turn_id, &request.id)),
+                update: FrontendBlockUpdate::Replace,
+                state: FrontendBlockState::Pending,
+                role: FrontendBlockRole::Approval,
                 title: "Approval required".into(),
                 text: format!("{}\n{}", request.reason, approval_tools(&request.calls)),
-                format: crate::protocol::FrontendBlockFormat::PlainText,
+                format: FrontendBlockFormat::PlainText,
                 tone: FrontendTone::Warning,
                 ..Default::default()
             }),
+            // Append the outcome to the existing request, keeping its reason and tool details.
+            EventMsg::ExecApprovalDecided(decided) => {
+                let mut block = FrontendBlock {
+                    id: Some(approval_block_id(&decided.turn_id, &decided.id)),
+                    update: FrontendBlockUpdate::Append,
+                    role: FrontendBlockRole::Approval,
+                    ..Default::default()
+                };
+                block.title = match &decided.decision {
+                    ReviewDecision::Approved => {
+                        block.tone = FrontendTone::Success;
+                        "Allowed once"
+                    }
+                    ReviewDecision::ApprovedForSession => {
+                        block.tone = FrontendTone::Success;
+                        "Allowed for this chat"
+                    }
+                    ReviewDecision::Denied { rejection } => {
+                        block.content = ToolContent::from(rejection);
+                        block.tone = FrontendTone::Warning;
+                        "Denied"
+                    }
+                    ReviewDecision::Abort => "Stopped",
+                }
+                .into();
+                Some(block)
+            }
             _ => None,
         }
     }
@@ -290,9 +323,52 @@ fn state_not_initialized() -> Error {
     Error::Stopped("approval state is not initialized".into())
 }
 
+/// The block an approval request and its decision share: `{turn}/approval:{request}`.
+fn approval_block_id(turn_id: &str, request_id: &str) -> String {
+    format!("{turn_id}/approval:{request_id}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decision_appends_its_outcome_to_the_request_block() {
+        let request = Approval::render(&EventMsg::ExecApprovalRequest(
+            crate::protocol::ExecApprovalRequestEvent {
+                id: "request".into(),
+                turn_id: "turn".into(),
+                calls: Vec::new(),
+                reason: "push".into(),
+            },
+        ))
+        .expect("request block");
+        let decided = |decision| {
+            Approval::render(&EventMsg::ExecApprovalDecided(
+                crate::protocol::ExecApprovalDecidedEvent {
+                    id: "request".into(),
+                    turn_id: "turn".into(),
+                    decision,
+                },
+            ))
+            .expect("decision block")
+        };
+        let denied = decided(ReviewDecision::Denied {
+            rejection: "use the 1.99 toolchain".into(),
+        });
+        assert_eq!(request.id.as_deref(), Some("turn/approval:request"));
+        assert_eq!(request.state, FrontendBlockState::Pending);
+        assert_eq!(denied.id, request.id);
+        assert_eq!(denied.state, FrontendBlockState::Complete);
+        assert_eq!(denied.update, FrontendBlockUpdate::Append);
+        assert_eq!(denied.title, "Denied");
+        assert!(denied.text.is_empty());
+        assert_eq!(denied.content, ToolContent::from("use the 1.99 toolchain"));
+        assert_eq!(
+            decided(ReviewDecision::ApprovedForSession).title,
+            "Allowed for this chat"
+        );
+    }
 
     #[test]
     fn approval_grants_only_the_reviewed_call() {

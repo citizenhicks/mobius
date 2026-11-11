@@ -278,6 +278,7 @@ fn widget_event(todos: Vec<Todo>) -> FrontendEvent {
                     .into_iter()
                     .enumerate()
                     .map(|(index, todo)| FrontendActionListItem {
+                        outcome: None,
                         id: index.to_string().into(),
                         text: todo.content,
                         state: match todo.status {

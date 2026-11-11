@@ -126,20 +126,13 @@ pub(super) const SCENARIOS: &[Scenario] = &[
             this.open_chat_detail(ChatDetail::Context(id), window, cx);
         });
     }),
-    // The live chat's first pending approval, open in the Attention panel.
+    // The live chat's approvals and questions, open in the Attention panel.
     ("chat-attention-live", |this, window, cx| {
         open_chat(this, window, cx);
         Workspace::when_chat_ready(window, cx, |this, window, cx| {
             let Some(id) = session_id(this) else {
                 return;
             };
-            this.chat_ui.attention_item = this
-                .client
-                .state
-                .session
-                .as_ref()
-                .and_then(|session| session.pending_approvals.first())
-                .map(|approval| Arc::clone(&approval.id));
             this.open_chat_detail(ChatDetail::Attention(id), window, cx);
         });
     }),
@@ -249,7 +242,6 @@ pub(super) const SCENARIOS: &[Scenario] = &[
     ("chat-fixture-attention", |this, window, cx| {
         fixture(this, window, cx, |this, window, cx| {
             this.apply_fixture(Scene::Attention, cx);
-            this.chat_ui.attention_item = Some("fixture:attention:open".into());
             let Some(session) = session_id(this) else {
                 return;
             };

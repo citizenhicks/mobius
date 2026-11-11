@@ -1,11 +1,12 @@
-//! Interface documents a Bot composes with `show_ui`: one hairline card headed by the block
-//! title, holding sections, markdown, lists, tables, stat tiles, link previews, images and
+//! Interface documents a Bot composes with `show_ui`: the transcript's inline card headed by
+//! the block title, holding sections, markdown, lists, tables, stat tiles, link previews, images and
 //! charts. Neutral theme colours throughout; the accent marks data and links only.
 
 mod chart;
 
 use super::*;
 use crate::numeric::ToFloat;
+use crate::ui::primitives::inline_card;
 use gpui_component::table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow};
 use mobius::protocol::{FrontendBlock, UiBlock, UiListItem, UiStat, UiTrend};
 
@@ -71,26 +72,27 @@ impl Workspace {
         if let Some(title) = heading {
             groups.push(self.ui_group(Some(title), None));
         }
-        div()
-            .w_full()
+        let title = (!block.title.is_empty()).then(|| {
+            div()
+                .typography(Type::Headline)
+                .text_color(p.text)
+                .child(block.title.clone()) // rules-allow: the element owns its title while the block keeps it
+                .into_any_element()
+        });
+        let content = div()
             .flex()
             .flex_col()
             .gap(space::L)
-            .p(inset::CARD)
-            .control_corners()
-            .border_1()
-            .border_color(p.separator)
-            .bg(p.card)
-            .when(!block.title.is_empty(), |card| {
-                card.child(
-                    div()
-                        .typography(Type::Headline)
-                        .text_color(p.text)
-                        .child(block.title.clone()), // rules-allow: the element owns its title while the block keeps it
-                )
-            })
             .children(groups)
-            .into_any_element()
+            .into_any_element();
+        inline_card(
+            title.into_iter().chain(std::iter::once(content)),
+            "hi.layoutDashboard",
+            None,
+            None,
+            &p,
+        )
+        .into_any_element()
     }
 
     fn ui_group(&self, heading: Option<&str>, element: Option<AnyElement>) -> Div {

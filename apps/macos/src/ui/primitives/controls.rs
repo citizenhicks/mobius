@@ -16,7 +16,7 @@ use gpui_component::input::{Input, InputState, Textarea, TextareaState};
 use gpui_component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_component::popover::Popover;
 use gpui_component::progress::ProgressCircle;
-use gpui_component::{Icon, Selectable, Sizable, Size};
+use gpui_component::{Disableable, Icon, Selectable, Sizable, Size};
 use mobius_gateway::wire::BotShape;
 use std::rc::Rc;
 
@@ -871,4 +871,76 @@ pub(crate) fn leading_item(
             )
             .child(gpui::text!(SharedString::clone(&label)))
     })
+}
+
+/// The one card the transcript draws in place (MobiusInlineCard): a question, an approval, a
+/// generated interface. `body` reads top to bottom; the kind's `glyph` sits in the
+/// bottom-leading corner, opposite `trailing`, so every card ends on the same line.
+pub fn inline_card(
+    body: impl IntoIterator<Item = AnyElement>,
+    glyph_name: &str,
+    tint: Option<Hsla>,
+    trailing: Option<AnyElement>,
+    p: &Palette,
+) -> Div {
+    div()
+        .w_full()
+        .flex()
+        .flex_col()
+        .gap(space::S)
+        .p(inset::CARD)
+        .tile_corners()
+        .bg(p.raised)
+        .children(body)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(space::S)
+                .min_h(height::PRIMARY)
+                .child(
+                    icon(glyph_name, p)
+                        .size(glyph::LEAD)
+                        .text_color(tint.unwrap_or(p.muted)),
+                )
+                .child(div().flex_1())
+                .children(trailing),
+        )
+}
+
+/// One keyboard-accessible choice of an inline decision.
+pub fn choice_row(
+    id: impl Into<ElementId>,
+    label: SharedString,
+    selected: bool,
+    enabled: bool,
+    cx: &App,
+) -> Button {
+    let p = palette(cx);
+    let mark = div().size(glyph::INLINE).flex_shrink_0().pill_corners();
+    let mark = if selected {
+        mark.border_4().border_color(p.ink)
+    } else {
+        mark.border_1().border_color(p.muted)
+    };
+    Button::new(id)
+        .with_variant(quiet(cx))
+        .w_full()
+        .min_h(height::REGULAR)
+        .p_0()
+        .selected(selected)
+        .toggled(selected)
+        .disabled(!enabled)
+        .accessibility_label(SharedString::clone(&label))
+        .child(
+            div()
+                .w_full()
+                .flex()
+                .items_center()
+                .gap(space::S)
+                .typography(Type::Body)
+                .text_color(p.ink)
+                .child(mark)
+                .child(div().flex_1().min_w_0().child(label)),
+        )
 }

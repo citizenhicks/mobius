@@ -72,6 +72,7 @@ fn action_list_item(memory: &MemoryItem) -> FrontendActionListItem {
         ),
     ];
     FrontendActionListItem {
+        outcome: None,
         id: (*memory.id).into(),
         text: format!("{} — {}", memory.name, memory.description),
         state: FrontendListItemState::Plain,

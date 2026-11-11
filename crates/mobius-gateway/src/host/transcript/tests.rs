@@ -234,6 +234,81 @@ fn completed(turn: &str) -> EventMsg {
     })
 }
 
+#[test]
+fn approval_history_keeps_request_details_with_or_without_a_decision() {
+    for decided in [true, false] {
+        let mut chat = Chat::new(0);
+        chat.send(None, started("turn"), Vec::new());
+        let id = "turn/approval:request";
+        let request = FrontendBlock {
+            id: Some(id.into()),
+            role: FrontendBlockRole::Approval,
+            state: FrontendBlockState::Pending,
+            title: "Approval required".into(),
+            text: "Run publish --dry-run".into(),
+            ..Default::default()
+        };
+        let render = |block| RenderedBlock {
+            capability: "sandbox".into(),
+            block,
+        };
+        chat.send(
+            None,
+            EventMsg::ExecApprovalRequest(mobius::protocol::ExecApprovalRequestEvent {
+                id: "request".into(),
+                turn_id: "turn".into(),
+                calls: Vec::new(),
+                reason: "Run publish --dry-run".into(),
+            }),
+            vec![render(request)],
+        );
+        if decided {
+            let event = serde_json::from_value(serde_json::json!({
+                "type": "exec_approval_decided",
+                "id": "request",
+                "turn_id": "turn",
+                "decision": { "denied": { "rejection": "Check the target first" } }
+            }))
+            .unwrap();
+            chat.send(
+                None,
+                event,
+                vec![render(FrontendBlock {
+                    id: Some(id.into()),
+                    role: FrontendBlockRole::Approval,
+                    update: FrontendBlockUpdate::Append,
+                    title: "Denied".into(),
+                    content: ToolContent::from("Check the target first"),
+                    ..Default::default()
+                })],
+            );
+        }
+        chat.send(
+            None,
+            EventMsg::TurnAborted(TurnAbortedEvent {
+                idle: false,
+                turn_id: "turn".into(),
+                reason: "Stopped".into(),
+            }),
+            Vec::new(),
+        );
+        let entry = chat.client.item("block:sandbox:turn/approval:request");
+        let TranscriptItemContent::Block { block, .. } = &entry.content else {
+            panic!("expected an approval block");
+        };
+        assert_eq!(entry.state, TranscriptItemState::Complete);
+        assert_eq!(block.state, FrontendBlockState::Complete);
+        assert_eq!(block.text, "Run publish --dry-run");
+        if decided {
+            assert_eq!(block.title, "Denied");
+            assert_eq!(block.content, ToolContent::from("Check the target first"));
+        } else {
+            assert_eq!(block.title, "No decision recorded");
+            assert!(block.content.0.is_empty());
+        }
+    }
+}
+
 fn user(text: &str, target: Option<u64>) -> EventMsg {
     EventMsg::Message(MessageEvent {
         author: MessageAuthor::User,

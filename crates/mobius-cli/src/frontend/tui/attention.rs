@@ -19,6 +19,7 @@ impl TuiState {
             .approvals
             .iter()
             .map(|approval| FrontendActionListItem {
+                outcome: None,
                 id: Arc::clone(&approval.id),
                 text: approval.reason.clone(), // rules-allow: the pending approval stays queued while the overlay owns its row
                 state: FrontendListItemState::Pending,

@@ -11,6 +11,7 @@ use mobius::SessionId;
 use mobius::protocol::{FrontendListItemState, FrontendWidget, FrontendWidgetContent};
 use std::collections::BTreeMap;
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// A footer widget's label: counts such as "2/5" read with their title ("Tasks 2/5").
 fn footer_label(widget: &FrontendWidget) -> String {
@@ -98,7 +99,7 @@ impl Workspace {
     }
 
     /// The chat's composer-footer widgets by key.
-    pub(super) fn footer_widget_items(&self) -> BTreeMap<String, (&FrontendWidget, bool)> {
+    pub(super) fn footer_widget_items(&self) -> BTreeMap<String, (&Arc<FrontendWidget>, bool)> {
         self.slot_widget_items(FrontendSlot::ComposerFooter)
     }
 
@@ -107,7 +108,7 @@ impl Workspace {
     pub(in crate::ui) fn slot_widget_items(
         &self,
         slot: FrontendSlot,
-    ) -> BTreeMap<String, (&FrontendWidget, bool)> {
+    ) -> BTreeMap<String, (&Arc<FrontendWidget>, bool)> {
         self.widget_items(Some(slot))
     }
 

@@ -169,10 +169,15 @@ impl Workspace {
             };
             (Arc::clone(&submission.id), message)
         };
+        if let Err(error) = self.enqueue(message) {
+            self.report(error);
+            cx.notify();
+            return None;
+        }
         if let Some(key) = key {
             self.chat_ui.action_requests.insert(key, Arc::clone(&id));
         }
-        self.send(message, cx);
+        cx.notify();
         Some(id)
     }
 }

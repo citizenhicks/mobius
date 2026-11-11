@@ -77,6 +77,7 @@ fn blocks(text: &str) -> FrontendWidgetContent {
     FrontendWidgetContent::ActionList {
         title: "View".into(),
         items: vec![FrontendActionListItem {
+            outcome: None,
             id: "view".into(),
             text: text.into(),
             state: FrontendListItemState::Plain,

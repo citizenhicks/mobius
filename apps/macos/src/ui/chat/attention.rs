@@ -1,296 +1,883 @@
-//! Approval and contributed attention rows share the existing list and decision form.
-use super::*;
-use mobius::protocol::{FrontendAction, FrontendListItemState, FrontendWidgetContent};
+//! Questions and approvals shown in the transcript and the Attention panel.
+
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
+use std::rc::Rc;
+use std::sync::Arc;
+
+use gpui::AnyElement;
+use gpui::AppContext;
+use gpui::Context;
+use gpui::Entity;
+use gpui::Hsla;
+use gpui::InteractiveElement;
+use gpui::IntoElement;
+use gpui::ParentElement;
+use gpui::SharedString;
+use gpui::StatefulInteractiveElement;
+use gpui::Styled;
+use gpui::Subscription;
+use gpui::Window;
+use gpui::div;
+use gpui_component::Disableable;
+use gpui_component::input::InputEvent;
+use gpui_component::input::TextareaState;
+use mobius::protocol::ApprovalCall;
+use mobius::protocol::ContentPart;
+use mobius::protocol::ExecApprovalRequestEvent;
+use mobius::protocol::FrontendActionListItem;
+use mobius::protocol::FrontendBlock;
+use mobius::protocol::FrontendBlockFormat;
+use mobius::protocol::FrontendBlockRole;
+use mobius::protocol::FrontendListItemState;
+use mobius::protocol::FrontendSlot;
+use mobius::protocol::FrontendTone;
+use mobius::protocol::FrontendWidget;
+use mobius::protocol::FrontendWidgetContent;
+use mobius::protocol::Op;
+use mobius::protocol::ReviewDecision;
+use mobius_gateway::wire::TranscriptItem;
+use mobius_gateway::wire::TranscriptItemContent;
+use mobius_gateway::wire::TranscriptItemState;
+use mobius_gateway::wire::TranscriptRow;
+use mobius_gateway::wire::TranscriptRowKind;
+
+use super::Workspace;
+use crate::ui::diff_document::DiffDocument;
+use crate::ui::motion;
+use crate::ui::primitives::Shape;
+use crate::ui::primitives::Type;
+use crate::ui::primitives::Typography;
+use crate::ui::primitives::choice_row;
+use crate::ui::primitives::heading;
+use crate::ui::primitives::icon;
+use crate::ui::primitives::inline_card;
+use crate::ui::primitives::primary_button;
+use crate::ui::primitives::textarea;
+use crate::ui::transcript;
+use crate::ui::{glyph, inset, space};
+
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+enum DecisionTarget {
+    Question { widget: Arc<str>, item: Arc<str> },
+    Approval { request: Arc<str> },
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct DecisionKey {
+    session: String,
+    target: DecisionTarget,
+}
+
+pub(super) struct DecisionDraft {
+    selected: SharedString,
+    editor: Option<DecisionEditor>,
+}
+
+struct DecisionEditor {
+    placement: DecisionPlacement,
+    input: Entity<TextareaState>,
+    _subscription: Subscription,
+}
+
+struct Choice {
+    id: SharedString,
+    label: SharedString,
+    prompt: Option<SharedString>,
+}
+
+impl Choice {
+    fn approval(id: &'static str, label: &'static str, prompt: Option<&'static str>) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            prompt: prompt.map(SharedString::from),
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DecisionPlacement {
+    Inline,
+    Panel,
+    Tail,
+}
+
+impl DecisionPlacement {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Inline => "inline",
+            Self::Panel => "panel",
+            Self::Tail => "tail",
+        }
+    }
+}
+
+struct DecisionCard {
+    key: Option<Rc<DecisionKey>>,
+    title: SharedString,
+    glyph: &'static str,
+    tint: Option<Hsla>,
+    detail: Vec<AnyElement>,
+    outcome: Option<SharedString>,
+    choices: Vec<Choice>,
+    enabled: bool,
+}
+
+#[derive(Clone, Copy)]
+enum Decision<'a> {
+    Question {
+        widget: &'a AttentionWidget,
+        item: &'a FrontendActionListItem,
+    },
+    Pending(&'a ExecApprovalRequestEvent),
+    Closed {
+        request: &'a str,
+        block: &'a FrontendBlock,
+    },
+}
+
+struct AttentionWidget {
+    key: Arc<str>,
+    widget: Arc<FrontendWidget>,
+    global: bool,
+}
+
+impl AttentionWidget {
+    fn items(&self) -> &[FrontendActionListItem] {
+        match &self.widget.content {
+            Some(FrontendWidgetContent::ActionList { items, .. }) => items,
+            _ => &[],
+        }
+    }
+}
+
+struct QuestionAnchor {
+    widget: usize,
+    item: usize,
+}
+
+#[derive(Default)]
+pub(super) struct AttentionIndex {
+    widgets: Vec<AttentionWidget>,
+    questions: BTreeMap<String, BTreeMap<Arc<str>, QuestionAnchor>>,
+    tail: ApprovalTail,
+}
+
+#[derive(Default)]
+struct ApprovalTail {
+    revision: u64,
+    pending: Vec<Arc<str>>,
+    unanchored: Vec<Arc<str>>,
+}
+
+impl AttentionIndex {
+    fn question(&self, entry: &TranscriptItem) -> Option<Decision<'_>> {
+        if entry.inherited {
+            return None;
+        }
+        let TranscriptItemContent::Block {
+            capability, block, ..
+        } = &entry.content
+        else {
+            return None;
+        };
+        let call = block
+            .id
+            .as_deref()?
+            .strip_prefix(entry.turn_id.as_deref()?)?
+            .strip_prefix('/')?;
+        let anchor = self.questions.get(capability.as_ref())?.get(call)?;
+        let widget = self.widgets.get(anchor.widget)?;
+        Some(Decision::Question {
+            widget,
+            item: widget.items().get(anchor.item)?,
+        })
+    }
+
+    fn questions(&self) -> impl Iterator<Item = Decision<'_>> {
+        self.widgets.iter().flat_map(|widget| {
+            widget
+                .items()
+                .iter()
+                .map(move |item| Decision::Question { widget, item })
+        })
+    }
+}
+
+struct ApprovalAnchor<'a> {
+    request: &'a str,
+    block: &'a FrontendBlock,
+}
+
+fn approval_anchor(item: &TranscriptItem) -> Option<ApprovalAnchor<'_>> {
+    let TranscriptItemContent::Block { block, .. } = &item.content else {
+        return None;
+    };
+    if block.role != FrontendBlockRole::Approval {
+        return None;
+    }
+    let (_, request) = item.id.rsplit_once("/approval:")?;
+    Some(ApprovalAnchor { request, block })
+}
 
 impl Workspace {
     pub(super) fn attention_count(&self) -> usize {
+        self.pending_approvals().len()
+            + self.chat_ui.attention.questions().filter(|question| {
+                matches!(question, Decision::Question { item, .. } if item.state == FrontendListItemState::Pending)
+            }).count()
+    }
+
+    pub(super) fn attention_has_items(&self) -> bool {
+        !self.pending_approvals().is_empty() || self.chat_ui.attention.questions().next().is_some()
+    }
+
+    pub(super) fn pending_approvals(&self) -> &[ExecApprovalRequestEvent] {
         self.client
             .state
             .session
             .as_ref()
-            .map_or(0, |session| session.pending_approvals.len())
-            + self
-                .slot_widget_items(FrontendSlot::Attention)
-                .values()
-                .flat_map(|(widget, _)| widget.pending_attention_items())
-                .count()
+            .map_or(&[], |session| session.pending_approvals.as_slice())
     }
 
-    pub(super) fn attention_has_items(&self) -> bool {
-        self.client.state.session.as_ref().is_some_and(|session| !session.pending_approvals.is_empty()) || self.slot_widget_items(FrontendSlot::Attention).values().any(|(widget, _)| {
-            matches!(&widget.content, Some(FrontendWidgetContent::ActionList { items, .. }) if !items.is_empty())
-        })
+    fn decision_session(&self) -> String {
+        self.client.draft_key(
+            self.client
+                .state
+                .selected_session_id
+                .as_deref()
+                .unwrap_or_default(),
+        )
     }
 
-    pub(super) fn attention_body(&self, cx: &mut Context<Self>) -> AnyElement {
-        let p = self.palette;
-        let mut rows = Vec::new();
-        if let Some(session) = &self.client.state.session {
-            for approval in &session.pending_approvals {
-                let id = Arc::clone(&approval.id);
-                let open = self.chat_ui.attention_item.as_ref() == Some(&approval.id);
-                rows.push(
-                    Row::new(
-                        SharedString::from(format!("approval:{id}")),
-                        "Approval required",
-                    )
-                    .leading(Leading::glyph("hi.userRoundCheck"))
-                    .status(p.warning, "Waiting for you")
-                    .subtitle(approval.reason.clone()) // rules-allow: the row owns its text while the approval stays in session state
-                    .control(attention_caret(&p, open))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.open_attention_item(Arc::clone(&id), cx);
-                    }))
-                    .into_any_element(),
-                );
-                if open {
-                    rows.extend(self.approval_card(cx));
+    fn refresh_attention_widgets(&mut self) -> bool {
+        let sources = self.slot_widget_items(FrontendSlot::Attention);
+        let attention = &self.chat_ui.attention;
+        let widgets_changed = sources.len() != attention.widgets.len()
+            || !sources.iter().zip(&attention.widgets).all(
+                |((key, (widget, global)), previous)| {
+                    key == &*previous.key
+                        && *global == previous.global
+                        && Arc::ptr_eq(widget, &previous.widget)
+                },
+            );
+        if widgets_changed {
+            let widgets: Vec<_> = sources
+                .into_iter()
+                .map(|(key, (widget, global))| AttentionWidget {
+                    key: key.into(),
+                    widget: Arc::clone(widget),
+                    global,
+                })
+                .collect();
+            let mut questions: BTreeMap<String, BTreeMap<Arc<str>, QuestionAnchor>> =
+                BTreeMap::new();
+            for (widget, source) in widgets.iter().enumerate() {
+                let Some((capability, _)) = source.key.split_once(':') else {
+                    continue;
+                };
+                let anchors = questions.entry(capability.to_owned()).or_default();
+                for (item, question) in source.items().iter().enumerate() {
+                    anchors
+                        .entry(Arc::clone(&question.id))
+                        .or_insert(QuestionAnchor { widget, item });
                 }
             }
+            self.chat_ui.attention.widgets = widgets;
+            self.chat_ui.attention.questions = questions;
         }
-        let widgets = self.slot_widget_items(FrontendSlot::Attention);
-        let mut items: Vec<_> = widgets
+        widgets_changed
+    }
+
+    pub(super) fn refresh_decisions(&mut self) {
+        let widgets_changed = self.refresh_attention_widgets();
+        let revision = self.client.state.transcript.structure_revision();
+        let tail = &self.chat_ui.attention.tail;
+        let pending_changed = !self
+            .pending_approvals()
             .iter()
-            .flat_map(|(key, (widget, global))| {
-                let items = match &widget.content {
-                    Some(FrontendWidgetContent::ActionList { items, .. }) => items.as_slice(),
-                    _ => &[],
-                };
-                items.iter().map(move |item| (key, item, *global))
-            })
-            .collect();
-        items.sort_by_key(|(_, item, _)| item.state != FrontendListItemState::Pending);
-        for (key, item, global) in items {
-            let id: Arc<str> = format!("{key}:{}", item.id).into();
-            let pending = item.state == FrontendListItemState::Pending;
-            let selected = self.chat_ui.attention_item.as_ref() == Some(&id);
-            // An answered item reads "question\noutcome": the outcome becomes its status.
-            let (question, outcome) = item.text.split_once('\n').unwrap_or((&item.text, ""));
-            let row = Row::new(SharedString::from(&id), question.to_owned())
-                .leading(Leading::glyph("hi.userQuestion01"));
-            let row = if pending {
-                let id = Arc::clone(&id);
-                row.status(p.warning, "Waiting for you")
-                    .control(attention_caret(&p, selected))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.open_attention_item(Arc::clone(&id), cx);
-                    }))
-            } else {
-                row.status(
-                    p.signal,
-                    if outcome.is_empty() { "Done" } else { outcome }.to_owned(),
-                )
+            .map(|approval| &approval.id)
+            .eq(&tail.pending);
+        if pending_changed || revision != tail.revision {
+            let pending: Vec<_> = self
+                .pending_approvals()
+                .iter()
+                .map(|approval| Arc::clone(&approval.id))
+                .collect();
+            let mut unanchored: BTreeSet<_> = pending.iter().map(Arc::as_ref).collect();
+            if !unanchored.is_empty() {
+                for entry in self
+                    .transcript_items()
+                    .rev()
+                    .filter(|entry| !entry.inherited)
+                {
+                    if let Some(anchor) = approval_anchor(entry) {
+                        unanchored.remove(anchor.request);
+                    }
+                    if unanchored.is_empty() {
+                        break;
+                    }
+                }
+            }
+            let unanchored = pending
+                .iter()
+                .filter(|id| unanchored.contains(id.as_ref()))
+                .map(Arc::clone)
+                .collect();
+            self.chat_ui.attention.tail = ApprovalTail {
+                revision,
+                pending,
+                unanchored,
             };
-            // The options join their question's row, so the list draws no line between them.
-            let options = (pending && selected)
-                .then(|| self.attention_options(key, &id, &item.actions, global, cx));
-            rows.push(div().child(row).children(options).into_any_element());
         }
+        if (widgets_changed || pending_changed) && self.active_session_ready() {
+            let scope = self.decision_session();
+            let attention = &self.chat_ui.attention;
+            let requests = &mut self.chat_ui.action_requests;
+            self.chat_ui.decision_drafts.retain(|key, _| {
+                if key.session != scope {
+                    return true;
+                }
+                match &key.target {
+                    DecisionTarget::Approval { request } => {
+                        let pending = attention.tail.pending.contains(request);
+                        if !pending {
+                            requests.remove(&format!("approval\0{request}"));
+                        }
+                        pending
+                    }
+                    DecisionTarget::Question { widget, item } => attention
+                        .widgets
+                        .iter()
+                        .find(|source| &source.key == widget)
+                        .and_then(|source| {
+                            source.items().iter().find(|question| &question.id == item)
+                        })
+                        .is_none_or(|question| question.state == FrontendListItemState::Pending),
+                }
+            });
+        }
+    }
+
+    fn transcript_items(&self) -> impl DoubleEndedIterator<Item = &TranscriptItem> {
+        let transcript = &self.client.state.transcript;
+        transcript
+            .rows()
+            .flat_map(move |row| transcript.row_items(row))
+            .map(|entry| &**entry)
+    }
+
+    fn approval_at<'a>(&'a self, item: &'a TranscriptItem) -> Option<Decision<'a>> {
+        let anchor = approval_anchor(item)?;
+        if item.state == TranscriptItemState::Complete {
+            return Some(Decision::Closed {
+                request: if item.inherited {
+                    &item.id
+                } else {
+                    anchor.request
+                },
+                block: anchor.block,
+            });
+        }
+        if item.inherited {
+            return None;
+        }
+        self.pending_approvals()
+            .iter()
+            .find(|approval| &*approval.id == anchor.request)
+            .map(Decision::Pending)
+    }
+
+    pub(super) fn attention_body(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        self.refresh_decisions();
+        let mut questions: Vec<_> = self.chat_ui.attention.questions().collect();
+        questions.sort_by_key(|decision| {
+            matches!(decision, Decision::Question { item, .. } if item.state != FrontendListItemState::Pending)
+        });
+        let cards: Vec<_> = self
+            .pending_approvals()
+            .iter()
+            .map(Decision::Pending)
+            .chain(questions)
+            .chain(
+                self.transcript_items()
+                    .filter_map(|item| self.approval_at(item))
+                    .filter(|decision| matches!(decision, Decision::Closed { .. })),
+            )
+            .map(|decision| self.decision(decision, DecisionPlacement::Panel, cx))
+            .collect();
         div()
             .id("attention-list")
             .p(inset::CARD)
             .overflow_y_scroll()
-            .child(Group::new().children(rows))
+            .flex()
+            .flex_col()
+            .gap(space::S)
+            .children(cards)
             .into_any_element()
     }
 
-    fn open_attention_item(&mut self, id: Arc<str>, cx: &mut Context<Self>) {
-        self.chat_ui.attention_editor = None;
-        self.chat_ui.attention_item = Some(id);
-        cx.notify();
+    /// Render a row's decisions and omit its source only if every item has a replacement.
+    pub(super) fn row_decisions(
+        &self,
+        row: &TranscriptRow,
+        cx: &mut Context<Self>,
+    ) -> RowDecisions {
+        let mut has_source = !matches!(row.kind, TranscriptRowKind::Activity { .. });
+        let mut cards = Vec::new();
+        for entry in self.client.state.transcript.row_items(row) {
+            if let Some(decision) = self
+                .approval_at(entry)
+                .or_else(|| self.chat_ui.attention.question(entry))
+            {
+                cards.push(self.decision(decision, DecisionPlacement::Inline, cx));
+            } else {
+                has_source = true;
+            }
+        }
+        RowDecisions {
+            show_source: has_source || cards.is_empty(),
+            cards,
+        }
     }
 
-    /// A question's answers under its row: choices or a written reply, then anything else,
-    /// such as Skip, as a quiet trailing button.
-    fn attention_options(
+    pub(super) fn unanchored_approval_ids(&self) -> impl Iterator<Item = &Arc<str>> {
+        self.chat_ui.attention.tail.unanchored.iter()
+    }
+
+    pub(super) fn unanchored_approval(
         &self,
-        key: &str,
         id: &str,
-        actions: &[FrontendAction],
-        global: bool,
-        cx: &Context<Self>,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let pending = self
+            .pending_approvals()
+            .iter()
+            .find(|approval| &*approval.id == id)?;
+        Some(self.decision(Decision::Pending(pending), DecisionPlacement::Tail, cx))
+    }
+
+    fn decision(
+        &self,
+        decision: Decision<'_>,
+        placement: DecisionPlacement,
+        cx: &mut Context<Self>,
     ) -> AnyElement {
-        let p = self.palette;
-        let (choices, others): (Vec<_>, Vec<_>) = actions
-            .iter()
-            .partition(|action| action.input_from_label || action.editor.is_some());
-        // Questions list the recommended answer first.
-        let recommended = choices
-            .iter()
-            .find(|action| action.input_from_label)
-            .map(|action| &action.id);
-        let others = others.into_iter().map(|action| {
-            let action = action.clone(); // rules-allow: the 'static click listener owns its copy of the action
-            button(
-                SharedString::from(format!("attention-other:{key}:{}", action.id)),
-                action.label.clone(), // rules-allow: the button owns its label while the listener keeps the action
-            )
-            .ghost()
-            .text_color(p.muted)
-            .disabled(self.widget_action_blocked(&action))
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.activate_widget_action(action.clone(), global, window, cx); // rules-allow: every click activates its own copy
-            }))
-        });
-        let others: Vec<_> = others.collect();
+        let (identity, card) = match decision {
+            Decision::Question { widget, item } => (
+                format!("question:{}:{}", widget.key, item.id),
+                self.question_card(widget, item),
+            ),
+            Decision::Pending(approval) => (
+                format!("approval:{}", approval.id),
+                self.approval_decision(approval, cx),
+            ),
+            Decision::Closed { request, block } => {
+                (format!("approval:{request}"), self.closed_approval(block))
+            }
+        };
+        let id = format!("{}:{identity}", placement.as_str());
+        let card = self.decision_card(card, &id, placement, cx);
         motion::rise_in(
-            div()
-                .flex()
-                .flex_col()
-                .gap(space::XS)
-                .pl(space::L + glyph::GUTTER + space::S)
-                .pr(space::L)
-                .pb(space::S)
-                .children(choices.iter().map(|action| {
-                    self.attention_action(key, action, recommended == Some(&action.id), global, cx)
-                }))
-                .when(!others.is_empty(), |options| {
-                    options.child(button_row().children(others))
-                }),
-            SharedString::from(format!("attention-options:{id}")),
-            motion::STANDARD,
-            px(4.),
+            div().w_full().child(card),
+            id,
+            motion::REVEAL,
+            space::XS,
             cx,
         )
     }
 
-    /// One answer to a question: a left-aligned choice, the recommended one tagged.
-    fn attention_option(
+    fn question_card(
         &self,
-        id: impl Into<ElementId>,
-        glyph_name: &str,
-        action: &FrontendAction,
-        recommended: bool,
-        blocked: bool,
-    ) -> Stateful<Div> {
-        let p = self.palette;
-        let label = action
-            .label
-            .strip_suffix(" (Recommended)")
-            .unwrap_or(&action.label);
-        div()
-            .id(id)
-            .flex()
-            .items_center()
-            .gap(space::S)
-            .min_h(height::REGULAR)
-            .py(space::XS)
-            .px(space::S)
-            .control_corners()
-            .border_1()
-            .border_color(p.separator)
-            .child(icon(glyph_name, &p).size(glyph::INLINE).text_color(p.muted))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .typography(Type::Body)
-                    .text_color(p.tone(action.tone))
-                    .child(label.to_owned()),
-            )
-            .when(recommended, |option| {
-                option.child(
-                    div()
-                        .px(space::S)
-                        .pill_corners()
-                        .bg(p.accent.opacity(alpha::TINT))
-                        .typography(Type::Caption)
-                        .text_color(p.accent)
-                        .child("Recommended"),
-                )
+        widget: &AttentionWidget,
+        item: &FrontendActionListItem,
+    ) -> DecisionCard {
+        let key = self.decision_key(DecisionTarget::Question {
+            widget: Arc::clone(&widget.key),
+            item: Arc::clone(&item.id),
+        });
+        let outcome = item
+            .outcome
+            .as_deref()
+            .map(SharedString::from)
+            .or_else(|| item.actions.is_empty().then(|| "Done".into()));
+        let choices = item
+            .actions
+            .iter()
+            .map(|action| Choice {
+                id: SharedString::from(action.id.as_str()),
+                label: SharedString::from(
+                    action
+                        .label
+                        .strip_suffix(" (Recommended)")
+                        .unwrap_or(&action.label),
+                ),
+                prompt: action
+                    .editor
+                    .as_ref()
+                    .map(|editor| SharedString::from(editor.label.as_str())),
             })
-            .when(blocked, |option| option.opacity(alpha::DIM))
-            .when(!blocked, |option| {
-                option
-                    .cursor_pointer()
-                    .hover(|style| style.bg(p.hover).border_color(p.accent.opacity(alpha::DIM)))
-            })
+            .collect();
+        DecisionCard {
+            key: Some(key),
+            title: SharedString::from(item.text.as_str()),
+            glyph: "hi.userQuestion01",
+            tint: None,
+            detail: Vec::new(),
+            outcome,
+            choices,
+            enabled: self.client.link.is_ready()
+                && !item
+                    .actions
+                    .iter()
+                    .any(|action| self.widget_action_blocked(action)),
+        }
     }
 
-    fn attention_action(
+    fn approval_decision(
         &self,
-        widget_key: &str,
-        action: &FrontendAction,
-        recommended: bool,
-        global: bool,
+        approval: &ExecApprovalRequestEvent,
+        cx: &mut Context<Self>,
+    ) -> DecisionCard {
+        let key = self.decision_key(DecisionTarget::Approval {
+            request: Arc::clone(&approval.id),
+        });
+        let in_flight = self
+            .chat_ui
+            .action_requests
+            .contains_key(&format!("approval\0{}", approval.id));
+        let mut detail = self.decision_detail(&approval.reason);
+        detail.extend(
+            approval
+                .calls
+                .iter()
+                .map(|call| self.approval_call(&approval.id, call, cx)),
+        );
+        DecisionCard {
+            key: Some(key),
+            title: "Allow this command?".into(),
+            glyph: "hi.shieldCheck",
+            tint: Some(self.palette.warning),
+            detail,
+            outcome: None,
+            choices: vec![
+                Choice::approval("once", "Allow once", None),
+                Choice::approval("session", "Allow for this chat", None),
+                Choice::approval(
+                    "deny",
+                    "Deny and tell möbius why",
+                    Some("Why not, or what to do instead"),
+                ),
+                Choice::approval("abort", "Stop this turn", None),
+            ],
+            enabled: !in_flight && self.client.link.is_ready(),
+        }
+    }
+
+    fn closed_approval(&self, block: &FrontendBlock) -> DecisionCard {
+        let outcome = match block.content.0.first() {
+            Some(ContentPart::Text { text }) => format!("{}: {text}", block.title).into(),
+            _ => SharedString::from(block.title.as_str()),
+        };
+        DecisionCard {
+            key: None,
+            title: "Allow this command?".into(),
+            glyph: "hi.shieldCheck",
+            tint: None,
+            detail: self.decision_detail(&block.text),
+            outcome: Some(outcome),
+            choices: Vec::new(),
+            enabled: false,
+        }
+    }
+
+    fn decision_detail(&self, text: &str) -> Vec<AnyElement> {
+        if text.is_empty() {
+            return Vec::new();
+        }
+        vec![
+            div()
+                .typography(Type::Body)
+                .text_color(self.palette.muted)
+                .whitespace_normal()
+                .child(SharedString::from(text))
+                .into_any_element(),
+        ]
+    }
+
+    fn decision_key(&self, target: DecisionTarget) -> Rc<DecisionKey> {
+        Rc::new(DecisionKey {
+            session: self.decision_session(),
+            target,
+        })
+    }
+
+    fn decision_card(
+        &self,
+        card: DecisionCard,
+        id: &str,
+        placement: DecisionPlacement,
         cx: &Context<Self>,
     ) -> AnyElement {
-        let blocked = self.widget_action_blocked(action);
-        let Some(editor) = &action.editor else {
-            let action = action.clone(); // rules-allow: the 'static click listener owns its copy of the action
-            return self
-                .attention_option(
-                    SharedString::from(format!("attention-option:{widget_key}:{}", action.id)),
-                    "hi.circle",
-                    &action,
-                    recommended,
-                    blocked,
+        let DecisionCard {
+            key,
+            title,
+            glyph: glyph_name,
+            tint,
+            detail,
+            outcome,
+            choices,
+            enabled,
+        } = card;
+        let p = self.palette;
+        let mut body = vec![heading(title).whitespace_normal().into_any_element()];
+        body.extend(detail);
+        if let Some(outcome) = outcome {
+            body.push(motion::fade_in(
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(space::S)
+                    .typography(Type::Body)
+                    .text_color(p.muted)
+                    .child(
+                        icon("hi.check", &p)
+                            .size(glyph::INLINE)
+                            .text_color(p.signal),
+                    )
+                    .child(div().flex_1().whitespace_normal().child(outcome)),
+                SharedString::from(format!("{id}:outcome")),
+                motion::CROSSFADE,
+                cx,
+            ));
+            return inline_card(body, glyph_name, None, None, &p).into_any_element();
+        }
+        let Some(key) = key else {
+            return inline_card(body, glyph_name, tint, None, &p).into_any_element();
+        };
+        let draft = self.chat_ui.decision_drafts.get(&key);
+        let selected =
+            draft.and_then(|draft| choices.iter().find(|choice| choice.id == draft.selected));
+        let editor = draft
+            .and_then(|draft| draft.editor.as_ref())
+            .filter(|editor| editor.placement == placement);
+        let needs_text = selected.is_some_and(|choice| choice.prompt.is_some());
+        let can_send = enabled
+            && selected.is_some_and(|choice| {
+                choice.prompt.is_none()
+                    || editor.is_some_and(|editor| !editor.input.read(cx).value().trim().is_empty())
+            });
+        for (
+            index,
+            Choice {
+                id: choice_id,
+                label,
+                prompt,
+            },
+        ) in choices.into_iter().enumerate()
+        {
+            let selected = draft.is_some_and(|draft| draft.selected == choice_id);
+            let key = Rc::clone(&key);
+            body.push(
+                choice_row(
+                    SharedString::from(format!("{id}:choice:{index}")),
+                    label,
+                    selected,
+                    enabled,
+                    cx,
                 )
-                .when(!blocked, |option| {
-                    option.on_click(cx.listener(move |this, _, window, cx| {
-                        this.activate_widget_action(action.clone(), global, window, cx); // rules-allow: every click activates its own copy
-                    }))
-                })
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.choose(
+                        Rc::clone(&key),
+                        SharedString::clone(&choice_id),
+                        prompt.as_ref(),
+                        placement,
+                        window,
+                        cx,
+                    );
+                }))
+                .into_any_element(),
+            );
+        }
+        if needs_text && let Some(editor) = editor {
+            body.push(motion::rise_in(
+                div().w_full().child(textarea(&editor.input).w_full()),
+                SharedString::from(format!("{id}:field")),
+                motion::STANDARD,
+                space::XS,
+                cx,
+            ));
+        }
+        let send = primary_button(
+            SharedString::from(format!("{id}:send")),
+            "Send",
+            "hi.arrowUp02",
+            cx,
+        )
+        .disabled(!can_send)
+        .on_click(cx.listener(move |this, _, window, cx| this.send_decision(&key, window, cx)));
+        inline_card(body, glyph_name, tint, Some(send.into_any_element()), &p).into_any_element()
+    }
+
+    fn choose(
+        &mut self,
+        key: Rc<DecisionKey>,
+        selected: SharedString,
+        prompt: Option<&SharedString>,
+        placement: DecisionPlacement,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if key.session != self.decision_session() {
+            return;
+        }
+        let draft = self
+            .chat_ui
+            .decision_drafts
+            .entry(key)
+            .or_insert_with(|| DecisionDraft {
+                selected: SharedString::clone(&selected),
+                editor: None,
+            });
+        draft.selected = selected;
+        if let Some(prompt) = prompt {
+            let editor = draft.editor.get_or_insert_with(|| {
+                let prompt = SharedString::clone(prompt);
+                let input = cx.new(|cx| {
+                    TextareaState::new(window, cx)
+                        .placeholder(prompt)
+                        .auto_grow(2, 5)
+                });
+                let subscription = cx.subscribe(&input, |_, _, _: &InputEvent, cx| cx.notify());
+                DecisionEditor {
+                    placement,
+                    input,
+                    _subscription: subscription,
+                }
+            });
+            editor.placement = placement;
+            editor.input.update(cx, |input, cx| input.focus(window, cx));
+        }
+        cx.notify();
+    }
+
+    fn send_decision(&mut self, key: &DecisionKey, window: &mut Window, cx: &mut Context<Self>) {
+        if key.session != self.decision_session() {
+            return;
+        }
+        let Some(draft) = self.chat_ui.decision_drafts.get(key) else {
+            return;
+        };
+        let selected = SharedString::clone(&draft.selected);
+        let text = draft
+            .editor
+            .as_ref()
+            .map(|editor| editor.input.read(cx).value().trim().to_owned())
+            .unwrap_or_default();
+        match &key.target {
+            DecisionTarget::Approval { request } => {
+                if !self
+                    .pending_approvals()
+                    .iter()
+                    .any(|approval| &approval.id == request)
+                {
+                    return;
+                }
+                let decision = match selected.as_ref() {
+                    "once" => ReviewDecision::Approved,
+                    "session" => ReviewDecision::ApprovedForSession,
+                    "deny" if !text.is_empty() => ReviewDecision::Denied { rejection: text },
+                    "abort" => ReviewDecision::Abort,
+                    _ => return,
+                };
+                self.dispatch_widget_operation(
+                    Op::ExecApproval {
+                        id: Arc::clone(request),
+                        decision,
+                    },
+                    false,
+                    cx,
+                );
+            }
+            DecisionTarget::Question { widget, item } => {
+                let widgets = self.slot_widget_items(FrontendSlot::Attention);
+                let Some((widget, global)) = widgets.get(widget.as_ref()) else {
+                    return;
+                };
+                let Some(FrontendWidgetContent::ActionList { items, .. }) = &widget.content else {
+                    return;
+                };
+                let Some(action) =
+                    items
+                        .iter()
+                        .find(|question| &question.id == item)
+                        .and_then(|question| {
+                            question
+                                .actions
+                                .iter()
+                                .find(|action| action.id == selected.as_ref())
+                        })
+                else {
+                    return;
+                };
+                let typed = action.editor.is_some();
+                if typed && text.is_empty() {
+                    return;
+                }
+                let global = *global;
+                if !typed && !action.input_from_label && action.tone == FrontendTone::Error {
+                    let action = action.clone(); // rules-allow: a confirmation owns the action after dispatch
+                    self.activate_widget_action(action, global, window, cx);
+                    return;
+                }
+                let mut op = action.op.clone(); // rules-allow: submitting owns its operation while the widget remains mounted
+                if let Op::CapabilityCommand { input, .. } = &mut op {
+                    if typed {
+                        *input = Some(text);
+                    } else if action.input_from_label {
+                        *input = Some(action.label.clone()); // rules-allow: the submitted operation owns its answer
+                    }
+                }
+                self.dispatch_widget_operation(op, global, cx);
+            }
+        }
+    }
+
+    fn approval_call(
+        &self,
+        approval: &str,
+        call: &ApprovalCall,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(block) = &call.preview else {
+            return div()
+                .p(space::S)
+                .control_corners()
+                .bg(self.palette.inset)
+                .typography(Type::Mono)
+                .child(SharedString::from(&call.name))
                 .into_any_element();
         };
-        let key: Arc<str> = format!(
-            "{widget_key}:{}",
-            match &action.op {
-                Op::CapabilityCommand { arguments, .. } => arguments.as_str(),
-                _ => action.id.as_str(),
-            }
+        let document = (block.format == FrontendBlockFormat::UnifiedDiff)
+            .then(|| DiffDocument::parse(&block.text));
+        let key = format!("{approval}:{}", call.call_id);
+        self.block_line(
+            transcript::BlockLine {
+                key: &key,
+                owner: (*call.name).to_owned(),
+                label: None,
+                block,
+                document: document.as_ref(),
+            },
+            None,
+            "approval",
+            cx,
         )
-        .into();
-        if let Some((active, input, _)) = &self.chat_ui.attention_editor
-            && active == &key
-        {
-            let text = input.read(cx).value().trim().to_owned();
-            let empty = text.is_empty();
-            let mut operation = action.op.clone(); // rules-allow: the answer goes out as its own Op carrying the typed text
-            if let Op::CapabilityCommand { input, .. } = &mut operation {
-                *input = Some(text);
-            }
-            return div()
-                .flex()
-                .items_center()
-                .gap(space::S)
-                .child(div().flex_1().child(text_field(input)))
-                .child(
-                    button("send-attention-answer", editor.submit_label.clone()) // rules-allow: the button owns its label
-                        .primary()
-                        .disabled(empty || !self.client.link.is_ready())
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if this
-                                .dispatch_widget_operation(operation.clone(), global, cx) // rules-allow: every click dispatches its own Op
-                                .is_some()
-                            {
-                                this.chat_ui.attention_editor = None;
-                            }
-                            cx.notify();
-                        })),
-                )
-                .into_any_element();
-        }
-        let label = SharedString::from(editor.label.clone()); // rules-allow: the 'static listener owns the field's placeholder
-        self.attention_option(
-            SharedString::from(format!("attention-option:{key}")),
-            "hi.pencilSimple",
-            action,
-            false,
-            false,
-        )
-        .on_click(cx.listener(move |this, _, window, cx| {
-            let input =
-                cx.new(|cx| InputState::new(window, cx).placeholder(SharedString::clone(&label)));
-            let subscription = cx.subscribe(&input, |_, _, _: &InputEvent, cx| cx.notify());
-            input.update(cx, |input, cx| input.focus(window, cx));
-            this.chat_ui.attention_editor = Some((Arc::clone(&key), input, subscription));
-            cx.notify();
-        }))
-        .into_any_element()
     }
 }
 
-fn attention_caret(p: &Palette, open: bool) -> gpui_component::Icon {
-    chevron(open, p).text_color(p.muted)
+pub(super) struct RowDecisions {
+    pub(super) show_source: bool,
+    pub(super) cards: Vec<AnyElement>,
 }

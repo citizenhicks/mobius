@@ -445,8 +445,18 @@ impl TranscriptReducer {
         for id in &items {
             let terminal = answer.as_ref() == Some(id);
             if let Some(item) = self.edit_if(step, id, |item| {
-                item.state == TranscriptItemState::Streaming || terminal && !item.terminal
+                item.state == TranscriptItemState::Streaming
+                    || pending_approval(item)
+                    || terminal && !item.terminal
             }) {
+                if pending_approval(item)
+                    && let TranscriptItemContent::Block { block, .. } = &mut item.content
+                {
+                    block.state = FrontendBlockState::Complete;
+                    block.title = "No decision recorded".into();
+                    block.tone = FrontendTone::Neutral;
+                    item.state = TranscriptItemState::Complete;
+                }
                 if item.state == TranscriptItemState::Streaming {
                     item.state = TranscriptItemState::Complete;
                 }
@@ -1178,6 +1188,12 @@ fn group_title(
         groups.insert(group.into(), (Arc::clone(id), block.title.as_str().into()));
     }
     None
+}
+
+fn pending_approval(item: &TranscriptItem) -> bool {
+    item.state == TranscriptItemState::Pending
+        && matches!(&item.content, TranscriptItemContent::Block { block, .. }
+            if block.role == FrontendBlockRole::Approval)
 }
 
 fn item_state(block: &FrontendBlock) -> TranscriptItemState {

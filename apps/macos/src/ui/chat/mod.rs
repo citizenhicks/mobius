@@ -55,9 +55,9 @@ pub(in crate::ui) struct ChatUi {
     reaction_timer: Option<Task<()>>,
     /// The chat `open_failure` belongs to.
     failed_session: Option<SessionId>,
-    /// The approval or question currently expanded in the attention list.
-    pub(in crate::ui) attention_item: Option<Arc<str>>,
-    attention_editor: Option<(Arc<str>, Entity<InputState>, Subscription)>,
+    attention: attention::AttentionIndex,
+    decision_drafts:
+        std::collections::BTreeMap<std::rc::Rc<attention::DecisionKey>, attention::DecisionDraft>,
     pub(in crate::ui) action_requests: std::collections::BTreeMap<String, Arc<str>>,
     /// The message whose Copy shows a check, and the timer that clears it.
     copied: Option<(String, Task<()>)>,
@@ -125,8 +125,12 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         match message {
-            ServerMessage::Accepted { request_id, .. }
-            | ServerMessage::Rejected { request_id, .. } => {
+            ServerMessage::Accepted { request_id, .. } => {
+                self.chat_ui
+                    .action_requests
+                    .retain(|key, request| request != request_id || key.starts_with("approval\0"));
+            }
+            ServerMessage::Rejected { request_id, .. } => {
                 self.chat_ui
                     .action_requests
                     .retain(|_, request| request != request_id);
@@ -184,6 +188,11 @@ impl Workspace {
             || self.client.state.selected_session_id.as_deref() != Some(session_id.as_ref())
         {
             return;
+        }
+        if let EventMsg::ExecApprovalDecided(decided) = &record.event.msg {
+            self.chat_ui
+                .action_requests
+                .remove(&format!("approval\0{}", decided.id));
         }
         if mention::files_published(self.client.state.touched_entries()) {
             self.load_chat_files();
@@ -552,6 +561,7 @@ impl Workspace {
     ) -> AnyElement {
         #[cfg(feature = "snapshot")]
         super::snapshot::count_render(1);
+        self.refresh_decisions();
         let state = &self.client.state;
         let selected = state.selected_session_id.as_ref();
         let scope = format!("chat:{}", selected.map_or("", |id| id.as_str()));
@@ -586,6 +596,10 @@ impl Workspace {
         for (index, key) in self.transcript_tail_keys().into_iter().enumerate() {
             tail_items.push(ChatItem::Tail(index));
             tail_ids.push(key.into());
+        }
+        for id in self.unanchored_approval_ids() {
+            tail_items.push(ChatItem::Decision(Arc::clone(id)));
+            tail_ids.push(format!("decision:approval:{id}").into());
         }
         for (index, (id, _)) in self.pending_messages().into_iter().enumerate() {
             tail_items.push(ChatItem::Pending(index));
@@ -677,16 +691,41 @@ impl Workspace {
                 .get(*row)
                 .and_then(|id| self.client.state.transcript.row(id))
                 .map(|row| {
-                    self.transcript_row_view(
-                        &self.client.state.transcript,
-                        row,
-                        session_id,
-                        &scope,
-                        cx,
-                    )
+                    // A question's call or an approval's block says only what its card says.
+                    let decisions = self.row_decisions(row, cx);
+                    let view = decisions.show_source.then(|| {
+                        self.transcript_row_view(
+                            &self.client.state.transcript,
+                            row,
+                            session_id,
+                            &scope,
+                            cx,
+                        )
+                    });
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(space::S)
+                        .children(view)
+                        .children(decisions.cards.into_iter().map(|card| {
+                            div()
+                                .mx_auto()
+                                .w_full()
+                                .max_w(width::TRANSCRIPT)
+                                .child(card)
+                        }))
+                        .into_any_element()
                 }),
             Some(ChatItem::Waiting) => self.waiting_tail(&scope, cx),
             Some(ChatItem::Tail(tail)) => self.transcript_tail(cx).into_iter().nth(*tail),
+            Some(ChatItem::Decision(id)) => self.unanchored_approval(id, cx).map(|card| {
+                div()
+                    .mx_auto()
+                    .w_full()
+                    .max_w(width::TRANSCRIPT)
+                    .child(card)
+                    .into_any_element()
+            }),
             Some(ChatItem::Pending(pending)) => self.pending_bubbles(cx).into_iter().nth(*pending),
             None => None,
         };
@@ -779,5 +818,7 @@ pub(in crate::ui) enum ChatItem {
     Row(usize),
     Waiting,
     Tail(usize),
+    /// An open approval with no loaded transcript anchor.
+    Decision(Arc<str>),
     Pending(usize),
 }

@@ -616,6 +616,19 @@ pub struct ExecApprovalRequestEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// The reader's decision on an approval request, recorded where it was made so history
+/// keeps what was allowed or denied.
+#[non_exhaustive]
+pub struct ExecApprovalDecidedEvent {
+    /// The request identifier.
+    pub id: Arc<str>,
+    /// The turn identifier.
+    pub turn_id: Arc<str>,
+    /// The decision.
+    pub decision: ReviewDecision,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 /// Data for approval call.
 pub struct ApprovalCall {
     /// The call identifier.

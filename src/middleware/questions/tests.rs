@@ -22,6 +22,24 @@ fn question(id: &str, at: i64) -> Question {
     }
 }
 
+#[test]
+fn question_outcome_preserves_the_whole_prompt() {
+    let mut question = question("multiline", 1);
+    question.title = "Which suite?\nThe full suite takes an hour.".into();
+    question.outcome = Some(Outcome::Answered {
+        text: "Run just the wire tests".into(),
+        at: 2,
+    });
+
+    let item = question_item(question);
+    assert_eq!(item.text, "Which suite?\nThe full suite takes an hour.");
+    assert_eq!(
+        item.outcome.as_deref(),
+        Some("Answered: Run just the wire tests")
+    );
+    assert_eq!(item.state, FrontendListItemState::Completed);
+}
+
 struct TestModel {
     block: AtomicBool,
     release: Notify,

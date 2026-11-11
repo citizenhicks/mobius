@@ -435,6 +435,9 @@ pub struct FrontendActionListItem {
     pub id: Arc<str>,
     /// The text.
     pub text: String,
+    /// The result of a decision, separate from the original prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
     /// The state.
     pub state: FrontendListItemState,
     /// The actions.
@@ -747,6 +750,7 @@ impl EventMsg {
             | Self::ToolCallEnd(_)
             | Self::ToolLoad(_)
             | Self::ExecApprovalRequest(_)
+            | Self::ExecApprovalDecided(_)
             | Self::TokenCount(_)
             | Self::ContextCompacted
             | Self::Frontend(_) => return None,

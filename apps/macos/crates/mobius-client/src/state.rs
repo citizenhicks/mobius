@@ -306,6 +306,9 @@ impl GatewayState {
             EventMsg::ModelChanged(model) => {
                 Arc::make_mut(&mut session.session).model = model.clone(); // rules-allow: the runtime dispatches the borrowed message after this, so the state stores a copy
             }
+            EventMsg::ExecApprovalDecided(decided) => session
+                .pending_approvals
+                .retain(|approval| approval.id != decided.id),
             EventMsg::ExecApprovalRequest(approval) => {
                 if !session
                     .pending_approvals

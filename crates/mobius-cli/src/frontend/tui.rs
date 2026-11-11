@@ -481,6 +481,15 @@ impl TuiState {
         self.sync_attention_approvals();
     }
 
+    fn remove_approval(&mut self, id: &str) {
+        if self.approval().is_some_and(|approval| &*approval.id == id) {
+            self.take_approval();
+        } else {
+            self.approvals.retain(|approval| &*approval.id != id);
+            self.sync_attention_approvals();
+        }
+    }
+
     fn take_approval(&mut self) -> Option<Arc<str>> {
         let request = self.approvals.pop_front()?;
         self.sync_attention_approvals();

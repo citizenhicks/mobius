@@ -810,6 +810,7 @@ fn agent_items(tree: &Tree) -> Vec<FrontendActionListItem> {
     agents
         .into_iter()
         .map(|(path, entry)| FrontendActionListItem {
+            outcome: None,
             id: path.as_str().into(),
             text: path.rsplit('/').next().unwrap_or(path).into(),
             state: entry.status.list_state(),

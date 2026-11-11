@@ -18,6 +18,7 @@ use crate::middleware::PermissionRequestContext;
 use crate::middleware::tools::ToolResult;
 use crate::protocol::Event;
 use crate::protocol::EventMsg;
+use crate::protocol::ExecApprovalDecidedEvent;
 use crate::protocol::ReviewDecision;
 use crate::protocol::ToolCall;
 
@@ -116,11 +117,26 @@ impl Runner {
             return Ok(None);
         };
         let decision = approval.decision;
-        if let Some(current) = self.state.make_mut().pending_approval.as_mut()
-            && current.request_id == pending.request_id
-        {
-            current.decision_received = true;
-            self.save().await?;
+        let previous_state = super::LiveCheckpoint(Arc::clone(&self.state.0));
+        let current = self
+            .state
+            .make_mut()
+            .pending_approval
+            .as_mut()
+            .filter(|current| current.request_id == pending.request_id)
+            .ok_or_else(|| Error::Checkpoint("approval request is no longer pending".into()))?;
+        current.decision_received = true;
+        let event = Event {
+            submission_id: Some(Arc::clone(&approval.submission_id)),
+            msg: EventMsg::ExecApprovalDecided(ExecApprovalDecidedEvent {
+                id: Arc::clone(&pending.request_id),
+                turn_id: Arc::clone(&pending.turn_id),
+                decision: decision.clone(), // rules-allow: the recorder and the tool execution each own the decision
+            }),
+        };
+        if let Err(error) = self.persist_with_events(vec![event], None).await {
+            self.state = previous_state;
+            return Err(error);
         }
         let permissions = SandboxPermissions::restore(
             &self.runtime.session_id,

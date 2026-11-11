@@ -498,16 +498,13 @@ fn widget(mut questions: Vec<Question>) -> FrontendWidget {
 }
 
 fn question_item(question: Question) -> FrontendActionListItem {
-    let mut text = question.title;
     let mut actions = Vec::new();
-    match &question.outcome {
+    let outcome = match question.outcome {
         Some(Outcome::Answered { text: answer, .. }) => {
-            text.push('\n');
-            text.push_str(&DEFINITION.widget_item_answered.replace("{answer}", answer));
+            Some(DEFINITION.widget_item_answered.replace("{answer}", &answer))
         }
         Some(Outcome::Skipped { .. }) => {
-            text.push('\n');
-            text.push_str(&DEFINITION.widget_item_skipped);
+            Some(DEFINITION.widget_item_skipped.clone()) // rules-allow: the widget owns its outcome text
         }
         None => {
             actions.extend(
@@ -546,16 +543,18 @@ fn question_item(question: Question) -> FrontendActionListItem {
                 &Command::Skip,
                 false,
             ));
+            None
         }
-    }
+    };
     FrontendActionListItem {
         id: question.id,
-        text,
-        state: if question.outcome.is_none() {
+        text: question.title,
+        state: if outcome.is_none() {
             FrontendListItemState::Pending
         } else {
             FrontendListItemState::Completed
         },
+        outcome,
         actions,
     }
 }

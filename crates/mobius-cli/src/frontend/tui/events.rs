@@ -42,6 +42,9 @@ impl TuiState {
                     self.begin_approval(request);
                 }
             }
+            EventMsg::ExecApprovalDecided(decided) if live => {
+                self.remove_approval(&decided.id);
+            }
             EventMsg::TokenCount(tokens) => {
                 if let Some(info) = tokens.info {
                     self.usage = usage_status(&info, self.context_limit);

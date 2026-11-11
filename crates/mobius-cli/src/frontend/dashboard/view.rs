@@ -223,10 +223,12 @@ pub(super) fn render_action_list(
                 .sum::<usize>()
                 .saturating_add(item.actions.len().saturating_sub(1) * 2);
             let note_width = width.saturating_sub(actions_width.saturating_add(1));
-            let note = truncate_terminal_width(
-                format!("{marker}{}", terminal_text(&item.text)),
-                note_width,
-            );
+            let mut note = format!("{marker}{}", terminal_text(&item.text));
+            if let Some(outcome) = &item.outcome {
+                note.push_str(" · ");
+                note.push_str(&terminal_text(outcome));
+            }
+            let note = truncate_terminal_width(note, note_width);
             let used = Line::from(note.as_str())
                 .width()
                 .saturating_add(actions_width);

@@ -3,6 +3,75 @@
 use super::*;
 
 #[tokio::test]
+async fn failed_checkpoint_save_does_not_journal_an_approval_decision() {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let path = workspace.path().join("checkpoints.sqlite3");
+        let checkpoints = Arc::new(SqliteCheckpoint::new(&path).expect("checkpoint store"));
+        let model = Arc::new(ScriptedModel {
+            outputs: Mutex::new(VecDeque::from([scripted_tool_call()])),
+            tool_counts: Mutex::new(Vec::new()),
+            inputs: Mutex::new(Vec::new()),
+        });
+        let mut agent = create_agent(
+            AgentConfig::new(
+                Arc::new(ModelRouter::new("main", model)),
+                Arc::new(Sandbox::new(
+                    Arc::new(LocalSandbox::new(workspace.path()).unwrap()),
+                    ApprovalPolicy::Ask,
+                )),
+                checkpoints,
+                test_middleware(vec![Arc::new(Tools::new(vec![Arc::new(
+                    ApprovalRequiredTestTool,
+                )]))]),
+                "test prompt",
+            )
+            .session_context(test_session_context())
+            .session_id("approval-save-failure".parse().unwrap()),
+        )
+        .await
+        .unwrap();
+        agent.sender().submit(user_op("run the tool")).unwrap();
+        let id = loop {
+            if let EventMsg::ExecApprovalRequest(request) = agent.next_event().await.unwrap().msg {
+                break request.id;
+            }
+        };
+        let connection = rusqlite::Connection::open(path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TRIGGER fail_decision_save BEFORE UPDATE OF latest_checkpoint_json ON sessions
+                 WHEN json_extract(NEW.latest_checkpoint_json, '$.pending_approval.decision_received') = 1
+                 BEGIN SELECT RAISE(ABORT, 'test decision save failure'); END;",
+            )
+            .unwrap();
+        agent
+            .sender()
+            .submit(Op::ExecApproval {
+                id,
+                decision: crate::protocol::ReviewDecision::Approved,
+            })
+            .unwrap();
+        while let Some(event) = agent.next_event().await {
+            assert!(!matches!(event.msg, EventMsg::ExecApprovalDecided(_) | EventMsg::ToolCallBegin(_)));
+            if matches!(event.msg, EventMsg::TurnAborted(_)) {
+                break;
+            }
+        }
+        let decisions: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM event_journal WHERE event_kind = 'exec_approval_decided'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(decisions, 0);
+    })
+    .await
+    .expect("approval and failed save finish");
+}
+
+#[tokio::test]
 async fn rejected_prompt_aborts_without_persisting_or_wedging_the_next_turn() {
     let workspace = tempfile::tempdir().expect("workspace");
     let checkpoints = Arc::new(

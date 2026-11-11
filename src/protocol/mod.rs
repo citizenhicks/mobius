@@ -736,6 +736,8 @@ pub enum EventMsg {
     ToolLoad(ToolLoadEvent),
     /// Selects the exec approval request case.
     ExecApprovalRequest(ExecApprovalRequestEvent),
+    /// Selects the exec approval decided case.
+    ExecApprovalDecided(ExecApprovalDecidedEvent),
     /// Selects the token count case.
     TokenCount(TokenCountEvent),
     /// Selects the context compacted case.
@@ -772,6 +774,7 @@ impl EventMsg {
             | Self::ToolCallEnd(_)
             | Self::ToolLoad(_)
             | Self::ExecApprovalRequest(_)
+            | Self::ExecApprovalDecided(_)
             | Self::TokenCount(_)
             | Self::ContextCompacted
             | Self::WebSearchBegin(_)
@@ -802,6 +805,7 @@ impl EventMsg {
             | Self::ToolCallEnd(_)
             | Self::ToolLoad(_)
             | Self::ExecApprovalRequest(_)
+            | Self::ExecApprovalDecided(_)
             | Self::TokenCount(_)
             | Self::ContextCompacted
             | Self::WebSearchBegin(_)

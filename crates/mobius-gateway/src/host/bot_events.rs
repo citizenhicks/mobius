@@ -869,6 +869,7 @@ mod tests {
                 title: "Attention".into(),
                 actions: Vec::new(),
                 items: vec![FrontendActionListItem {
+                    outcome: None,
                     id: "call".into(),
                     text: "界".repeat(250),
                     state: FrontendListItemState::Pending,

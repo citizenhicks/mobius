@@ -615,6 +615,7 @@ fn subagent_item(path: &str, name: &str, status: &str) -> FrontendActionListItem
         ),
     };
     FrontendActionListItem {
+        outcome: None,
         id: path.into(),
         text: name.into(),
         state,
@@ -728,8 +729,8 @@ fn scene_widgets(widgets: &[SessionWidget], scene: Scene) -> Vec<SessionWidget> 
                         "id":"skip", "label":"Skip", "symbol":"user", "tone":"neutral", "editor":null,
                         "op":{"type":"capability_command", "capability":"fixture", "command":"skip", "arguments":"open", "input":null, "target":null}
                     }))).collect::<Vec<_>>())},
-                {"id":"answered", "text":"Which style?\nAnswered: Minimal", "state":"completed", "actions":[]},
-                {"id":"skipped", "text":"Add an animation?\nSkipped", "state":"completed", "actions":[]}
+                {"id":"answered", "text":"Which style?", "outcome":"Answered: Minimal", "state":"completed", "actions":[]},
+                {"id":"skipped", "text":"Add an animation?", "outcome":"Skipped", "state":"completed", "actions":[]}
             ]}
         })) {
             Ok(item) => widgets.push(SessionWidget {

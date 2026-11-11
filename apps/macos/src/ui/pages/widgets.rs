@@ -25,9 +25,9 @@ enum Origin {
 /// Page queries keep the last gateway/live widget, with the first static session fallback.
 /// Both retain gateway > live session > static session precedence and key order.
 fn collect_widgets<'a>(
-    sources: impl Iterator<Item = (&'a str, &'a FrontendWidget, Origin)>,
+    sources: impl Iterator<Item = (&'a str, &'a Arc<FrontendWidget>, Origin)>,
     slot: Option<FrontendSlot>,
-) -> BTreeMap<String, (&'a FrontendWidget, bool)> {
+) -> BTreeMap<String, (&'a Arc<FrontendWidget>, bool)> {
     let mut items = BTreeMap::new();
     for (capability, widget, origin) in sources {
         if slot.is_some_and(|slot| widget.slot != slot) {
@@ -54,30 +54,31 @@ impl Workspace {
     pub(in crate::ui) fn widget_items(
         &self,
         slot: Option<FrontendSlot>,
-    ) -> BTreeMap<String, (&FrontendWidget, bool)> {
+    ) -> BTreeMap<String, (&Arc<FrontendWidget>, bool)> {
         let global = self.client.state.gateway.iter().flat_map(|gateway| {
             gateway
                 .agent_catalog
                 .contributions
                 .iter()
                 .flat_map(|contribution| {
-                    contribution.widgets.iter().map(|widget| {
-                        (contribution.capability.as_ref(), &**widget, Origin::Gateway)
-                    })
+                    contribution
+                        .widgets
+                        .iter()
+                        .map(|widget| (contribution.capability.as_ref(), widget, Origin::Gateway))
                 })
         });
         let live = self.client.state.session.iter().flat_map(|session| {
             session
                 .widgets
                 .iter()
-                .map(|widget| (widget.capability.as_ref(), &*widget.item, Origin::Live))
+                .map(|widget| (widget.capability.as_ref(), &widget.item, Origin::Live))
         });
         let local = self.client.state.session.iter().flat_map(|session| {
             session.contributions.iter().flat_map(|contribution| {
                 contribution
                     .widgets
                     .iter()
-                    .map(|widget| (contribution.capability.as_ref(), &**widget, Origin::Session))
+                    .map(|widget| (contribution.capability.as_ref(), widget, Origin::Session))
             })
         });
         collect_widgets(global.chain(live).chain(local), slot)
