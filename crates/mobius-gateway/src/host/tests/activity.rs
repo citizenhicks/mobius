@@ -193,3 +193,150 @@ async fn telemetry_update_rolls_back_only_changed_fields_on_publication_failure(
     std::fs::rename(&backup, &config_path).unwrap();
     gateway.shutdown().await;
 }
+
+#[tokio::test]
+async fn telemetry_reports_resumed_session_activity_without_duplicate_network_calls() {
+    use crate::telemetry::{Telemetry, TelemetrySink, Trigger};
+    use crate::wire::{HookData, HookEvent};
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let (root, gateway, bot) = super::bots::gateway_with_bot().await;
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let session = gateway.create_session(&workspace, &bot.id).await.unwrap();
+    let (checkpoints, activities) = {
+        let state = gateway.state.lock().await;
+        (
+            Arc::clone(&state.checkpoints),
+            Arc::clone(&state.activities),
+        )
+    };
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let sink: TelemetrySink = serde_json::from_value(serde_json::json!({
+        "id":"activity", "url":format!("http://{}",listener.local_addr().unwrap()),
+        "every_seconds":60,"sections":["activity"],"events":["session_turn_started","session_approval"]
+    }))
+    .unwrap();
+    gateway
+        .configure_telemetry(0, vec![sink], &[])
+        .await
+        .unwrap();
+    let receiver = tokio::spawn(async move {
+        let mut bodies = Vec::new();
+        for _ in 0..2 {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0; 4096];
+            loop {
+                let count = socket.read(&mut buffer).await.unwrap();
+                assert_ne!(count, 0);
+                request.extend_from_slice(&buffer[..count]);
+                if let Some(end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                    let header = std::str::from_utf8(&request[..end]).unwrap();
+                    let length: usize = header
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse().unwrap())
+                        })
+                        .unwrap();
+                    if request.len() >= end + 4 + length {
+                        bodies.push(
+                            serde_json::from_slice::<serde_json::Value>(
+                                &request[end + 4..end + 4 + length],
+                            )
+                            .unwrap(),
+                        );
+                        break;
+                    }
+                }
+                assert!(request.len() < 8192);
+            }
+            socket
+                .write_all(
+                    b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        }
+        bodies
+    });
+    for state in [
+        SessionActivityState::AwaitingApproval,
+        SessionActivityState::Running,
+    ] {
+        if state == SessionActivityState::AwaitingApproval {
+            let bots = Arc::clone(&gateway.state.lock().await.bots);
+            bots.storage
+                .record_hook(&HookEvent {
+                    id: "approval".into(),
+                    bot_id: Arc::clone(&bot.id),
+                    occurred_at: Utc::now().timestamp(),
+                    source: HookSource::Session {
+                        session_id: session.session_id().share(),
+                    },
+                    cause_id: None,
+                    ancestry: vec![],
+                    data: HookData::SessionApproval {
+                        session_id: session.session_id().share(),
+                        turn_id: "turn".into(),
+                        request_id: "approval".into(),
+                    },
+                })
+                .unwrap();
+        }
+        let activity = SessionActivity {
+            state,
+            turn_id: Some("turn".into()),
+            approval_request_id: (state == SessionActivityState::AwaitingApproval)
+                .then(|| "approval".into()),
+            started_at: Some(10),
+            ..SessionActivity::default()
+        };
+        update_session_activity(&checkpoints, &activities, session.session_id(), activity)
+            .await
+            .unwrap();
+        let mut tasks = tokio::task::JoinSet::new();
+        Telemetry::tick_at(
+            &gateway,
+            0,
+            Trigger::Events,
+            &mut tasks,
+            Utc::now().timestamp(),
+        )
+        .await
+        .unwrap();
+        while tasks.join_next().await.is_some() {}
+        Telemetry::tick_at(
+            &gateway,
+            0,
+            Trigger::Events,
+            &mut tasks,
+            Utc::now().timestamp(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            tasks.is_empty(),
+            "an unchanged catalog must not send another snapshot"
+        );
+    }
+    let bodies = tokio::time::timeout(std::time::Duration::from_secs(5), receiver)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(bodies[0]["events"][0]["id"], "approval");
+    for (body, state) in bodies.iter().zip(["awaiting_approval", "running"]) {
+        assert_eq!(
+            body["reason"],
+            if state == "awaiting_approval" {
+                "events"
+            } else {
+                "interval"
+            }
+        );
+        assert_eq!(body["session_activity"]["complete"], true);
+        assert_eq!(body["session_activity"]["sessions"][0]["state"], state);
+    }
+    gateway.shutdown().await;
+}

@@ -27,6 +27,7 @@ pub(super) type SessionCatalogMetadata = BTreeMap<SessionId, SessionMetadata>;
 
 #[derive(Default)]
 pub(super) struct SessionCatalog {
+    pub(super) revision: u64,
     pub(super) activities: HashMap<SessionId, SessionActivity>,
     pub(super) approvals: BTreeMap<SessionId, Arc<BackgroundApproval>>,
     pub(super) snapshot: Option<CatalogSnapshot>,
@@ -34,7 +35,7 @@ pub(super) struct SessionCatalog {
 
 pub(super) struct CatalogSnapshot {
     metadata: SessionCatalogMetadata,
-    sessions: Vec<SessionRecord>,
+    pub(super) sessions: Vec<SessionRecord>,
 }
 
 pub(super) async fn session_catalog(
@@ -72,7 +73,7 @@ pub(super) async fn gateway_catalog(
     ))
 }
 
-async fn refresh_catalog(
+pub(super) async fn refresh_catalog(
     checkpoints: &Arc<dyn CheckpointStore>,
     catalog: &mut SessionCatalog,
 ) -> Result<Vec<SessionRecord>> {
@@ -190,6 +191,9 @@ impl SessionCatalog {
         self.approvals.remove(&summary.session_id);
         if let Some(approval) = approval {
             self.approvals.insert(summary.session_id.share(), approval);
+        }
+        if self.activities.get(&summary.session_id) != Some(&activity) {
+            self.revision = self.revision.wrapping_add(1);
         }
         self.activities
             .insert(summary.session_id.share(), activity.clone()); // rules-allow: the activity map and the session record each own the activity

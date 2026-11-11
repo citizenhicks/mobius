@@ -78,6 +78,7 @@ impl TelemetrySection {
 struct Snapshot {
     clients: usize,
     sections: BTreeMap<TelemetrySection, Value>,
+    session_activity: Option<crate::host::SessionActivityReport>,
 }
 impl Snapshot {
     async fn read(&mut self, host: &GatewayHost, sections: &[TelemetrySection]) -> Result<Value> {
@@ -122,7 +123,8 @@ pub struct TelemetrySink {
     /// Requested snapshots.
     #[serde(default)]
     pub sections: Vec<TelemetrySection>,
-    /// Committed facts to deliver.
+    /// Committed facts to deliver. Subscribing to session turn starts also sends bounded
+    /// `session_activity` catalog snapshots when activity changes and at each snapshot interval.
     #[serde(default)]
     pub events: Vec<HookKind>,
     /// Non-secret HTTP headers.
@@ -221,6 +223,11 @@ pub(crate) enum Trigger {
     Stop(StopCause),
 }
 
+struct SessionActivityVersion {
+    configuration: u64,
+    catalog: u64,
+}
+
 pub(crate) struct Telemetry {
     pub(crate) notify: Arc<tokio::sync::Notify>,
     // GatewayConfig owns the persisted configuration; this snapshot is refreshed by
@@ -229,6 +236,7 @@ pub(crate) struct Telemetry {
     state_dir: std::path::PathBuf,
     client: Result<HttpClient>,
     statuses: Mutex<BTreeMap<String, TelemetrySinkStatus>>,
+    session_revisions: Mutex<BTreeMap<usize, SessionActivityVersion>>,
     sequence: AtomicU64,
     instance: String,
     started_at_ms: i64,
@@ -312,6 +320,7 @@ impl Telemetry {
                     .map(|sink| (sink.id.clone(), TelemetrySinkStatus::default())) // rules-allow: the status map owns its keys
                     .collect(),
             ),
+            session_revisions: Mutex::default(),
             sequence: AtomicU64::new(0),
             instance: uuid::Uuid::new_v4().to_string(),
             started_at_ms: chrono::Utc::now().timestamp_millis(),
@@ -350,7 +359,13 @@ impl Telemetry {
             .statuses
             .lock()
             .map_err(crate::poisoned("telemetry status"))?;
+        let mut session_revisions = self
+            .session_revisions
+            .lock()
+            .map_err(crate::poisoned("telemetry session revisions"))?;
         let (config, publication) = operation()?;
+        session_revisions.clear();
+        drop(session_revisions);
         statuses.retain(|id, _| config.sinks.iter().any(|sink| &sink.id == id));
         for sink in &config.sinks {
             match statuses.get_mut(&sink.id) {
@@ -461,6 +476,7 @@ impl Telemetry {
         let mut snapshot = Snapshot {
             clients,
             sections: BTreeMap::new(),
+            session_activity: None,
         };
         for (index, sink) in config
             .sinks
@@ -538,8 +554,30 @@ impl Telemetry {
             };
             (snapshot_due, retry_due)
         };
+        // Session titles are shared only with destinations already subscribed to session events.
+        let session_revision = if !matches!(trigger, Trigger::Stop(_))
+            && sink.events.contains(&HookKind::SessionTurnStarted)
+        {
+            Some(host.session_activity_revision().await)
+        } else {
+            None
+        };
+        let session_due = if let Some(revision) = session_revision {
+            let revisions = host
+                .telemetry
+                .session_revisions
+                .lock()
+                .map_err(crate::poisoned("telemetry session revisions"))?;
+            revisions.get(&index).is_none_or(|version| {
+                version.configuration != config.revision || version.catalog != revision
+            })
+        } else {
+            false
+        };
+        let mut delivered_session_revision = None;
         let mut cursor = None;
         let mut pending = 0;
+        let mut has_events = false;
         let mut envelope = if snapshot_due {
             let sections = if matches!(trigger, Trigger::Stop(_)) {
                 &[][..]
@@ -548,27 +586,49 @@ impl Telemetry {
             };
             snapshot.read(host, sections).await?
         } else {
-            if sink.events.is_empty() || !retry_due {
+            if !retry_due {
                 return Ok(());
             }
-            let (events, after, count) = host.telemetry_events(sink).await?;
-            if events.is_empty() {
+            // Pending events carry the changed catalog with them: one request, not two.
+            let (events, after, count) = if sink.events.is_empty() {
+                (Vec::new(), None, 0)
+            } else {
+                host.telemetry_events(sink).await?
+            };
+            if events.is_empty() && !session_due {
                 return Ok(());
             }
-            cursor = after;
-            pending = count;
             let mut header = snapshot.read(host, &[]).await?;
-            header
-                .as_object_mut()
-                .ok_or_else(|| Error::Config("telemetry snapshot is not an object".into()))?
-                .insert("events".into(), json!(events));
+            if !events.is_empty() {
+                has_events = true;
+                cursor = after;
+                pending = count;
+                header
+                    .as_object_mut()
+                    .ok_or_else(|| Error::Config("telemetry snapshot is not an object".into()))?
+                    .insert("events".into(), json!(events));
+            }
             header
         };
         let reason = if snapshot_due {
             trigger
-        } else {
+        } else if has_events {
             Trigger::Events
+        } else {
+            Trigger::Interval
         };
+        if session_revision.is_some() && (snapshot_due || session_due) {
+            if snapshot.session_activity.is_none() {
+                snapshot.session_activity = Some(host.session_activity_report().await?);
+            }
+            if let Some(report) = &snapshot.session_activity {
+                envelope
+                    .as_object_mut()
+                    .ok_or_else(|| Error::Config("telemetry snapshot is not an object".into()))?
+                    .insert("session_activity".into(), report.payload.clone()); // rules-allow: each in-flight delivery owns its bounded catalog snapshot
+                delivered_session_revision = Some(report.revision);
+            }
+        }
         let header = host.telemetry.header(sink, now);
         let object = envelope
             .as_object_mut()
@@ -620,6 +680,24 @@ impl Telemetry {
             } else {
                 result.err().map(|error| error.message)
             };
+            if error.is_none()
+                && let Some(revision) = delivered_session_revision
+            {
+                match host.telemetry.session_revisions.lock() {
+                    Ok(mut revisions) => {
+                        revisions.insert(
+                            index,
+                            SessionActivityVersion {
+                                configuration: config.revision,
+                                catalog: revision,
+                            },
+                        );
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "telemetry session revision lock poisoned");
+                    }
+                }
+            }
             if let Ok(mut statuses) = host.telemetry.statuses.lock() {
                 if let Some(status) = statuses.get_mut(&sink.id) {
                     status.in_flight = false;

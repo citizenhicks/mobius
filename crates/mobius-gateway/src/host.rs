@@ -20,6 +20,8 @@ pub(crate) mod ssh;
 mod telemetry;
 mod transcript;
 
+pub(crate) use telemetry::SessionActivityReport;
+
 #[cfg(feature = "fixtures")]
 pub use transcript::TranscriptReducer;
 

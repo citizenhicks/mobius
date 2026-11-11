@@ -83,6 +83,11 @@ impl StorageMeasurements {
     }
 }
 
+pub(crate) struct SessionActivityReport {
+    pub(crate) revision: u64,
+    pub(crate) payload: Value,
+}
+
 impl GatewayHost {
     pub(crate) fn invalidate_storage_usage(&self) {
         self.storage_reads.invalidate();
@@ -245,6 +250,50 @@ impl GatewayHost {
         }
         drop(state);
         Ok((config.revision, reports))
+    }
+
+    pub(crate) async fn session_activity_revision(&self) -> u64 {
+        let activities = Arc::clone(&self.state.lock().await.activities);
+        activities.lock().await.revision
+    }
+
+    pub(crate) async fn session_activity_report(&self) -> Result<SessionActivityReport> {
+        let (checkpoints, activities) = {
+            let state = self.state.lock().await;
+            (
+                Arc::clone(&state.checkpoints),
+                Arc::clone(&state.activities),
+            )
+        };
+        let mut catalog = activities.lock().await;
+        if catalog.snapshot.is_none() {
+            super::catalog::refresh_catalog(&checkpoints, &mut catalog).await?;
+        }
+        let Some(snapshot) = &catalog.snapshot else {
+            return Err(Error::Config(
+                "session catalog snapshot is unavailable".into(),
+            ));
+        };
+        let sessions = &snapshot.sessions;
+        let complete = sessions.len() <= 256;
+        let revision = catalog.revision;
+        let entries: Vec<_> = sessions
+            .iter()
+            .take(256)
+            .map(|session| {
+                json!({
+                    "session_id": session.session_id, "title": session.title,
+                    "state": session.activity.state, "attention": session.activity.attention,
+                    "started_at": session.activity.started_at, "updated_at": session.updated_at,
+                    "last_outcome": session.activity.last_outcome,
+                })
+            })
+            .collect();
+        drop(catalog);
+        Ok(SessionActivityReport {
+            revision,
+            payload: json!({"complete": complete, "sessions": entries}),
+        })
     }
 
     pub(crate) async fn telemetry_snapshot(

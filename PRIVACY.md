@@ -1,6 +1,6 @@
 # möbius Privacy Policy
 
-Effective November 10, 2026.
+Effective November 11, 2026.
 
 möbius connects to local, self-hosted, or möbius-hosted AI gateways. The app
 developer does not sell your personal data or use it for advertising.
@@ -22,8 +22,10 @@ and event kinds selected for that endpoint. Sections may contain activity, usage
 run, or storage totals; host hardware measurements (processor, memory, disk, and GPU
 use of the gateway machine and process); or, for up to 64 recent chats, the chat
 identifier and how many input tokens each part of its context used, never message
-text. Event kinds may contain committed Bot hook facts. The
-endpoint’s operator controls retention. Credentials used for delivery are not sent
+text. Event kinds may contain committed Bot hook facts. Endpoints subscribed to
+session turn starts also receive activity snapshots for up to 256 visible chats,
+including identifiers, titles, activity states, attention counts, turn timing and
+outcomes. These snapshots contain no message text. The endpoint’s operator controls retention. Credentials used for delivery are not sent
 to paired clients in telemetry reports.
 
 Apple may provide TestFlight or App Store diagnostics according to your device

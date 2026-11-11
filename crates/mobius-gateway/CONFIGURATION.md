@@ -374,6 +374,14 @@ mobius-gateway telemetry add --id collector \
 mobius-gateway telemetry list
 ```
 
+Collectors subscribing to `session_turn_started` also receive `session_activity`
+snapshots for up to 256 visible chats: identifiers, titles, state, attention count,
+turn timestamps and last outcome. A `complete` flag indicates whether the entire
+visible catalog fits. Activity changes accompany pending events in one request;
+without pending events, changed activity sends its own snapshot. Regular snapshot
+intervals also include this section. Delivery uses the same credentials and retry
+policy as the collector's other reports.
+
 Relative bearer files resolve against gateway state and require owner-only permissions;
 `--bearer-env MOBIUS_COLLECTOR_TOKEN` is another explicit operator source. Collector
 environment names must start with `MOBIUS_`; provider and gateway credential names cannot be selected. Reports show collector origins

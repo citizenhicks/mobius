@@ -522,6 +522,7 @@ pub(super) async fn remove_session_trees(
         .approvals
         .retain(|id, _| !session_ids.iter().any(|deleted| **deleted == **id));
     catalog.snapshot = None;
+    catalog.revision = catalog.revision.wrapping_add(1);
     drop(catalog);
     Ok((!cleanup_errors.is_empty()).then(|| internal(cleanup_errors.join("; "))))
 }
