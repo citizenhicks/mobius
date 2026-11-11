@@ -1090,7 +1090,12 @@ impl GatewayHost {
         reject_persistent_session(&summary)?;
         let title = validate_session_title(title)?;
         self.update_session_metadata(session_id, |metadata| metadata.title = Some(title.into()))
-            .await
+            .await?;
+        let activities = Arc::clone(&self.state.lock().await.activities);
+        let mut activities = activities.lock().await;
+        activities.revision = activities.revision.wrapping_add(1);
+        drop(activities);
+        Ok(())
     }
 
     pub(crate) async fn set_session_pinned(

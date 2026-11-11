@@ -167,16 +167,16 @@ impl Neutrals {
     /// from the background, and the frame, sidebar, lines and secondary text sit between it
     /// and the foreground.
     fn new(is_dark: bool, colors: Colors) -> Self {
-        // The steps turn the defaults into #1d1d1d, #151515, #9e9e9e and #f6f6f6, #fcfcfc, #767778.
+        // Light cards step toward the ink; secondary text keeps contrast on those cards.
         let (background, foreground, frame, sidebar, muted) = if is_dark {
             (0x11_11_11, 0xfc_fc_fc, 12. / 235., 4. / 235., 141. / 235.)
         } else {
-            (0xff_ff_ff, 0x1a_1c_1f, 9. / 229., 3. / 229., 137. / 229.)
+            (0xff_ff_ff, 0x1a_1c_1f, 9. / 229., 3. / 229., 149. / 229.)
         };
         let background = rgb(colors.background.unwrap_or(background));
         let foreground = rgb(colors.foreground.unwrap_or(foreground));
         let toward = |target: Rgba, amount: f32| background.blend(target.alpha(amount));
-        let (black, white) = (rgb(0), rgb(0xff_ff_ff));
+        let black = rgb(0);
         let (recessed, panel, raised, line) = if is_dark {
             (
                 toward(black, 0.33),
@@ -188,7 +188,7 @@ impl Neutrals {
             (
                 toward(black, 0.03),
                 toward(black, 0.03),
-                toward(white, 0.57),
+                toward(foreground, 0.06),
                 toward(foreground, 0.08),
             )
         };
@@ -660,16 +660,19 @@ mod tests {
         for (is_dark, expected) in [
             (
                 true,
-                [0x11_11_11, 0x1d_1d_1d, 0x15_15_15, 0x9e_9e_9e, 0xfc_fc_fc],
+                [
+                    0x11_11_11, 0x1d_1d_1d, 0x15_15_15, 0x9e_9e_9e, 0xfc_fc_fc, 0x2d_2d_2d,
+                ],
             ),
-            // #767778 lies just off the white-to-foreground line; the derived step lands one blue unit over.
             (
                 false,
-                [0xff_ff_ff, 0xf6_f6_f6, 0xfc_fc_fc, 0x76_77_79, 0x1a_1c_1f],
+                [
+                    0xff_ff_ff, 0xf6_f6_f6, 0xfc_fc_fc, 0x6a_6b_6d, 0x1a_1c_1f, 0xf1_f1_f2,
+                ],
             ),
         ] {
             let n = Neutrals::new(is_dark, Colors::default());
-            let got = [n.canvas, n.frame, n.sidebar, n.muted, n.text].map(hex);
+            let got = [n.canvas, n.frame, n.sidebar, n.muted, n.text, n.raised].map(hex);
             assert_eq!(got, expected, "dark: {is_dark}");
         }
     }

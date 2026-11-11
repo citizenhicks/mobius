@@ -985,3 +985,25 @@ fn nested_preview_events_keep_their_order_within_one_sequence() {
         ["notice:1:0", "block:tools:tool", "notice:1:7"]
     );
 }
+
+#[test]
+fn prompt_precedes_its_work_even_when_a_hook_warning_arrives_first() {
+    let mut chat = Chat::new(0);
+    chat.send(None, started("hook-turn"), Vec::new());
+    chat.send(
+        None,
+        EventMsg::Warning(mobius::protocol::WarningEvent {
+            message: "UserPromptSubmit hook exited with status 127: node: not found".into(),
+        }),
+        Vec::new(),
+    );
+    chat.send(
+        Some("prompt"),
+        user("thank you very much", None),
+        Vec::new(),
+    );
+    chat.send(None, completed("hook-turn"), Vec::new());
+    assert_eq!(chat.client.order(), ["message:prompt", "worked:hook-turn"]);
+    assert_eq!(chat.client.shown("worked:hook-turn").len(), 1);
+    assert_eq!(Client::from_page(&chat.reducer.page()), chat.client);
+}

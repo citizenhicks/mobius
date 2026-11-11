@@ -183,7 +183,9 @@ impl Runner {
             batch_item_count: std::num::NonZeroUsize::MIN
                 .saturating_add(self.transcript_delta.len()),
         });
-        events.push(turn_event(&submission_id, message.event));
+        if submitted.show_message {
+            events.push(turn_event(&submission_id, message.event));
+        }
         // Retain the removed item at its original position until turn-start publication succeeds.
         let (queue_index, queued_message) =
             self.consume_turn_message(&submission_id, Arc::clone(&turn_id), author)?;

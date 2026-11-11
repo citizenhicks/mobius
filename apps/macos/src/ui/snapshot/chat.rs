@@ -11,6 +11,22 @@ use pages::bots::AgentScope;
     reason = "fixed scenario identities must be valid"
 )]
 pub(super) const SCENARIOS: &[Scenario] = &[
+    ("decisions-pending", |this, window, cx| {
+        decision_fixture(
+            this,
+            window,
+            cx,
+            mobius::protocol::FrontendBlockState::Pending,
+        );
+    }),
+    ("decisions-resolved", |this, window, cx| {
+        decision_fixture(
+            this,
+            window,
+            cx,
+            mobius::protocol::FrontendBlockState::Complete,
+        );
+    }),
     ("chat", open_chat),
     // The message rail with a tick under the pointer: its falloff and preview card.
     ("chat-rail-hover", |this, window, cx| {
@@ -424,6 +440,182 @@ pub(super) const SCENARIOS: &[Scenario] = &[
         window.focus(&this.focus, cx);
     }),
 ];
+
+fn decision_fixture(
+    this: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+    state: mobius::protocol::FrontendBlockState,
+) {
+    use mobius::protocol::FrontendBlockState;
+    this.client.gateway.take();
+    super::documents::open_demo(
+        this,
+        window,
+        cx,
+        "decisions",
+        "Testing Question Tool",
+        crate::gateway::TranscriptStore::default(),
+    );
+    this.set_link(Link::Ready);
+    let pending = state == FrontendBlockState::Pending;
+    if let Some(session) = &mut this.client.state.session {
+        session.active_turn_ids = if pending {
+            vec!["fixture-live".into()]
+        } else {
+            Vec::new()
+        };
+        session.pending_approvals = if pending {
+            vec![mobius::protocol::ExecApprovalRequestEvent {
+                id: "fixture-approval".into(),
+                turn_id: "fixture-live".into(),
+                reason: String::new(),
+                calls: vec![mobius::protocol::ApprovalCall {
+                    call_id: "call_2".into(),
+                    name: "exec".into(),
+                    arguments: serde_json::json!({"command": "rustup toolchain install 1.98.1"}),
+                    preview: None,
+                }],
+            }]
+        } else {
+            Vec::new()
+        };
+        session.widgets.clear();
+        session.widgets.push(mobius_gateway::wire::SessionWidget {
+            capability: "fixture".into(),
+            item: Arc::new(decision_widget(pending)),
+        });
+    }
+    this.client.state.transcript = decision_transcript(state);
+    this.shell.notices.clear();
+    this.shell.toast = None;
+}
+
+fn decision_transcript(
+    state: mobius::protocol::FrontendBlockState,
+) -> crate::gateway::TranscriptStore {
+    use mobius::protocol::{
+        FrontendBlockRole, FrontendBlockState, MessageAuthor, MessageDelivery, MessageEvent,
+        ModelStepContentPhase,
+    };
+    let pending = state == FrontendBlockState::Pending;
+    let mut script = crate::gateway::fixture::Script::default();
+    script.turn("fixture-live", true);
+    let mut warning = mobius::protocol::FrontendBlock {
+        id: Some("fixture-live/warning".into()),
+        group: Some("fixture-live".into()),
+        role: FrontendBlockRole::Activity,
+        title: "Agent".into(),
+        text: "UserPromptSubmit hook exited with status 127: node: not found".into(),
+        ..Default::default()
+    };
+    script.block("fixture", warning);
+    script.message(
+        "opening",
+        MessageEvent {
+            author: MessageAuthor::User,
+            delivery: MessageDelivery::Turn,
+            text: "Run the tests and tell me what broke.".into(),
+            attachments: Vec::new(),
+            reply: None,
+            message_target: None,
+        },
+    );
+    let question = "open";
+    warning = mobius::protocol::FrontendBlock {
+        id: Some(format!("fixture-live/{question}")),
+        group: Some("fixture-live".into()),
+        role: FrontendBlockRole::Tool,
+        title: "ask_user".into(),
+        text: "Which suite should I run?".into(),
+        ..Default::default()
+    };
+    script.block("fixture", warning);
+    script.block(
+        "sandbox",
+        mobius::protocol::FrontendBlock {
+            id: Some("fixture-live/approval:fixture-approval".into()),
+            group: Some("fixture-live".into()),
+            state,
+            role: FrontendBlockRole::Approval,
+            title: if state == FrontendBlockState::Pending {
+                "Approval required"
+            } else {
+                "Allowed once"
+            }
+            .into(),
+            text: "exec cargo test --locked".into(),
+            ..Default::default()
+        },
+    );
+    script.text(
+        "fixture-live",
+        "answer",
+        ModelStepContentPhase::FinalAnswer,
+        "The build passes. Before I start the long run, which suite do you want?",
+    );
+    if !pending {
+        script.turn("fixture-live", false);
+    }
+    let mut page = script.page();
+    for row in &mut page.rows {
+        if let mobius_gateway::wire::TranscriptRowKind::Worked {
+            started_at_ms,
+            duration_ms: None,
+            ..
+        } = &mut Arc::make_mut(row).kind
+        {
+            *started_at_ms = chrono::Utc::now().timestamp_millis() - 48_000;
+        }
+    }
+    crate::gateway::TranscriptStore::from(page)
+}
+
+fn decision_widget(pending: bool) -> mobius::protocol::FrontendWidget {
+    let mut widget = mobius::protocol::FrontendWidget::new(
+        "attention",
+        mobius::protocol::FrontendSlot::Attention,
+        "1",
+    );
+    widget.content = Some(mobius::protocol::FrontendWidgetContent::ActionList {
+        title: "Questions".into(),
+        actions: Vec::new(),
+        items: vec![mobius::protocol::FrontendActionListItem {
+            id: "open".into(),
+            text: "Which suite should I run?".into(),
+            outcome: (!pending).then(|| "Only the Wire tests, then stop".into()),
+            state: if pending {
+                mobius::protocol::FrontendListItemState::Pending
+            } else {
+                mobius::protocol::FrontendListItemState::Completed
+            },
+            actions: if pending {
+                ["Unit tests", "Full simulator suite"]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, label)| mobius::protocol::FrontendAction {
+                        id: i.to_string(),
+                        label: label.into(),
+                        symbol: mobius::protocol::FrontendSymbol::Question,
+                        tone: mobius::protocol::FrontendTone::Neutral,
+                        input_from_label: true,
+                        editor: None,
+                        op: mobius::protocol::Op::CapabilityCommand {
+                            capability: "fixture".into(),
+                            command: "answer".into(),
+                            arguments: "open".into(),
+                            input: None,
+                            target: None,
+                        },
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            },
+        }],
+    });
+    widget
+}
 
 /// Scenarios whose probed reasoning line the harness clicks open and closed.
 pub(super) const CLICKS: &[&str] = &[

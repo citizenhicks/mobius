@@ -153,19 +153,12 @@ impl Workspace {
             let removed = old.get(removed).unwrap_or_default();
             let inserted = ids.get(inserted).unwrap_or_default();
             hand_off_rows(scope, removed, inserted, next);
-            if animate && !old.is_empty() && removed.is_empty() {
+            if animate && !old.is_empty() {
                 let previous: std::collections::HashSet<_> = old.iter().collect();
-                // Rows that arrive above the old first row are history, already read.
-                let top = old
-                    .iter()
-                    .find(|id| &***id != HISTORY)
-                    .and_then(|first| ids.iter().position(|id| id == first))
-                    .unwrap_or(0);
                 state.animated.extend(
                     ids.iter()
-                        .enumerate()
-                        .filter(|(index, id)| *index >= top && !previous.contains(id))
-                        .map(|(_, id)| Arc::clone(id)),
+                        .filter(|id| &***id != HISTORY && !previous.contains(id))
+                        .map(Arc::clone),
                 );
             }
             let current: std::collections::HashSet<_> = ids.iter().collect();

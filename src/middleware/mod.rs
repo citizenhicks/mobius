@@ -763,6 +763,7 @@ impl MiddlewareStack {
             .message()
             .ok_or_else(|| Error::Checkpoint("prepared event is not a message".into()))?;
         let mut context = MessageSubmitContext {
+            submission_id: &message.submission_id,
             turn,
             author: &event.author,
             message: &event.text,
@@ -771,6 +772,7 @@ impl MiddlewareStack {
             delivery_once: delivery_once::DeliveryOnce::new(receipts),
             input: Vec::new(),
             rejection: None,
+            show_message: true,
         };
         for entry in &self.entries {
             context.delivery_once.owner = entry.name();
@@ -779,6 +781,7 @@ impl MiddlewareStack {
         Ok(MessageSubmitResult {
             input: context.input,
             rejection: context.rejection,
+            show_message: context.show_message,
         })
     }
 

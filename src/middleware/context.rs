@@ -565,6 +565,8 @@ impl SessionStartContext<'_> {
 
 /// Mutable state exposed before a prepared next-turn message enters durable context.
 pub struct MessageSubmitContext<'a> {
+    /// The submission being delivered.
+    pub submission_id: &'a str,
     /// The turn.
     pub turn: TurnIdentity<'a>,
     /// The author.
@@ -578,6 +580,7 @@ pub struct MessageSubmitContext<'a> {
     pub(crate) delivery_once: DeliveryOnce<'a>,
     pub(crate) input: Vec<Value>,
     pub(crate) rejection: Option<String>,
+    pub(crate) show_message: bool,
 }
 
 impl std::fmt::Debug for MessageSubmitContext<'_> {
@@ -590,6 +593,12 @@ impl std::fmt::Debug for MessageSubmitContext<'_> {
 }
 
 impl MessageSubmitContext<'_> {
+    /// Omits the standalone frontend message when a capability's card already represents it.
+    /// Model input and checkpoint conversation history are retained.
+    pub fn hide_message(&mut self) {
+        self.show_message = false;
+    }
+
     /// Appends guidance once per session and middleware, before this submitted message.
     /// Rejected submissions do not consume the delivery receipt.
     /// # Errors
@@ -614,6 +623,7 @@ impl MessageSubmitContext<'_> {
 pub(crate) struct MessageSubmitResult {
     pub(crate) input: Vec<Value>,
     pub(crate) rejection: Option<String>,
+    pub(crate) show_message: bool,
 }
 
 /// Provisional history borrows its immutable prefix and owns only new or replaced items.

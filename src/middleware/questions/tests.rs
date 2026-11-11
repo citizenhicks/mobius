@@ -8,7 +8,7 @@ use crate::backend::sandbox::{
 };
 use crate::middleware::MiddlewareStack;
 use crate::middleware::messages::Messages;
-use crate::protocol::{MessageDelivery, SessionContext, TokenUsage};
+use crate::protocol::{SessionContext, TokenUsage};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::Notify;
 
@@ -114,7 +114,7 @@ async fn agent(
 }
 
 #[tokio::test]
-async fn answers_are_user_messages_during_active_and_idle_turns() {
+async fn answers_reach_model_history_without_duplicate_frontend_messages() {
     for active in [false, true] {
         let temp = tempfile::tempdir().expect("temp");
         let store: Arc<dyn CheckpointStore> =
@@ -174,23 +174,30 @@ async fn answers_are_user_messages_during_active_and_idle_turns() {
             .await;
             model.release.notify_one();
         }
-        let event = next(
-            &mut agent,
-            |event| matches!(event, EventMsg::Message(message) if message.text.starts_with("> ")),
-        )
-        .await;
-        let EventMsg::Message(message) = event else {
-            unreachable!()
-        };
-        assert_eq!(message.text, "> Choose {answer}?\n\nA");
-        assert_eq!(message.author, MessageAuthor::User);
-        assert_eq!(
-            message.delivery,
-            if active {
-                MessageDelivery::Steer
-            } else {
-                MessageDelivery::Turn
+        loop {
+            let event = next(&mut agent, |_| true).await;
+            assert!(
+                !matches!(&event, EventMsg::Message(message) if message.text.starts_with("> ")),
+                "the question card already shows its answer"
+            );
+            if matches!(event, EventMsg::TurnComplete(_)) {
+                break;
             }
+        }
+        let checkpoint = store
+            .load(&"session".parse().expect("session ID"))
+            .await
+            .expect("checkpoint")
+            .expect("saved");
+        assert!(
+            checkpoint
+                .context
+                .iter()
+                .any(|message| message["role"] == "user"
+                    && message["content"].as_array().is_some_and(|parts| parts
+                        .iter()
+                        .any(|part| part["text"] == "> Choose {answer}?\n\nA"))),
+            "the model keeps the actual user answer"
         );
         let session = questions
             .session(&"session".parse().expect("session ID"))
@@ -208,10 +215,6 @@ async fn answers_are_user_messages_during_active_and_idle_turns() {
         };
         assert_eq!(items[0].state, FrontendListItemState::Completed);
         assert!(items[0].actions.is_empty());
-        next(&mut agent, |event| {
-            matches!(event, EventMsg::TurnComplete(_))
-        })
-        .await;
     }
 }
 
@@ -277,7 +280,20 @@ async fn concurrent_answers_close_a_question_once() {
             _ => unreachable!(),
         }
     }
-    assert_eq!(messages, [format!("> Choose {{answer}}?\n\n{text}")]);
+    assert!(messages.is_empty(), "the card owns the displayed answer");
+    let checkpoint = store
+        .load(&"session".parse().expect("session ID"))
+        .await
+        .expect("checkpoint")
+        .expect("saved");
+    let expected = format!("> Choose {{answer}}?\n\n{text}");
+    let user_messages: Vec<_> = checkpoint
+        .context
+        .iter()
+        .filter(|message| message["role"] == "user")
+        .collect();
+    assert_eq!(user_messages.len(), 1);
+    assert_eq!(user_messages[0]["content"][0]["text"], expected);
 }
 
 #[tokio::test]

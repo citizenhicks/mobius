@@ -961,9 +961,15 @@ impl TranscriptReducer {
                 };
             }
             rows.extend(runs);
+            let mut position = first.position;
+            if let Some(opening) = slots.iter().find(|slot| slot.item.starts_turn) {
+                let mut after_opening = opening.position;
+                after_opening.index = after_opening.index.saturating_add(1);
+                position = position.max(after_opening);
+            }
             rows.push(TranscriptRow {
                 id: self.id(format_args!("worked:{turn_id}")),
-                position: first.position,
+                position,
                 items,
                 kind: TranscriptRowKind::Worked {
                     counts: counts(work.iter().map(|slot| &*slot.item)),

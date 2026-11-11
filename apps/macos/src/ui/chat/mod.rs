@@ -557,11 +557,11 @@ impl Workspace {
     pub(in crate::ui) fn transcript_region(
         &mut self,
         window: &Window,
-        cx: &Context<Self>,
+        cx: &mut Context<Self>,
     ) -> AnyElement {
         #[cfg(feature = "snapshot")]
         super::snapshot::count_render(1);
-        self.refresh_decisions();
+        self.refresh_decisions(cx);
         let state = &self.client.state;
         let selected = state.selected_session_id.as_ref();
         let scope = format!("chat:{}", selected.map_or("", |id| id.as_str()));
@@ -597,9 +597,9 @@ impl Workspace {
             tail_items.push(ChatItem::Tail(index));
             tail_ids.push(key.into());
         }
-        for id in self.unanchored_approval_ids() {
-            tail_items.push(ChatItem::Decision(Arc::clone(id)));
-            tail_ids.push(format!("decision:approval:{id}").into());
+        if self.has_pending_decisions() {
+            tail_items.push(ChatItem::Decisions);
+            tail_ids.push("decisions:tail".into());
         }
         for (index, (id, _)) in self.pending_messages().into_iter().enumerate() {
             tail_items.push(ChatItem::Pending(index));
@@ -718,14 +718,7 @@ impl Workspace {
                 }),
             Some(ChatItem::Waiting) => self.waiting_tail(&scope, cx),
             Some(ChatItem::Tail(tail)) => self.transcript_tail(cx).into_iter().nth(*tail),
-            Some(ChatItem::Decision(id)) => self.unanchored_approval(id, cx).map(|card| {
-                div()
-                    .mx_auto()
-                    .w_full()
-                    .max_w(width::TRANSCRIPT)
-                    .child(card)
-                    .into_any_element()
-            }),
+            Some(ChatItem::Decisions) => self.decision_deck(cx),
             Some(ChatItem::Pending(pending)) => self.pending_bubbles(cx).into_iter().nth(*pending),
             None => None,
         };
@@ -819,6 +812,6 @@ pub(in crate::ui) enum ChatItem {
     Waiting,
     Tail(usize),
     /// An open approval with no loaded transcript anchor.
-    Decision(Arc<str>),
+    Decisions,
     Pending(usize),
 }

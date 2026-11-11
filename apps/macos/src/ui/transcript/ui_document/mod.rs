@@ -85,14 +85,7 @@ impl Workspace {
             .gap(space::L)
             .children(groups)
             .into_any_element();
-        inline_card(
-            title.into_iter().chain(std::iter::once(content)),
-            "hi.layoutDashboard",
-            None,
-            None,
-            &p,
-        )
-        .into_any_element()
+        inline_card(title, [content], "hi.layoutDashboard", None, None, &p).into_any_element()
     }
 
     fn ui_group(&self, heading: Option<&str>, element: Option<AnyElement>) -> Div {

@@ -9,8 +9,9 @@ use serde_json::Value;
 
 use super::tools::{ApprovalRequirement, Catalog, ExecutionMode, Tool, ToolContext, ToolExposure};
 use super::{
-    ActiveCommandContext, FrontendEventSink, Middleware, MiddlewareCommandContext,
-    MiddlewareCommandOutput, RuntimeContext, SessionStartContext, SubmissionResult,
+    ActiveCommandContext, FrontendEventSink, MessageSubmitContext, Middleware,
+    MiddlewareCommandContext, MiddlewareCommandOutput, RuntimeContext, SessionStartContext,
+    SubmissionResult,
 };
 use crate::agent::{AgentRole, WeakAgentSender};
 use crate::backend::checkpoint::CheckpointStore;
@@ -56,6 +57,7 @@ super::manifest::middleware_manifest! {
     "questions", DEFINITION, required: false, settings: &[]
 }
 const STATE_KEY: &str = "questions.v1";
+const ANSWER_SUBMISSION_PREFIX: &str = "question-answer:";
 const MAX_TITLE_BYTES: usize = 1024;
 const MAX_OPTIONS: usize = 6;
 const MAX_OPTION_BYTES: usize = 200;
@@ -219,6 +221,26 @@ impl Middleware for Questions {
         })
     }
 
+    fn message_submit<'a>(
+        &'a self,
+        context: &'a mut MessageSubmitContext<'_>,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let Some(id) = context.submission_id.strip_prefix(ANSWER_SUBMISSION_PREFIX) else {
+                return Ok(());
+            };
+            let session = self.session(context.turn.session_id)?;
+            let questions = session.load().await?;
+            if questions.iter().any(|question| {
+                &*question.id == id && matches!(&question.outcome,
+                    Some(Outcome::Answered { text, .. }) if context.message == answer_message(&question.title, text))
+            }) {
+                context.hide_message();
+            }
+            Ok(())
+        })
+    }
+
     fn session_end<'a>(&'a self, runtime: &'a RuntimeContext) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             self.sessions()?.remove(&runtime.session_id);
@@ -315,22 +337,7 @@ impl QuestionSession {
                     text: answer.into(),
                     at,
                 });
-                // Replace template placeholders only, never placeholder-like text in user input.
-                Some(
-                    DEFINITION
-                        .answer_message
-                        .split("{title}")
-                        .enumerate()
-                        .map(|(index, part)| {
-                            let rendered = part.replace("{answer}", answer);
-                            if index == 0 {
-                                rendered
-                            } else {
-                                format!("{}{rendered}", question.title)
-                            }
-                        })
-                        .collect(),
-                )
+                Some(answer_message(&question.title, answer))
             }
             Command::Skip => {
                 question.outcome = Some(Outcome::Skipped { at });
@@ -345,14 +352,19 @@ impl QuestionSession {
                 .upgrade()
                 .ok_or_else(|| Error::Stopped(DEFINITION.message_unavailable.clone())) // rules-allow: the error owns a copy of the embedded message
                 .and_then(|sender| {
-                    sender.send(Submission::message(MessageSubmission {
-                        author: MessageAuthor::User,
-                        text,
-                        attachments: Vec::new(),
-                        reply: None,
-                        requested_delivery: Some(ActiveMessageDelivery::Steer),
-                        target_turn_id: turn_id.map(str::to_owned),
-                    }))
+                    sender.send(Submission {
+                        id: format!("{ANSWER_SUBMISSION_PREFIX}{id}").into(),
+                        op: Op::Message {
+                            message: MessageSubmission {
+                                author: MessageAuthor::User,
+                                text,
+                                attachments: Vec::new(),
+                                reply: None,
+                                requested_delivery: Some(ActiveMessageDelivery::Steer),
+                                target_turn_id: turn_id.map(str::to_owned),
+                            },
+                        },
+                    })
                 });
             if let Err(error) = sent {
                 if let Some(question) = questions.get_mut(index) {
@@ -429,6 +441,23 @@ impl Tool for AskUser {
             Ok(response.into())
         })
     }
+}
+
+fn answer_message(title: &str, answer: &str) -> String {
+    // Substitute the template only, leaving placeholder-like user text intact.
+    DEFINITION
+        .answer_message
+        .split("{title}")
+        .enumerate()
+        .map(|(index, part)| {
+            let rendered = part.replace("{answer}", answer);
+            if index == 0 {
+                rendered
+            } else {
+                format!("{title}{rendered}")
+            }
+        })
+        .collect()
 }
 
 fn validate(args: &AskArgs) -> Result<()> {

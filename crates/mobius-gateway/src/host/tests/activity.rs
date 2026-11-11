@@ -222,7 +222,7 @@ async fn telemetry_reports_resumed_session_activity_without_duplicate_network_ca
         .unwrap();
     let receiver = tokio::spawn(async move {
         let mut bodies = Vec::new();
-        for _ in 0..2 {
+        for _ in 0..3 {
             let (mut socket, _) = listener.accept().await.unwrap();
             let mut request = Vec::new();
             let mut buffer = [0; 4096];
@@ -321,11 +321,30 @@ async fn telemetry_reports_resumed_session_activity_without_duplicate_network_ca
             "an unchanged catalog must not send another snapshot"
         );
     }
+    gateway
+        .rename_session(session.session_id(), "A fresh title")
+        .await
+        .unwrap();
+    let mut tasks = tokio::task::JoinSet::new();
+    Telemetry::tick_at(
+        &gateway,
+        0,
+        Trigger::Events,
+        &mut tasks,
+        Utc::now().timestamp(),
+    )
+    .await
+    .unwrap();
+    while tasks.join_next().await.is_some() {}
     let bodies = tokio::time::timeout(std::time::Duration::from_secs(5), receiver)
         .await
         .unwrap()
         .unwrap();
     assert_eq!(bodies[0]["events"][0]["id"], "approval");
+    assert_eq!(
+        bodies[2]["session_activity"]["sessions"][0]["title"],
+        "A fresh title"
+    );
     for (body, state) in bodies.iter().zip(["awaiting_approval", "running"]) {
         assert_eq!(
             body["reason"],

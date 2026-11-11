@@ -1,7 +1,6 @@
 //! Questions and approvals shown in the transcript and the Attention panel.
 
 use std::collections::BTreeMap;
-use std::collections::BTreeSet;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -20,6 +19,7 @@ use gpui::Subscription;
 use gpui::Window;
 use gpui::div;
 use gpui_component::Disableable;
+use gpui_component::carousel::{Carousel, CarouselContent, CarouselItem, CarouselState};
 use gpui_component::input::InputEvent;
 use gpui_component::input::TextareaState;
 use mobius::protocol::ApprovalCall;
@@ -51,6 +51,7 @@ use crate::ui::primitives::Typography;
 use crate::ui::primitives::choice_row;
 use crate::ui::primitives::heading;
 use crate::ui::primitives::icon;
+use crate::ui::primitives::inline_button;
 use crate::ui::primitives::inline_card;
 use crate::ui::primitives::primary_button;
 use crate::ui::primitives::textarea;
@@ -137,6 +138,24 @@ enum Decision<'a> {
     },
 }
 
+impl Decision<'_> {
+    fn id(self) -> String {
+        match self {
+            Self::Question { widget, item } => format!("question:{}:{}", widget.key, item.id),
+            Self::Pending(approval) => format!("approval:{}", approval.id),
+            Self::Closed { request, .. } => format!("approval:{request}"),
+        }
+    }
+
+    fn is_pending(&self) -> bool {
+        match self {
+            Self::Pending(_) => true,
+            Self::Question { item, .. } => item.state == FrontendListItemState::Pending,
+            Self::Closed { .. } => false,
+        }
+    }
+}
+
 struct AttentionWidget {
     key: Arc<str>,
     widget: Arc<FrontendWidget>,
@@ -161,14 +180,9 @@ struct QuestionAnchor {
 pub(super) struct AttentionIndex {
     widgets: Vec<AttentionWidget>,
     questions: BTreeMap<String, BTreeMap<Arc<str>, QuestionAnchor>>,
-    tail: ApprovalTail,
-}
-
-#[derive(Default)]
-struct ApprovalTail {
-    revision: u64,
     pending: Vec<Arc<str>>,
-    unanchored: Vec<Arc<str>>,
+    deck: Option<Entity<CarouselState>>,
+    deck_ids: Vec<String>,
 }
 
 impl AttentionIndex {
@@ -290,46 +304,39 @@ impl Workspace {
         widgets_changed
     }
 
-    pub(super) fn refresh_decisions(&mut self) {
+    pub(super) fn refresh_decisions(&mut self, cx: &mut Context<Self>) {
         let widgets_changed = self.refresh_attention_widgets();
-        let revision = self.client.state.transcript.structure_revision();
-        let tail = &self.chat_ui.attention.tail;
         let pending_changed = !self
             .pending_approvals()
             .iter()
             .map(|approval| &approval.id)
-            .eq(&tail.pending);
-        if pending_changed || revision != tail.revision {
-            let pending: Vec<_> = self
+            .eq(&self.chat_ui.attention.pending);
+        if pending_changed {
+            self.chat_ui.attention.pending = self
                 .pending_approvals()
                 .iter()
                 .map(|approval| Arc::clone(&approval.id))
                 .collect();
-            let mut unanchored: BTreeSet<_> = pending.iter().map(Arc::as_ref).collect();
-            if !unanchored.is_empty() {
-                for entry in self
-                    .transcript_items()
-                    .rev()
-                    .filter(|entry| !entry.inherited)
-                {
-                    if let Some(anchor) = approval_anchor(entry) {
-                        unanchored.remove(anchor.request);
-                    }
-                    if unanchored.is_empty() {
-                        break;
-                    }
+        }
+        if widgets_changed || pending_changed {
+            let ids: Vec<String> = self.pending_decisions().map(Decision::id).collect();
+            let deck = self
+                .chat_ui
+                .attention
+                .deck
+                .get_or_insert_with(|| cx.new(|_| CarouselState::new(0)));
+            let selection = deck
+                .read(cx)
+                .selected_index()
+                .and_then(|index| self.chat_ui.attention.deck_ids.get(index))
+                .and_then(|id| ids.iter().position(|candidate| candidate == id));
+            deck.update(cx, |deck, cx| {
+                deck.set_item_count(ids.len(), cx);
+                if let Some(index) = selection {
+                    deck.set_selected_index(index, cx);
                 }
-            }
-            let unanchored = pending
-                .iter()
-                .filter(|id| unanchored.contains(id.as_ref()))
-                .map(Arc::clone)
-                .collect();
-            self.chat_ui.attention.tail = ApprovalTail {
-                revision,
-                pending,
-                unanchored,
-            };
+            });
+            self.chat_ui.attention.deck_ids = ids;
         }
         if (widgets_changed || pending_changed) && self.active_session_ready() {
             let scope = self.decision_session();
@@ -341,7 +348,7 @@ impl Workspace {
                 }
                 match &key.target {
                     DecisionTarget::Approval { request } => {
-                        let pending = attention.tail.pending.contains(request);
+                        let pending = attention.pending.contains(request);
                         if !pending {
                             requests.remove(&format!("approval\0{request}"));
                         }
@@ -390,7 +397,7 @@ impl Workspace {
     }
 
     pub(super) fn attention_body(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        self.refresh_decisions();
+        self.refresh_decisions(cx);
         let mut questions: Vec<_> = self.chat_ui.attention.questions().collect();
         questions.sort_by_key(|decision| {
             matches!(decision, Decision::Question { item, .. } if item.state != FrontendListItemState::Pending)
@@ -430,6 +437,7 @@ impl Workspace {
             if let Some(decision) = self
                 .approval_at(entry)
                 .or_else(|| self.chat_ui.attention.question(entry))
+                .filter(|decision| !decision.is_pending())
             {
                 cards.push(self.decision(decision, DecisionPlacement::Inline, cx));
             } else {
@@ -442,20 +450,76 @@ impl Workspace {
         }
     }
 
-    pub(super) fn unanchored_approval_ids(&self) -> impl Iterator<Item = &Arc<str>> {
-        self.chat_ui.attention.tail.unanchored.iter()
+    fn pending_decisions(&self) -> impl Iterator<Item = Decision<'_>> {
+        self.pending_approvals()
+            .iter()
+            .map(Decision::Pending)
+            .chain(
+                self.chat_ui
+                    .attention
+                    .questions()
+                    .filter(Decision::is_pending),
+            )
     }
 
-    pub(super) fn unanchored_approval(
-        &self,
-        id: &str,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
-        let pending = self
-            .pending_approvals()
-            .iter()
-            .find(|approval| &*approval.id == id)?;
-        Some(self.decision(Decision::Pending(pending), DecisionPlacement::Tail, cx))
+    pub(super) fn has_pending_decisions(&self) -> bool {
+        !self.chat_ui.attention.deck_ids.is_empty()
+    }
+
+    pub(super) fn decision_deck(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let state = self.chat_ui.attention.deck.as_ref()?;
+        let cards: Vec<_> = self
+            .pending_decisions()
+            .enumerate()
+            .map(|(index, decision)| {
+                CarouselItem::new(decision.id(), index, state).child(self.decision(
+                    decision,
+                    DecisionPlacement::Tail,
+                    cx,
+                ))
+            })
+            .collect();
+        let mut deck = Carousel::new("pending-decisions", state)
+            .accessibility_label("Pending decisions")
+            .w_full()
+            .gap(space::S)
+            .child(CarouselContent::new(state).children(cards));
+        if self.chat_ui.attention.deck_ids.len() > 1 {
+            let previous = Entity::clone(state);
+            let next = Entity::clone(state);
+            deck = deck.child(
+                div()
+                    .flex()
+                    .justify_center()
+                    .gap(space::S)
+                    .child(
+                        inline_button("decision-previous", "Previous", "hi.arrowLeft", cx)
+                            .disabled(!state.read(cx).has_previous())
+                            .on_click(move |_, _, cx| {
+                                previous.update(cx, |state, cx| {
+                                    state.select_previous(cx);
+                                });
+                            }),
+                    )
+                    .child(
+                        inline_button("decision-next", "Next", "hi.arrowRight", cx)
+                            .disabled(!state.read(cx).has_next())
+                            .on_click(move |_, _, cx| {
+                                next.update(cx, |state, cx| {
+                                    state.select_next(cx);
+                                });
+                            }),
+                    ),
+            );
+        }
+        Some(
+            div()
+                .mx_auto()
+                .w_full()
+                .max_w(crate::ui::width::TRANSCRIPT)
+                .child(deck)
+                .into_any_element(),
+        )
     }
 
     fn decision(
@@ -464,18 +528,11 @@ impl Workspace {
         placement: DecisionPlacement,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let (identity, card) = match decision {
-            Decision::Question { widget, item } => (
-                format!("question:{}:{}", widget.key, item.id),
-                self.question_card(widget, item),
-            ),
-            Decision::Pending(approval) => (
-                format!("approval:{}", approval.id),
-                self.approval_decision(approval, cx),
-            ),
-            Decision::Closed { request, block } => {
-                (format!("approval:{request}"), self.closed_approval(block))
-            }
+        let identity = decision.id();
+        let card = match decision {
+            Decision::Question { widget, item } => self.question_card(widget, item),
+            Decision::Pending(approval) => self.approval_decision(approval, cx),
+            Decision::Closed { block, .. } => self.closed_approval(block),
         };
         let id = format!("{}:{identity}", placement.as_str());
         let card = self.decision_card(card, &id, placement, cx);
@@ -631,8 +688,8 @@ impl Workspace {
             enabled,
         } = card;
         let p = self.palette;
-        let mut body = vec![heading(title).whitespace_normal().into_any_element()];
-        body.extend(detail);
+        let title = heading(title).whitespace_normal().into_any_element();
+        let mut body = detail;
         if let Some(outcome) = outcome {
             body.push(motion::fade_in(
                 div()
@@ -651,10 +708,10 @@ impl Workspace {
                 motion::CROSSFADE,
                 cx,
             ));
-            return inline_card(body, glyph_name, None, None, &p).into_any_element();
+            return inline_card(Some(title), body, glyph_name, None, None, &p).into_any_element();
         }
         let Some(key) = key else {
-            return inline_card(body, glyph_name, tint, None, &p).into_any_element();
+            return inline_card(Some(title), body, glyph_name, tint, None, &p).into_any_element();
         };
         let draft = self.chat_ui.decision_drafts.get(&key);
         let selected =
@@ -668,21 +725,13 @@ impl Workspace {
                 choice.prompt.is_none()
                     || editor.is_some_and(|editor| !editor.input.read(cx).value().trim().is_empty())
             });
-        for (
-            index,
-            Choice {
-                id: choice_id,
-                label,
-                prompt,
-            },
-        ) in choices.into_iter().enumerate()
-        {
-            let selected = draft.is_some_and(|draft| draft.selected == choice_id);
+        for (index, choice) in choices.into_iter().enumerate() {
+            let selected = draft.is_some_and(|draft| draft.selected == choice.id);
             let key = Rc::clone(&key);
             body.push(
                 choice_row(
                     SharedString::from(format!("{id}:choice:{index}")),
-                    label,
+                    choice.label,
                     selected,
                     enabled,
                     cx,
@@ -690,8 +739,8 @@ impl Workspace {
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.choose(
                         Rc::clone(&key),
-                        SharedString::clone(&choice_id),
-                        prompt.as_ref(),
+                        SharedString::clone(&choice.id),
+                        choice.prompt.as_ref(),
                         placement,
                         window,
                         cx,
@@ -717,7 +766,15 @@ impl Workspace {
         )
         .disabled(!can_send)
         .on_click(cx.listener(move |this, _, window, cx| this.send_decision(&key, window, cx)));
-        inline_card(body, glyph_name, tint, Some(send.into_any_element()), &p).into_any_element()
+        inline_card(
+            Some(title),
+            body,
+            glyph_name,
+            tint,
+            Some(send.into_any_element()),
+            &p,
+        )
+        .into_any_element()
     }
 
     fn choose(

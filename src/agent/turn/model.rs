@@ -228,10 +228,12 @@ impl Runner {
             let input = Arc::new(message.input);
             context.push(Arc::clone(&input));
             transcript.push(input);
-            events.push(Event {
-                submission_id: Some(message.submission_id),
-                msg: message.event,
-            });
+            if submitted.show_message {
+                events.push(Event {
+                    submission_id: Some(message.submission_id),
+                    msg: message.event,
+                });
+            }
         }
         let previous_pending_messages = std::mem::replace(
             &mut self.state.make_mut().pending_messages,

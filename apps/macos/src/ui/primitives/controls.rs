@@ -874,9 +874,10 @@ pub(crate) fn leading_item(
 }
 
 /// The one card the transcript draws in place (MobiusInlineCard): a question, an approval, a
-/// generated interface. `body` reads top to bottom; the kind's `glyph` sits in the
-/// bottom-leading corner, opposite `trailing`, so every card ends on the same line.
+/// generated interface. The kind's glyph aligns with the title's first line;
+/// only cards with controls reserve a footer.
 pub fn inline_card(
+    title: Option<AnyElement>,
     body: impl IntoIterator<Item = AnyElement>,
     glyph_name: &str,
     tint: Option<Hsla>,
@@ -891,21 +892,27 @@ pub fn inline_card(
         .p(inset::CARD)
         .tile_corners()
         .bg(p.raised)
-        .children(body)
         .child(
             div()
                 .flex()
-                .items_center()
+                .items_start()
                 .gap(space::S)
-                .min_h(height::PRIMARY)
+                .child(div().flex_1().min_w_0().children(title))
                 .child(
-                    icon(glyph_name, p)
-                        .size(glyph::LEAD)
-                        .text_color(tint.unwrap_or(p.muted)),
-                )
-                .child(div().flex_1())
-                .children(trailing),
+                    div()
+                        .h(Type::Headline.line_height())
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .child(
+                            icon(glyph_name, p)
+                                .size(glyph::LEAD)
+                                .text_color(tint.unwrap_or(p.muted)),
+                        ),
+                ),
         )
+        .children(body)
+        .children(trailing.map(|control| div().flex().justify_end().child(control)))
 }
 
 /// One keyboard-accessible choice of an inline decision.
