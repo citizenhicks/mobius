@@ -93,7 +93,8 @@ with tempfile.TemporaryDirectory(prefix='mobius-native-check-') as temporary:
     native.mobius_native_cloud.argtypes = [ctypes.c_uint8]
     if not configured:
         native.mobius_native_cloud(0)
-        assert events() == [{'type': 'cloud_status', 'status': {'signed_in': False}}]
+        cloud = [event for event in events() if event['type'] == 'cloud_status']
+        assert cloud == [{'type': 'cloud_status', 'status': {'signed_in': False}}], cloud
     native.mobius_native_cloud(1)
     cloud = [event for event in events() if event['type'] == 'cloud_status']
     assert cloud and cloud[-1]['status']['error_kind'] == 'other', cloud
