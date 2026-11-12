@@ -715,11 +715,11 @@ impl TokenUsage {
 pub struct TokenUsageInfo {
     /// The total token usage.
     pub total_token_usage: TokenUsage,
-    /// The last token usage.
+    /// Last foreground model usage, or zero before a request in the current context.
     pub last_token_usage: TokenUsage,
     /// The model context window.
     pub model_context_window: Option<i64>,
-    /// Where the last model request's input tokens went; absent from other usage.
+    /// Where the last foreground request's input tokens went; absent until it is known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<ContextBreakdown>,
 }

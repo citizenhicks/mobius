@@ -79,7 +79,7 @@ pub struct Checkpoint {
     pub last_context_rewrite: Option<ContextRewrite>,
     /// The total usage.
     pub total_usage: TokenUsage,
-    /// The last usage.
+    /// Usage of the last foreground model request; cleared when its context is rewritten.
     pub last_usage: Option<TokenUsage>,
     /// The pending messages.
     pub pending_messages: Vec<QueuedMessage>,

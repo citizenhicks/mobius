@@ -16,8 +16,8 @@ use crate::backend::checkpoint::{
 };
 use crate::middleware::{PreparedMessage, TurnEndContext};
 use crate::protocol::{
-    ErrorEvent, Event, EventMsg, MessageAuthor, MessageTarget, TokenCountEvent, TokenUsage,
-    TokenUsageInfo, TurnAbortedEvent, TurnCompleteEvent, TurnStartedEvent,
+    ErrorEvent, Event, EventMsg, MessageAuthor, MessageTarget, TokenCountEvent, TokenUsageInfo,
+    TurnAbortedEvent, TurnCompleteEvent, TurnStartedEvent,
 };
 use crate::{Error, Result};
 
@@ -343,22 +343,18 @@ impl Runner {
         })
     }
 
-    pub(super) fn usage_event(
-        &self,
-        submission_id: &Arc<str>,
-        accounting_usage: Option<&TokenUsage>,
-    ) -> Option<Event> {
-        let last = *accounting_usage.or(self.state.last_usage.as_ref())?;
+    pub(super) fn usage_event(&self, submission_id: &Arc<str>) -> Event {
+        let last = self.state.last_usage.unwrap_or_default();
         // A model step's own usage scales the parts its request was built from.
         let window = self.config.context_window;
         let context = self
             .context_estimate
-            .filter(|_| accounting_usage.is_none())
+            .filter(|_| self.state.last_usage.is_some())
             .map(|estimate| {
                 let buffer = window - self.config.middleware.context_limit(window);
                 estimate.breakdown(last.input_tokens, buffer)
             });
-        Some(turn_event(
+        turn_event(
             submission_id,
             EventMsg::TokenCount(TokenCountEvent {
                 info: Some(TokenUsageInfo {
@@ -369,7 +365,7 @@ impl Runner {
                 }),
                 rate_limits: None,
             }),
-        ))
+        )
     }
 
     async fn complete_turn(

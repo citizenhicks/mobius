@@ -34,7 +34,7 @@ use crate::middleware::{ModelContext, PreparationNotices, StagedInput, StopConte
 use crate::protocol::{
     AssistantMessageEvent, Event, EventMsg, MessageTarget, ModelEvent, ModelEventTracker,
     ModelStepCompletedEvent, ModelStepDiagnostics, ModelStepOutcome, ModelStepStartedEvent,
-    SubmissionRejectedEvent, TokenUsage, ToolCall,
+    SubmissionRejectedEvent, ToolCall,
 };
 use crate::{Error, Result};
 
@@ -297,7 +297,7 @@ impl Runner {
         &mut self,
         submission_id: &Arc<str>,
         mut middleware_events: Vec<EventMsg>,
-        accounting_usage: Option<&TokenUsage>,
+        usage_changed: bool,
         checkpoint_changed: bool,
         provisional_target_sequence: u64,
     ) -> Result<()> {
@@ -310,10 +310,8 @@ impl Runner {
             );
         }
         let mut events = turn_events(submission_id, middleware_events).collect::<Vec<_>>();
-        if accounting_usage.is_some()
-            && let Some(usage) = self.usage_event(submission_id, accounting_usage)
-        {
-            events.push(usage);
+        if usage_changed {
+            events.push(self.usage_event(submission_id));
         }
         if checkpoint_changed {
             self.persist_with_events(events, None).await?;
@@ -424,10 +422,8 @@ impl Runner {
             Wait::Interrupted { submission_id } => {
                 let mut events = turn_events(&submission_id, preparation_notices.cancellations())
                     .collect::<Vec<_>>();
-                if let Some(usage) = middleware_usage.last().map(|(_, usage)| usage)
-                    && let Some(event) = self.usage_event(&submission_id, Some(usage))
-                {
-                    events.push(event);
+                if usage_changed {
+                    events.push(self.usage_event(&submission_id));
                 }
                 self.abort_with_events(
                     &submission_id,
@@ -505,7 +501,7 @@ impl Runner {
         self.persist_model_hook_changes(
             submission_id,
             middleware_events,
-            middleware_usage.last().map(|(_, usage)| usage),
+            usage_changed,
             checkpoint_changed,
             provisional_target_sequence,
         )
@@ -1110,9 +1106,7 @@ impl Runner {
         }
         model_events.extend(turn_events(submission_id, tool_effects.events));
         model_events.extend(turn_events(submission_id, hook_events));
-        if let Some(usage) = self.usage_event(submission_id, None) {
-            model_events.push(usage);
-        }
+        model_events.push(self.usage_event(submission_id));
         let previous_context_provider = self.state.make_mut().context_model_route.replace(provider);
         if let Err(error) = self.persist_with_events(model_events, None).await {
             self.state.make_mut().context_model_route = previous_context_provider;

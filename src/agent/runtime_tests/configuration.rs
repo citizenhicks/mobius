@@ -1,6 +1,89 @@
 //! Configuration agent runtime tests.
 
 use super::*;
+use crate::backend::checkpoint::ContextRewriteReason;
+
+#[tokio::test]
+async fn auxiliary_usage_preserves_the_last_foreground_context() {
+    struct AuxiliaryUsage(AtomicUsize);
+    impl Middleware for AuxiliaryUsage {
+        fn name(&self) -> &'static str {
+            "auxiliary_usage"
+        }
+
+        fn pre_model<'a>(&'a self, context: &'a mut ModelContext<'_>) -> BoxFuture<'a, Result<()>> {
+            Box::pin(async move {
+                if self.0.fetch_add(1, Ordering::SeqCst) == 2 {
+                    context.rewrite_input(
+                        ContextRewriteReason::Compaction,
+                        [crate::backend::model::internal_user_message(
+                            "compaction",
+                            "fresh context",
+                        )],
+                    )?;
+                }
+                context.record_usage(
+                    context.provider,
+                    TokenUsage {
+                        input_tokens: 10_000,
+                        total_tokens: 10_000,
+                        ..TokenUsage::default()
+                    },
+                );
+                Ok(())
+            })
+        }
+    }
+
+    let workspace = tempfile::tempdir().expect("workspace");
+    let checkpoints = Arc::new(
+        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3")).expect("checkpoints"),
+    );
+    let mut config = config_with_model(
+        workspace.path(),
+        checkpoints,
+        "auxiliary-context",
+        "test",
+        Arc::new(HandoffModel::default()),
+    );
+    config.middleware = Arc::new(test_middleware(vec![Arc::new(AuxiliaryUsage(
+        AtomicUsize::new(0),
+    ))]));
+    let mut agent = create_agent(config).await.expect("agent");
+    let mut foreground_context = None;
+    for completed_turns in 0..3_i64 {
+        if completed_turns == 2 {
+            foreground_context = None;
+        }
+        agent.sender().submit(user_op("next")).expect("submit");
+        let mut counts = Vec::new();
+        loop {
+            match agent.next_event().await.expect("event").msg {
+                EventMsg::TokenCount(event) => counts.push(event.info.expect("usage")),
+                EventMsg::TurnComplete(_) => break,
+                EventMsg::TurnAborted(event) => panic!("unexpected abort: {event:?}"),
+                _ => {}
+            }
+        }
+        assert_eq!(counts.len(), 2);
+        assert_eq!(
+            counts[0].last_token_usage.input_tokens,
+            i64::from(completed_turns == 1)
+        );
+        assert_eq!(counts[0].context, foreground_context);
+        assert_eq!(
+            counts[0].total_token_usage.total_tokens,
+            completed_turns * 10_001 + 10_000
+        );
+        assert_eq!(counts[1].last_token_usage, scripted_usage());
+        assert!(counts[1].context.is_some(), "foreground request breakdown");
+        assert_eq!(
+            counts[1].total_token_usage.total_tokens,
+            (completed_turns + 1) * 10_001
+        );
+        foreground_context = counts[1].context.clone();
+    }
+}
 
 #[tokio::test]
 async fn completed_pre_model_usage_is_settled_when_a_later_hook_rejects_preparation() {

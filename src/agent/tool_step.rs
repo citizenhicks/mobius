@@ -248,10 +248,8 @@ impl Runner {
         let outcome = async {
             self.append_tool_results(&mut results).await?;
             events.extend(tool_result_events(submission_id, turn_id, results));
-            if tool_usage.is_some()
-                && let Some(usage) = self.usage_event(submission_id, tool_usage.as_ref())
-            {
-                events.push(usage);
+            if tool_usage.is_some() {
+                events.push(self.usage_event(submission_id));
             }
             self.persist_with_events(events, None).await?;
             Ok(())
