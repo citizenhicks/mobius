@@ -100,16 +100,7 @@ impl Workspace {
             return section;
         };
         let mut group = Group::new();
-        // Individual Bots keep their dedicated Memory section.
-        let features = gateway
-            .agent_catalog
-            .middleware_features
-            .iter()
-            .filter(|feature| {
-                matches!(scope.as_ref(), AgentScope::Defaults)
-                    || feature.id != crate::ui::pages::harness::MEMORY
-            });
-        for feature in features {
+        for feature in &gateway.agent_catalog.middleware_features {
             group = group.child(self.capability_row(scope, draft, config, gateway, feature, cx));
             if !self
                 .bots

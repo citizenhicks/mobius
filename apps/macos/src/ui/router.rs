@@ -153,17 +153,14 @@ pub(super) enum AgentSection {
     Identity,
     Prompt,
     Model,
-    /// Whether a möbius Bot remembers across chats.
-    Memory,
     Capabilities,
 }
 
 impl AgentSection {
-    const MOBIUS: [Self; 5] = [
+    const MOBIUS: [Self; 4] = [
         Self::Identity,
         Self::Prompt,
         Self::Model,
-        Self::Memory,
         Self::Capabilities,
     ];
     /// A Bot on a harness this app has no settings for shows only who it is.
@@ -184,7 +181,6 @@ impl AgentSection {
             Self::Identity => "Identity",
             Self::Prompt => "System prompt",
             Self::Model => "Model",
-            Self::Memory => "Memory",
             Self::Capabilities => "Capabilities",
         }
     }
@@ -194,7 +190,6 @@ impl AgentSection {
             Self::Identity => "hi.userFocus",
             Self::Prompt => "hi.text",
             Self::Model => "hi.aiScan",
-            Self::Memory => "hi.stickyNote02",
             Self::Capabilities => "hi.slidersHorizontal",
         }
     }

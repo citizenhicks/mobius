@@ -3,7 +3,6 @@
 mod capabilities;
 mod capability_rows;
 mod create;
-mod memory;
 mod menu;
 mod model;
 mod overview;

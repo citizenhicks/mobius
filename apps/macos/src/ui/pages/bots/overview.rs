@@ -1,6 +1,5 @@
 //! A Bot's overview: face, description, routines, run history, chats and configuration.
 
-use super::memory::memory_summary;
 use super::*;
 use crate::ui::navigation::Section as Rail;
 use mobius_gateway::wire::{HarnessConfig, SessionActivityState};
@@ -220,7 +219,6 @@ impl Workspace {
                     color,
                     not_set(single_line(&config.system_prompt)),
                     self.model_summary(&config.provider).into(),
-                    memory_summary(bot.capabilities.memory).into(),
                     format!("{enabled} enabled").into(),
                 ]
             }

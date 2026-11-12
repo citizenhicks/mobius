@@ -8,10 +8,6 @@ pub(in crate::ui) use rows::{Choice, option_menu};
 use super::*;
 use mobius_gateway::wire::HarnessKind;
 
-/// The möbius middleware that turns memory on or off; a Bot's Memory section shows it, not its
-/// Capabilities.
-pub(in crate::ui) const MEMORY: &str = "memory";
-
 /// The harness's glyph in lists and menus; the rail draws möbius as its two-layer logo.
 pub(in crate::ui) const fn glyph(kind: HarnessKind) -> &'static str {
     match kind {

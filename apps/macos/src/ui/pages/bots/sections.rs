@@ -81,7 +81,6 @@ impl Workspace {
                 AgentSection::Identity => self.identity_section(scope, window, cx),
                 AgentSection::Prompt => self.prompt_section(scope, fill),
                 AgentSection::Model => self.model_section(surface, scope, cx),
-                AgentSection::Memory => self.memory_section(surface, scope, cx),
                 AgentSection::Capabilities => self.capabilities_section(surface, scope, cx),
             };
             body = body.child(if sections.len() > 1 {
