@@ -380,3 +380,139 @@ async fn restart_recovers_streamed_calls_without_reexecuting_them() {
         .collect::<Vec<_>>()
     );
 }
+
+struct PanickingModel;
+
+impl Model for PanickingModel {
+    fn respond<'a>(
+        &'a self,
+        _request: ModelRequest,
+        _events: ModelEventSink,
+    ) -> BoxFuture<'a, Result<ModelOutput>> {
+        Box::pin(async { panic!("injected model panic") })
+    }
+}
+
+struct CleanupProbe {
+    ended: Arc<AtomicUsize>,
+    panic_turn_end: bool,
+}
+
+impl Middleware for CleanupProbe {
+    fn name(&self) -> &'static str {
+        "cleanup_probe"
+    }
+
+    fn turn_end<'a>(
+        &'a self,
+        _context: &'a mut crate::middleware::TurnEndContext<'_>,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            assert!(!self.panic_turn_end, "injected turn cleanup panic");
+            Ok(())
+        })
+    }
+
+    fn session_end<'a>(
+        &'a self,
+        _runtime: &'a crate::middleware::RuntimeContext,
+    ) -> BoxFuture<'a, Result<()>> {
+        self.ended.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { Ok(()) })
+    }
+}
+
+#[tokio::test]
+async fn runner_panic_seals_the_durable_turn_and_always_ends_the_session() {
+    for (panic_model, panic_turn_end) in [(true, false), (true, true), (false, false)] {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let checkpoints =
+            Arc::new(SqliteCheckpoint::new(workspace.path().join("state.sqlite3")).unwrap());
+        let ended = Arc::new(AtomicUsize::new(0));
+        let id: crate::SessionId = "supervised-runner".parse().expect("session ID");
+        let mut config = config_with_model(
+            workspace.path(),
+            Arc::<SqliteCheckpoint>::clone(&checkpoints),
+            &id,
+            "test",
+            Arc::new(PanickingModel),
+        );
+        config.middleware = Arc::new(test_middleware(vec![Arc::new(CleanupProbe {
+            ended: Arc::clone(&ended),
+            panic_turn_end,
+        })]));
+        let agent = create_agent(config).await.expect("create agent");
+        let (sender, mut events) = agent.into_parts();
+        let sender = if panic_model {
+            sender.submit(user_op("panic once")).expect("submit input");
+            Some(sender)
+        } else {
+            drop(sender);
+            None
+        };
+        let received = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            let mut received = Vec::new();
+            while let Some(event) = events.recv().await {
+                received.push(event.msg);
+            }
+            received
+        })
+        .await
+        .expect("the event stream closes after cleanup");
+        drop(sender);
+        assert_eq!(ended.load(Ordering::SeqCst), 1);
+        let saved = checkpoints
+            .load(&id)
+            .await
+            .unwrap()
+            .expect("durable checkpoint");
+        assert!(saved.active_execution.is_none(), "failed work is terminal");
+        assert!(
+            saved.active_model_step.is_none(),
+            "failed model step is terminal"
+        );
+        assert!(saved.pending_tools.is_empty(), "no tool work is replayed");
+        let completed: Vec<_> = received
+            .iter()
+            .filter_map(|event| match event {
+                EventMsg::ModelStepCompleted(step) => Some(step),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(completed.len(), usize::from(panic_model));
+        assert_eq!(
+            received
+                .iter()
+                .filter(|event| matches!(event, EventMsg::TurnAborted(_)))
+                .count(),
+            usize::from(panic_model)
+        );
+        assert_eq!(
+            received
+                .iter()
+                .filter(|event| matches!(event, EventMsg::Error(_)))
+                .count(),
+            usize::from(panic_model)
+        );
+        assert_eq!(
+            saved.execution_stats.failed_run_count,
+            u64::from(panic_model)
+        );
+        if panic_model {
+            assert_eq!(completed[0].outcome, ModelStepOutcome::Failed);
+            let history = checkpoints
+                .execution_page(
+                    &id,
+                    ExecutionPageRequest {
+                        before_sequence: None,
+                        limit: 10,
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(history.executions.len(), 1);
+            assert_eq!(history.executions[0].outcome, ExecutionOutcome::Failed);
+            assert_eq!(history.executions[0].model_calls, 1);
+        }
+    }
+}

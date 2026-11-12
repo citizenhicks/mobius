@@ -6,32 +6,26 @@ use super::AgentConfig;
 use super::ChildAgents;
 use super::Runner;
 use super::SUBMISSION_QUEUE_CAPACITY;
-use super::TURN_RESTARTED_REASON;
+use super::recovery;
+use super::recovery::Cause;
+use super::recovery::Recovery;
 use super::submission_channel;
-use super::unix_timestamp_ms;
 use crate::Error;
 use crate::Result;
 use crate::backend::checkpoint::CHECKPOINT_VERSION;
 use crate::backend::checkpoint::Checkpoint;
-use crate::backend::checkpoint::ExecutionOutcome;
-use crate::backend::checkpoint::ExecutionRecord;
 use crate::backend::checkpoint::TranscriptPageRequest;
 use crate::middleware::FrontendExtensions;
 use crate::middleware::RuntimeContext;
 use crate::middleware::SessionStartSource;
-use crate::middleware::TurnEndContext;
 use crate::protocol::ErrorEvent;
 use crate::protocol::Event;
 use crate::protocol::EventMsg;
 use crate::protocol::ModelChangedEvent;
-use crate::protocol::ModelStepCompletedEvent;
-use crate::protocol::ModelStepOutcome;
 use crate::protocol::SessionConfiguredEvent;
 use crate::protocol::SessionHistoryEvent;
 use crate::protocol::TokenCountEvent;
 use crate::protocol::TokenUsageInfo;
-use crate::protocol::ToolCallEndEvent;
-use crate::protocol::TurnAbortedEvent;
 use crate::protocol::replay_events;
 
 fn initial_hook_source(is_new: bool) -> SessionStartSource {
@@ -141,9 +135,6 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
             }
         }
     }
-    let mut recovery_delta = Vec::new();
-    let mut recovery_execution: Option<ExecutionRecord> = None;
-    let mut recovery_events = Vec::new();
     let route = if config.model_route_configured || is_new {
         std::mem::take(&mut config.provider)
     } else {
@@ -220,110 +211,8 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
     let frontend = FrontendExtensions::new(Arc::clone(&config.middleware), session_id.share())?;
     let mut state_changed = metadata_changed || state.model_route.as_ref() != Some(&route);
     state.model_route = Some(route);
-    let uncertain_tools = !state.pending_tools.is_empty()
-        && state
-            .pending_approval
-            .as_ref()
-            .is_none_or(|pending| pending.decision_received);
-    let interrupted_model_step = state.active_model_step.is_some();
-    let interrupted_execution = uncertain_tools || interrupted_model_step;
-    let recovery_idle = state
-        .active_execution
-        .as_ref()
-        .is_some_and(|execution| execution.idle);
-    if interrupted_execution && let Some(step) = state.active_model_step.take() {
-        let active = state
-            .active_execution
-            .as_ref()
-            .ok_or_else(|| Error::Checkpoint("active model step has no execution".into()))?;
-        recovery_events.push(crate::agent::turn::turn_event(
-            &active.submission_id,
-            EventMsg::ModelStepCompleted(ModelStepCompletedEvent {
-                session_id: state.session_id.share(),
-                turn_id: Arc::clone(&active.turn_id),
-                model_step_id: step.model_step_id,
-                step_index: step.step_index,
-                started_at_ms: step.started_at_ms,
-                completed_at_ms: unix_timestamp_ms()?.max(step.started_at_ms),
-                outcome: ModelStepOutcome::Interrupted,
-                diagnostics: None,
-            }),
-        ));
-    }
-    let mut recovered_tool_calls = 0;
-    if uncertain_tools {
-        if interrupted_model_step {
-            let calls = super::tool_step::tool_call_inputs(&state.pending_tools)?
-                .into_iter()
-                .map(Arc::new)
-                .collect::<Vec<_>>();
-            Arc::make_mut(&mut state.context).extend(calls.iter().map(Arc::clone));
-            recovery_delta.extend(calls);
-        }
-        recovered_tool_calls = u64::try_from(state.pending_tools.len()).map_err(|error| {
-            Error::Checkpoint(format!("recovered tool-call count is unsupported: {error}"))
-        })?;
-        let recovered_turn = state
-            .active_execution
-            .as_ref()
-            .map(|execution| Arc::clone(&execution.turn_id))
-            .ok_or_else(|| Error::Checkpoint("pending tools have no active execution".into()))?;
-        for call in std::mem::take(&mut state.pending_tools) {
-            let output = "execution interrupted; result unknown after restart";
-            let item = Arc::new(crate::backend::model::tool_output(
-                &call.call_id,
-                &output.into(),
-                true,
-            ));
-            Arc::make_mut(&mut state.context).push(Arc::clone(&item));
-            recovery_delta.push(item);
-            recovery_events.push(Event {
-                submission_id: state
-                    .active_execution
-                    .as_ref()
-                    .map(|execution| Arc::clone(&execution.submission_id)),
-                msg: EventMsg::ToolCallEnd(ToolCallEndEvent {
-                    turn_id: Arc::clone(&recovered_turn),
-                    call_id: call.call_id,
-                    name: call.name,
-                    output: output.into(),
-                    is_error: true,
-                }),
-            });
-        }
-        state.pending_approval = None;
-    }
-    if interrupted_execution {
-        let recovered_turn = state
-            .active_execution
-            .as_ref()
-            .map(|execution| &execution.turn_id)
-            .ok_or_else(|| Error::Checkpoint("active model step has no execution".into()))?;
-        config.middleware.finish_message_turn(
-            &mut state.pending_messages,
-            recovered_turn,
-            ExecutionOutcome::Aborted,
-        )?;
-        if uncertain_tools {
-            let active = state
-                .active_execution
-                .as_mut()
-                .ok_or_else(|| Error::Checkpoint("recovery lost its active execution".into()))?;
-            active.tool_calls = active
-                .tool_calls
-                .checked_add(recovered_tool_calls)
-                .ok_or_else(|| Error::Checkpoint("execution tool-call count overflow".into()))?;
-            active.failed_tool_calls = active
-                .failed_tool_calls
-                .checked_add(recovered_tool_calls)
-                .ok_or_else(|| {
-                Error::Checkpoint("execution failed-tool count overflow".into())
-            })?;
-        }
-        recovery_execution =
-            Some(state.finish_execution(ExecutionOutcome::Aborted, unix_timestamp_ms()?)?);
-        state_changed = true;
-    }
+    let mut recovery = Recovery::prepare(&mut state, &config.middleware, Cause::Restart)?;
+    state_changed |= recovery.execution.is_some();
     let start_source = initial_hook_source(is_new);
     let session_start = config
         .middleware
@@ -337,33 +226,15 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
         .await?;
     state_changed |= session_start.input_changed;
     let pending_session_start_stop = session_start.stop_reason;
-    if let Some(execution) = &recovery_execution {
-        let mut messages = Vec::new();
-        if let Err(error) = config
-            .middleware
-            .turn_end(TurnEndContext {
-                session_id: &session_id,
-                turn_id: &execution.turn_id,
-                owner: None,
-                idle: recovery_idle,
-                events: &mut messages,
-            })
-            .await
-        {
-            return Err(failed_start(&config, &runtime, error).await);
-        }
-        recovery_events.extend(crate::agent::turn::turn_events(
-            &execution.submission_id,
-            messages,
-        ));
-        recovery_events.push(crate::agent::turn::turn_event(
-            &execution.submission_id,
-            EventMsg::TurnAborted(TurnAbortedEvent {
-                idle: recovery_idle,
-                turn_id: Arc::clone(&execution.turn_id),
-                reason: TURN_RESTARTED_REASON.into(),
-            }),
-        ));
+    if let Err(error) = recovery
+        .finish(
+            Arc::clone(&config.middleware),
+            session_id.share(),
+            Cause::Restart,
+        )
+        .await
+    {
+        return Err(failed_start(&config, &runtime, error).await);
     }
     let mut state = super::LiveCheckpoint(Arc::new(state));
     let finish_start = async {
@@ -372,12 +243,12 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
                 state.make_mut().sequence = state.next_sequence()?;
             }
             let mut startup_events = vec![session_event];
-            startup_events.append(&mut recovery_events);
+            startup_events.append(&mut recovery.events);
             event_tx
                 .save(
                     Arc::clone(&state.0),
-                    &recovery_delta,
-                    recovery_execution,
+                    &recovery.delta,
+                    recovery.execution,
                     startup_events,
                 )
                 .await?;
@@ -434,36 +305,56 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
             .ok_or_else(|| Error::Stopped("agent frontend stopped".into()))?;
         frontend(event)
     });
-    let mut runner = Runner {
-        config,
-        runtime: Arc::new(runtime),
-        system_prompt,
-        prompt_estimate,
-        context_estimate: None,
-        tool_schema_estimate: super::context_estimate::ToolSchemaEstimate::default(),
-        catalog: Arc::new(catalog),
-        state,
-        transcript_delta: Vec::new(),
-        pending_session_start_stop,
-        turn_end_turn_id: None,
-        idle: crate::middleware::IdleSchedule::default(),
-        events: event_tx,
-    };
-    tokio::spawn(async move {
-        let run = runner.run(inbox).await;
-        let session_end = runner.config.middleware.session_end(&runner.runtime).await;
-        drop(root_config);
-        let error = match (run, session_end) {
-            (Err(primary), Err(rollback)) => Some(Error::Rollback {
-                primary: Box::new(primary),
-                rollback: Box::new(rollback),
-            }),
-            (Err(error), Ok(())) | (Ok(()), Err(error)) => Some(error),
-            (Ok(()), Ok(())) => None,
+    let middleware = Arc::clone(&config.middleware);
+    let runtime = Arc::new(runtime);
+    let fallback_runtime = Arc::clone(&runtime);
+    let events = Arc::clone(&event_tx);
+    let worker = tokio::spawn(async move {
+        let mut runner = Runner {
+            config,
+            runtime,
+            system_prompt,
+            prompt_estimate,
+            context_estimate: None,
+            tool_schema_estimate: super::context_estimate::ToolSchemaEstimate::default(),
+            catalog: Arc::new(catalog),
+            state,
+            transcript_delta: Vec::new(),
+            pending_session_start_stop,
+            turn_end_turn_id: None,
+            idle: crate::middleware::IdleSchedule::default(),
+            events: event_tx,
         };
-        if let Some(error) = error
-            && let Err(send_error) = runner
-                .events
+        let result = runner.run(inbox).await;
+        (result, runner.runtime)
+    });
+    tokio::spawn(async move {
+        let (run, runtime) = match worker.await {
+            Ok(result) => result,
+            Err(_join_error) => (
+                Err(Error::Stopped("agent runner panicked".into())),
+                fallback_runtime,
+            ),
+        };
+        let recovered = if run.is_err() {
+            let middleware = Arc::clone(&middleware);
+            let runtime = Arc::clone(&runtime);
+            let events = Arc::clone(&events);
+            tokio::spawn(
+                async move { recovery::seal_failure(&middleware, &runtime, &events).await },
+            )
+            .await
+            .unwrap_or_else(|_| Err(Error::Stopped("agent recovery panicked".into())))
+        } else {
+            Ok(())
+        };
+        let session_end = tokio::spawn(async move { middleware.session_end(&runtime).await })
+            .await
+            .unwrap_or_else(|_| Err(Error::Stopped("agent session cleanup panicked".into())));
+        drop(root_config);
+        let result = recovery::combine(recovery::combine(run, recovered), session_end);
+        if let Err(error) = result
+            && let Err(send_error) = events
                 .record(Event {
                     submission_id: None,
                     msg: EventMsg::Error(ErrorEvent::from_error(&error)),

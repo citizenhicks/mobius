@@ -6,6 +6,7 @@ mod context_estimate;
 mod handle;
 mod input;
 mod recorder;
+mod recovery;
 mod runner;
 mod sender;
 mod startup;
