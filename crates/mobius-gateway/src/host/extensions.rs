@@ -1,6 +1,6 @@
 use super::{
     Arc, ConfigStore, Error, GatewayConfig, GatewayHost, GatewayState, ReadyPayload, Rejection,
-    ServerMessage, finish_publication, gateway_ready_after_unlock, internal, invalid_config,
+    finish_publication, gateway_ready_after_unlock, internal, invalid_config,
 };
 use crate::harness::mobius::extensions::ExtensionStore;
 
@@ -255,10 +255,6 @@ impl GatewayHost {
         Ok(Some(publication))
     }
 
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the state lock moves into gateway_ready_after_unlock"
-    )]
     async fn finish_extension_mutation(
         &self,
         id: &str,
@@ -271,14 +267,7 @@ impl GatewayHost {
             .invalidate(|prepared| Ok(prepared.uses_extension(id)))
             .await;
         invalidated?;
-        let payload = gateway_ready_after_unlock(state).await?;
-        super::send_event(
-            &self.events,
-            ServerMessage::Ready {
-                payload: payload.clone(), // rules-allow: the broadcast and the requester each own the ready payload
-            },
-        );
-        Ok(payload)
+        self.publish_ready_after_unlock(state).await
     }
 
     async fn discard_unreferenced_snapshot(

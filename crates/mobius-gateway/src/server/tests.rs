@@ -15,6 +15,19 @@ use crate::wire::{MAX_PRE_AUTH_FRAME_BYTES, SessionActivity, SessionActivityStat
 
 use super::*;
 
+fn connection_shared(server: &GatewayServer, revocation_capacity: usize) -> Arc<ConnectionShared> {
+    let (client_revocations, _) = broadcast::channel(revocation_capacity);
+    Arc::new(ConnectionShared {
+        auth: Arc::clone(&server.auth),
+        host: Arc::clone(&server.host),
+        bots: Arc::clone(&server.bots),
+        client_connections: Arc::new(ClientConnections::default()),
+        client_revocations,
+        tls: None,
+        websocket_host: None,
+    })
+}
+
 async fn wait_gateway_ready(events: &mut GatewayEvents) {
     loop {
         if matches!(

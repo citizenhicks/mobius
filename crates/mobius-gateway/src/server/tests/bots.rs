@@ -50,19 +50,10 @@ async fn bot_catalog_broadcasts_do_not_reintroduce_a_deleted_bot() {
             .await
             .expect("queue request");
     }
-    let (client_revocations, _) = broadcast::channel(ConnectionPolicy::default().total());
     let serving = tokio::spawn(serve_connection(
         stream,
         ConnectionContext {
-            shared: Arc::new(ConnectionShared {
-                auth: server.auth,
-                host: server.host,
-                bots: server.bots,
-                client_connections: Arc::new(ClientConnections::default()),
-                client_revocations,
-                tls: None,
-                websocket_host: None,
-            }),
+            shared: connection_shared(&server, ConnectionPolicy::default().total()),
             desktop_transport: false,
             local: true,
             admission: ConnectionAdmission::new(1, 1).admit().await,

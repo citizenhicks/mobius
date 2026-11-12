@@ -79,17 +79,7 @@ impl GatewayHost {
             *current = next.into_inner();
             publication
         };
-        let follow_up = async {
-            let payload = gateway_ready_after_unlock(state).await?;
-            super::send_event(
-                &self.events,
-                ServerMessage::Ready {
-                    payload: payload.clone(), // rules-allow: the broadcast and the requester each own the ready payload
-                },
-            );
-            Ok(payload)
-        }
-        .await;
+        let follow_up = self.publish_ready_after_unlock(state).await;
         finish_publication(publication.confirm(), follow_up)
     }
 
@@ -518,14 +508,7 @@ impl GatewayHost {
                 bots = state.bots.bots().map_err(internal)?;
                 self.broadcast_bots();
             }
-            let payload = gateway_ready_after_unlock(state).await?;
-            super::send_event(
-                &self.events,
-                ServerMessage::Ready {
-                    payload: payload.clone(), // rules-allow: the broadcast and the requester each own the ready payload
-                },
-            );
-            Ok(payload)
+            self.publish_ready_after_unlock(state).await
         }
         .await;
         finish_publication(
@@ -561,17 +544,7 @@ impl GatewayHost {
             crate::publication::Outcome::applied(commit_provider_removal(&state, &instance, next))
                 .map_err(internal)?;
         state.provider_epoch.store(target_epoch, Ordering::Release);
-        let follow_up = async {
-            let payload = gateway_ready_after_unlock(state).await?;
-            super::send_event(
-                &self.events,
-                ServerMessage::Ready {
-                    payload: payload.clone(), // rules-allow: the broadcast and the requester each own the ready payload
-                },
-            );
-            Ok(payload)
-        }
-        .await;
+        let follow_up = self.publish_ready_after_unlock(state).await;
         finish_publication(publication.confirm(), follow_up)
     }
 }

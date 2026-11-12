@@ -10,17 +10,8 @@ async fn queued_client_requests_do_not_starve_gateway_broadcasts() {
     let root = tempfile::tempdir().unwrap();
     let (server, grant) = configured_test_server(root.path().join("state")).await;
     let identity = server.auth.pair(&grant.code, "busy client").unwrap();
-    let (revocations, _) = broadcast::channel(1);
     let connection = ConnectionContext {
-        shared: Arc::new(ConnectionShared {
-            auth: Arc::clone(&server.auth),
-            host: Arc::clone(&server.host),
-            bots: Arc::clone(&server.bots),
-            client_connections: Arc::new(ClientConnections::default()),
-            client_revocations: revocations,
-            tls: None,
-            websocket_host: None,
-        }),
+        shared: connection_shared(&server, 1),
         desktop_transport: false,
         local: true,
         admission: ConnectionAdmission::new(1, 1).admit().await,
@@ -104,17 +95,8 @@ async fn non_reading_client_releases_its_authenticated_connection_slot() {
     let (server, grant) = configured_test_server(root.path().join("state")).await;
     let identity = server.auth.pair(&grant.code, "stalled").unwrap();
     let admission = ConnectionAdmission::new(1, 1);
-    let (revocations, _) = broadcast::channel(1);
     let connection = ConnectionContext {
-        shared: Arc::new(ConnectionShared {
-            auth: Arc::clone(&server.auth),
-            host: Arc::clone(&server.host),
-            bots: Arc::clone(&server.bots),
-            client_connections: Arc::new(ClientConnections::default()),
-            client_revocations: revocations,
-            tls: None,
-            websocket_host: None,
-        }),
+        shared: connection_shared(&server, 1),
         desktop_transport: false,
         local: true,
         admission: admission.admit().await,
@@ -367,15 +349,8 @@ async fn websocket_upgrade_and_authentication_share_one_deadline() {
     .await
     .expect("bootstrap gateway");
     let listen = server.listen_addr();
-    let GatewayServer {
-        listener,
-        auth,
-        host,
-        bots,
-        ..
-    } = server;
-    let client_connections = Arc::new(ClientConnections::default());
-    let (client_revocations, _) = broadcast::channel(ConnectionPolicy::default().total());
+    let shared = connection_shared(&server, ConnectionPolicy::default().total());
+    let GatewayServer { listener, .. } = server;
     let admission = ConnectionAdmission::new(1, 1).admit().await;
     let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
     let serving = tokio::spawn(async move {
@@ -386,15 +361,7 @@ async fn websocket_upgrade_and_authentication_share_one_deadline() {
         serve_plaintext_connection(
             stream,
             ConnectionContext {
-                shared: Arc::new(ConnectionShared {
-                    auth,
-                    host,
-                    bots,
-                    client_connections,
-                    client_revocations,
-                    tls: None,
-                    websocket_host: None,
-                }),
+                shared,
                 desktop_transport: false,
                 local: true,
                 admission,

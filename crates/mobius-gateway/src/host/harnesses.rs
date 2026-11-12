@@ -1,6 +1,6 @@
 //! Harness options and on-demand detection.
 
-use super::{GatewayHost, ReadyPayload, Rejection, ServerMessage, gateway_ready_after_unlock};
+use super::{GatewayHost, ReadyPayload, Rejection};
 use crate::wire::{CliHarnessConfig, HarnessKind};
 
 impl GatewayHost {
@@ -24,13 +24,7 @@ impl GatewayHost {
 
     /// Sends every client the harnesses again.
     pub(crate) async fn refresh_harnesses(&self) -> std::result::Result<ReadyPayload, Rejection> {
-        let payload = gateway_ready_after_unlock(self.state.lock().await).await?;
-        super::send_event(
-            &self.events,
-            ServerMessage::Ready {
-                payload: payload.clone(), // rules-allow: the broadcast and the requester each own the ready payload
-            },
-        );
-        Ok(payload)
+        self.publish_ready_after_unlock(self.state.lock().await)
+            .await
     }
 }

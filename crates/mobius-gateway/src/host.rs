@@ -270,6 +270,20 @@ impl Rejection {
 pub(crate) type HostAccess = Arc<dyn Fn() -> Result<GatewayHost> + Send + Sync>;
 
 impl GatewayHost {
+    async fn publish_ready_after_unlock(
+        &self,
+        state: tokio::sync::MutexGuard<'_, GatewayState>,
+    ) -> std::result::Result<ReadyPayload, Rejection> {
+        let payload = gateway_ready_after_unlock(state).await?;
+        send_event(
+            &self.events,
+            ServerMessage::Ready {
+                payload: payload.clone(), // rules-allow: the broadcast and requester each own the ready payload
+            },
+        );
+        Ok(payload)
+    }
+
     pub(crate) async fn pending_upload_capacity(&self) -> Result<usize> {
         let state = self.state.lock().await;
         let config = crate::config::lock(&state.config)?;
