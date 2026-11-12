@@ -1057,6 +1057,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn current_provider_catalogs_advertise_supported_models_and_efforts() {
+        assert!(
+            provider("openai_socket")
+                .unwrap()
+                .models()
+                .iter()
+                .any(|model| model.id == "gpt-6.1-terra")
+        );
+        assert!(
+            provider("anthropic")
+                .unwrap()
+                .models()
+                .iter()
+                .any(|model| model.id == "claude-fable-5-2")
+        );
+        let mistral = provider("mistral").unwrap();
+        let large = mistral
+            .models()
+            .iter()
+            .find(|model| model.id == "mistral-large-4-0")
+            .unwrap();
+        assert_eq!(
+            large
+                .reasoning
+                .iter()
+                .map(|effort| effort.id.as_str())
+                .collect::<Vec<_>>(),
+            ["low", "medium", "high"]
+        );
+        assert_eq!(large.default_reasoning.as_deref(), Some("high"));
+    }
+
+    #[test]
     fn configured_discovery_is_applied_by_each_api_key_transport() {
         for id in [
             "openai_socket",

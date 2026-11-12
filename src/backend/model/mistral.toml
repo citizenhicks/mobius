@@ -1,4 +1,4 @@
-# Provider-owned model catalog, verified 2026-10-10 against docs.mistral.ai.
+# Provider-owned model catalog, verified 2026-11-12 against docs.mistral.ai.
 # A model without `reasoning` accepts every listed effort.
 default_model = "mistral-large-4-0"
 
@@ -39,6 +39,7 @@ description = "Mistral's flagship multimodal reasoning model, in public preview"
 default_reasoning = "high"
 context_window = 1000000
 tool_discovery = "rebuild"
+reasoning = ["low", "medium", "high"]
 
 [[models]]
 id = "mistral-small-2603"

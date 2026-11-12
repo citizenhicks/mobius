@@ -43,6 +43,14 @@ context_window = 1000000
 tool_discovery = "native"
 
 [[models]]
+id = "claude-fable-5-2"
+label = "Claude Fable 5.2"
+description = "Demanding reasoning and long-horizon agentic work"
+default_reasoning = "high"
+context_window = 1000000
+tool_discovery = "native"
+
+[[models]]
 id = "claude-fable-5-1"
 label = "Claude Fable 5.1"
 description = "Anthropic's most capable model for the hardest work"

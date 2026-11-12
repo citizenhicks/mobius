@@ -41,6 +41,15 @@ tool_discovery = "native"
 reasoning = ["low", "medium", "high", "xhigh", "max"]
 
 [[models]]
+id = "gpt-6.1-terra"
+label = "6.1 Terra"
+description = "Visual reasoning, computer use, and complex writing"
+default_reasoning = "medium"
+context_window = 1050000
+tool_discovery = "native"
+reasoning = ["none", "low", "medium", "high", "xhigh", "max"]
+
+[[models]]
 id = "gpt-6-luna"
 label = "6 Luna"
 description = "Focused, high-volume tasks"
