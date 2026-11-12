@@ -11,6 +11,9 @@ use crate::telemetry::{TelemetrySection, TelemetrySink, TelemetrySinkReport};
 use crate::wire::{HookData, HookEvent, HookSource};
 use serde_json::{Value, json};
 
+/// Matches the Cloud's `DONE_LINGER_SECONDS`: how long a finished chat stays on the activity.
+const LIVE_ACTIVITY_DONE_LINGER_SECONDS: i64 = 15 * 60;
+
 #[derive(Default)]
 pub(super) struct StorageMeasurements {
     completed: Mutex<Option<CompletedStorageMeasurement>>,
@@ -274,11 +277,23 @@ impl GatewayHost {
                 "session catalog snapshot is unavailable".into(),
             ));
         };
-        let sessions = &snapshot.sessions;
+        // Only chats a Live Activity can show. Sending every chat made `complete` false on
+        // any gateway with more than 256, and the Cloud never ends an activity on an
+        // incomplete report, so a finished run kept counting until the app opened.
+        let recent = chrono::Utc::now().timestamp() - LIVE_ACTIVITY_DONE_LINGER_SECONDS;
+        let sessions: Vec<_> = snapshot
+            .sessions
+            .iter()
+            .filter(|session| {
+                session.activity.state != crate::wire::SessionActivityState::Idle
+                    || session.activity.attention > 0
+                    || session.updated_at >= recent
+            })
+            .collect();
         let complete = sessions.len() <= 256;
         let revision = catalog.revision;
         let entries: Vec<_> = sessions
-            .iter()
+            .into_iter()
             .take(256)
             .map(|session| {
                 json!({

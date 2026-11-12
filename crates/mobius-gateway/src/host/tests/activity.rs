@@ -359,3 +359,34 @@ async fn telemetry_reports_resumed_session_activity_without_duplicate_network_ca
     }
     gateway.shutdown().await;
 }
+
+#[tokio::test]
+async fn session_activity_report_stays_complete_with_many_finished_chats() {
+    let (root, gateway, bot) = super::bots::gateway_with_bot().await;
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let session = gateway.create_session(&workspace, &bot.id).await.unwrap();
+    gateway.session_activity_report().await.unwrap();
+    let activities = Arc::clone(&gateway.state.lock().await.activities);
+    let record = activities.lock().await.snapshot.as_ref().unwrap().sessions[0].clone();
+    let mut running = record.clone();
+    running.activity.state = SessionActivityState::Running;
+    let mut old = record;
+    old.updated_at = Utc::now().timestamp() - 24 * 60 * 60;
+    let sessions = (0..300)
+        .map(|index| {
+            let mut record = old.clone();
+            record.session_id = SessionId::new(format!("old-{index}")).unwrap();
+            record
+        })
+        .chain([running])
+        .collect();
+    activities.lock().await.snapshot.as_mut().unwrap().sessions = sessions;
+    let report = gateway.session_activity_report().await.unwrap();
+    assert_eq!(report.payload["complete"], true);
+    let sessions = report.payload["sessions"].as_array().unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0]["session_id"], session.session_id().to_string());
+    assert_eq!(sessions[0]["state"], "running");
+    gateway.shutdown().await;
+}
