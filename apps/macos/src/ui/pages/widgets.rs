@@ -307,7 +307,7 @@ impl Workspace {
                 })
             }
             actions => actions.iter().fold(row, |row, action| {
-                row.control(self.widget_action(action, global, cx))
+                row.control(self.widget_action(action.clone(), global, cx)) // rules-allow: the button owns its action while the list keeps it
             }),
         }
     }

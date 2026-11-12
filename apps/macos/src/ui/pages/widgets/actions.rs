@@ -7,7 +7,7 @@ use std::rc::Rc;
 impl Workspace {
     pub(in crate::ui) fn widget_action(
         &self,
-        action: &FrontendAction,
+        action: FrontendAction,
         global: bool,
         cx: &Context<Self>,
     ) -> AnyElement {
@@ -16,15 +16,15 @@ impl Workspace {
         } else {
             known_symbol_icon(Some(&action.symbol))
         };
-        let shared = Rc::new(action.clone()); // rules-allow: the 'static listener owns its copy of the action from gateway state
+        let action = Rc::new(action);
         button(SharedString::from(&action.id), &action.label)
             .when_some(glyph, |button, glyph| {
                 button.icon(icon(glyph, &palette(cx)))
             })
             .text_color(self.palette.tone(action.tone))
-            .disabled(self.widget_action_blocked(action))
+            .disabled(self.widget_action_blocked(&action))
             .on_click(cx.listener(move |this, _, window, cx| {
-                this.activate_widget_action(Rc::clone(&shared), global, window, cx);
+                this.activate_widget_action(Rc::clone(&action), global, window, cx);
             }))
             .into_any_element()
     }

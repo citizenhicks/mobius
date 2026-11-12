@@ -23,8 +23,8 @@ use crate::numeric::ToFloat;
 use gpui_component::menu::ContextMenuExt;
 use mobius::SessionId;
 use mobius::protocol::{
-    FrontendTone, MessageAuthor, MessageDelivery, MessageEvent, ModelStepContentPhase,
-    SessionFileReference,
+    FrontendAction, FrontendEditor, FrontendSymbol, FrontendTone, MessageAuthor, MessageDelivery,
+    MessageEvent, ModelStepContentPhase, SessionFileReference,
 };
 use mobius_gateway::wire::{
     BotShape, TranscriptItemContent, TranscriptRow, TranscriptRowKind, TurnChanges,
@@ -867,6 +867,33 @@ impl Workspace {
                     Some(mobius::protocol::Op::CapabilityCommand { input: Some(_), .. })
                 );
                 let row = if queued {
+                    let meta = match item.symbol.as_ref() {
+                        Some(FrontendSymbol::Steer) => {
+                            message_meta(&p, "hi.arrowUpRight01", Some("steer"), 0)
+                        }
+                        _ => message_meta(&p, "hi.queue01", Some("queued"), 0),
+                    };
+                    let edit = item.action.as_ref().map(|op| {
+                        self.widget_action(
+                            FrontendAction {
+                                id: format!("edit:{}", item.id),
+                                label: "Edit".into(),
+                                symbol: FrontendSymbol::Edit,
+                                tone: FrontendTone::Neutral,
+                                op: op.clone(), // rules-allow: the editor owns its operation while the live widget keeps it
+                                input_from_label: false,
+                                editor: Some(FrontendEditor {
+                                    title: "Edit message".into(),
+                                    label: "Message".into(),
+                                    description: "Update this message before it is delivered."
+                                        .into(),
+                                    submit_label: "Save".into(),
+                                }),
+                            },
+                            false,
+                            cx,
+                        )
+                    });
                     div()
                         .pl(width::BUBBLE_INDENT)
                         .flex()
@@ -885,12 +912,7 @@ impl Workspace {
                                 .whitespace_normal()
                                 .child(item.text.clone()), // rules-allow: the bubble owns its text while the widget keeps it
                         )
-                        .child(match item.symbol.as_ref() {
-                            Some(mobius::protocol::FrontendSymbol::Steer) => {
-                                message_meta(&p, "hi.arrowUpRight01", Some("steer"), 0)
-                            }
-                            _ => message_meta(&p, "hi.queue01", Some("queued"), 0),
-                        })
+                        .child(meta.children(edit))
                 } else {
                     div()
                         .min_h(height::COMPACT)
