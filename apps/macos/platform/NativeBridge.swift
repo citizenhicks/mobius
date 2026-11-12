@@ -41,7 +41,9 @@ final class NativeBridge: NSObject, UNUserNotificationCenterDelegate {
     private(set) var connectionGeneration: UInt64 = 0
     lazy var voice = NativeVoice(emit: { [weak self] in self?.emit($0) })
     lazy var dictation = NativeDictation(emit: { [weak self] in self?.emit($0) })
-    lazy var cloud = NativeCloud(emit: { [weak self] in self?.emit($0) })
+    lazy var cloud = CloudConfig.current.map { config in
+        NativeCloud(config: config, emit: { [weak self] in self?.emit($0) })
+    }
     lazy var updates = NativeUpdates.live(emit: { [weak self] in self?.emit($0) })
 
     override private init() {

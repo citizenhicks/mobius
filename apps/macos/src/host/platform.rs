@@ -279,6 +279,8 @@ pub struct CloudStatus {
     pub age: Option<CloudAge>,
     pub gateway: Option<String>,
     pub gateway_endpoint: Option<String>,
+    /// The provider of the saved sign-in, e.g. "apple".
+    pub provider: Option<String>,
     pub stage: Option<CloudStage>,
     pub error_kind: Option<CloudErrorKind>,
     pub error: Option<String>,
@@ -313,11 +315,54 @@ pub enum CloudErrorKind {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CloudAction {
-    Refresh = 0,
-    SignIn = 1,
-    Connect = 2,
-    SignOut = 3,
-    ConfirmAge = 4,
+    Refresh,
+    /// Signs in with `CloudConfig::providers[n]`.
+    SignIn(u8),
+    Connect,
+    SignOut,
+    ConfirmAge,
+}
+
+impl CloudAction {
+    /// The byte `mobius_native_cloud` reads.
+    fn code(self) -> u8 {
+        match self {
+            Self::Refresh => 0,
+            Self::Connect => 2,
+            Self::SignOut => 3,
+            Self::ConfirmAge => 4,
+            Self::SignIn(provider) => 16 + provider,
+        }
+    }
+}
+
+/// `~/.mobius/cloud.json` as Swift read it: the parts the UI needs.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct CloudConfig {
+    pub site: String,
+    pub providers: Vec<String>,
+    pub age_gate: Option<u8>,
+}
+
+/// Read once from Swift, which owns the file and its Info.plist defaults; none when this
+/// build has no Cloud.
+pub fn cloud_config() -> Option<&'static CloudConfig> {
+    static CONFIG: std::sync::OnceLock<Option<CloudConfig>> = std::sync::OnceLock::new();
+    CONFIG
+        .get_or_init(|| {
+            // SAFETY: Swift returns a strdup allocation (or null), released by its free function.
+            owned_json(unsafe { mobius_native_cloud_config() }).and_then(Result::ok)
+        })
+        .as_ref()
+}
+
+/// Whether Swift's configured Cloud owns this exact gateway endpoint.
+pub fn cloud_owns_gateway(endpoint: &str) -> bool {
+    let Ok(endpoint) = CString::new(endpoint) else {
+        return false;
+    };
+    // SAFETY: Swift reads the valid C string synchronously without retaining it.
+    unsafe { mobius_native_cloud_owns_gateway(endpoint.as_ptr()) }
 }
 
 /// Sparkle's update state; Swift owns it and asks for a render after every change.
@@ -653,7 +698,7 @@ impl Native {
 
     pub fn cloud(&self, action: CloudAction) {
         // SAFETY: Invoked on the main thread; results arrive as native events.
-        unsafe { mobius_native_cloud(action as u8) }
+        unsafe { mobius_native_cloud(action.code()) }
     }
 
     pub fn update_status(&self) -> UpdateStatus {
@@ -928,6 +973,8 @@ unsafe extern "C" {
     ) -> i32;
     fn mobius_native_foundation_status() -> u8;
     fn mobius_native_update_status() -> *mut c_char;
+    fn mobius_native_cloud_config() -> *mut c_char;
+    fn mobius_native_cloud_owns_gateway(endpoint: *const c_char) -> bool;
     fn mobius_native_update(action: u8);
     fn mobius_native_reduce_motion() -> bool;
     fn mobius_native_voice_start(session: *const c_char, wait_for_session_started: bool);

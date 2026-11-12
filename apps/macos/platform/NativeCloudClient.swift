@@ -23,33 +23,164 @@ struct CloudFailure: LocalizedError, Equatable {
 
     static let unavailable = CloudFailure("möbius Cloud is temporarily unavailable.")
     static let expired = CloudFailure(
-        .session, "Your Cloud sign-in expired. Sign in with Apple again.")
+        .session, "Your Cloud sign-in expired. Sign in again.")
     static let reauthenticationRequired = CloudFailure(
-        "Sign in with Apple again to connect your gateway.")
+        "Sign in again to connect your gateway.")
     static let invalidAccount = CloudFailure("möbius Cloud returned invalid account information.")
     static let invalidGateway = CloudFailure("möbius Cloud returned an invalid gateway response.")
     static let invalidSignIn = CloudFailure("möbius Cloud returned an invalid sign-in response.")
     static let keychain = CloudFailure("The Cloud sign-in could not be saved securely.")
 }
 
+/// Where Cloud lives and how users sign in to it. The build's defaults are the
+/// `MobiusCloud` dictionary in Info.plist; `~/.mobius/cloud.json` overrides any of its keys
+/// and is written from those defaults only when missing. A build with neither has no Cloud.
+struct CloudConfig: Codable, Equatable, Sendable {
+    /// The HTTPS service serving the `api/desktop/*` and `api/mobile/*` routes.
+    var api: URL
+    /// Marketing and legal pages (`{site}/legal/en/{slug}`).
+    var site: String
+    /// Hosted gateways; `{id}` is the first 24 hex digits of SHA-256(lowercased user ID).
+    var gateway: String
+    /// Sign-in buttons, in order; each opens `{api}/api/desktop/auth/{provider}`.
+    var providers: [String]
+    /// The browser returns to `{callbackScheme}://auth/callback`.
+    var callbackScheme: String
+    /// Asks Apple for the user's age range against this gate; null or absent skips it.
+    var ageGate: Int?
+
+    static let file = FileManager.default.homeDirectoryForCurrentUser
+        .appending(path: ".mobius/cloud.json")
+    static let current = load(
+        bundled: Bundle.main.object(forInfoDictionaryKey: "MobiusCloud") as? [String: Any])
+
+    /// The bearer goes to `api` and gateways matching `gateway`, so both must be TLS
+    /// (plain HTTP only on loopback, for a local server) and every value must be URL-safe.
+    var isValid: Bool {
+        func secure(_ url: URL?, _ tls: String, _ plain: String) -> Bool {
+            guard let url, let host = url.host(), !host.isEmpty, url.user == nil,
+                url.password == nil, url.query == nil, url.fragment == nil
+            else {
+                return false
+            }
+            return url.scheme == tls
+                || url.scheme == plain && ["localhost", "127.0.0.1", "::1", "[::1]"].contains(host)
+        }
+        let gatewayURL = URL(string: gateway.replacing("{id}", with: "id"))
+        let token = #"\A[a-z0-9-]{1,32}\z"#
+        return secure(api, "https", "http")
+            && secure(URL(string: site), "https", "http")
+            && gateway.components(separatedBy: "{id}").count == 2
+            // Endpoint supports TLS WebSockets with only a host and optional nondefault port.
+            && secure(gatewayURL, "wss", "wss")
+            && gatewayURL?.path == ""
+            && gatewayURL?.port != 443
+            && gatewayURL?.port.map { (1...65535).contains($0) } ?? true
+            && (1...4).contains(providers.count)
+            && Set(providers).count == providers.count
+            && providers.allSatisfy { $0.range(of: token, options: .regularExpression) != nil }
+            && callbackScheme.range(
+                of: #"\A[a-z][a-z0-9+.-]*\z"#, options: .regularExpression) != nil
+            && ageGate.map { (1...99).contains($0) } ?? true
+    }
+
+    /// The bundled defaults with the user's file over them. The file is written from the
+    /// defaults only when missing; an unreadable or invalid file is reported, left alone,
+    /// and the defaults are used.
+    static func load(bundled: [String: Any]?, file: URL = file) -> Self? {
+        let defaults = bundled.flatMap(decode)
+        guard let data = try? Data(contentsOf: file) else {
+            if let defaults {
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+                try? FileManager.default.createDirectory(
+                    at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try? encoder.encode(defaults).write(to: file, options: .withoutOverwriting)
+            }
+            return defaults
+        }
+        guard let user = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let config = decode((bundled ?? [:]).merging(user) { $1 })
+        else {
+            NSLog("möbius: ignoring invalid %@", file.path)
+            return defaults
+        }
+        return config
+    }
+
+    private static func decode(_ values: [String: Any]) -> Self? {
+        guard JSONSerialization.isValidJSONObject(values),
+            let data = try? JSONSerialization.data(withJSONObject: values),
+            let config = try? JSONDecoder().decode(Self.self, from: data), config.isValid
+        else { return nil }
+        return config
+    }
+
+    /// The gateway this account's Cloud must hand out; pins the bearer to it.
+    func gatewayEndpoint(for userID: UUID) -> String {
+        let digest = SHA256.hash(data: Data(userID.uuidString.lowercased().utf8))
+            .map { String(format: "%02x", $0) }.joined()
+        return gateway.replacing("{id}", with: digest.prefix(24))
+    }
+
+    func ownsGateway(_ endpoint: String) -> Bool {
+        let parts = gateway.components(separatedBy: "{id}")
+        guard parts.count == 2, endpoint.hasPrefix(parts[0]), endpoint.hasSuffix(parts[1]) else {
+            return false
+        }
+        let id = endpoint.dropFirst(parts[0].count).dropLast(parts[1].count)
+        return id.utf8.count == 24
+            && id.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+    }
+
+    /// Bind the saved bearer to the complete API URL, including its port and service path.
+    var keychainService: String {
+        let digest = SHA256.hash(data: Data(api.absoluteString.utf8))
+            .map { String(format: "%02x", $0) }.joined()
+        return "app.mobius.desktop.cloud.\(digest)"
+    }
+
+    /// What Rust needs for copy, links and sign-in buttons.
+    var publicJSON: String {
+        let value: [String: Any] = [
+            "site": site, "providers": providers,
+            "age_gate": ageGate.map { $0 as Any } ?? NSNull(),
+        ]
+        let data = try? JSONSerialization.data(withJSONObject: value)
+        return data.flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+    }
+}
+
+/// Null when this build has no Cloud.
+@_cdecl("mobius_native_cloud_config")
+public func nativeCloudConfig() -> UnsafeMutablePointer<CChar>? {
+    CloudConfig.current.flatMap { strdup($0.publicJSON) }
+}
+
+/// Uses the same exact endpoint match as bearer admission.
+@_cdecl("mobius_native_cloud_owns_gateway")
+public func nativeCloudOwnsGateway(_ endpoint: UnsafePointer<CChar>) -> Bool {
+    CloudConfig.current?.ownsGateway(String(cString: endpoint)) ?? false
+}
+
 /// One browser sign-in, bound to this process by state and an S256 PKCE verifier.
 struct CloudSignIn: Equatable, Sendable {
-    static let callbackScheme = "app.mobius.desktop"
     let state: String
     let codeVerifier: String
+    let callbackScheme: String
 
     var codeChallenge: String {
         Self.base64URL(Data(SHA256.hash(data: Data(codeVerifier.utf8))))
     }
 
-    static func make() throws -> Self {
-        try Self(state: randomValue(), codeVerifier: randomValue())
+    static func make(callbackScheme: String) throws -> Self {
+        try Self(state: randomValue(), codeVerifier: randomValue(), callbackScheme: callbackScheme)
     }
 
     private static func randomValue() throws -> String {
         var bytes = [UInt8](repeating: 0, count: 32)
         guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
-            throw CloudFailure("A secure Apple sign-in could not be started.")
+            throw CloudFailure("A secure sign-in could not be started.")
         }
         return base64URL(Data(bytes))
     }
@@ -61,7 +192,7 @@ struct CloudSignIn: Equatable, Sendable {
 
     func code(from url: URL) throws -> String {
         guard let callback = URLComponents(url: url, resolvingAgainstBaseURL: false),
-            callback.scheme == Self.callbackScheme, callback.percentEncodedHost == "auth",
+            callback.scheme == callbackScheme, callback.percentEncodedHost == "auth",
             callback.percentEncodedPath == "/callback", callback.user == nil,
             callback.password == nil, callback.port == nil, callback.fragment == nil,
             let items = callback.queryItems, items.count == 2,
@@ -95,29 +226,21 @@ struct CloudCredential: Codable, Equatable {
     let expiresAt: Date
     var name: String?
     var gatewayEndpoint: String?
+    /// The provider this sign-in used, so a re-authentication reuses it.
+    var provider: String?
 
     var isValid: Bool {
         isCloudToken(token)
     }
 
-    var expectedGatewayEndpoint: String {
-        let digest = SHA256.hash(data: Data(userID.uuidString.lowercased().utf8))
-            .map { String(format: "%02x", $0) }.joined()
-        return "wss://mobius-\(digest.prefix(24)).thinkingsand.dev"
-    }
-
-    func gatewayToken(for endpoint: String, now: Date = .now) throws -> String {
-        guard isValid, expiresAt > now, endpoint == expectedGatewayEndpoint else {
+    func gatewayToken(for endpoint: String, config: CloudConfig, now: Date = .now) throws
+        -> String
+    {
+        guard isValid, expiresAt > now, endpoint == config.gatewayEndpoint(for: userID) else {
             throw CloudFailure.expired
         }
         return token
     }
-}
-
-func isManagedCloudGateway(_ endpoint: String) -> Bool {
-    endpoint.range(
-        of: #"\Awss://mobius-[0-9a-f]{24}\.thinkingsand\.dev\z"#, options: .regularExpression
-    ) != nil
 }
 
 /// Called on Rust's socket worker; reads Keychain afresh for pairing, reconnects and transfers.
@@ -127,10 +250,11 @@ public func nativeCloudGatewayToken(
     _ endpoint: UnsafePointer<CChar>, _ output: UnsafeMutablePointer<UInt8>, _ capacity: Int
 ) -> Int32 {
     let endpoint = String(cString: endpoint)
-    guard isManagedCloudGateway(endpoint) else { return 0 }
+    guard let config = CloudConfig.current, config.ownsGateway(endpoint) else { return 0 }
     do {
-        guard let credential = try CloudKeychain().load() else { return -1 }
-        let bytes = Array(try credential.gatewayToken(for: endpoint).utf8)
+        guard let credential = try CloudKeychain(service: config.keychainService).load()
+        else { return -1 }
+        let bytes = Array(try credential.gatewayToken(for: endpoint, config: config).utf8)
         guard bytes.count == capacity else { return -1 }
         output.update(from: bytes, count: bytes.count)
         return 1
@@ -138,7 +262,7 @@ public func nativeCloudGatewayToken(
 }
 
 struct CloudKeychain {
-    var service = "app.mobius.desktop.cloud"
+    let service: String
     private let account = "mobile-session"
 
     private var query: [CFString: Any] {
@@ -239,13 +363,13 @@ final class CloudClient {
     }
 
     static let maximumResponseBytes = 64 * 1024
-    private let base: URL
+    private let config: CloudConfig
+    private var base: URL { config.api }
     private let transport: Transport
     private let decoder: JSONDecoder
 
-    init(base: URL = URL(string: "https://mobius.thinkingsand.dev/")!, transport: Transport? = nil)
-    {
-        self.base = base
+    init(config: CloudConfig, transport: Transport? = nil) {
+        self.config = config
         self.transport = transport ?? Self.liveTransport()
         decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .custom { decoder in
@@ -288,8 +412,8 @@ final class CloudClient {
         }
     }
 
-    func signInURL(_ authorization: CloudSignIn) -> URL {
-        base.appending(path: "api/desktop/auth/apple").appending(queryItems: [
+    func signInURL(_ authorization: CloudSignIn, provider: String) -> URL {
+        base.appending(path: "api/desktop/auth/\(provider)").appending(queryItems: [
             URLQueryItem(name: "state", value: authorization.state),
             URLQueryItem(name: "code_challenge", value: authorization.codeChallenge),
         ])
@@ -309,7 +433,7 @@ final class CloudClient {
             switch error.status {
             case 401:
                 throw CloudFailure(
-                    "This Cloud sign-in link expired or was already used. Sign in with Apple again."
+                    "This Cloud sign-in link expired or was already used. Sign in again."
                 )
             default: throw CloudFailure.unavailable
             }
@@ -372,7 +496,7 @@ final class CloudClient {
         let data = try await authorized(
             "api/mobile/gateway", method: "POST", token: token, timeout: timeout)
         guard let grant = try? decoder.decode(Grant.self, from: data), grant.expiresAt > .now,
-            isManagedCloudGateway(grant.endpoint),
+            config.ownsGateway(grant.endpoint),
             !grant.pairingCode.isEmpty, grant.pairingCode.utf8.count <= 256
         else { throw CloudFailure.invalidGateway }
         return (grant.endpoint, grant.pairingCode)

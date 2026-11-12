@@ -19,6 +19,18 @@ brew install --cask mobius-app
 It updates itself with Sparkle. It runs the local gateway by default and can pair with
 any other gateway with a one-time code, or sign in to möbius Cloud.
 
+Cloud endpoints and sign-in providers come from `platform/Info.plist`'s `MobiusCloud`
+dictionary, overlaid by `~/.mobius/cloud.json`. The app writes the bundled defaults
+there only when the file is missing; edit it and restart to use your own service.
+[cloud.example.json](cloud.example.json) shows a complete configuration. Your service
+must implement the same desktop PKCE sign-in, account and gateway API contract; listing
+a provider does not add it to the server. Gateways use TLS WebSockets and the `{id}`
+placeholder is the first 24 lowercase hex digits of SHA-256 of the lowercase account UUID.
+One to four unique providers are supported. `ageGate: null` skips Apple's age sheet.
+A build without either configuration has no Cloud sign-in. Changing the API URL
+requires a new sign-in; 0.17.7 also requires existing Cloud users to sign in once again
+because credentials are now isolated by the complete service URL.
+
 ## Build and run
 
 Requires Apple Silicon, macOS 26+, Xcode command-line tools, Rust 1.99.0, CMake and

@@ -11,7 +11,10 @@ use gpui_component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerSta
 use gpui_component::text::TextView;
 use std::sync::LazyLock;
 
-pub(super) const SITE: &str = "https://mobius.thinkingsand.dev";
+/// Cloud's `site`: marketing and legal pages.
+pub(super) fn site() -> Option<&'static str> {
+    crate::host::platform::cloud_config().map(|cloud| cloud.site.as_str())
+}
 const PRIVACY: &str = "x-apple.systempreferences:com.apple.preference.security?Privacy_";
 const LEGAL: [(&str, &str, &str); 5] = [
     ("Acceptable Use Policy", "hi.shieldCheck", "acceptable-use"),
@@ -150,14 +153,16 @@ impl Workspace {
     fn account_settings(&self, cx: &Context<Self>) -> Page {
         let version = format!("möbius v{}", env!("CARGO_PKG_VERSION"));
         let mut about = Group::new().child(self.version_row(cx));
-        for (title, glyph, slug) in LEGAL {
-            let url = format!("{SITE}/legal/en/{slug}");
-            about = about.child(
-                Row::new(slug, title)
-                    .leading(Leading::glyph(glyph))
-                    .external()
-                    .on_click(move |_, _, cx| cx.open_url(&url)),
-            );
+        if let Some(site) = site() {
+            for (title, glyph, slug) in LEGAL {
+                let url = format!("{}/legal/en/{slug}", site.trim_end_matches('/'));
+                about = about.child(
+                    Row::new(slug, title)
+                        .leading(Leading::glyph(glyph))
+                        .external()
+                        .on_click(move |_, _, cx| cx.open_url(&url)),
+                );
+            }
         }
         let header =
             PageHeader::new("Account").subtitle(format!("{version} · {}", self.link_label()));

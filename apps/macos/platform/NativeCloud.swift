@@ -33,18 +33,23 @@ struct CloudStatus: Encodable, Equatable {
     var age: Age?
     var gateway: String?
     var gatewayEndpoint: String?
+    /// The provider of the saved sign-in.
+    var provider: String?
     var stage: Stage?
     var errorKind: CloudFailure.Kind?
     var error: String?
 }
 
-/// Sign in with Apple, the mobile bearer in Keychain, and the Cloud gateway pairing grant.
+/// Browser sign-in, the mobile bearer in Keychain, and the Cloud gateway pairing grant.
 /// Pairing itself stays in Rust's ordinary gateway flow.
 @MainActor
 final class NativeCloud: NSObject {
     private let emit: (JSONValue) -> Void
     private let client: CloudClient
     private let keychain: CloudKeychain
+    private let config: CloudConfig
+    /// The provider a re-authentication uses: the saved sign-in's, else the first offered.
+    private var provider: String
     private(set) var status = CloudStatus()
     /// Declined or failed for this sign-in; Apple's sheet is not shown again until a retry.
     private var ageAnswer: CloudStatus.Age?
@@ -53,31 +58,42 @@ final class NativeCloud: NSObject {
     private(set) var task: Task<Void, Never>?
 
     init(
-        client: CloudClient = CloudClient(), keychain: CloudKeychain = CloudKeychain(),
+        config: CloudConfig, client: CloudClient? = nil, keychain: CloudKeychain? = nil,
         emit: @escaping (JSONValue) -> Void
     ) {
-        self.client = client
-        self.keychain = keychain
+        self.client = client ?? CloudClient(config: config)
+        self.keychain = keychain ?? CloudKeychain(service: config.keychainService)
+        self.config = config
+        provider = config.providers[0]
         self.emit = emit
     }
 
-    func signIn(connect: Bool = false) {
+    /// `provider` indexes `config.providers`; nil reuses the last one.
+    func signIn(provider index: Int? = nil, connect: Bool = false) {
         guard status.stage == nil else { return }
+        if let index {
+            guard config.providers.indices.contains(index) else { return }
+            provider = config.providers[index]
+        }
         guard (NSApplication.shared.keyWindow ?? NSApplication.shared.windows.first) != nil else {
-            fail(CloudFailure("Open the möbius app window to sign in with Apple."))
+            fail(CloudFailure("Open the möbius app window to sign in."))
             return
         }
         do {
-            let authorization = try CloudSignIn.make()
+            let authorization = try CloudSignIn.make(callbackScheme: config.callbackScheme)
+            let provider = provider
             generation += 1
             let current = generation
             task?.cancel()
-            let session = Self.webSession(url: client.signInURL(authorization)) {
+            let session = Self.webSession(
+                url: client.signInURL(authorization, provider: provider),
+                scheme: authorization.callbackScheme
+            ) {
                 [weak self] url, error in
                 Task { @MainActor in
                     self?.completeSignIn(
                         url: url, error: error, authorization: authorization, generation: current,
-                        connect: connect)
+                        connect: connect, provider: provider)
                 }
             }
             session.presentationContextProvider = self
@@ -88,7 +104,7 @@ final class NativeCloud: NSObject {
             if !session.start() {
                 generation += 1
                 webSession = nil
-                fail(CloudFailure("Apple sign-in could not be opened. Try again."))
+                fail(CloudFailure("Sign-in could not be opened. Try again."))
             }
         } catch { fail(error) }
     }
@@ -96,9 +112,9 @@ final class NativeCloud: NSObject {
     /// Apple's sign-in window answers on an XPC queue, so its handler must not be main-actor
     /// code: a closure written in this main-actor class is, and Swift aborts on the check.
     nonisolated private static func webSession(
-        url: URL, handler: @escaping @Sendable (URL?, (any Error)?) -> Void
+        url: URL, scheme: String, handler: @escaping @Sendable (URL?, (any Error)?) -> Void
     ) -> ASWebAuthenticationSession {
-        ASWebAuthenticationSession(url: url, callback: .customScheme(CloudSignIn.callbackScheme)) {
+        ASWebAuthenticationSession(url: url, callback: .customScheme(scheme)) {
             url, error in handler(url, error)
         }
     }
@@ -124,18 +140,20 @@ final class NativeCloud: NSObject {
             return
         }
         guard credential.expiresAt > .now else { throw CloudFailure.expired }
+        if let saved = credential.provider, config.providers.contains(saved) { provider = saved }
         update {
             $0.signedIn = true
             $0.name = credential.name
+            $0.provider = credential.provider
             $0.gatewayEndpoint = credential.gatewayEndpoint
             $0.stage = .checking
             $0.error = nil
             $0.errorKind = nil
         }
         var account = try await verifiedAccount(credential)
-        if account.ageEligible == nil, ageAnswer == nil {
+        if let gate = config.ageGate, account.ageEligible == nil, ageAnswer == nil {
             update { $0.age = .checking }
-            ageAnswer = try await shareAgeRange(token: credential.token)
+            ageAnswer = try await shareAgeRange(token: credential.token, gate: gate)
             try Task.checkCancellation()
             if ageAnswer == nil {
                 account = try await verifiedAccount(credential)
@@ -152,7 +170,9 @@ final class NativeCloud: NSObject {
             $0.allowanceLeft = account.allowanceLeft
             $0.age = account.ageEligible.map { $0 ? .eligible : .underage } ?? ageAnswer
         }
-        guard account.subscribed, account.ageEligible == true else { return }
+        guard account.subscribed, account.ageEligible == true || config.ageGate == nil else {
+            return
+        }
         try await checkGateway(&credential, connect: connect)
     }
 
@@ -168,12 +188,12 @@ final class NativeCloud: NSObject {
 
     /// Apple's age sheet, then Cloud records its decision from the range. Returns what this
     /// Mac keeps when nothing was recorded; an expired sign-in still throws.
-    private func shareAgeRange(token: String) async throws -> CloudStatus.Age? {
+    private func shareAgeRange(token: String, gate: Int) async throws -> CloudStatus.Age? {
         let response: AgeRangeService.Response
         do {
             guard let window = NSApplication.shared.keyWindow ?? NSApplication.shared.windows.first
             else { return .failed }
-            response = try await AgeRangeService.shared.requestAgeRange(ageGates: 18, in: window)
+            response = try await AgeRangeService.shared.requestAgeRange(ageGates: gate, in: window)
         } catch {
             // This case exists only in the SDK 27 module, and only on macOS 27 and later.
             #if canImport(DeclaredAgeRange, _version: 28)
@@ -214,7 +234,7 @@ final class NativeCloud: NSObject {
                     token: credential.token,
                     timeout: Self.gatewayRequestTimeout(until: deadline, maximum: 120))
                 _ = try Self.gatewayRequestTimeout(until: deadline, maximum: 120)
-                guard grant.endpoint == credential.expectedGatewayEndpoint else {
+                guard grant.endpoint == config.gatewayEndpoint(for: credential.userID) else {
                     throw CloudFailure.invalidGateway
                 }
                 try Task.checkCancellation()
@@ -260,7 +280,8 @@ final class NativeCloud: NSObject {
         ageAnswer = nil
         run { [self] in
             let credential = try keychain.load()
-            let endpoint = credential?.expectedGatewayEndpoint ?? status.gatewayEndpoint
+            let endpoint =
+                credential.map { config.gatewayEndpoint(for: $0.userID) } ?? status.gatewayEndpoint
             if let credential, credential.expiresAt > .now {
                 update { $0.stage = .checking }
                 try await client.signOut(token: credential.token)
@@ -327,7 +348,7 @@ final class NativeCloud: NSObject {
 
     func completeSignIn(
         url: URL?, error: Error?, authorization: CloudSignIn, generation current: Int,
-        connect: Bool = false
+        connect: Bool = false, provider: String? = nil
     ) {
         guard current == generation else { return }
         webSession = nil
@@ -343,9 +364,10 @@ final class NativeCloud: NSObject {
                 let previous = try keychain.load()
                 var credential = try await client.authenticate(
                     code: code, codeVerifier: authorization.codeVerifier)
+                credential.provider = provider
                 if let previous, previous.userID == credential.userID {
                     credential.name = previous.name
-                    if previous.gatewayEndpoint == credential.expectedGatewayEndpoint {
+                    if previous.gatewayEndpoint == config.gatewayEndpoint(for: credential.userID) {
                         credential.gatewayEndpoint = previous.gatewayEndpoint
                     }
                 }
@@ -356,10 +378,11 @@ final class NativeCloud: NSObject {
                         status = CloudStatus()
                         status.stage = .checking
                         emitStatus()
-                        emit(.object([
-                            "type": .string("cloud_forget"),
-                            "endpoint": .string(previous.expectedGatewayEndpoint),
-                        ]))
+                        emit(
+                            .object([
+                                "type": .string("cloud_forget"),
+                                "endpoint": .string(config.gatewayEndpoint(for: previous.userID)),
+                            ]))
                     }
                     if previous.token != credential.token {
                         // On its own, so signing in does not wait for it and neither a later
@@ -379,10 +402,11 @@ final class NativeCloud: NSObject {
     }
 
     private func signInCancelled(connect: Bool) {
-        fail(CloudFailure(
-            connect
-                ? "Apple sign-in was canceled. Select Connect to try again."
-                : "Apple sign-in was canceled. Select Sign in with Apple to try again."))
+        fail(
+            CloudFailure(
+                connect
+                    ? "Sign-in was canceled. Select Connect to try again."
+                    : "Sign-in was canceled. Select Sign in to try again."))
     }
 }
 
@@ -395,12 +419,24 @@ extension NativeCloud: ASWebAuthenticationPresentationContextProviding {
 @_cdecl("mobius_native_cloud")
 public func nativeCloud(_ action: UInt8) {
     MainActor.assumeIsolated {
-        let cloud = NativeBridge.shared.cloud
+        guard let cloud = NativeBridge.shared.cloud else {
+            var status: [String: JSONValue] = ["signed_in": .bool(false)]
+            if action != 0 {
+                status["error_kind"] = .string("other")
+                status["error"] = .string("möbius Cloud isn’t configured for this build.")
+            }
+            NativeBridge.shared.emit(.object([
+                "type": .string("cloud_status"), "status": .object(status),
+            ]))
+            return
+        }
         switch action {
         case 1: cloud.signIn()
         case 2: cloud.refresh(connect: true)
         case 3: cloud.signOut()
         case 4: cloud.retryAge()
+        // 16 + n signs in with the configured provider n.
+        case 16...: cloud.signIn(provider: Int(action) - 16)
         default: cloud.refresh()
         }
     }

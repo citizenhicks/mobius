@@ -1,8 +1,10 @@
-//! möbius Cloud on the Account page (MobiusCloudOffer.swift). Swift signs in with Apple and
+//! Cloud account sign-in through the providers configured in cloud.json. Swift
 //! keeps the bearer in Keychain; a pairing grant joins the ordinary gateway pairing flow.
 
 use super::*;
-use crate::host::platform::{CloudAction, CloudAge, CloudErrorKind, CloudStage, CloudStatus};
+use crate::host::platform::{
+    CloudAction, CloudAge, CloudErrorKind, CloudStage, CloudStatus, cloud_config,
+};
 use mobius_gateway::client::Endpoint;
 
 /// Apple's subscription management; purchases stay in the iPhone and iPad app.
@@ -17,10 +19,30 @@ fn plan_summary(plan: &str) -> &'static str {
     }
 }
 
+/// A provider's name as its sign-in button reads.
+fn provider_name(provider: &str) -> String {
+    match provider {
+        "apple" => "Apple".into(),
+        "github" => "GitHub".into(),
+        "google" => "Google".into(),
+        other => {
+            let mut chars = other.chars();
+            chars.next().map_or_else(String::new, |first| {
+                first.to_uppercase().chain(chars).collect()
+            })
+        }
+    }
+}
+
+/// A service without an age gate can connect without an Apple age decision.
+fn can_connect(status: &CloudStatus, age_gate: Option<u8>) -> bool {
+    status.subscribed && (age_gate.is_none() || status.age == Some(CloudAge::Eligible))
+}
+
 /// What a Cloud step tells the user as it starts; reading the account is routine.
 fn stage_toast(stage: CloudStage) -> Option<&'static str> {
     match stage {
-        CloudStage::SigningIn => Some("Complete Apple sign-in in the browser window."),
+        CloudStage::SigningIn => Some("Complete sign-in in the browser window."),
         // Pairing announces itself (pair_gateway).
         CloudStage::Checking | CloudStage::Connecting => None,
         CloudStage::Provisioning => {
@@ -109,7 +131,7 @@ impl Workspace {
         Section::new("möbius Cloud").child(group)
     }
 
-    /// Sign out, or Pair with a code then Sign in with Apple.
+    /// Sign out, or Pair with a code then one sign-in button per configured provider.
     pub(super) fn account_actions(&self, cx: &Context<Self>) -> Vec<AnyElement> {
         let status = &self.config.cloud;
         let pair = toolbar_button("pair-cloud", "Pair with a code", "hi.link", cx)
@@ -121,23 +143,45 @@ impl Workspace {
                 .into_any_element();
             vec![sign_out, pair]
         } else {
-            let sign_in = apple_toolbar_button("cloud-sign-in", cx)
-                .disabled(status.stage.is_some())
-                .on_click(cx.listener(|this, _, _, _| this.cloud(CloudAction::SignIn)))
-                .into_any_element();
-            vec![pair, sign_in]
+            let mut actions = vec![pair];
+            for (index, provider) in
+                (0u8..).zip(cloud_config().map_or(&[][..], |cloud| &cloud.providers))
+            {
+                let id = ElementId::Name(format!("cloud-sign-in-{provider}").into());
+                let button = if provider == "apple" {
+                    apple_toolbar_button(id, cx)
+                } else {
+                    let label = format!("Sign in with {}", provider_name(provider));
+                    toolbar_button(id, label, "hi.userFocus", cx)
+                };
+                let action = CloudAction::SignIn(index);
+                actions.push(
+                    button
+                        .disabled(status.stage.is_some())
+                        .on_click(cx.listener(move |this, _, _, _| this.cloud(action)))
+                        .into_any_element(),
+                );
+            }
+            actions
         }
     }
 
     fn cloud_offer_rows(&self) -> Group {
         Group::new()
-            .footer("For adults aged 18 and over: after you sign in, Apple asks whether to share your age range. Bots are AI agents and can make mistakes.")
+            .footer(match cloud_config().and_then(|cloud| cloud.age_gate) {
+                Some(age) => format!("For adults aged {age} and over: after you sign in, Apple asks whether to share your age range. Bots are AI agents and can make mistakes."),
+                None => "Bots are AI agents and can make mistakes.".to_owned(),
+            })
             .child(
                 Row::new("cloud", "Your private gateway, managed by möbius")
                     .leading(Leading::glyph("hi.cloudServer"))
                     .subtitle("Provisioned, secured and maintained for your account.")
                     .external()
-                    .on_click(|_, _, cx| cx.open_url(super::settings::SITE)),
+                    .on_click(|_, _, cx| {
+                        if let Some(site) = super::settings::site() {
+                            cx.open_url(site);
+                        }
+                    }),
             )
             .child(
                 Row::new("cloud-plans", "Plans")
@@ -145,7 +189,11 @@ impl Workspace {
             )
             .child(
                 Row::new("cloud-account", "Account")
-                    .subtitle("Sign in with Apple to connect this Mac.")
+                    .subtitle(if cloud_config().is_some() {
+                        "Sign in to connect this Mac."
+                    } else {
+                        "möbius Cloud isn’t configured for this build."
+                    })
                     .status(
                         self.palette.muted,
                         if self.config.cloud.stage.is_some() {
@@ -158,11 +206,15 @@ impl Workspace {
     }
 
     fn cloud_account_rows(&self, status: &CloudStatus, cx: &Context<Self>) -> Group {
+        let signed_in = status.provider.as_deref().map_or_else(
+            || "Signed in".to_owned(),
+            |provider| format!("Signed in with {}", provider_name(provider)),
+        );
         let (title, subtitle) = match (status.name.as_deref(), status.email.as_deref()) {
             (Some(name), Some(email)) => (name, email),
-            (None, Some(email)) => (email, "Signed in with Apple"),
-            (Some(name), None) => (name, "Signed in with Apple"),
-            (None, None) => ("Apple Account", "Signed in with Apple"),
+            (None, Some(email)) => (email, signed_in.as_str()),
+            (Some(name), None) => (name, signed_in.as_str()),
+            (None, None) => ("Cloud Account", signed_in.as_str()),
         };
         let group = Group::new()
             .child(
@@ -172,8 +224,8 @@ impl Workspace {
             )
             .children(self.cloud_age_row(status, cx))
             .child(self.cloud_plan_row(status));
-        // Connecting needs both an adult age decision and a subscription.
-        if status.subscribed && status.age == Some(CloudAge::Eligible) {
+        // Apply the configured age gate while keeping the subscription requirement.
+        if can_connect(status, cloud_config().and_then(|cloud| cloud.age_gate)) {
             group.child(self.cloud_gateway_row(status, cx))
         } else {
             group
@@ -184,10 +236,13 @@ impl Workspace {
     fn cloud_plan_row(&self, status: &CloudStatus) -> Row {
         let row = Row::new("cloud-plan", "Plan");
         if !status.subscribed {
-            let subtitle = if status.age == Some(CloudAge::Underage) {
-                "Subscriptions are for adults aged 18 and over."
+            let subtitle = if let Some(gate) = cloud_config()
+                .and_then(|cloud| cloud.age_gate)
+                .filter(|_| status.age == Some(CloudAge::Underage))
+            {
+                format!("Subscriptions require age {gate} or over.")
             } else {
-                "Subscribe in the möbius app on iPhone or iPad."
+                "Subscribe in the möbius app on iPhone or iPad.".to_owned()
             };
             return row
                 .subtitle(subtitle)
@@ -219,28 +274,37 @@ impl Workspace {
     /// a decline or failure keeps the sign-in and offers another try.
     fn cloud_age_row(&self, status: &CloudStatus, cx: &Context<Self>) -> Option<Row> {
         let p = self.palette;
+        let gate = cloud_config()?.age_gate?;
         let age = status.age?;
         let (subtitle, tone, label) = match age {
-            CloudAge::Eligible => ("Recorded on your möbius Cloud account.", p.signal, "18+"),
+            CloudAge::Eligible => (
+                "Recorded on your möbius Cloud account.".to_owned(),
+                p.signal,
+                format!("{gate}+"),
+            ),
             CloudAge::Underage => (
-                "möbius Cloud is only for adults aged 18 and over. The age range shared by your Apple Account is under 18.",
+                format!(
+                    "möbius Cloud requires age {gate} or over. The age range shared by your Apple Account is under {gate}."
+                ),
                 p.danger,
-                "Under 18",
+                format!("Under {gate}"),
             ),
             CloudAge::Checking => (
-                "Apple asks whether to share your age range with möbius.",
+                "Apple asks whether to share your age range with möbius.".to_owned(),
                 p.muted,
-                "Checking",
+                "Checking".to_owned(),
             ),
             CloudAge::Declined => (
-                "You chose not to share your age range. möbius Cloud is for adults aged 18 and over.",
+                format!(
+                    "You chose not to share your age range. möbius Cloud requires age {gate} or over."
+                ),
                 p.warning,
-                "Not shared",
+                "Not shared".to_owned(),
             ),
             CloudAge::Failed => (
-                "Your age range couldn’t be confirmed.",
+                "Your age range couldn’t be confirmed.".to_owned(),
                 p.warning,
-                "Not confirmed",
+                "Not confirmed".to_owned(),
             ),
         };
         let row = Row::new("cloud-age", "Age range")
@@ -316,9 +380,9 @@ impl Workspace {
 fn cloud_loading_rows() -> Group {
     Group::new()
         .child(
-            Row::new("cloud-account", "Apple Account")
+            Row::new("cloud-account", "Cloud Account")
                 .leading(Leading::glyph("hi.cloudServer"))
-                .subtitle("Signed in with Apple")
+                .subtitle("Signed in")
                 .placeholder(),
         )
         .child(
@@ -336,4 +400,35 @@ fn cloud_loading_rows() -> Group {
                 .subtitle("Ready to pair with this Mac.")
                 .placeholder(),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connect_visibility_follows_the_services_age_gate_and_subscription() {
+        let mut status = CloudStatus {
+            subscribed: true,
+            ..CloudStatus::default()
+        };
+        assert!(
+            can_connect(&status, None),
+            "an ungated service must offer Connect"
+        );
+        assert!(
+            !can_connect(&status, Some(18)),
+            "a gated service requires an age decision"
+        );
+        status.age = Some(CloudAge::Eligible);
+        assert!(
+            can_connect(&status, Some(18)),
+            "an eligible subscriber can connect"
+        );
+        status.subscribed = false;
+        assert!(
+            !can_connect(&status, None),
+            "a subscription is still required without an age gate"
+        );
+    }
 }

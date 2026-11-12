@@ -100,12 +100,15 @@ impl Workspace {
             return section;
         };
         let mut group = Group::new();
-        // Memory has a section of its own, as on every harness.
+        // Individual Bots keep their dedicated Memory section.
         let features = gateway
             .agent_catalog
             .middleware_features
             .iter()
-            .filter(|feature| feature.id != crate::ui::pages::harness::MEMORY);
+            .filter(|feature| {
+                matches!(scope.as_ref(), AgentScope::Defaults)
+                    || feature.id != crate::ui::pages::harness::MEMORY
+            });
         for feature in features {
             group = group.child(self.capability_row(scope, draft, config, gateway, feature, cx));
             if !self

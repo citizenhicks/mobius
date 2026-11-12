@@ -1,0 +1,11 @@
+{
+  "ageGate" : null,
+  "api" : "https://cloud.example.com/",
+  "callbackScheme" : "app.mobius.desktop",
+  "gateway" : "wss://gateway-{id}.example.com",
+  "providers" : [
+    "github",
+    "google"
+  ],
+  "site" : "https://example.com"
+}

@@ -76,12 +76,30 @@ with tempfile.TemporaryDirectory(prefix='mobius-native-check-') as temporary:
     assert 'error' in request['response'], 'Disabled computer control must never execute'
     native.mobius_native_connected(False)
 
+    native.mobius_native_cloud_config.restype = ctypes.c_void_p
+    pointer = native.mobius_native_cloud_config()
+    configured = bool(pointer)
+    if pointer:
+        try:
+            configuration = json.loads(ctypes.string_at(pointer))
+            assert 1 <= len(configuration['providers']) <= 4, configuration
+        finally:
+            native.mobius_native_free(pointer)
+    native.mobius_native_cloud_owns_gateway.argtypes = [ctypes.c_char_p]
+    native.mobius_native_cloud_owns_gateway.restype = ctypes.c_bool
+    assert not native.mobius_native_cloud_owns_gateway(b'wss://unrelated.invalid')
+
     # A headless library has no presentation window and must not open a sign-in browser.
     native.mobius_native_cloud.argtypes = [ctypes.c_uint8]
+    if not configured:
+        native.mobius_native_cloud(0)
+        assert events() == [{'type': 'cloud_status', 'status': {'signed_in': False}}]
     native.mobius_native_cloud(1)
     cloud = [event for event in events() if event['type'] == 'cloud_status']
     assert cloud and cloud[-1]['status']['error_kind'] == 'other', cloud
-    assert cloud[-1]['status']['error'] == 'Open the möbius app window to sign in with Apple.', cloud
+    expected = ('Open the möbius app window to sign in.' if configured
+                else 'möbius Cloud isn’t configured for this build.')
+    assert cloud[-1]['status']['error'] == expected, cloud
     assert not cloud[-1]['status']['signed_in'], cloud
 
     # An unbundled library never starts Sparkle and says why updates are unavailable.

@@ -96,13 +96,9 @@ pub(super) fn is_loopback(endpoint: &str) -> bool {
     matches!(host(endpoint), "127.0.0.1" | "localhost" | "[::1]" | "::1")
 }
 
-/// möbius Cloud's hosted gateways live at `mobius-<24 hex>.thinkingsand.dev`
-/// (MobiusCloudClient.ownsGateway).
+/// Uses the native Cloud owner's exact endpoint match.
 pub(super) fn is_cloud(endpoint: &str) -> bool {
-    host(endpoint)
-        .strip_prefix("mobius-")
-        .and_then(|id| id.strip_suffix(".thinkingsand.dev"))
-        .is_some_and(|id| id.len() == 24 && id.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    crate::host::platform::cloud_owns_gateway(endpoint)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -173,8 +169,7 @@ impl AgentSection {
     /// A Bot on a harness this app has no settings for shows only who it is.
     const IDENTITY: [Self; 1] = [Self::Identity];
     /// Agent defaults are möbius settings with no identity of their own.
-    pub(super) const DEFAULTS: [Self; 4] =
-        [Self::Prompt, Self::Model, Self::Memory, Self::Capabilities];
+    pub(super) const DEFAULTS: [Self; 3] = [Self::Prompt, Self::Model, Self::Capabilities];
 
     /// The sections a Bot on `harness` shows, in order.
     pub(super) const fn for_harness(harness: HarnessKind) -> &'static [Self] {

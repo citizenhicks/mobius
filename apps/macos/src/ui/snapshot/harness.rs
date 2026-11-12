@@ -73,6 +73,14 @@ pub(super) const SCENARIOS: &[Scenario] = &[
         fixture(this);
         this.open_page(PageTab::AgentDefaults(AgentSection::Model), window, cx);
     }),
+    ("agent-defaults-capabilities", |this, window, cx| {
+        fixture(this);
+        this.open_page(
+            PageTab::AgentDefaults(AgentSection::Capabilities),
+            window,
+            cx,
+        );
+    }),
     ("bots-create-mobius-only", |this, window, cx| {
         fixture(this);
         this.select_section(Section::Bots, window, cx);
@@ -177,13 +185,21 @@ pub(super) fn fixture(this: &mut Workspace) {
             })
         ),
     ]);
+    let mut defaults = bots.get(0).and_then(|bot| bot.get("config")).cloned(); // rules-allow: defaults and the Bot are independent fixture records
+    if let Some(config) = defaults
+        .as_mut()
+        .and_then(|defaults| defaults.get_mut("config"))
+        .and_then(Value::as_object_mut)
+    {
+        config.remove("harness");
+    }
     this.client.state.gateway = catalog(
         "typed offline harness catalog",
         json!({
             "gateway_version": "preview", "machine_name": "Local preview", "computer_view": "unavailable",
             "sessions": [], "background_approvals": [], "providers": [], "provider_instances": [],
             "agent_catalog": {
-                "bot_defaults": null, "default_capabilities": null, "models": [],
+                "bot_defaults": defaults, "default_capabilities": null, "models": [],
                 "model_providers": {}, "image_models": [], "voice_models": [],
                 "middleware_features": [{"id": "memory", "label": "Memory",
                     "description": "Remember short facts across this Bot's chats.",

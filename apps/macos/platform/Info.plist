@@ -18,6 +18,14 @@
     <key>NSHighResolutionCapable</key><true/>
     <key>NSMicrophoneUsageDescription</key><string>Dictate messages and talk to your möbius chats.</string>
     <key>NSSpeechRecognitionUsageDescription</key><string>Transcribe dictated messages on this Mac.</string>
+    <key>MobiusCloud</key><dict>
+        <key>api</key><string>https://mobius.thinkingsand.dev/</string>
+        <key>site</key><string>https://mobius.thinkingsand.dev</string>
+        <key>gateway</key><string>wss://mobius-{id}.thinkingsand.dev</string>
+        <key>providers</key><array><string>apple</string></array>
+        <key>callbackScheme</key><string>app.mobius.desktop</string>
+        <key>ageGate</key><integer>18</integer>
+    </dict>
     <key>SUFeedURL</key><string>https://github.com/citizenhicks/mobius/releases/download/mobius-desktop-appcast/appcast.xml</string>
     <key>SUPublicEDKey</key><string>M/m8S2LLC6GT8J+qykSl8XLJKa+NA2MCZ5t0q0Pa36Y=</string>
     <key>SUEnableAutomaticChecks</key><true/>

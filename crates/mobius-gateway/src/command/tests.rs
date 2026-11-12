@@ -75,7 +75,10 @@ fn command_definition_is_valid() {
 async fn telemetry_readiness_rejects_stopped_or_unauthenticated_gateways() {
     let directory = tempfile::tempdir().expect("gateway state parent");
     let state = directory.path().join("gateway");
-    ConfigStore::initialize(state.clone(), DEFAULT_LISTEN, None).expect("gateway config");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("test listener");
+    let listen = listener.local_addr().expect("test listener address");
+    drop(listener);
+    ConfigStore::initialize(state.clone(), listen, None).expect("gateway config");
     let stopped = telemetry::run(state.clone(), args::TelemetryCommand::Ready, |_| Ok(None))
         .await
         .expect_err("saved configuration cannot prove readiness");
