@@ -55,6 +55,10 @@ report() {
 report "No clones in production code (.clone(), .cloned(), Type::clone): borrow, move or take; share handles with Arc::clone(&x) or a GPUI handle's Entity::clone(&x)." \
     "$(production_matches '[.]clone[(][)]|[.]cloned[(][)]|::clone[(]')"
 
+dependencies=$(cargo tree --all-features --locked -e normal --prefix none)
+report "The app uses ring: a second TLS crypto backend makes automatic provider selection panic." \
+    "$(printf '%s\n' "$dependencies" | grep -E '^aws-lc-(rs|sys) ' || true)"
+
 if [ "$failures" -gt 0 ]; then
     echo "$failures rule(s) failed"
     exit 1

@@ -3,4 +3,5 @@
 
 pub mod agent_browser;
 pub mod browser;
+pub mod http;
 pub mod platform;

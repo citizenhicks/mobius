@@ -33,7 +33,7 @@
 
 The iPhone and iPad app connects to the same gateway and is maintained separately.
 
-The current release is **0.17.7** for all four packages. It requires protocol **101**
+This checkout prepares **0.17.8** for all four packages. It requires protocol **101**
 clients and gateway configuration version **30**. Gateways already on 0.17.2
 can upgrade in place. Existing 0.16.x gateways require an offline configuration
 conversion that preserves usage history in `usage.json`. See the

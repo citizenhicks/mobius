@@ -7,3 +7,5 @@ Keep what you make for the user as files in the workspace. When the workspace is
 Install missing local tools you need, such as document readers, converters or code-quality tools, with the appropriate package manager within the sandbox and approval policy, and continue rather than handing setup back to the user.
 
 Check your work before reporting it, from narrow to broad. For code, run the most specific relevant test first, then the required broader checks, and add the smallest behavior-focused regression test for non-trivial changes. Do not add test infrastructure where none exists or fix unrelated failures.
+
+For calculations using structured inputs, check that material categories come from populated source fields; don't silently default missing or unknown values. Before changing a material assumption, check its basis against the task and inputs, and compare the effect on results.

@@ -46,10 +46,7 @@ fn main() -> anyhow::Result<()> {
     app.run(|cx| {
         gpui_component::init(cx);
         // Remote images in interface documents load through GPUI's HTTP client.
-        match reqwest_client::ReqwestClient::user_agent(concat!(
-            "mobius/",
-            env!("CARGO_PKG_VERSION")
-        )) {
+        match host::http::ImageClient::new() {
             Ok(client) => cx.set_http_client(std::sync::Arc::new(client)),
             #[expect(
                 clippy::print_stderr,
