@@ -86,3 +86,47 @@ fn a_draft_model_change_moves_only_the_model_and_reasoning() {
         "the picker shows the draft's choice as current"
     );
 }
+
+#[test]
+fn inherited_reasoning_uses_the_selected_instances_model_default() {
+    let mut gateway = catalog();
+    let mut other = gateway.provider_instances[0].clone();
+    other.selection.instance = "other".into();
+    gateway.provider_instances.push(other);
+    for mut choice in gateway.agent_catalog.models.clone() {
+        choice.route = format!("other/{}", choice.route.strip_prefix("work/").unwrap()).into();
+        gateway
+            .agent_catalog
+            .model_providers
+            .insert(std::sync::Arc::clone(&choice.route), "other".into());
+        gateway.agent_catalog.models.push(choice);
+    }
+    for (index, effort) in ["low", "high"].into_iter().enumerate() {
+        gateway.provider_instances[index].models.push(
+            serde_json::from_value(json!({
+                "id":"sol", "label":"Sol", "description":"", "context_window":1000,
+                "reasoning":[{"id":"low","label":"Low","description":""},
+                             {"id":"high","label":"High","description":""}],
+                "default_reasoning":effort, "tool_discovery":"native"
+            }))
+            .unwrap(),
+        );
+        let mut selection = gateway.provider_instances[index].selection.clone();
+        selection.reasoning_effort = None;
+        assert_eq!(
+            configured_model(&gateway, &selection)
+                .unwrap()
+                .reasoning_effort
+                .as_deref(),
+            Some(effort)
+        );
+        selection.reasoning_effort = Some("low".into());
+        assert_eq!(
+            configured_model(&gateway, &selection)
+                .unwrap()
+                .reasoning_effort
+                .as_deref(),
+            Some("low")
+        );
+    }
+}

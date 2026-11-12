@@ -124,14 +124,26 @@ pub(in crate::ui) fn configured_model<'a>(
     provider: &ProviderConfig,
 ) -> Option<&'a ModelChoice> {
     let default = gateway
-        .providers
+        .provider_instances
         .iter()
-        .find(|status| status.provider == provider.provider)
-        .and_then(|status| {
-            status
+        .find(|instance| instance.selection.instance == provider.instance)
+        .and_then(|instance| {
+            instance
                 .models
                 .iter()
                 .find(|model| model.id == provider.model)
+        })
+        .or_else(|| {
+            gateway
+                .providers
+                .iter()
+                .find(|status| status.provider == provider.provider)
+                .and_then(|status| {
+                    status
+                        .models
+                        .iter()
+                        .find(|model| model.id == provider.model)
+                })
         })
         .and_then(|model| model.default_reasoning.as_ref());
     let candidates = || {
