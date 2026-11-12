@@ -347,7 +347,7 @@ impl Workspace {
         match message {
             ServerMessage::Ready { payload }
                 if payload.computer_view == ComputerView::EmbeddedBrowser
-                    && crate::host::browser::running() =>
+                    && crate::host::browser::available() =>
             {
                 self.send(
                     ClientMessage::SetBrowserRuntime {

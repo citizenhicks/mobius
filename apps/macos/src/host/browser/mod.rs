@@ -7,5 +7,5 @@ mod mac;
 mod page;
 mod router;
 
-pub use engine::{available, ensure_started, running, shutdown};
+pub use engine::{available, ensure_started, shutdown};
 pub use page::{Page, PageEvent, PageEvents, Popup, Shortcut, download_path};
