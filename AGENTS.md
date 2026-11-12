@@ -209,8 +209,11 @@ the loop.
 
 ## Checks
 
-Rust 1.99.0 or newer is required. The repository pins Rust 1.99.0 with Clippy and
-rustfmt in `rust-toolchain.toml`. Before handing off a change, run:
+Rust 1.99.0 or newer is required. The repository pins Rust 1.99.1 with Clippy and
+rustfmt in `rust-toolchain.toml`. The shared `.cargo/config.toml` enables the
+experimental eight-worker compiler frontend through `RUSTC_BOOTSTRAP`, including
+for the macOS workspace. Cargo's parallel crate jobs are separate. Before handing
+off a change, run:
 
 ```sh
 cargo fmt --all -- --check
@@ -226,8 +229,9 @@ python3 .github/sync-gateway-contract.py --check
 no hosted-service names, no serde aliases, provider and middleware names only in their
 owners). Pull requests and manually dispatched qualification run all of the above, check
 the minimum toolchain with
-`cargo +1.99.0 check --workspace --all-targets --all-features --locked`, and lint the
-generated manual pages. Relevant main pushes run formatting, rules and contract
+`RUSTC_BOOTSTRAP=-1 CARGO_ENCODED_RUSTFLAGS="" cargo +1.99.0 check --workspace --all-targets --all-features --locked`
+so published crates retain stable support, and lint the generated manual pages.
+Relevant main pushes run formatting, rules and contract
 checks only. Before tagging, manually dispatch `ci.yml` and `desktop-ci.yml` on
 the exact main commit; release workflows require both applicable full qualifications.
 

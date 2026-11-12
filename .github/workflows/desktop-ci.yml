@@ -7,6 +7,8 @@ on:
       - src/**
       - crates/mobius-gateway/**
       - Cargo.toml
+      - rust-toolchain.toml
+      - .cargo/**
       - .github/sync-gateway-contract.py
       - .github/workflows/desktop-*.yml
   workflow_call:

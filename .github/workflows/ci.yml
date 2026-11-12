@@ -58,8 +58,12 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: core-${{ runner.os }}-${{ runner.arch }}-ubuntu-latest
-      - name: Check Rust 1.99.0
+      - name: Check minimum Rust 1.99.0
+        env:
+          RUSTC_BOOTSTRAP: "-1"
+          CARGO_ENCODED_RUSTFLAGS: ""
         run: |
+          rustup toolchain install 1.99.0 --profile minimal
           cargo +1.99.0 check --workspace --all-targets --all-features --locked
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Build documentation

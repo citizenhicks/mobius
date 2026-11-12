@@ -1,0 +1,6 @@
+# The pinned stable toolchain's parallel frontend is still experimental.
+[env]
+RUSTC_BOOTSTRAP = "1"
+
+[build]
+rustflags = ["-Zunstable-options", "--jobs-frontend=8"]

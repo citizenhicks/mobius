@@ -160,7 +160,9 @@ just complexity                                 # Clippy, warnings denied
 just rules                                      # project rules Clippy cannot express
 ```
 
-Rust 1.99.0 is pinned in `rust-toolchain.toml`. Linux sandbox tests need Bubblewrap.
+Rust 1.99.1 is pinned in `rust-toolchain.toml`. The shared Cargo configuration uses
+`RUSTC_BOOTSTRAP` for the experimental eight-worker compiler frontend; Cargo also
+builds independent crates in parallel. Linux sandbox tests need Bubblewrap.
 
 | Path | Owns |
 | --- | --- |
