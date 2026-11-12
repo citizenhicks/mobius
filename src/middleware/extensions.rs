@@ -378,27 +378,21 @@ impl Extensions {
         }
     }
 
-    fn section(&self) -> Option<PromptSection> {
+    fn section(&self) -> Result<Option<PromptSection>> {
         if self.skills.is_empty() {
-            return None;
+            return Ok(None);
         }
-        let skills = self
-            .skills
-            .iter()
-            .map(|(name, skill)| {
-                format!(
-                    "- name: {}\n  description: {}\n  location: {}",
-                    prompt_value(name),
-                    prompt_value(&skill.description),
-                    prompt_value(&skill.location.display().to_string())
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        Some(PromptSection::new(format!(
-            "{}\n\n{skills}",
-            text::DEFINITION.prompt_default.trim()
-        )))
+        let mut body = format!("{}\n", text::DEFINITION.prompt_default.trim());
+        for (name, skill) in &self.skills {
+            let location = skill.location.to_string_lossy();
+            body.push('\n');
+            body.push_str(&serde_json::to_string(&[
+                name.as_str(),
+                skill.description.as_str(),
+                location.as_ref(),
+            ])?);
+        }
+        Ok(Some(PromptSection::new(body)))
     }
 
     async fn run_hooks(
@@ -677,10 +671,6 @@ fn discover_roots(
     Ok(())
 }
 
-fn prompt_value(value: &str) -> String {
-    Value::String(value.into()).to_string()
-}
-
 fn installed_skill_roots() -> Vec<PathBuf> {
     let home = env::home_dir();
     let codex_home = env::var_os("CODEX_HOME").map(PathBuf::from);
@@ -810,7 +800,7 @@ impl Middleware for Extensions {
     }
 
     fn prompt_section(&self, _runtime: &super::RuntimeContext) -> Result<Option<PromptSection>> {
-        Ok(self.section())
+        self.section()
     }
 
     fn session_start<'a>(
@@ -1345,7 +1335,7 @@ mod tests {
         let temporary = tempfile::tempdir().expect("temporary extensions");
         let workspace = temporary.path().join("workspace");
         std::fs::create_dir(&workspace).expect("workspace");
-        let plugin = temporary.path().join("ponytail");
+        let plugin = temporary.path().join("ponytail \"quoted\"");
         std::fs::create_dir_all(plugin.join(".codex-plugin")).expect("manifest directory");
         std::fs::create_dir_all(plugin.join("skills/review")).expect("plugin skill");
         std::fs::create_dir_all(plugin.join("hooks")).expect("hooks directory");
@@ -1356,7 +1346,7 @@ mod tests {
         .expect("plugin manifest");
         std::fs::write(
             plugin.join("skills/review/SKILL.md"),
-            "---\nname: review\ndescription: Review code.\n---\n",
+            "---\nname: review\ndescription: Review \"code\" and C:\\paths.\n---\nSkill body stays out of the catalog.",
         )
         .expect("skill manifest");
         std::fs::write(
@@ -1364,16 +1354,34 @@ mod tests {
             r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"true"}]}]}}"#,
         )
         .expect("hook manifest");
+        let plugin = std::fs::canonicalize(plugin).expect("canonical plugin root");
         let backend = Arc::new(LocalSandbox::new(&workspace).expect("sandbox"));
 
         let extensions = Extensions::discover(Vec::<PathBuf>::new())
             .expect("extensions")
-            .load_plugins([(plugin, None)], &workspace)
+            .load_plugins([(plugin.clone(), None)], &workspace)
             .and_then(|extensions| extensions.start_hooks(backend))
             .expect("activate plugin skills");
 
         assert!(extensions.skills.contains_key("ponytail:review"));
         assert!(extensions.hooks.is_empty());
+        let section = extensions
+            .section()
+            .expect("skill section")
+            .expect("skills");
+        let (_, rows) = section.body.split_once("\n\n").expect("catalog rows");
+        let rows = rows
+            .lines()
+            .map(|row| serde_json::from_str::<[String; 3]>(row).expect("JSON skill row"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            rows,
+            [[
+                "ponytail:review".into(),
+                "Review \"code\" and C:\\paths.".into(),
+                plugin.join("skills/review/SKILL.md").display().to_string(),
+            ]]
+        );
     }
 
     #[tokio::test]
