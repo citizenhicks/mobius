@@ -94,10 +94,16 @@ pub(super) const SCENARIOS: &[Scenario] = &[
         fixture(this);
         let scope = pages::bots::AgentScope::Bot("fixture-mobius".into());
         this.snapshot_edit_draft(&scope, window, cx);
+        this.draft_workspace = "/gateway-a/work".into();
+        this.draft_bot = Some("fixture-mobius".into());
         assert!(this.snapshot_draft_is_dirty(&scope, cx));
         this.connecting("same gateway".into(), true, window, cx);
+        assert_eq!(this.draft_workspace.to_str(), Some("/gateway-a/work"));
+        assert_eq!(this.draft_bot.as_deref(), Some("fixture-mobius"));
         assert!(this.snapshot_draft_is_dirty(&scope, cx));
         this.connecting("another gateway".into(), false, window, cx);
+        assert_eq!(this.draft_workspace.to_str(), Some("."));
+        assert_eq!(this.draft_bot, None);
         fixture(this);
         this.open_page(
             PageTab::BotSettings("fixture-mobius".into(), AgentSection::Identity),
