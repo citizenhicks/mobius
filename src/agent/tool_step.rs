@@ -313,8 +313,8 @@ impl Runner {
             ))
         })?;
         self.record_tools(tool_calls, failed_tool_calls)?;
-        for (route, usage) in results.iter().filter_map(|result| result.usage.as_ref()) {
-            self.record_usage(route, usage).await?;
+        for reported in results.iter().filter_map(|result| result.usage.as_ref()) {
+            self.record_usage(&reported.route, &reported.usage).await?;
         }
         let completed = results
             .iter()
@@ -360,10 +360,10 @@ impl Runner {
 
 fn batch_usage(results: &[ToolResult]) -> Result<Option<TokenUsage>> {
     let mut total = None;
-    for (_, usage) in results.iter().filter_map(|result| result.usage.as_ref()) {
+    for reported in results.iter().filter_map(|result| result.usage.as_ref()) {
         total
             .get_or_insert_with(TokenUsage::default)
-            .checked_add(usage)
+            .checked_add(&reported.usage)
             .ok_or_else(|| {
                 Error::Provider("provider token usage exceeds the supported range".into())
             })?;
@@ -440,6 +440,7 @@ pub(super) fn order_results(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::middleware::tools::ReportedToolUsage;
 
     #[test]
     fn batch_usage_includes_every_paid_tool_call() {
@@ -457,13 +458,13 @@ mod tests {
             })
             .collect::<Vec<_>>();
         for (result, tokens) in results.iter_mut().zip([7, 5]) {
-            result.usage = Some((
-                "route".into(),
-                TokenUsage {
+            result.usage = Some(ReportedToolUsage {
+                route: "route".into(),
+                usage: TokenUsage {
                     total_tokens: tokens,
                     ..TokenUsage::default()
                 },
-            ));
+            });
         }
         assert_eq!(batch_usage(&results).unwrap().unwrap().total_tokens, 12);
     }

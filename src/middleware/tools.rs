@@ -175,20 +175,26 @@ impl ToolContext {
         &self.model_route
     }
 
-    /// Records provider-reported usage for a paid tool operation.
+    /// Records provider-reported usage for a paid operation on this context's model route.
     /// # Errors
     ///
     /// Returns an error if usage was already recorded or its state is unavailable.
     pub fn report_usage(&self, usage: TokenUsage) -> Result<()> {
-        self.usage.record(usage)
+        self.usage.record(Arc::clone(&self.model_route), usage)
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ReportedToolUsage {
+    pub(crate) route: Arc<str>,
+    pub(crate) usage: TokenUsage,
+}
+
 #[derive(Clone, Default)]
-struct ToolUsage(Arc<Mutex<Option<TokenUsage>>>);
+struct ToolUsage(Arc<Mutex<Option<ReportedToolUsage>>>);
 
 impl ToolUsage {
-    fn record(&self, usage: TokenUsage) -> Result<()> {
+    fn record(&self, route: Arc<str>, usage: TokenUsage) -> Result<()> {
         let mut recorded = self
             .0
             .lock()
@@ -196,12 +202,12 @@ impl ToolUsage {
         if recorded.is_some() {
             return Err(Error::Tool("tool usage was already recorded".into()));
         }
-        *recorded = Some(usage);
+        *recorded = Some(ReportedToolUsage { route, usage });
         drop(recorded);
         Ok(())
     }
 
-    fn take(&self) -> Result<Option<TokenUsage>> {
+    fn take(&self) -> Result<Option<ReportedToolUsage>> {
         Ok(self
             .0
             .lock()
@@ -1133,7 +1139,7 @@ pub struct ToolResult {
     pub output: crate::protocol::ToolContent,
     /// The is error.
     pub is_error: bool,
-    pub(crate) usage: Option<(String, TokenUsage)>,
+    pub(crate) usage: Option<ReportedToolUsage>,
     pub(crate) handler_executed: bool,
     pub(crate) additional_input: Vec<Value>,
     pub(crate) events: Vec<EventMsg>,
@@ -1175,9 +1181,9 @@ impl ToolResult {
         self.output = capped(output.as_ref(), self.output_limit).into();
     }
 
-    fn with_usage(mut self, pending_usage: &ToolUsage, model_route: &str) -> Self {
+    fn with_usage(mut self, pending_usage: &ToolUsage) -> Self {
         match pending_usage.take() {
-            Ok(usage) => self.usage = usage.map(|usage| (model_route.into(), usage)),
+            Ok(usage) => self.usage = usage,
             Err(error) => {
                 self.replace(error.to_string());
                 self.is_error = true;
@@ -1357,7 +1363,7 @@ async fn run_call(
         }
         Err(error) => ToolResult::failure(call_id, name, &error.to_string(), true, output_limit),
     }
-    .with_usage(&pending_usage, model_route)
+    .with_usage(&pending_usage)
 }
 
 struct DispatchOutput {

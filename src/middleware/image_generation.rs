@@ -185,7 +185,11 @@ impl Tool for GenerateImage {
         ApprovalRequirement::Always
     }
 
-    fn call(&self, context: ToolContext, arguments: Value) -> BoxFuture<'_, Result<ToolResponse>> {
+    fn call(
+        &self,
+        mut context: ToolContext,
+        arguments: Value,
+    ) -> BoxFuture<'_, Result<ToolResponse>> {
         Box::pin(async move {
             let arguments: GenerateImageArgs = serde_json::from_value(arguments)?;
             if arguments.reference_file_ids.len() > MAX_REFERENCE_IMAGES {
@@ -215,7 +219,12 @@ impl Tool for GenerateImage {
                     },
                 )
                 .await?;
+            let returns_images = self
+                .models
+                .supports_tool_image_input(context.model_route())
+                .unwrap_or(false);
             if let Some(usage) = generated.usage {
+                context = context.with_model_route(image.route);
                 context.report_usage(usage)?;
             }
             let extension = image::ImageFormat::from_mime_type(&generated.media_type)
@@ -234,11 +243,7 @@ impl Tool for GenerateImage {
                 )
                 .await?;
             // Models without image tool results receive the file; frontends still get its pixels.
-            let part = if self
-                .models
-                .supports_tool_image_input(context.model_route())
-                .unwrap_or(false)
-            {
+            let part = if returns_images {
                 ContentPart::Image { image }
             } else {
                 ContentPart::File { file: image.file }
@@ -409,29 +414,46 @@ mod tests {
             NetworkAccess::Allowed,
             ["image-call".into()],
         );
-        let context = ToolContext::new(
+        crate::middleware::tools::Tools::new(Vec::new())
+            .register(&mut catalog, &runtime)
+            .expect("register tool discovery");
+        catalog.finalize().expect("finalize image tools");
+        let visible = ["generate_image".into()].into_iter().collect();
+        let call = catalog.bind_call(
+            crate::protocol::ToolCall {
+                call_id: "image-call".into(),
+                name: "generate_image".into(),
+                arguments: serde_json::json!({"prompt":"a red landscape", "image_aspect":"landscape", "reference_file_ids":[source.id]}),
+            },
+            &visible,
+            &visible,
+        ).expect("bind image call");
+        let mut results = crate::middleware::tools::execute_batch(
+            &catalog,
+            [call],
             Arc::clone(&sandbox),
-            permissions.for_call("image-call"),
-            "turn",
+            &permissions,
+            &"turn".into(),
+            &"image".into(),
+            &crate::protocol::MessageAuthor::User.into(),
         )
-        .with_model_route("image");
-        let response = tool
-            .call(
-                context,
-                serde_json::json!({"prompt": "a red landscape", "image_aspect": "landscape", "reference_file_ids": [source.id]}),
-            )
-            .await
-            .expect("generate image");
-        let Some(ContentPart::Image { image }) = response.content.0.first() else {
+        .await;
+        assert_eq!(results.len(), 1);
+        let result = results.pop().expect("image result");
+        assert!(!result.is_error, "{}", result.output.text());
+        assert_eq!(
+            result
+                .usage
+                .as_ref()
+                .map(|reported| (&*reported.route, reported.usage.total_tokens)),
+            Some(("openai::gpt-image-2.5-sunburst", 1))
+        );
+        let response = result.output;
+        let Some(ContentPart::Image { image }) = response.0.first() else {
             panic!("generated image part");
         };
         assert!(image.width > 0 && image.height > 0);
-        let file = response
-            .content
-            .files()
-            .next()
-            .expect("published file")
-            .clone();
+        let file = response.files().next().expect("published file").clone();
         assert_eq!(
             store
                 .read_file(&"session".parse().expect("session ID"), &file)
@@ -480,7 +502,7 @@ mod tests {
                     turn_id: "turn".into(),
                     call_id: "image-call".into(),
                     name: "generate_image".into(),
-                    output: response.content,
+                    output: response,
                     is_error: false,
                 }),
                 "session",
