@@ -142,12 +142,17 @@ impl Workspace {
                 FrontendSettingKind::Select {
                     options,
                     unset_label,
-                } => match select_value(config, &feature.id, &setting.id) {
-                    Some(value) => Cow::Owned(
-                        self.option_label(options.iter().map(|o| (&*o.value, &*o.label)), value),
-                    ),
-                    None => Cow::Borrowed(unset_label.as_deref().unwrap_or("Not set")),
-                },
+                } => {
+                    let value =
+                        match select_value(config, &feature.id, &setting.id) {
+                            Some(value) => Cow::Owned(self.option_label(
+                                options.iter().map(|o| (&*o.value, &*o.label)),
+                                value,
+                            )),
+                            None => Cow::Borrowed(unset_label.as_deref().unwrap_or("Not set")),
+                        };
+                    Cow::Owned(format!("{}: {value}", setting.label))
+                }
             })
             .collect();
         let available = extensions(gateway, feature);
