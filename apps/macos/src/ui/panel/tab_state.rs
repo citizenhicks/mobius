@@ -184,7 +184,8 @@ impl TabState {
         session: &SessionId,
     ) -> usize {
         let target = PageTab::Chat(session.share());
-        if TabOwner::of(tabs) == TabOwner::Draft {
+        let owner = TabOwner::of(tabs);
+        if owner == TabOwner::Draft {
             self.remember(tabs, active);
             if let Some(page) = self.pages.remove(&TabOwner::Draft) {
                 self.pages.insert(TabOwner::Chat(session.share()), page);
@@ -197,7 +198,7 @@ impl TabState {
             }
             return active;
         }
-        if TabOwner::of(tabs) == TabOwner::Chat(session.share()) {
+        if owner == TabOwner::Global || owner == TabOwner::Chat(session.share()) {
             return active;
         }
         self.activate(tabs, active, target)
@@ -253,7 +254,7 @@ mod tests {
         state.insert(TabOwner::Draft, "terminal".into());
         let active = state.activate(&mut tabs, active, PageTab::Content("terminal".into()));
         let session = "created".parse().unwrap();
-        let active = state.session_opened(&mut tabs, active, &session);
+        let mut active = state.session_opened(&mut tabs, active, &session);
         assert_eq!(tabs[0], PageTab::Chat(session));
         assert_eq!(tabs[active], PageTab::Content("terminal".into()));
         assert_eq!(
@@ -263,6 +264,17 @@ mod tests {
         );
         state.remove("terminal");
         assert_eq!(state.last(&TabOwner::of(&tabs)), Some(&file));
+        for page in [
+            PageTab::Settings(SettingsPage::Appearance),
+            PageTab::Bot("bot".into()),
+        ] {
+            active = state.activate(&mut tabs, active, page.clone());
+            active = state.session_opened(&mut tabs, active, &"resumed".parse().unwrap());
+            assert_eq!(
+                tabs[active], page,
+                "background resume must keep the selected page"
+            );
+        }
     }
 
     #[test]
