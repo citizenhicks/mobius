@@ -1,5 +1,5 @@
 //! The waiting line (TranscriptWaitingNote.swift): during a running turn's quiet gaps, a
-//! shimmering "thinking", or the turn's reasoning title once it has one.
+//! "thinking", or the turn's reasoning title once it has one.
 
 use super::{
     AnyElement, Context, InteractiveElement, IntoElement, ParentElement, SharedString,
@@ -97,7 +97,7 @@ impl Workspace {
             })
     }
 
-    /// The shimmering line: the turn's reasoning title, or "thinking" until there is one.
+    /// The waiting line: the turn's reasoning title, or "thinking" until there is one.
     pub(in crate::ui) fn waiting_phrase(&self) -> Option<AnyElement> {
         self.chat_ui.waiting.as_ref()?;
         let text = self
@@ -107,14 +107,14 @@ impl Workspace {
             div()
                 .min_w_0()
                 .truncate()
-                .child(composer::shimmer_text("waiting-phrase", text))
+                .child(composer::status_text(text))
                 .into_any_element(),
         )
     }
 
-    /// A running group's summary: it shimmers while the run is live.
+    /// A running group's current progress summary.
     pub(in crate::ui) fn running_summary(summary: String) -> AnyElement {
-        composer::shimmer_text("running-summary", summary)
+        composer::status_text(summary)
     }
 
     /// The waiting line as the transcript's last row, when no event group owns the phrase.

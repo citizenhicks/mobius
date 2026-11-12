@@ -743,10 +743,7 @@ impl Workspace {
                 .items_center()
                 .gap(space::S)
                 .child(Spinner::new(glyph::MARK).color(p.muted))
-                .child(composer::shimmer_text(
-                    "earlier-history-loading",
-                    "Loading earlier messages…",
-                ))
+                .child(composer::status_text("Loading earlier messages…"))
                 .into_any_element()
         } else {
             div()

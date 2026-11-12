@@ -33,7 +33,6 @@ pub const CROSSFADE: Duration = STANDARD;
 pub const BLINK: Duration = Duration::from_millis(110);
 pub const WINK: Duration = Duration::from_millis(800);
 pub const REACTION: Duration = Duration::from_millis(1400);
-pub const SHIMMER_PERIOD: Duration = Duration::from_millis(1600);
 /// At most 30 frames per second.
 pub const FRAME: Duration = Duration::from_millis(33);
 /// A display frame, for motion driven from a task rather than the renderer.
