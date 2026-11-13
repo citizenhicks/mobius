@@ -6,7 +6,10 @@ use super::*;
 use gpui_component::Disableable;
 use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_component::tooltip::Tooltip;
-use mobius::protocol::{FrontendSlot, MessageTarget, Op};
+use mobius::protocol::{
+    FrontendAction, FrontendEditor, FrontendSlot, FrontendSymbol, FrontendTone, FrontendWidget,
+    MessageTarget, Op,
+};
 use mobius_gateway::wire::ClientMessage;
 use std::rc::Rc;
 
@@ -16,7 +19,7 @@ enum Action {
         text: SharedString,
     },
     Widget(Box<Op>),
-    Edit(Rc<FrontendAction>),
+    Edit(Arc<FrontendWidget>),
     Reply {
         target: MessageTarget,
         text: SharedString,
@@ -34,7 +37,7 @@ pub(super) struct Message {
     pub(super) key: SharedString,
     pub(super) text: SharedString,
     pub(super) target: Option<MessageTarget>,
-    pub(super) edit: Option<Rc<FrontendAction>>,
+    pub(super) edit: Option<Arc<FrontendWidget>>,
     /// Incoming provenance; generated assistant prose has no input author.
     pub(super) author: Option<MessageAuthor>,
     pub(super) recorded_at_ms: i64,
@@ -119,10 +122,12 @@ impl Workspace {
         }
         if let Some(edit) = &message.edit {
             actions.push((
-                Action::Edit(Rc::clone(edit)),
-                edit.label.as_str().into(),
-                symbol_icon_or(Some(&edit.symbol), "hi.dotsThree"),
-                !self.widget_action_blocked(edit),
+                Action::Edit(Arc::clone(edit)),
+                "Edit".into(),
+                symbol_icon_or(Some(&FrontendSymbol::Edit), "hi.dotsThree"),
+                edit.action
+                    .as_ref()
+                    .is_some_and(|op| !self.widget_operation_blocked(op)),
             ));
         }
         let target = message.target.as_ref().filter(|_| chat);
@@ -236,8 +241,29 @@ impl Workspace {
             Action::Widget(op) => {
                 self.dispatch_widget_operation((**op).clone(), false, cx); // rules-allow: the action runs on every click and each dispatch owns its operation
             }
-            Action::Edit(action) => {
-                self.activate_widget_action(Rc::clone(action), false, window, cx);
+            Action::Edit(item) => {
+                let Some(op) = &item.action else {
+                    return;
+                };
+                self.activate_widget_action(
+                    FrontendAction {
+                        id: format!("edit:{}", item.id),
+                        label: "Edit".into(),
+                        symbol: FrontendSymbol::Edit,
+                        tone: FrontendTone::Neutral,
+                        op: op.clone(), // rules-allow: only the opened editor owns its operation while the gateway widget keeps it
+                        input_from_label: false,
+                        editor: Some(FrontendEditor {
+                            title: "Edit message".into(),
+                            label: "Message".into(),
+                            description: "Update this message before it is delivered.".into(),
+                            submit_label: "Save".into(),
+                        }),
+                    },
+                    false,
+                    window,
+                    cx,
+                );
             }
             Action::Reply {
                 target,

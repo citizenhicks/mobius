@@ -23,8 +23,8 @@ use crate::numeric::ToFloat;
 use gpui_component::menu::ContextMenuExt;
 use mobius::SessionId;
 use mobius::protocol::{
-    FrontendAction, FrontendEditor, FrontendSymbol, FrontendTone, MessageAuthor, MessageDelivery,
-    MessageEvent, ModelStepContentPhase, SessionFileReference,
+    FrontendSymbol, FrontendTone, MessageAuthor, MessageDelivery, MessageEvent,
+    ModelStepContentPhase, SessionFileReference,
 };
 use mobius_gateway::wire::{
     BotShape, TranscriptItemContent, TranscriptRow, TranscriptRowKind, TurnChanges,
@@ -352,7 +352,7 @@ impl Workspace {
             id,
             text,
             expanded_content,
-            toggle: std::rc::Rc::new(cx.listener(move |this, _, _, cx| {
+            toggle: Rc::new(cx.listener(move |this, _, _, cx| {
                 if !this.expanded.remove(toggle.as_ref()) {
                     this.expanded.insert(toggle.to_string()); // rules-allow: the toggle is Fn and the expanded set owns its keys
                 }
@@ -928,22 +928,7 @@ impl Workspace {
                     key,
                     text: item.text.clone().into(), // rules-allow: the 'static message menu owns its text
                     target: None,
-                    edit: item.action.as_ref().map(|op| {
-                        Rc::new(FrontendAction {
-                            id: format!("edit:{}", item.id),
-                            label: "Edit".into(),
-                            symbol: FrontendSymbol::Edit,
-                            tone: FrontendTone::Neutral,
-                            op: op.clone(), // rules-allow: the editor owns its operation while the live widget keeps it
-                            input_from_label: false,
-                            editor: Some(FrontendEditor {
-                                title: "Edit message".into(),
-                                label: "Message".into(),
-                                description: "Update this message before it is delivered.".into(),
-                                submit_label: "Save".into(),
-                            }),
-                        })
-                    }),
+                    edit: Some(Arc::clone(item)),
                     author: Some(MessageAuthor::User),
                     recorded_at_ms: 0,
                     bot: None,

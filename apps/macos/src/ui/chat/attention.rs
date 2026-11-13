@@ -588,7 +588,7 @@ impl Workspace {
                 && !item
                     .actions
                     .iter()
-                    .any(|action| self.widget_action_blocked(action)),
+                    .any(|action| self.widget_operation_blocked(&action.op)),
         }
     }
 

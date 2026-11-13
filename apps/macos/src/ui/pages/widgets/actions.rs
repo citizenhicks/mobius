@@ -7,7 +7,7 @@ use std::rc::Rc;
 impl Workspace {
     pub(in crate::ui) fn widget_action(
         &self,
-        action: FrontendAction,
+        action: &FrontendAction,
         global: bool,
         cx: &Context<Self>,
     ) -> AnyElement {
@@ -16,13 +16,13 @@ impl Workspace {
         } else {
             known_symbol_icon(Some(&action.symbol))
         };
-        let action = Rc::new(action);
+        let action = Rc::new(action.clone()); // rules-allow: the static click handler owns its action while the list keeps it
         button(SharedString::from(&action.id), &action.label)
             .when_some(glyph, |button, glyph| {
                 button.icon(icon(glyph, &palette(cx)))
             })
             .text_color(self.palette.tone(action.tone))
-            .disabled(self.widget_action_blocked(&action))
+            .disabled(self.widget_operation_blocked(&action.op))
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.activate_widget_action(Rc::clone(&action), global, window, cx);
             }))
@@ -30,10 +30,9 @@ impl Workspace {
     }
 
     /// Offline, or this action's operation is already on its way.
-    pub(in crate::ui) fn widget_action_blocked(&self, action: &FrontendAction) -> bool {
+    pub(in crate::ui) fn widget_operation_blocked(&self, op: &Op) -> bool {
         !self.client.link.is_ready()
-            || operation_key(&action.op)
-                .is_some_and(|key| self.chat_ui.action_requests.contains_key(&key))
+            || operation_key(op).is_some_and(|key| self.chat_ui.action_requests.contains_key(&key))
     }
 
     /// A contributed list action for a header: icon-only, its label as the tooltip, and
@@ -49,7 +48,7 @@ impl Workspace {
         let button = toolbar_button(id, &action.label, glyph, cx);
         let shared = Rc::new(action.clone()); // rules-allow: the 'static listener owns its copy of the action from gateway state
         button
-            .disabled(self.widget_action_blocked(action))
+            .disabled(self.widget_operation_blocked(&action.op))
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.activate_widget_action(Rc::clone(&shared), global, window, cx);
             }))
