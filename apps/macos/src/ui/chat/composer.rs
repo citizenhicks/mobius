@@ -412,7 +412,7 @@ impl Workspace {
                             .text_color(self.palette.muted)
                             .typography(Type::Label)
                             .when(!self.voice_connected, |status| {
-                                status.child(status_text("Connecting voice…"))
+                                status.child(shimmer_text("voice-status", "Connecting voice…"))
                             }),
                     )
                     .child(
@@ -442,10 +442,33 @@ fn delivery_label(delivery: Option<ActiveMessageDelivery>) -> (&'static str, &'s
     }
 }
 
-/// Status text changes with progress instead of repainting between updates.
-pub(super) fn status_text(text: impl Into<SharedString>) -> AnyElement {
-    div()
-        .min_w_0()
-        .child(StyledText::new(text.into()))
-        .into_any_element()
+/// Muted text with the running shimmer; static in inactive windows or Reduce Motion.
+pub(super) fn shimmer_text(id: &'static str, text: impl Into<SharedString>) -> AnyElement {
+    RunningText {
+        id,
+        text: text.into(),
+    }
+    .into_any_element()
+}
+
+#[derive(IntoElement)]
+struct RunningText {
+    id: &'static str,
+    text: SharedString,
+}
+
+impl RenderOnce for RunningText {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        if motion::is_animating(window, cx) {
+            gpui_component::shimmer::ShimmerText::new(self.text)
+                .id(self.id)
+                .duration(motion::SHIMMER_PERIOD)
+                .into_any_element()
+        } else {
+            div()
+                .min_w_0()
+                .child(StyledText::new(self.text))
+                .into_any_element()
+        }
+    }
 }
