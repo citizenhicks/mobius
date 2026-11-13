@@ -233,7 +233,8 @@ impl Runner {
         }
         let mut events =
             crate::agent::turn::turn_events(submission_id, hook_events).collect::<Vec<_>>();
-        let tool_usage = batch_usage(&results)?;
+        // Validate the whole batch before usage observers can see a partial result.
+        let has_tool_usage = validate_batch_usage(&results)?;
         // Failed persistence restores calls removed by the tentative result application.
         let pending_tools = self.state.pending_tools.clone(); // rules-allow: restored if persisting the results fails
         let active_accounting = self
@@ -248,7 +249,7 @@ impl Runner {
         let outcome = async {
             self.append_tool_results(&mut results).await?;
             events.extend(tool_result_events(submission_id, turn_id, results));
-            if tool_usage.is_some() {
+            if has_tool_usage {
                 events.push(self.usage_event(submission_id));
             }
             self.persist_with_events(events, None).await?;
@@ -356,7 +357,7 @@ impl Runner {
     }
 }
 
-fn batch_usage(results: &[ToolResult]) -> Result<Option<TokenUsage>> {
+fn validate_batch_usage(results: &[ToolResult]) -> Result<bool> {
     let mut total = None;
     for reported in results.iter().filter_map(|result| result.usage.as_ref()) {
         total
@@ -366,7 +367,7 @@ fn batch_usage(results: &[ToolResult]) -> Result<Option<TokenUsage>> {
                 Error::Provider("provider token usage exceeds the supported range".into())
             })?;
     }
-    Ok(total)
+    Ok(total.is_some())
 }
 
 pub(super) fn tool_call_inputs(calls: &[ToolCall]) -> Result<Vec<serde_json::Value>> {
@@ -441,7 +442,7 @@ mod tests {
     use crate::middleware::tools::ReportedToolUsage;
 
     #[test]
-    fn batch_usage_includes_every_paid_tool_call() {
+    fn paid_tool_batches_reject_overflow_before_recording_usage() {
         let mut results = (0..2)
             .map(|index| {
                 ToolResult::error(
@@ -455,6 +456,10 @@ mod tests {
                 )
             })
             .collect::<Vec<_>>();
+        assert!(
+            !validate_batch_usage(&results).unwrap(),
+            "unpaid calls need no usage event"
+        );
         for (result, tokens) in results.iter_mut().zip([7, 5]) {
             result.usage = Some(ReportedToolUsage {
                 route: "route".into(),
@@ -464,6 +469,14 @@ mod tests {
                 },
             });
         }
-        assert_eq!(batch_usage(&results).unwrap().unwrap().total_tokens, 12);
+        assert!(
+            validate_batch_usage(&results).unwrap(),
+            "paid calls need a usage event"
+        );
+        results[0].usage.as_mut().unwrap().usage.total_tokens = i64::MAX;
+        assert!(
+            matches!(validate_batch_usage(&results), Err(Error::Provider(_))),
+            "overflow must fail before any observer is called"
+        );
     }
 }
