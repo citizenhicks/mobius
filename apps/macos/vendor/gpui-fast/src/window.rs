@@ -3136,13 +3136,6 @@ impl Window {
             .render_to_image(&self.rendered_frame.scene)
     }
 
-    /// Borrows the most recently rendered frame's scene, so benchmarks can validate their
-    /// output and report batch counts without cloning it.
-    #[cfg(feature = "bench-support")]
-    pub fn rendered_scene(&self) -> &Scene {
-        &self.rendered_frame.scene
-    }
-
     /// Returns the quads in the most recently rendered frame's scene, so tests can assert on
     /// painted output without rasterizing the frame. Quad bounds are in scaled pixels and are
     /// not clipped; each quad carries the content mask it will be clipped to when drawn. Quads
@@ -3884,6 +3877,7 @@ impl Window {
         self.invalidator.replace_views(views);
     }
 
+    #[profiling::function]
     fn present(&mut self) {
         crate::fast::motion::presented(self);
         #[cfg(feature = "profiler")]
@@ -4417,7 +4411,7 @@ impl Window {
 
         self.text_system
             .reuse_layouts(range.start.line_layout_index..range.end.line_layout_index);
-        crate::fast::motion::replay(&mut self.next_frame.scene, range.start.scene_index..range.end.scene_index, &self.rendered_frame.scene, &range.start.fast_motion_parent);
+        crate::fast::motion::reuse(self, range.start.scene_index..range.end.scene_index, &range.start.fast_motion_parent);
     }
 
     /// Push a text style onto the stack, and call a function with that style active.

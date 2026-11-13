@@ -230,6 +230,12 @@ pub(crate) fn finish_measure_tally(engine: &mut TaffyLayoutEngine, tally: Measur
 }
 
 impl Window {
+    /// Borrows the rendered scene for test and benchmark assertions.
+    #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
+    pub fn rendered_scene(&self) -> &crate::Scene {
+        &self.rendered_frame.scene
+    }
+
     /// Counters describing the work the layout engine has performed since the
     /// last call to [`Window::reset_layout_stats`].
     ///

@@ -101,7 +101,7 @@ pub(crate) fn compile(scene: &mut Scene) {
             PaintOperation::Primitive(primitive) => stack
                 .last_mut()
                 .unwrap()
-                .insert_primitive(primitive.clone()),
+                .insert(primitive.clone()),
             PaintOperation::StartLayer(bounds) => stack.last_mut().unwrap().push_layer(*bounds),
             PaintOperation::EndLayer => stack.last_mut().unwrap().pop_layer(),
         }

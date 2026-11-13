@@ -47,11 +47,7 @@ pub(crate) fn moved(
     path: &gpui::Path<gpui::ScaledPixels>,
     motions: &[gpui::MotionTransform],
 ) -> (gpui::TransformationMatrix, gpui::Bounds<gpui::ScaledPixels>) {
-    let transformation = motions
-        .get(path.fast_motion as usize)
-        .map_or(gpui::TransformationMatrix::unit(), |motion| {
-            motion.transformation
-        });
+    let transformation = motions[path.fast_motion as usize].transformation;
     if path.fast_motion == 0 {
         return (transformation, path.clipped_bounds());
     }

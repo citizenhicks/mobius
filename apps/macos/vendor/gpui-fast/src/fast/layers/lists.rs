@@ -2776,6 +2776,27 @@ pub(crate) fn end_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Glob
         mem::swap(&mut window.next_frame.scene, &mut paint.scene);
         window.content_mask_stack.pop();
     }
+    if crate::fast::motion::has_motion(&paint.scene) {
+        for row in frame.slots.keys() {
+            if let Some(span) = paint.spans.iter().find(|span| span.row == *row) {
+                paint::draw_motion_into_frame(window, &paint.scene, span.operations.clone());
+            } else {
+                let previous = window
+                    .fast_layers
+                    .layers
+                    .get(id)
+                    .and_then(|layer| layer.rows.rows.get(row))
+                    .map(|row| Row::whole_part(row).scene);
+                if let Some(previous) = previous {
+                    paint::draw_into_frame(window, &previous.paint_operations, frame.translation);
+                }
+            }
+        }
+        clear_rows(window, id, &frame);
+        policy::defer_unbaked(window, id);
+        window.request_animation_frame();
+        return;
+    }
     let rendered_rows: Vec<usize> = paint.spans.iter().map(|span| span.row).collect();
     let rendered_operations = paint.scene.paint_operations.len();
     let painted = paint.scene;

@@ -63,3 +63,29 @@ test covers absent, completed and pending entries and counts loader calls.
 Recent-cache retention follows the real tab owner: one chat plus companion tabs.
 Keep open/document references and unsent drafts; keep the four recent chats.
 The memory/dreaming overwrite policy is unchanged.
+
+## Retained motion and scroll layers
+
+Each attachment has its own scope identity even when two `Motion` values share a
+sampler. Replayed motion keeps its original view owner for layer eligibility.
+A scroll container that paints motion bypasses its cached layer in that frame:
+painted motion is remapped into the frame, and carried static rows keep their
+order. Replay renews the animation note, so promotion stays off while motion
+content remains. Static scroll content still promotes normally.
+
+`Scene::insert_primitive` deliberately splits stamping from the private unstamped
+`Scene::insert`: copied primitives receive the current scene's scope, while replay
+and rounded-clip scenes explicitly preserve/remap indices with their own tables.
+This body split is an additional proposed upstream-file exception, beyond the
+qualified hooks. `Window::rendered_scene` lives in Fast's stats owner and is
+available only with test-support or bench-support; shipping API is unchanged.
+
+The ordinary app tests execute the motion invariants and virtual scroll/list
+windows, checking fresh, scrolled, and retained scenes against a different sibling
+motion. Every tested primitive must index its own table and preserve its 7px
+translation rather than the sibling's 50px motion. Static content must first
+promote to a layer, so the test cannot pass by disabling scroll layers globally.
+
+Content masks and rounded clips remain at laid-out positions; motion inside a
+moving clipping ancestor can appear as a wipe. Highlights use window coordinates,
+so a horizontal translation does not carry the highlight band with the text.

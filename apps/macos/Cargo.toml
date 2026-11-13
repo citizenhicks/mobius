@@ -18,6 +18,7 @@ path = "src/main.rs"
 members = ["browser-helper", "crates/mobius-client"]
 
 [workspace.dependencies]
+gpui = { package = "gpui-fast", version = "=0.1.14" }
 # Chromium, embedded: one pinned CEF build shared by the app and its helper processes.
 cef = { version = "=156.0.0", default-features = false, features = ["sandbox"] }
 # The framework and gateway this app speaks to, from the same repository.
@@ -30,7 +31,7 @@ objc2 = "0.6"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSWorkspace", "NSImage", "NSBitmapImageRep", "NSImageRep"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSArray", "NSString", "NSURL", "NSData", "NSDictionary"] }
 anyhow = "1"
-gpui = { package = "gpui-fast", version = "=0.1.14" }
+gpui.workspace = true
 gpui_platform = { package = "gpui-fast-platform", version = "=0.1.14", features = ["runtime_shaders", "font-kit"] }
 reqwest = { version = "0.12", default-features = false, features = ["http2", "macos-system-configuration", "rustls-tls-native-roots", "socks", "stream"] }
 tempfile = "3"
@@ -63,6 +64,7 @@ http-body-util = "0.1"
 lilt = "0.8.2"
 
 [dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
 # Tests build transcripts with the gateway's own reducer; see mobius-client's fixture.rs.
 mobius-gateway = { workspace = true, features = ["fixtures"] }
 

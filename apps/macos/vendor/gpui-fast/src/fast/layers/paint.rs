@@ -648,15 +648,49 @@ pub(crate) fn draw_into_frame<'a>(
     operations: impl IntoIterator<Item = &'a PaintOperation>,
     delta: Point<ScaledPixels>,
 ) {
+    draw_operations(window, operations, delta, None);
+}
+
+pub(crate) fn draw_motion_into_frame(
+    window: &mut Window,
+    source: &Scene,
+    range: std::ops::Range<usize>,
+) {
+    draw_operations(
+        window,
+        &source.paint_operations[range],
+        Point::default(),
+        Some(source),
+    );
+}
+
+fn draw_operations<'a>(
+    window: &mut Window,
+    operations: impl IntoIterator<Item = &'a PaintOperation>,
+    delta: Point<ScaledPixels>,
+    source: Option<&Scene>,
+) {
     let viewports = viewports(window);
     let viewport = viewports.snapped;
     let scene = &mut window.next_frame.scene;
+    let mut motions = FxHashMap::default();
     for operation in operations {
         match operation {
             PaintOperation::Primitive(primitive) => {
                 let mut primitive = translate_primitive(primitive, delta);
                 clip_primitive(&mut primitive, viewports);
-                scene.insert_primitive(primitive);
+                if let Some(source) = source {
+                    crate::fast::motion::remap_primitive(
+                        scene,
+                        source,
+                        &mut primitive,
+                        &mut motions,
+                        &crate::fast::motion::Scope::default(),
+                    );
+                    scene.insert(primitive);
+                } else {
+                    scene.insert_primitive(primitive);
+                }
             }
             PaintOperation::StartLayer(bounds) => {
                 let bounds = Bounds {
@@ -739,6 +773,13 @@ fn repaint(
     let paint_end = window.paint_index();
     mem::swap(&mut window.next_frame.scene, &mut painting.scene);
     window.content_mask_stack.pop();
+    if crate::fast::motion::has_motion(&painting.scene) {
+        draw_motion_into_frame(window, &painting.scene, 0..painting.scene.len());
+        layer_mut(window, &painting.id).record = None;
+        policy::defer_unbaked(window, &painting.id);
+        window.request_animation_frame();
+        return;
+    }
 
     let scale_factor = window.scale_factor();
     let translation = painting.translation;

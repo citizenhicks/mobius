@@ -250,6 +250,10 @@ pub(crate) fn decide(
             demote = true;
             Decision::Bypass
         }
+        _ if invalidate::animation_frame_requested(window, id) => {
+            ineligible = true;
+            Decision::Bypass
+        }
         Some(record) if !eligible(window, id, policy, record) => {
             ineligible = true;
             Decision::Bypass
