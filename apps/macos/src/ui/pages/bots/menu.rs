@@ -122,7 +122,7 @@ impl Workspace {
                     shape,
                     config: config.clone(), // rules-allow: each submit sends its own copy of the snapshot
                 };
-                this.send(message, cx);
+                this.send(message, cx)
             },
         );
     }

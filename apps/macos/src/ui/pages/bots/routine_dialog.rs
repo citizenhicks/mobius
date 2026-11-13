@@ -92,8 +92,7 @@ impl Workspace {
             let (schedule, ends_at) = (inputs.schedule(f, cx), inputs.ends_at(f, cx));
             let instructions = inputs.instructions.read(cx).value().trim().to_owned();
             let ready = view.upgrade().is_some_and(|view| {
-                let workspace = view.read(cx);
-                workspace.client.epoch == epoch && workspace.client.link.is_ready()
+                view.read(cx).gateway_dialog_ready(epoch)
             });
             let valid = ready && !f.busy() && !f.workspace.is_empty() && !instructions.is_empty()
                 && (schedule.is_some() || (f.mode == Mode::Bindings && f.saved_triggers.is_some()))
@@ -128,6 +127,7 @@ impl Workspace {
                         view.update(cx, |this, cx| {
                             this.submit_gateway_dialog(epoch, cx, |this, cx| {
                                 this.save_routine(submit, &editor, cx);
+                                false
                             });
                         });
                     }

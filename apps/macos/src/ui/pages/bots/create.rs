@@ -89,10 +89,12 @@ impl Workspace {
         let view = cx.entity().downgrade();
         let epoch = self.client.epoch;
         let tint = self.accent.color();
-        let ready = self.client.link.is_ready();
         let focus = Entity::clone(&name);
         window.open_dialog(cx, move |dialog, window, cx| {
             let p = *cx.global::<crate::ui::theme::Palette>();
+            let ready = view
+                .upgrade()
+                .is_some_and(|view| view.read(cx).gateway_dialog_ready(epoch));
             let (title, detail) = (
                 name.read(cx).value().trim().to_owned(),
                 description.read(cx).value().trim().to_owned(),
@@ -136,7 +138,7 @@ impl Workspace {
                     dialog_actions(dialog, "Create", ready, move |_, cx| {
                         view.update(cx, |this, cx| {
                             this.submit_gateway_dialog(epoch, cx, |this, cx| {
-                                this.create_bot(&inputs.0, &inputs.1, cx);
+                                this.create_bot(&inputs.0, &inputs.1, cx)
                             })
                         })
                         .unwrap_or(false)
@@ -154,7 +156,7 @@ impl Workspace {
         name: &Entity<InputState>,
         description: &Entity<TextareaState>,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         let name = name.read(cx).value().trim().to_owned();
         let description = description.read(cx).value().trim().to_owned();
         let known = self
@@ -171,6 +173,6 @@ impl Workspace {
             name,
             description,
         };
-        self.track_bots_request(request_id, Pending::Create(known), message, cx);
+        self.track_bots_request(request_id, Pending::Create(known), message, cx)
     }
 }

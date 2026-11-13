@@ -85,13 +85,13 @@ impl Workspace {
             .kind(EditKind::Multiline { min: 3, max: 10 });
             self.edit_text(edit, window, cx, move |this, text, _, cx| {
                 if !this.widget_session_current(global, session.as_deref(), cx) {
-                    return;
+                    return false;
                 }
                 let mut op = action.op.clone(); // rules-allow: each submission sends its own operation, the action stays shared
                 if let Op::CapabilityCommand { input, .. } = &mut op {
                     *input = Some(text);
                 }
-                this.dispatch_widget_operation(op, global, cx);
+                this.dispatch_widget_operation(op, global, cx).is_some()
             });
         } else if action.tone == FrontendTone::Error {
             let label = SharedString::from(&action.label);
@@ -143,6 +143,10 @@ impl Workspace {
             .as_ref()
             .is_some_and(|key| self.chat_ui.action_requests.contains_key(key))
         {
+            self.report(
+                "This action is already being sent. Wait for its reply before trying again.",
+            );
+            cx.notify();
             return None;
         }
         let (id, message) = if global {
@@ -153,13 +157,20 @@ impl Workspace {
             };
             (id, message)
         } else {
-            let session = self
+            let Some(session) = self
                 .client
                 .state
                 .selected_session_id
                 .as_ref()
-                .map(SessionId::share)?;
+                .map(SessionId::share)
+            else {
+                self.report("Open the original chat before saving this action.");
+                cx.notify();
+                return None;
+            };
             if !self.client.link.is_ready() || !self.active_session_ready() {
+                self.report("Wait until this chat finishes loading before trying again.");
+                cx.notify();
                 return None;
             }
             let message = crate::gateway::submit(session, op);

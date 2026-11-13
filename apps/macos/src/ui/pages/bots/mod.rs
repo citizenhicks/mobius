@@ -177,7 +177,7 @@ impl Workspace {
             Pending::Routine | Pending::RunRoutine(_) => self.refresh_routines(cx),
             Pending::Install(source) => {
                 if rejection.is_some() {
-                    self.install_dialog(&source, rejection, window, cx);
+                    self.install_dialog(&source, window, cx);
                 }
             }
             Pending::Create(_) => {}
@@ -192,8 +192,8 @@ impl Workspace {
         pending: Pending,
         message: ClientMessage,
         cx: &mut Context<Self>,
-    ) {
-        match self.enqueue(message) {
+    ) -> bool {
+        let sent = match self.enqueue(message) {
             Ok(()) => {
                 if let Pending::SaveRoutine(form) = &pending
                     && let Some(form) = form.upgrade()
@@ -204,13 +204,16 @@ impl Workspace {
                     });
                 }
                 self.bots.pending.insert(request_id, pending);
+                true
             }
             Err(error) => {
                 self.bots.abandon(pending, cx);
                 self.report(error);
+                false
             }
-        }
+        };
         cx.notify();
+        sent
     }
 
     fn is_pending(&self, pending: &Pending) -> bool {

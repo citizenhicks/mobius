@@ -226,9 +226,8 @@ impl Workspace {
                 window,
                 cx,
                 move |this, path, _, cx| {
-                    if this.client.epoch == epoch && !path.trim().is_empty() {
-                        on_pick(this, path.trim().into(), cx);
-                    }
+                    on_pick(this, path.trim().into(), cx);
+                    true
                 },
             );
             return;

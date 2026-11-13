@@ -2,8 +2,6 @@
 
 use super::*;
 use gpui_component::WindowExt;
-use std::cell::Cell;
-use std::rc::Rc;
 
 const GITHUB: &str = "https://github.com";
 
@@ -181,21 +179,20 @@ impl Workspace {
         });
         let view = cx.entity().downgrade();
         let epoch = self.client.epoch;
-        let (muted, danger) = (self.palette.muted, self.palette.danger);
-        let missing = Rc::new(Cell::new(false));
+        let muted = self.palette.muted;
         window.open_dialog(cx, move |dialog, _, _| {
             let submit = {
-                let (username, token, view, missing) =
-                    (Entity::clone(&username), Entity::clone(&token), WeakEntity::clone(&view), Rc::clone(&missing));
-                move |window: &mut Window, cx: &mut App| {
+                let (username, token, view) =
+                    (Entity::clone(&username), Entity::clone(&token), WeakEntity::clone(&view));
+                move |_: &mut Window, cx: &mut App| {
                     let user = username.read(cx).value().trim().to_owned();
                     let secret = token.read(cx).value().to_string();
-                    if user.is_empty() || secret.is_empty() {
-                        missing.set(true);
-                        window.refresh();
-                        return false;
-                    }
                     view.update(cx, |this, cx| {
+                        if user.is_empty() || secret.is_empty() {
+                            this.report("Enter a username and a token to continue.");
+                            cx.notify();
+                            return false;
+                        }
                         this.submit_gateway_dialog(epoch, cx, |this, cx| {
                             this.send(
                                 ClientMessage::ApproveGitCredential {
@@ -205,7 +202,7 @@ impl Workspace {
                                     token: secret,
                                 },
                                 cx,
-                            );
+                            )
                         })
                     })
                     .unwrap_or(false)
@@ -226,15 +223,7 @@ impl Workspace {
                                 .child("Sent once to the host’s configured Git helper. möbius does not store or read it back."),
                         )
                         .child(labelled("Username", text_field(&username).aria_label("Username"), muted))
-                        .child(labelled("Personal access token", text_field(&token).aria_label("Personal access token"), muted))
-                        .when(missing.get(), |body| {
-                            body.child(
-                                div()
-                                    .typography(Type::Caption)
-                                    .text_color(danger)
-                                    .child("Enter a username and a token to continue."),
-                            )
-                        }),
+                        .child(labelled("Personal access token", text_field(&token).aria_label("Personal access token"), muted)),
                 )
                 .map(|dialog| dialog_actions(dialog, "Save", true, submit))
         });

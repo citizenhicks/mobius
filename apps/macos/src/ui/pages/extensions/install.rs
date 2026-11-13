@@ -10,14 +10,13 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.install_dialog("", None, window, cx);
+        self.install_dialog("", window, cx);
     }
 
     /// The install dialog; a rejected install reopens it with the gateway's message.
     pub(in crate::ui) fn install_dialog(
         &self,
         source: &str,
-        error: Option<Arc<str>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -30,10 +29,11 @@ impl Workspace {
         cx.subscribe(&input, |_, _, _: &InputEvent, cx| cx.notify())
             .detach();
         let view = cx.entity().downgrade();
-        let (epoch, ready) = (self.client.epoch, self.client.link.is_ready());
+        let epoch = self.client.epoch;
         let focus = Entity::clone(&input);
         window.open_dialog(cx, move |dialog, _, cx| {
             let p = *cx.global::<crate::ui::theme::Palette>();
+            let ready = view.upgrade().is_some_and(|view| view.read(cx).gateway_dialog_ready(epoch));
             let enabled = ready && !input.read(cx).value().trim().is_empty();
             let (view, input) = (WeakEntity::clone(&view), Entity::clone(&input));
             dialog
@@ -42,8 +42,7 @@ impl Workspace {
                 .child(text_field(&input).aria_label("Extension Git URL"))
                 .child(div().typography(Type::Caption).text_color(p.muted).child(
                     "An HTTPS Git URL, or a GitHub tree URL pointing at a branch and subdirectory. The gateway clones it, pins an immutable snapshot, and reads its package manifest.",
-                ))
-                .children(error.as_ref().map(|error| div().typography(Type::Caption).text_color(p.danger).child(SharedString::from(Arc::clone(error))))))
+                )))
                 .map(|dialog| dialog_actions(dialog, "Install", enabled, move |_, cx| {
                     let source = input.read(cx).value().trim().to_owned();
                     view.update(cx, |this, cx| {
@@ -55,7 +54,7 @@ impl Workspace {
                                 reference: None,
                                 subdirectory: None,
                             };
-                            this.track_bots_request(request_id, Pending::Install(source), message, cx);
+                            this.track_bots_request(request_id, Pending::Install(source), message, cx)
                         })
                     })
                     .unwrap_or(false)

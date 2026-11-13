@@ -189,14 +189,16 @@ impl Workspace {
                 }
             }
             ChatAction::Computer => self.open_computer(window, cx),
-            ChatAction::Pin(pinned) => self.send(
-                ClientMessage::SetSessionPinned {
-                    request_id: crate::gateway::request_id(),
-                    session_id,
-                    pinned,
-                },
-                cx,
-            ),
+            ChatAction::Pin(pinned) => {
+                self.send(
+                    ClientMessage::SetSessionPinned {
+                        request_id: crate::gateway::request_id(),
+                        session_id,
+                        pinned,
+                    },
+                    cx,
+                );
+            }
             ChatAction::Unread(unread) => self.set_unread(&session_id, unread),
             ChatAction::Rename => self.rename_chat(session_id, window, cx),
             ChatAction::NameWithAi => self.name_chat_with_ai(&session_id),
@@ -219,7 +221,7 @@ impl Workspace {
                         title,
                     },
                     cx,
-                );
+                )
             },
         );
     }
@@ -242,7 +244,7 @@ impl Workspace {
                         folder: folder.trim().into(),
                     },
                     cx,
-                );
+                )
             },
         );
     }

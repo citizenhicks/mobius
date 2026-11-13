@@ -81,11 +81,16 @@ impl Workspace {
         }
     }
 
-    pub(super) fn send(&mut self, message: ClientMessage, cx: &mut Context<Self>) {
-        if let Err(error) = self.enqueue(message) {
-            self.report(error);
-        }
+    pub(super) fn send(&mut self, message: ClientMessage, cx: &mut Context<Self>) -> bool {
+        let sent = match self.enqueue(message) {
+            Ok(()) => true,
+            Err(error) => {
+                self.report(error);
+                false
+            }
+        };
         cx.notify();
+        sent
     }
 
     pub(super) fn enqueue(&mut self, message: ClientMessage) -> Result<(), String> {

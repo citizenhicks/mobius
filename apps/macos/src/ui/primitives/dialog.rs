@@ -10,7 +10,6 @@ use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::dialog::Dialog;
 use gpui_component::input::{InputState, TextareaState};
 use gpui_component::{Disableable, WindowExt};
-use std::cell::Cell;
 use std::rc::Rc;
 
 /// Runs a dialog's action; returns whether the dialog may close.
@@ -102,20 +101,23 @@ impl EditInput {
 }
 
 impl Workspace {
+    pub(in crate::ui) fn gateway_dialog_ready(&self, epoch: u64) -> bool {
+        self.client.epoch == epoch && self.client.link.is_ready()
+    }
+
     /// Runs `submit` only if the gateway this dialog was opened for is still connected.
     pub(in crate::ui) fn submit_gateway_dialog(
         &mut self,
         epoch: u64,
         cx: &mut Context<Self>,
-        submit: impl FnOnce(&mut Self, &mut Context<Self>),
+        submit: impl FnOnce(&mut Self, &mut Context<Self>) -> bool,
     ) -> bool {
-        if epoch != self.client.epoch || !self.client.link.is_ready() {
+        if !self.gateway_dialog_ready(epoch) {
             self.report("The gateway changed or disconnected. Close this dialog and try again.");
             cx.notify();
             return false;
         }
-        submit(self, cx);
-        true
+        submit(self, cx)
     }
 
     /// Asks before an irreversible action; the confirm button is red.
@@ -136,7 +138,10 @@ impl Workspace {
             let (view, on_confirm) = (WeakEntity::clone(&view), Rc::clone(&on_confirm));
             let submit: Submit = Rc::new(move |window, cx| {
                 view.update(cx, |this, cx| {
-                    this.submit_gateway_dialog(epoch, cx, |this, cx| on_confirm(this, window, cx))
+                    this.submit_gateway_dialog(epoch, cx, |this, cx| {
+                        on_confirm(this, window, cx);
+                        true
+                    })
                 })
                 .unwrap_or(false)
             });
@@ -154,40 +159,37 @@ impl Workspace {
         });
     }
 
-    /// Asks for one value; an empty value is refused inline rather than silently.
+    /// Keeps the draft open unless `submit` accepts it; validation uses the shared toast.
     pub(in crate::ui) fn edit_text(
         &self,
         edit: TextEdit,
         window: &mut Window,
         cx: &mut Context<Self>,
-        submit: impl Fn(&mut Self, String, &mut Window, &mut Context<Self>) + 'static,
+        submit: impl Fn(&mut Self, String, &mut Window, &mut Context<Self>) -> bool + 'static,
     ) {
         let input = EditInput::new(&edit.kind, edit.value, window, cx);
         let view = cx.entity().downgrade();
         let epoch = self.client.epoch;
         let submit = Rc::new(submit);
-        let empty = Rc::new(Cell::new(false));
-        let danger = palette(cx).danger;
         let (title, caption, ok_label) = (edit.title, edit.caption, edit.ok_label);
         let focus = EditInput::clone(&input);
         window.open_dialog(cx, move |dialog, _, cx| {
             let muted = palette(cx).muted;
-            let (field, view, submit, check) = (
+            let (field, view, submit) = (
                 EditInput::clone(&input),
                 WeakEntity::clone(&view),
                 Rc::clone(&submit),
-                Rc::clone(&empty),
             );
             let submit: Submit = Rc::new(move |window, cx| {
                 let value = field.value(cx);
-                if value.trim().is_empty() {
-                    check.set(true);
-                    window.refresh();
-                    return false;
-                }
                 view.update(cx, |this, cx| {
+                    if value.trim().is_empty() {
+                        this.report("Enter a value to continue.");
+                        cx.notify();
+                        return false;
+                    }
                     this.submit_gateway_dialog(epoch, cx, |this, cx| {
-                        submit(this, value, window, cx);
+                        submit(this, value, window, cx)
                     })
                 })
                 .unwrap_or(false)
@@ -203,14 +205,6 @@ impl Workspace {
                         .text_color(muted)
                         .child(SharedString::clone(caption))
                 }))
-                .when(empty.get(), |dialog| {
-                    dialog.child(
-                        div()
-                            .typography(Type::Caption)
-                            .text_color(danger)
-                            .child("Enter a value to continue."),
-                    )
-                })
                 .footer(actions(
                     button("dialog-ok", SharedString::clone(&ok_label)).primary(),
                     true,
