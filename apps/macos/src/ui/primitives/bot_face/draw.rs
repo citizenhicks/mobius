@@ -1,7 +1,25 @@
 //! Building a face's elements at a pose, with the GPU motions that carry each part along
 //! its course: head, gaze, brows, blush, ground shadow, cogs and z's.
 
-use super::*;
+use super::mood::BotMood;
+use super::pose::{Course, Pose, cog_turn};
+use crate::ui::primitives::{FontSet, Shape, motion};
+use gpui::prelude::FluentBuilder as _;
+use gpui::{
+    AnyElement, App, Div, FontWeight, Hsla, IntoElement, Motion, MotionExt as _, MotionFrame,
+    ParentElement, Pixels, Point, RenderOnce, SharedString, Size, Styled, Transformation, Window,
+    black, div, point, px, radians, relative, rgba, size, svg, white,
+};
+use gpui_component::menu::PopupMenuItem;
+use mobius_gateway::wire::BotShape;
+use std::time::Instant;
+
+/// Faces this large turn cogs and drift z's; smaller ones keep glyph eyes.
+pub(super) const DETAIL: Pixels = px(40.);
+const EYE_INK: u32 = 0x00_00_00_d1;
+const BROW_INK: u32 = 0x00_00_00_c7;
+const GLINT: u32 = 0xff_ff_ff_e6;
+const BLUSH: u32 = 0xff_6e_8c_ff;
 
 /// What the eyes show: glyphs, or two cogs turning from an instant (still without one).
 #[derive(Clone, Copy)]
@@ -15,18 +33,17 @@ pub(super) enum Eyes {
 pub(super) fn place<E: Styled>(
     element: E,
     unit: Pixels,
-    extent: (f32, f32),
-    offset: (f32, f32),
+    extent: Size<f32>,
+    offset: Point<f32>,
 ) -> E {
-    let ((width, height), (x, y)) = (extent, offset);
     element
         .absolute()
         .left(relative(0.5))
         .top(relative(0.5))
-        .w(unit * width)
-        .h(unit * height)
-        .ml(unit * (x - width / 2.))
-        .mt(unit * (y - height / 2.))
+        .w(unit * extent.width)
+        .h(unit * extent.height)
+        .ml(unit * (offset.x - extent.width / 2.))
+        .mt(unit * (offset.y - extent.height / 2.))
 }
 
 /// One eye glyph, with its brow, cheek and glint when the face has room for them.
@@ -51,8 +68,8 @@ pub(super) fn eye(
             let blush = place(
                 svg().path("icons/face.blush.svg"),
                 em,
-                (0.64, 0.4),
-                (side * 0.22, 0.6),
+                size(0.64, 0.4),
+                point(side * 0.22, 0.6),
             );
             // Gliding, the blush is drawn opaque and the motion sets its opacity.
             eye.child(if matches!(course, Course::Still(_)) {
@@ -72,8 +89,8 @@ pub(super) fn eye(
                 place(
                     div().pill_corners().bg(rgba(GLINT)),
                     em,
-                    (2. * radius, 2. * radius),
-                    (x, y),
+                    size(2. * radius, 2. * radius),
+                    point(x, y),
                 )
             }))
             .child(
@@ -86,8 +103,8 @@ pub(super) fn eye(
                                 -side * brows.slope.atan(),
                             ))),
                         em,
-                        (0.68, 0.26),
-                        (0., -0.56 + brows.lift - side * brows.skew),
+                        size(0.68, 0.26),
+                        point(0., -0.56 + brows.lift - side * brows.skew),
                     ),
                     move |pose, to| {
                         let (now, to) = (pose.brows, to.brows);
@@ -243,63 +260,6 @@ pub(super) fn moving_face(
         ..MotionFrame::default()
     })
 }
-
-/// Two faces for the snapshot harness to compare: one still at the pose a glide shows
-/// `elapsed` into its spring, and one laid out at the glide's end and moved there by its
-/// motions, sampled at `start + elapsed` (the harness's frame clock).
-#[cfg(feature = "snapshot")]
-pub(crate) fn glide_parity(
-    tint: Hsla,
-    size: Pixels,
-    start: Instant,
-    elapsed: Duration,
-) -> [AnyElement; 2] {
-    let from = Pose {
-        head: point(0.03, -0.04),
-        gaze: point(-0.15, 0.05),
-        brows: BotMood::Idle.brows(),
-    };
-    let to = Pose {
-        head: point(-0.02, 0.),
-        gaze: point(0.18, -0.06),
-        brows: BotMood::Happy.brows(),
-    };
-    let glide = Glide {
-        from,
-        to,
-        start,
-        spring: POSE_SPRING,
-    };
-    let still = Course::Still(glide.at(start + elapsed));
-    [
-        still,
-        Course::Live {
-            live: Live::new(glide),
-            layout: to,
-        },
-    ]
-    .map(|course| {
-        let eyes = Eyes::Glyphs(BotMood::Idle.eyes());
-        moving_face(
-            face(tint, BotShape::Circle, size, eyes, &course),
-            size,
-            &course,
-        )
-    })
-}
-
-/// Faces this large turn cogs and drift z's; smaller ones keep glyph eyes.
-pub(super) const DETAIL: Pixels = px(40.);
-/// Seconds between cog ticks; each tick turns one tooth on this spring.
-pub(super) const COG_TICK: f32 = 0.6;
-pub(super) const COG_SPRING: (f32, f32) = (0.3, 0.3);
-/// Seconds a z drifts, and between one z and the next.
-pub(super) const Z_LIFE: f32 = 2.4;
-pub(super) const Z_GAP: f32 = 0.8;
-const EYE_INK: u32 = 0x00_00_00_d1;
-const BROW_INK: u32 = 0x00_00_00_c7;
-const GLINT: u32 = 0xff_ff_ff_e6;
-const BLUSH: u32 = 0xff_6e_8c_ff;
 
 /// The shape's silhouette, light and shade layers, and where its eyes sit: the eye
 /// row's centre and the eye size, both as fractions of the face (BotFace.swift's

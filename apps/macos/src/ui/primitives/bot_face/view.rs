@@ -1,7 +1,23 @@
 //! The lively face: an entity that beats, blinks and winks, turning its glide without
 //! rendering and rendering only when its eyes or mood change.
 
-use super::*;
+use super::draw::{DETAIL, Eyes, clock, face, moving_face};
+use super::mood::BotMood;
+use super::pose::{Course, Glide, Live, MOOD_SPRING, POSE_SPRING, Pose, Spring, between};
+use crate::numeric::ToFloat;
+use crate::ui::primitives::controls::palette;
+use crate::ui::primitives::{FontSet, motion};
+use gpui::{
+    AnyElement, App, Context, Entity, FontWeight, Hsla, InteractiveElement, IntoElement, Motion,
+    MotionExt as _, MotionFrame, MouseButton, ParentElement, Pixels, Render, SharedString, Styled,
+    Subscription, Task, Window, div, point,
+};
+use mobius_gateway::wire::BotShape;
+use std::time::{Duration, Instant};
+
+/// Seconds a z drifts, and between one z and the next.
+const Z_LIFE: f32 = 2.4;
+const Z_GAP: f32 = 0.8;
 
 /// A face that moves like SwiftUI's; see the module note on cost.
 pub(crate) struct BotFaceView {
@@ -76,7 +92,7 @@ impl BotFaceView {
     /// Springs the pose toward `to` from wherever it shows now. The GPU draws the glide
     /// through the motions already painted, so this renders nothing; callers present it
     /// with `Window::refresh_motions` or render for their own reasons.
-    fn glide(&self, to: Pose, spring: (f32, f32), cx: &App) {
+    fn glide(&self, to: Pose, spring: Spring, cx: &App) {
         let now = Instant::now();
         self.live.set(if cx.reduce_motion() {
             Glide::still(to)
@@ -106,11 +122,11 @@ impl BotFaceView {
                 if moved.is_err() {
                     return;
                 }
-                let (low, high) = mood.beat();
+                let beat = mood.beat();
                 cx.background_executor()
-                    .timer(Duration::from_secs_f32(between(low, high)))
+                    .timer(Duration::from_secs_f32(between(beat)))
                     .await;
-                if mood.blinks() && between(0., 4.) < 1. {
+                if mood.blinks() && between(0.0..4.0) < 1. {
                     if let Err(error) = this.update(cx, |face, cx| {
                         face.blinking = true;
                         cx.notify();

@@ -13,30 +13,14 @@
 //! ground shadow that shrinks as the head lifts.
 
 mod draw;
+#[cfg(feature = "snapshot")]
+mod glide_parity;
+mod mood;
 mod pose;
 mod view;
 
-#[cfg(feature = "snapshot")]
-pub(crate) use draw::glide_parity;
-pub(crate) use view::{BotFaceView, lively_face};
-
-use super::controls::palette;
-use super::motion;
-use super::{FontSet, Shape};
-use crate::numeric::ToFloat;
 pub(crate) use draw::{BotFace, shape_label};
-use draw::{COG_SPRING, COG_TICK, DETAIL, Eyes, Z_GAP, Z_LIFE, clock, face, moving_face};
-use gpui::prelude::*;
-use gpui::{
-    AnyElement, App, Div, Entity, FontWeight, Hsla, Motion, MotionExt as _, MotionFrame,
-    MouseButton, Pixels, Point, SharedString, Subscription, Task, Transformation, Window, black,
-    div, point, px, radians, relative, rgba, svg, white,
-};
-use gpui_component::menu::PopupMenuItem;
-use mobius_gateway::wire::BotShape;
-pub(crate) use pose::BotMood;
-use pose::{Course, Glide, Live, MOOD_SPRING, POSE_SPRING, Pose, between, cog_turn};
-use std::cell::Cell;
-use std::hash::{BuildHasher, Hasher};
-use std::rc::Rc;
-use std::time::{Duration, Instant};
+#[cfg(feature = "snapshot")]
+pub(crate) use glide_parity::glide_parity;
+pub(crate) use mood::BotMood;
+pub(crate) use view::{BotFaceView, lively_face};
