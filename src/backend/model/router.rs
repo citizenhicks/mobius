@@ -1,8 +1,8 @@
 //! Stable model route selection and route diagnostics.
 
-use std::collections::BTreeSet;
-use std::sync::Arc;
-use std::time::SystemTime;
+use std::collections::{BTreeSet, HashMap};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime};
 
 use super::GeneratedImage;
 use super::ImageGenerationRequest;
@@ -31,6 +31,7 @@ pub struct ModelRouter {
     voices: Vec<MediaRoute>,
     files: Option<Arc<crate::backend::session_files::SessionFileStore>>,
     image_limits: super::ImageInputLimits,
+    health: Option<Arc<ProviderHealth>>,
 }
 
 impl std::fmt::Debug for ModelRouter {
@@ -95,6 +96,7 @@ impl ModelRouter {
         Self {
             default: id,
             files: None,
+            health: None,
             image_limits: super::ImageInputLimits::default(),
             images: Vec::new(),
             voices: Vec::new(),
@@ -114,6 +116,13 @@ impl ModelRouter {
         files: impl Into<Arc<crate::backend::session_files::SessionFileStore>>,
     ) -> Self {
         self.files = Some(files.into());
+        self
+    }
+
+    /// Shares provider outage state with every other router given the same value.
+    #[must_use]
+    pub fn provider_health(mut self, health: Arc<ProviderHealth>) -> Self {
+        self.health = Some(health);
         self
     }
 
@@ -374,6 +383,13 @@ impl ModelRouter {
         events: ModelEventSink,
     ) -> Result<ModelOutput> {
         let route = self.route(provider)?;
+        let health_key = route
+            .context_group
+            .as_deref()
+            .unwrap_or(&route.choice.route);
+        if let Some(health) = &self.health {
+            health.admit(health_key)?;
+        }
         let media = super::MediaPreparation {
             files: self.files.as_deref(),
             limits: self.image_limits,
@@ -391,7 +407,11 @@ impl ModelRouter {
         tokio::pin!(response);
         // This guard must drop before the pinned response reads its local cancellation reason.
         let _inheritance = cancellation.inherit_on_drop(parent);
-        response.await
+        let output = response.await;
+        if let Some(health) = &self.health {
+            health.record(health_key, &output);
+        }
+        output
     }
 
     /// Activates a session's fallback transport after safe retries are exhausted.
@@ -569,6 +589,84 @@ impl ModelRouter {
     }
 }
 
+const PROVIDER_TRIP_AFTER: u32 = 5;
+const PROVIDER_OPEN_FOR: Duration = Duration::from_secs(30);
+
+/// A circuit breaker per provider, shared by every router given the same value.
+///
+/// After consecutive transient failures, calls fail fast with a retryable error until the
+/// provider has been left alone for a while; then a single probe call decides whether it is back.
+/// An outage therefore costs one probe rather than a retry storm from every session.
+#[derive(Debug, Default)]
+pub struct ProviderHealth(Mutex<HashMap<String, ProviderBreaker>>);
+
+#[derive(Debug, Default)]
+struct ProviderBreaker {
+    failures: u32,
+    open_until: Option<Instant>,
+    probe_since: Option<Instant>,
+}
+
+impl ProviderHealth {
+    fn admit(&self, key: &str) -> Result<()> {
+        let now = Instant::now();
+        let until = {
+            let mut breakers = self
+                .0
+                .lock()
+                .map_err(|_poisoned| Error::Poisoned("provider health"))?;
+            let Some(breaker) = breakers.get_mut(key) else {
+                return Ok(());
+            };
+            let Some(open_until) = breaker.open_until else {
+                return Ok(());
+            };
+            // A probe that never reports back (a cancelled turn) releases its slot after one period.
+            let probing_until = breaker
+                .probe_since
+                .map(|since| since + PROVIDER_OPEN_FOR)
+                .filter(|until| now < *until);
+            let Some(until) = Some(open_until)
+                .filter(|until| now < *until)
+                .or(probing_until)
+            else {
+                breaker.probe_since = Some(now);
+                return Ok(());
+            };
+            drop(breakers);
+            until
+        };
+        let seconds = until.duration_since(now).as_secs().max(1);
+        Err(crate::ProviderError {
+            retry_after: Some(seconds.to_string()),
+            ..crate::ProviderError::retryable(format!(
+                "model provider is unavailable after repeated failures; retrying in {seconds}s"
+            ))
+        }
+        .into())
+    }
+
+    fn record<T>(&self, key: &str, outcome: &Result<T>) {
+        let Ok(mut breakers) = self.0.lock() else {
+            return;
+        };
+        match outcome {
+            Err(Error::Provider(error)) if error.class() == crate::FailureClass::Transient => {
+                let breaker = breakers.entry(key.to_owned()).or_default();
+                breaker.failures = breaker.failures.saturating_add(1);
+                if breaker.probe_since.take().is_some() || breaker.failures >= PROVIDER_TRIP_AFTER {
+                    breaker.open_until = Some(Instant::now() + PROVIDER_OPEN_FOR);
+                }
+            }
+            // Any answer from the provider, even a rejection, shows it is reachable.
+            Ok(_) | Err(Error::Provider(_)) => {
+                breakers.remove(key);
+            }
+            Err(_) => {}
+        }
+    }
+}
+
 /// The absolute deadline and revocation signal for a model credential.
 /// Dropping the signal's sender revokes every route and call holding a receiver.
 #[derive(Debug, Clone, Default)]
@@ -667,5 +765,56 @@ fn inferred_choice(route: Arc<str>, provider: &dyn Model) -> ModelChoice {
         supports_image_generation: provider.supports_image_generation(),
         supports_realtime_voice: provider.supports_realtime_voice(),
         tool_discovery: provider.tool_discovery(),
+    }
+}
+
+#[cfg(test)]
+mod health_tests {
+    use super::*;
+
+    fn transient() -> Result<()> {
+        Err(crate::ProviderError::retryable("503").into())
+    }
+
+    #[test]
+    fn provider_health_trips_after_transient_failures_and_admits_one_probe() {
+        let health = ProviderHealth::default();
+        for _ in 0..PROVIDER_TRIP_AFTER {
+            health.admit("p").expect("closed breaker admits");
+            health.record("p", &transient());
+        }
+        let rejected = health.admit("p").expect_err("open breaker fails fast");
+        assert!(
+            matches!(rejected, Error::Provider(error) if error.is_retryable() && error.retry_after().is_some())
+        );
+        health.admit("other").expect("breakers are per provider");
+
+        health
+            .0
+            .lock()
+            .expect("lock")
+            .get_mut("p")
+            .expect("breaker")
+            .open_until = Some(Instant::now());
+        health
+            .admit("p")
+            .expect("cooled-down breaker admits a probe");
+        health.admit("p").expect_err("only one probe at a time");
+        health.record("p", &transient());
+        health.admit("p").expect_err("a failed probe reopens");
+
+        health
+            .0
+            .lock()
+            .expect("lock")
+            .get_mut("p")
+            .expect("breaker")
+            .open_until = Some(Instant::now());
+        health.admit("p").expect("probe");
+        health.record("p", &Ok(()));
+        health.admit("p").expect("a successful probe closes");
+        health
+            .admit("p")
+            .expect("closed breaker admits concurrently");
     }
 }

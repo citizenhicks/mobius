@@ -54,7 +54,7 @@ pub use transport::{ModelTransportSettings, RawModelTransportSettings};
 pub use self::realtime::{
     RealtimeVoiceCall, RealtimeVoiceCommand, RealtimeVoiceEvent, RealtimeVoiceRequest,
 };
-pub use self::router::{ImageModel, ModelCredentialLifetime, ModelRouter};
+pub use self::router::{ImageModel, ModelCredentialLifetime, ModelRouter, ProviderHealth};
 
 use crate::protocol::ModelInfo;
 use crate::protocol::{

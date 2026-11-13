@@ -521,6 +521,10 @@ async fn publish_usage(
     .map_err(|error| MobiusError::Config(format!("usage publication task failed: {error}")))?
 }
 
+// ponytail: one gateway per process, so every Bot shares one provider outage table.
+static PROVIDER_HEALTH: std::sync::LazyLock<Arc<mobius::backend::model::ProviderHealth>> =
+    std::sync::LazyLock::new(Arc::default);
+
 fn build_models(
     gateway: &GatewayConfig,
     selection: &ProviderConfig,
@@ -564,8 +568,9 @@ fn build_models(
     let first = routes
         .next()
         .ok_or_else(|| Error::Config("provider has no model routes".into()))?;
-    let mut router =
-        ModelRouter::new(Arc::clone(&first.choice.route), first.model).session_files(session_files);
+    let mut router = ModelRouter::new(Arc::clone(&first.choice.route), first.model)
+        .session_files(session_files)
+        .provider_health(Arc::clone(&PROVIDER_HEALTH));
     router.set_credential_lifetime(&first.choice.route, first.lifetime)?;
     router.set_context_group(&first.choice.route, first.instance)?;
     router.configure_choice(first.choice)?;
