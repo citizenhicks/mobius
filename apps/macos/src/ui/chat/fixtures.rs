@@ -2,15 +2,14 @@
 //! open chat. Nothing here talks to the gateway.
 
 use super::*;
-use crate::gateway::{TranscriptStore, fixture};
+use crate::gateway::TranscriptStore;
+use crate::gateway::fixture::{Script, tool};
 use mobius::protocol::{
-    ApprovalCall, ContentPart, EventMsg, ExecApprovalRequestEvent, FrontendAction,
-    FrontendActionListItem, FrontendBlock, FrontendBlockFormat, FrontendBlockRole,
-    FrontendBlockState, FrontendBlockUpdate, FrontendLink, FrontendListItemState,
-    FrontendPickerOption, FrontendPriority, FrontendSymbol, FrontendTone, FrontendWidget,
-    FrontendWidgetContent, MessageAuthor, MessageDelivery, MessageEvent, ModelStepContentPhase,
-    RenderedBlock, SessionFileReference, TokenUsage, TokenUsageInfo, ToolCallBeginEvent,
-    ToolCallEndEvent, ToolContent,
+    ApprovalCall, ContentPart, ExecApprovalRequestEvent, FrontendAction, FrontendActionListItem,
+    FrontendBlock, FrontendBlockFormat, FrontendBlockRole, FrontendBlockState, FrontendLink,
+    FrontendListItemState, FrontendPickerOption, FrontendPriority, FrontendSymbol, FrontendTone,
+    FrontendWidget, FrontendWidgetContent, MessageAuthor, MessageDelivery, MessageEvent,
+    ModelStepContentPhase, SessionFileReference, TokenUsage, TokenUsageInfo, ToolContent,
 };
 use mobius_gateway::wire::{RenderedPreview, SessionWidget};
 use std::rc::Rc;
@@ -37,105 +36,12 @@ pub(in crate::ui) enum Scene {
 const DONE: &str = "fixture-done";
 const LIVE: &str = "fixture-live";
 
-/// The scene's events, grouped as the gateway groups them.
-#[derive(Default)]
-struct Script(fixture::Script);
-
-struct ToolFixture {
-    call: ToolCallBeginEvent,
-    block: FrontendBlock,
-}
-
-impl Script {
-    fn user(
-        &mut self,
-        id: &str,
-        text: &str,
-        delivery: MessageDelivery,
-        files: Vec<SessionFileReference>,
-    ) {
-        self.0.message(
-            id,
-            MessageEvent {
-                author: MessageAuthor::User,
-                delivery,
-                text: text.into(),
-                attachments: files,
-                reply: None,
-                message_target: None,
-            },
-        );
-    }
-
-    fn text(&mut self, turn: &str, step: &str, phase: ModelStepContentPhase, text: &str) {
-        self.0.text(turn, step, phase, text);
-    }
-
-    fn turn(&mut self, turn: &str, start: bool) {
-        self.0.turn(turn, start);
-    }
-
-    fn tool(&mut self, tool: ToolFixture) {
-        let ToolFixture { call, block } = tool;
-        let event = if block.state == FrontendBlockState::Pending {
-            EventMsg::ToolCallBegin(call)
-        } else {
-            EventMsg::ToolCallEnd(ToolCallEndEvent {
-                turn_id: call.turn_id,
-                call_id: call.call_id,
-                name: call.name,
-                output: ToolContent::default(),
-                is_error: block.tone == FrontendTone::Error,
-            })
-        };
-        self.0.apply(
-            None,
-            event,
-            vec![RenderedBlock {
-                capability: "tools".into(),
-                block,
-            }],
-        );
-    }
-
-    fn store(self) -> TranscriptStore {
-        self.0.store()
-    }
-}
-
 fn file(name: &str, size: u64, media_type: &str) -> SessionFileReference {
     SessionFileReference {
         id: format!("fixture-{name}"),
         name: name.into(),
         size,
         media_type: media_type.into(),
-    }
-}
-
-fn tool(id: &str, turn: &str, title: &str, text: &str, format: FrontendBlockFormat) -> ToolFixture {
-    ToolFixture {
-        call: ToolCallBeginEvent {
-            turn_id: turn.into(),
-            call_id: id.into(),
-            name: "fixture_tool".into(),
-            arguments: serde_json::json!({}),
-        },
-        block: FrontendBlock {
-            id: Some(id.into()),
-            group: Some(turn.into()),
-            update: FrontendBlockUpdate::Replace,
-            state: FrontendBlockState::Complete,
-            role: FrontendBlockRole::Tool,
-            title: title.into(),
-            text: text.into(),
-            symbol: None,
-            links: Vec::new(),
-            files: Vec::new(),
-            content: ToolContent::default(),
-            format,
-            tone: FrontendTone::Neutral,
-            ui: Vec::new(),
-        },
     }
 }
 
@@ -147,9 +53,7 @@ const DIFF: &str = "--- a/src/ui/chat/composer.rs\n+++ b/src/ui/chat/composer.rs
 fn transcript(running: bool) -> TranscriptStore {
     let mut script = Script::default();
     done_turn(&mut script);
-    script
-        .0
-        .error("The provider rate limit was reached; retrying in 20 seconds.");
+    script.error("The provider rate limit was reached; retrying in 20 seconds.");
     live_turn(&mut script, running);
     script.store()
 }
@@ -200,7 +104,7 @@ the catalog only starts tracking once every chat has reported in.\n\nIf you see 
 open the recap with a chat still running: the button should stay idle until it finishes.",
         ),
     }
-    transcript.replace(script.0.page());
+    transcript.replace(script.page());
 }
 
 /// A coding turn for the site's background, caught just before it ends so its steps stay
@@ -294,7 +198,7 @@ pub(in crate::ui) fn ui_demo_transcript() -> TranscriptStore {
         Vec::new(),
     );
     for (index, Document { title, blocks }) in documents.into_iter().enumerate() {
-        script.0.block(
+        script.block(
             "intelligent_ui",
             FrontendBlock {
                 id: Some(format!("{DONE}/ui-{index}")),
@@ -494,7 +398,7 @@ fn short_turn(script: &mut Script, turn: &str, ask: &str, answer: &str) {
 
 /// A fork of `parent` whose inherited turn sits above the divider and its own below.
 fn fork_transcript(parent: &SessionId) -> TranscriptStore {
-    let mut inherited = Script(fixture::Script::inherited(1));
+    let mut inherited = Script::inherited(1);
     short_turn(
         &mut inherited,
         "fixture-parent",
@@ -508,9 +412,9 @@ fn fork_transcript(parent: &SessionId) -> TranscriptStore {
         "Go with A, and keep the Session pill last.",
         "Done: the pills float over the transcript and Session stays last.",
     );
-    own.0.fork_point(parent.share());
+    own.fork_point(parent.share());
     let mut transcript = own.store();
-    transcript.prepend(inherited.0.page());
+    transcript.prepend(inherited.page());
     transcript
 }
 
@@ -843,7 +747,7 @@ impl Workspace {
                 "I am checking the current job search.",
             );
         }
-        script.0.message("fixture-peer-message", MessageEvent {
+        script.message("fixture-peer-message", MessageEvent {
             author: MessageAuthor::Source {
                 message_id: "fixture-peer-message".into(),
                 source: mobius::protocol::MessageSource::Session { session_id: source_id.share() },
@@ -936,7 +840,7 @@ impl Workspace {
     pub(in crate::ui) fn fixture_provider_issue(&mut self, cx: &mut Context<Self>) {
         let mut script = Script::default();
         script.user("fixture-ask", "Hey", MessageDelivery::Turn, Vec::new());
-        script.0.block(
+        script.block(
             "tools",
             FrontendBlock {
                 id: Some("provider-error".into()),

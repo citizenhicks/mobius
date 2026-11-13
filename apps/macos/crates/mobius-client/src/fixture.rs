@@ -4,7 +4,9 @@
 use mobius::SessionId;
 use mobius::protocol::{
     AssistantContentDeltaEvent, ErrorEvent, ErrorKind, Event, EventMsg, FrontendBlock,
-    MessageEvent, ModelStepContentPhase, RenderedBlock, TurnCompleteEvent, TurnStartedEvent,
+    FrontendBlockFormat, FrontendBlockRole, FrontendBlockState, FrontendTone, MessageAuthor,
+    MessageDelivery, MessageEvent, ModelStepContentPhase, RenderedBlock, SessionFileReference,
+    ToolCallBeginEvent, ToolCallEndEvent, ToolContent, TurnCompleteEvent, TurnStartedEvent,
 };
 use mobius_gateway::TranscriptReducer;
 use mobius_gateway::wire::TranscriptPage;
@@ -36,7 +38,7 @@ impl Script {
     }
 
     /// One scripted event and its capability-owned presentation.
-    pub fn apply(&mut self, submission: Option<&str>, msg: EventMsg, blocks: Vec<RenderedBlock>) {
+    fn apply(&mut self, submission: Option<&str>, msg: EventMsg, blocks: Vec<RenderedBlock>) {
         self.sequence += 1;
         let at = 1_790_000_000_000 + self.sequence.cast_signed() * 4_000;
         let event = Event {
@@ -62,6 +64,51 @@ impl Script {
             })
         };
         self.apply(None, msg, Vec::new());
+    }
+
+    /// A user message, including its delivery mode and attachments.
+    pub fn user(
+        &mut self,
+        id: &str,
+        text: &str,
+        delivery: MessageDelivery,
+        files: Vec<SessionFileReference>,
+    ) {
+        self.message(
+            id,
+            MessageEvent {
+                author: MessageAuthor::User,
+                delivery,
+                text: text.into(),
+                attachments: files,
+                reply: None,
+                message_target: None,
+            },
+        );
+    }
+
+    /// One invocation with its capability-rendered block.
+    pub fn tool(&mut self, tool: ToolFixture) {
+        let ToolFixture { call, block } = tool;
+        let event = if block.state == FrontendBlockState::Pending {
+            EventMsg::ToolCallBegin(call)
+        } else {
+            EventMsg::ToolCallEnd(ToolCallEndEvent {
+                turn_id: call.turn_id,
+                call_id: call.call_id,
+                name: call.name,
+                output: ToolContent::default(),
+                is_error: block.tone == FrontendTone::Error,
+            })
+        };
+        self.apply(
+            None,
+            event,
+            vec![RenderedBlock {
+                capability: "tools".into(),
+                block,
+            }],
+        );
     }
 
     /// A message under its submission id.
@@ -122,5 +169,39 @@ impl Script {
 
     pub fn store(self) -> TranscriptStore {
         TranscriptStore::from(self.page())
+    }
+}
+
+/// A tool invocation paired with the presentation a scene can customize.
+#[derive(Debug)]
+pub struct ToolFixture {
+    call: ToolCallBeginEvent,
+    pub block: FrontendBlock,
+}
+
+/// One completed tool call with the supplied stable call/turn identities.
+pub fn tool(
+    id: &str,
+    turn: &str,
+    title: &str,
+    text: &str,
+    format: FrontendBlockFormat,
+) -> ToolFixture {
+    ToolFixture {
+        call: ToolCallBeginEvent {
+            turn_id: turn.into(),
+            call_id: id.into(),
+            name: "fixture_tool".into(),
+            arguments: serde_json::json!({}),
+        },
+        block: FrontendBlock {
+            id: Some(id.into()),
+            group: Some(turn.into()),
+            role: FrontendBlockRole::Tool,
+            title: title.into(),
+            text: text.into(),
+            format,
+            ..FrontendBlock::default()
+        },
     }
 }
