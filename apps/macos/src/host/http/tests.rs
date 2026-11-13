@@ -1,5 +1,6 @@
 use super::*;
 use futures_util::io::AsyncReadExt;
+use gpui::http_client::{HttpRequestExt, RedirectPolicy};
 use std::io::{Read, Write};
 use std::net::TcpListener;
 
@@ -44,10 +45,34 @@ fn image_requests_preserve_redirects_headers_status_and_streamed_bytes() {
         let unsupported = Request::post(format!("http://{address}/"))
             .body(AsyncBody::empty())
             .unwrap();
-        assert!(
-            client.send(unsupported).await.is_err(),
-            "unsupported requests must not be sent"
+        assert_eq!(
+            client
+                .send(unsupported)
+                .await
+                .err()
+                .expect("unsupported request")
+                .to_string(),
+            "the image client only accepts empty GET requests"
         );
+        for policy in [
+            None,
+            Some(RedirectPolicy::NoFollow),
+            Some(RedirectPolicy::FollowLimit(1)),
+        ] {
+            let request = Request::get(format!("http://{address}/"))
+                .when_some(policy, HttpRequestExt::follow_redirects)
+                .body(AsyncBody::empty())
+                .unwrap();
+            assert_eq!(
+                client
+                    .send(request)
+                    .await
+                    .err()
+                    .expect("unsupported request")
+                    .to_string(),
+                "the image client requires redirects to be enabled"
+            );
+        }
     });
     server.join().unwrap();
 }

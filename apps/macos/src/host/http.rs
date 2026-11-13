@@ -6,7 +6,7 @@ use std::time::Duration;
 use futures_util::TryStreamExt;
 use futures_util::future::BoxFuture;
 use gpui::http_client::{
-    AsyncBody, HttpClient, Inner, Method, Request, RequestTimeout, Response, Url,
+    AsyncBody, HttpClient, Inner, Method, RedirectPolicy, Request, RequestTimeout, Response, Url,
 };
 use hyper::header::HeaderValue;
 use reqwest::Client;
@@ -56,10 +56,15 @@ impl HttpClient for ImageClient {
     ) -> BoxFuture<'static, anyhow::Result<Response<AsyncBody>>> {
         use http_body_util::BodyExt as _;
         let (parts, body) = request.into_parts();
-        // shortcut: GPUI image loading uses empty GETs with redirects; extend only for a new consumer.
+        // shortcut: only image GETs with redirects (100-hop bound); extend for a new consumer.
         if parts.method != Method::GET || !matches!(body.0, Inner::Empty) {
             return Box::pin(async {
                 anyhow::bail!("the image client only accepts empty GET requests")
+            });
+        }
+        if parts.extensions.get::<RedirectPolicy>() != Some(&RedirectPolicy::FollowAll) {
+            return Box::pin(async {
+                anyhow::bail!("the image client requires redirects to be enabled")
             });
         }
         let mut request = self
