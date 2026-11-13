@@ -1,7 +1,13 @@
 //! Compact message dates and an attribution that gives up its date before its name.
 
-use super::*;
+use crate::ui::primitives::{FontSet, Type, Typography as _, glyph, icon, space};
+use crate::ui::theme::Palette;
 use chrono::{DateTime, Datelike, TimeZone};
+
+use gpui::{
+    App, Div, IntoElement, ParentElement as _, RenderOnce, SharedString, Styled as _, TextRun,
+    Window, container_query, div, font,
+};
 
 #[derive(IntoElement)]
 pub(super) struct Label {
@@ -106,6 +112,29 @@ where
         _ => "%b %-d, %H:%M",
     };
     Some(time.format(format).to_string())
+}
+
+/// "you", "steer · you" or "queued · you" under a bubble.
+pub(super) fn message_meta(
+    p: &Palette,
+    glyph: &'static str,
+    delivery: Option<&'static str>,
+    recorded_at_ms: i64,
+) -> Div {
+    div()
+        .max_w_full()
+        .min_w_0()
+        .flex()
+        .items_center()
+        .gap(space::XS)
+        .typography(Type::Caption)
+        .text_color(p.muted)
+        .child(icon(glyph, p).size(glyph::MARK).flex_shrink_0())
+        .children(delivery.map(|label| div().flex_shrink_0().child(format!("{label} ·"))))
+        .child(Label {
+            name: "you".into(),
+            recorded_at_ms,
+        })
 }
 
 #[cfg(test)]

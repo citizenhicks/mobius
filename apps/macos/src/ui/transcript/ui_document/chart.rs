@@ -2,9 +2,21 @@
 //! soft-filled areas on a round value scale, and a donut beside its legend. Data marks take
 //! the accent, later series a step further toward the card; axes are neutral Caption text.
 
-use super::*;
 use crate::numeric::{Saturating, ToFloat};
+use crate::ui::primitives::{
+    Shape as _, Type, Typography as _, compact_count, glyph, hairline, radius, space,
+};
+use crate::ui::theme;
+use crate::ui::theme::Palette;
+use gpui::prelude::FluentBuilder as _;
+use gpui::{
+    AnyElement, Background, Corners, DefiniteLength, Div, Hsla, InteractiveElement as _,
+    IntoElement as _, ParentElement as _, Pixels, SharedString, StatefulInteractiveElement as _,
+    Styled, div, linear_color_stop, linear_gradient, px, relative,
+};
+
 use gpui_component::chart::{AreaChart, BarChart, PieChart};
+
 use mobius::protocol::{UiChartKind, UiSeries};
 
 /// The plot's height; gridlines sit half a caption line in from its edges so the axis
@@ -507,7 +519,7 @@ mod tests {
                 .all(|tick| tick.is_finite())
         );
         assert!(figure(1e300, None).contains("e300"));
-        assert!(super::super::numeric("$1,999"));
-        assert!(!super::super::numeric("M5 Pro"));
+        assert!(super::super::document::numeric("$1,999"));
+        assert!(!super::super::document::numeric("M5 Pro"));
     }
 }

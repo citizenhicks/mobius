@@ -1,5 +1,12 @@
-use super::*;
+use crate::ui::Workspace;
+use crate::ui::primitives::{composer_button, height, motion, space};
+use gpui::prelude::FluentBuilder as _;
+use gpui::{
+    AnyElement, App, Context, IntoElement, ParentElement as _, Pixels, SharedString, Styled as _,
+    Window, div, px,
+};
 use gpui::{FollowMode, ListAlignment, ListOffset, ListState};
+
 use std::collections::BTreeSet;
 use std::ops::Range;
 use std::rc::Rc;
@@ -460,6 +467,8 @@ fn hand_off_rows(
 #[cfg(test)]
 mod tests {
     use super::{TranscriptScroll, history_destination, splice_chat_rows};
+    #[cfg(feature = "snapshot")]
+    use gpui::{AppContext as _, Render, point, size};
     use gpui::{FollowMode, ListAlignment, ListOffset, ListState, px};
     use std::sync::Arc;
 

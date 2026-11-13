@@ -2,15 +2,20 @@
 //! provider's raw text, such as `provider error: Responses HTTP 402 Payment Required: …`;
 //! anything not recognised here keeps that text.
 
-use super::{
-    AnyElement, Context, FluentBuilder, FrontendTone, InteractiveElement, IntoElement,
-    ParentElement, Shape, SharedString, StatefulInteractiveElement, Styled, TranscriptEntry, Type,
-    Typography, Window, Workspace, div, height, space,
-};
+use crate::gateway::TranscriptEntry;
+use crate::ui::Workspace;
 use crate::ui::navigation::Section as Rail;
 use crate::ui::pages::SUBSCRIPTIONS;
 use crate::ui::primitives::icon_button;
+use crate::ui::primitives::{Shape as _, Type, Typography as _, height, space};
 use crate::ui::theme::mix;
+use gpui::prelude::FluentBuilder as _;
+use gpui::{
+    AnyElement, Context, InteractiveElement as _, IntoElement as _, ParentElement as _,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
+};
+
+use mobius::protocol::FrontendTone;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::ui) enum ProviderIssue {

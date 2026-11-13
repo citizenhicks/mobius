@@ -1,10 +1,27 @@
 //! The transcript's disclosures (TranscriptEventViews.swift): Worked for, event groups,
 //! event lines with their detail, and reasoning lines.
 
-use super::*;
 use crate::gateway::RowChild;
+use crate::gateway::{TranscriptEntry, TranscriptStore};
+use crate::ui::primitives::{
+    Notice, Shape as _, Tone, Type, Typography as _, chevron, clock_duration, counted, first_line,
+    glyph, height, icon, motion, palette, space, symbol_icon_or,
+};
+use crate::ui::theme::Palette;
+use crate::ui::{Workspace, chat};
+use gpui::prelude::FluentBuilder as _;
+use gpui::{
+    AnyElement, Context, Div, FontWeight, HighlightStyle, InteractiveElement as _, IntoElement,
+    ParentElement as _, Pixels, SharedString, StatefulInteractiveElement as _, Styled as _,
+    StyledText, div,
+};
+use gpui_component::button::{Button, ButtonVariants as _};
+
+use mobius::SessionId;
 use mobius::protocol::{FrontendBlock, FrontendBlockFormat, FrontendBlockRole};
+use mobius::protocol::{FrontendTone, ModelStepContentPhase, SessionFileReference};
 use mobius_gateway::wire::ActivityCounts;
+use mobius_gateway::wire::{TranscriptItemContent, TranscriptRow};
 
 /// A disclosure summary row: glyph, one line of muted text and a trailing mark.
 fn summary_row(

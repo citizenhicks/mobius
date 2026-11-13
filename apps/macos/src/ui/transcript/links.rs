@@ -1,6 +1,15 @@
-use super::*;
+use crate::ui::Workspace;
+use crate::ui::primitives::{inline_code_ring, markdown_style};
+
+use gpui::{
+    Anchor, AnyElement, App, AppContext as _, Context, Entity, IntoElement as _,
+    ParentElement as _, SharedString, Styled as _, WeakEntity, div,
+};
+use gpui_component::Sizable as _;
+use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_component::text::{SelectionFormat, TextView, TextViewState};
+use mobius::SessionId;
 use std::rc::Rc;
 
 pub(in crate::ui) struct StreamingMarkdown {

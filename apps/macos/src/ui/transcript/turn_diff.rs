@@ -2,10 +2,14 @@
 //! the turn's totals, on demand its first files, and a row that opens the whole diff in
 //! the Changes tab as "This turn".
 
-use super::{
-    AnyElement, Context, InteractiveElement, IntoElement, ParentElement, Shape, SharedString,
-    StatefulInteractiveElement, Styled, Type, Typography, Workspace, chevron, counted, div, glyph,
-    height, icon, palette, space,
+use crate::ui::Workspace;
+use crate::ui::primitives::{
+    Shape as _, Type, Typography as _, chevron, counted, glyph, height, icon, palette, space,
+};
+
+use gpui::{
+    AnyElement, Context, InteractiveElement as _, IntoElement as _, ParentElement as _,
+    SharedString, StatefulInteractiveElement as _, Styled as _, div,
 };
 
 /// Files shown before "View more" (TurnDiffCard's `prefix(3)`).

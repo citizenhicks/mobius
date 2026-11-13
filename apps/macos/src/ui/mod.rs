@@ -22,17 +22,16 @@ pub(crate) use primitives::FontSet;
 use crate::gateway::{Gateway, GatewayState};
 use gpui::prelude::*;
 use gpui::{
-    Action, Anchor, AnyElement, App, AppContext, Background, Bounds, BoxShadow, ClickEvent,
-    ClipboardEntry, ClipboardItem, Corners, DefiniteLength, DevicePixels, DispatchPhase, Div,
-    ElementId, Entity, ExternalPaths, FocusHandle, Focusable, FontWeight, Global, HighlightStyle,
-    Hsla, Img, ImgResourceLoader, KeyBinding, KeyBindingContextPredicate, KeyDownEvent, Keystroke,
-    Menu, MenuItem, Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, NavigationDirection, ObjectFit, OsAction, PathPromptOptions, Pixels, Point,
-    Radians, RenderImage, Resource, Result, Rgba, Role, ScrollEvent, ScrollHandle, ScrollStrategy,
-    SharedString, Size, Stateful, StyleRefinement, StyledText, Subscription, Task, TextRun,
-    WeakEntity, Window, WindowBackgroundAppearance, WindowControlArea, actions, black, canvas,
-    container_query, div, fill, font, hsla, img, linear_color_stop, linear_gradient, point, px,
-    relative, rgb, size, transparent_black, white,
+    Action, Anchor, AnyElement, App, AppContext, Bounds, BoxShadow, ClickEvent, ClipboardEntry,
+    ClipboardItem, Corners, DevicePixels, DispatchPhase, Div, ElementId, Entity, ExternalPaths,
+    FocusHandle, Focusable, FontWeight, Global, Hsla, KeyBinding, KeyBindingContextPredicate,
+    KeyDownEvent, Keystroke, Menu, MenuItem, Modifiers, ModifiersChangedEvent, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, NavigationDirection, ObjectFit, OsAction,
+    PathPromptOptions, Pixels, Point, Radians, RenderImage, Result, Rgba, Role, ScrollEvent,
+    ScrollHandle, ScrollStrategy, SharedString, Size, Stateful, StyleRefinement, StyledText,
+    Subscription, Task, TextRun, WeakEntity, Window, WindowBackgroundAppearance, WindowControlArea,
+    actions, black, canvas, div, fill, font, hsla, img, point, px, relative, rgb, size,
+    transparent_black, white,
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{InputEvent, InputState, TextareaState};
@@ -41,19 +40,19 @@ use mobius::SessionId;
 #[cfg(feature = "snapshot")]
 use primitives::shape_picker;
 use primitives::{
-    BotFace, BotFaceView, BotMood, EditKind, EmptyState, Group, Handler, Leading, MenuChoice,
-    Notice, Page, PageHeader, RailGlyph, Row, Section, Shape, SidebarRow, Spinner, StackedField,
-    TextEdit, ToggleExt, Tone, Type, Typography, accent_tile_picker, ago, alpha,
-    apple_toolbar_button, back_icon, button, button_row, byte_count, chat_menu_trigger, chevron,
-    clock_duration, compact_count, compact_duration, composer_button, counted, dialog_actions,
-    dialog_body, face, field, filled_glyph, first_line, forward_icon, gauge_button, glyph,
-    hairline, heading, height, icon, inline_button, inline_code_ring, inset, known_symbol_icon,
-    labelled, leading_item, lively_face, loading_rows, markdown_style, menu_select, mini_button,
-    motion, organic, page, palette, percent, pill, pill_quad, preview_glyph, primary_button,
-    radius, rail_button, rail_section_button, row_actions_inset, row_button, segmented,
-    settings_button, show_more_row, sidebar_header, sidebar_label, sidebar_note, single_line,
-    space, status_dot, status_label, swatch_picker, symbol_icon_or, text_field, text_tooltip,
-    textarea, toggle, toolbar_button, unavailable, width, workspace_item,
+    BotFace, BotFaceView, BotMood, EditKind, EmptyState, Group, Handler, Leading, MenuChoice, Page,
+    PageHeader, RailGlyph, Row, Section, Shape, SidebarRow, Spinner, StackedField, TextEdit,
+    ToggleExt, Tone, Type, Typography, accent_tile_picker, ago, alpha, apple_toolbar_button,
+    back_icon, button, button_row, byte_count, chat_menu_trigger, chevron, compact_count,
+    compact_duration, composer_button, counted, dialog_actions, dialog_body, face, field,
+    filled_glyph, forward_icon, gauge_button, glyph, hairline, heading, height, icon,
+    inline_button, inline_code_ring, inset, known_symbol_icon, labelled, leading_item, lively_face,
+    loading_rows, markdown_style, menu_select, mini_button, motion, organic, page, palette,
+    percent, pill, pill_quad, preview_glyph, primary_button, radius, rail_button,
+    rail_section_button, row_actions_inset, row_button, segmented, settings_button, show_more_row,
+    sidebar_header, sidebar_label, sidebar_note, single_line, space, status_dot, status_label,
+    swatch_picker, symbol_icon_or, text_field, text_tooltip, textarea, toggle, toolbar_button,
+    unavailable, width, workspace_item,
 };
 use router::{
     AgentSection, GatewayPage, GatewayRef, PageTab, SettingsPage, activate_page, host, is_cloud,

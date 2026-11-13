@@ -2,16 +2,33 @@
 //! gateway's message actions, Reply, Pin and Speak, then the Bot that wrote it; the same actions
 //! with the time it was sent and its author in the message's context menu.
 
-use super::*;
+use super::attribution;
+use crate::ui::Workspace;
+use crate::ui::primitives::{
+    BotFace, Type, Typography as _, glyph, icon, inline_button, palette, space, symbol_icon_or,
+    workspace_item,
+};
+use crate::ui::theme::Palette;
+use gpui::prelude::FluentBuilder as _;
+use gpui::{
+    AnyElement, App, ClipboardItem, Context, Div, Hsla, InteractiveElement as _, IntoElement as _,
+    ParentElement as _, Pixels, SharedString, Stateful, StatefulInteractiveElement as _,
+    Styled as _, Window, div,
+};
 use gpui_component::Disableable;
+
 use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_component::tooltip::Tooltip;
+
+use mobius::protocol::MessageAuthor;
 use mobius::protocol::{
     FrontendAction, FrontendEditor, FrontendSlot, FrontendSymbol, FrontendTone, FrontendWidget,
     MessageTarget, Op,
 };
+use mobius_gateway::wire::BotShape;
 use mobius_gateway::wire::ClientMessage;
 use std::rc::Rc;
+use std::sync::Arc;
 
 enum Action {
     Copy {

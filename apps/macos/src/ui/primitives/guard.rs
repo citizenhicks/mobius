@@ -53,7 +53,7 @@ const RULES: &[(&str, &[(&str, &str)])] = &[
             ),
             // A remote picture copies its frame's corners, as GPUI clips to rectangles only.
             (
-                "ui/transcript/ui_document/mod.rs",
+                "ui/transcript/ui_document/document.rs",
                 "style().corner_radii = ",
             ),
         ],

@@ -1,7 +1,13 @@
 //! Native text layout decides whether the five-line preview needs an expansion button.
 
-use super::*;
+use crate::ui::primitives::{Handler, Type, Typography as _, height, palette, space};
+use gpui::prelude::FluentBuilder as _;
+use gpui::{
+    AnyElement, App, ClickEvent, ElementId, IntoElement, ParentElement as _, RenderOnce,
+    SharedString, Styled as _, Window, div,
+};
 use gpui_component::ElementExt;
+use gpui_component::button::{Button, ButtonVariants as _};
 
 const PREVIEW_LINES: f32 = 5.;
 
