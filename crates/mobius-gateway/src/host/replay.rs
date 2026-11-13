@@ -1,13 +1,44 @@
+use super::rejection::{Rejection, internal};
+use super::session::{JournalDelivery, JournalSequence, LoadedReplay, SessionWidgets};
 use super::transcript::TranscriptReducer;
-use super::{
-    Arc, CheckpointStore, Error, Event, EventMsg, EventPageRequest, FrontendEvent,
-    FrontendExtensions, JournalDelivery, JournalEvent, JournalSequence, LoadedReplay,
-    MAX_REPLAY_BYTES, REPLAY_CAPACITY, REPLAY_LOAD_PAGE_SIZE, RecordedEvent, Rejection,
-    RenderedBlock, Result, ServerFrame, ServerMessage, SessionHistoryPage, SessionWidget,
-    SessionWidgets, SharedFrame, TranscriptPage, VecDeque, broadcast, event_turn_page, internal,
-};
+use super::{MAX_REPLAY_BYTES, REPLAY_CAPACITY, REPLAY_LOAD_PAGE_SIZE};
 use crate::wire::{HistoryCursor, TranscriptOp};
+use crate::wire::{
+    RecordedEvent, ServerFrame, ServerMessage, SessionReadyPayload, SessionWidget, SharedFrame,
+    TranscriptPage,
+};
+use crate::{Error, Result};
 use mobius::SessionId;
+use mobius::backend::checkpoint::{
+    CheckpointStore, EventPageRequest, JournalEvent, event_turn_page,
+};
+use mobius::middleware::FrontendExtensions;
+use mobius::protocol::{Event, EventMsg, FrontendEvent, RenderedBlock};
+use std::collections::VecDeque;
+use std::sync::Arc;
+use tokio::sync::broadcast;
+
+pub(crate) struct HostSnapshot {
+    pub(crate) ready: SessionReadyPayload,
+    pub(crate) replay: OpenReplay,
+}
+
+/// What an opening client receives after `session_opened`.
+pub(crate) enum OpenReplay {
+    /// The replay frames after the client's resume cursor.
+    Frames(Vec<crate::wire::SharedFrame>),
+    /// The whole live transcript, for a fresh open or a cursor outside the window.
+    Transcript {
+        through_sequence: u64,
+        page: crate::wire::TranscriptPage,
+        next: Option<crate::wire::HistoryCursor>,
+    },
+}
+
+pub(crate) struct SessionHistoryPage {
+    pub(crate) page: crate::wire::TranscriptPage,
+    pub(crate) next: Option<crate::wire::HistoryCursor>,
+}
 
 /// Journal events read per page while looking for a fork point.
 const FORK_SCAN_PAGE_SIZE: usize = 256;

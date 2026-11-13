@@ -1,9 +1,12 @@
-use super::{
-    Arc, GatewayHost, Rejection, RemoteDesktop, Uuid, invalid_bot, invalid_config,
-    require_catalog_session,
-};
+use super::gateway_host::{GatewayHost, require_catalog_session};
+use super::rejection::{Rejection, invalid_bot, invalid_config};
+
+use crate::computer_runtime::remote_desktop::RemoteDesktop;
 use futures_util::StreamExt as _;
 use mobius::SessionId;
+use std::sync::Arc;
+
+use uuid::Uuid;
 
 const DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 

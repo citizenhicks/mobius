@@ -1,3 +1,8 @@
+use super::gateway_host::GatewayHost;
+use super::publication::finish_publication;
+use super::rejection::{Rejection, internal, invalid_config};
+use super::state::gateway_ready_after_unlock;
+
 use crate::config::ProviderRegistration;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -19,10 +24,6 @@ use crate::wire::{
 };
 
 use super::session::ProviderRefresh;
-use super::{
-    GatewayHost, Rejection, finish_publication, gateway_ready_after_unlock, internal,
-    invalid_config,
-};
 
 const MAX_LOGIN_REQUEST_ID_BYTES: usize = 128;
 

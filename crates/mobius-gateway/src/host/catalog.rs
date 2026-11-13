@@ -1,4 +1,8 @@
+use super::rejection::Rejection;
+
+use super::SessionActivities;
 use mobius::SessionId;
+
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
@@ -7,8 +11,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::wire::{BackgroundApproval, SessionActivity, SessionActivityState, SessionRecord};
 use crate::{Error, Result};
-
-use super::{Rejection, SessionActivities};
 
 use super::SESSION_PAGE_SIZE;
 const SESSION_CATALOG_SCOPE: &str = "gateway";

@@ -1,9 +1,39 @@
+use super::catalog::{load_session_metadata, update_session_activity};
+use tokio::sync::broadcast;
+
+use super::gateway_host::GatewayHost;
+
+use super::rejection::{Rejection, internal, invalid_bot, invalid_config, stopped};
+use super::replay::{
+    FrameworkPresentation, ReplayEntry, classify_journal_sequence, durable_history_page,
+    load_replay, record_and_publish,
+};
+use super::session::{HostHandle, JournalDelivery, JournalSequence};
+use super::{MAX_REPLAY_BYTES, REPLAY_CAPACITY};
+use crate::Result;
+use crate::bots::{BeginRun, BotStore};
+use crate::config::{ChatSpec, ConfigStore, CredentialStore, GatewayConfig};
+use crate::wire::{
+    AgentComposition, RoutineRunStatus, RunStats, ServerFrame, ServerMessage, SessionActivity,
+    SessionActivityState, SharedFrame,
+};
+use chrono::Utc;
 use mobius::SessionId;
 use mobius::backend::checkpoint::Checkpoint;
+use mobius::backend::checkpoint::CheckpointStore;
 use mobius::protocol::TokenUsage;
+use mobius::protocol::{
+    Event, EventMsg, FrontendEvent, MessageAuthor, MessageSubmission, Op, Submission,
+};
+use std::collections::{HashSet, VecDeque};
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
+use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
+use tokio::task::JoinHandle;
+use uuid::Uuid;
 
 use super::session::{HostCommand, HostInner, ProviderCutoverStatus};
-use super::*;
 
 mod activity;
 mod bots;
@@ -212,4 +242,31 @@ pub(crate) fn turn_complete(turn_id: &str) -> mobius::protocol::EventMsg {
         idle: false,
         turn_id: turn_id.into(),
     })
+}
+
+#[cfg(test)]
+impl GatewayHost {
+    pub(crate) async fn stop_idle_session(&self, session_id: &SessionId) {
+        let host = self
+            .state
+            .lock()
+            .await
+            .sessions
+            .remove(session_id)
+            .expect("resident chat");
+        assert!(host.stop_if_idle().await);
+    }
+
+    pub(crate) async fn is_resident(&self, session_id: &SessionId) -> bool {
+        let state = self.state.lock().await;
+        state.sessions.contains_key(session_id)
+            || state
+                .starting_sessions
+                .lock()
+                .is_ok_and(|starting| starting.contains_key(session_id))
+    }
+
+    pub(crate) async fn checkpoint_store(&self) -> Arc<dyn CheckpointStore> {
+        Arc::clone(&self.state.lock().await.checkpoints)
+    }
 }

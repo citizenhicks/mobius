@@ -1,6 +1,12 @@
 //! Owner-scoped session access through the existing messaging tools.
 
+use super::gateway_host::HostAccess;
+
+use super::session::HostHandle;
+use super::state::GatewayState;
+
 use mobius::SessionId;
+
 use std::sync::{Arc, Weak};
 
 use crate::harness::ValidatedSubmission;
@@ -10,7 +16,6 @@ use mobius::protocol::{MessageAuthor, MessageSubmission, Op, Submission};
 use tokio::sync::Mutex;
 
 use super::catalog::load_session_metadata;
-use super::{GatewayState, HostAccess, HostHandle};
 use crate::wire::SessionActivityState;
 
 /// Reads resident chats without keeping the gateway registry alive.

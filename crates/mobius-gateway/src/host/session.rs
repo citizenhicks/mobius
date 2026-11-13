@@ -1,24 +1,37 @@
+use super::activity::WorkActivity;
+use super::composition::validated;
+use super::files::{
+    WorkspaceFiles, WorkspaceRead, list as list_workspace_files, read as read_workspace_file,
+};
+use super::gateway_host::reject_pending_bot_deletion;
+use super::git::{diff as workspace_git_diff, diff_totals as workspace_git_diff_totals};
+use tokio::sync::broadcast;
+
+use super::rejection::{Rejection, internal, receive, stopped};
+use super::replay::{HostSnapshot, ReplayEntry, SessionHistoryPage, load_replay};
+
+use super::{BROADCAST_CAPACITY, COMMAND_CAPACITY, SessionActivities};
+use crate::Result;
+use crate::bots::{ActiveRoutineRun, BotStore};
+use crate::config::ChatSpec;
+use crate::harness::ValidatedSubmission;
+use crate::sandbox::GatewaySandbox;
+use crate::wire::{
+    GitDiffScope, ProviderConfig, RoutineRunStatus, RunStats, SessionActivity,
+    SessionActivityState, SessionReadyPayload, SessionWidget, SharedFrame, WorkspaceFileScope,
+};
+use chrono::Utc;
 use mobius::SessionId;
+use mobius::backend::checkpoint::CheckpointStore;
+use mobius::protocol::{EventMsg, MessageAuthor, Submission};
+use std::collections::{HashSet, VecDeque};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 mod events;
 mod runtime;
 
-use super::{
-    ActiveRoutineRun, Arc, AtomicBool, BROADCAST_CAPACITY, BotStore, COMMAND_CAPACITY, ChatSpec,
-    CheckpointStore, Error, Event, EventMsg, EventPageRequest, ExecutionOutcome, FrontendEvent,
-    GatewaySandbox, GitDiffScope, HashSet, HostSnapshot, JournalEvent, MessageAuthor,
-    MessageSubmission, ModelStepContentPhase, Mutex, Op, Ordering, Path, PathBuf, ProviderConfig,
-    Rejection, ReplayEntry, Result, ReviewDecision, RoutineRunStatus, RunStats, RwLock,
-    ServerFrame, ServerMessage, SessionActivities, SessionActivity, SessionActivityState,
-    SessionHistoryPage, SessionReadyPayload, SessionWidget, SharedFrame, Submission, Utc, Uuid,
-    ValidatedSubmission, VecDeque, WorkActivity, WorkspaceFileScope, WorkspaceFiles, WorkspaceRead,
-    activity_catalog, broadcast, classify_journal_sequence, compact_replay_deltas,
-    delete_workspace_file, durable_history_page, event_sequence, git_status, internal,
-    invalid_config, invalid_workspace, list_workspace_files, load_replay, mpsc, oneshot,
-    project_record, publish_ready_and_pending, read_workspace_file, receive, record_and_publish,
-    reject_pending_bot_deletion, stopped, switch_workspace_branch, update_session_activity,
-    update_widgets, validate_gateway_event, validated, workspace_git_diff,
-    workspace_git_diff_totals, write_workspace_file,
-};
 use crate::harness::mobius::RealtimeModel;
 use crate::harness::{HarnessContext, HarnessSession};
 use mobius::backend::model::provider::provider;

@@ -1,8 +1,12 @@
 //! The memory page: every harness's memories, and edits to the editable ones.
 
-use std::collections::BTreeMap;
+use super::gateway_host::GatewayHost;
+use super::rejection::{Rejection, internal, memory_error};
 
-use super::{Arc, GatewayHost, Rejection, internal, memory_error};
+use mobius::protocol::FrontendContribution;
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
 use crate::harness::memory::{self, MemoryContext, list};
 use crate::wire::{MemoryRecord, WorkspaceInfo};
 use mobius::middleware::memory::Memory;
@@ -85,4 +89,13 @@ fn rejection(error: crate::Error) -> Rejection {
         crate::Error::Mobius(error) => memory_error(error),
         error => internal(error),
     }
+}
+
+/// The gateway's frontend contributions followed by the memory's current one.
+pub(super) async fn with_memory_contribution(
+    memory: &Memory,
+    mut contributions: Vec<FrontendContribution>,
+) -> mobius::Result<Vec<FrontendContribution>> {
+    contributions.push(memory.global_contribution().await?);
+    Ok(contributions)
 }

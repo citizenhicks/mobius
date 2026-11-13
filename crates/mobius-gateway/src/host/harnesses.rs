@@ -1,6 +1,9 @@
 //! Harness options and on-demand detection.
 
-use super::{GatewayHost, ReadyPayload, Rejection};
+use super::gateway_host::GatewayHost;
+use super::rejection::Rejection;
+
+use crate::wire::ReadyPayload;
 use crate::wire::{CliHarnessConfig, HarnessKind};
 
 impl GatewayHost {

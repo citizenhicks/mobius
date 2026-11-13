@@ -1,8 +1,13 @@
-use super::{
-    Arc, ConfigStore, Error, GatewayConfig, GatewayHost, GatewayState, ReadyPayload, Rejection,
-    finish_publication, gateway_ready_after_unlock, internal, invalid_config,
-};
+use super::gateway_host::GatewayHost;
+use super::publication::finish_publication;
+use super::rejection::{Rejection, internal, invalid_config};
+use super::state::{GatewayState, gateway_ready_after_unlock};
+
+use crate::Error;
+use crate::config::{ConfigStore, GatewayConfig};
 use crate::harness::mobius::extensions::ExtensionStore;
+use crate::wire::ReadyPayload;
+use std::sync::Arc;
 
 impl GatewayHost {
     pub(crate) async fn install_extension(

@@ -1,16 +1,30 @@
 //! Committed lifecycle projection and delivery through ordinary sessions.
 
-use super::{
-    Arc, BotStore, CheckpointStore, Error, EventMsg, EventPageRequest, ExecutionOutcome,
-    ExecutionRecord, FrontendEvent, GatewayHost, GatewayState, JournalEvent, MessageAuthor,
-    MessageSubmission, Op, Rejection, Result, RoutineRunStatus, ServerMessage, SessionRuntimeState,
-    Submission, TurnLifecycle, Utc, gateway_session_summaries, internal, invalid_bot,
-    invalid_config, invalid_routine, turn_lifecycle, unknown_session, validate_bot_workspace,
+use super::composition::validate_bot_workspace;
+use super::gateway_host::GatewayHost;
+use super::profile::gateway_session_summaries;
+
+use super::rejection::{
+    Rejection, internal, invalid_bot, invalid_config, invalid_routine, unknown_session,
 };
+
+use super::session::{SessionRuntimeState, TurnLifecycle, turn_lifecycle};
+use super::state::GatewayState;
+
+use crate::bots::BotStore;
 use crate::wire::{BotAction, BotSubscription, HookData, HookEvent, HookSelector, HookSource};
+use crate::wire::{RoutineRunStatus, ServerMessage};
+use crate::{Error, Result};
+use chrono::Utc;
 use mobius::SessionId;
 use mobius::backend::checkpoint::ExecutionPageRequest;
+
+use mobius::backend::checkpoint::{
+    CheckpointStore, EventPageRequest, ExecutionOutcome, ExecutionRecord, JournalEvent,
+};
 use mobius::protocol::{ActiveMessageDelivery, MessageSource};
+use mobius::protocol::{EventMsg, FrontendEvent, MessageAuthor, MessageSubmission, Op, Submission};
+use std::sync::Arc;
 
 impl GatewayHost {
     pub(crate) async fn set_bot_subscription(

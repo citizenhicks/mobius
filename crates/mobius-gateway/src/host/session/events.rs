@@ -1,17 +1,26 @@
 use super::super::telemetry::cancellation_reason;
-use super::{
-    ActiveRoutine, Arc, Error, Event, EventMsg, ExecutionOutcome, FrontendEvent, HashSet,
-    HostState, JournalDelivery, JournalEvent, JournalSequence, MessageTarget,
-    ModelStepContentPhase, Rejection, ReplayEntry, Result, RoutineRunStatus, ServerFrame,
-    ServerMessage, SessionActivity, SessionActivityState, SessionReadyPayload, SharedFrame,
-    TurnLifecycle, Utc, activity_catalog, classify_journal_sequence, compact_replay_deltas,
-    event_sequence, git_status, internal, project_record, publish_ready_and_pending,
-    record_and_publish, switch_workspace_branch, turn_lifecycle, update_session_activity,
-    update_widgets, validate_gateway_event,
+use super::{ActiveRoutine, HostState, MessageTarget};
+use crate::host::catalog::{activity_catalog, update_session_activity};
+use crate::host::git::{status as git_status, switch_branch as switch_workspace_branch};
+use crate::host::rejection::{Rejection, internal};
+use crate::host::replay::{
+    ReplayEntry, classify_journal_sequence, compact_replay_deltas, event_sequence, project_record,
+    publish_ready_and_pending, record_and_publish, update_widgets, validate_gateway_event,
 };
+use crate::host::session::{JournalDelivery, JournalSequence, TurnLifecycle, turn_lifecycle};
+use crate::wire::{
+    RoutineRunStatus, ServerFrame, ServerMessage, SessionActivity, SessionActivityState,
+    SessionReadyPayload, SharedFrame,
+};
+use crate::{Error, Result};
+use chrono::Utc;
 use mobius::backend::checkpoint::TranscriptPageRequest;
+use mobius::backend::checkpoint::{ExecutionOutcome, JournalEvent};
+use mobius::protocol::{Event, EventMsg, FrontendEvent, ModelStepContentPhase};
 use serde_json::Value;
 use std::collections::BTreeSet;
+use std::collections::HashSet;
+use std::sync::Arc;
 
 impl HostState {
     pub(super) async fn apply_event(&mut self, record: JournalEvent) -> Result<()> {
