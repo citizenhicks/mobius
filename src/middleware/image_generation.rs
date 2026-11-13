@@ -185,11 +185,7 @@ impl Tool for GenerateImage {
         ApprovalRequirement::Always
     }
 
-    fn call(
-        &self,
-        mut context: ToolContext,
-        arguments: Value,
-    ) -> BoxFuture<'_, Result<ToolResponse>> {
+    fn call(&self, context: ToolContext, arguments: Value) -> BoxFuture<'_, Result<ToolResponse>> {
         Box::pin(async move {
             let arguments: GenerateImageArgs = serde_json::from_value(arguments)?;
             if arguments.reference_file_ids.len() > MAX_REFERENCE_IMAGES {
@@ -224,8 +220,7 @@ impl Tool for GenerateImage {
                 .supports_tool_image_input(context.model_route())
                 .unwrap_or(false);
             if let Some(usage) = generated.usage {
-                context = context.with_model_route(image.route);
-                context.report_usage(usage)?;
+                context.report_usage(image.route, usage)?;
             }
             let extension = image::ImageFormat::from_mime_type(&generated.media_type)
                 .filter(image::ImageFormat::reading_enabled)

@@ -40,7 +40,7 @@ pub(super) struct Runner {
     pub(super) system_prompt: Arc<str>,
     /// The system prompt's parts, estimated once when it is assembled.
     pub(super) prompt_estimate: super::context_estimate::ContextEstimate,
-    /// The last model request's parts, scaled once its usage arrives.
+    /// The request parts paired with the last model response's usage.
     pub(super) context_estimate: Option<super::context_estimate::ContextEstimate>,
     /// The last request's tool-schema estimate, reused while its tool set is unchanged.
     pub(super) tool_schema_estimate: super::context_estimate::ToolSchemaEstimate,

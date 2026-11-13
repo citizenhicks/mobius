@@ -175,12 +175,12 @@ impl ToolContext {
         &self.model_route
     }
 
-    /// Records provider-reported usage for a paid operation on this context's model route.
+    /// Records provider-reported usage for a paid operation on its actual model route.
     /// # Errors
     ///
     /// Returns an error if usage was already recorded or its state is unavailable.
-    pub fn report_usage(&self, usage: TokenUsage) -> Result<()> {
-        self.usage.record(Arc::clone(&self.model_route), usage)
+    pub fn report_usage(&self, route: impl Into<Arc<str>>, usage: TokenUsage) -> Result<()> {
+        self.usage.record(route.into(), usage)
     }
 }
 

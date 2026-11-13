@@ -10,6 +10,7 @@ use uuid::Uuid;
 use super::streaming::StreamedTools;
 use super::turn_event;
 use super::turn_events;
+use crate::agent::context_estimate::ContextEstimate;
 use crate::agent::input::Wait;
 use crate::agent::recorder::RecorderIngress;
 use crate::agent::tool_step::order_results;
@@ -132,6 +133,7 @@ struct PreparedTools {
 struct CompletedModelStep {
     started: Arc<ModelStepStartedEvent>,
     output: ModelOutput,
+    context_estimate: ContextEstimate,
     tools: PreparedToolSet<'static>,
     model_events: Arc<ModelEventTracker>,
     streamed: StreamedTools,
@@ -675,7 +677,6 @@ impl Runner {
             tools.catalog.materialized(),
             estimate,
         )?);
-        self.context_estimate = Some(context);
         let mut stream_retries = 0;
         let hosted = Arc::new(HostedObserver::new(
             Arc::clone(&self.catalog),
@@ -785,6 +786,7 @@ impl Runner {
                     return Ok(ModelStepRequest::Completed(Box::new(CompletedModelStep {
                         started,
                         output,
+                        context_estimate: context,
                         tools: tools.catalog,
                         model_events,
                         streamed,
@@ -915,6 +917,7 @@ impl Runner {
                 .await;
         }
         self.state.make_mut().last_usage = Some(step.output.usage);
+        self.context_estimate = Some(step.context_estimate);
         if !step.output.tool_calls.starts_with(&step.streamed.originals) {
             return self
                 .fail_completed_model_step(

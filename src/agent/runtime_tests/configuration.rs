@@ -39,12 +39,23 @@ async fn auxiliary_usage_preserves_the_last_foreground_context() {
     let checkpoints = Arc::new(
         SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3")).expect("checkpoints"),
     );
+    let mut output = scripted_message("done");
+    let usage = TokenUsage {
+        input_tokens: 1_000,
+        total_tokens: 1_000,
+        ..TokenUsage::default()
+    };
+    output.usage = usage;
     let mut config = config_with_model(
         workspace.path(),
         checkpoints,
         "auxiliary-context",
         "test",
-        Arc::new(HandoffModel::default()),
+        Arc::new(ScriptedModel {
+            outputs: Mutex::new(VecDeque::from([output.clone(), output.clone(), output])),
+            tool_counts: Mutex::new(Vec::new()),
+            inputs: Mutex::new(Vec::new()),
+        }),
     );
     config.middleware = Arc::new(test_middleware(vec![Arc::new(AuxiliaryUsage(
         AtomicUsize::new(0),
@@ -68,20 +79,36 @@ async fn auxiliary_usage_preserves_the_last_foreground_context() {
         assert_eq!(counts.len(), 2);
         assert_eq!(
             counts[0].last_token_usage.input_tokens,
-            i64::from(completed_turns == 1)
+            i64::from(completed_turns == 1) * 1_000
         );
         assert_eq!(counts[0].context, foreground_context);
         assert_eq!(
             counts[0].total_token_usage.total_tokens,
-            completed_turns * 10_001 + 10_000
+            completed_turns * 11_000 + 10_000
         );
-        assert_eq!(counts[1].last_token_usage, scripted_usage());
+        assert_eq!(counts[1].last_token_usage, usage);
         assert!(counts[1].context.is_some(), "foreground request breakdown");
         assert_eq!(
             counts[1].total_token_usage.total_tokens,
-            (completed_turns + 1) * 10_001
+            (completed_turns + 1) * 11_000
         );
         foreground_context = counts[1].context.clone();
+    }
+
+    for text in ["failed context ".repeat(1_000), "next failure".into()] {
+        agent.sender().submit(user_op(text)).expect("submit");
+        let mut counts = Vec::new();
+        loop {
+            match agent.next_event().await.expect("event").msg {
+                EventMsg::TokenCount(event) => counts.push(event.info.expect("usage")),
+                EventMsg::TurnAborted(_) => break,
+                EventMsg::TurnComplete(_) => panic!("exhausted model should fail"),
+                _ => {}
+            }
+        }
+        assert_eq!(counts.len(), 1);
+        assert_eq!(counts[0].last_token_usage.input_tokens, 1_000);
+        assert_eq!(counts[0].context, foreground_context);
     }
 }
 
