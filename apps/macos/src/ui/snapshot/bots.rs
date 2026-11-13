@@ -488,6 +488,22 @@ pub(super) const SCENARIOS: &[Scenario] = &[
     }),
     // Every face shape in the moods that move differently, beside its list sizes.
     ("bot-faces", |_, window, cx| face_gallery(window, cx)),
+    // A face moved by its glide's motions beside one laid out still at the same pose:
+    // the two must match.
+    ("face-glide-parity", |_, window, cx| {
+        let start = std::time::Instant::now();
+        let elapsed = std::time::Duration::from_millis(120);
+        crate::ui::primitives::motion::set_clock(Some(start + elapsed));
+        super::undo_after_capture(|_| crate::ui::primitives::motion::set_clock(None));
+        let tint = Accent::Blue.color();
+        window.open_dialog(cx, move |dialog, _, _| {
+            dialog.w(width::DIALOG_FORM).child(
+                dialog_body().child(div().flex().gap(space::L).children(
+                    crate::ui::primitives::glide_parity(tint, face::FORM, start, elapsed),
+                )),
+            )
+        });
+    }),
     ("bots-create-dialog", |this, window, cx| {
         overview(this, window, cx);
         this.create_bot_dialog(window, cx);

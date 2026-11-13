@@ -1,8 +1,8 @@
 //! The Bot's persistent conversation uses the same chat, transcript and composer.
 
 use super::*;
+use crate::ui::primitives::Skeleton;
 use gpui_component::scroll::ScrollableMask;
-use gpui_component::skeleton::Skeleton;
 use mobius_gateway::wire::BotRecord;
 
 impl Workspace {

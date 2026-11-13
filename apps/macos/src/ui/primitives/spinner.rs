@@ -1,16 +1,15 @@
 //! MobiusSpinner (MobiusStyle.swift): a bright head chasing a fading tail around an
-//! accent track. The angle comes off the clock, so a re-render never restarts it; each
-//! frame asks only the view that painted it for the next one, at most 30 per second.
+//! accent track. The ring is painted once and turned by a GPU motion whose angle comes off
+//! the clock, so a re-render never restarts it and turning costs no renders.
 
 use super::controls::palette;
 use super::motion;
 use crate::numeric::ToFloat;
 use gpui::prelude::*;
 use gpui::{
-    App, Bounds, EntityId, Hsla, PathBuilder, Pixels, Window, canvas, div, point, px, size,
+    App, Bounds, Hsla, Motion, MotionFrame, PathBuilder, Pixels, Window, canvas, div, point, px,
+    radians, size,
 };
-use std::cell::RefCell;
-use std::collections::HashSet;
 use std::f32::consts::TAU;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -25,11 +24,6 @@ const STOPS: [(f32, f32); 5] = [
     (0.86, 0.82),
 ];
 const SEGMENTS: usize = 48;
-
-thread_local! {
-    /// Views with a frame already scheduled, so several spinners share one tick.
-    static SCHEDULED: RefCell<HashSet<EntityId>> = RefCell::new(HashSet::new());
-}
 
 /// The shared loading indicator; `color` defaults to the accent.
 #[derive(IntoElement)]
@@ -70,30 +64,15 @@ fn turn() -> f32 {
     (now % PERIOD_MS).to_f32() / PERIOD_MS.to_f32()
 }
 
-pub(super) fn schedule_frame(window: &Window, cx: &App) {
-    let view = window.current_view();
-    if !SCHEDULED.with(|views| views.borrow_mut().insert(view)) {
-        return;
-    }
-    window
-        .spawn(cx, async move |cx| {
-            cx.background_executor().timer(motion::FRAME).await;
-            SCHEDULED.with(|views| views.borrow_mut().remove(&view));
-            if let Err(error) = cx.update(|_, cx| cx.notify(view)) {
-                tracing::debug!(%error, "spinner window closed before its next frame");
-            }
-        })
-        .detach();
-}
-
-fn paint_spinner(bounds: Bounds<Pixels>, extent: f32, tint: Hsla, turn: f32, window: &mut Window) {
+/// The ring at rest, its head at the top; a motion turns it.
+fn paint_spinner(bounds: Bounds<Pixels>, extent: f32, tint: Hsla, window: &mut Window) {
     let ring = extent * 1.04;
     let line = (extent * 0.14).max(1.8);
     let head = (extent * 0.19).max(2.4);
     let radius = ((ring - line) / 2.).max(0.);
     let center = bounds.center();
     let at = |fraction: f32, r: f32| {
-        let angle = (fraction + turn) * TAU - TAU / 4.;
+        let angle = fraction * TAU - TAU / 4.;
         point(
             center.x + px(r * angle.cos()),
             center.y + px(r * angle.sin()),
@@ -143,16 +122,18 @@ impl RenderOnce for Spinner {
                     if bounds.intersect(&window.content_mask().bounds).is_empty() {
                         return;
                     }
-                    let still = !motion::is_animating(window, cx);
-                    paint_spinner(
-                        bounds,
-                        f32::from(extent),
-                        tint,
-                        if still { 0. } else { turn() },
-                        window,
-                    );
-                    if !still {
-                        schedule_frame(window, cx);
+                    let extent = f32::from(extent);
+                    if motion::is_animating(window, cx) {
+                        let spin = Motion::new(|_| MotionFrame {
+                            rotation: radians(turn() * TAU),
+                            ..MotionFrame::default()
+                        })
+                        .max_fps(motion::SMOOTH_FPS);
+                        window.with_motion(spin, bounds.center(), |window| {
+                            paint_spinner(bounds, extent, tint, window);
+                        });
+                    } else {
+                        paint_spinner(bounds, extent, tint, window);
                     }
                 },
             )

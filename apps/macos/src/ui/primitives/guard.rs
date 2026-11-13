@@ -16,10 +16,14 @@ const RULES: &[(&str, &[(&str, &str)])] = &[
             // The Apple logo is a font glyph, sized as a glyph.
             ("ui/primitives/controls.rs", "text_size(glyph::LEAD)"),
             // Face features scale with the face.
-            ("ui/primitives/bot_face.rs", "text_size(size * eye_size)"),
             (
-                "ui/primitives/bot_face.rs",
-                "text_size(size * 0.2 * (0.6 + 0.5 * life))",
+                "ui/primitives/bot_face/draw.rs",
+                "text_size(size * eye_size)",
+            ),
+            // A drifting z, laid out at the start of its life; its motion grows it.
+            (
+                "ui/primitives/bot_face/view.rs",
+                "text_size(size * 0.2 * 0.6)",
             ),
         ],
     ),

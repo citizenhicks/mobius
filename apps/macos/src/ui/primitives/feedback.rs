@@ -8,7 +8,6 @@ use super::{Type, Typography, heading, icon};
 use crate::ui::theme::{Palette, mix};
 use gpui::prelude::*;
 use gpui::{AnyElement, App, Div, Hsla, SharedString, Window, div, px, relative};
-use gpui_component::skeleton::Skeleton;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
@@ -160,6 +159,58 @@ impl RenderOnce for Notice {
             .text_color(mix(color, p.text, 0.15))
             .whitespace_normal()
             .child(self.title)
+    }
+}
+
+/// gpui-component's `Skeleton`, its breathing drawn as a GPU motion: the same theme fill
+/// and two-second bounce from full to half opacity, without rendering the window.
+#[derive(IntoElement)]
+pub(crate) struct Skeleton {
+    style: gpui::StyleRefinement,
+}
+
+impl Skeleton {
+    pub(crate) fn new() -> Self {
+        Self {
+            style: gpui::StyleRefinement::default(),
+        }
+    }
+}
+
+impl Styled for Skeleton {
+    fn style(&mut self) -> &mut gpui::StyleRefinement {
+        &mut self.style
+    }
+}
+
+impl RenderOnce for Skeleton {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        use gpui::MotionExt as _;
+        use gpui_component::{ActiveTheme as _, StyledExt as _};
+        static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        let epoch = *EPOCH.get_or_init(std::time::Instant::now);
+        let breathe = gpui::bounce(gpui::ease_in_out);
+        let body = div()
+            .w_full()
+            .h_4()
+            .bg(cx.theme().skeleton)
+            .refine_style(&self.style);
+        if !super::motion::is_animating(window, cx) {
+            return body.into_any_element();
+        }
+        body.with_motion(
+            gpui::Motion::new(move |at| {
+                let elapsed = super::motion::sampled(at)
+                    .saturating_duration_since(epoch)
+                    .as_secs_f32();
+                gpui::MotionFrame {
+                    opacity: 1. - breathe(elapsed % 2. / 2.) * 0.5,
+                    ..gpui::MotionFrame::default()
+                }
+            })
+            .max_fps(super::motion::AMBIENT_FPS),
+        )
+        .into_any_element()
     }
 }
 

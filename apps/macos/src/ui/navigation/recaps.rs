@@ -5,7 +5,7 @@ use super::catalog::session_title;
 use super::*;
 use crate::gateway::Update;
 use crate::host::platform::{ChatRecap, FoundationStatus};
-use gpui_component::skeleton::Skeleton;
+use crate::ui::primitives::Skeleton;
 use mobius::SessionId;
 use mobius_gateway::wire::{SessionActivityState, SessionRecord};
 use std::borrow::Cow;

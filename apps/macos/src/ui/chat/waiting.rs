@@ -107,14 +107,14 @@ impl Workspace {
             div()
                 .min_w_0()
                 .truncate()
-                .child(composer::shimmer_text("waiting-phrase", text))
+                .child(composer::shimmer_text(text))
                 .into_any_element(),
         )
     }
 
     /// A running group's summary: it shimmers while the run is live.
     pub(in crate::ui) fn running_summary(summary: String) -> AnyElement {
-        composer::shimmer_text("running-summary", summary)
+        composer::shimmer_text(summary)
     }
 
     /// The waiting line as the transcript's last row, when no event group owns the phrase.

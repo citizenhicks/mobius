@@ -189,6 +189,8 @@ async fn capture_strip(
         report(
             "strip draw",
             cx.update(|window, cx| {
+                // Retained paint skips the strip's probes unless explicitly refreshed.
+                window.refresh();
                 window.draw(cx).clear(cx);
                 content::verify_pane_motion(name, frame, cx);
             }),

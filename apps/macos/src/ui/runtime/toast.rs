@@ -3,6 +3,7 @@
 //! notices wait their turn, so an error is never replaced unseen.
 
 use super::*;
+use gpui::{Motion, MotionExt as _, MotionFrame};
 use std::time::Duration;
 
 /// Below the titlebar, clear of the traffic lights.
@@ -15,6 +16,7 @@ pub(in crate::ui) struct Toast {
     message: SharedString,
     action: Option<navigation::NoticeAction>,
     reveal: motion::Reveal,
+    settle: Option<Task<()>>,
 }
 
 impl Workspace {
@@ -41,6 +43,7 @@ impl Workspace {
             message: message.into(),
             action,
             reveal,
+            settle: None,
         });
         let hold = if matches!(tone, Tone::Error | Tone::Warning) {
             Duration::from_secs(7)
@@ -60,7 +63,20 @@ impl Workspace {
     fn dismiss_toast(&mut self, id: u64, cx: &mut Context<Self>) {
         let still = cx.reduce_motion();
         if let Some(toast) = self.shell.toast.as_mut().filter(|toast| toast.id == id) {
-            toast.reveal.set(false, still, motion::now());
+            if toast.settle.is_some() {
+                return;
+            }
+            let now = motion::now();
+            toast.reveal.set(false, still, now);
+            let end = toast.reveal.end(now);
+            toast.settle = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(end.saturating_duration_since(motion::now()))
+                    .await;
+                if let Err(error) = this.update(cx, |_, cx| cx.notify()) {
+                    tracing::debug!(%error, "the window closed while its toast hid");
+                }
+            }));
             cx.notify();
         }
     }
@@ -86,72 +102,82 @@ impl Workspace {
         }
     }
 
-    pub(in crate::ui) fn toast_layer(
-        &mut self,
-        window: &Window,
-        cx: &Context<Self>,
-    ) -> Option<AnyElement> {
+    pub(in crate::ui) fn toast_layer(&mut self, cx: &Context<Self>) -> Option<AnyElement> {
         let now = motion::now();
         let toast = self.shell.toast.as_ref()?;
-        let shown = toast.reveal.shown(now);
-        if toast.reveal.moving(now) {
-            window.request_animation_frame();
-        } else if shown == 0. {
+        let moving = toast.reveal.moving(now);
+        if !moving && toast.reveal.shown(now) == 0. {
             self.shell.toast = None;
             crate::host::platform::wake();
             return None;
         }
+        // Dismissal owns its completion task; painting only supplies the sampled motion.
+        let rise = moving.then(|| {
+            let shown = toast.reveal.sampler();
+            let end = toast.reveal.end(now);
+            Motion::new(move |at| {
+                let shown = shown(at);
+                MotionFrame {
+                    offset: point(px(0.), -RISE * (1. - shown)),
+                    opacity: shown,
+                    ..MotionFrame::default()
+                }
+            })
+            .until(end)
+            .max_fps(motion::SMOOTH_FPS)
+        });
+        let shown = if moving { 1. } else { toast.reveal.shown(now) };
         let p = self.palette;
         let id = toast.id;
-        Some(
-            div()
-                .absolute()
-                .top(TOP - RISE * (1. - shown))
-                .left_0()
-                .right_0()
-                .flex()
-                .justify_center()
-                .child(
-                    div()
-                        .id(ElementId::NamedInteger("toast".into(), id))
-                        .occlude()
-                        .w(width::TOAST)
-                        .flex()
-                        .items_center()
-                        .gap(space::S)
-                        .px(space::L)
-                        .py(space::L)
-                        .tile_corners()
-                        .bg(p.control)
-                        .border_1()
-                        .border_color(p.separator)
-                        .shadow(chat::surface_shadow())
-                        .opacity(shown)
-                        .child(
-                            icon(toast.tone.glyph(), &p)
-                                .size(glyph::LEAD)
-                                .text_color(toast.tone.color(&p)),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .child(SharedString::clone(&toast.message)),
-                        )
-                        .on_scroll(cx.listener(move |this, event: &ScrollEvent, window, cx| {
-                            if event.delta.pixel_delta(window.line_height()).y < -RISE / 3. {
-                                this.dismiss_toast(id, cx);
-                            }
-                        }))
-                        .when(toast.action.is_some(), |card| {
-                            card.cursor_pointer().on_click(cx.listener(
-                                move |this, _, window, cx| {
-                                    this.run_toast(id, window, cx);
-                                },
-                            ))
-                        }),
-                )
-                .into_any_element(),
-        )
+        let layer = div()
+            .absolute()
+            .top(TOP)
+            .left_0()
+            .right_0()
+            .flex()
+            .justify_center()
+            .child(
+                div()
+                    .id(ElementId::NamedInteger("toast".into(), id))
+                    .occlude()
+                    .w(width::TOAST)
+                    .flex()
+                    .items_center()
+                    .gap(space::S)
+                    .px(space::L)
+                    .py(space::L)
+                    .tile_corners()
+                    .bg(p.control)
+                    .border_1()
+                    .border_color(p.separator)
+                    .shadow(chat::surface_shadow())
+                    .opacity(shown)
+                    .child(
+                        icon(toast.tone.glyph(), &p)
+                            .size(glyph::LEAD)
+                            .text_color(toast.tone.color(&p)),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(SharedString::clone(&toast.message)),
+                    )
+                    .on_scroll(cx.listener(move |this, event: &ScrollEvent, window, cx| {
+                        if event.delta.pixel_delta(window.line_height()).y < -RISE / 3. {
+                            this.dismiss_toast(id, cx);
+                        }
+                    }))
+                    .when(toast.action.is_some(), |card| {
+                        card.cursor_pointer()
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.run_toast(id, window, cx);
+                            }))
+                    }),
+            );
+        Some(match rise {
+            Some(rise) => layer.with_motion(rise).into_any_element(),
+            None => layer.into_any_element(),
+        })
     }
 }

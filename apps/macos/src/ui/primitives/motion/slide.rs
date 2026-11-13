@@ -1,12 +1,13 @@
 //! Positions that follow layout on the spring: when a row moves because others were added,
 //! removed, reordered or opened above it, it slides from where it was drawn instead of
-//! appearing in its new place. Scrolling never counts as a move.
+//! appearing in its new place. Scrolling never counts as a move. The slide is a GPU
+//! motion: layout and hit testing use the new place at once, and the window renders once.
 
 use gpui::{
     AnyElement, App, Bounds, ElementId, GlobalElementId, InspectorElementId, IntoElement, LayoutId,
-    Pixels, SharedString, Window, point, px,
+    Motion, MotionFrame, Pixels, SharedString, Window, point, px,
 };
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use super::spring;
 
@@ -15,13 +16,24 @@ pub fn slide(id: impl Into<SharedString>, child: impl IntoElement) -> Slide {
     Slide {
         id: id.into(),
         child: child.into_any_element(),
+        seed: State {
+            top: 0.,
+            offset: 0.,
+            velocity: 0.,
+            at: Instant::now(),
+        },
     }
 }
 
 pub struct Slide {
     id: SharedString,
     child: AnyElement,
+    /// Where the spring started from, read in paint.
+    seed: State,
 }
+
+/// Longer than the spring takes to come home from any distance a row moves.
+const SETTLE: Duration = Duration::from_millis(600);
 
 #[derive(Clone, Copy)]
 struct State {
@@ -74,48 +86,62 @@ impl gpui::Element for Slide {
         let top = f32::from(bounds.top() - window.element_offset().y);
         let now = super::now();
         let still = cx.reduce_motion();
-        let offset =
-            window.with_optional_element_state(id, |state: Option<Option<State>>, window| {
-                let next = match state.flatten() {
-                    Some(last) if !still => {
-                        // Keep it where it was drawn, then let the spring bring it home.
-                        let moved = last.offset + last.top - top;
-                        let (offset, velocity) =
-                            spring::step(moved, last.velocity, 0., now - last.at);
-                        if offset != 0. {
-                            window.request_animation_frame();
-                        }
-                        State {
-                            top,
-                            offset,
-                            velocity,
-                            at: now,
-                        }
-                    }
-                    _ => State {
+        self.seed = window.with_optional_element_state(id, |state: Option<Option<State>>, _| {
+            let next = match state.flatten() {
+                // Moved by layout: carry on from where it is drawn now, toward its new place.
+                Some(last) if !still && last.top != top => {
+                    let (offset, velocity) =
+                        spring::at(last.offset, last.velocity, 0., now - last.at);
+                    State {
                         top,
-                        offset: 0.,
-                        velocity: 0.,
+                        offset: offset + last.top - top,
+                        velocity,
                         at: now,
-                    },
-                };
-                (next.offset, Some(next))
-            });
-        window.with_element_offset(point(px(0.), px(offset)), |window| {
-            self.child.prepaint(window, cx)
+                    }
+                }
+                Some(last) if !still => last,
+                _ => State {
+                    top,
+                    offset: 0.,
+                    velocity: 0.,
+                    at: now,
+                },
+            };
+            (next, Some(next))
         });
+        self.child.prepaint(window, cx);
     }
 
     fn paint(
         &mut self,
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
-        _: Bounds<Pixels>,
+        bounds: Bounds<Pixels>,
         (): &mut (),
         (): &mut (),
         window: &mut Window,
         cx: &mut App,
     ) {
-        self.child.paint(window, cx);
+        let seed = self.seed;
+        let settled =
+            spring::at(seed.offset, seed.velocity, 0., super::now() - seed.at) == (0., 0.);
+        if settled {
+            self.child.paint(window, cx);
+            return;
+        }
+        // The spring settles well within this; the motion stops presenting after it.
+        let home = Motion::new(move |at| {
+            let elapsed = super::sampled(at).saturating_duration_since(seed.at);
+            MotionFrame {
+                offset: point(
+                    px(0.),
+                    px(spring::at(seed.offset, seed.velocity, 0., elapsed).0),
+                ),
+                ..MotionFrame::default()
+            }
+        })
+        .until(seed.at + SETTLE)
+        .max_fps(super::SMOOTH_FPS);
+        window.with_motion(home, bounds.center(), |window| self.child.paint(window, cx));
     }
 }

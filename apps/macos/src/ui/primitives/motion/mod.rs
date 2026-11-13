@@ -1,6 +1,7 @@
 //! Motion: durations, and the eased open/closed state every sliding panel, card and
 //! disclosure uses (lilt). Reduce Motion makes each change instant.
 
+mod appear;
 mod counter;
 mod height;
 mod slide;
@@ -10,10 +11,7 @@ pub use counter::counter;
 pub use height::{hand_off, progress, smooth, visible};
 pub use slide::slide;
 
-use gpui::{
-    Animation, AnimationExt, AnyElement, App, ElementId, IntoElement, Pixels, Styled, Window,
-    ease_out_quint,
-};
+use gpui::{AnyElement, App, ElementId, IntoElement, Pixels, Window, px};
 use lilt::{Animated, Easing};
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -52,6 +50,17 @@ pub fn now() -> Instant {
         .unwrap_or_else(Instant::now)
 }
 
+/// GPU motion that should read as smooth movement: glides, sweeps, spins and reveals.
+pub const SMOOTH_FPS: f32 = 60.;
+/// GPU motion in the background of a scene: pulses, ticking cogs and drifting z's.
+pub const AMBIENT_FPS: f32 = 30.;
+
+/// The instant a GPU motion shows when presented at `at`: the snapshot harness's frame
+/// clock while it records, so captured strips step exactly as rendered motion does.
+pub fn sampled(at: Instant) -> Instant {
+    CLOCK.with(std::cell::Cell::get).unwrap_or(at)
+}
+
 #[cfg(feature = "snapshot")]
 pub fn set_clock(at: Option<Instant>) {
     CLOCK.with(|clock| clock.set(at));
@@ -65,27 +74,18 @@ pub fn is_animating(window: &Window, cx: &App) -> bool {
 /// `element` fading in over `duration` when it first appears, and again whenever `id`
 /// changes; Reduce Motion shows it at once.
 pub fn fade_in(
-    element: impl IntoElement + Styled + 'static,
+    element: impl IntoElement + 'static,
     id: impl Into<ElementId>,
     duration: Duration,
     cx: &App,
 ) -> AnyElement {
-    if cx.reduce_motion() {
-        return element.into_any_element();
-    }
-    element
-        .with_animation(
-            id,
-            Animation::new(duration).with_easing(ease_out_quint()),
-            gpui::Styled::opacity,
-        )
-        .into_any_element()
+    rise_in(element, id, duration, px(0.), cx)
 }
 
-/// `element` fading in while it rises the last few points into place; Reduce Motion shows
-/// it at once. The relative offset leaves the element's layout footprint unchanged.
+/// `element` fading in while it rises the last `lift` points into place; Reduce Motion
+/// shows it at once. Only its drawing moves: its layout and hit area stay put.
 pub fn rise_in(
-    element: impl IntoElement + Styled + 'static,
+    element: impl IntoElement + 'static,
     id: impl Into<ElementId>,
     duration: Duration,
     lift: Pixels,
@@ -94,18 +94,7 @@ pub fn rise_in(
     if cx.reduce_motion() {
         return element.into_any_element();
     }
-    element
-        .with_animation(
-            id,
-            Animation::new(duration).with_easing(ease_out_quint()),
-            move |element, progress| {
-                element
-                    .opacity(progress)
-                    .relative()
-                    .top(lift * (1. - progress))
-            },
-        )
-        .into_any_element()
+    appear::appear(element, &id.into(), duration, lift).into_any_element()
 }
 
 /// An open or closed state that eases between the two over `PANEL` and, changed
@@ -144,6 +133,22 @@ impl Reveal {
 
     pub fn moving(&self, now: Instant) -> bool {
         self.0.in_progress(now)
+    }
+
+    /// How much shows at each instant, for a GPU motion to sample.
+    pub fn sampler(&self) -> impl Fn(Instant) -> f32 + 'static {
+        let reveal = self.0.clone(); // rules-allow: the motion samples its own copy while the view keeps steering this one
+        move |at| reveal.animate_bool(0., 1., sampled(at))
+    }
+
+    /// When the reveal arrives where it is heading.
+    pub fn end(&self, now: Instant) -> Instant {
+        let remaining = if self.moving(now) {
+            PANEL
+        } else {
+            Duration::ZERO
+        };
+        now + remaining
     }
 }
 

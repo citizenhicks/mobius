@@ -12,7 +12,18 @@ const REST: f32 = 0.5;
 /// `value` and `velocity` after `elapsed` heading for `target`; exactly the target at rest.
 pub fn step(value: f32, velocity: f32, target: f32, elapsed: Duration) -> (f32, f32) {
     // Past a hitch, resume from where the last frame left off instead of leaping ahead.
-    let t = elapsed.as_secs_f32().min(1. / 20.);
+    at(
+        value,
+        velocity,
+        target,
+        elapsed.min(Duration::from_millis(50)),
+    )
+}
+
+/// Where the spring is `elapsed` after leaving `value` at `velocity` for `target`, in one
+/// step however long; exactly the target at rest.
+pub fn at(value: f32, velocity: f32, target: f32, elapsed: Duration) -> (f32, f32) {
+    let t = elapsed.as_secs_f32();
     let offset = value - target;
     let decay = (-OMEGA * t).exp();
     let carry = velocity + OMEGA * offset;

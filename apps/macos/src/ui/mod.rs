@@ -417,7 +417,7 @@ impl Render for Workspace {
             .child(backdrop::layer(&p, cx))
             .child(self.chrome(window, cx))
             .child(body)
-            .children(self.toast_layer(window, cx))
+            .children(self.toast_layer(cx))
     }
 }
 
