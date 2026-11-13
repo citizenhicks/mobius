@@ -110,7 +110,7 @@ pub(super) const SCENARIOS: &[Scenario] = &[
 /// A long, offline catalog, with the Bot strip and New Chat in the scroll area.
 fn scroll_edge_fixture(this: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     harness::fixture(this);
-    this.client.state.sessions = (0..40)
+    let sessions = (0..40)
         .map(|index| {
             documents::fixture_session(
                 &format!("fixture-sidebar-edge-{index}"),
@@ -119,7 +119,14 @@ fn scroll_edge_fixture(this: &mut Workspace, window: &mut Window, cx: &mut Conte
             )
         })
         .collect();
-    this.navigation_catalog = Default::default();
+    this.client.state.sessions = sessions;
+    let before = std::mem::take(&mut this.navigation_catalog);
+    CATALOG.with(|stash| stash.replace(Some(before)));
+    undo_after_capture(|this| {
+        if let Some(catalog) = CATALOG.with(|stash| stash.borrow_mut().take()) {
+            this.navigation_catalog = catalog;
+        }
+    });
     this.navigation_catalog.organization = navigation::Organization::Chronological;
     this.gateway_revision += 1;
     this.new_chat(window, cx);
@@ -220,6 +227,9 @@ fn pin_oldest_project(this: &mut Workspace) {
 }
 
 thread_local! {
+    /// The real sidebar organisation while the scroll-edge scenario shows its own.
+    static CATALOG: std::cell::RefCell<Option<navigation::CatalogState>> =
+        const { std::cell::RefCell::new(None) };
     /// The real pinned projects while a scenario shows another pin.
     static PINS: std::cell::RefCell<Option<BTreeMap<String, std::collections::BTreeSet<String>>>> =
         const { std::cell::RefCell::new(None) };

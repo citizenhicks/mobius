@@ -164,8 +164,25 @@ fn bot(
 }
 
 /// Replaces the catalog with a möbius Bot and a Codex Bot this gateway cannot run.
+/// The live connection, catalog and chats are kept and restored after the capture, so
+/// later scenarios can still open real chats.
 pub(super) fn fixture(this: &mut Workspace) {
-    this.client.gateway.take();
+    let live = (
+        this.client.gateway.take(),
+        this.client.state.gateway.take(),
+        this.client.state.sessions.clone(), // rules-allow: the live chats come back after the fixture's capture
+    );
+    LIVE.with(|stash| {
+        stash.borrow_mut().get_or_insert(live);
+    });
+    super::probes::undo_after_capture(|this| {
+        if let Some((gateway, catalog, sessions)) = LIVE.with(|stash| stash.borrow_mut().take()) {
+            this.client.gateway = gateway;
+            this.client.state.gateway = catalog;
+            this.client.state.sessions = sessions;
+            this.gateway_revision += 1;
+        }
+    });
     let mobius = json!({
         "kind": "mobius", "label": "möbius", "symbol": "agent",
         "install": {"state": "not_applicable"}, "auth": {"state": "not_applicable"},
@@ -231,4 +248,17 @@ pub(super) fn fixture(this: &mut Workspace) {
             "bots": bots
         }),
     );
+}
+
+/// The live connection, catalog and chats an offline fixture replaces.
+type Live = (
+    Option<crate::gateway::Gateway>,
+    Option<mobius_gateway::wire::ReadyPayload>,
+    Vec<mobius_gateway::wire::SessionRecord>,
+);
+
+thread_local! {
+    /// The live connection, catalog and chats while an offline fixture is shown.
+    static LIVE: std::cell::RefCell<Option<Live>> =
+        const { std::cell::RefCell::new(None) };
 }
