@@ -31,8 +31,7 @@ impl Workspace {
                 .client
                 .state
                 .bot(id)
-                .map(|bot| format!("{} · @{}", bot.name, bot.handle))
-                .unwrap_or_default(),
+                .map_or_default(|bot| format!("{} · @{}", bot.name, bot.handle)),
         };
         let header = PageHeader::new(section.label()).subtitle(subtitle);
         let fill = section == AgentSection::Prompt;
@@ -133,8 +132,7 @@ impl Workspace {
             .client
             .state
             .bot(id)
-            .map(|bot| format!("@{}", bot.handle))
-            .unwrap_or_default();
+            .map_or_default(|bot| format!("@{}", bot.handle));
         let harness = self.scope_harness(scope).unwrap_or(HarnessKind::Mobius);
         let mut harness_row = Row::new("identity-harness", "Harness")
             .subtitle("Chosen when the Bot was created; it can’t change.")

@@ -212,8 +212,7 @@ impl Router {
         if reply.get("id").is_some_and(|id| *id == TARGET_INFO) {
             let target = reply
                 .pointer_mut("/result/targetInfo")
-                .map(Value::take)
-                .unwrap_or_default();
+                .map_or_default(Value::take);
             let attach = json!({
                 "id": ATTACH,
                 "method": "Target.attachToTarget",

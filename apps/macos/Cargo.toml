@@ -2,7 +2,7 @@
 name = "mobius-desktop"
 version = "0.17.8"
 edition = "2024"
-rust-version = "1.99.0"
+rust-version.workspace = true
 publish = false
 license = "Apache-2.0"
 repository = "https://github.com/citizenhicks/mobius"
@@ -16,6 +16,9 @@ path = "src/main.rs"
 
 [workspace]
 members = ["browser-helper", "crates/mobius-client"]
+
+[workspace.package]
+rust-version = "1.100.0"
 
 [workspace.dependencies]
 gpui = { package = "gpui-fast", version = "=0.1.14" }

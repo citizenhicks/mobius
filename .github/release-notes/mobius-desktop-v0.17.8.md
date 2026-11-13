@@ -11,5 +11,5 @@ Bundle gateway **0.17.8**. Use protocol **102** with a matching local or remote 
 Protocol 101 gateways are incompatible.
 
 Keep GPU-presented animations and recent-chat image caching. Held messages can be
-edited from their context menu. Rust 1.99.1 builds retain the experimental
+edited from their context menu. Rust 1.100.0 builds retain the experimental
 eight-worker compiler frontend.

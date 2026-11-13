@@ -7,5 +7,5 @@ Expose committed execution statistics through `Agent::subscribe_run_stats` and
 non-exhaustive; downstream struct literals and exhaustive matches must be updated.
 The gateway and clients use protocol **102** for live statistics.
 
-Builds pin Rust 1.99.1 and opt into its experimental eight-worker compiler frontend.
-The minimum supported Rust version remains 1.99.0.
+Builds pin Rust 1.100.0 and opt into its experimental eight-worker compiler frontend.
+The minimum supported Rust version is 1.100.0.

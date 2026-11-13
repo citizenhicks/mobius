@@ -33,7 +33,7 @@ because credentials are now isolated by the complete service URL.
 
 ## Build and run
 
-Requires Apple Silicon, macOS 26+, Xcode command-line tools, Rust 1.99.1, CMake and
+Requires Apple Silicon, macOS 26+, Xcode command-line tools, Rust 1.100.0, CMake and
 Ninja (`brew install cmake ninja`). The app is its own Cargo workspace and builds
 against the framework and gateway in this repository (`../..`). Swift Package Manager
 fetches the pinned, namespaced LiveKitWebRTC framework for native voice, and the first

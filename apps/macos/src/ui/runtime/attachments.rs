@@ -72,8 +72,7 @@ impl Workspace {
             .draft_owner
             .as_ref()
             .and_then(|key| self.runtime.attachments.get(key))
-            .map(Vec::as_slice)
-            .unwrap_or_default()
+            .map_or_default(Vec::as_slice)
     }
 
     pub(in crate::ui) fn attachments_ready(&self) -> bool {

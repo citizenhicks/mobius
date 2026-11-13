@@ -351,8 +351,7 @@ impl Workspace {
             .as_ref()
             .filter(|open| *open.session.session_id == *session)
             .and_then(|open| open.workspace.as_ref())
-            .map(|workspace| workspace.path.to_string_lossy().into_owned())
-            .unwrap_or_default();
+            .map_or_default(|workspace| workspace.path.to_string_lossy().into_owned());
         self.open_content_for(
             TabOwner::Chat(session.share()),
             ContentTab {
@@ -380,8 +379,7 @@ impl Workspace {
             .session
             .as_ref()
             .and_then(|session| session.workspace.as_ref())
-            .map(|workspace| workspace.path.to_string_lossy().into_owned())
-            .unwrap_or_default();
+            .map_or_default(|workspace| workspace.path.to_string_lossy().into_owned());
         InlineDiff {
             // A patch still streaming gets fresh state as its text grows.
             key: format!("{key}:diff:{}", text.len()).into(),

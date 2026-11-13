@@ -417,8 +417,7 @@ fn render_runs(frame: &mut ratatui::Frame<'_>, area: Rect, state: &BotsState, ro
         let message = run
             .message
             .as_deref()
-            .map(|message| format!(" · {}", terminal_text(message)))
-            .unwrap_or_default();
+            .map_or_default(|message| format!(" · {}", terminal_text(message)));
         Line::from(format!(" {}{message}", routine_run_label(run)))
     });
     render_list_page(

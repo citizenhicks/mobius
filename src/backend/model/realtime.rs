@@ -972,8 +972,7 @@ impl VoiceTurns {
             let text = self
                 .streams
                 .get_mut(&caption.id)
-                .map(|stream| std::mem::take(&mut stream.text))
-                .unwrap_or_default();
+                .map_or_default(|stream| std::mem::take(&mut stream.text));
             self.transcript(&caption.id, live_role(speaker), text.into(), true, events)?;
         }
         Ok(())

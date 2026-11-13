@@ -102,8 +102,7 @@ pub(crate) fn strip_attachment_references(items: &mut Vec<Arc<Value>>) {
             let mut parts = item
                 .get_mut("content")
                 .and_then(Value::as_array_mut)
-                .map(std::mem::take)
-                .unwrap_or_default();
+                .map_or_default(std::mem::take);
             parts.retain(is_image);
             parts
         } else {

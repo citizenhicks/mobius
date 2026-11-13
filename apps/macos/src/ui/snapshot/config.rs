@@ -82,8 +82,7 @@ fn event_fixtures(this: &mut Workspace) {
     let bot = gateway
         .bots
         .first()
-        .map(|bot| Arc::clone(&bot.id))
-        .unwrap_or_default();
+        .map_or_default(|bot| Arc::clone(&bot.id));
     gateway
         .background_approvals
         .push(Arc::new(BackgroundApproval {

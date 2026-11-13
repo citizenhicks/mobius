@@ -426,8 +426,7 @@ pub(crate) async fn assemble(
     let mut metadata = checkpoints
         .load(&session_id)
         .await?
-        .map(|checkpoint| checkpoint.metadata)
-        .unwrap_or_default();
+        .map_or_default(|checkpoint| checkpoint.metadata);
     metadata.extend(chat.metadata()?);
     let workspace = chat.workspace_info();
     let workspace_label = workspace

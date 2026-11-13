@@ -292,8 +292,7 @@ impl Workspace {
                 .content
                 .tabs
                 .get(id)
-                .map(|tab| SharedString::clone(&tab.title))
-                .unwrap_or_default(),
+                .map_or_default(|tab| SharedString::clone(&tab.title)),
             PageTab::Chat(id) => {
                 if let Some(bot) = self.conversation_bot(id) {
                     return bot.name.to_string().into();

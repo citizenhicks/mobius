@@ -37,8 +37,7 @@ fn describe(status: &UpdateStatus) -> String {
     let version = status.version.as_deref().unwrap_or("");
     let percent = status
         .progress
-        .map(|fraction| format!(" · {}", percent(fraction)))
-        .unwrap_or_default();
+        .map_or_default(|fraction| format!(" · {}", percent(fraction)));
     match status.stage {
         _ if !status.supported => status
             .reason

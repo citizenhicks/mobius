@@ -503,8 +503,7 @@ impl Workspace {
         let efforts = editor
             .models
             .last()
-            .map(|model| model.efforts.read(cx).value())
-            .unwrap_or_default();
+            .map_or_default(|model| model.efforts.read(cx).value());
         if self.push_provider_model(value.trim(), &efforts, window, cx)
             && let Some(editor) = &self.provider_setup.editor
         {

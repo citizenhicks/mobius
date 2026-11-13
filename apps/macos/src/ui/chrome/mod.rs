@@ -95,15 +95,12 @@ impl Workspace {
     /// the page's own actions, then the side-pane toggle.
     fn page_header(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let primary = self.primary_page();
-        let actions = primary
-            .map(|page| self.page_actions(page, cx))
-            .unwrap_or_default();
+        let actions = primary.map_or_default(|page| self.page_actions(page, cx));
         let conversation = self.active_conversation_bot().is_some();
         let title = primary
             .filter(|_| !conversation)
             .filter(|tab| !matches!(tab, PageTab::Draft))
-            .map(|tab| self.page_title(tab))
-            .unwrap_or_default();
+            .map_or_default(|tab| self.page_title(tab));
         let chat = matches!(primary, Some(PageTab::Chat(_) | PageTab::Draft));
         let chat_title = chat && !conversation;
         // Running, finished unread, or waiting on an approval or question, as in the sidebar.

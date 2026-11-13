@@ -555,8 +555,7 @@ impl VoiceConversation {
                 return event
                     .submission_id
                     .as_deref()
-                    .map(|id| self.finish(id, Some(&rejection.message)))
-                    .unwrap_or_default();
+                    .map_or_default(|id| self.finish(id, Some(&rejection.message)));
             }
             EventMsg::TurnAborted(turn) => {
                 return self.finish_turn(&turn.turn_id, Some(&turn.reason));

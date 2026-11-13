@@ -1101,15 +1101,12 @@ fn composer_title(state: &TuiState) -> Line<'static> {
     } else {
         ("ready", Role::Accent)
     };
-    let elapsed = state
-        .turn_started_at
-        .map(|started| {
-            format!(
-                " · {}",
-                crate::frontend::terminal::elapsed_label(started.elapsed())
-            )
-        })
-        .unwrap_or_default();
+    let elapsed = state.turn_started_at.map_or_default(|started| {
+        format!(
+            " · {}",
+            crate::frontend::terminal::elapsed_label(started.elapsed())
+        )
+    });
     let title = format!(" mobius · {status}{elapsed} ");
     if state.is_working() {
         shimmer::line(

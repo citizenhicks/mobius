@@ -36,7 +36,7 @@ codegen-units = 1
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.99.0"
+rust-version = "1.100.0"
 license = "Apache-2.0"
 repository = "https://github.com/citizenhicks/mobius"
 publish = ["crates-io"]

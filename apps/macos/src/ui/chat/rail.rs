@@ -201,13 +201,13 @@ impl Workspace {
                     turn += 1;
                 }
                 // The first answer text after the message, as the reference card shows.
-                let reply = answer(entries.get(index..).unwrap_or_default(), entry)
-                    .map(|text| {
+                let reply = answer(entries.get(index..).unwrap_or_default(), entry).map_or_default(
+                    |text| {
                         lines(&super::reply::plain_text(text))
                             .collect::<Vec<_>>()
                             .join(" ")
-                    })
-                    .unwrap_or_default();
+                    },
+                );
                 marks.push(Mark {
                     id: Arc::clone(&entry.id).into(),
                     item,

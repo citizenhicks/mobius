@@ -97,8 +97,7 @@ fn login_state(gateway: &ReadyPayload) -> Result<SetupState> {
         .agent_catalog
         .bot_defaults
         .as_ref()
-        .map(|defaults| defaults.config.clone()) // rules-allow: setup edits a snapshot while events update the gateway payload
-        .unwrap_or_default();
+        .map_or_default(|defaults| defaults.config.clone()); // rules-allow: setup edits a snapshot while events update the gateway payload
     SetupState::new(
         SetupMode::Login,
         None,

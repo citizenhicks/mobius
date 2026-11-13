@@ -73,7 +73,7 @@ Other ways to install (the [CLI guide](https://github.com/citizenhicks/mobius/bl
 - **Prebuilt archive:** download `mobius-<version>-<target>.tar.gz` from
   [Releases](https://github.com/citizenhicks/mobius/releases) for Apple Silicon macOS
   (`aarch64-apple-darwin`) or 64-bit Intel/AMD Linux (`x86_64-unknown-linux-gnu`).
-- **Cargo:** `cargo install --locked mobius-cli`. This needs Rust 1.99.0 or newer, and
+- **Cargo:** `cargo install --locked mobius-cli`. This needs Rust 1.100.0 or newer, and
   `cloudflared` installed separately if you want Quick Connect.
 
 On Linux, sandboxed command execution requires **Bubblewrap**.
@@ -163,7 +163,7 @@ just complexity                                 # Clippy, warnings denied
 just rules                                      # project rules Clippy cannot express
 ```
 
-Rust 1.99.1 is pinned in `rust-toolchain.toml`. The shared Cargo configuration uses
+Rust 1.100.0 is pinned in `rust-toolchain.toml`. The shared Cargo configuration uses
 `RUSTC_BOOTSTRAP` for the experimental eight-worker compiler frontend; Cargo also
 builds independent crates in parallel. Linux sandbox tests need Bubblewrap.
 

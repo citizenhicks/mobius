@@ -403,8 +403,7 @@ fn category_axis(p: &Palette, labels: &[String], edge: impl Into<DefiniteLength>
 /// A donut of the first series beside a legend of each slice's value and share.
 fn donut(p: &Palette, labels: &[String], series: Option<&UiSeries>, unit: Option<&str>) -> Div {
     let data: Vec<f64> = series
-        .map(values)
-        .unwrap_or_default()
+        .map_or_default(values)
         .into_iter()
         .map(|value| value.max(0.))
         .collect();

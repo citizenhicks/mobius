@@ -50,8 +50,7 @@ pub fn install_menus(cx: &mut App) {
     cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
     cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
     let overrides = crate::ui::preferences::Preferences::load()
-        .map(|preferences| preferences.shortcuts)
-        .unwrap_or_default();
+        .map_or_default(|preferences| preferences.shortcuts);
     apply_shortcuts(overrides, cx);
 }
 

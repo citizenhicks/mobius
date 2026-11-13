@@ -150,7 +150,7 @@ impl RoutineForm {
                 MAX_MESSAGE_BYTES,
             ),
             ends_at: TextForm::new(
-                ends_at.map(|value| value.to_string()).unwrap_or_default(),
+                ends_at.map_or_default(|value| value.to_string()),
                 MAX_MESSAGE_BYTES,
             ),
             schedule_enabled: timer.is_some(),

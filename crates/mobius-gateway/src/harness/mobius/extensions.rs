@@ -321,8 +321,7 @@ impl ExtensionSource {
         if url.host_str() == Some("github.com") {
             let segments = url
                 .path_segments()
-                .map(std::iter::Iterator::collect::<Vec<_>>)
-                .unwrap_or_default();
+                .map_or_default(std::iter::Iterator::collect::<Vec<_>>);
             if let [owner, repository, "tree", branch, rest @ ..] = segments.as_slice() {
                 if reference.is_some() || subdirectory.is_some() {
                     return Err(Error::Config(

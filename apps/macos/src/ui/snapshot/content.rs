@@ -33,8 +33,7 @@ pub(super) fn last_commit_diff() -> String {
     std::process::Command::new("git")
         .args(["show", "--format=", "--no-color", "HEAD"])
         .output()
-        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
-        .unwrap_or_default()
+        .map_or_default(|output| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// The files tracked in this repository, read locally.
@@ -42,13 +41,12 @@ fn tracked_files() -> Vec<String> {
     std::process::Command::new("git")
         .arg("ls-files")
         .output()
-        .map(|output| {
+        .map_or_default(|output| {
             String::from_utf8_lossy(&output.stdout)
                 .lines()
                 .map(str::to_owned)
                 .collect()
         })
-        .unwrap_or_default()
 }
 
 const CHANGES_REVIEW: &str = "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n\

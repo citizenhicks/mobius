@@ -830,8 +830,7 @@ impl Workspace {
         let text = draft
             .editor
             .as_ref()
-            .map(|editor| editor.input.read(cx).value().trim().to_owned())
-            .unwrap_or_default();
+            .map_or_default(|editor| editor.input.read(cx).value().trim().to_owned());
         match &key.target {
             DecisionTarget::Approval { request } => {
                 if !self

@@ -910,8 +910,7 @@ impl TranscriptReducer {
             let previous = self
                 .turns
                 .get_mut(turn_id)
-                .map(|turn| std::mem::take(&mut turn.rows))
-                .unwrap_or_default();
+                .map_or_default(|turn| std::mem::take(&mut turn.rows));
             let published = self.replace_rows(&mut step.ops, previous, rows);
             if let Some(turn) = self.turns.get_mut(turn_id) {
                 turn.rows = published;

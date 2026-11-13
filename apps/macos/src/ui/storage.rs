@@ -552,30 +552,24 @@ impl Workspace {
         .zip(self.storage.kinds)
         .filter_map(|(kind, selected)| selected.then_some(kind))
         .collect::<Vec<_>>();
-        let (count, size) = self
-            .client
-            .storage
-            .usage
-            .as_ref()
-            .map(|usage| {
-                usage
-                    .sessions
-                    .iter()
-                    .filter(|s| ids.contains(&s.session_id))
-                    .fold((0_u64, 0_u64), |mut total, row| {
-                        for (size, selected) in [&row.uploads, &row.artifacts, &row.observations]
-                            .into_iter()
-                            .zip(self.storage.kinds)
-                        {
-                            if selected {
-                                total.0 = total.0.saturating_add(size.files);
-                                total.1 = total.1.saturating_add(size.bytes);
-                            }
+        let (count, size) = self.client.storage.usage.as_ref().map_or_default(|usage| {
+            usage
+                .sessions
+                .iter()
+                .filter(|s| ids.contains(&s.session_id))
+                .fold((0_u64, 0_u64), |mut total, row| {
+                    for (size, selected) in [&row.uploads, &row.artifacts, &row.observations]
+                        .into_iter()
+                        .zip(self.storage.kinds)
+                    {
+                        if selected {
+                            total.0 = total.0.saturating_add(size.files);
+                            total.1 = total.1.saturating_add(size.bytes);
                         }
-                        total
-                    })
-            })
-            .unwrap_or_default();
+                    }
+                    total
+                })
+        });
         self.confirm_destructive(
             format!(
                 "Purge {} ({})?",

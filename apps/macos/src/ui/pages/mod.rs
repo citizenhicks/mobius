@@ -69,8 +69,7 @@ impl Workspace {
         match page {
             PageTab::Empty(crate::ui::navigation::Section::Bots) => self
                 .first_bot_id()
-                .map(|id| self.bot_page_actions(&id, cx))
-                .unwrap_or_default(),
+                .map_or_default(|id| self.bot_page_actions(&id, cx)),
             PageTab::Bot(id) => self.bot_page_actions(id, cx),
             PageTab::BotSettings(id, _) => {
                 self.agent_status_actions(&bots::AgentScope::Bot(Arc::clone(id)), cx)
@@ -79,8 +78,7 @@ impl Workspace {
             PageTab::Provider(_) | PageTab::ProviderDraft(_) => self.provider_actions_for(page, cx),
             PageTab::Extensions => self
                 .first_extension_id()
-                .map(|id| self.extension_actions(&id, cx))
-                .unwrap_or_default(),
+                .map_or_default(|id| self.extension_actions(&id, cx)),
             PageTab::Extension(id) => self.extension_actions(id, cx),
             PageTab::Gateway(page) => self.gateway_actions(page, cx),
             PageTab::Settings(SettingsPage::Account) => self.account_actions(cx),
