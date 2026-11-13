@@ -32,4 +32,4 @@ setting_background_commands_description = "Maximum running or retained backgroun
 defaults_environment = ["PATH", "USER", "LOGNAME", "LANG", "LC_ALL", "TERM", "DEVELOPER_DIR", "SDKROOT"]
 prompt_workspace = "Primary workspace cwd: {path}."
 prompt_attached_folders = "Attached writable folders (use absolute paths):"
-prompt_temporary_directory = "Private temporary directory: {path}. Shell and file tools share it across calls; child agents have separate temporary files. It is removed when this execution lifetime ends. Recorded images remain in history."
+prompt_temporary_directory = "Scratch directory, for temporary files only: {path}. The task's files are in the workspace cwd, not here. Shell and file tools share it across calls; child agents have separate temporary files. It is removed when this execution lifetime ends. Recorded images remain in history."
