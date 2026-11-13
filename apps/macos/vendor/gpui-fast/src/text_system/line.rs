@@ -1731,7 +1731,7 @@ mod tests {
             assert_eq!(actual.thickness, expected.thickness);
             assert_eq!(actual.wavy, expected.wavy);
             assert_eq!(actual.order, expected.order);
-            assert_eq!(actual.fast_motion, expected.fast_motion);
+            assert_eq!(actual.pad, expected.pad);
         }
     }
 

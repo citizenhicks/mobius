@@ -158,9 +158,9 @@ fn check(scene: &Scene, scale: f32) -> usize {
     let others = scene
         .shadows
         .iter()
-        .map(|p| p.fast_motion)
-        .chain(scene.underlines.iter().map(|p| p.fast_motion))
-        .chain(scene.monochrome_sprites.iter().map(|p| p.fast_motion))
+        .map(|p| p.pad)
+        .chain(scene.underlines.iter().map(|p| p.pad))
+        .chain(scene.monochrome_sprites.iter().map(|p| p.pad))
         .chain(scene.polychrome_sprites.iter().map(|p| p.fast_motion));
     for (index, ours) in quads.chain(paths).chain(others.map(|index| (index, false))) {
         assert!(

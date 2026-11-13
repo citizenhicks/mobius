@@ -297,11 +297,11 @@ pub(crate) fn clear(scene: &mut Scene) {
 }
 fn primitive_motion(primitive: &mut Primitive) -> Option<&mut u32> {
     match primitive {
-        Primitive::Shadow(p) => Some(&mut p.fast_motion),
+        Primitive::Shadow(p) => Some(&mut p.pad),
         Primitive::Quad(p) => Some(&mut p.fast_motion),
         Primitive::Path(p) => Some(&mut p.fast_motion),
-        Primitive::Underline(p) => Some(&mut p.fast_motion),
-        Primitive::MonochromeSprite(p) => Some(&mut p.fast_motion),
+        Primitive::Underline(p) => Some(&mut p.pad),
+        Primitive::MonochromeSprite(p) => Some(&mut p.pad),
         Primitive::PolychromeSprite(p) => Some(&mut p.fast_motion),
         Primitive::SubpixelSprite(_) | Primitive::Surface(_) => None,
     }
@@ -404,6 +404,7 @@ pub(crate) fn is_animating(window: &Window) -> bool {
     )
     .is_some()
 }
+// A motion-only frame re-presents the retained scene at its fastest active rate.
 pub(crate) fn due(window: &Window) -> bool {
     let now = Instant::now();
     interval(

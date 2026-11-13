@@ -211,7 +211,7 @@ fn content_in_parts_draws_each_tile_as_one_scene_does() {
                         element_bounds: sp(100., y + 150., 300., 40.),
                         element_corner_radii: Default::default(),
                         inset: 0,
-                        fast_motion: 0,
+                        pad: 0,
                     }
                     .into(),
                 ));
@@ -300,7 +300,7 @@ fn translation_moves_every_position_a_primitive_carries() {
         element_bounds: sp(5., 6., 7., 8.),
         element_corner_radii: Default::default(),
         inset: 0,
-        fast_motion: 0,
+        pad: 0,
     };
     let Primitive::Shadow(moved) = translate(shadow.into()) else {
         unreachable!()
@@ -367,7 +367,7 @@ fn translation_moves_every_position_a_primitive_carries() {
 
     let underline = Underline {
         order: 0,
-        fast_motion: 0,
+        pad: 0,
         bounds: sp(1., 2., 3., 4.),
         content_mask: mask,
         color: Hsla::red(),
@@ -393,7 +393,7 @@ fn translation_moves_every_position_a_primitive_carries() {
     };
     let mono = MonochromeSprite {
         order: 0,
-        fast_motion: 0,
+        pad: 0,
         bounds: sp(1., 2., 3., 4.),
         content_mask: mask,
         color: Hsla::red(),
@@ -1668,7 +1668,7 @@ mod footprints {
             element_bounds: sp(400., 100., 100., 100.),
             element_corner_radii: Default::default(),
             inset: 0,
-            fast_motion: 0,
+            pad: 0,
         }
     }
 
@@ -1677,7 +1677,7 @@ mod footprints {
         // around its centre (475, 135): its corners reach x = 524.5.
         MonochromeSprite {
             order: 0,
-            fast_motion: 0,
+            pad: 0,
             bounds: sp(440., 100., 70., 70.),
             content_mask: wide_mask(),
             color,

@@ -556,7 +556,7 @@ impl From<Quad> for Primitive {
 #[expect(missing_docs)]
 pub struct Underline {
     pub order: DrawOrder,
-    pub fast_motion: u32,
+    pub pad: u32, // align to 8 bytes
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
     pub color: Hsla,
@@ -584,7 +584,7 @@ pub struct Shadow {
     pub element_corner_radii: Corners<ScaledPixels>,
     /// 0 = drop shadow (rendered outside the element), 1 = inset shadow (rendered inside).
     pub inset: u32,
-    pub fast_motion: u32,
+    pub pad: u32, // align to 8 bytes
 }
 
 impl From<Shadow> for Primitive {
@@ -712,7 +712,7 @@ impl Default for TransformationMatrix {
 #[expect(missing_docs)]
 pub struct MonochromeSprite {
     pub order: DrawOrder,
-    pub fast_motion: u32,
+    pub pad: u32,
     pub tile: AtlasTile,
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,

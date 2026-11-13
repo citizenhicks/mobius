@@ -3,8 +3,8 @@ use crate::metal_atlas::MetalAtlas;
 use anyhow::{Context as _, Result};
 use block2::RcBlock;
 use gpui::{
-    AtlasTextureId, Background, Bounds, ContentMask, DevicePixels, PaintSurface,
-    Path, Point, PrimitiveBatch, ScaledPixels, Scene, Size, point, size,
+    AtlasTextureId, Background, Bounds, ContentMask, DevicePixels, PaintSurface, Path, Point,
+    PrimitiveBatch, ScaledPixels, Scene, Size, point, size,
 };
 #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
 use image::RgbaImage;
@@ -1737,8 +1737,6 @@ pub(crate) fn write_instances(scene: &Scene, writer: &mut InstanceBufferWriter) 
         }))?,
     })
 }
-
-
 
 pub(crate) struct InstanceBufferWriter {
     device: Retained<ProtocolObject<dyn MTLDevice>>,

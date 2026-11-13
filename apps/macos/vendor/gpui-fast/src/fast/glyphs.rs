@@ -237,7 +237,7 @@ impl Window {
             } else {
                 self.next_frame.scene.insert_primitive(MonochromeSprite {
                     order: 0,
-                    fast_motion: 0,
+                    pad: 0,
                     bounds,
                     content_mask,
                     color: color.opacity(element_opacity),

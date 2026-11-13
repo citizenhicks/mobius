@@ -4,7 +4,11 @@
 //! rasterization itself is unmasked; its premultiplied result is masked when
 //! the path sprite is composited, avoiding applying coverage twice.
 
-pub fn source(_source: &str) -> String {
+pub fn source(upstream: &str) -> String {
+    let hash = upstream.bytes().fold(0xcbf2_9ce4_8422_2325u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+    });
+    assert_eq!(hash, 0x73ed_1dc3_f093_9900, "upstream shader changed; reconcile fast/motion.metal");
     let mut source = include_str!("motion.metal").to_owned();
     for name in [
         "quad_fragment",

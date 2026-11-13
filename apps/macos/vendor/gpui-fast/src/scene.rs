@@ -6,8 +6,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AtlasTextureId, AtlasTile, Background, Bounds, ContentMask, Corners, Edges, Hsla,
-    Pixels, Point, Radians, ScaledPixels, Size, bounds_tree::BoundsTree, point,
+    AtlasTextureId, AtlasTile, Background, Bounds, ContentMask, Corners, Edges, Hsla, Pixels,
+    Point, Radians, ScaledPixels, Size, bounds_tree::BoundsTree, point,
 };
 use std::{
     fmt::Debug,
@@ -240,8 +240,6 @@ impl Primitive {
             Primitive::Surface(surface) => &surface.bounds,
         }
     }
-
-
 
     pub fn content_mask(&self) -> &ContentMask<ScaledPixels> {
         match self {
@@ -553,7 +551,7 @@ impl From<Quad> for Primitive {
 #[expect(missing_docs)]
 pub struct Underline {
     pub order: DrawOrder,
-    pub fast_motion: u32,
+    pub pad: u32, // align to 8 bytes
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
     pub color: Hsla,
@@ -581,7 +579,7 @@ pub struct Shadow {
     pub element_corner_radii: Corners<ScaledPixels>,
     /// 0 = drop shadow (rendered outside the element), 1 = inset shadow (rendered inside).
     pub inset: u32,
-    pub fast_motion: u32,
+    pub pad: u32, // align to 8 bytes
 }
 
 impl From<Shadow> for Primitive {
@@ -685,7 +683,6 @@ impl TransformationMatrix {
         }
     }
 
-
     /// Apply transformation to a point, mainly useful for debugging
     pub fn apply(&self, point: Point<Pixels>) -> Point<Pixels> {
         let input = [point.x.0, point.y.0];
@@ -710,7 +707,7 @@ impl Default for TransformationMatrix {
 #[expect(missing_docs)]
 pub struct MonochromeSprite {
     pub order: DrawOrder,
-    pub fast_motion: u32,
+    pub pad: u32,
     pub tile: AtlasTile,
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
@@ -925,8 +922,6 @@ where
         self.bounds.intersect(&self.content_mask.bounds)
     }
 }
-
-
 
 impl From<Path<ScaledPixels>> for Primitive {
     fn from(path: Path<ScaledPixels>) -> Self {

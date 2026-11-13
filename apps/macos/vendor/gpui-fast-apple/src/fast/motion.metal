@@ -111,7 +111,7 @@ vertex QuadVertexOutput quad_vertex(uint unit_vertex_id [[vertex_id]],
 
 fragment float4 quad_fragment(QuadFragmentInput input [[stage_in]],
                               constant Quad *quads
-                              [[buffer(QuadInputIndex_Quads)]],
+                                    [[buffer(QuadInputIndex_Quads)]],
                               constant MotionTransform *motions
                               [[buffer(QuadInputIndex_FastMotions)]]) {
   Quad quad = quads[input.quad_id];
@@ -483,7 +483,7 @@ vertex ShadowVertexOutput shadow_vertex(
     constant MotionTransform *motions [[buffer(ShadowInputIndex_FastMotions)]]) {
   float2 unit_vertex = unit_vertices[unit_vertex_id];
   Shadow shadow = shadows[shadow_id];
-  MotionTransform motion = motions[shadow.fast_motion];
+  MotionTransform motion = motions[shadow.pad];
   shadow.bounds = move_bounds(shadow.bounds, motion);
   shadow.element_bounds = move_bounds(shadow.element_bounds, motion);
 
@@ -520,7 +520,7 @@ fragment float4 shadow_fragment(ShadowFragmentInput input [[stage_in]],
                                 constant MotionTransform *motions
                                 [[buffer(ShadowInputIndex_FastMotions)]]) {
   Shadow shadow = shadows[input.shadow_id];
-  MotionTransform motion = motions[shadow.fast_motion];
+  MotionTransform motion = motions[shadow.pad];
   shadow.bounds = move_bounds(shadow.bounds, motion);
   shadow.element_bounds = move_bounds(shadow.element_bounds, motion);
 
@@ -601,7 +601,7 @@ vertex UnderlineVertexOutput underline_vertex(
     constant MotionTransform *motions [[buffer(UnderlineInputIndex_FastMotions)]]) {
   float2 unit_vertex = unit_vertices[unit_vertex_id];
   Underline underline = underlines[underline_id];
-  MotionTransform motion = motions[underline.fast_motion];
+  MotionTransform motion = motions[underline.pad];
   underline.bounds = move_bounds(underline.bounds, motion);
   float4 device_position =
       to_device_position(unit_vertex, underline.bounds, viewport_size);
@@ -625,7 +625,7 @@ fragment float4 underline_fragment(UnderlineFragmentInput input [[stage_in]],
   const float WAVE_HEIGHT_RATIO = 0.8;
 
   Underline underline = underlines[input.underline_id];
-  underline.bounds = move_bounds(underline.bounds, motions[underline.fast_motion]);
+  underline.bounds = move_bounds(underline.bounds, motions[underline.pad]);
   if (underline.wavy) {
     float half_thickness = underline.thickness * 0.5;
     float2 origin =
@@ -677,7 +677,7 @@ vertex MonochromeSpriteVertexOutput monochrome_sprite_vertex(
     constant MotionTransform *motions [[buffer(SpriteInputIndex_FastMotions)]]) {
   float2 unit_vertex = unit_vertices[unit_vertex_id];
   MonochromeSprite sprite = sprites[sprite_id];
-  MotionTransform motion = motions[sprite.fast_motion];
+  MotionTransform motion = motions[sprite.pad];
   TransformationMatrix transformation = compose(motion.transformation, sprite.transformation);
   float4 device_position =
       to_device_position_transformed(unit_vertex, sprite.bounds, transformation, viewport_size);
@@ -690,7 +690,7 @@ vertex MonochromeSpriteVertexOutput monochrome_sprite_vertex(
       tile_position,
       color,
       {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w},
-      sprite.fast_motion};
+      sprite.pad};
 }
 
 fragment float4 monochrome_sprite_fragment(
@@ -1032,10 +1032,10 @@ float4 srgb_to_oklab(float4 color) {
   float s_ = pow(s, 1.0/3.0);
 
   return float4(
-    0.2104542553 * l_ + 0.7936177850 * m_ - 0.0040720468 * s_,
-    1.9779984951 * l_ - 2.4285922050 * m_ + 0.4505937099 * s_,
-    0.0259040371 * l_ + 0.7827717662 * m_ - 0.8086757660 * s_,
-    color.a
+   	0.2104542553 * l_ + 0.7936177850 * m_ - 0.0040720468 * s_,
+   	1.9779984951 * l_ - 2.4285922050 * m_ + 0.4505937099 * s_,
+   	0.0259040371 * l_ + 0.7827717662 * m_ - 0.8086757660 * s_,
+   	color.a
   );
 }
 
@@ -1050,9 +1050,9 @@ float4 oklab_to_srgb(float4 color) {
   float s = s_ * s_ * s_;
 
   float3 linear_rgb = float3(
-    4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
-    -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
-    -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s
+   	4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+   	-1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+   	-0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s
   );
 
   // Convert linear sRGB to non-linear sRGB

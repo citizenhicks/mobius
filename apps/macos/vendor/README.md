@@ -15,7 +15,9 @@ reviewed port of a2e2e1bd. New runtime state, algorithms and tests live under
 `src/fast/motion.rs`; upstream files contain qualified hooks, index fields, and
 individual exports. The published Metal shader stays unchanged; the existing
 Fast build-time shader owner redirects to `fast/motion.metal`. That full shader
-copy must be reconciled with upstream shader edits on every upgrade.
+copy must be reconciled with upstream shader edits on every upgrade. A build-time
+FNV-1a fingerprint of the published shader fails on drift; it is an upgrade
+tripwire, not an authenticity check. The archive hashes remain in `provenance.json`.
 
 This is a private proposed exception to GPUI Fast's unchanged-public-API rule,
 approved by the application owner, not approved by upstream maintainers:
@@ -26,7 +28,8 @@ approved by the application owner, not approved by upstream maintainers:
 - `MotionTransform` and `Scene::motion_transforms` are the cross-crate Metal
   renderer ABI; Scene's motion state, scopes and replay bookkeeping stay private.
   Primitive `fast_motion` indices are renderer-facing ABI fields. Existing
-  padding is reused where possible. `max_fps` validates once; subnormal positive
+  padding (`Shadow`, `Underline`, `MonochromeSprite`) keeps its upstream name and
+  layout; Fast interprets it as a motion index. `max_fps` validates once; subnormal positive
   values saturate to Duration::MAX, and nonpositive/nonfinite values are uncapped.
 - The sole test-only export, `assert_motion_invariants`, is gated by test-support.
   It runs the same focused invariants as the Fast unit tests, without depending

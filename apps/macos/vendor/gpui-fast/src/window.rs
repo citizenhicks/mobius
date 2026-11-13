@@ -2049,8 +2049,6 @@ impl Window {
                 }
 
                 let should_draw = invalidator.is_dirty() || force_render;
-                // A frame whose only changes are motions presents the last scene again,
-                // as often as its most frequent motion asks.
                 let fast_animating = !should_draw
                     && handle
                         .update(&mut cx, |_, window, _| crate::fast::motion::due(window))
@@ -3541,7 +3539,7 @@ impl Window {
     fn underline(&self, origin: Point<Pixels>, width: Pixels, style: &UnderlineStyle) -> Underline {
         Underline {
             order: 0,
-            fast_motion: 0,
+            pad: 0,
             bounds: self.underline_bounds(origin, width, style),
             content_mask: self.snapped_content_mask(),
             color: style
@@ -4895,7 +4893,7 @@ impl Window {
                 element_bounds,
                 element_corner_radii,
                 inset: 0,
-                fast_motion: 0,
+                pad: 0,
             });
         }
     }
@@ -4940,7 +4938,7 @@ impl Window {
                 element_bounds,
                 element_corner_radii,
                 inset: 1,
-                fast_motion: 0,
+                pad: 0,
             });
         }
     }
@@ -5116,7 +5114,7 @@ impl Window {
 
         self.next_frame.scene.insert_primitive(Underline {
             order: 0,
-            fast_motion: 0,
+            pad: 0,
             bounds,
             content_mask: self.snapped_content_mask(),
             thickness: self.snap_stroke(style.thickness),
@@ -5189,7 +5187,7 @@ impl Window {
             } else {
                 self.next_frame.scene.insert_primitive(MonochromeSprite {
                     order: 0,
-                    fast_motion: 0,
+                    pad: 0,
                     bounds,
                     content_mask,
                     color: color.opacity(element_opacity),
@@ -5337,7 +5335,7 @@ impl Window {
 
         self.next_frame.scene.insert_primitive(MonochromeSprite {
             order: 0,
-            fast_motion: 0,
+            pad: 0,
             bounds: final_bounds,
             content_mask,
             color: color.opacity(element_opacity),
@@ -10250,7 +10248,7 @@ mod tests {
         assert_eq!(actual.thickness, expected.thickness);
         assert_eq!(actual.wavy, expected.wavy);
         assert_eq!(actual.color, expected.color);
-        assert_eq!(actual.fast_motion, expected.fast_motion);
+        assert_eq!(actual.pad, expected.pad);
     }
 
     fn underline_device_columns(underlines: &[Underline]) -> Vec<i32> {
