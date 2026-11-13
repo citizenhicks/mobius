@@ -1,7 +1,18 @@
 //! Content scenarios: the companion pane and its documents.
 
-use super::*;
+use super::capture::{open_chat, session_id};
+use super::probes::{PROBES, click_probe, strip_after_capture, watch};
+use super::{Scenario, bots, documents, harness};
+use crate::ui::primitives::width;
+use crate::ui::router::PageTab;
 use crate::ui::runtime::Link;
+use crate::ui::{ContentTab, TabContent, Workspace, panel};
+
+use gpui::{App, Context, MouseButton, SharedString, Window, px, size};
+
+use mobius::SessionId;
+
+use std::sync::Arc;
 
 fn repo(path: &str) -> std::path::PathBuf {
     std::env::current_dir().unwrap_or_default().join(path)

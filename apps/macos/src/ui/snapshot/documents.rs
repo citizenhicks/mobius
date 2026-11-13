@@ -1,8 +1,21 @@
 //! Interface-document scenarios: the `show_ui` demo transcript in a local chat that needs
 //! no gateway, scrolled to each document in turn.
 
-use super::*;
+use super::Scenario;
+use super::capture::{catalog, forced_appearance, session_id};
+use super::probes::{report, set_activity, undo_after_capture};
+
+use crate::ui::Workspace;
+use crate::ui::router::PageTab;
+use crate::ui::theme::Appearance;
+
+use gpui::{Context, Pixels, Window, px, size};
+
+use mobius::SessionId;
+use mobius_gateway::wire::SessionActivityState;
 use mobius_gateway::wire::{HarnessConfig, ReadyPayload, SessionReadyPayload, SessionRecord};
+use std::collections::BTreeMap;
+use std::sync::Arc;
 
 const CHAT: &str = "fixture-intelligent-ui";
 

@@ -1,10 +1,19 @@
 //! Harness scenarios on an offline typed catalog: the möbius rail group, a möbius Bot's
 //! settings and a Bot whose harness the gateway lacks. Nothing is connected, sent or saved.
 
-use super::*;
+use super::Scenario;
+use super::capture::catalog;
+
 use crate::gateway::{Link, Update};
-use navigation::Section;
+use crate::ui::navigation::Section;
+
+use crate::ui::router::{AgentSection, PageTab};
+use crate::ui::{Workspace, pages};
+
+use gpui::{Context, Window};
+
 use serde_json::{Value, json};
+use std::sync::Arc;
 
 pub(super) const SCENARIOS: &[Scenario] = &[
     ("send-failure-copy", |this, window, cx| {

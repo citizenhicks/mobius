@@ -1,9 +1,26 @@
 //! Bots scenarios: Bots, Bot settings, Bot defaults and Extensions. They open pages and
 //! dialogs but never submit them, so no Bot, routine, extension or default changes.
 
-use super::*;
-use navigation::Section;
-use pages::bots::AgentScope;
+use super::Scenario;
+use super::capture::catalog;
+use super::probes::{PROBES, click, click_probe, report, wait};
+use crate::ui::Workspace;
+use crate::ui::navigation::Section;
+use crate::ui::pages::bots::AgentScope;
+use crate::ui::primitives::{
+    BotFace, BotMood, dialog_body, face, glyph, height, lively_face, shape_picker, space, width,
+};
+use crate::ui::router::{AgentSection, PageTab};
+use crate::ui::theme::Accent;
+
+use gpui::{
+    ClipboardItem, Context, Modifiers, MouseButton, ParentElement as _, PlatformInput, ScrollDelta,
+    ScrollEvent, ScrollSource, Styled as _, TouchPhase, Window, div, point, px, size,
+};
+
+use gpui_component::WindowExt as _;
+use std::rc::Rc;
+use std::sync::Arc;
 
 /// `MOBIUS_SNAPSHOT_BOT`, else @mobius, else the first Bot.
 fn bot(this: &Workspace) -> Option<Arc<str>> {

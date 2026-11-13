@@ -1,8 +1,13 @@
 //! Memory scenarios on the offline harness catalog: the Memory page with memories across
 //! projects and Global, and its inline editor. Nothing is connected, sent or saved.
 
+use super::Scenario;
 use super::harness::fixture;
-use super::*;
+use super::probes::undo_after_capture;
+
+use crate::ui::router::PageTab;
+use crate::ui::{Workspace, pages};
+
 use serde_json::json;
 
 pub(super) const SCENARIOS: &[Scenario] = &[

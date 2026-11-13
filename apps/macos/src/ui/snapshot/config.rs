@@ -1,9 +1,20 @@
 //! Config scenarios: Gateway, Providers, Settings and Event Centre.
 //! Steps only navigate or open dialogs; they never submit, pair or change settings.
 
-use super::*;
+use super::Scenario;
+use super::capture::catalog;
+use super::probes::{click_probe, undo_after_capture};
+
 use crate::host::platform::{CloudAge, CloudErrorKind, CloudStage, CloudStatus};
-use navigation::Section;
+use crate::ui::navigation::Section;
+
+use crate::ui::router::{GatewayPage, GatewayRef, PageTab, SettingsPage};
+use crate::ui::theme::Accent;
+use crate::ui::{Workspace, navigation, theme};
+
+use gpui::{Context, Keystroke, MouseButton, Window, px};
+
+use std::sync::Arc;
 
 fn settings(
     this: &mut Workspace,

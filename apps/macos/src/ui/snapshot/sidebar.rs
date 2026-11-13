@@ -2,9 +2,26 @@
 //! and the rail's highlight per section. Menus are only opened, never used, and
 //! activity is a display fixture; nothing reaches the gateway.
 
-use super::*;
+use super::capture::open_chat;
+use super::probes::{
+    PROBES, click_probe, report, set_activity, strip_after_capture, undo_after_capture, wait,
+};
+use super::{Scenario, documents, harness};
+
 use crate::ui::navigation::{Section, project_id};
+use crate::ui::primitives::{row_actions_inset, space};
+use crate::ui::router::PageTab;
+use crate::ui::{Workspace, navigation};
+
+use gpui::{
+    App, Bounds, Context, Modifiers, MouseButton, MouseMoveEvent, Pixels, PlatformInput, Point,
+    ScrollDelta, ScrollEvent, ScrollHandle, ScrollSource, TouchPhase, Window, point, px,
+};
+
+use mobius::SessionId;
 use mobius_gateway::wire::SessionActivityState;
+use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 /// Half an inline button: where a click lands on a row's ⋯ from its inset.
 const HALF_BUTTON: Pixels = px(13.);

@@ -38,7 +38,6 @@ use gpui_component::input::{InputEvent, InputState, TextareaState};
 use gpui_component::{ResizableState, Sizable, WindowExt};
 use mobius::SessionId;
 #[cfg(feature = "snapshot")]
-use primitives::shape_picker;
 use primitives::{
     BotFace, BotFaceView, BotMood, EditKind, EmptyState, Group, Handler, Leading, MenuChoice, Page,
     PageHeader, RailGlyph, Row, Section, Shape, SidebarRow, Spinner, StackedField, TextEdit,

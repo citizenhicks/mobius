@@ -1,10 +1,21 @@
 //! Shell scenarios: rail, sidebar, catalog, titlebar, palette and connection states.
 //! Forced connection states restore the real link and catalog shortly after capture.
 
-use super::*;
+use super::Scenario;
+use super::capture::open_chat;
+use super::probes::{report, wait, watch};
 use crate::host::platform::{UpdateStage, UpdateStatus};
+use crate::ui::Workspace;
 use crate::ui::navigation::Organization;
+
+use crate::ui::router::{PageTab, SettingsPage};
 use crate::ui::runtime::Link;
+
+use gpui::{Context, Window, px, size};
+
+use mobius::SessionId;
+use std::sync::Arc;
+use std::time::Duration;
 
 pub(super) const SCENARIOS: &[Scenario] = &[
     ("motion-sidebar", |this, window, cx| {

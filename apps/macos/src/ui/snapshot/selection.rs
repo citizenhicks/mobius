@@ -1,7 +1,17 @@
 //! Exercise the real transcript through mouse selection and unrelated redraws.
 
-use super::*;
+use super::Scenario;
+use super::capture::open_chat;
+use super::probes::{PROBES, wait};
 use crate::ui::chat::Scene;
+
+use crate::ui::Workspace;
+use crate::ui::router::PageTab;
+
+use gpui::{
+    App, ClipboardItem, Context, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, PlatformInput, Point, Window, point, px,
+};
 
 pub(super) const SCENARIOS: &[Scenario] = &[("chat-selection", select_transcript)];
 

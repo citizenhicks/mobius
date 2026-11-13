@@ -1,9 +1,17 @@
 //! Attachment scenarios: composer tiles in each upload state and a sent message's images,
 //! their thumbnails drawn from generated images by the native pipeline. Nothing uploads.
 
-use super::*;
+use super::Scenario;
+use super::capture::{open_chat, session_id};
+use super::probes::undo_after_capture;
 use crate::numeric::{Saturating, ToFloat};
 use crate::ui::chat::Scene;
+
+use crate::ui::Workspace;
+use crate::ui::runtime::ThumbnailKey;
+
+use gpui::Context;
+
 use mobius::protocol::{
     ContentPart, FrontendBlock, FrontendBlockFormat, FrontendBlockRole, FrontendBlockState,
     FrontendBlockUpdate, FrontendTone, MessageAuthor, MessageDelivery, MessageEvent,
@@ -13,7 +21,7 @@ use mobius_gateway::wire::{
     TranscriptChild, TranscriptItem, TranscriptItemContent, TranscriptItemState, TranscriptOp,
     TranscriptPosition, TranscriptRow, TranscriptRowKind,
 };
-use runtime::ThumbnailKey;
+use std::sync::Arc;
 
 pub(super) const SCENARIOS: &[Scenario] = &[
     ("chat-attachments", |this, window, cx| {

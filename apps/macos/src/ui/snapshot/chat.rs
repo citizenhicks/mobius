@@ -1,10 +1,24 @@
 //! Chat scenarios: composer, pickers, pills and transcript fixtures. No message is sent;
 //! the transcript scenarios ask the gateway for subagent and voice transcripts, which only read.
 
-use super::*;
+use super::Scenario;
+use super::capture::{open_chat, session_id};
+use super::probes::{PROBES, click, click_probe, report, undo_after_capture, wait};
+use crate::ui::Workspace;
 use crate::ui::chat::{ChatDetail, Scene};
+use crate::ui::pages::bots::AgentScope;
+use crate::ui::primitives::{Tone, height, space};
+use crate::ui::router::PageTab;
 use crate::ui::runtime::Link;
-use pages::bots::AgentScope;
+
+use gpui::{
+    App, Bounds, Context, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
+    PlatformInput, ScrollDelta, ScrollEvent, ScrollSource, TouchPhase, Window, point, px, size,
+};
+
+use mobius::SessionId;
+use std::rc::Rc;
+use std::sync::Arc;
 
 #[expect(
     clippy::expect_used,

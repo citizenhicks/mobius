@@ -2,11 +2,16 @@
 //! the transparent window and the Appearance page's Background group. Settings are set in
 //! memory only and undone after each capture.
 
-use super::{
-    Appearance, Context, PageTab, Scenario, SettingsPage, Window, Workspace, forced_appearance,
-    open_chat, undo_after_capture,
-};
+use super::Scenario;
+use super::capture::{forced_appearance, open_chat};
+use super::probes::undo_after_capture;
 use crate::ui::backdrop::{Background, Source, Texture};
+
+use crate::ui::Workspace;
+use crate::ui::router::{PageTab, SettingsPage};
+use crate::ui::theme::Appearance;
+
+use gpui::{Context, Window};
 
 /// Shows `source` behind both appearances until the capture is taken.
 pub(super) fn show(this: &mut Workspace, source: Source, cx: &mut Context<Workspace>) {
