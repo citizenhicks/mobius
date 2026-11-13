@@ -1,8 +1,22 @@
 //! Routine and run rows on a Bot's overview (RoutineViews.swift).
 
+use super::Pending;
+use super::menu::{MenuAction, more_menu};
 use super::schedule::{now, routine_summary};
-use super::*;
-use mobius_gateway::wire::{Routine, RoutineAction, RoutineCommand};
+use crate::ui::Workspace;
+use crate::ui::primitives::{
+    Group, Row, Section, Spinner, Type, Typography as _, clip, compact_duration, glyph, height,
+    icon, inline_button, inset, motion, palette, space,
+};
+use gpui::{
+    AnyElement, Context, Div, InteractiveElement as _, IntoElement as _, ParentElement as _,
+    SharedString, Styled as _, Window, div, px,
+};
+use gpui_component::Disableable as _;
+use mobius_gateway::wire::{BotRecord, ClientMessage, Routine, RoutineAction, RoutineCommand};
+use std::collections::BTreeSet;
+use std::rc::Rc;
+use std::sync::Arc;
 
 impl Workspace {
     /// Reloads every routine and run; the one builder of these requests.

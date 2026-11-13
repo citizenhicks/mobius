@@ -1,12 +1,19 @@
 //! Agent settings for one Bot or for the agent defaults: one draft per scope, saved explicitly
 //! (AgentSettingsView.swift). The same body serves the settings pages and the chat side tab.
 
-use super::*;
+use crate::ui::Workspace;
+use crate::ui::primitives::field;
+use gpui::{App, AppContext as _, Context, Entity, Subscription, Window};
 use gpui_component::input::{InputEvent, InputState, TextareaState};
 use mobius::protocol::{FrontendSettingKind, FrontendSettingValue};
 use mobius_gateway::wire::{
-    AgentComposition, BotShape, HarnessConfig, ProviderTint, ReadyPayload, SessionActivityState,
+    AgentComposition, BotShape, HarnessConfig, HarnessKind, ProviderTint, ReadyPayload,
+    SessionActivityState,
 };
+use std::collections::BTreeMap;
+#[cfg(feature = "snapshot")]
+use std::rc::Rc;
+use std::sync::Arc;
 
 /// Whose settings a draft edits.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]

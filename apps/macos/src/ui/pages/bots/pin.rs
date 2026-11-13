@@ -1,5 +1,14 @@
-use super::*;
+use super::menu;
+use super::menu::MenuAction;
+use crate::ui::Workspace;
+use crate::ui::primitives::{BotFace, ToggleExt as _, glyph, height};
+use crate::ui::router::PageTab;
+use crate::ui::theme::Accent;
+use gpui::{AnyElement, Context, IntoElement as _, ParentElement as _, Styled as _};
+use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::menu::ContextMenuExt;
+use mobius_gateway::wire::BotRecord;
+use std::sync::Arc;
 
 impl Workspace {
     pub(in crate::ui) fn pinned_bot(&self) -> Option<&BotRecord> {

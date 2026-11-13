@@ -1,10 +1,11 @@
 //! The Model section: the composer's model and reasoning picker for a Bot or Bot
 //! defaults, reused for its voice.
 
-use super::{
-    Anchor, AnyElement, Context, Disableable, SharedString, Workspace, icon, select_button,
-};
+use crate::ui::Workspace;
 use crate::ui::chat::{ModelTarget, configured_model};
+use crate::ui::primitives::{icon, select_button};
+use gpui::{Anchor, AnyElement, Context, SharedString};
+use gpui_component::Disableable as _;
 use mobius::protocol::ModelChoice;
 use mobius_gateway::wire::ProviderConfig;
 use std::borrow::Cow;

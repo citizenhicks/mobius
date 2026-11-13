@@ -1,19 +1,31 @@
 //! The routine editor dialog (RoutineViews.swift `RoutineForm`).
 
+use super::Pending;
 use super::create::dialog_heading;
 use super::routine_form::{
     DURATIONS, ENDS, Inputs, MODES, Mode, RoutineForm, UNITS, replace_schedule,
 };
 use super::schedule::WEEKDAYS;
-use super::*;
+use crate::ui::Workspace;
 use crate::ui::navigation::workspace_name;
-use gpui_component::Disableable;
+use crate::ui::primitives::{
+    FontSet, Group, Leading, MenuChoice, Row, StackedField, Type, Typography as _, dialog_actions,
+    dialog_body, labelled, menu_select, segmented, text_field, textarea, width,
+};
+use gpui::prelude::FluentBuilder as _;
+use gpui::{
+    AnyElement, App, AppContext as _, ClickEvent, Context, Div, Entity, IntoElement as _,
+    ParentElement as _, Pixels, SharedString, Styled as _, WeakEntity, Window, div, px,
+};
 use gpui_component::input::{InputState, NumberInput};
 use gpui_component::select::Select;
+use gpui_component::{Disableable, WindowExt as _};
 use mobius_gateway::wire::{
-    Routine, RoutineAction, RoutineCommand, RoutineDefinition, RoutineInteractionPolicy,
-    RoutineSchedule,
+    ClientMessage, Routine, RoutineAction, RoutineCommand, RoutineDefinition,
+    RoutineInteractionPolicy, RoutineSchedule,
 };
+use std::rc::Rc;
+use std::sync::Arc;
 
 /// A handler that edits the form and redraws the dialog.
 fn edit<E: 'static>(

@@ -2,14 +2,19 @@
 
 use super::capabilities::{extension_metadata, select_value};
 use super::settings::{AgentDraft, AgentScope};
-use super::*;
+use crate::ui::Workspace;
 use crate::ui::chat::ModelTarget;
 use crate::ui::pages::harness::{Choice, option_menu};
+use crate::ui::primitives::{Leading, Row, toggle, width};
+use gpui::{AnyElement, Context, IntoElement as _, SharedString, Styled as _};
+use gpui_component::Disableable as _;
 use gpui_component::input::NumberInput;
 use mobius::protocol::{
     FrontendSetting, FrontendSettingKind, FrontendSettingValue, MiddlewareFeature,
 };
 use mobius_gateway::wire::{AgentComposition, ExtensionRecord};
+use std::rc::Rc;
+use std::sync::Arc;
 
 impl Workspace {
     pub(super) fn setting_row(

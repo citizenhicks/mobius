@@ -1,8 +1,19 @@
 //! The agent settings status: saved, unsaved, saving, conflicting or rejected; and Save.
 
+use super::Pending;
 use super::settings::{AgentDraft, AgentScope, Saved};
-use super::*;
-use mobius_gateway::wire::HarnessConfig;
+use crate::ui::Workspace;
+use crate::ui::primitives::{
+    Type, Typography as _, space, status_dot, text_tooltip, toolbar_button,
+};
+use gpui::prelude::FluentBuilder as _;
+use gpui::{
+    AnyElement, Context, Hsla, InteractiveElement as _, IntoElement as _, ParentElement as _,
+    SharedString, StatefulInteractiveElement as _, Styled as _, div,
+};
+use gpui_component::Disableable as _;
+use mobius_gateway::wire::{ClientMessage, HarnessConfig};
+use std::sync::Arc;
 
 /// What the header status says about a draft.
 struct Status {

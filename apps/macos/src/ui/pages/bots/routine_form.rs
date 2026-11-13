@@ -4,7 +4,9 @@ use super::schedule::{
     SimpleCron, format_local, local_zone, now, parse_clock, parse_local, schedule_summary,
     scheduled_start,
 };
-use super::*;
+use crate::ui::Workspace;
+use crate::ui::primitives::field;
+use gpui::{App, AppContext as _, Context, Entity, FocusHandle, Result, SharedString, Window};
 use gpui_component::input::{InputEvent, InputState, TextareaState};
 use gpui_component::searchable_list::SearchableVec;
 use gpui_component::select::SelectState;

@@ -1,7 +1,13 @@
 //! The Bots list, and the agent defaults and extensions rows of the möbius list (WP4).
 
-use super::*;
+use crate::ui::Workspace;
 use crate::ui::navigation::sidebar_list;
+use crate::ui::primitives::{Leading, SidebarRow, glyph, icon, palette};
+use crate::ui::router::{AgentSection, PageTab};
+use crate::ui::theme::Accent;
+use gpui::{AnyElement, Context, IntoElement as _, ParentElement as _, Styled as _};
+use mobius_gateway::wire::BotRecord;
+use std::sync::Arc;
 
 impl Workspace {
     /// New Bot, then Bots by name; the selected Bot expands to its overview and settings.

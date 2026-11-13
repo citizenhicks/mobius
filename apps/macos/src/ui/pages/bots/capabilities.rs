@@ -2,13 +2,19 @@
 //! disclosed beneath it.
 
 use super::settings::{AgentDraft, AgentScope};
-use super::*;
+use crate::ui::Workspace;
+use crate::ui::primitives::{Group, Row, chevron, inline_button, palette, toggle};
+use gpui::{
+    AnyElement, App, Context, Div, IntoElement as _, ParentElement as _, SharedString, div,
+};
+use gpui_component::Disableable as _;
 use mobius::protocol::{
     FrontendSetting, FrontendSettingKind, FrontendSettingRequirement, FrontendSettingValue,
     MiddlewareFeature,
 };
 use mobius_gateway::wire::{AgentComposition, ExtensionKind, ExtensionRecord, ReadyPayload};
 use std::borrow::Cow;
+use std::rc::Rc;
 
 /// Why a capability cannot be switched on, if it cannot.
 fn unavailable(

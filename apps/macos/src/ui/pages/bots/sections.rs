@@ -1,10 +1,23 @@
 //! The agent settings page and body, and the Identity and System prompt sections.
 
 use super::settings::AgentScope;
-use super::*;
+use crate::ui::Workspace;
 use crate::ui::chat::ModelTarget;
+use crate::ui::primitives::{
+    BotMood, EmptyState, Group, Page, PageHeader, Row, Section, StackedField, Type,
+    Typography as _, face, lively_face, page, shape_picker, space, swatch_picker, text_field,
+    textarea, width,
+};
+use crate::ui::router::AgentSection;
+use crate::ui::theme::Accent;
+use gpui::prelude::FluentBuilder as _;
+use gpui::{
+    AnyElement, Context, Div, IntoElement as _, ParentElement as _, Pixels, SharedString,
+    Styled as _, Window, div, px,
+};
 use gpui_component::input::NumberInput;
-use mobius_gateway::wire::ProviderTint;
+use mobius_gateway::wire::{BotShape, HarnessKind, ProviderTint};
+use std::rc::Rc;
 
 /// The system prompt editor's height, or its minimum when it fills the page.
 const PROMPT_HEIGHT: Pixels = px(240.);

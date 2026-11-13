@@ -1,7 +1,20 @@
 //! The New Bot dialog (BotsView.swift `NewBotForm`) and the footer every Bots dialog shares.
 
-use super::*;
+use super::Pending;
+use crate::ui::Workspace;
+use crate::ui::primitives::{
+    BotMood, Shape as _, Type, Typography as _, dialog_actions, dialog_body, face, field, glyph,
+    heading, height, icon, labelled, lively_face, space, text_field, textarea, width,
+};
+use gpui::prelude::FluentBuilder as _;
+use gpui::{
+    AppContext as _, Context, Div, Entity, Hsla, IntoElement, ParentElement as _, SharedString,
+    Styled as _, WeakEntity, Window, div,
+};
+use gpui_component::WindowExt as _;
 use gpui_component::input::{InputEvent, InputState, TextareaState};
+use mobius_gateway::wire::{BotShape, ClientMessage, HarnessKind};
+use std::sync::Arc;
 
 /// A dialog's heading: a 22 glyph on an accent tile, the title and a caption.
 pub(in crate::ui) fn dialog_heading(

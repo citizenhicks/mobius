@@ -38,21 +38,22 @@ use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{InputEvent, InputState, TextareaState};
 use gpui_component::{ResizableState, Sizable, WindowExt};
 use mobius::SessionId;
+#[cfg(feature = "snapshot")]
+use primitives::shape_picker;
 use primitives::{
     BotFace, BotFaceView, BotMood, EditKind, EmptyState, Group, Handler, Leading, MenuChoice,
     Notice, Page, PageHeader, RailGlyph, Row, Section, Shape, SidebarRow, Spinner, StackedField,
     TextEdit, ToggleExt, Tone, Type, Typography, accent_tile_picker, ago, alpha,
     apple_toolbar_button, back_icon, button, button_row, byte_count, chat_menu_trigger, chevron,
-    clip, clock_duration, compact_count, compact_duration, composer_button, counted,
-    dialog_actions, dialog_body, face, field, filled_glyph, first_line, forward_icon, gauge_button,
-    glyph, hairline, heading, height, icon, inline_button, inline_code_ring, inset,
-    known_symbol_icon, labelled, leading_item, lively_face, loading_rows, markdown_style,
-    menu_select, mini_button, motion, organic, page, palette, percent, pill, pill_quad,
-    preview_glyph, primary_button, radius, rail_button, rail_section_button, row_actions_inset,
-    row_button, segmented, select_button, settings_button, shape_picker, show_more_row,
-    sidebar_header, sidebar_label, sidebar_note, single_line, space, status_dot, status_label,
-    swatch_picker, symbol_icon_or, text_field, text_tooltip, textarea, toggle, toolbar_button,
-    unavailable, width, workspace_item,
+    clock_duration, compact_count, compact_duration, composer_button, counted, dialog_actions,
+    dialog_body, face, field, filled_glyph, first_line, forward_icon, gauge_button, glyph,
+    hairline, heading, height, icon, inline_button, inline_code_ring, inset, known_symbol_icon,
+    labelled, leading_item, lively_face, loading_rows, markdown_style, menu_select, mini_button,
+    motion, organic, page, palette, percent, pill, pill_quad, preview_glyph, primary_button,
+    radius, rail_button, rail_section_button, row_actions_inset, row_button, segmented,
+    settings_button, show_more_row, sidebar_header, sidebar_label, sidebar_note, single_line,
+    space, status_dot, status_label, swatch_picker, symbol_icon_or, text_field, text_tooltip,
+    textarea, toggle, toolbar_button, unavailable, width, workspace_item,
 };
 use router::{
     AgentSection, GatewayPage, GatewayRef, PageTab, SettingsPage, activate_page, host, is_cloud,

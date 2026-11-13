@@ -1,10 +1,21 @@
 //! The run history on a Bot's overview (RoutineViews.swift `RoutineRunRow`).
 
+use super::Pending;
 use super::menu::{MenuAction, fill_menu};
 use super::schedule::run_status_label;
-use super::*;
+use crate::ui::Workspace;
+use crate::ui::primitives::{
+    Group, Row, Section, Type, Typography as _, ago, first_line, glyph, icon, inset, palette,
+    single_line, space, status_dot,
+};
+use gpui::prelude::FluentBuilder as _;
+use gpui::{
+    AnyElement, Context, InteractiveElement as _, IntoElement as _, ParentElement as _,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
+};
 use gpui_component::menu::ContextMenuExt;
-use mobius_gateway::wire::{RoutineAction, RoutineRun, RoutineRunStatus};
+use mobius_gateway::wire::{ClientMessage, RoutineAction, RoutineRun, RoutineRunStatus};
+use std::sync::Arc;
 
 const RUNS_PAGE: usize = 5;
 

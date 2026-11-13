@@ -1,8 +1,19 @@
 //! A Bot's overview: face, description, routines, run history, chats and configuration.
 
-use super::*;
+use super::menu::more_menu;
+use crate::ui::Workspace;
 use crate::ui::navigation::Section as Rail;
-use mobius_gateway::wire::{HarnessConfig, SessionActivityState};
+use crate::ui::primitives::{
+    BotMood, EmptyState, Group, Leading, PageHeader, Row, Section, ago, button, face, lively_face,
+    page, single_line, toolbar_button,
+};
+use crate::ui::router::{AgentSection, PageTab};
+use crate::ui::theme::Accent;
+use gpui::{AnyElement, Context, IntoElement as _, ParentElement as _, SharedString, Window};
+use gpui_component::Disableable as _;
+use gpui_component::button::ButtonVariants as _;
+use mobius_gateway::wire::{BotRecord, HarnessConfig, SessionActivityState};
+use std::sync::Arc;
 
 const CHATS_PAGE: usize = 5;
 

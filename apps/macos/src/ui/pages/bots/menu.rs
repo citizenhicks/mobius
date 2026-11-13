@@ -1,8 +1,13 @@
 //! Row and header "More" menus, and the Bot actions they offer.
 
-use super::*;
+use crate::ui::Workspace;
+use crate::ui::primitives::{TextEdit, palette, workspace_item};
+use gpui::{Anchor, AnyElement, App, Context, IntoElement as _, SharedString, WeakEntity, Window};
+use gpui_component::button::Button;
 use gpui_component::menu::{DropdownMenu, PopupMenu};
+use mobius_gateway::wire::{BotRecord, ClientMessage};
 use std::rc::Rc;
+use std::sync::Arc;
 
 type Run = Rc<dyn Fn(&mut Workspace, &mut Window, &mut Context<Workspace>)>;
 
