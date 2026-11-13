@@ -1,5 +1,5 @@
-//! Transcript pages for snapshot scenes and tests, reduced by the gateway's own
-//! `TranscriptReducer` from scripted events. Production code only ever receives pages and ops.
+//! Gateway snapshots and transcript pages for snapshot scenes and tests.
+//! Scripted pages use the gateway's own reducer; production receives gateway records.
 
 use mobius::SessionId;
 use mobius::protocol::{
@@ -204,4 +204,31 @@ pub fn tool(
             ..FrontendBlock::default()
         },
     }
+}
+
+#[cfg(test)]
+pub(crate) fn opened(session: &str, latest: u64) -> mobius_gateway::wire::ServerMessage {
+    let frame: mobius_gateway::wire::ServerFrame = serde_json::from_value(serde_json::json!({
+        "version": mobius_gateway::wire::PROTOCOL_VERSION,
+        "type": "session_opened",
+        "request_id": "open",
+        "payload": {
+            "active_turn_ids": [], "pending_approvals": [], "latest_sequence": latest,
+            "attached_folders": [],
+            "workspace": {"id": "workspace", "path": "/workspace"}, "git": null,
+            "session": {
+                "session_id": session, "context": {"owner_id": "bot"},
+                "model": {
+                    "route": "default", "model": "model",
+                    "reasoning_effort": null, "model_context_window": null
+                }
+            },
+            "contributions": [], "widgets": [],
+            "context_limit_tokens": null, "active_message_delivery": "steer",
+            "run_stats": mobius_gateway::wire::RunStats::default(),
+            "pinned_messages": []
+        }
+    }))
+    .unwrap();
+    frame.message
 }

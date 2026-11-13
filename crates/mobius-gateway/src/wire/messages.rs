@@ -7,7 +7,7 @@ use super::{
     DirectoryListing, FrontendContribution, GatewayNotification, GitDiffScope, HarnessConfig,
     HarnessKind, HistoryCursor, MemoryRecord, MessageTarget, Op, PROTOCOL_VERSION, PathBuf,
     ProfileSnapshot, ProviderConfig, ProviderTint, ReadyPayload, RecordedEvent, Routine,
-    RoutineDefinition, RoutineRun, RoutineRunPreview, Serialize, SessionFileRecord,
+    RoutineDefinition, RoutineRun, RoutineRunPreview, RunStats, Serialize, SessionFileRecord,
     SessionFileReference, SessionReadyPayload, SessionRecord, SessionSlot, SshIdentityRecord,
     Submission, TranscriptOp, TranscriptPage, Value, WorkspaceFileRecord, WorkspaceFileScope,
     base64_bytes, deserialize_frame, desktop_bytes,
@@ -1108,6 +1108,9 @@ pub enum ServerMessage {
         /// The transcript changes this event makes, in order.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         transcript: Vec<TranscriptOp>,
+        /// Committed execution statistics ordered by this event, omitted on text-only updates.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run_stats: Option<Arc<RunStats>>,
     },
     /// Selects the sessions case.
     Sessions {

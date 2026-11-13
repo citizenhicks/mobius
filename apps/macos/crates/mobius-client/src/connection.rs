@@ -1139,6 +1139,7 @@ pub(super) fn load_local_client(endpoint: &Endpoint) -> Result<Option<String>> {
 #[cfg(test)]
 mod tests {
     use super::{Command, Update, needs_bootstrap};
+    use crate::fixture::opened;
     use mobius::SessionId;
     use std::time::Duration;
 
@@ -1460,32 +1461,6 @@ mod tests {
         }
     }
 
-    fn opened(session: &str, latest: u64) -> super::ServerMessage {
-        let frame: mobius_gateway::wire::ServerFrame = serde_json::from_value(serde_json::json!({
-            "version": mobius_gateway::wire::PROTOCOL_VERSION,
-            "type": "session_opened",
-            "request_id": "open",
-            "payload": {
-                "active_turn_ids": [], "pending_approvals": [], "latest_sequence": latest,
-                "attached_folders": [],
-                "workspace": {"id": "workspace", "path": "/workspace"}, "git": null,
-                "session": {
-                    "session_id": session, "context": {"owner_id": "bot"},
-                    "model": {
-                        "route": "default", "model": "model",
-                        "reasoning_effort": null, "model_context_window": null
-                    }
-                },
-                "contributions": [], "widgets": [],
-                "context_limit_tokens": null, "active_message_delivery": "steer",
-                "run_stats": mobius_gateway::wire::RunStats::default(),
-                "pinned_messages": []
-            }
-        }))
-        .unwrap();
-        frame.message
-    }
-
     fn event(session: &str, sequence: u64) -> super::ServerMessage {
         super::ServerMessage::AgentEvent {
             session_id: SessionId::new(session).unwrap(),
@@ -1500,6 +1475,7 @@ mod tests {
                 preview: None,
             },
             transcript: Vec::new(),
+            run_stats: None,
         }
     }
 

@@ -171,6 +171,7 @@ impl GatewayState {
                 session_id,
                 record,
                 transcript,
+                run_stats,
             } if selected(session_id) => {
                 self.touched = self.transcript.apply(std::mem::take(transcript));
                 if let EventMsg::TokenCount(usage) = &record.event.msg
@@ -180,6 +181,11 @@ impl GatewayState {
                 }
                 if !self.replaying {
                     self.apply_session_event(record);
+                    if let Some(stats) = run_stats
+                        && let Some(session) = &mut self.session
+                    {
+                        session.run_stats = Arc::clone(stats);
+                    }
                 }
                 if let Some(preview) = record.take_preview() {
                     self.apply_preview(preview);

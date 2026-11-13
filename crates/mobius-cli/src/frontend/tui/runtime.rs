@@ -681,6 +681,7 @@ fn handle_server_message(
             session_id: actual,
             mut record,
             transcript,
+            run_stats,
         } if &actual == session_id => {
             settle_message_draft(state, &record.event);
             enrich_resume_picker(
@@ -694,6 +695,9 @@ fn handle_server_message(
             );
             // The snapshot already contains current activity through this sequence.
             let live = record.sequence > session.latest_sequence;
+            if live && let Some(stats) = run_stats {
+                session.run_stats = stats;
+            }
             handle_gateway_event(state, record, transcript, live);
         }
         ServerMessage::SessionHistory {
@@ -1581,7 +1585,7 @@ mod tests {
         ActiveMessageDelivery, Event, EventMsg, ModelChangedEvent, SessionConfiguredEvent,
         SessionContext,
     };
-    use mobius_gateway::wire::{RunStats, SessionReadyPayload, WorkspaceInfo};
+    use mobius_gateway::wire::{SessionReadyPayload, WorkspaceInfo};
 
     #[test]
     fn rejected_message_keeps_newer_input_and_recovers_the_failed_draft() {
@@ -1773,7 +1777,7 @@ mod tests {
             context_limit_tokens: None,
             token_usage: None,
             active_message_delivery: ActiveMessageDelivery::Steer,
-            run_stats: RunStats::default(),
+            run_stats: Arc::default(),
             pinned_messages: Default::default(),
             memory: None,
         }

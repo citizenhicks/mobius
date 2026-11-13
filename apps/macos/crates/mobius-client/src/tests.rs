@@ -436,17 +436,29 @@ fn a_moved_row_sorts_once_at_its_new_position() {
     assert_eq!(order(&store), ["message:b", "message:a"]);
 }
 
-/// The selected chat takes its ops out of the frame; another chat's are left alone.
 #[test]
-fn only_the_selected_chat_applies_decoded_ops() {
-    let mut state = GatewayState {
-        selected_session_id: Some(SessionId::new("session").unwrap()),
-        ..Default::default()
-    };
-    for session in ["session", "other"] {
+fn selected_chat_applies_replay_ops_but_only_live_committed_statistics() {
+    let mut state = GatewayState::default();
+    state.apply(&mut crate::fixture::opened("session", 0));
+    let mut previous = Arc::clone(&state.session.as_ref().unwrap().run_stats);
+    let mut stats = mobius_gateway::wire::RunStats::default();
+    stats.completed.run_count = 7;
+    stats.completed.elapsed_ms = 4_200;
+    for (sequence, (session, replaying, metadata)) in [
+        ("other", false, true),
+        ("session", true, true),
+        ("session", false, true),
+        ("other", false, true),
+        ("session", false, false),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        state.replaying = replaying;
         let frame = serde_json::json!({
             "type": "agent_event", "session_id": session,
-            "record": {"sequence": 1, "recorded_at_ms": 0, "stream_metrics": [], "preview": null,
+            "run_stats": metadata.then_some(&stats),
+            "record": {"sequence": sequence + 1, "recorded_at_ms": 0, "stream_metrics": [], "preview": null,
                 "event": {"submission_id": null, "msg": {"type": "context_compacted"}}},
             "transcript": [
                 {"op": "item", "item": {"id": format!("notice:{session}"), "turn_id": null,
@@ -459,6 +471,23 @@ fn only_the_selected_chat_applies_decoded_ops() {
         });
         let mut message: ServerMessage = serde_json::from_value(frame).unwrap();
         state.apply(&mut message);
+        let ServerMessage::AgentEvent { run_stats, .. } = &message else {
+            unreachable!()
+        };
+        let current = &state.session.as_ref().unwrap().run_stats;
+        if session == "session" && !replaying && metadata {
+            assert!(
+                Arc::ptr_eq(current, run_stats.as_ref().unwrap()),
+                "share the committed snapshot without copying it"
+            );
+            assert_eq!(**current, stats);
+        } else {
+            assert!(
+                Arc::ptr_eq(current, &previous),
+                "replay, other chats and missing metadata preserve the latest snapshot"
+            );
+        }
+        previous = Arc::clone(current);
     }
     assert_eq!(order(&state.transcript), ["notice:session"]);
 }
@@ -496,6 +525,7 @@ fn preview_pages_prepend_history_and_lay_live_pages_over_it() {
             }))
             .unwrap(),
             transcript: Vec::new(),
+            run_stats: None,
         };
         state.apply(&mut message);
     };

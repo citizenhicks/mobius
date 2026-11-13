@@ -1,4 +1,6 @@
 use mobius::SessionId;
+use mobius::protocol::EventMsg;
+use std::sync::Arc;
 use tokio::io::duplex;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
@@ -73,6 +75,34 @@ async fn framed_json_round_trip_preserves_the_versioned_message() {
         .expect("frame");
 
     assert_eq!(actual, expected);
+
+    for run_stats in [None, Some(Arc::new(RunStats::default()))] {
+        let metadata = run_stats.is_some();
+        let frame = ServerFrame::new(ServerMessage::AgentEvent {
+            session_id: SessionId::new("stats").unwrap(),
+            record: RecordedEvent {
+                sequence: 1,
+                recorded_at_ms: 0,
+                event: Event {
+                    submission_id: None,
+                    msg: EventMsg::ContextCompacted,
+                },
+                stream_metrics: Vec::new(),
+                preview: None,
+            },
+            transcript: Vec::new(),
+            run_stats,
+        });
+        let json = serde_json::to_value(&frame).unwrap();
+        assert_eq!(
+            json.get("run_stats").is_some(),
+            metadata,
+            "frames without a statistics update omit its metadata"
+        );
+        write_frame(&mut writer, &frame).await.unwrap();
+        let actual: ServerFrame = read_frame(&mut reader).await.unwrap().unwrap();
+        assert_eq!(actual, frame);
+    }
 }
 
 #[test]

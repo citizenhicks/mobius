@@ -1,6 +1,6 @@
 import Foundation
 
-let gatewayProtocolVersion = 101
+let gatewayProtocolVersion = 102
 
 struct GatewayRequest: Encodable, Sendable {
     let body: JSONValue

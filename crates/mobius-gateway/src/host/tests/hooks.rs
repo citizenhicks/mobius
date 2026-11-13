@@ -123,8 +123,10 @@ fn user_submission(id: &str, text: &str) -> Submission {
 #[tokio::test]
 async fn project_free_chats_expose_reads_without_coding_mutations() {
     let (_root, gateway, bot) = gateway_with_bot().await;
-    let model = Arc::new(CaptureModel::default());
-    model.release.notify_one();
+    let model = Arc::new(CaptureModel {
+        block_all: true,
+        ..Default::default()
+    });
     install_model(&gateway, &bot, Arc::clone(&model)).await;
     let main = gateway
         .open_session(&bot.conversation_session_id)
@@ -137,12 +139,28 @@ async fn project_free_chats_expose_reads_without_coding_mutations() {
     let chats = [(main, true), (ordinary, false)];
     for (chat, persistent) in chats {
         assert!(chat.ready().await.unwrap().workspace.is_none());
+        let mut events = chat.subscribe();
         chat.submit(user_submission("read", "Read the computer-control guide"))
             .await
             .unwrap();
+        let active = next_statistics(&mut events, |stats| {
+            stats
+                .active
+                .as_ref()
+                .is_some_and(|run| run.model_calls == 1)
+        })
+        .await;
+        assert_eq!(active.completed.run_count, 0);
+        model.release.notify_one();
         tokio::time::timeout(std::time::Duration::from_secs(5), chat.wait_idle())
             .await
             .unwrap();
+        let completed = next_statistics(&mut events, |stats| {
+            stats.completed.run_count == 1 && stats.active.is_none()
+        })
+        .await;
+        assert_eq!(completed.completed.model_calls, 1);
+        assert_eq!(completed, chat.ready().await.unwrap().run_stats);
         let tools = model.tools.lock().unwrap().last().unwrap().clone();
         assert!(tools.iter().any(|tool| tool == "read_file"));
         assert_eq!(
@@ -154,6 +172,27 @@ async fn project_free_chats_expose_reads_without_coding_mutations() {
         }
     }
     gateway.shutdown().await;
+}
+
+async fn next_statistics(
+    events: &mut broadcast::Receiver<SharedFrame>,
+    ready: fn(&RunStats) -> bool,
+) -> Arc<RunStats> {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let frame = events.recv().await.unwrap();
+            if let ServerMessage::AgentEvent {
+                run_stats: Some(stats),
+                ..
+            } = &frame.message
+                && ready(stats)
+            {
+                break Arc::clone(stats);
+            }
+        }
+    })
+    .await
+    .expect("committed statistics arrive without reopening the chat")
 }
 
 fn subscription(bot_id: &str, session_id: &SessionId, kind: HookKind, id: &str) -> BotSubscription {

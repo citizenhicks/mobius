@@ -303,7 +303,7 @@ fn coding_chat(
         crate::ui::chat::coding_demo_transcript(),
     );
     if let Some(session) = this.client.state.session.as_mut() {
-        session.run_stats.completed.elapsed_ms = 252_000;
+        Arc::make_mut(&mut session.run_stats).completed.elapsed_ms = 252_000;
     }
     // Every step open: the search, the diff and the test run read as code.
     if !expand {

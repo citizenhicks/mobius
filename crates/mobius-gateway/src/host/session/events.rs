@@ -111,10 +111,17 @@ impl HostState {
             Vec::new()
         };
         super::super::replay::strip_streamed_text(&mut record, &transcript);
+        let run_stats =
+            if delivery == JournalDelivery::Live && sequence_kind == JournalSequence::Next {
+                self.running.run_stats(sequence)
+            } else {
+                None
+            };
         let frame = ServerFrame::new(ServerMessage::AgentEvent {
             session_id: self.running.session_id().share(),
             record,
             transcript,
+            run_stats,
         });
         let entry = ReplayEntry::new(frame)?;
         let frame = &entry.frame;
@@ -257,7 +264,7 @@ impl HostState {
             context_limit_tokens,
             token_usage: self.token_usage.as_ref().map(Arc::clone),
             active_message_delivery: self.running.active_message_delivery(),
-            run_stats: runtime.stats,
+            run_stats: Arc::new(runtime.stats),
             pinned_messages: pinned_messages?,
             memory: self.spec.memory,
         })

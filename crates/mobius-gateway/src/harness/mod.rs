@@ -30,7 +30,7 @@ use crate::sandbox::GatewaySandbox;
 use crate::wire::{
     AgentComposition, BotAccess, BotCapabilities, BotMemory, BotRecord, HarnessAuth,
     HarnessCapabilities, HarnessConfig, HarnessDescriptor, HarnessInstall, HarnessKind,
-    RoutineInteractionPolicy, VoiceCapability,
+    RoutineInteractionPolicy, RunStats, VoiceCapability,
 };
 use crate::{Error, Result};
 
@@ -71,6 +71,9 @@ pub(crate) trait HarnessSession: RenderEvents + Send + Sync {
 
     /// The journaled events, in sequence; ends after [`HarnessSession::shutdown`].
     fn events(&mut self) -> &mut mpsc::Receiver<JournalEvent>;
+
+    /// Latest committed statistics, only when this receipt orders their checkpoint.
+    fn run_stats(&self, after_sequence: u64) -> Option<Arc<RunStats>>;
 
     /// The turn, approval and queue state the durable checkpoint holds.
     fn runtime_state(&self) -> BoxFuture<'_, Result<Option<SessionRuntimeState>>>;

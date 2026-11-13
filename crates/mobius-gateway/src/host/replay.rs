@@ -127,6 +127,7 @@ pub(super) async fn load_replay(
             session_id: session_id.share(),
             record,
             transcript: ops,
+            run_stats: None,
         });
         if replayable(&frame) {
             truncated |= push_replay(&mut replay, &mut replay_bytes, &ReplayEntry::new(frame)?);

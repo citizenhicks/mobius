@@ -288,7 +288,7 @@ pub struct SessionReadyPayload {
     /// The active message delivery.
     pub active_message_delivery: mobius::protocol::ActiveMessageDelivery,
     /// The run stats.
-    pub run_stats: RunStats,
+    pub run_stats: Arc<RunStats>,
     /// Assistant messages the user pinned, in transcript order.
     pub pinned_messages: BTreeSet<MessageTarget>,
     /// This chat's memory override; `None` follows the Bot's `capabilities.memory.enabled`.

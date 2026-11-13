@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use ::mobius::agent::AgentSender;
+use ::mobius::backend::checkpoint::CommittedRunStats;
 use ::mobius::backend::checkpoint::JournalEvent;
 use ::mobius::backend::model::ModelRouter;
 use ::mobius::backend::sandbox::Sandbox;
@@ -14,6 +15,7 @@ use ::mobius::protocol::{
 };
 use ::mobius::{BoxFuture, SessionId};
 use tokio::sync::mpsc;
+use tokio::sync::watch;
 
 use super::ValidatedSubmission;
 use super::assembly::{BuiltAgent, PreparedBot, assemble, prepare_bot};
@@ -24,7 +26,7 @@ use crate::harness::{
 };
 use crate::host::{Rejection, RenderEvents, SessionRuntimeState};
 use crate::sandbox::GatewaySandbox;
-use crate::wire::BotRecord;
+use crate::wire::{BotRecord, RunStats};
 
 /// The möbius framework harness.
 pub(crate) struct Mobius;
@@ -57,6 +59,7 @@ struct MobiusSession {
     session_id: SessionId,
     sender: Option<AgentSender>,
     events: mpsc::Receiver<JournalEvent>,
+    run_stats: watch::Receiver<Option<CommittedRunStats>>,
     model_router: Arc<ModelRouter>,
     sandbox: Arc<Sandbox>,
     frontend: FrontendExtensions,
@@ -113,6 +116,14 @@ impl HarnessSession for MobiusSession {
 
     fn events(&mut self) -> &mut mpsc::Receiver<JournalEvent> {
         &mut self.events
+    }
+
+    fn run_stats(&self, after_sequence: u64) -> Option<Arc<RunStats>> {
+        self.run_stats
+            .borrow()
+            .as_ref()
+            .filter(|committed| committed.after_sequence == after_sequence)
+            .map(|committed| Arc::clone(&committed.stats))
     }
 
     fn runtime_state(&self) -> BoxFuture<'_, Result<Option<SessionRuntimeState>>> {
@@ -241,6 +252,7 @@ async fn start(
     )
     .await?;
     let frontend_sink = agent.frontend_sink();
+    let run_stats = agent.subscribe_run_stats();
     let (sender, events, session, frontend) = agent.into_recorded_parts();
     let session_id = session.session_id.share();
     Ok(MobiusSession {
@@ -248,6 +260,7 @@ async fn start(
         session_id,
         sender: Some(sender),
         events,
+        run_stats,
         model_router,
         sandbox,
         frontend,
