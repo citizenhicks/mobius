@@ -388,5 +388,18 @@ async fn session_activity_report_stays_complete_with_many_finished_chats() {
     assert_eq!(sessions.len(), 1);
     assert_eq!(sessions[0]["session_id"], session.session_id().to_string());
     assert_eq!(sessions[0]["state"], "running");
+    for count in [256, 257] {
+        activities.lock().await.snapshot.as_mut().unwrap().sessions = (0..count)
+            .map(|index| {
+                let mut record = old.clone();
+                record.session_id = SessionId::new(format!("recent-{index}")).unwrap();
+                record.activity.state = SessionActivityState::Running;
+                record
+            })
+            .collect();
+        let report = gateway.session_activity_report().await.unwrap();
+        assert_eq!(report.payload["complete"], count == 256);
+        assert_eq!(report.payload["sessions"].as_array().unwrap().len(), 256);
+    }
     gateway.shutdown().await;
 }

@@ -11,7 +11,7 @@ use crate::telemetry::{TelemetrySection, TelemetrySink, TelemetrySinkReport};
 use crate::wire::{HookData, HookEvent, HookSource};
 use serde_json::{Value, json};
 
-/// Matches the Cloud's `DONE_LINGER_SECONDS`: how long a finished chat stays on the activity.
+/// How long recently finished chats remain in an activity report.
 const LIVE_ACTIVITY_DONE_LINGER_SECONDS: i64 = 15 * 60;
 
 #[derive(Default)]
@@ -277,23 +277,16 @@ impl GatewayHost {
                 "session catalog snapshot is unavailable".into(),
             ));
         };
-        // Only chats a Live Activity can show. Sending every chat made `complete` false on
-        // any gateway with more than 256, and the Cloud never ends an activity on an
-        // incomplete report, so a finished run kept counting until the app opened.
+        // Old, idle chats must not exhaust the bounded report and hide recent completions.
         let recent = chrono::Utc::now().timestamp() - LIVE_ACTIVITY_DONE_LINGER_SECONDS;
-        let sessions: Vec<_> = snapshot
-            .sessions
-            .iter()
-            .filter(|session| {
-                session.activity.state != crate::wire::SessionActivityState::Idle
-                    || session.activity.attention > 0
-                    || session.updated_at >= recent
-            })
-            .collect();
-        let complete = sessions.len() <= 256;
+        let mut sessions = snapshot.sessions.iter().filter(|session| {
+            session.activity.state != crate::wire::SessionActivityState::Idle
+                || session.activity.attention > 0
+                || session.updated_at >= recent
+        });
         let revision = catalog.revision;
         let entries: Vec<_> = sessions
-            .into_iter()
+            .by_ref()
             .take(256)
             .map(|session| {
                 json!({
@@ -304,6 +297,7 @@ impl GatewayHost {
                 })
             })
             .collect();
+        let complete = sessions.next().is_none();
         drop(catalog);
         Ok(SessionActivityReport {
             revision,
