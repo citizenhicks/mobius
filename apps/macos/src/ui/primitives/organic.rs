@@ -8,10 +8,10 @@
 use super::motion;
 use crate::numeric::{Saturating, ToFloat};
 use gpui::{App, Bounds, Hsla, IntoElement, Motion, Pixels, Styled, canvas, fill, point, px, size};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 const COLUMNS: usize = 24;
-/// The tiles clear over 0.72 s; the overlay stays a frame past that.
+/// The tiles clear over 0.72 s; the completion render removes the overlay.
 pub const REVEAL: Duration = Duration::from_millis(760);
 
 fn noise(column: usize, row: usize) -> f32 {
@@ -48,21 +48,16 @@ fn tiles(bounds: Bounds<Pixels>, mut tile: impl FnMut(Bounds<Pixels>, f32, f32, 
     }
 }
 
-fn in_view(bounds: Bounds<Pixels>, window: &gpui::Window) -> bool {
-    !bounds.intersect(&window.content_mask().bounds).is_empty()
-}
-
 /// The field pulsing while an image is on its way; its phase runs off the clock, so a
 /// row replaced mid-turn keeps the rhythm.
 pub fn pulse(accent: Hsla, paused: bool) -> impl IntoElement {
     canvas(
         |_, _, _| (),
         move |bounds, (), window, cx| {
-            if !in_view(bounds, window) {
+            if !motion::in_view(bounds, window) {
                 return;
             }
             let still = paused || !motion::is_animating(window, cx);
-            let clock = WallClock::now();
             tiles(bounds, |rect, _, _, noise| {
                 let inset = rect.size.width.min(rect.size.height) * (0.10 + noise * 0.06);
                 let rect = Bounds::new(
@@ -73,7 +68,7 @@ pub fn pulse(accent: Hsla, paused: bool) -> impl IntoElement {
                     window.paint_quad(fill(rect, accent.opacity(glow(0.5))));
                     return;
                 }
-                let beat = Motion::opacity(move |at| glow(beat_at(clock.at(at), noise)))
+                let beat = Motion::opacity(move |at| glow(beat_at(motion::seconds(at), noise)))
                     .max_fps(motion::AMBIENT_FPS);
                 window.with_motion(beat, rect.center(), |window| {
                     window.paint_quad(fill(rect, accent));
@@ -90,7 +85,7 @@ fn glow(pulse: f32) -> f32 {
     0.06 + 0.84 * pulse * pulse
 }
 
-/// A tile's pulse at wall-clock `time` in seconds, so replaced rows keep the rhythm.
+/// A tile's pulse at monotonic `time` in seconds, so replaced rows keep the rhythm.
 fn beat_at(time: f64, noise: f32) -> f32 {
     (time * (1.8 + noise as f64 * 1.4) + noise as f64 * 24.)
         .sin()
@@ -98,39 +93,10 @@ fn beat_at(time: f64, noise: f32) -> f32 {
         .to_f32()
 }
 
-/// Wall-clock seconds for an instant, read from the system clock once rather than for
-/// every tile each frame.
-#[derive(Clone, Copy)]
-struct WallClock {
-    instant: Instant,
-    seconds: f64,
-}
-
-impl WallClock {
-    fn now() -> Self {
-        let seconds = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs_f64();
-        Self {
-            instant: Instant::now(),
-            seconds,
-        }
-    }
-
-    fn at(&self, at: Instant) -> f64 {
-        let at = motion::sampled(at);
-        match at.checked_duration_since(self.instant) {
-            Some(after) => self.seconds + after.as_secs_f64(),
-            None => self.seconds - self.instant.duration_since(at).as_secs_f64(),
-        }
-    }
-}
-
 /// Tiles of `cover` over a picture that arrived at `arrived`, clearing from the middle out
 /// until `REVEAL` has passed; nothing once it has, or under Reduce Motion.
 pub fn reveal(cover: Hsla, arrived: Instant, cx: &App) -> Option<impl IntoElement> {
-    if cx.reduce_motion() || arrived.elapsed() >= REVEAL {
+    if cx.reduce_motion() || motion::now().saturating_duration_since(arrived) >= REVEAL {
         return None;
     }
     Some(
@@ -148,11 +114,12 @@ pub fn reveal(cover: Hsla, arrived: Instant, cx: &App) -> Option<impl IntoElemen
                         let progress = (elapsed.as_secs_f32() / 0.72).min(1.);
                         ((progress - order * 0.68) / 0.24).clamp(0., 1.)
                     };
-                    if shown(Instant::now()) >= 1. {
+                    let visible = shown(motion::now());
+                    if visible >= 1. {
                         return;
                     }
                     if !animating {
-                        window.paint_quad(fill(rect, cover.opacity(1. - shown(Instant::now()))));
+                        window.paint_quad(fill(rect, cover.opacity(1. - visible)));
                         return;
                     }
                     let clearing = Motion::opacity(move |at| 1. - shown(at))

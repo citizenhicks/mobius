@@ -11,10 +11,9 @@ use gpui::{
     radians, size,
 };
 use std::f32::consts::TAU;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::ops::Range;
 
-const PERIOD_MS: u128 = 900;
-const TRIM: (f32, f32) = (0.06, 0.86);
+const TRIM: Range<f32> = 0.06..0.86;
 /// The track's angular gradient: (location, opacity).
 const STOPS: [(f32, f32); 5] = [
     (0.06, 0.),
@@ -56,14 +55,6 @@ fn opacity_at(location: f32) -> f32 {
         .unwrap_or(last)
 }
 
-/// The fraction of a turn the spinner has made, off the wall clock.
-fn turn() -> f32 {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_millis());
-    (now % PERIOD_MS).to_f32() / PERIOD_MS.to_f32()
-}
-
 /// The ring at rest, its head at the top; a motion turns it.
 fn paint_spinner(bounds: Bounds<Pixels>, extent: f32, tint: Hsla, window: &mut Window) {
     let ring = extent * 1.04;
@@ -79,11 +70,11 @@ fn paint_spinner(bounds: Bounds<Pixels>, extent: f32, tint: Hsla, window: &mut W
         )
     };
     let (inner, outer) = (radius - line / 2., radius + line / 2.);
-    let step = (TRIM.1 - TRIM.0) / SEGMENTS.to_f32();
+    let step = (TRIM.end - TRIM.start) / SEGMENTS.to_f32();
     for index in 0..SEGMENTS {
         let (start, end) = (
-            TRIM.0 + step * index.to_f32(),
-            TRIM.0 + step * (index + 1).to_f32(),
+            TRIM.start + step * index.to_f32(),
+            TRIM.start + step * (index + 1).to_f32(),
         );
         let alpha = opacity_at(f32::midpoint(start, end));
         if alpha <= 0.005 {
@@ -103,7 +94,7 @@ fn paint_spinner(bounds: Bounds<Pixels>, extent: f32, tint: Hsla, window: &mut W
             window.paint_path(path, tint.opacity(alpha));
         }
     }
-    let dot = at(TRIM.1, radius);
+    let dot = at(TRIM.end, radius);
     let half = px(head / 2.);
     window.paint_quad(super::pill_quad(
         Bounds::new(point(dot.x - half, dot.y - half), size(px(head), px(head))),
@@ -119,13 +110,18 @@ impl RenderOnce for Spinner {
             canvas(
                 |_, _, _| {},
                 move |bounds, (), window, cx| {
-                    if bounds.intersect(&window.content_mask().bounds).is_empty() {
+                    if !motion::in_view(bounds, window) {
                         return;
                     }
                     let extent = f32::from(extent);
                     if motion::is_animating(window, cx) {
-                        let spin = Motion::new(|_| MotionFrame {
-                            rotation: radians(turn() * TAU),
+                        let spin = Motion::new(|at| MotionFrame {
+                            rotation: radians(
+                                (motion::seconds(at) % motion::SPINNER_PERIOD.as_secs_f64()
+                                    / motion::SPINNER_PERIOD.as_secs_f64())
+                                .to_f32()
+                                    * TAU,
+                            ),
                             ..MotionFrame::default()
                         })
                         .max_fps(motion::SMOOTH_FPS);

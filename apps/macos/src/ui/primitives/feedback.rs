@@ -3,11 +3,15 @@
 use super::Shape;
 use super::Spinner;
 use super::controls::palette;
+use super::motion;
 use super::tokens::{glyph, height, space, width};
 use super::{Type, Typography, heading, icon};
+use crate::numeric::ToFloat;
 use crate::ui::theme::{Palette, mix};
 use gpui::prelude::*;
-use gpui::{AnyElement, App, Div, Hsla, SharedString, Window, div, px, relative};
+use gpui::{
+    AnyElement, App, Div, Hsla, Motion, SharedString, StyleRefinement, Window, div, px, relative,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
@@ -166,19 +170,19 @@ impl RenderOnce for Notice {
 /// and two-second bounce from full to half opacity, without rendering the window.
 #[derive(IntoElement)]
 pub(crate) struct Skeleton {
-    style: gpui::StyleRefinement,
+    style: StyleRefinement,
 }
 
 impl Skeleton {
     pub(crate) fn new() -> Self {
         Self {
-            style: gpui::StyleRefinement::default(),
+            style: StyleRefinement::default(),
         }
     }
 }
 
 impl Styled for Skeleton {
-    fn style(&mut self) -> &mut gpui::StyleRefinement {
+    fn style(&mut self) -> &mut StyleRefinement {
         &mut self.style
     }
 }
@@ -187,25 +191,21 @@ impl RenderOnce for Skeleton {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         use gpui::MotionExt as _;
         use gpui_component::{ActiveTheme as _, StyledExt as _};
-        static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-        let epoch = *EPOCH.get_or_init(std::time::Instant::now);
         let breathe = gpui::bounce(gpui::ease_in_out);
         let body = div()
             .w_full()
             .h_4()
             .bg(cx.theme().skeleton)
             .refine_style(&self.style);
-        if !super::motion::is_animating(window, cx) {
+        if !motion::is_animating(window, cx) {
             return body.into_any_element();
         }
         body.with_motion(
-            gpui::Motion::opacity(move |at| {
-                let elapsed = super::motion::sampled(at)
-                    .saturating_duration_since(epoch)
-                    .as_secs_f32();
+            Motion::opacity(move |at| {
+                let elapsed = motion::seconds(at).to_f32();
                 1. - breathe(elapsed % 2. / 2.) * 0.5
             })
-            .max_fps(super::motion::AMBIENT_FPS),
+            .max_fps(motion::AMBIENT_FPS),
         )
         .into_any_element()
     }

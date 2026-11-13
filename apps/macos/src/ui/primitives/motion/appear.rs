@@ -5,20 +5,46 @@
 use super::{SMOOTH_FPS, now, sampled};
 use gpui::{
     AnyElement, App, Bounds, ElementId, GlobalElementId, InspectorElementId, IntoElement, LayoutId,
-    Motion, MotionFrame, Pixels, SharedString, Window, ease_out_quint, point, px,
+    Motion, MotionFrame, Pixels, Window, ease_out_quint, point, px,
 };
 use std::time::{Duration, Instant};
+
+/// `element` fading in over `duration` when it first appears, and again whenever `id`
+/// changes; Reduce Motion shows it at once.
+pub fn fade_in(
+    element: impl IntoElement + 'static,
+    id: impl Into<ElementId>,
+    duration: Duration,
+    cx: &App,
+) -> AnyElement {
+    rise_in(element, id, duration, px(0.), cx)
+}
+
+/// `element` fading in while it rises the last `lift` points into place; Reduce Motion
+/// shows it at once. Only its drawing moves: its layout and hit area stay put.
+pub fn rise_in(
+    element: impl IntoElement + 'static,
+    id: impl Into<ElementId>,
+    duration: Duration,
+    lift: Pixels,
+    cx: &App,
+) -> AnyElement {
+    if cx.reduce_motion() {
+        return element.into_any_element();
+    }
+    appear(element, id.into(), duration, lift).into_any_element()
+}
 
 /// `child` fading in over `duration` from its first paint under `id`, risen by `lift`
 /// at the start.
 pub(super) fn appear(
     child: impl IntoElement,
-    id: &ElementId,
+    id: ElementId,
     duration: Duration,
     lift: Pixels,
 ) -> Appear {
     Appear {
-        id: SharedString::from(id.to_string()),
+        id,
         child: child.into_any_element(),
         duration,
         lift,
@@ -27,7 +53,7 @@ pub(super) fn appear(
 }
 
 pub struct Appear {
-    id: SharedString,
+    id: ElementId,
     child: AnyElement,
     duration: Duration,
     lift: Pixels,
@@ -48,7 +74,7 @@ impl gpui::Element for Appear {
     type PrepaintState = ();
 
     fn id(&self) -> Option<ElementId> {
-        Some(ElementId::Name(SharedString::clone(&self.id)))
+        Some(ElementId::clone(&self.id)) // rules-allow: GPUI retains its own structured id handle; formatting it would allocate on every render
     }
 
     fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {

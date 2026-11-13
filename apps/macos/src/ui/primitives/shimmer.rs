@@ -12,7 +12,6 @@ use gpui::{
     Window, div, prelude::*, px,
 };
 use gpui_component::{ActiveTheme as _, Colorize as _};
-use std::time::Instant;
 
 /// Nested bands; the innermost is the brightest.
 const LAYERS: u32 = 12;
@@ -82,16 +81,12 @@ impl Sweep {
 
 /// The band over text laid out at `bounds`, its phase shared by every shimmer.
 fn sweep(bounds: Bounds<Pixels>, color: Hsla) -> Motion {
-    static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
-    let epoch = *EPOCH.get_or_init(Instant::now);
     let width = f32::from(bounds.size.width);
     let radius = width * SPREAD;
     let padding = SPREAD + 0.05;
     let period = motion::SHIMMER_PERIOD.as_secs_f64();
     Motion::new(move |at| {
-        let elapsed = motion::sampled(at)
-            .saturating_duration_since(epoch)
-            .as_secs_f64();
+        let elapsed = motion::seconds(at);
         let phase = (elapsed % period / period).to_f32();
         MotionFrame {
             highlight: Some(MotionHighlight {
@@ -159,10 +154,15 @@ impl Element for Sweep {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let motion = sweep(bounds, self.highlight(window.text_style().color));
-        window.with_motion(motion, bounds.center(), |window| {
+        let motion = motion::in_view(bounds, window)
+            .then(|| sweep(bounds, self.highlight(window.text_style().color)));
+        let mut paint = |window: &mut Window| {
             self.text
                 .paint(id, inspector_id, bounds, &mut (), &mut (), window, cx);
-        });
+        };
+        match motion {
+            Some(motion) => window.with_motion(motion, bounds.center(), paint),
+            None => paint(window),
+        }
     }
 }

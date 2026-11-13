@@ -358,22 +358,36 @@ impl Workspace {
                 }
                 return;
             };
+            let until = thumbnail.arrived + primitives::organic::REVEAL;
             let mut thumbnail = Some(thumbnail);
-            if let Err(error) = this.update(cx, |this, cx| {
+            let completed = this.update(cx, |this, cx| {
                 let Some(thumbnail) = thumbnail.take() else {
-                    return;
+                    return false;
                 };
-                if this.runtime.thumbnails.complete(key, generation, thumbnail) {
+                let completed = this.runtime.thumbnails.complete(key, generation, thumbnail);
+                if completed {
                     cx.notify();
                     crate::host::platform::wake();
                 }
-            }) {
+                completed
+            }).unwrap_or_else(|error| {
                 tracing::debug!(%error, "the workspace closed before a thumbnail arrived");
-            }
+                false
+            });
             if let Some(thumbnail) = thumbnail {
                 cx.background_executor()
                     .spawn(async move { crate::gateway::local::discard(&thumbnail.path) })
                     .detach();
+            }
+            if completed {
+                cx.background_executor().timer(until.saturating_duration_since(std::time::Instant::now())).await;
+                if let Err(error) = this.update(cx, |this, cx| {
+                    if this.runtime.thumbnails.file_generation == generation {
+                        cx.notify();
+                    }
+                }) {
+                    tracing::debug!(%error, "the workspace closed before its picture reveal ended");
+                }
             }
         })
         .detach();

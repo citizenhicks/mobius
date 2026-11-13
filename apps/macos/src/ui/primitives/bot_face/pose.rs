@@ -208,7 +208,7 @@ impl Course {
         let (layout, glide) = (*layout, Rc::clone(&live.glide));
         element
             .with_motion(
-                Motion::new(move |at| sample(glide.get().at(motion::sampled(at)), layout))
+                Motion::new(move |at| sample(glide.get().at(at), layout))
                     .until_cell(Rc::clone(&live.end))
                     .max_fps(live.fps),
             )
