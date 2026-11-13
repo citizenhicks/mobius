@@ -594,7 +594,7 @@ const PROVIDER_OPEN_FOR: Duration = Duration::from_secs(30);
 
 /// A circuit breaker per provider, shared by every router given the same value.
 ///
-/// After consecutive transient failures, calls fail fast with a retryable error until the
+/// After consecutive transient failures, calls fail fast without local retries until the
 /// provider has been left alone for a while; then a single probe call decides whether it is back.
 /// An outage therefore costs one probe rather than a retry storm from every session.
 #[derive(Debug, Default)]
@@ -637,10 +637,13 @@ impl ProviderHealth {
             until
         };
         let seconds = until.duration_since(now).as_secs().max(1);
+        // Not retryable: local retries would only spend the turn's retry budget against the
+        // open breaker before failing anyway.
         Err(crate::ProviderError {
+            retryable: false,
             retry_after: Some(seconds.to_string()),
             ..crate::ProviderError::retryable(format!(
-                "model provider is unavailable after repeated failures; retrying in {seconds}s"
+                "model provider is unavailable after repeated failures; try again in {seconds}s"
             ))
         }
         .into())
@@ -785,7 +788,7 @@ mod health_tests {
         }
         let rejected = health.admit("p").expect_err("open breaker fails fast");
         assert!(
-            matches!(rejected, Error::Provider(error) if error.is_retryable() && error.retry_after().is_some())
+            matches!(rejected, Error::Provider(error) if !error.is_retryable() && error.retry_after().is_some())
         );
         health.admit("other").expect("breakers are per provider");
 
