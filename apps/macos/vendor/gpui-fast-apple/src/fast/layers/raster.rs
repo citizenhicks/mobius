@@ -32,8 +32,7 @@ use objc2_metal::{
 };
 
 use crate::metal_renderer::{
-    InstanceBindings, InstanceBufferWriter, MetalRenderer, SurfaceBounds,
-    new_command_encoder_for_texture,
+    InstanceBindings, InstanceBufferWriter, MetalRenderer, new_command_encoder_for_texture,
 };
 
 /// The pixel format of tiles: the drawable's and every pipeline's.
@@ -131,7 +130,7 @@ fn encode(
             )?;
             continue;
         }
-        let bindings = match write_instances(&tile_scene, &mut writer) {
+        let bindings = match crate::metal_renderer::write_instances(&tile_scene, &mut writer) {
             Ok(bindings) => bindings,
             Err(error) => {
                 result = Err(error);
@@ -205,24 +204,6 @@ fn encode(
     }
     command_buffer.commit();
     Ok(())
-}
-
-/// Writes a tile scene's instance data, as upstream's `write_instances` does
-/// for a frame.
-fn write_instances(scene: &Scene, writer: &mut InstanceBufferWriter) -> Result<InstanceBindings> {
-    Ok(InstanceBindings {
-        // Layers never hold moving content, so tiles see only the identity motion.
-        fast_motions: crate::fast::motion::sample(scene, writer)?,
-        quads: writer.write(&scene.quads)?,
-        shadows: writer.write(&scene.shadows)?,
-        underlines: writer.write(&scene.underlines)?,
-        monochrome_sprites: writer.write(&scene.monochrome_sprites)?,
-        polychrome_sprites: writer.write(&scene.polychrome_sprites)?,
-        surfaces: writer.write_iter(scene.surfaces.iter().map(|surface| SurfaceBounds {
-            bounds: surface.bounds,
-            content_mask: surface.content_mask,
-        }))?,
-    })
 }
 
 /// Draws a tile scene's batches with the renderer's pipelines, as upstream's

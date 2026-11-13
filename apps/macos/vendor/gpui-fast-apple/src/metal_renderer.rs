@@ -1724,19 +1724,9 @@ pub(crate) struct InstanceBindings {
 }
 
 pub(crate) fn write_instances(scene: &Scene, writer: &mut InstanceBufferWriter) -> Result<InstanceBindings> {
-    Ok(InstanceBindings {
-        fast_motions: crate::fast::motion::sample(scene, writer)?,
-        quads: writer.write(&scene.quads)?,
-        shadows: writer.write(&scene.shadows)?,
-        underlines: writer.write(&scene.underlines)?,
-        monochrome_sprites: writer.write(&scene.monochrome_sprites)?,
-        polychrome_sprites: writer.write(&scene.polychrome_sprites)?,
-        surfaces: writer.write_iter(scene.surfaces.iter().map(|surface| SurfaceBounds {
-            bounds: surface.bounds,
-            content_mask: surface.content_mask,
-        }))?,
-    })
+    crate::fast::motion::write_instances(scene, writer, None)
 }
+
 
 pub(crate) struct InstanceBufferWriter {
     device: Retained<ProtocolObject<dyn MTLDevice>>,

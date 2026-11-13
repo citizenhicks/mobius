@@ -99,7 +99,7 @@ impl Scene {
     }
 
     pub(crate) fn insert(&mut self, mut primitive: Primitive) {
-        let clipped_bounds = crate::fast::motion::bounds(&mut primitive);
+        let clipped_bounds = crate::fast::motion::bounds(self, &mut primitive);
 
         if clipped_bounds.is_empty() {
             return;

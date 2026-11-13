@@ -10,6 +10,7 @@
 //! rounded groups do not allocate intermediate render targets.
 
 use std::mem;
+use std::rc::Rc;
 
 use crate::fast::rounded_clip::{ClipOperation, Shape};
 use crate::{
@@ -27,7 +28,7 @@ pub(crate) fn compile(scene: &mut Scene) {
         return;
     }
     let operations = mem::take(&mut scene.paint_operations);
-    let motions = scene.fast_motions.entries.clone();
+    let motions = Rc::clone(&scene.fast_motions.entries);
     let layers: Vec<LayerFrame> = scene
         .layers
         .frames
@@ -39,7 +40,7 @@ pub(crate) fn compile(scene: &mut Scene) {
         let mut scene = Scene::default();
         scene.layers.frames = layers.clone();
         // Primitives keep their motion indices, so every compiled scene shares the table.
-        scene.fast_motions.entries = motions.clone();
+        scene.fast_motions.entries = Rc::clone(&motions);
         scene
     };
     let mut stack = vec![new_scene()];
@@ -98,10 +99,9 @@ pub(crate) fn compile(scene: &mut Scene) {
                     },
                 });
             }
-            PaintOperation::Primitive(primitive) => stack
-                .last_mut()
-                .unwrap()
-                .insert(primitive.clone()),
+            PaintOperation::Primitive(primitive) => {
+                stack.last_mut().unwrap().insert(primitive.clone())
+            }
             PaintOperation::StartLayer(bounds) => stack.last_mut().unwrap().push_layer(*bounds),
             PaintOperation::EndLayer => stack.last_mut().unwrap().pop_layer(),
         }

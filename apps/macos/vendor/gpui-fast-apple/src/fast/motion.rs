@@ -1,18 +1,58 @@
-use crate::metal_renderer::{InstanceBinding, InstanceBindings, InstanceBufferWriter};
+use crate::metal_renderer::{
+    InstanceBinding, InstanceBindings, InstanceBufferWriter, SurfaceBounds,
+};
 use anyhow::Result;
 use gpui::{MotionTransform, Scene};
+use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_metal::MTLRenderCommandEncoder;
+use std::rc::Rc;
 use std::time::Instant;
 pub(crate) struct Bindings {
     pub(crate) buffer: InstanceBinding,
-    pub(crate) transforms: Vec<MotionTransform>,
+    pub(crate) transforms: Rc<Vec<MotionTransform>>,
 }
-pub(crate) fn sample(scene: &Scene, writer: &mut InstanceBufferWriter) -> Result<Bindings> {
-    let transforms = scene.motion_transforms(Instant::now());
+impl Clone for Bindings {
+    fn clone(&self) -> Self {
+        Self {
+            buffer: InstanceBinding {
+                buffer: Retained::clone(&self.buffer.buffer),
+                offset: self.buffer.offset,
+            },
+            transforms: Rc::clone(&self.transforms),
+        }
+    }
+}
+fn sample(
+    scene: &Scene,
+    writer: &mut InstanceBufferWriter,
+    parent: Option<&Bindings>,
+) -> Result<Bindings> {
+    if let Some(parent) = parent {
+        return Ok(Bindings::clone(parent));
+    }
+    let transforms: Rc<Vec<MotionTransform>> = Rc::new(scene.motion_transforms(Instant::now()));
     Ok(Bindings {
         buffer: writer.write(&transforms)?,
         transforms,
+    })
+}
+pub(crate) fn write_instances(
+    scene: &Scene,
+    writer: &mut InstanceBufferWriter,
+    fast_motions: Option<&Bindings>,
+) -> Result<InstanceBindings> {
+    Ok(InstanceBindings {
+        fast_motions: sample(scene, writer, fast_motions)?,
+        quads: writer.write(&scene.quads)?,
+        shadows: writer.write(&scene.shadows)?,
+        underlines: writer.write(&scene.underlines)?,
+        monochrome_sprites: writer.write(&scene.monochrome_sprites)?,
+        polychrome_sprites: writer.write(&scene.polychrome_sprites)?,
+        surfaces: writer.write_iter(scene.surfaces.iter().map(|surface| SurfaceBounds {
+            bounds: surface.bounds,
+            content_mask: surface.content_mask,
+        }))?,
     })
 }
 pub(crate) fn color(

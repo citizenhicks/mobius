@@ -105,6 +105,8 @@ impl Render for Page {
         };
         div()
             .size_full()
+            .overflow_hidden()
+            .rounded(px(8.))
             .bg(rgb(0x00ff_ffff))
             .child(Entity::clone(&self.mover))
             .child(content)
@@ -210,6 +212,7 @@ fn scrolling_and_retained_paint_keep_their_own_motion(cx: &mut TestAppContext) {
             }
             window
                 .update(cx, |_, window, _| {
+                    assert!(window.rendered_scene().layers.frames.iter().any(|layer| layer.tile_size == 0 && layer.content.scene().is_some()), "fixture must compile a rounded clip scene");
                     assert!(
                         window.layout_stats().layer_frames_composited > 0,
                         "static {kind:?} fixture (list={}) must promote a layer before its content starts moving: {:?}", state.is_some(), window.layout_stats()

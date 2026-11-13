@@ -199,14 +199,11 @@ impl RenderOnce for Skeleton {
             return body.into_any_element();
         }
         body.with_motion(
-            gpui::Motion::new(move |at| {
+            gpui::Motion::opacity(move |at| {
                 let elapsed = super::motion::sampled(at)
                     .saturating_duration_since(epoch)
                     .as_secs_f32();
-                gpui::MotionFrame {
-                    opacity: 1. - breathe(elapsed % 2. / 2.) * 0.5,
-                    ..gpui::MotionFrame::default()
-                }
+                1. - breathe(elapsed % 2. / 2.) * 0.5
             })
             .max_fps(super::motion::AMBIENT_FPS),
         )

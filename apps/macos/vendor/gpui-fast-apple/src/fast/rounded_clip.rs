@@ -243,7 +243,11 @@ fn encode(
                             ],
                             vertical: [radii.r, radii.g, radii.b, radii.a],
                         });
-                        let child_bindings = write_instances(child, writer)?;
+                        let child_bindings = crate::fast::motion::write_instances(
+                            child,
+                            writer,
+                            Some(&bindings.fast_motions),
+                        )?;
                         encoder = encode(
                             renderer,
                             child,
@@ -267,14 +271,13 @@ fn encode(
             PrimitiveBatch::Paths(range) => {
                 encoder.endEncoding();
                 let paths = &scene.paths[range];
-                let drawn =
-                    renderer.draw_paths_to_intermediate(
-                        paths,
-                        &bindings.fast_motions.transforms,
-                        writer,
-                        viewport,
-                        commands,
-                    )?;
+                let drawn = renderer.draw_paths_to_intermediate(
+                    paths,
+                    &bindings.fast_motions.transforms,
+                    writer,
+                    viewport,
+                    commands,
+                )?;
                 encoder = new_command_encoder_for_texture(commands, texture, viewport, None)?;
                 bind(&encoder, clips, &renderer.device);
                 if drawn {

@@ -26,6 +26,7 @@ pub struct Motion {
     until: Option<Rc<Cell<Instant>>>,
     anchor: (f32, f32),
     interval: Option<Duration>,
+    fixed_geometry: bool,
 }
 
 impl Motion {
@@ -36,11 +37,23 @@ impl Motion {
             until: None,
             anchor: (0.5, 0.5),
             interval: None,
+            fixed_geometry: false,
         }
+    }
+
+    /// Fade without moving geometry, preserving ordinary clipping and batching.
+    pub fn opacity(sample: impl Fn(Instant) -> f32 + 'static) -> Self {
+        let mut motion = Self::new(move |at| MotionFrame {
+            opacity: sample(at),
+            ..MotionFrame::default()
+        });
+        motion.fixed_geometry = true;
+        motion
     }
 
     /// Present at most `fps` frames a second for this motion, rather than one every
     /// display refresh. A window presents for its most frequent active motion.
+    /// This caps presentation, not display-link callbacks.
     pub fn max_fps(mut self, fps: f32) -> Self {
         self.interval = (fps.is_finite() && fps > 0.)
             .then(|| Duration::try_from_secs_f64(1. / f64::from(fps)).unwrap_or(Duration::MAX));
@@ -220,6 +233,7 @@ pub(crate) struct SceneMotion {
     pub fast_motion: Motion,
     scope: Scope,
     owner: Option<EntityId>,
+    painted: bool,
     /// The enclosing motion's index plus one, or zero.
     pub parent: u32,
     /// The point the motion rotates and scales around.
@@ -279,7 +293,7 @@ pub(crate) fn scope(scene: &Scene) -> Scope {
 
 #[derive(Default, Clone)]
 pub(crate) struct SceneMotions {
-    pub(crate) entries: Vec<SceneMotion>,
+    pub(crate) entries: Rc<Vec<SceneMotion>>,
     stack: Vec<u32>,
 }
 
@@ -292,7 +306,11 @@ pub(crate) fn current(scene: &Scene) -> u32 {
     scene.fast_motions.stack.last().copied().unwrap_or(0)
 }
 pub(crate) fn clear(scene: &mut Scene) {
-    scene.fast_motions.entries.clear();
+    if let Some(entries) = Rc::get_mut(&mut scene.fast_motions.entries) {
+        entries.clear();
+    } else {
+        scene.fast_motions.entries = Rc::default();
+    }
     scene.fast_motions.stack.clear();
 }
 fn primitive_motion(primitive: &mut Primitive) -> Option<&mut u32> {
@@ -323,7 +341,7 @@ pub(crate) fn remap_primitive(
     }
 }
 pub(crate) fn has_motion(scene: &Scene) -> bool {
-    !scene.fast_motions.entries.is_empty()
+    scene.fast_motions.entries.iter().any(|entry| entry.painted)
 }
 pub(crate) fn replay_primitive(
     scene: &mut Scene,
@@ -346,7 +364,8 @@ pub(crate) fn reuse(window: &mut Window, range: Range<usize>, parent: &Scope) {
     );
     let mut last_owner = None;
     for entry in &window.next_frame.scene.fast_motions.entries[before..] {
-        if let Some(owner) = entry.owner
+        if entry.painted
+            && let Some(owner) = entry.owner
             && Some(owner) != last_owner
         {
             crate::fast::layers::invalidate::note_animation_frame(window, owner);
@@ -376,25 +395,42 @@ pub(crate) fn replay(
     }
 }
 fn interval(scene: &Scene, now: Instant, last: Option<Instant>) -> Option<Duration> {
-    scene
+    let mut shortest: Option<Duration> = None;
+    for entry in scene
         .fast_motions
         .entries
         .iter()
-        .filter_map(|entry| {
-            if entry.fast_motion.is_active(now) {
-                Some(entry.fast_motion.interval.unwrap_or_default())
-            } else if entry
-                .fast_motion
-                .until
-                .as_ref()
-                .is_some_and(|end| last.is_none_or(|last| last < end.get()))
-            {
-                Some(Duration::ZERO)
-            } else {
-                None
-            }
+        .filter(|entry| entry.painted)
+    {
+        let next = if entry.fast_motion.is_active(now) {
+            entry.fast_motion.interval.unwrap_or_default()
+        } else if entry
+            .fast_motion
+            .until
+            .as_ref()
+            .is_some_and(|end| last.is_none_or(|last| last < end.get()))
+        {
+            Duration::ZERO
+        } else {
+            continue;
+        };
+        if next.is_zero() {
+            return Some(next);
+        }
+        shortest = Some(shortest.map_or(next, |previous| previous.min(next)));
+    }
+    shortest
+}
+impl MotionClock {
+    fn due(&self, scene: &Scene, now: Instant) -> bool {
+        interval(scene, now, self.last_present.get()).is_some_and(|interval| {
+            self.last_present.get().is_none_or(|last| {
+                now.saturating_duration_since(last)
+                    .saturating_add(Duration::from_millis(2))
+                    >= interval
+            })
         })
-        .min()
+    }
 }
 pub(crate) fn is_animating(window: &Window) -> bool {
     interval(
@@ -406,19 +442,9 @@ pub(crate) fn is_animating(window: &Window) -> bool {
 }
 // A motion-only frame re-presents the retained scene at its fastest active rate.
 pub(crate) fn due(window: &Window) -> bool {
-    let now = Instant::now();
-    interval(
-        &window.rendered_frame.scene,
-        now,
-        window.fast_motion.last_present.get(),
-    )
-    .is_some_and(|interval| {
-        window.fast_motion.last_present.get().is_none_or(|last| {
-            now.saturating_duration_since(last)
-                .saturating_add(Duration::from_millis(2))
-                >= interval
-        })
-    })
+    window
+        .fast_motion
+        .due(&window.rendered_frame.scene, Instant::now())
 }
 pub(crate) fn presented(window: &Window) {
     window.fast_motion.last_present.set(Some(Instant::now()));
@@ -432,11 +458,13 @@ impl Scene {
         scale_factor: f32,
         owner: Option<EntityId>,
     ) {
-        self.fast_motions.entries.push(SceneMotion {
+        let parent = current(self);
+        Rc::make_mut(&mut self.fast_motions.entries).push(SceneMotion {
             fast_motion: motion,
             scope: Scope::new(),
             owner,
-            parent: current(self),
+            painted: false,
+            parent,
             origin,
             scale_factor,
         });
@@ -451,7 +479,11 @@ impl Scene {
     pub fn motion_transforms(&self, at: Instant) -> Vec<MotionTransform> {
         let mut transforms = Vec::with_capacity(self.fast_motions.entries.len() + 1);
         transforms.push(MotionTransform::default());
-        for motion in &self.fast_motions.entries {
+        for motion in self.fast_motions.entries.iter() {
+            if !motion.painted {
+                transforms.push(MotionTransform::default());
+                continue;
+            }
             let frame = motion.fast_motion.sample(at);
             let scale = motion.scale_factor;
             let origin = motion.origin;
@@ -497,7 +529,8 @@ impl Scene {
         }
         let mut motion = prev_scene.fast_motions.entries[index as usize - 1].clone();
         motion.parent = self.replay_motion(motion.parent, prev_scene, replayed, previous_parent);
-        self.fast_motions.entries.push(motion);
+        motion.painted = false;
+        Rc::make_mut(&mut self.fast_motions.entries).push(motion);
         let replayed_index = self.fast_motions.entries.len() as u32;
         replayed.insert(index, replayed_index);
         replayed_index
@@ -508,7 +541,6 @@ impl Window {
     pub fn refresh_motions(&self) {
         self.needs_present.set(true);
         self.platform_window.schedule_frame();
-        self.invalidator.wake_platform();
     }
     /// Paint primitives under a motion; hit testing remains at laid-out bounds.
     pub fn with_motion<R>(
@@ -519,32 +551,52 @@ impl Window {
     ) -> R {
         self.invalidator.debug_assert_paint();
 
-        // Motion changes what is presented each frame, like an animation frame request:
-        // a scroll layer must not cache it in its tiles.
-        crate::fast::layers::invalidate::note_animation_frame(self, self.current_view());
         let scale_factor = self.scale_factor();
-        let owner = Some(self.current_view());
-        self.next_frame
-            .scene
-            .push_motion(motion, origin.scale(scale_factor), scale_factor, owner);
+        let owner = self.current_view();
+        self.next_frame.scene.push_motion(
+            motion,
+            origin.scale(scale_factor),
+            scale_factor,
+            Some(owner),
+        );
+        let index = current(&self.next_frame.scene);
         let result = f(self);
         self.next_frame.scene.pop_motion();
+        if self.next_frame.scene.fast_motions.entries[index as usize - 1].painted {
+            crate::fast::layers::invalidate::note_animation_frame(self, owner);
+        }
         result
     }
 }
 
-pub(crate) fn bounds(primitive: &mut Primitive) -> Bounds<ScaledPixels> {
-    if primitive_motion(primitive).is_some_and(|index| *index != 0) {
-        // The sampler may move anywhere in this mask; initial bounds cannot cull or batch it.
-        primitive.content_mask().bounds
-    } else {
-        primitive
+pub(crate) fn bounds(scene: &mut Scene, primitive: &mut Primitive) -> Bounds<ScaledPixels> {
+    let mut index = primitive_motion(primitive).copied().unwrap_or(0);
+    if index == 0 {
+        return primitive
             .bounds()
-            .intersect(&primitive.content_mask().bounds)
+            .intersect(&primitive.content_mask().bounds);
     }
-}
-pub(crate) fn wake(window: &Window) {
-    window.invalidator.wake_platform();
+    let mut bounds = primitive
+        .bounds()
+        .intersect(&primitive.content_mask().bounds);
+    let mut parent = index;
+    while parent != 0 {
+        let motion = &scene.fast_motions.entries[parent as usize - 1];
+        if !motion.fast_motion.fixed_geometry {
+            // An arbitrary ancestor can enter anywhere in this mask.
+            bounds = primitive.content_mask().bounds;
+            break;
+        }
+        parent = motion.parent;
+    }
+    if !bounds.is_empty() {
+        while index != 0 && !scene.fast_motions.entries[index as usize - 1].painted {
+            let entry = &mut Rc::make_mut(&mut scene.fast_motions.entries)[index as usize - 1];
+            entry.painted = true;
+            index = entry.parent;
+        }
+    }
+    bounds
 }
 
 /// Run retained-motion, clipping, FPS and final-frame invariants against the compiled core.
@@ -556,7 +608,7 @@ pub fn assert_motion_invariants() {
 
 #[cfg(any(test, feature = "test-support"))]
 mod tests {
-    use super::{Motion, MotionFrame, Scope, interval, replay, scope};
+    use super::{Motion, MotionClock, MotionFrame, Scope, interval, replay, scope};
     use crate::{Bounds, ContentMask, Quad, ScaledPixels, Scene, point, px, size};
     use scheduler::Instant;
     use std::time::Duration;
@@ -578,13 +630,8 @@ mod tests {
             ..Quad::default()
         }
     }
-    fn push(scene: &mut Scene, x: f32) {
-        scene.push_motion(
-            translated(x),
-            point(ScaledPixels(0.), ScaledPixels(0.)),
-            1.,
-            None,
-        );
+    fn push(scene: &mut Scene, motion: Motion) {
+        scene.push_motion(motion, point(ScaledPixels(0.), ScaledPixels(0.)), 1., None);
     }
     fn position(scene: &Scene, at: Instant) -> f32 {
         f32::from(
@@ -598,19 +645,19 @@ mod tests {
     pub(super) fn retained_paint_rebases_outer_motion_and_keeps_inner_motion() {
         let now = Instant::now();
         let mut previous = Scene::default();
-        push(&mut previous, 1.);
+        push(&mut previous, translated(1.));
         let old_scope = scope(&previous);
-        push(&mut previous, 4.);
+        push(&mut previous, translated(4.));
         previous.insert_primitive(quad());
         previous.pop_motion();
         previous.pop_motion();
         let mut retained = Scene::default();
-        push(&mut retained, 10.);
+        push(&mut retained, translated(10.));
         replay(&mut retained, 0..previous.len(), &previous, &old_scope);
         retained.pop_motion();
         let mut fresh = Scene::default();
-        push(&mut fresh, 10.);
-        push(&mut fresh, 4.);
+        push(&mut fresh, translated(10.));
+        push(&mut fresh, translated(4.));
         fresh.insert_primitive(quad());
         fresh.pop_motion();
         fresh.pop_motion();
@@ -627,7 +674,7 @@ mod tests {
             scene
         };
         let mut added = Scene::default();
-        push(&mut added, 10.);
+        push(&mut added, translated(10.));
         added.replay(0..plain.len(), &plain);
         assert_eq!(position(&added, now), 10.);
         let mut composed = Scene::default();
@@ -637,17 +684,12 @@ mod tests {
         assert_eq!(position(&composed, now), 5.);
         let shared = translated(3.);
         let mut nested = Scene::default();
-        nested.push_motion(
-            shared.clone(),
-            point(ScaledPixels(0.), ScaledPixels(0.)),
-            1.,
-            None,
-        );
+        push(&mut nested, shared.clone());
         let outer = scope(&nested);
-        nested.push_motion(shared, point(ScaledPixels(0.), ScaledPixels(0.)), 1., None);
+        push(&mut nested, shared);
         nested.insert_primitive(quad());
         let mut rebased = Scene::default();
-        push(&mut rebased, 10.);
+        push(&mut rebased, translated(10.));
         replay(&mut rebased, 0..nested.len(), &nested, &outer);
         assert_eq!(
             position(&rebased, now),
@@ -655,7 +697,7 @@ mod tests {
             "cloned samplers must remain distinct nested scopes"
         );
         let mut entering = Scene::default();
-        push(&mut entering, 20.);
+        push(&mut entering, translated(20.));
         let mut outside = quad();
         outside.bounds.origin.x = ScaledPixels(-20.);
         entering.insert_primitive(outside);
@@ -679,22 +721,73 @@ mod tests {
             assert_eq!(translated(0.).max_fps(fps).interval, None);
         }
         let start = Instant::now();
+        let mut fade = Scene::default();
+        push(&mut fade, Motion::opacity(|_| 0.5));
+        let mut outside = quad();
+        outside.bounds.origin.x = ScaledPixels(-20.);
+        fade.insert_primitive(outside.clone());
+        assert!(
+            fade.quads.is_empty(),
+            "opacity-only content outside the mask must be culled"
+        );
+        assert_eq!(interval(&fade, start, None), None);
+        fade.insert_primitive(quad());
+        assert_eq!(fade.motion_transforms(start)[1].opacity, 0.5);
+        let mut entering = Scene::default();
+        push(&mut entering, translated(20.));
+        push(&mut entering, Motion::opacity(|_| 0.5));
+        entering.insert_primitive(outside);
+        assert_eq!(
+            entering.quads.len(),
+            1,
+            "a moving ancestor must preserve entering opacity-only content"
+        );
+        assert_eq!(position(&entering, start), 20.);
         let end = start + Duration::from_millis(10);
         let mut scene = Scene::default();
-        scene.push_motion(
+        push(
+            &mut scene,
             Motion::new(move |at| MotionFrame {
                 opacity: if at == end { 1. } else { 0. },
                 ..MotionFrame::default()
             })
             .until(end)
             .max_fps(30.),
-            point(ScaledPixels(0.), ScaledPixels(0.)),
-            1.,
-            None,
         );
+        assert_eq!(
+            interval(&scene, start, None),
+            None,
+            "an empty motion must not drive frames"
+        );
+        let mut clipped = quad();
+        clipped.content_mask.bounds.size.width = ScaledPixels(0.);
+        scene.insert_primitive(clipped);
+        assert_eq!(
+            interval(&scene, start, None),
+            None,
+            "a fully clipped motion must not drive frames"
+        );
+        scene.insert_primitive(quad());
         let after = end + Duration::from_millis(2);
         assert_eq!(interval(&scene, after, Some(start)), Some(Duration::ZERO));
         assert_eq!(scene.motion_transforms(after)[1].opacity, 1.);
         assert_eq!(interval(&scene, after, Some(after)), None);
+        let mut cadence = Scene::default();
+        push(&mut cadence, translated(0.).max_fps(30.));
+        cadence.insert_primitive(quad());
+        let clock = MotionClock::default();
+        assert!(clock.due(&cadence, start));
+        clock.last_present.set(Some(start));
+        assert!(!clock.due(&cadence, start + Duration::from_millis(30)));
+        assert!(clock.due(&cadence, start + Duration::from_millis(32)));
+        assert!(
+            clock.due(&scene, after),
+            "completion cannot be skipped by the fps gate"
+        );
+        clock.last_present.set(Some(after));
+        assert!(
+            !clock.due(&scene, after),
+            "a completed final frame must stop"
+        );
     }
 }

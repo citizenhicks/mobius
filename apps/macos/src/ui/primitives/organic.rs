@@ -7,10 +7,7 @@
 
 use super::motion;
 use crate::numeric::{Saturating, ToFloat};
-use gpui::{
-    App, Bounds, Hsla, IntoElement, Motion, MotionFrame, Pixels, Styled, canvas, fill, point, px,
-    size,
-};
+use gpui::{App, Bounds, Hsla, IntoElement, Motion, Pixels, Styled, canvas, fill, point, px, size};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const COLUMNS: usize = 24;
@@ -76,11 +73,8 @@ pub fn pulse(accent: Hsla, paused: bool) -> impl IntoElement {
                     window.paint_quad(fill(rect, accent.opacity(glow(0.5))));
                     return;
                 }
-                let beat = Motion::new(move |at| MotionFrame {
-                    opacity: glow(beat_at(clock.at(at), noise)),
-                    ..MotionFrame::default()
-                })
-                .max_fps(motion::AMBIENT_FPS);
+                let beat = Motion::opacity(move |at| glow(beat_at(clock.at(at), noise)))
+                    .max_fps(motion::AMBIENT_FPS);
                 window.with_motion(beat, rect.center(), |window| {
                     window.paint_quad(fill(rect, accent));
                 });
@@ -161,12 +155,9 @@ pub fn reveal(cover: Hsla, arrived: Instant, cx: &App) -> Option<impl IntoElemen
                         window.paint_quad(fill(rect, cover.opacity(1. - shown(Instant::now()))));
                         return;
                     }
-                    let clearing = Motion::new(move |at| MotionFrame {
-                        opacity: 1. - shown(at),
-                        ..MotionFrame::default()
-                    })
-                    .until(until)
-                    .max_fps(motion::SMOOTH_FPS);
+                    let clearing = Motion::opacity(move |at| 1. - shown(at))
+                        .until(until)
+                        .max_fps(motion::SMOOTH_FPS);
                     window.with_motion(clearing, rect.center(), |window| {
                         window.paint_quad(fill(rect, cover));
                     });

@@ -24,7 +24,9 @@ approved by the application owner, not approved by upstream maintainers:
 
 - `Motion`, `MotionFrame`, `MotionHighlight`, `MotionExt`, `MotionElement` let the
   app supply its own curves while GPUI presents the retained scene. `Window`
-  gains only `with_motion` and `refresh_motions`.
+  gains only `with_motion` and `refresh_motions`. `Motion::opacity` guarantees fixed
+  geometry so fades retain ordinary clipping/batching; it is the only specialized
+  constructor, not an unchecked bounds hint.
 - `MotionTransform` and `Scene::motion_transforms` are the cross-crate Metal
   renderer ABI; Scene's motion state, scopes and replay bookkeeping stay private.
   Primitive `fast_motion` indices are renderer-facing ABI fields. Existing
@@ -94,3 +96,23 @@ promote to a layer, so the test cannot pass by disabling scroll layers globally.
 Content masks and rounded clips remain at laid-out positions; motion inside a
 moving clipping ancestor can appear as a wipe. Highlights use window coordinates,
 so a horizontal translation does not carry the highlight band with the text.
+
+
+## Active motion and shared sampling
+
+Only motion stamped onto a drawable primitive drives frames; its enclosing scopes
+are marked with it. Empty and fully clipped scopes neither sample nor block static
+scroll layers. Rounded-clip compilation shares the immutable entry table. The
+Fast instance serializer accepts an optional existing motion binding: rounded-clip
+children use their parent's already sampled/uploaded table, while root frames and
+static tiles create their own. The upstream Metal function keeps its signature and
+delegates through a qualified hook; tile/frame serialization has one Fast owner.
+
+The macOS backend's schedule_frame and frame_waker call the same idempotent
+MetalFrames::wake; motion uses schedule_frame once. max_fps caps presents, not
+120Hz display-link wakeups. Moving bounds cover the content mask to preserve entering
+content and draw order. Opacity-only scopes keep ordinary bounds unless an ancestor
+can move them: a virtual 12-row quad/path fixture uses 2 batches at rest, 24 under a
+generic motion, and 2 under Motion::opacity. Moving/reordering mixed content retains
+the conservative batching cost.
+CPU/GPU/memory improvements require representative hardware measurements.

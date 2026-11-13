@@ -2098,7 +2098,6 @@ impl Window {
                             || crate::fast::motion::is_animating(window)
                         {
                             window.platform_window.schedule_frame();
-                            crate::fast::motion::wake(window);
                         }
                     })
                     .with_context(|| {

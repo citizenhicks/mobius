@@ -99,15 +99,22 @@ impl gpui::Element for Appear {
         };
         let (duration, lift) = (self.duration.as_secs_f32(), self.lift);
         let ease = ease_out_quint();
-        let fade = Motion::new(move |at| {
+        let opacity = move |at| {
             let elapsed = sampled(at).saturating_duration_since(start).as_secs_f32();
-            let shown = ease((elapsed / duration).min(1.));
-            MotionFrame {
-                offset: point(px(0.), lift * (1. - shown)),
-                opacity: shown,
-                ..MotionFrame::default()
-            }
-        })
+            ease((elapsed / duration).min(1.))
+        };
+        let fade = if lift == px(0.) {
+            Motion::opacity(opacity)
+        } else {
+            Motion::new(move |at| {
+                let shown = opacity(at);
+                MotionFrame {
+                    offset: point(px(0.), lift * (1. - shown)),
+                    opacity: shown,
+                    ..MotionFrame::default()
+                }
+            })
+        }
         .until(start + self.duration)
         .max_fps(SMOOTH_FPS);
         window.with_motion(fade, bounds.center(), |window| self.child.paint(window, cx));
