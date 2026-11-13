@@ -200,14 +200,17 @@ impl Workspace {
                 message
             });
         }
-        self.set_link(Link::Failed(
-            if chat_send {
-                "Delivery failed."
-            } else {
-                "Connection failed."
-            }
-            .into(),
-        ));
+        self.set_link(
+            Link::Failed(
+                if chat_send {
+                    "Delivery failed."
+                } else {
+                    "Connection failed."
+                }
+                .into(),
+            ),
+            cx,
+        );
     }
 
     pub(in crate::ui) fn desktop_execution_changed(

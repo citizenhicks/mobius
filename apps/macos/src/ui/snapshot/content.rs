@@ -73,7 +73,7 @@ fn changes_header_action(
             "Review changes",
             Default::default(),
         );
-        this.set_link(Link::Ready);
+        this.set_link(Link::Ready, cx);
     }
     Workspace::when_chat_ready(window, cx, move |this, window, cx| {
         let path = repo("README.md").to_string_lossy().into_owned();
@@ -168,7 +168,7 @@ fn output_chat(this: &mut Workspace, window: &mut Window, cx: &mut Context<Works
         "Preview an output",
         Default::default(),
     );
-    this.set_link(Link::Ready);
+    this.set_link(Link::Ready, cx);
 }
 
 /// Exercises the real page selection and response handlers without a gateway request.
@@ -192,7 +192,7 @@ fn chat_owned_tabs(this: &mut Workspace, window: &mut Window, cx: &mut Context<W
         "Chat A",
         Default::default(),
     );
-    this.set_link(Link::Ready);
+    this.set_link(Link::Ready, cx);
     let session_a = session_id(this).expect("fixture A is selected");
     this.open_local_now(repo("README.md"), false, cx);
     let file_a = Arc::clone(&this.active_content().expect("A file").id);
@@ -327,7 +327,7 @@ fn computer_chat_context(this: &mut Workspace, window: &mut Window, cx: &mut Con
         "Chat A",
         Default::default(),
     );
-    this.set_link(Link::Ready);
+    this.set_link(Link::Ready, cx);
     let a = session_id(this).expect("fixture A is selected");
     this.open_content(
         ContentTab {
@@ -427,7 +427,7 @@ fn downloaded_file_identity(
         "Review chat attachment",
         Default::default(),
     );
-    this.set_link(Link::Ready);
+    this.set_link(Link::Ready, cx);
     this.split_content = true;
     this.fixture_chat_files();
     let session = session_id(this).expect("fixture chat is selected");

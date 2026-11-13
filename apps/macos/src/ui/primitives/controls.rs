@@ -367,6 +367,7 @@ pub struct Segmented {
     labels: Vec<SharedString>,
     selected: Option<usize>,
     full_width: bool,
+    disabled: bool,
     on_select: Handler<usize>,
 }
 
@@ -381,6 +382,7 @@ pub fn segmented(
         labels: labels.into_iter().map(Into::into).collect(),
         selected,
         full_width: false,
+        disabled: false,
         on_select: Rc::new(on_select),
     }
 }
@@ -389,6 +391,13 @@ impl Segmented {
     /// Stretches to its container with equal segments.
     pub fn full_width(mut self) -> Self {
         self.full_width = true;
+        self
+    }
+}
+
+impl Disableable for Segmented {
+    fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
         self
     }
 }
@@ -409,6 +418,7 @@ impl RenderOnce for Segmented {
                 let on_select = Rc::clone(&self.on_select);
                 let selected = self.selected == Some(index);
                 Button::new(index)
+                    .disabled(self.disabled)
                     .with_variant(quiet(cx))
                     .h(height::COMPACT)
                     .p_0()
@@ -486,20 +496,47 @@ pub fn menu_select(
     glyph: Option<&str>,
     items: Vec<MenuChoice>,
     cx: &App,
-) -> impl IntoElement {
-    let items = Rc::new(items);
-    let glyph = glyph.map(|name| icon(name, &palette(cx)));
-    select_button(id, label, glyph, cx).dropdown_menu(move |mut menu, _, _| {
-        for item in items.iter() {
-            let on_select = Rc::clone(&item.on_select);
-            menu = menu.item(
-                PopupMenuItem::new(SharedString::clone(&item.label))
-                    .checked(item.checked)
-                    .on_click(move |event, window, cx| on_select(event, window, cx)),
-            );
+) -> MenuSelect {
+    MenuSelect {
+        button: select_button(id, label, glyph.map(|name| icon(name, &palette(cx))), cx),
+        items,
+        disabled: false,
+    }
+}
+
+#[derive(IntoElement)]
+pub struct MenuSelect {
+    button: Button,
+    items: Vec<MenuChoice>,
+    disabled: bool,
+}
+
+impl Disableable for MenuSelect {
+    fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+}
+
+impl RenderOnce for MenuSelect {
+    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+        if self.disabled {
+            return self.button.disabled(true).into_any_element();
         }
-        menu
-    })
+        self.button
+            .dropdown_menu(move |mut menu, _, _| {
+                for item in &self.items {
+                    let on_select = Rc::clone(&item.on_select);
+                    menu = menu.item(
+                        PopupMenuItem::new(SharedString::clone(&item.label))
+                            .checked(item.checked)
+                            .on_click(move |event, window, cx| on_select(event, window, cx)),
+                    );
+                }
+                menu
+            })
+            .into_any_element()
+    }
 }
 
 /// A 26 high capsule for composer and toolbar status (MobiusBadge).

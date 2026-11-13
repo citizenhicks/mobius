@@ -186,13 +186,13 @@ impl Workspace {
                 endpoint,
                 attempt,
                 message,
-            } => self.reconnecting(endpoint, attempt, message),
+            } => self.reconnecting(endpoint, attempt, message, cx),
             Update::Connected(endpoint) => self.connected(endpoint, window, cx),
             Update::Resuming(request_id, session_id) => self.resuming(request_id, session_id),
             Update::Message(message) => self.receive(*message, window, cx),
             Update::Error(error) => {
                 self.report(&error);
-                self.set_link(Link::Failed(error.into()));
+                self.set_link(Link::Failed(error.into()), cx);
             }
             Update::SendFailed {
                 request_id,
@@ -253,7 +253,9 @@ impl Workspace {
             } if endpoint == self.client.endpoint => {
                 self.preview_loaded(&id, &session_id, result, cx);
             }
-            Update::Disconnected => self.set_link(Link::Failed("The gateway disconnected.".into())),
+            Update::Disconnected => {
+                self.set_link(Link::Failed("The gateway disconnected.".into()), cx);
+            }
             Update::AttachmentDeleted {
                 endpoint,
                 session_id,
@@ -295,7 +297,7 @@ impl Workspace {
             self.report(error);
         }
         if matches!(message, ServerMessage::Ready { .. }) {
-            self.set_link(Link::Ready);
+            self.set_link(Link::Ready, cx);
         }
         self.dispatch_message(&message, window, cx);
         match message {
@@ -321,18 +323,24 @@ impl Workspace {
                 fatal,
                 message,
                 ..
-            } => self.request_rejected(&request_id, fatal, message),
+            } => self.request_rejected(&request_id, fatal, message, cx),
             ServerMessage::Error {
                 fatal: true,
                 message,
                 ..
-            } => self.set_link(Link::Failed(message)),
+            } => self.set_link(Link::Failed(message), cx),
             _ => {}
         }
     }
 
     /// The gateway refused `request_id`: drop what waited on it and say why.
-    fn request_rejected(&mut self, request_id: &Arc<str>, fatal: bool, message: Arc<str>) {
+    fn request_rejected(
+        &mut self,
+        request_id: &Arc<str>,
+        fatal: bool,
+        message: Arc<str>,
+        cx: &mut Context<Self>,
+    ) {
         if self
             .queued_draft
             .as_ref()
@@ -344,7 +352,7 @@ impl Workspace {
             self.chat_ui.open_failure = Some(Arc::clone(&message));
         }
         if fatal {
-            self.set_link(Link::Failed(message));
+            self.set_link(Link::Failed(message), cx);
         }
     }
 

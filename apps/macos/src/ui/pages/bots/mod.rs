@@ -51,6 +51,33 @@ pub(in crate::ui) enum Pending {
     Install(String),
 }
 
+impl BotsUi {
+    fn abandon(&mut self, pending: Pending, cx: &mut App) {
+        match pending {
+            Pending::Save(scope) => {
+                if let Some(draft) = self.drafts.get_mut(&scope) {
+                    draft.finish_save(None);
+                }
+            }
+            Pending::SaveRoutine(form) => {
+                if let Some(form) = form.upgrade() {
+                    form.update(cx, |form, cx| {
+                        form.save = routine_form::SaveState::Editing;
+                        cx.notify();
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub(in crate::ui) fn disconnect(&mut self, cx: &mut App) {
+        for pending in std::mem::take(&mut self.pending).into_values() {
+            self.abandon(pending, cx);
+        }
+    }
+}
+
 impl Workspace {
     pub(in crate::ui) fn bots_on_message(
         &mut self,
@@ -166,8 +193,24 @@ impl Workspace {
         message: ClientMessage,
         cx: &mut Context<Self>,
     ) {
-        self.bots.pending.insert(request_id, pending);
-        self.send(message, cx);
+        match self.enqueue(message) {
+            Ok(()) => {
+                if let Pending::SaveRoutine(form) = &pending
+                    && let Some(form) = form.upgrade()
+                {
+                    form.update(cx, |form, cx| {
+                        form.save = routine_form::SaveState::Pending;
+                        cx.notify();
+                    });
+                }
+                self.bots.pending.insert(request_id, pending);
+            }
+            Err(error) => {
+                self.bots.abandon(pending, cx);
+                self.report(error);
+            }
+        }
+        cx.notify();
     }
 
     fn is_pending(&self, pending: &Pending) -> bool {
@@ -188,5 +231,67 @@ impl Workspace {
                 cx.notify();
             },
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::TestAppContext;
+    use gpui_component::input::InputState;
+    use gpui_component::input::TextareaState;
+    use gpui_component::searchable_list::SearchableVec;
+    use gpui_component::select::SelectState;
+    use routine_form::{Inputs, RoutineForm, SaveState};
+
+    #[gpui::test]
+    fn disconnect_unlocks_a_routine_draft_and_forgets_its_old_reply(cx: &mut TestAppContext) {
+        cx.add_empty_window().update(|window, cx| {
+            gpui_component::init(cx);
+            let input = cx.new(|cx| InputState::new(window, cx));
+            let instructions = cx.new(|cx| TextareaState::new(window, cx));
+            instructions.update(cx, |input, cx| {
+                input.set_value("keep this draft", window, cx);
+            });
+            let zone = cx.new(|cx| {
+                SelectState::new(
+                    SearchableVec::new(vec!["Asia/Kathmandu".to_owned()]),
+                    None,
+                    window,
+                    cx,
+                )
+            });
+            let inputs = Inputs {
+                instructions,
+                zone,
+                at: Entity::clone(&input),
+                every: Entity::clone(&input),
+                time: Entity::clone(&input),
+                cron: Entity::clone(&input),
+                duration: Entity::clone(&input),
+                end_at: input,
+            };
+            let form = cx.new(|_| RoutineForm::new(None, &["/work".into()], inputs));
+            form.update(cx, |form, _| form.save = SaveState::Pending);
+            let mut bots = BotsUi::default();
+            bots.pending
+                .insert("lost-reply".into(), Pending::SaveRoutine(form.downgrade()));
+            bots.disconnect(cx);
+            assert!(!form.read(cx).busy());
+            assert_eq!(form.read(cx).workspace, "/work");
+            assert_eq!(
+                form.read(cx).inputs.instructions.read(cx).value(),
+                "keep this draft"
+            );
+            assert!(
+                bots.pending.remove("lost-reply").is_none(),
+                "a late ACK must not close the recovered editor"
+            );
+            bots.disconnect(cx);
+            assert!(
+                !form.read(cx).busy(),
+                "repeated reconnects keep the editor usable"
+            );
+        });
     }
 }

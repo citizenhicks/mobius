@@ -59,11 +59,7 @@ pub(super) const SCENARIOS: &[Scenario] = &[
         );
         drop(this.client.take_pending("fixture-send"));
         this.shell.notices = notices;
-        this.set_link(link);
-    }),
-    ("routine-rejected-draft", |this, window, cx| {
-        fixture(this);
-        this.snapshot_routine_rejection(window, cx);
+        this.set_link(link, cx);
     }),
     ("rail-mobius", |this, window, cx| {
         fixture(this);

@@ -22,8 +22,9 @@ impl LinkTone for Link {
 
 impl Workspace {
     /// The single place that changes the connection state and tells the native bridge.
-    pub(in crate::ui) fn set_link(&mut self, link: Link) {
+    pub(in crate::ui) fn set_link(&mut self, link: Link, cx: &mut Context<Self>) {
         if !link.is_ready() {
+            self.bots.disconnect(cx);
             self.shell.recaps = Default::default();
         }
         self.native.set_connected(link.is_ready());
@@ -59,7 +60,7 @@ impl Workspace {
     pub(in crate::ui) fn connect(&mut self, connection: Connection, cx: &mut Context<Self>) {
         match self.client.connect(connection) {
             Ok(false) => return,
-            Ok(true) => self.set_link(Link::Connecting(String::new())),
+            Ok(true) => self.set_link(Link::Connecting(String::new()), cx),
             Err(error) => self.report(error),
         }
         cx.notify();
@@ -78,12 +79,13 @@ impl Workspace {
         } else {
             self.switch_gateway(window, cx);
         }
-        self.set_link(Link::Connecting(label));
+        self.set_link(Link::Connecting(label), cx);
     }
 
     /// Leaves the previous gateway's session state; pages that still mean something stay.
     fn switch_gateway(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.provider_setup.reset();
+        self.bots.disconnect(cx);
         self.bots = Default::default();
         self.memory = Default::default();
         self.model_picker = None;
@@ -133,14 +135,20 @@ impl Workspace {
     ) {
         self.shell.reload_gateways();
         let resumed = self.client.connected(&endpoint);
-        self.set_link(Link::Connecting(endpoint));
+        self.set_link(Link::Connecting(endpoint), cx);
         if !resumed {
             self.runtime.draft_owner = None;
             self.load_draft("", window, cx);
         }
     }
 
-    pub(super) fn reconnecting(&mut self, endpoint: Option<String>, attempt: u32, message: String) {
+    pub(super) fn reconnecting(
+        &mut self,
+        endpoint: Option<String>,
+        attempt: u32,
+        message: String,
+        cx: &mut Context<Self>,
+    ) {
         if attempt == 1 && message == crate::gateway::GATEWAY_STARTING {
             self.announce(
                 Tone::Info,
@@ -152,11 +160,14 @@ impl Workspace {
         self.client.reopen = true;
         self.runtime.desktop_held = false;
         self.cancel_session_selection();
-        self.set_link(Link::Reconnecting {
-            endpoint,
-            attempt,
-            message,
-        });
+        self.set_link(
+            Link::Reconnecting {
+                endpoint,
+                attempt,
+                message,
+            },
+            cx,
+        );
     }
 
     /// The connection reopens `session_id` right behind authentication; when this window

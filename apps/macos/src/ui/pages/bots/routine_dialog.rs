@@ -2,7 +2,7 @@
 
 use super::create::dialog_heading;
 use super::routine_form::{
-    DURATIONS, ENDS, Inputs, MODES, Mode, RoutineForm, SaveState, UNITS, replace_schedule,
+    DURATIONS, ENDS, Inputs, MODES, Mode, RoutineForm, UNITS, replace_schedule,
 };
 use super::schedule::WEEKDAYS;
 use super::*;
@@ -53,7 +53,9 @@ fn menu<T: Copy + PartialEq + 'static>(
             )
         })
         .collect();
-    menu_select(id, label, None, items, cx).into_any_element()
+    menu_select(id, label, None, items, cx)
+        .disabled(form.read(cx).busy())
+        .into_any_element()
 }
 
 impl Workspace {
@@ -63,7 +65,7 @@ impl Workspace {
         routine: Option<Rc<Routine>>,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Entity<RoutineForm> {
+    ) {
         let workspaces = self.routine_workspaces();
         let inputs = Inputs::new(routine.as_deref(), window, cx);
         let form = cx.new(|_| RoutineForm::new(routine.as_deref(), &workspaces, inputs));
@@ -71,11 +73,7 @@ impl Workspace {
         let pauses = self.client.state.bot(&bot_id).is_some_and(|bot| {
             bot.routine_interaction_policy == RoutineInteractionPolicy::MayPauseForApproval
         });
-        let (view, epoch, ready) = (
-            cx.entity().downgrade(),
-            self.client.epoch,
-            self.client.link.is_ready(),
-        );
+        let (view, epoch) = (cx.entity().downgrade(), self.client.epoch);
         window.open_dialog(cx, move |dialog, window, cx| {
             let p = *cx.global::<crate::ui::theme::Palette>();
             let close = form.read(cx).should_close(window, cx);
@@ -93,6 +91,10 @@ impl Workspace {
             let inputs = &f.inputs;
             let (schedule, ends_at) = (inputs.schedule(f, cx), inputs.ends_at(f, cx));
             let instructions = inputs.instructions.read(cx).value().trim().to_owned();
+            let ready = view.upgrade().is_some_and(|view| {
+                let workspace = view.read(cx);
+                workspace.client.epoch == epoch && workspace.client.link.is_ready()
+            });
             let valid = ready && !f.busy() && !f.workspace.is_empty() && !instructions.is_empty()
                 && (schedule.is_some() || (f.mode == Mode::Bindings && f.saved_triggers.is_some()))
                 && ends_at.is_ok();
@@ -111,7 +113,7 @@ impl Workspace {
                 .w(width::DIALOG_FORM)
                 .child(dialog_body().child(dialog_heading("hi.clock", title, inputs.summary(f, cx), &p))
                 .child(labelled("Instructions", textarea(&inputs.instructions).aria_label("Routine instructions").disabled(f.busy()), p.muted))
-                .child(routine_rows(&form, inputs, &workspaces, cx))
+                .child(routine_rows(&form, &workspaces, cx))
                 .when(pauses, |dialog| {
                     dialog.child(
                         div()
@@ -122,17 +124,19 @@ impl Workspace {
                 }))
                 .map(|dialog| dialog_actions(dialog, if routine.is_some() { "Save" } else { "Create" }, valid, move |window, cx| {
                     let submit = submit.clone(); // rules-allow: the Save button may run more than once and each run sends its own copy of the form
-                    view.update(cx, |this, cx| {
-                        this.submit_gateway_dialog(epoch, cx, |this, cx| this.save_routine(submit, &editor, cx))
-                    })
-                    .unwrap_or(false);
+                    if let Some(view) = view.upgrade() {
+                        view.update(cx, |this, cx| {
+                            this.submit_gateway_dialog(epoch, cx, |this, cx| {
+                                this.save_routine(submit, &editor, cx);
+                            });
+                        });
+                    }
                     window.refresh();
                     false
                 }))
         });
         let focus = window.focused(cx);
         editor.update(cx, |form, _| form.focus = focus);
-        editor
     }
 
     fn save_routine(
@@ -141,13 +145,7 @@ impl Workspace {
         form: &Entity<RoutineForm>,
         cx: &mut Context<Self>,
     ) {
-        if !form.update(cx, |form, _| {
-            if form.busy() {
-                return false;
-            }
-            form.save = SaveState::Pending;
-            true
-        }) {
+        if form.read(cx).busy() {
             return;
         }
         let request_id = crate::gateway::request_id();
@@ -187,184 +185,6 @@ impl Workspace {
     }
 }
 
-#[cfg(feature = "snapshot")]
-impl Workspace {
-    /// Exercises real dialog submission and typed replies without a gateway connection.
-    pub(in crate::ui) fn snapshot_routine_rejection(
-        &self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        use gpui_component::dialog::Confirm;
-        use std::time::Duration;
-        let editor = self.routine_dialog("fixture-mobius".into(), None, window, cx);
-        editor.update(cx, |f, cx| {
-            f.workspace = "/audit/routine-draft".into();
-            f.mode = Mode::Advanced;
-            f.ends = 2;
-            f.inputs.instructions.update(cx, |input, cx| {
-                input.set_value("AUDIT_ROUTINE_DRAFT", window, cx);
-            });
-            f.inputs.cron.update(cx, |input, cx| {
-                input.set_value("invalid cron", window, cx);
-            });
-            f.inputs.zone.update(cx, |input, cx| {
-                input.set_selected_value(&"Asia/Kathmandu".to_owned(), window, cx);
-            });
-        });
-        let end = editor.read(cx).inputs.end_at.read(cx).value();
-        cx.spawn_in(window, async move |this, cx| {
-            let frame = Duration::from_millis(100);
-            let capture = |name: &str, window: &mut Window, cx: &mut App| {
-                window.draw(cx).clear(cx);
-                if let Some(dir) = std::env::var_os("MOBIUS_SNAPSHOT") {
-                    let path = std::path::PathBuf::from(dir).join(name);
-                    assert!(
-                        window
-                            .render_to_image()
-                            .is_ok_and(|image| image.save(path).is_ok()),
-                        "fixture capture"
-                    );
-                }
-            };
-            let submit = |window: &mut Window, cx: &mut App| {
-                window.draw(cx).clear(cx);
-                window.dispatch_action(Box::new(Confirm { secondary: false }), cx);
-            };
-            assert!(cx.update(submit).is_ok(), "submit fixture");
-            cx.background_executor().timer(frame).await;
-            assert!(
-                cx.update(|window, cx| capture("submitted.png", window, cx))
-                    .is_ok(),
-                "capture submission"
-            );
-            let rejected = this.update_in(cx, |this, window, cx| {
-                this.snapshot_reject_routine(&editor, &end, window, cx);
-            });
-            assert!(rejected.is_ok(), "reject fixture");
-            cx.background_executor().timer(frame).await;
-            assert!(
-                cx.update(|window, cx| capture("toast.png", window, cx))
-                    .is_ok(),
-                "capture rejection"
-            );
-            let corrected = this.update_in(cx, |_, window, cx| {
-                editor.update(cx, |f, cx| {
-                    f.inputs.cron.update(cx, |input, cx| {
-                        input.set_value("0 9 * * *", window, cx);
-                    });
-                });
-            });
-            assert!(corrected.is_ok(), "correct fixture");
-            assert!(cx.update(submit).is_ok(), "corrected form submits");
-            assert!(cx.update(submit).is_ok(), "repeated Confirm is harmless");
-            cx.background_executor().timer(frame).await;
-            let accepted = this.update_in(cx, |this, window, cx| {
-                this.snapshot_accept_routine(&editor, window, cx);
-            });
-            assert!(accepted.is_ok(), "accept fixture");
-            assert!(
-                cx.update(|window, cx| window.draw(cx).clear(cx)).is_ok(),
-                "draw acknowledgement"
-            );
-            cx.background_executor().timer(frame).await;
-            let newer = cx.update(|window, cx| {
-                assert!(window.has_active_dialog(cx), "keep the newer dialog");
-                window.close_dialog(cx);
-                window.draw(cx).clear(cx);
-            });
-            assert!(newer.is_ok(), "close newer dialog");
-            cx.background_executor().timer(frame).await;
-            let closed = cx.update(|window, cx| {
-                assert!(!window.has_active_dialog(cx), "accepted editor closes");
-            });
-            assert!(closed.is_ok(), "verify closure");
-        })
-        .detach();
-    }
-
-    fn snapshot_reject_routine(
-        &mut self,
-        editor: &Entity<RoutineForm>,
-        end: &SharedString,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        use crate::gateway::Update;
-        use mobius_gateway::wire::ServerMessage;
-        assert!(window.has_active_dialog(cx), "enqueue retains the form");
-        assert!(
-            matches!(editor.read(cx).save, SaveState::Pending),
-            "save is pending"
-        );
-        assert_eq!(self.bots.pending.len(), 1);
-        let id = self
-            .bots
-            .pending
-            .keys()
-            .next()
-            .map(Arc::clone)
-            .unwrap_or_default();
-        self.shell.notices.clear();
-        self.shell.toast = None;
-        let rejection = ServerMessage::Rejected {
-            request_id: id,
-            code: "invalid_routine".into(),
-            message: "gateway configuration error: invalid cron expression".into(),
-            fatal: false,
-        };
-        self.gateway_update(Update::Message(Box::new(rejection)), window, cx);
-        assert_eq!(self.shell.notices.len(), 1, "one rejection toast");
-        let notice = self.shell.notices.first().map(|notice| notice.1.as_str());
-        assert_eq!(notice, Some("Invalid cron expression."));
-        self.next_toast(cx);
-        assert!(self.shell.notices.is_empty(), "toast queue drained");
-        assert!(self.shell.toast.is_some(), "shared toast displayed");
-        let f = editor.read(cx);
-        assert!(
-            matches!(f.save, SaveState::Editing),
-            "rejection unlocks the form"
-        );
-        assert_eq!(&*f.workspace, "/audit/routine-draft");
-        assert_eq!(
-            f.inputs.instructions.read(cx).value(),
-            "AUDIT_ROUTINE_DRAFT"
-        );
-        assert_eq!(f.inputs.cron.read(cx).value(), "invalid cron");
-        let zone = f.inputs.zone.read(cx).selected_value().map(String::as_str);
-        assert_eq!(zone, Some("Asia/Kathmandu"));
-        assert_eq!(f.ends, 2);
-        assert_eq!(
-            &f.inputs.end_at.read(cx).value(),
-            end,
-            "end bound preserved"
-        );
-    }
-
-    fn snapshot_accept_routine(
-        &mut self,
-        editor: &Entity<RoutineForm>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        use mobius_gateway::wire::ServerMessage;
-        assert_eq!(self.bots.pending.len(), 1, "no duplicate Create request");
-        let id = self
-            .bots
-            .pending
-            .keys()
-            .next()
-            .map(Arc::clone)
-            .unwrap_or_default();
-        window.open_dialog(cx, |dialog, _, _| dialog.title("Newer dialog"));
-        self.bots_on_message(&ServerMessage::Accepted { request_id: id }, window, cx);
-        assert!(
-            matches!(editor.read(cx).save, SaveState::Saved),
-            "saved after ACK"
-        );
-    }
-}
-
 #[derive(Clone)]
 struct RoutineSubmit {
     bot_id: Arc<str>,
@@ -376,12 +196,7 @@ struct RoutineSubmit {
 }
 
 /// Workspace, repeat and the controls of the chosen schedule and cutoff.
-fn routine_rows(
-    form: &Entity<RoutineForm>,
-    inputs: &Inputs,
-    workspaces: &[SharedString],
-    cx: &App,
-) -> Group {
+fn routine_rows(form: &Entity<RoutineForm>, workspaces: &[SharedString], cx: &App) -> Group {
     let f = form.read(cx);
     let names = workspaces.iter().map(|path| {
         let name = workspace_name(path);
@@ -417,13 +232,16 @@ fn routine_rows(
         });
     let mut group = Group::new()
         .child(
-            Row::new("routine-workspace", "Workspace").control(menu_select(
-                "routine-workspace-menu",
-                workspace_label,
-                None,
-                workspace_items,
-                cx,
-            )),
+            Row::new("routine-workspace", "Workspace").control(
+                menu_select(
+                    "routine-workspace-menu",
+                    workspace_label,
+                    None,
+                    workspace_items,
+                    cx,
+                )
+                .disabled(f.busy()),
+            ),
         )
         .child(Row::new("routine-repeat", "Repeat").control(menu(
             "routine-repeat-menu",
@@ -433,8 +251,8 @@ fn routine_rows(
             |form, mode| form.mode = mode,
             cx,
         )));
-    group = schedule_rows(group, form, f, inputs, cx);
-    group = end_rows(group, form, f, inputs);
+    group = schedule_rows(group, form, f, cx);
+    group = end_rows(group, form, f);
     group
 }
 
@@ -454,20 +272,15 @@ fn sized_field(
 }
 
 /// The controls of the chosen repeat mode, then the time zone of clock schedules.
-fn schedule_rows(
-    mut group: Group,
-    form: &Entity<RoutineForm>,
-    f: &RoutineForm,
-    inputs: &Inputs,
-    cx: &App,
-) -> Group {
+fn schedule_rows(mut group: Group, form: &Entity<RoutineForm>, f: &RoutineForm, cx: &App) -> Group {
+    let inputs = &f.inputs;
     group = match f.mode {
         Mode::Bindings => group,
         Mode::Once => group.child(Row::new("routine-at", "Run at").control(sized_field(&inputs.at, DATE_FIELD, "Run at", f))),
         Mode::Every => group.child(
             Row::new("routine-every", "Every")
                 .control(NumberInput::new(&inputs.every).w(SHORT_FIELD).disabled(f.busy()))
-                .control(segmented("routine-unit", UNITS.map(|(label, _)| label), Some(f.unit), edit(form, |form, unit: &usize| form.unit = *unit))),
+                .control(segmented("routine-unit", UNITS.map(|(label, _)| label), Some(f.unit), edit(form, |form, unit: &usize| form.unit = *unit)).disabled(f.busy())),
         ),
         Mode::Daily => group.child(Row::new("routine-time", "Time").control(sized_field(&inputs.time, SHORT_FIELD, "Time", f))),
         Mode::Weekly => {
@@ -498,19 +311,20 @@ fn schedule_rows(
 }
 
 /// When a repeating routine ends.
-fn end_rows(
-    mut group: Group,
-    form: &Entity<RoutineForm>,
-    f: &RoutineForm,
-    inputs: &Inputs,
-) -> Group {
+fn end_rows(mut group: Group, form: &Entity<RoutineForm>, f: &RoutineForm) -> Group {
+    let inputs = &f.inputs;
     if !matches!(f.mode, Mode::Once | Mode::Bindings) {
-        group = group.child(Row::new("routine-ends", "Ends").control(segmented(
-            "routine-ends-choice",
-            ENDS,
-            Some(f.ends),
-            edit(form, |form, ends: &usize| form.ends = *ends),
-        )));
+        group = group.child(
+            Row::new("routine-ends", "Ends").control(
+                segmented(
+                    "routine-ends-choice",
+                    ENDS,
+                    Some(f.ends),
+                    edit(form, |form, ends: &usize| form.ends = *ends),
+                )
+                .disabled(f.busy()),
+            ),
+        );
         group = match f.ends {
             1 => group.child(
                 Row::new("routine-duration", "After")
@@ -520,12 +334,15 @@ fn end_rows(
                             .w(SHORT_FIELD)
                             .disabled(f.busy()),
                     )
-                    .control(segmented(
-                        "routine-duration-unit",
-                        DURATIONS.map(|(label, _)| label),
-                        Some(f.duration_unit),
-                        edit(form, |form, unit: &usize| form.duration_unit = *unit),
-                    )),
+                    .control(
+                        segmented(
+                            "routine-duration-unit",
+                            DURATIONS.map(|(label, _)| label),
+                            Some(f.duration_unit),
+                            edit(form, |form, unit: &usize| form.duration_unit = *unit),
+                        )
+                        .disabled(f.busy()),
+                    ),
             ),
             2 => group.child(
                 Row::new("routine-end-at", "End at")

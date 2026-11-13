@@ -89,7 +89,7 @@ pub(super) const SCENARIOS: &[Scenario] = &[
                 }
             }
         }
-        this.set_link(Link::Ready);
+        this.set_link(Link::Ready, cx);
         this.new_chat(window, cx);
         this.fixture_model_picker(false, cx);
         this.shell.notices.clear();
@@ -106,7 +106,7 @@ pub(super) const SCENARIOS: &[Scenario] = &[
             "Provider error",
             crate::gateway::TranscriptStore::default(),
         );
-        this.set_link(Link::Ready);
+        this.set_link(Link::Ready, cx);
         this.fixture_provider_issue(cx);
     }),
     ("perf-draft", |this, window, cx| {
@@ -457,7 +457,7 @@ fn decision_fixture(
         "Testing Question Tool",
         crate::gateway::TranscriptStore::default(),
     );
-    this.set_link(Link::Ready);
+    this.set_link(Link::Ready, cx);
     let pending = state == FrontendBlockState::Pending;
     if let Some(session) = &mut this.client.state.session {
         session.active_turn_ids = if pending {
@@ -654,7 +654,7 @@ fn fixture(
             "Interface preview",
             crate::gateway::TranscriptStore::default(),
         );
-        this.set_link(Link::Ready);
+        this.set_link(Link::Ready, cx);
         apply(this, window, cx);
         return;
     }

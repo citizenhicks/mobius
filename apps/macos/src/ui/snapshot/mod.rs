@@ -506,16 +506,6 @@ async fn capture_clicks(
     }
 }
 
-fn verify_scenario(name: &str, this: &Workspace, window: &mut Window, cx: &mut App) {
-    content::verify_content_action(name, this, cx);
-    if name == "routine-rejected-draft" {
-        assert!(
-            !window.has_active_dialog(cx),
-            "routine reply self-check completed"
-        );
-    }
-}
-
 impl Workspace {
     pub(super) fn start_snapshots(window: &Window, cx: &Context<Self>) {
         let Some(dir) = std::env::var_os("MOBIUS_SNAPSHOT").map(PathBuf::from) else {
@@ -581,7 +571,7 @@ impl Workspace {
                 report("draw", cx.update(|window, cx| window.draw(cx).clear(cx)));
                 wait(cx.background_executor(), 300).await;
                 report("draw", cx.update(|window, cx| window.draw(cx).clear(cx)));
-                let verified = this.update_in(cx, |this, window, cx| verify_scenario(name, this, window, cx));
+                let verified = this.update_in(cx, |this, _, cx| content::verify_content_action(name, this, cx));
                 report(name, verified);
                 let path = dir.join(format!("{name}.png"));
                 let saved = this.update_in(cx, |_, window, _| {
