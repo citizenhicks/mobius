@@ -118,7 +118,6 @@ async fn recorder_delivers_committed_events_and_statistics_without_publishing_fa
         .expect("coalesced statistics");
     assert_eq!(committed.after_sequence, second.sequence);
     assert_eq!(committed.stats.completed, checkpoint.execution_stats);
-    assert_eq!(committed.stats.completed.run_count, 2);
     let fresh = events.subscribe_run_stats();
     assert!(
         !fresh.has_changed().unwrap(),

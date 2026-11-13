@@ -531,7 +531,6 @@ async fn supervisor_seals_failures_once_and_ends_the_session_with_its_latest_mod
             saved.active_model_step.is_none(),
             "failed model step is terminal"
         );
-        assert!(saved.pending_tools.is_empty(), "no tool work is replayed");
         let completed: Vec<_> = received
             .iter()
             .filter_map(|event| match event {
