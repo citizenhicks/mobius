@@ -27,6 +27,7 @@ cef = { version = "=156.0.0", default-features = false, features = ["sandbox"] }
 # The framework and gateway this app speaks to, from the same repository.
 mobius = { path = "../.." }
 mobius-gateway = { path = "../../crates/mobius-gateway" }
+mobius-client = { path = "crates/mobius-client" }
 
 [dependencies]
 cef.workspace = true
@@ -44,7 +45,7 @@ pulldown-cmark = { version = "0.13", default-features = false }
 gpui-base = { version = "=0.9.1", optional = true, features = ["gpui-fast"] }
 gpui-component = { version = "=0.9.1", features = ["gpui-fast", "tree-sitter-rust", "tree-sitter-swift", "tree-sitter-javascript", "tree-sitter-typescript", "tree-sitter-tsx", "tree-sitter-toml", "tree-sitter-python", "tree-sitter-bash", "tree-sitter-diff", "tree-sitter-markdown", "tree-sitter-html", "tree-sitter-css", "tree-sitter-yaml", "tree-sitter-markdown-inline", "tree-sitter-go", "tree-sitter-c", "tree-sitter-cpp", "tree-sitter-java", "tree-sitter-kotlin", "tree-sitter-ruby"] }
 mobius.workspace = true
-mobius-client = { path = "crates/mobius-client" }
+mobius-client.workspace = true
 mobius-gateway.workspace = true
 serde = { version = "1", features = ["derive"] }
 chrono = "0.4"
@@ -67,12 +68,14 @@ http-body-util = "0.1"
 lilt = "0.8.2"
 
 [dev-dependencies]
+# UI tests need client fixtures without enabling the app capture workflow.
+mobius-client = { workspace = true, features = ["snapshot"] }
 gpui = { workspace = true, features = ["test-support"] }
 # Tests build transcripts with the gateway's own reducer; see mobius-client's fixture.rs.
 mobius-gateway = { workspace = true, features = ["fixtures"] }
 
 [features]
-# Development-only screen capture; see src/ui/snapshot.rs.
+# Development-only screen capture; see src/ui/snapshot/.
 snapshot = ["dep:gpui-base", "gpui/test-support", "gpui_platform/test-support", "mobius-gateway/fixtures", "mobius-client/snapshot"]
 
 [lints]
