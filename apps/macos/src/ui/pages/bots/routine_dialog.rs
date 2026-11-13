@@ -233,11 +233,22 @@ impl Workspace {
                 assert!(matches!(editor.read(cx).save, SaveState::Pending), "real Confirm submits once");
                 assert_eq!(this.bots.pending.len(), 1);
                 let id = this.bots.pending.keys().next().map(Arc::clone).unwrap_or_default();
-                this.bots_on_message(&mobius_gateway::wire::ServerMessage::Rejected {
-                    request_id: Arc::clone(&id), code: "invalid_routine".into(), message: "Invalid cron expression".into(), fatal: false,
-                }, window, cx);
+                this.shell.notices.clear();
+                this.shell.toast = None;
+                let mut rejection = mobius_gateway::wire::ServerMessage::Rejected {
+                    request_id: Arc::clone(&id), code: "invalid_routine".into(), message: "gateway configuration error: invalid cron expression".into(), fatal: true,
+                };
+                assert!(!this.bots_rejection_is_inline(&rejection), "fatal errors remain global");
+                if let mobius_gateway::wire::ServerMessage::Rejected { fatal, .. } = &mut rejection {
+                    *fatal = false;
+                }
+                this.gateway_update(crate::gateway::Update::Message(Box::new(rejection)), window, cx);
+                assert!(this.shell.notices.is_empty() && this.shell.toast.is_none(), "inline rejection must not queue a duplicate toast");
+                assert!(!this.bots_rejection_is_inline(&mobius_gateway::wire::ServerMessage::Rejected {
+                    request_id: Arc::clone(&id), code: "unowned".into(), message: "Unowned rejection".into(), fatal: false,
+                }), "a request with no pending editor remains global");
                 let f = editor.read(cx);
-                assert!(matches!(&f.save, SaveState::Rejected(error) if &**error == "Invalid cron expression"));
+                assert!(matches!(&f.save, SaveState::Rejected(error) if &**error == "Invalid cron expression."));
                 assert_eq!(&*f.workspace, "/audit/routine-draft");
                 assert_eq!(f.inputs.instructions.read(cx).value(), "AUDIT_ROUTINE_DRAFT");
                 assert_eq!(f.inputs.cron.read(cx).value(), "invalid cron");

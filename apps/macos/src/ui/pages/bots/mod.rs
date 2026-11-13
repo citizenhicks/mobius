@@ -52,6 +52,11 @@ pub(in crate::ui) enum Pending {
 }
 
 impl Workspace {
+    pub(in crate::ui) fn bots_rejection_is_inline(&self, message: &ServerMessage) -> bool {
+        matches!(message, ServerMessage::Rejected { request_id, fatal: false, .. }
+            if matches!(self.bots.pending.get(request_id), Some(Pending::SaveRoutine(form)) if form.upgrade().is_some()))
+    }
+
     pub(in crate::ui) fn bots_on_message(
         &mut self,
         message: &ServerMessage,
@@ -136,7 +141,9 @@ impl Workspace {
                 if let Some(form) = form.upgrade() {
                     form.update(cx, |form, _| {
                         form.save = match rejection {
-                            Some(error) => routine_form::SaveState::Rejected(error),
+                            Some(error) => routine_form::SaveState::Rejected(
+                                crate::gateway::friendly(&error).into(),
+                            ),
                             None => routine_form::SaveState::Saved,
                         };
                     });
