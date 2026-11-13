@@ -700,6 +700,32 @@ fn a_streamed_answer_appends_text_then_the_final_message_replaces_it() {
 }
 
 #[test]
+fn a_streamed_answer_completed_as_commentary_keeps_one_row() {
+    let mut chat = Chat::new(0);
+    chat.send(None, started("t"), Vec::new());
+    chat.send(None, delta("t", "s", FinalAnswer, "Checking."), Vec::new());
+    chat.send(
+        None,
+        answer("t", "s", &[(FinalAnswer, ""), (Commentary, "Checking.")]),
+        Vec::new(),
+    );
+    let page = chat.reducer.snapshot();
+    let assistant = page
+        .items
+        .iter()
+        .filter(|item| matches!(item.content, TranscriptItemContent::Assistant { .. }))
+        .collect::<Vec<_>>();
+    let [item] = &assistant[..] else {
+        panic!("one assistant row: {assistant:?}");
+    };
+    assert_eq!(item.state, TranscriptItemState::Complete);
+    assert!(matches!(
+        &item.content,
+        TranscriptItemContent::Assistant { phase: Commentary, text, .. } if text == "Checking."
+    ));
+}
+
+#[test]
 fn appended_blocks_merge_and_later_blocks_of_a_group_show_its_first_title() {
     let mut chat = Chat::new(0);
     let link = |label: &str| FrontendLink {

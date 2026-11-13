@@ -584,6 +584,33 @@ impl TranscriptReducer {
             .iter()
             .rfind(|part| part.phase != ModelStepContentPhase::Reasoning && !part.text.is_empty())
             .map(|part| part.phase);
+        // Chat-completions providers stream text as the final answer before they know a
+        // tool call follows; the completed message then names it commentary. Such a
+        // still-streaming row of a phase the message has no text for takes the completed text.
+        let mut streamed = [
+            ModelStepContentPhase::Commentary,
+            ModelStepContentPhase::FinalAnswer,
+        ]
+        .into_iter()
+        .filter(|phase| {
+            message
+                .content
+                .iter()
+                .all(|part| part.phase != *phase || part.text.is_empty())
+        })
+        .map(|phase| {
+            self.id(format_args!(
+                "assistant:{}:{}",
+                message.model_step_id,
+                phase_name(phase)
+            ))
+        })
+        .filter(|id| {
+            self.items
+                .get(id)
+                .is_some_and(|slot| slot.item.state == TranscriptItemState::Streaming)
+        })
+        .collect::<Vec<_>>();
         for phase in [
             ModelStepContentPhase::Reasoning,
             ModelStepContentPhase::Commentary,
@@ -605,11 +632,17 @@ impl TranscriptReducer {
             let annotations = parts()
                 .flat_map(|part| part.annotations.iter().cloned()) // rules-allow: the journal record keeps its event and the item owns the citations it shows
                 .collect();
-            let id = self.id(format_args!(
+            let mut id = self.id(format_args!(
                 "assistant:{}:{}",
                 message.model_step_id,
                 phase_name(phase)
             ));
+            if phase != ModelStepContentPhase::Reasoning
+                && !self.items.contains_key(&id)
+                && let Some(row) = streamed.pop()
+            {
+                id = row;
+            }
             let target = self.own(
                 message
                     .message_target
