@@ -97,14 +97,7 @@ beta and optional.
 
 ## How it fits together
 
-```mermaid
-flowchart LR
-    Terminal["Terminal · mobius"] <--> Gateway["Your gateway"]
-    Apple["iPhone, iPad, Mac"] <--> Gateway
-    Gateway --> Agents["Bots · chats · routines"]
-    Gateway --> Work["Workspaces · Git · saved conversations"]
-    Gateway --> Models["Your model providers"]
-```
+<p align="center"><img src="assets/gateway.svg" width="640" alt="A message from the terminal reaches a bot on your gateway, goes to a model provider and back, runs a tool in the workspace, and the result streams to the Mac, terminal and iPhone at once."></p>
 
 The gateway is where files, commands, provider credentials, and agent sessions live.
 Clients send requests and render the same event stream, so work continues while the
