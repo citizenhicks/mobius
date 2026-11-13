@@ -64,6 +64,7 @@ impl Agent {
     /// Updates coalesce; `None` means no lifecycle checkpoint has been saved yet.
     /// Each update identifies its final journal receipt, so a frontend can apply it
     /// after that event. This observer does not keep the agent or recorder alive.
+    /// Recorder shutdown closes the channel; its last committed value remains readable.
     /// Do not retain a watch borrow across an await.
     #[must_use]
     pub fn subscribe_run_stats(&self) -> watch::Receiver<Option<CommittedRunStats>> {

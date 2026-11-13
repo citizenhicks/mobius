@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::agent::recorder::RECORDER_COMMAND_CAPACITY;
+use std::time::Duration;
 use tokio::sync::Notify;
 
 struct BlockingRetainingModel {
@@ -118,6 +119,12 @@ async fn recorder_delivers_committed_events_and_statistics_without_publishing_fa
     assert_eq!(committed.after_sequence, second.sequence);
     assert_eq!(committed.stats.completed, checkpoint.execution_stats);
     assert_eq!(committed.stats.completed.run_count, 2);
+    let fresh = events.subscribe_run_stats();
+    assert!(
+        !fresh.has_changed().unwrap(),
+        "new observers start at the latest commit"
+    );
+    assert_eq!(fresh.borrow().as_ref(), Some(&committed));
     assert!(committed.stats.active.is_none());
     let persisted = checkpoints
         .load(&checkpoint.session_id)
@@ -152,8 +159,11 @@ async fn recorder_delivers_committed_events_and_statistics_without_publishing_fa
     );
     assert_eq!(stats.borrow().as_ref(), Some(&committed));
     assert!(
-        !stats.has_changed().expect("observer still open"),
-        "failed saves publish nothing"
+        matches!(
+            tokio::time::timeout(Duration::from_secs(1), stats.changed()).await,
+            Ok(Err(_))
+        ),
+        "a stopped recorder closes statistics even while its ingress is retained"
     );
     assert!(
         receiver.recv().await.is_none(),

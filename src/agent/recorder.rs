@@ -28,7 +28,7 @@ pub(super) type EventRecorder = Arc<RecorderIngress>;
 pub(super) struct RecorderIngress {
     commands: mpsc::Sender<RecorderCommand>,
     event_bytes: Arc<Semaphore>,
-    stats: Arc<watch::Sender<Option<CommittedRunStats>>>,
+    stats: watch::Receiver<Option<CommittedRunStats>>,
 }
 
 enum RecorderCommand {
@@ -117,19 +117,18 @@ impl RecorderIngress {
     ) -> (Arc<Self>, mpsc::Receiver<JournalEvent>) {
         let (commands, receiver) = mpsc::channel(RECORDER_COMMAND_CAPACITY);
         let (events, event_receiver) = mpsc::channel(EVENT_QUEUE_CAPACITY);
-        let (stats, _) = watch::channel(None);
-        let stats = Arc::new(stats);
+        let (stats, latest_stats) = watch::channel(None);
         tokio::spawn(run_recorder(
             checkpoints,
             session_id,
             receiver,
             events,
-            Arc::clone(&stats),
+            stats,
         ));
         (
             Arc::new(Self {
                 commands,
-                stats,
+                stats: latest_stats,
                 event_bytes: Arc::new(Semaphore::new(RECORDER_EVENT_BYTE_BUDGET)),
             }),
             event_receiver,
@@ -137,7 +136,9 @@ impl RecorderIngress {
     }
 
     pub(super) fn subscribe_run_stats(&self) -> watch::Receiver<Option<CommittedRunStats>> {
-        self.stats.subscribe()
+        let mut stats = self.stats.clone(); // rules-allow: every observer owns a watch cursor, not a statistics payload copy
+        stats.mark_unchanged();
+        stats
     }
 
     pub(super) async fn record(&self, event: Event) -> Result<()> {
@@ -303,7 +304,7 @@ async fn run_recorder(
     session_id: SessionId,
     mut commands: mpsc::Receiver<RecorderCommand>,
     events: mpsc::Sender<JournalEvent>,
-    stats: Arc<watch::Sender<Option<CommittedRunStats>>>,
+    stats: watch::Sender<Option<CommittedRunStats>>,
 ) {
     let mut terminal_error = None;
     let mut pending: Option<StreamBatch> = None;
@@ -429,13 +430,22 @@ async fn record_save(
             return false;
         }
     };
+    publish_committed_save(recorded, stats, events, stats_sender, result).await
+}
+
+async fn publish_committed_save(
+    recorded: Vec<JournalEvent>,
+    stats: Option<Arc<RunStats>>,
+    events: &mpsc::Sender<JournalEvent>,
+    stats_sender: &watch::Sender<Option<CommittedRunStats>>,
+    result: oneshot::Sender<Result<()>>,
+) -> bool {
     if let Some(stats) = stats {
         let Some(last) = recorded.last() else {
-            reply(
-                result,
-                Err(Error::Checkpoint(
-                    "committed run statistics have no journal receipt".into(),
-                )),
+            // Storage already committed; a delivery failure cannot roll that write back.
+            reply(result, Ok(()));
+            tracing::warn!(
+                "committed run statistics have no journal receipt; stopping the recorder"
             );
             return false;
         };
@@ -576,7 +586,43 @@ mod tests {
         RecorderIngress {
             commands,
             event_bytes: Arc::new(Semaphore::new(RECORDER_EVENT_BYTE_BUDGET)),
-            stats: Arc::new(watch::channel(None).0),
+            stats: watch::channel(None).1,
+        }
+    }
+
+    #[tokio::test]
+    async fn committed_save_stays_successful_when_delivery_cannot_continue() {
+        for missing_receipt in [false, true] {
+            let (events, receiver) = mpsc::channel(1);
+            drop(receiver);
+            let (stats, latest) = watch::channel(None);
+            let (result, committed) = oneshot::channel();
+            let recorded = if missing_receipt {
+                Vec::new()
+            } else {
+                vec![JournalEvent {
+                    sequence: 1,
+                    recorded_at_ms: 0,
+                    event: warning("committed".into()),
+                    stream_metrics: Vec::new(),
+                }]
+            };
+            assert!(
+                !publish_committed_save(
+                    recorded,
+                    Some(Arc::new(RunStats::default())),
+                    &events,
+                    &stats,
+                    result,
+                )
+                .await,
+                "failed delivery stops the recorder"
+            );
+            assert!(
+                committed.await.unwrap().is_ok(),
+                "durable success must not trigger a rollback"
+            );
+            assert_eq!(latest.borrow().is_some(), !missing_receipt);
         }
     }
 
