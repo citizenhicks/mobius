@@ -129,4 +129,39 @@ fn inherited_reasoning_uses_the_selected_instances_model_default() {
             Some("low")
         );
     }
+    gateway.providers.push(serde_json::from_value(json!({
+        "provider":"openai", "label":"OpenAI", "symbol":"hi.sparkles", "description":"",
+        "model_ids_configurable":true, "auth":"api_key", "default_base_url":"https://api.example",
+        "models":[gateway.provider_instances[1].models[0]], "web_search":[],
+        "tool_discovery":"native", "supported_tool_discovery":["native"],
+        "custom_endpoint_tool_discovery":null
+    })).unwrap());
+    let mut selection = gateway.provider_instances[0].selection.clone();
+    selection.reasoning_effort = None;
+    gateway.provider_instances[0].models.clear();
+    assert!(
+        configured_model(&gateway, &selection).is_none(),
+        "a missing configured model cannot inherit a built-in preset or an arbitrary first variant"
+    );
+    let mut ignored_override = gateway.providers[0].models[0].clone();
+    ignored_override.default_reasoning = Some("low".into());
+    gateway.provider_instances[0].models.push(ignored_override);
+    gateway.providers[0].model_ids_configurable = false;
+    assert_eq!(
+        configured_model(&gateway, &selection)
+            .unwrap()
+            .reasoning_effort
+            .as_deref(),
+        Some("high"),
+        "locked catalogs use the gateway's built-in default"
+    );
+    gateway.provider_instances.clear();
+    assert_eq!(
+        configured_model(&gateway, &selection)
+            .unwrap()
+            .reasoning_effort
+            .as_deref(),
+        Some("high"),
+        "an absent instance resolves against the provider preset"
+    );
 }

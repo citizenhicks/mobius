@@ -123,48 +123,30 @@ pub(in crate::ui) fn configured_model<'a>(
     gateway: &'a ReadyPayload,
     provider: &ProviderConfig,
 ) -> Option<&'a ModelChoice> {
-    let default = gateway
+    let instance = gateway
         .provider_instances
         .iter()
-        .find(|instance| instance.selection.instance == provider.instance)
-        .and_then(|instance| {
-            instance
-                .models
-                .iter()
-                .find(|model| model.id == provider.model)
-        })
-        .or_else(|| {
-            gateway
-                .providers
-                .iter()
-                .find(|status| status.provider == provider.provider)
-                .and_then(|status| {
-                    status
-                        .models
-                        .iter()
-                        .find(|model| model.id == provider.model)
-                })
-        })
-        .and_then(|model| model.default_reasoning.as_ref());
-    let candidates = || {
-        gateway.agent_catalog.models.iter().filter(|model| {
-            *model.model == *provider.model
-                && gateway.agent_catalog.model_providers.get(&model.route)
-                    == Some(&provider.instance)
-        })
+        .find(|instance| instance.selection.instance == provider.instance);
+    let status = gateway
+        .providers
+        .iter()
+        .find(|status| status.provider == provider.provider);
+    let models = if let Some(status) =
+        status.filter(|status| !status.model_ids_configurable || instance.is_none())
+    {
+        status.models.as_slice()
+    } else {
+        instance.map_or(&[][..], |instance| instance.models.as_slice())
     };
-    let effort = provider
-        .reasoning_effort
-        .as_ref()
-        .or(default)
-        .map(String::as_str);
-    candidates()
-        .find(|model| model.reasoning_effort.as_deref() == effort)
-        .or_else(|| {
-            provider
-                .reasoning_effort
-                .is_none()
-                .then(|| candidates().next())
-                .flatten()
-        })
+    let effort = provider.reasoning_effort.as_deref().or_else(|| {
+        models
+            .iter()
+            .find(|model| model.id == provider.model)
+            .and_then(|model| model.default_reasoning.as_deref())
+    });
+    gateway.agent_catalog.models.iter().find(|model| {
+        *model.model == *provider.model
+            && gateway.agent_catalog.model_providers.get(&model.route) == Some(&provider.instance)
+            && model.reasoning_effort.as_deref() == effort
+    })
 }
