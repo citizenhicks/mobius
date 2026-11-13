@@ -1,3 +1,4 @@
+use std::mem::DropGuard;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -432,46 +433,26 @@ pub(super) async fn exchange(
     cancellation: Option<&ModelCancellation>,
 ) -> Result<Exchange> {
     let message = Message::text(body);
-    let mut exchange = CloseReasonOnDrop {
-        connection,
-        cancellation,
-        finished: false,
-    };
-    let result = if exchange.connection.start(message).await.is_err() {
+    let mut guard = DropGuard::new(connection, |connection| {
+        connection.close_reason = Some(cancellation.map_or(
+            ModelCancellationReason::RequestDropped,
+            ModelCancellation::reason,
+        ));
+    });
+    let connection = &mut **guard;
+    let result = if connection.start(message).await.is_err() {
         Ok(Exchange::Reconnect)
     } else {
-        read_exchange_with_timeout(
-            &mut exchange.connection.messages,
-            events,
-            exchange.connection.idle_timeout,
-        )
-        .await
+        read_exchange_with_timeout(&mut connection.messages, events, connection.idle_timeout).await
     };
     match &result {
         Ok(Exchange::Reconnect) | Err(_) => {
-            exchange.connection.close_reason = Some(ModelCancellationReason::RequestFailed);
+            connection.close_reason = Some(ModelCancellationReason::RequestFailed);
         }
-        Ok(_) => exchange.connection.finish(),
+        Ok(_) => connection.finish(),
     }
-    exchange.finished = true;
+    DropGuard::dismiss(guard);
     result
-}
-
-struct CloseReasonOnDrop<'a> {
-    connection: &'a mut OpenAiWsConnection,
-    cancellation: Option<&'a ModelCancellation>,
-    finished: bool,
-}
-
-impl Drop for CloseReasonOnDrop<'_> {
-    fn drop(&mut self) {
-        if !self.finished {
-            self.connection.close_reason = Some(self.cancellation.map_or(
-                ModelCancellationReason::RequestDropped,
-                ModelCancellation::reason,
-            ));
-        }
-    }
 }
 
 pub(super) async fn read_exchange_with_timeout(

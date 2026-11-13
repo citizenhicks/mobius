@@ -149,7 +149,7 @@ impl LiveChat {
     /// Reports whether a `message_chat` target names this chat.
     #[must_use]
     pub fn is_target(&self, target: &str) -> bool {
-        let target = target.strip_prefix('#').unwrap_or(target);
+        let target = target.trim_prefix('#');
         *target == *self.session_id || target == compact_id(&self.session_id)
     }
 }

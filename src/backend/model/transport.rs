@@ -270,7 +270,7 @@ impl SseDecoder {
 
 pub(super) fn frame_data(frame: &str) -> Option<Cow<'_, str>> {
     // SSE streams may open with a UTF-8 BOM; stripping it per frame also covers the first one.
-    let frame = frame.strip_prefix('\u{feff}').unwrap_or(frame);
+    let frame = frame.trim_prefix('\u{feff}');
     let mut data = frame
         .lines()
         .filter_map(|line| line.strip_prefix("data:").map(str::trim_start));

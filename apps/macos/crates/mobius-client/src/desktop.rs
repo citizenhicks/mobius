@@ -1,6 +1,5 @@
 //! A desktop pane's private localhost noVNC server and authenticated gateway connection.
 
-use std::convert::Infallible;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -301,7 +300,7 @@ async fn serve(
                 let context = Arc::clone(&context);
                 let stopped = stopped.clone(); // rules-allow: a watch receiver is a channel handle and each connection needs one
                 connections.spawn(async move {
-                    let service = service_fn(move |request| std::future::ready(Ok::<_, Infallible>(handle(request, Arc::clone(&context), stopped.clone())))); // rules-allow: a watch receiver is a channel handle and each request needs one
+                    let service = service_fn(move |request| std::future::ready(Ok::<_, !>(handle(request, Arc::clone(&context), stopped.clone())))); // rules-allow: a watch receiver is a channel handle and each request needs one
                     match tokio::time::timeout(Duration::from_secs(30),
                         http1::Builder::new().serve_connection(TokioIo::new(stream), service).with_upgrades()).await {
                         Ok(Ok(())) => {}

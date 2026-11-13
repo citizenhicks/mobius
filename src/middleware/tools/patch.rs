@@ -62,9 +62,7 @@ struct PatchChange {
 }
 
 pub(super) fn parse_patch_document(input: &str) -> Result<PatchDocument> {
-    let mut lines = input
-        .lines()
-        .map(|line| line.strip_suffix('\r').unwrap_or(line));
+    let mut lines = input.lines().map(|line| line.trim_suffix('\r'));
     if lines.next() != Some("*** Begin Patch") {
         return Err(malformed_patch_document("missing `*** Begin Patch`"));
     }

@@ -838,7 +838,7 @@ fn hex(color: Hsla) -> String {
 
 /// `#RRGGBB`, with or without the `#`.
 fn parse_hex(text: &str) -> Option<u32> {
-    let digits = text.strip_prefix('#').unwrap_or(text);
+    let digits = text.trim_prefix('#');
     (digits.len() == 6 && digits.bytes().all(|byte| byte.is_ascii_hexdigit()))
         .then(|| u32::from_str_radix(digits, 16).ok())
         .flatten()

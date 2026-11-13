@@ -197,7 +197,7 @@ async fn next_host_request(
                 Ok(session_id) => return ServerMessage::DesktopHostRequested { session_id },
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    return std::future::pending().await;
+                    std::future::pending::<!>().await;
                 }
             }
         },

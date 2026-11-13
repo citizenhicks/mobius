@@ -158,7 +158,7 @@ impl<'a> ActivityHook<'a> {
     /// Runs as a pinned server future; cancellation leaves cleanup owned by this hook.
     pub(crate) async fn run(&mut self, host: &GatewayHost, clients: impl Fn() -> Result<usize>) {
         let Some(config) = self.config else {
-            return std::future::pending().await;
+            std::future::pending::<!>().await
         };
         let retry = Duration::from_secs(config.retry_seconds);
         let grace = Duration::from_secs(config.idle_grace_seconds);

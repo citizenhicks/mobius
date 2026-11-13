@@ -92,7 +92,7 @@ struct Patch<'a> {
 impl<'a> Patch<'a> {
     fn feed(&mut self, source: &'a str) -> std::fmt::Result {
         for line in source.lines() {
-            let line = line.strip_suffix('\r').unwrap_or(line);
+            let line = line.trim_suffix('\r');
             if line == TRUNCATED {
                 self.truncated = true;
             } else {

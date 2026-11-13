@@ -36,7 +36,7 @@ fn all_corners(frame: Div) -> Div {
 fn host(url: &str) -> Option<String> {
     let url = gpui::http_client::Url::parse(url).ok()?;
     let host = url.host_str()?;
-    Some(host.strip_prefix("www.").unwrap_or(host).to_owned())
+    Some(host.trim_prefix("www.").to_owned())
 }
 
 /// Cells that read as figures ("$1,999", "22 h", "−9 s") align right.

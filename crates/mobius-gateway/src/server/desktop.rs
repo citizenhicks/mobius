@@ -58,7 +58,7 @@ pub(super) async fn next_control(
     pending: &mut Option<PendingControl>,
 ) -> (Arc<str>, std::result::Result<(), Rejection>) {
     let Some(control) = pending.as_mut() else {
-        return std::future::pending().await;
+        std::future::pending::<!>().await
     };
     let result = control.future.as_mut().await;
     let request_id = std::mem::take(&mut control.request_id);

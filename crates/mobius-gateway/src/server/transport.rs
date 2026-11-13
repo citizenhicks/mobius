@@ -994,7 +994,7 @@ async fn next_profile(
     pending: &mut Option<PendingProfile>,
 ) -> (Arc<str>, std::result::Result<ProfileSnapshot, Rejection>) {
     let Some(pending) = pending.as_mut() else {
-        return std::future::pending().await;
+        std::future::pending::<!>().await
     };
     let result = pending.future.as_mut().await;
     (std::mem::take(&mut pending.request_id), result)

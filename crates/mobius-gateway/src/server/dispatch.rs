@@ -66,7 +66,7 @@ pub(super) async fn selected_broadcast(
         ..
     }) = selected
     else {
-        return std::future::pending().await;
+        std::future::pending::<!>().await
     };
     loop {
         let frame = broadcasts.recv().await?;

@@ -243,7 +243,7 @@ fn parse_credential_username(
         }
         output.get(..end).ok_or_else(invalid_credential_output)?
     } else {
-        output.strip_suffix(b"\n").unwrap_or(output)
+        output.trim_suffix(b"\n")
     };
     let target = Url::parse(target).map_err(invalid_credential_detail)?;
     let authority;
@@ -281,7 +281,7 @@ fn parse_credential_username(
     }
     if protocol != Some(b"https".as_slice())
         || host != Some(expected_host.as_bytes())
-        || path.is_some_and(|path| path.strip_prefix(b"/").unwrap_or(path) != expected_path)
+        || path.is_some_and(|path| path.trim_prefix(b"/") != expected_path)
         || password.is_none_or(|password| {
             password.is_empty() || password.len() > MAX_CREDENTIAL_TOKEN_BYTES
         })

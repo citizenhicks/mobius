@@ -768,7 +768,7 @@ impl TuiState {
             .take()
             .unwrap_or_else(|| std::mem::take(&mut entry.text));
         if body.is_empty() {
-            body.push_str(added.strip_prefix('\n').unwrap_or(&added));
+            body.push_str(added.trim_prefix('\n'));
         } else {
             body.push_str(&added);
         }
