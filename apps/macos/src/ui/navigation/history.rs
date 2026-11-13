@@ -101,6 +101,7 @@ impl Workspace {
             },
             cx,
         );
+        self.runtime.thumbnails.forget_chats(ids);
         for id in ids {
             self.set_unread(id, false);
             self.history.forget(&PageTab::Chat(id.share()));
@@ -110,6 +111,7 @@ impl Workspace {
         if selected.is_some_and(|selected| ids.contains(selected)) {
             self.new_chat(window, cx);
         }
+        self.prune_thumbnails();
     }
 
     pub(in crate::ui) fn navigate_history(

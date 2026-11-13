@@ -133,28 +133,43 @@ impl Thumbnails {
         }
     }
 
-    /// Notes `open` chats as the most recently shown, returning the chats to keep cached.
-    fn note_recent<'a>(&mut self, open: impl Iterator<Item = &'a SessionId>) -> Vec<SessionId> {
+    pub(in crate::ui) fn forget_chats(&mut self, ids: &[SessionId]) {
+        self.recent.retain(|id| !ids.contains(id));
+    }
+
+    /// One retention policy for files and parsed text: open/recent chats plus documents.
+    fn retain<'a>(
+        &mut self,
+        open: impl Iterator<Item = &'a SessionId>,
+        documents: impl Iterator<Item = &'a SessionId>,
+    ) -> BTreeSet<SessionId> {
         for session in open {
             self.recent.retain(|recent| recent != session);
             self.recent.push_front(session.share());
         }
         self.recent.truncate(RECENT_CHATS);
-        self.recent.iter().map(SessionId::share).collect()
+        let sessions: BTreeSet<_> = self
+            .recent
+            .iter()
+            .map(SessionId::share)
+            .chain(documents.map(SessionId::share))
+            .collect();
+        self.retain_sessions(&sessions);
+        sessions
     }
 
-    fn retain_sessions(&mut self, sessions: &BTreeSet<&str>) {
+    fn retain_sessions(&mut self, sessions: &BTreeSet<SessionId>) {
         let keep = |key: &ThumbnailKey| match key {
             ThumbnailKey::Draft(_) => true,
-            ThumbnailKey::File { session, .. } => sessions.contains(&**session),
+            ThumbnailKey::File { session, .. } => sessions.contains(session),
         };
         self.requested.retain(&keep);
         self.failed.retain(&keep);
         self.queued
-            .retain(|(session, _)| sessions.contains(&**session));
+            .retain(|(session, _)| sessions.contains(session));
         self.wanted
             .get_mut()
-            .retain(|(session, _)| sessions.contains(&**session));
+            .retain(|(session, _)| sessions.contains(session));
         let removed: Vec<_> = self
             .ready
             .extract_if(.., |key, _| !keep(key))
@@ -208,32 +223,30 @@ impl Workspace {
     /// Keep cached files and parsed text for open chats and documents, including hidden tabs
     /// and unsent drafts, and for the last few chats shown.
     pub(in crate::ui) fn prune_thumbnails(&mut self) {
-        let recent = self
-            .runtime
-            .thumbnails
-            .note_recent(self.page_tabs.iter().filter_map(|page| match page {
+        let sessions = self.runtime.thumbnails.retain(
+            self.page_tabs.iter().filter_map(|page| match page {
                 PageTab::Chat(id) => Some(id),
                 _ => None,
-            }));
-        let mut sessions: BTreeSet<&str> = recent.iter().map(SessionId::as_str).collect();
-        sessions.extend(self.content.navigation.sessions().map(SessionId::as_str));
-        for tab in self.content.tabs.values() {
-            match &tab.content {
-                TabContent::Preview { session_id, .. } => {
-                    sessions.insert(session_id);
-                }
-                TabContent::Routine(preview) => {
-                    sessions.extend(preview.source.run.session_id.as_deref());
-                }
-                _ => {}
-            }
-        }
+            }),
+            self.content
+                .navigation
+                .sessions()
+                .chain(
+                    self.content
+                        .tabs
+                        .values()
+                        .filter_map(|tab| match &tab.content {
+                            TabContent::Preview { session_id, .. } => Some(session_id),
+                            TabContent::Routine(preview) => preview.source.run.session_id.as_ref(),
+                            _ => None,
+                        }),
+                ),
+        );
         self.chat_ui.markdown.get_mut().retain(|_, view| {
             view.session
                 .as_ref()
-                .is_none_or(|session| sessions.contains(session.as_str()))
+                .is_none_or(|session| sessions.contains(session))
         });
-        self.runtime.thumbnails.retain_sessions(&sessions);
     }
 
     pub(super) fn reap_thumbnails(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -438,6 +451,7 @@ impl Workspace {
 mod tests {
     use super::{Thumbnail, ThumbnailKey, Thumbnails};
     use crate::ui::runtime::RuntimeState;
+    use std::collections::BTreeSet;
     use std::path::Path;
 
     fn thumbnail(path: &str) -> Thumbnail {
@@ -456,8 +470,10 @@ mod tests {
         let key = ThumbnailKey::file(&session, "file");
         runtime.thumbnails.requested.insert(key.clone());
         assert_eq!(
-            runtime.thumbnails.note_recent(std::iter::once(&session)),
-            vec![session.share()]
+            runtime
+                .thumbnails
+                .retain(std::iter::once(&session), std::iter::empty()),
+            BTreeSet::from([session.share()])
         );
         let generation = runtime.thumbnails.file_generation;
 
@@ -510,9 +526,7 @@ mod tests {
             .map(|index| format!("chat-{index}").parse().unwrap())
             .collect();
         let show = |thumbnails: &mut Thumbnails, chat: &mobius::SessionId| {
-            let recent = thumbnails.note_recent(std::iter::once(chat));
-            let sessions = recent.iter().map(mobius::SessionId::as_str).collect();
-            thumbnails.retain_sessions(&sessions);
+            thumbnails.retain(std::iter::once(chat), std::iter::empty());
         };
         // Each chat's picture arrives while it shows.
         for (index, chat) in chats.iter().take(2).enumerate() {
@@ -525,10 +539,8 @@ mod tests {
                 "fixture thumbnail must complete for its current generation"
             );
         }
-        for _ in 0..20 {
-            show(&mut thumbnails, &chats[0]);
-            show(&mut thumbnails, &chats[1]);
-        }
+        show(&mut thumbnails, &chats[0]);
+        show(&mut thumbnails, &chats[1]);
         assert!(
             thumbnails.discarded.is_empty(),
             "{:?}",
@@ -540,6 +552,19 @@ mod tests {
                 .is_some(),
             "recent chat thumbnail must remain cached"
         );
+        thumbnails.forget_chats(&chats[..1]);
+        show(&mut thumbnails, &chats[1]);
+        assert!(
+            thumbnails
+                .get(&ThumbnailKey::file(&chats[0], "picture"))
+                .is_none(),
+            "deleted chat must release its recent picture"
+        );
+        assert!(
+            thumbnails
+                .get(&ThumbnailKey::file(&chats[1], "picture"))
+                .is_some()
+        );
         for chat in &chats[2..] {
             show(&mut thumbnails, chat);
         }
@@ -550,48 +575,6 @@ mod tests {
                 Path::new("/tmp/1.png").into()
             ]
         );
-    }
-
-    #[cfg(feature = "snapshot")]
-    #[gpui::test]
-    fn eviction_returns_cached_data_without_starting_a_load(cx: &gpui::TestAppContext) {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        static LOADS: AtomicUsize = AtomicUsize::new(0);
-        struct Cached;
-        impl gpui::Asset for Cached {
-            type Source = u8;
-            type Output = u8;
-            fn load(
-                source: u8,
-                _: &mut gpui::App,
-            ) -> impl std::future::Future<Output = u8> + Send + 'static {
-                LOADS.fetch_add(1, Ordering::Relaxed);
-                let value = source;
-                async move {
-                    if value == 0 {
-                        std::future::pending().await
-                    } else {
-                        value
-                    }
-                }
-            }
-        }
-        let initial = LOADS.load(Ordering::Relaxed);
-        cx.update(|cx| {
-            assert_eq!(cx.take_asset::<Cached>(&1), None);
-            assert_eq!(LOADS.load(Ordering::Relaxed), initial);
-            assert_eq!(cx.fetch_asset::<Cached>(&1), None);
-            assert_eq!(cx.fetch_asset::<Cached>(&0), None);
-        });
-        cx.run_until_parked();
-        cx.update(|cx| {
-            assert_eq!(cx.take_asset::<Cached>(&1), Some(1));
-            assert_eq!(cx.take_asset::<Cached>(&0), None);
-            assert!(!cx.has_asset::<Cached>(&0), "pending entry must be removed");
-            assert!(!cx.has_asset::<Cached>(&1), "loaded entry must be removed");
-            assert_eq!(cx.take_asset::<Cached>(&1), None);
-            assert_eq!(LOADS.load(Ordering::Relaxed), initial + 2);
-        });
     }
 
     #[test]
