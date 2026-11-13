@@ -4,12 +4,13 @@
 use super::*;
 use crate::gateway::{TranscriptStore, fixture};
 use mobius::protocol::{
-    ApprovalCall, ContentPart, ExecApprovalRequestEvent, FrontendAction, FrontendActionListItem,
-    FrontendBlock, FrontendBlockFormat, FrontendBlockRole, FrontendBlockState, FrontendBlockUpdate,
-    FrontendLink, FrontendListItemState, FrontendPickerOption, FrontendPriority, FrontendSymbol,
-    FrontendTone, FrontendWidget, FrontendWidgetContent, MessageAuthor, MessageDelivery,
-    MessageEvent, ModelStepContentPhase, SessionFileReference, TokenUsage, TokenUsageInfo,
-    ToolContent,
+    ApprovalCall, ContentPart, EventMsg, ExecApprovalRequestEvent, FrontendAction,
+    FrontendActionListItem, FrontendBlock, FrontendBlockFormat, FrontendBlockRole,
+    FrontendBlockState, FrontendBlockUpdate, FrontendLink, FrontendListItemState,
+    FrontendPickerOption, FrontendPriority, FrontendSymbol, FrontendTone, FrontendWidget,
+    FrontendWidgetContent, MessageAuthor, MessageDelivery, MessageEvent, ModelStepContentPhase,
+    RenderedBlock, SessionFileReference, TokenUsage, TokenUsageInfo, ToolCallBeginEvent,
+    ToolCallEndEvent, ToolContent,
 };
 use mobius_gateway::wire::{RenderedPreview, SessionWidget};
 use std::rc::Rc;
@@ -40,6 +41,11 @@ const LIVE: &str = "fixture-live";
 #[derive(Default)]
 struct Script(fixture::Script);
 
+struct ToolFixture {
+    call: ToolCallBeginEvent,
+    block: FrontendBlock,
+}
+
 impl Script {
     fn user(
         &mut self,
@@ -69,8 +75,27 @@ impl Script {
         self.0.turn(turn, start);
     }
 
-    fn block(&mut self, block: FrontendBlock) {
-        self.0.block("tools", block);
+    fn tool(&mut self, tool: ToolFixture) {
+        let ToolFixture { call, block } = tool;
+        let event = if block.state == FrontendBlockState::Pending {
+            EventMsg::ToolCallBegin(call)
+        } else {
+            EventMsg::ToolCallEnd(ToolCallEndEvent {
+                turn_id: call.turn_id,
+                call_id: call.call_id,
+                name: call.name,
+                output: ToolContent::default(),
+                is_error: block.tone == FrontendTone::Error,
+            })
+        };
+        self.0.apply(
+            None,
+            event,
+            vec![RenderedBlock {
+                capability: "tools".into(),
+                block,
+            }],
+        );
     }
 
     fn store(self) -> TranscriptStore {
@@ -87,28 +112,30 @@ fn file(name: &str, size: u64, media_type: &str) -> SessionFileReference {
     }
 }
 
-fn tool(
-    id: &str,
-    turn: &str,
-    title: &str,
-    text: &str,
-    format: FrontendBlockFormat,
-) -> FrontendBlock {
-    FrontendBlock {
-        id: Some(id.into()),
-        group: Some(turn.into()),
-        update: FrontendBlockUpdate::Replace,
-        state: FrontendBlockState::Complete,
-        role: FrontendBlockRole::Tool,
-        title: title.into(),
-        text: text.into(),
-        symbol: None,
-        links: Vec::new(),
-        files: Vec::new(),
-        content: ToolContent::default(),
-        format,
-        tone: FrontendTone::Neutral,
-        ui: Vec::new(),
+fn tool(id: &str, turn: &str, title: &str, text: &str, format: FrontendBlockFormat) -> ToolFixture {
+    ToolFixture {
+        call: ToolCallBeginEvent {
+            turn_id: turn.into(),
+            call_id: id.into(),
+            name: "fixture_tool".into(),
+            arguments: serde_json::json!({}),
+        },
+        block: FrontendBlock {
+            id: Some(id.into()),
+            group: Some(turn.into()),
+            update: FrontendBlockUpdate::Replace,
+            state: FrontendBlockState::Complete,
+            role: FrontendBlockRole::Tool,
+            title: title.into(),
+            text: text.into(),
+            symbol: None,
+            links: Vec::new(),
+            files: Vec::new(),
+            content: ToolContent::default(),
+            format,
+            tone: FrontendTone::Neutral,
+            ui: Vec::new(),
+        },
     }
 }
 
@@ -197,7 +224,7 @@ fn coding_demo() -> Script {
         ModelStepContentPhase::Reasoning,
         "**Tracing the recap state**\nThe button reads `unread` before the catalog has settled.",
     );
-    script.block(tool(
+    script.tool(tool(
         "code-search",
         DONE,
         "rg \"unread\" src/ui/navigation",
@@ -213,19 +240,19 @@ chats.rs:212:            self.catalog.unread.insert(session_id);\n",
         "src/ui/navigation/recaps.rs\n",
         FrontendBlockFormat::PlainText,
     );
-    read.links.push(FrontendLink {
+    read.block.links.push(FrontendLink {
         label: "recaps.rs".into(),
         href: "src/ui/navigation/recaps.rs".into(),
     });
-    script.block(read);
-    script.block(tool(
+    script.tool(read);
+    script.tool(tool(
         "code-edit",
         DONE,
         "Edit recaps.rs",
         CODING_DIFF,
         FrontendBlockFormat::UnifiedDiff,
     ));
-    script.block(tool(
+    script.tool(tool(
         "code-test",
         DONE,
         "cargo test recaps",
@@ -312,11 +339,11 @@ fn done_turn(script: &mut Script) {
         "src/ui/chat/composer.rs\n",
         FrontendBlockFormat::PlainText,
     );
-    read.links.push(FrontendLink {
+    read.block.links.push(FrontendLink {
         label: "composer.rs".into(),
         href: "src/ui/chat/composer.rs".into(),
     });
-    script.block(read);
+    script.tool(read);
     script.user(
         "fixture-steer-done",
         "Keep the iPad gap as it is.",
@@ -336,10 +363,10 @@ fn done_turn(script: &mut Script) {
         "",
         FrontendBlockFormat::PlainText,
     );
-    report.content = ToolContent(vec![ContentPart::File {
+    report.block.content = ToolContent(vec![ContentPart::File {
         file: file("test-report.txt", 3_100, "text/plain"),
     }]);
-    script.block(report);
+    script.tool(report);
     script.turn(DONE, false);
 }
 
@@ -358,7 +385,7 @@ fn live_turn(script: &mut Script, running: bool) {
         ModelStepContentPhase::Reasoning,
         "## Checking the pills\nThe row is centred with 8 point gaps.",
     );
-    script.block(tool(
+    script.tool(tool(
         "tests",
         LIVE,
         "cargo test chat",
@@ -371,7 +398,7 @@ fn live_turn(script: &mut Script, running: bool) {
         MessageDelivery::Steer,
         Vec::new(),
     );
-    script.block(tool(
+    script.tool(tool(
         "edit",
         LIVE,
         "Edit composer.rs",
@@ -387,8 +414,8 @@ fn live_turn(script: &mut Script, running: bool) {
             "",
             FrontendBlockFormat::Image,
         );
-        image.state = FrontendBlockState::Pending;
-        script.block(image);
+        image.block.state = FrontendBlockState::Pending;
+        script.tool(image);
     }
     if !running {
         script.text(
@@ -431,7 +458,7 @@ fn patch_transcript(root: &str) -> TranscriptStore {
         MessageDelivery::Turn,
         Vec::new(),
     );
-    script.block(tool(
+    script.tool(tool(
         "patch-diff",
         LIVE,
         "Edit file",
@@ -515,7 +542,7 @@ fn long_transcript() -> TranscriptStore {
             ModelStepContentPhase::Reasoning,
             if index % 2 == 0 { &long } else { REASONING },
         );
-        script.block(tool(
+        script.tool(tool(
             &format!("run-{index}"),
             &turn,
             "cargo test transcript",
@@ -837,7 +864,7 @@ impl Workspace {
             ModelStepContentPhase::Reasoning,
             "I am reviewing the job search results and deadlines.",
         );
-        script.block(tool(
+        script.tool(tool(
             "peer-review",
             turn,
             "Review job search results",
@@ -909,17 +936,16 @@ impl Workspace {
     pub(in crate::ui) fn fixture_provider_issue(&mut self, cx: &mut Context<Self>) {
         let mut script = Script::default();
         script.user("fixture-ask", "Hey", MessageDelivery::Turn, Vec::new());
-        let mut block = tool(
-            "provider-error",
-            "provider-error",
-            "",
-            "provider error: Responses HTTP 401 Unauthorized: API key rejected.",
-            FrontendBlockFormat::PlainText,
+        script.0.block(
+            "tools",
+            FrontendBlock {
+                id: Some("provider-error".into()),
+                role: FrontendBlockRole::Notice,
+                text: "provider error: Responses HTTP 401 Unauthorized: API key rejected.".into(),
+                tone: FrontendTone::Error,
+                ..FrontendBlock::default()
+            },
         );
-        block.group = None;
-        block.role = FrontendBlockRole::Notice;
-        block.tone = FrontendTone::Error;
-        script.block(block);
         self.client.state.transcript = script.store();
         self.gateway_revision += 1;
         cx.notify();

@@ -7,7 +7,8 @@ use mobius::protocol::{
     EventMsg, FrontendBlock, FrontendBlockFormat, FrontendBlockRole, FrontendBlockState,
     FrontendBlockUpdate, FrontendLink, FrontendTone, MessageAuthor, MessageDelivery, MessageEvent,
     MessageTarget, ModelStepContent, ModelStepContentPhase, RenderedBlock, SessionFileReference,
-    ToolContent, TurnAbortedEvent, TurnCompleteEvent, TurnStartedEvent, UiBlock,
+    ToolCallBeginEvent, ToolCallEndEvent, ToolContent, ToolLoadEvent, TurnAbortedEvent,
+    TurnCompleteEvent, TurnStartedEvent, UiBlock,
 };
 
 use super::TranscriptReducer;
@@ -231,6 +232,25 @@ fn completed(turn: &str) -> EventMsg {
     EventMsg::TurnComplete(TurnCompleteEvent {
         idle: false,
         turn_id: turn.into(),
+    })
+}
+
+fn call_begin(turn: &str, id: &str) -> EventMsg {
+    EventMsg::ToolCallBegin(ToolCallBeginEvent {
+        turn_id: turn.into(),
+        call_id: id.into(),
+        name: "fixture_tool".into(),
+        arguments: serde_json::json!({}),
+    })
+}
+
+fn call_end(turn: &str, id: &str, is_error: bool) -> EventMsg {
+    EventMsg::ToolCallEnd(ToolCallEndEvent {
+        turn_id: turn.into(),
+        call_id: id.into(),
+        name: "fixture_tool".into(),
+        output: "result".into(),
+        is_error,
     })
 }
 
@@ -826,16 +846,13 @@ fn a_long_turn_sends_ops_bounded_by_the_change_not_the_turn() {
     let chunk = "x".repeat(100);
     let mut events = Vec::new();
     for call in 0..500 {
+        let id = format!("call-{call}");
         let begin = FrontendBlock {
             state: Pending,
             title: format!("Bash · step {call}"),
             ..FrontendBlock::default()
         };
-        events.push(chat.event(
-            None,
-            EventMsg::ContextCompacted,
-            tool(&format!("call-{call}"), begin),
-        ));
+        events.push(chat.event(None, call_begin("t", &id), tool(&id, begin)));
         let output = FrontendBlock {
             update: FrontendBlockUpdate::Append,
             state: Pending,
@@ -858,6 +875,19 @@ fn a_long_turn_sends_ops_bounded_by_the_change_not_the_turn() {
     assert_eq!(chat.client, Client::from_page(&chat.reducer.snapshot()));
     assert_eq!(chat.client.row("worked:t").items.len(), 1);
     assert_eq!(chat.client.shown("worked:t").len(), 501);
+    assert!(
+        matches!(
+            chat.client.row("worked:t").kind,
+            TranscriptRowKind::Worked {
+                counts: ActivityCounts {
+                    tool_calls: 500,
+                    ..
+                },
+                ..
+            }
+        ),
+        "rendered output does not add another invocation"
+    );
 }
 
 #[test]
@@ -868,7 +898,7 @@ fn a_worked_row_nests_each_run_of_work_between_its_commentary() {
     let call = |chat: &mut Chat, id: &str| {
         chat.event(
             None,
-            EventMsg::ContextCompacted,
+            call_begin("t", id),
             tool(id, FrontendBlock::default()),
         )
     };
@@ -945,6 +975,99 @@ fn a_worked_row_nests_each_run_of_work_between_its_commentary() {
         chat.client.order(),
         ["message:ask", "worked:t", "assistant:s3:final_answer"],
         "nested runs are not top-level rows"
+    );
+}
+
+#[test]
+fn invocation_counts_survive_artifacts_missing_blocks_and_failed_calls() {
+    let mut chat = Chat::new(0);
+    chat.send(None, started("t"), Vec::new());
+    chat.send(Some("ask"), user("go", None), Vec::new());
+    let image = || {
+        vec![RenderedBlock {
+            capability: "custom".into(),
+            block: FrontendBlock {
+                id: Some("image".into()),
+                role: FrontendBlockRole::Artifact,
+                format: FrontendBlockFormat::Image,
+                ..FrontendBlock::default()
+            },
+        }]
+    };
+    chat.send(None, call_begin("t", "image"), image());
+    assert!(
+        matches!(
+            chat.client.row("worked:t").kind,
+            TranscriptRowKind::Worked {
+                counts: ActivityCounts { tool_calls: 1, .. },
+                ..
+            }
+        ),
+        "a standalone image is still a tool invocation"
+    );
+    chat.send(None, call_end("t", "image", false), image());
+    chat.send(None, call_begin("t", "hidden"), Vec::new());
+    chat.send(None, call_end("t", "hidden", false), Vec::new());
+    let failed = ["failure-a", "failure-b"]
+        .into_iter()
+        .flat_map(|id| {
+            tool(
+                id,
+                FrontendBlock {
+                    tone: FrontendTone::Error,
+                    ..FrontendBlock::default()
+                },
+            )
+        })
+        .collect();
+    chat.send(None, call_end("t", "failed", true), failed);
+    chat.send(
+        None,
+        EventMsg::ToolLoad(ToolLoadEvent {
+            turn_id: "t".into(),
+            load_id: "load".into(),
+            catalog_revision: "1".into(),
+            tools: vec!["fixture_tool".into()],
+        }),
+        tool("discovery", FrontendBlock::default()),
+    );
+    // Call IDs may be reused by later model steps, even when validation emits only an end.
+    chat.send(None, call_end("t", "failed", true), Vec::new());
+    chat.send(None, call_begin("t", "hidden"), Vec::new());
+    chat.send(None, call_end("t", "hidden", false), Vec::new());
+    let repeated = Event {
+        submission_id: None,
+        msg: call_end("t", "hidden", false),
+    };
+    let ops = chat.reducer.apply(
+        chat.sequence,
+        chat.sequence.cast_signed() * 1000,
+        &repeated,
+        Vec::new(),
+    );
+    chat.client.apply(&ops);
+    chat.send(None, completed("t"), Vec::new());
+    let TranscriptRowKind::Worked { counts, .. } = chat.client.row("worked:t").kind else {
+        panic!("the turn retains its work summary");
+    };
+    assert_eq!(counts.tool_calls, 5);
+    assert_eq!(counts.errors, 2);
+    assert_eq!(
+        chat.client.row("activity:block:tools:failure-a").kind,
+        TranscriptRowKind::Activity {
+            counts: ActivityCounts {
+                tool_calls: 1,
+                errors: 1,
+                events: 1,
+                ..ActivityCounts::default()
+            }
+        }
+    );
+    assert_eq!(chat.client, Client::from_page(&chat.reducer.snapshot()));
+    chat.reducer.trim_before(chat.sequence + 1);
+    assert!(
+        chat.reducer.invocations.is_empty(),
+        "trimmed turns release invocation metadata"
     );
 }
 

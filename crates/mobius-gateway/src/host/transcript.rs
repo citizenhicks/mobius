@@ -9,7 +9,7 @@
 //! on its own row, with consecutive activity of one turn or block group joined.
 
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
@@ -37,6 +37,16 @@ struct Slot {
     position: TranscriptPosition,
     /// The started turn holding the item, or `None` for items shown on their own.
     turn: Option<Arc<str>>,
+    invocations: Vec<u64>,
+}
+
+#[derive(Debug)]
+// Call IDs may recur across model steps; journal sequences identify invocations.
+struct Invocation {
+    turn_id: Arc<str>,
+    call_id: Arc<str>,
+    ended_at: Option<u64>,
+    failed: bool,
 }
 
 #[derive(Debug)]
@@ -102,6 +112,7 @@ pub struct TranscriptReducer {
     items: HashMap<Arc<str>, Slot>,
     rows: HashMap<Arc<str>, Arc<TranscriptRow>>,
     turns: HashMap<Arc<str>, Turn>,
+    invocations: BTreeMap<u64, Invocation>,
     loose: Vec<Arc<str>>,
     loose_rows: Vec<Arc<str>>,
     /// Each block group's first titled block and its title.
@@ -131,6 +142,7 @@ impl TranscriptReducer {
             items: HashMap::new(),
             rows: HashMap::new(),
             turns: HashMap::new(),
+            invocations: BTreeMap::new(),
             loose: Vec::new(),
             loose_rows: Vec::new(),
             groups: HashMap::new(),
@@ -200,7 +212,8 @@ impl TranscriptReducer {
             _ => {}
         }
         let ends_turn = matches!(event.msg, EventMsg::Error(_) | EventMsg::TurnAborted(_));
-        let first_block = self.blocks(&mut step, blocks, ends_turn);
+        let invocation = self.record_invocation(&mut step, &event.msg);
+        let first_block = self.blocks(&mut step, blocks, ends_turn, invocation);
         if let EventMsg::Message(message) = &event.msg
             && message.author != MessageAuthor::User
             && !from_session(message)
@@ -338,6 +351,14 @@ impl TranscriptReducer {
             self.items.remove(&item);
         }
         self.loose = kept;
+        let shown_calls: HashSet<_> = self
+            .items
+            .values()
+            .flat_map(|slot| slot.invocations.iter().copied())
+            .collect();
+        self.invocations.retain(|sequence, call| {
+            self.turns.contains_key(&call.turn_id) || shown_calls.contains(sequence)
+        });
         self.cut = Some(self.cut.map_or(sequence, |cut| cut.max(sequence)));
     }
 
@@ -601,12 +622,70 @@ impl TranscriptReducer {
         item.terminal |= terminal;
     }
 
+    fn record_invocation(&mut self, step: &mut Step, event: &EventMsg) -> Option<u64> {
+        let turn_id = match event {
+            EventMsg::ToolCallBegin(call) => &call.turn_id,
+            EventMsg::ToolCallEnd(call) => &call.turn_id,
+            _ => return None,
+        };
+        step.touch_turn(self.turns.get_key_value(turn_id).map(|(id, _)| id));
+        let sequence = match event {
+            EventMsg::ToolCallBegin(call) => {
+                self.invocations
+                    .entry(step.sequence)
+                    .or_insert_with(|| Invocation {
+                        turn_id: Arc::clone(&call.turn_id),
+                        call_id: Arc::clone(&call.call_id),
+                        ended_at: None,
+                        failed: false,
+                    });
+                step.sequence
+            }
+            EventMsg::ToolCallEnd(call) => {
+                let previous = self.invocations.iter_mut().rev().find(|(_, invocation)| {
+                    invocation.turn_id == call.turn_id
+                        && invocation.call_id == call.call_id
+                        && (invocation.ended_at.is_none()
+                            || invocation.ended_at == Some(step.sequence))
+                });
+                if let Some((sequence, invocation)) = previous {
+                    invocation.ended_at = Some(step.sequence);
+                    invocation.failed = call.is_error;
+                    *sequence
+                } else {
+                    self.invocations.insert(
+                        step.sequence,
+                        Invocation {
+                            turn_id: Arc::clone(&call.turn_id),
+                            call_id: Arc::clone(&call.call_id),
+                            ended_at: Some(step.sequence),
+                            failed: call.is_error,
+                        },
+                    );
+                    step.sequence
+                }
+            }
+            _ => return None,
+        };
+        Some(sequence)
+    }
+
+    fn attach_invocation(&mut self, id: &Arc<str>, invocation: Option<u64>) {
+        if let Some(invocation) = invocation
+            && let Some(slot) = self.items.get_mut(id)
+            && !slot.invocations.contains(&invocation)
+        {
+            slot.invocations.push(invocation);
+        }
+    }
+
     /// Applies the event's blocks, merging appends, and returns the first block's id.
     fn blocks(
         &mut self,
         step: &mut Step,
         blocks: Vec<RenderedBlock>,
         ends_turn: bool,
+        invocation: Option<u64>,
     ) -> Option<Arc<str>> {
         let mut first = None;
         for (offset, rendered) in (0_u32..).zip(blocks) {
@@ -631,6 +710,7 @@ impl TranscriptReducer {
             {
                 if block.update == FrontendBlockUpdate::Append {
                     self.append_block(step, &id, block, ends_turn);
+                    self.attach_invocation(&id, invocation);
                     first.get_or_insert(id);
                     continue;
                 }
@@ -650,6 +730,7 @@ impl TranscriptReducer {
             let item = self.set(step, Arc::clone(&id), index, content);
             item.state = state;
             item.terminal |= ends_turn;
+            self.attach_invocation(&id, invocation);
             first.get_or_insert(id);
         }
         first
@@ -780,6 +861,7 @@ impl TranscriptReducer {
                         index: step.base.saturating_add(index),
                     },
                     turn,
+                    invocations: Vec::new(),
                 })
             }
         };
@@ -891,13 +973,13 @@ impl TranscriptReducer {
     }
 
     /// The items a row lists directly.
-    fn child_items<'a>(
+    fn child_slots<'a>(
         &'a self,
         children: &'a [TranscriptChild],
-    ) -> impl Iterator<Item = &'a TranscriptItem> {
+    ) -> impl Iterator<Item = &'a Slot> {
         children
             .iter()
-            .filter_map(|child| Some(&*self.items.get(child.item()?)?.item))
+            .filter_map(|child| self.items.get(child.item()?))
     }
 
     /// One started turn's rows: the opening message, one `worked` row for its work, what
@@ -937,7 +1019,12 @@ impl TranscriptReducer {
                 }
             }
         }
-        if let Some(first) = work.first() {
+        if !work.is_empty()
+            || self
+                .invocations
+                .values()
+                .any(|call| &*call.turn_id == turn_id)
+        {
             let mut items = Vec::new();
             let mut runs = Vec::<TranscriptRow>::new();
             let mut in_run = false;
@@ -949,7 +1036,7 @@ impl TranscriptReducer {
                 } else if let Some(run) = runs.last_mut().filter(|_| in_run) {
                     run.items.push(TranscriptChild::Item(id));
                 } else {
-                    let run = activity_row(slot);
+                    let run = activity_row(slot, self.counts(std::iter::once(*slot), None));
                     items.push(TranscriptChild::Row(Arc::clone(&run.id)));
                     runs.push(run);
                     in_run = true;
@@ -957,11 +1044,18 @@ impl TranscriptReducer {
             }
             for run in &mut runs {
                 run.kind = TranscriptRowKind::Activity {
-                    counts: counts(self.child_items(&run.items)),
+                    counts: self.counts(self.child_slots(&run.items), None),
                 };
             }
             rows.extend(runs);
-            let mut position = first.position;
+            let mut position = work.first().map_or(
+                TranscriptPosition {
+                    depth: self.depth,
+                    sequence: turn.start_sequence,
+                    index: 1,
+                },
+                |first| first.position,
+            );
             if let Some(opening) = slots.iter().find(|slot| slot.item.starts_turn) {
                 let mut after_opening = opening.position;
                 after_opening.index = after_opening.index.saturating_add(1);
@@ -972,7 +1066,7 @@ impl TranscriptReducer {
                 position,
                 items,
                 kind: TranscriptRowKind::Worked {
-                    counts: counts(work.iter().map(|slot| &*slot.item)),
+                    counts: self.counts(work.iter().copied(), Some(turn_id)),
                     started_at_ms: turn.started_at_ms,
                     duration_ms: turn.ended_at_ms.map(|ended| {
                         u64::try_from(ended.saturating_sub(turn.started_at_ms)).unwrap_or(0)
@@ -1006,9 +1100,9 @@ impl TranscriptReducer {
                         .is_some_and(|first| activity_key(&first.item) == key)
                 {
                     row.items.push(TranscriptChild::Item(Arc::clone(&item.id)));
-                    *row_counts = counts(self.child_items(&row.items));
+                    *row_counts = self.counts(self.child_slots(&row.items), None);
                 } else {
-                    rows.push(activity_row(slot));
+                    rows.push(activity_row(slot, self.counts(std::iter::once(slot), None)));
                 }
             } else {
                 rows.push(single(
@@ -1078,14 +1172,12 @@ fn share(child: &TranscriptChild) -> TranscriptChild {
 }
 
 /// A run of activity starting at `slot`, holding only it so far.
-fn activity_row(slot: &Slot) -> TranscriptRow {
+fn activity_row(slot: &Slot, counts: ActivityCounts) -> TranscriptRow {
     TranscriptRow {
         id: format!("activity:{}", slot.item.id).into(),
         position: slot.position,
         items: vec![TranscriptChild::Item(Arc::clone(&slot.item.id))],
-        kind: TranscriptRowKind::Activity {
-            counts: counts(std::iter::once(&*slot.item)),
-        },
+        kind: TranscriptRowKind::Activity { counts },
     }
 }
 
@@ -1149,35 +1241,70 @@ fn turn_changes(slots: &[&Slot]) -> Option<TurnChanges> {
     (!diffs.is_empty()).then_some(TurnChanges { diffs, totals })
 }
 
-fn counts<'a>(items: impl Iterator<Item = &'a TranscriptItem>) -> ActivityCounts {
-    let mut counts = ActivityCounts::default();
-    for item in items {
-        let errored = match &item.content {
-            TranscriptItemContent::Block { block, .. } => block.tone == FrontendTone::Error,
-            TranscriptItemContent::Notice { tone, .. } => *tone == FrontendTone::Error,
-            _ => false,
-        };
-        let count = match &item.content {
-            _ if errored => &mut counts.errors,
-            TranscriptItemContent::Assistant {
-                phase: ModelStepContentPhase::Reasoning,
-                ..
-            } => &mut counts.thoughts,
-            TranscriptItemContent::Block { block, .. } => match block.role {
-                FrontendBlockRole::Tool => &mut counts.tool_calls,
-                FrontendBlockRole::WebSearch => &mut counts.web_searches,
-                FrontendBlockRole::Approval => &mut counts.approvals,
-                FrontendBlockRole::Artifact => &mut counts.artifacts,
-                FrontendBlockRole::Activity | FrontendBlockRole::Notice => &mut counts.events,
-            },
-            TranscriptItemContent::Message { .. }
-            | TranscriptItemContent::Assistant { .. }
-            | TranscriptItemContent::Notice { .. }
-            | TranscriptItemContent::ForkPoint { .. } => &mut counts.events,
-        };
-        *count = count.saturating_add(1);
+impl TranscriptReducer {
+    fn counts<'a>(
+        &self,
+        slots: impl Iterator<Item = &'a Slot>,
+        turn: Option<&str>,
+    ) -> ActivityCounts {
+        let mut counts = ActivityCounts::default();
+        let mut invocation_ids = HashSet::new();
+        for slot in slots {
+            let item = &*slot.item;
+            if turn.is_none() {
+                invocation_ids.extend(slot.invocations.iter().copied());
+            }
+            let errored = slot.invocations.is_empty()
+                && match &item.content {
+                    TranscriptItemContent::Block { block, .. } => block.tone == FrontendTone::Error,
+                    TranscriptItemContent::Notice { tone, .. } => *tone == FrontendTone::Error,
+                    _ => false,
+                };
+            let count = match &item.content {
+                _ if errored => &mut counts.errors,
+                TranscriptItemContent::Assistant {
+                    phase: ModelStepContentPhase::Reasoning,
+                    ..
+                } => &mut counts.thoughts,
+                TranscriptItemContent::Block { block, .. } => match block.role {
+                    FrontendBlockRole::Tool if !slot.invocations.is_empty() => continue,
+                    FrontendBlockRole::WebSearch => &mut counts.web_searches,
+                    FrontendBlockRole::Approval => &mut counts.approvals,
+                    FrontendBlockRole::Artifact => &mut counts.artifacts,
+                    FrontendBlockRole::Tool
+                    | FrontendBlockRole::Activity
+                    | FrontendBlockRole::Notice => &mut counts.events,
+                },
+                TranscriptItemContent::Message { .. }
+                | TranscriptItemContent::Assistant { .. }
+                | TranscriptItemContent::Notice { .. }
+                | TranscriptItemContent::ForkPoint { .. } => &mut counts.events,
+            };
+            *count = count.saturating_add(1);
+        }
+        match turn {
+            Some(turn) => count_invocations(
+                &mut counts,
+                self.invocations
+                    .values()
+                    .filter(|call| &*call.turn_id == turn),
+            ),
+            None => count_invocations(
+                &mut counts,
+                invocation_ids
+                    .iter()
+                    .filter_map(|id| self.invocations.get(id)),
+            ),
+        }
+        counts
     }
-    counts
+}
+
+fn count_invocations<'a>(counts: &mut ActivityCounts, calls: impl Iterator<Item = &'a Invocation>) {
+    for call in calls {
+        counts.tool_calls = counts.tool_calls.saturating_add(1);
+        counts.errors = counts.errors.saturating_add(u32::from(call.failed));
+    }
 }
 
 /// The title a later block of a group shows from the group's first titled block.

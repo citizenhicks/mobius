@@ -35,7 +35,8 @@ impl Script {
         }
     }
 
-    fn apply(&mut self, submission: Option<&str>, msg: EventMsg, blocks: Vec<RenderedBlock>) {
+    /// One scripted event and its capability-owned presentation.
+    pub fn apply(&mut self, submission: Option<&str>, msg: EventMsg, blocks: Vec<RenderedBlock>) {
         self.sequence += 1;
         let at = 1_790_000_000_000 + self.sequence.cast_signed() * 4_000;
         let event = Event {

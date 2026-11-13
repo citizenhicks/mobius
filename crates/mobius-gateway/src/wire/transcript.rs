@@ -219,7 +219,7 @@ pub struct ActivityCounts {
     /// Reasoning text.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub thoughts: u32,
-    /// Tool blocks.
+    /// Tool invocations, including failed calls and standalone deliverables.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub tool_calls: u32,
     /// Web search blocks.
@@ -234,7 +234,7 @@ pub struct ActivityCounts {
     /// Everything else.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub events: u32,
-    /// Error-toned blocks and notices.
+    /// Failed tool invocations and other error-toned blocks and notices.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub errors: u32,
 }
