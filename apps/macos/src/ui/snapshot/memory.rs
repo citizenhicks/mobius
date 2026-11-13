@@ -1,8 +1,7 @@
 //! Memory scenarios on the offline harness catalog: the Memory page with memories across
-//! projects and Global, its inline editor, and a möbius Bot's Memory capability. Nothing is
-//! connected, sent or saved.
+//! projects and Global, and its inline editor. Nothing is connected, sent or saved.
 
-use super::harness::{fixture, settings};
+use super::harness::fixture;
 use super::*;
 use serde_json::json;
 
@@ -65,10 +64,6 @@ pub(super) const SCENARIOS: &[Scenario] = &[
             "A pending memory save must not queue again or replace its editor"
         );
         undo_after_capture(Workspace::snapshot_close_memory_editor);
-    }),
-    ("bots-settings-mobius-capabilities", |this, window, cx| {
-        fixture(this);
-        settings(this, "mobius", AgentSection::Capabilities, window, cx);
     }),
 ];
 

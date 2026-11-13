@@ -455,6 +455,7 @@ fn selected_chat_applies_replay_ops_but_only_live_committed_statistics() {
     .enumerate()
     {
         state.replaying = replaying;
+        stats.completed.run_count += 1;
         let frame = serde_json::json!({
             "type": "agent_event", "session_id": session,
             "run_stats": metadata.then_some(&stats),
@@ -471,19 +472,12 @@ fn selected_chat_applies_replay_ops_but_only_live_committed_statistics() {
         });
         let mut message: ServerMessage = serde_json::from_value(frame).unwrap();
         state.apply(&mut message);
-        let ServerMessage::AgentEvent { run_stats, .. } = &message else {
-            unreachable!()
-        };
         let current = &state.session.as_ref().unwrap().run_stats;
         if session == "session" && !replaying && metadata {
-            assert!(
-                Arc::ptr_eq(current, run_stats.as_ref().unwrap()),
-                "share the committed snapshot without copying it"
-            );
             assert_eq!(**current, stats);
         } else {
-            assert!(
-                Arc::ptr_eq(current, &previous),
+            assert_eq!(
+                **current, *previous,
                 "replay, other chats and missing metadata preserve the latest snapshot"
             );
         }

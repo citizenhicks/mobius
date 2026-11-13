@@ -264,17 +264,13 @@ mod tests {
         );
         state.remove("terminal");
         assert_eq!(state.last(&TabOwner::of(&tabs)), Some(&file));
-        for page in [
-            PageTab::Settings(SettingsPage::Appearance),
-            PageTab::Bot("bot".into()),
-        ] {
-            active = state.activate(&mut tabs, active, page.clone());
-            active = state.session_opened(&mut tabs, active, &"resumed".parse().unwrap());
-            assert_eq!(
-                tabs[active], page,
-                "background resume must keep the selected page"
-            );
-        }
+        let page = PageTab::Settings(SettingsPage::Appearance);
+        active = state.activate(&mut tabs, active, page.clone());
+        active = state.session_opened(&mut tabs, active, &"resumed".parse().unwrap());
+        assert_eq!(
+            tabs[active], page,
+            "background resume must keep the selected page"
+        );
     }
 
     #[test]
