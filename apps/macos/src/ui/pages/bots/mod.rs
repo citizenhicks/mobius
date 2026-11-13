@@ -45,6 +45,7 @@ pub(in crate::ui) enum Pending {
     /// A new Bot, with the Bots known when it was requested.
     Create(BTreeSet<Arc<str>>),
     Routine,
+    SaveRoutine(WeakEntity<routine_form::RoutineForm>),
     RunRoutine(Arc<str>),
     /// An extension install from this source.
     Install(String),
@@ -128,6 +129,21 @@ impl Workspace {
                 });
                 if let Some(id) = created {
                     self.open_page(PageTab::Bot(id), window, cx);
+                }
+            }
+            Pending::SaveRoutine(form) => {
+                let accepted = rejection.is_none();
+                if let Some(form) = form.upgrade() {
+                    form.update(cx, |form, _| {
+                        form.save = match rejection {
+                            Some(error) => routine_form::SaveState::Rejected(error),
+                            None => routine_form::SaveState::Saved,
+                        };
+                    });
+                    window.refresh();
+                }
+                if accepted {
+                    self.refresh_routines(cx);
                 }
             }
             Pending::Routine | Pending::RunRoutine(_) => self.refresh_routines(cx),

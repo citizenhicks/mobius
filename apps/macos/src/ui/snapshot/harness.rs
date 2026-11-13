@@ -61,6 +61,10 @@ pub(super) const SCENARIOS: &[Scenario] = &[
         this.shell.notices = notices;
         this.set_link(link);
     }),
+    ("routine-rejected-draft", |this, window, cx| {
+        fixture(this);
+        this.snapshot_routine_rejection(window, cx);
+    }),
     ("rail-mobius", |this, window, cx| {
         fixture(this);
         this.select_section(Section::Mobius, window, cx);

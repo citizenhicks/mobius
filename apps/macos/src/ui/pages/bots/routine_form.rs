@@ -36,7 +36,10 @@ pub(super) const DURATIONS: [(&str, i64); 3] =
 pub(super) const ENDS: [&str; 3] = ["Never", "After duration", "At date"];
 
 /// The dialog's choices; its text lives in `Inputs`.
-pub(super) struct RoutineForm {
+pub(in crate::ui) struct RoutineForm {
+    pub(super) inputs: Inputs,
+    pub(super) focus: Option<FocusHandle>,
+    pub(super) save: SaveState,
     pub(super) workspace: SharedString,
     pub(super) mode: Mode,
     pub(super) unit: usize,
@@ -47,7 +50,13 @@ pub(super) struct RoutineForm {
     pub(super) saved_triggers: Option<usize>,
 }
 
-#[derive(Clone)]
+pub(super) enum SaveState {
+    Editing,
+    Pending,
+    Saved,
+    Rejected(Arc<str>),
+}
+
 pub(super) struct Inputs {
     pub(super) instructions: Entity<TextareaState>,
     pub(super) at: Entity<InputState>,
@@ -76,8 +85,24 @@ fn text(input: &Entity<InputState>, cx: &App) -> String {
 }
 
 impl RoutineForm {
+    pub(super) fn should_close(&self, window: &Window, cx: &App) -> bool {
+        matches!(self.save, SaveState::Saved)
+            && self
+                .focus
+                .as_ref()
+                .is_some_and(|focus| focus.contains_focused(window, cx))
+    }
+
+    pub(super) fn busy(&self) -> bool {
+        matches!(self.save, SaveState::Pending | SaveState::Saved)
+    }
+
     /// The routine's own choices, or a daily schedule in the first workspace.
-    pub(super) fn new(routine: Option<&Routine>, workspaces: &[SharedString]) -> Self {
+    pub(super) fn new(
+        routine: Option<&Routine>,
+        workspaces: &[SharedString],
+        inputs: Inputs,
+    ) -> Self {
         let timer = routine.and_then(|routine| scheduled_start(&routine.bindings));
         let schedule = timer.map(|(_, schedule, _)| schedule);
         let parsed = schedule
@@ -95,6 +120,9 @@ impl RoutineForm {
             None => Mode::Daily,
         };
         Self {
+            inputs,
+            focus: None,
+            save: SaveState::Editing,
             workspace: routine
                 .map(|routine| routine.workspace.to_string_lossy().into_owned().into())
                 .or_else(|| workspaces.first().map(SharedString::from))
