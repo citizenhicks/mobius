@@ -2,6 +2,9 @@ use super::*;
 use mobius::SessionId;
 use mobius::protocol::{MessageAuthor, MessageSubmission};
 
+/// A new draft has no chosen remote folder yet.
+pub(in crate::ui) const UNSELECTED_FOLDER: &str = ".";
+
 pub(in crate::ui) enum DraftIntent {
     Message(String),
     Voice,

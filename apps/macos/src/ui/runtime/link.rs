@@ -92,7 +92,7 @@ impl Workspace {
         self.expanded.clear();
         self.stop_voice();
         self.save_draft(cx);
-        self.draft_workspace = ".".into();
+        self.draft_workspace = UNSELECTED_FOLDER.into();
         self.draft_bot = None;
         self.interrupt_uploads();
         self.stop_dictation();

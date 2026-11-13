@@ -247,7 +247,7 @@ impl Workspace {
             content_resize,
             split_content: true,
             motion: Default::default(),
-            draft_workspace: ".".into(),
+            draft_workspace: runtime::UNSELECTED_FOLDER.into(),
             draft_bot: None,
             queued_draft: None,
             appearance: preferences.appearance,

@@ -15,7 +15,7 @@ pub(super) use link::LinkTone;
 use mobius::protocol::{EventMsg, Op};
 use mobius_gateway::wire::{ClientMessage, ServerMessage};
 pub(super) use native::DictationDraft;
-pub(super) use session::DraftIntent;
+pub(super) use session::{DraftIntent, UNSELECTED_FOLDER};
 #[cfg(feature = "snapshot")]
 pub(in crate::ui) use thumbnails::ThumbnailKey;
 pub(in crate::ui) use thumbnails::{Thumbnail, drawable, private_path};

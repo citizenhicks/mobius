@@ -150,7 +150,7 @@ impl Workspace {
         self.ensure_session_ticker(cx);
         self.update_waiting(cx);
         if matches!(message, ServerMessage::Ready { .. })
-            && self.draft_workspace.as_os_str() == "."
+            && self.draft_workspace.as_os_str() == runtime::UNSELECTED_FOLDER
             && let Some(latest) = self.recent_folders().into_iter().next()
         {
             self.draft_workspace = latest.into();
