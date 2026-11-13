@@ -3,8 +3,10 @@
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
+use tokio::sync::watch;
 
 use super::AgentSender;
+use crate::backend::checkpoint::CommittedRunStats;
 use crate::backend::checkpoint::JournalEvent;
 use crate::backend::model::ModelRouter;
 use crate::middleware::FrontendExtensions;
@@ -34,6 +36,7 @@ impl std::fmt::Debug for AgentEvents {
 pub struct Agent {
     pub(super) sender: AgentSender,
     pub(super) events: mpsc::Receiver<JournalEvent>,
+    pub(super) run_stats: watch::Receiver<Option<CommittedRunStats>>,
     pub(super) model_router: Arc<ModelRouter>,
     pub(super) frontend: FrontendExtensions,
     pub(super) frontend_sink: crate::middleware::FrontendEventSink,
@@ -54,6 +57,17 @@ impl Agent {
     #[must_use]
     pub fn model_router(&self) -> Arc<ModelRouter> {
         Arc::clone(&self.model_router)
+    }
+
+    /// Subscribes to the latest committed lifecycle statistics.
+    ///
+    /// Updates coalesce; `None` means no lifecycle checkpoint has been saved yet.
+    /// Each update identifies its final journal receipt, so a frontend can apply it
+    /// after that event. This observer does not keep the agent or recorder alive.
+    /// Do not retain a watch borrow across an await.
+    #[must_use]
+    pub fn subscribe_run_stats(&self) -> watch::Receiver<Option<CommittedRunStats>> {
+        self.run_stats.clone() // rules-allow: each observer needs its own watch cursor; statistics remain Arc-shared
     }
 
     /// Receives the next agent event.

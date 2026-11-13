@@ -11,8 +11,9 @@ use super::{
     BTreeMap, BTreeSet, BotMemory, Deserialize, Event, FrontendContribution, FrontendPreviewUpdate,
     FrontendSettingOption, FrontendSettingValue, FrontendSymbol, FrontendWidget, HarnessConfig,
     HarnessDescriptor, HarnessKind, HistoryCursor, HostedWebSearch, MessageTarget,
-    MiddlewareFeature, ModelChoice, Op, PathBuf, Serialize, SessionConfiguredEvent,
-    SessionFileLimits, StreamMetrics, TokenUsage, ToolDiscoveryMode, TranscriptPage, UsageLimit,
+    MiddlewareFeature, ModelChoice, Op, PathBuf, RunStats, RunSummary, Serialize,
+    SessionConfiguredEvent, SessionFileLimits, StreamMetrics, TokenUsage, ToolDiscoveryMode,
+    TranscriptPage, UsageLimit,
 };
 
 /// Optional gateway broadcasts a client may suppress on its connection.
@@ -1023,43 +1024,6 @@ pub struct SessionRunGroup {
     pub title: String,
     /// The runs.
     pub runs: Vec<RunSummary>,
-}
-
-/// Completed execution totals plus the active run, when one exists.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RunStats {
-    #[serde(flatten)]
-    /// The completed.
-    pub completed: mobius::backend::checkpoint::ExecutionStats,
-    /// The active.
-    pub active: Option<RunSummary>,
-}
-
-/// Frontend-safe summary of one completed or active user turn.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RunSummary {
-    /// The session identifier.
-    pub session_id: SessionId,
-    /// The submission identifier.
-    pub submission_id: Arc<str>,
-    /// The turn identifier.
-    pub turn_id: Arc<str>,
-    /// The started at milliseconds.
-    pub started_at_ms: i64,
-    /// The finished at milliseconds.
-    pub finished_at_ms: Option<i64>,
-    /// The elapsed milliseconds.
-    pub elapsed_ms: u64,
-    /// The outcome.
-    pub outcome: Option<mobius::backend::checkpoint::ExecutionOutcome>,
-    /// The model calls.
-    pub model_calls: u64,
-    /// The tool calls.
-    pub tool_calls: u64,
-    /// The failed tool calls.
-    pub failed_tool_calls: u64,
-    /// The usage.
-    pub usage: TokenUsage,
 }
 
 /// Usage accrued during one Unix day.

@@ -39,6 +39,7 @@ pub use self::messages::{
 };
 pub use self::records::*;
 pub use self::transcript::*;
+pub use mobius::backend::checkpoint::{RunStats, RunSummary};
 
 mod base64_bytes {
     use base64::Engine as _;

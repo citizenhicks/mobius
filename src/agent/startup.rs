@@ -155,6 +155,7 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
         Arc::clone(&config.checkpoints),
         session_id.share(),
     );
+    let run_stats = event_tx.subscribe_run_stats();
     let session = Arc::new(SessionConfiguredEvent {
         session_id: session_id.share(),
         context: Arc::clone(&config.session_context),
@@ -367,6 +368,7 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
     Ok(Agent {
         sender,
         events: event_rx,
+        run_stats,
         model_router,
         frontend,
         frontend_sink,

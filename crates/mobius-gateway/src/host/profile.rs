@@ -1,7 +1,7 @@
 use super::{
-    ActiveExecution, Arc, CheckpointStore, Error, ExecutionRecord, GatewayReadySnapshot, HashMap,
-    HashSet, ReadyPayload, Rejection, Result, RunStats, RunSummary, SESSION_PAGE_SIZE,
-    SessionCatalogMetadata, SessionPageRequest, SessionRunGroup, SessionSummary, Utc,
+    Arc, CheckpointStore, Error, ExecutionRecord, GatewayReadySnapshot, HashMap, HashSet,
+    ReadyPayload, Rejection, Result, RunStats, RunSummary, SESSION_PAGE_SIZE,
+    SessionCatalogMetadata, SessionPageRequest, SessionRunGroup, SessionSummary,
     configured_model_routes, gateway_catalog, internal, provider_instances, provider_statuses,
     route_choices,
 };
@@ -129,22 +129,6 @@ pub(super) fn gateway_run_stats(sessions: &[SessionSummary]) -> Result<RunStats>
     Ok(totals)
 }
 
-pub(super) fn run_summary(record: ExecutionRecord) -> RunSummary {
-    RunSummary {
-        session_id: record.session_id,
-        submission_id: record.submission_id,
-        turn_id: record.turn_id,
-        started_at_ms: record.started_at_ms,
-        finished_at_ms: Some(record.finished_at_ms),
-        elapsed_ms: record.elapsed_ms,
-        outcome: Some(record.outcome),
-        model_calls: record.model_calls,
-        tool_calls: record.tool_calls,
-        failed_tool_calls: record.failed_tool_calls,
-        usage: record.usage,
-    }
-}
-
 pub(super) fn recent_run_groups(
     records: Vec<ExecutionRecord>,
     sessions: &[SessionSummary],
@@ -159,7 +143,7 @@ pub(super) fn recent_run_groups(
         let Some(root) = visible_session(&record.session_id, &sessions_by_id) else {
             continue;
         };
-        let run = run_summary(record);
+        let run = RunSummary::from(record);
         if let Some(group) = groups
             .iter_mut()
             .find(|group| group.session_id == root.session_id)
@@ -208,27 +192,6 @@ pub(super) fn session_run_group_title(
         })
         .unwrap_or("Untitled")
         .to_owned()
-}
-
-pub(super) fn active_run_summary(session_id: &SessionId, active: &ActiveExecution) -> RunSummary {
-    let elapsed_ms = Utc::now()
-        .timestamp_millis()
-        .checked_sub(active.started_at_ms)
-        .and_then(|elapsed| u64::try_from(elapsed).ok())
-        .unwrap_or_default();
-    RunSummary {
-        session_id: session_id.share(),
-        submission_id: Arc::clone(&active.submission_id),
-        turn_id: Arc::clone(&active.turn_id),
-        started_at_ms: active.started_at_ms,
-        finished_at_ms: None,
-        elapsed_ms,
-        outcome: None,
-        model_calls: active.model_calls,
-        tool_calls: active.tool_calls,
-        failed_tool_calls: active.failed_tool_calls,
-        usage: active.usage,
-    }
 }
 
 pub(super) async fn gateway_ready(

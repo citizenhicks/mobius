@@ -34,7 +34,7 @@ fn test_checkpoint(session_id: &str) -> Checkpoint {
 }
 
 #[tokio::test]
-async fn recorder_persists_an_event_before_delivery() {
+async fn recorder_delivers_committed_events_and_statistics_without_publishing_failed_saves() {
     let directory = tempfile::tempdir().expect("checkpoint directory");
     let checkpoints = Arc::new(
         SqliteCheckpoint::new(directory.path().join("checkpoints.sqlite3"))
@@ -48,6 +48,11 @@ async fn recorder_persists_an_event_before_delivery() {
     let (events, mut receiver) = crate::agent::recorder::RecorderIngress::spawn(
         store,
         "session".parse().expect("session ID"),
+    );
+    let mut stats = events.subscribe_run_stats();
+    assert!(
+        stats.borrow().is_none(),
+        "no lifecycle checkpoint has committed yet"
     );
     let event = Event {
         submission_id: Some("submission".into()),
@@ -71,6 +76,89 @@ async fn recorder_persists_an_event_before_delivery() {
 
     assert_eq!(page.events, vec![delivered]);
     assert_eq!(page.events[0].event, event);
+    assert!(
+        stats.borrow().is_none(),
+        "ordinary appended events do not publish statistics"
+    );
+    let mut checkpoint = test_checkpoint("session");
+    for count in 1..=2 {
+        checkpoint.sequence = count;
+        checkpoint.execution_stats.run_count = count;
+        events
+            .save(
+                Arc::new(checkpoint.clone()),
+                &[],
+                None,
+                vec![Event {
+                    submission_id: Some("submission".into()),
+                    msg: EventMsg::TurnComplete(crate::protocol::TurnCompleteEvent {
+                        idle: false,
+                        turn_id: "turn".into(),
+                    }),
+                }],
+            )
+            .await
+            .expect("committed lifecycle checkpoint");
+    }
+    let first = receiver.recv().await.expect("first receipt");
+    let second = receiver.recv().await.expect("second receipt");
+    assert_eq!(
+        second.sequence,
+        first.sequence + 1,
+        "statistics add no journal entries"
+    );
+    assert!(
+        receiver.try_recv().is_err(),
+        "only the original events were delivered"
+    );
+    let committed = stats
+        .borrow_and_update()
+        .clone()
+        .expect("coalesced statistics");
+    assert_eq!(committed.after_sequence, second.sequence);
+    assert_eq!(committed.stats.completed, checkpoint.execution_stats);
+    assert_eq!(committed.stats.completed.run_count, 2);
+    assert!(committed.stats.active.is_none());
+    let persisted = checkpoints
+        .load(&checkpoint.session_id)
+        .await
+        .expect("load")
+        .expect("checkpoint");
+    assert_eq!(persisted.execution_stats, committed.stats.completed);
+    let fault = rusqlite::Connection::open(directory.path().join("checkpoints.sqlite3"))
+        .expect("fault injector");
+    fault.execute_batch("CREATE TRIGGER reject_stats_insert BEFORE INSERT ON sessions BEGIN SELECT RAISE(ABORT, 'injected statistics save failure'); END;
+        CREATE TRIGGER reject_stats_update BEFORE UPDATE ON sessions BEGIN SELECT RAISE(ABORT, 'injected statistics save failure'); END;").expect("save fault");
+    checkpoint.sequence += 1;
+    checkpoint.execution_stats.run_count = 3;
+    let failure = events
+        .save(
+            Arc::new(checkpoint),
+            &[],
+            None,
+            vec![Event {
+                submission_id: None,
+                msg: EventMsg::TurnComplete(crate::protocol::TurnCompleteEvent {
+                    idle: false,
+                    turn_id: "failed".into(),
+                }),
+            }],
+        )
+        .await
+        .expect_err("the atomic write must fail");
+    assert!(
+        matches!(failure, Error::Sqlite(ref error) if error.to_string().contains("injected statistics save failure")),
+        "{failure:?}"
+    );
+    assert_eq!(stats.borrow().as_ref(), Some(&committed));
+    assert!(
+        !stats.has_changed().expect("observer still open"),
+        "failed saves publish nothing"
+    );
+    assert!(
+        receiver.recv().await.is_none(),
+        "the failed recorder closes delivery"
+    );
 }
 
 #[tokio::test]
@@ -120,6 +208,7 @@ async fn interrupted_response_delivers_accepted_text_before_aborting_and_rejects
     ))
     .await
     .expect("agent");
+    let mut stats = agent.subscribe_run_stats();
     agent.sender().submit(user_op("hello")).expect("submit");
     started.notified().await;
     let turn_id = loop {
@@ -127,6 +216,18 @@ async fn interrupted_response_delivers_accepted_text_before_aborting_and_rejects
             break Arc::clone(&step.turn_id);
         }
     };
+    assert_eq!(
+        stats
+            .borrow_and_update()
+            .as_ref()
+            .expect("active statistics")
+            .stats
+            .active
+            .as_ref()
+            .expect("active run")
+            .model_calls,
+        1
+    );
     let sink = retained.lock().expect("sink lock").clone().expect("sink");
     sink(ModelEvent::TextDelta("first".into()))
         .await
@@ -134,6 +235,10 @@ async fn interrupted_response_delivers_accepted_text_before_aborting_and_rejects
     sink(ModelEvent::TextDelta("pending".into()))
         .await
         .expect("admission");
+    assert!(
+        !stats.has_changed().expect("observer open"),
+        "streamed deltas do not publish statistics"
+    );
     agent
         .sender()
         .submit(Op::Interrupt { turn_id })
@@ -151,6 +256,25 @@ async fn interrupted_response_delivers_accepted_text_before_aborting_and_rejects
     .await
     .expect("aborted turn");
     assert_eq!(text, "firstpending");
+    assert_eq!(
+        stats
+            .borrow()
+            .as_ref()
+            .expect("aborted statistics")
+            .stats
+            .completed
+            .aborted_run_count,
+        1
+    );
+    assert!(
+        stats
+            .borrow()
+            .as_ref()
+            .expect("aborted statistics")
+            .stats
+            .active
+            .is_none()
+    );
     assert_eq!(
         sink(ModelEvent::TextDelta("late".into()))
             .await
@@ -183,7 +307,7 @@ async fn fast_model_burst_coalesces_without_losing_text_before_completion() {
         SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
             .expect("checkpoint store"),
     );
-    let mut agent = create_agent(config_with_model(
+    let agent = create_agent(config_with_model(
         workspace.path(),
         checkpoints,
         "fast-model-burst",
@@ -192,12 +316,14 @@ async fn fast_model_burst_coalesces_without_losing_text_before_completion() {
     ))
     .await
     .expect("agent");
-    agent.sender().submit(user_op("hello")).expect("submit");
+    let mut stats = agent.subscribe_run_stats();
+    let (sender, mut events) = agent.into_parts();
+    sender.submit(user_op("hello")).expect("submit");
     let mut deltas = 0;
     let mut text = String::new();
     tokio::time::timeout(std::time::Duration::from_secs(15), async {
         loop {
-            match agent.next_event().await.expect("agent event").msg {
+            match events.recv().await.expect("agent event").msg {
                 EventMsg::AssistantContentDelta(delta) => {
                     deltas += 1;
                     text.push_str(&delta.delta);
@@ -212,4 +338,33 @@ async fn fast_model_burst_coalesces_without_losing_text_before_completion() {
     .expect("burst completes");
     assert!(deltas < DELTAS);
     assert_eq!(text, "x".repeat(DELTAS));
+    assert_eq!(
+        stats
+            .borrow_and_update()
+            .as_ref()
+            .expect("completed statistics")
+            .stats
+            .completed
+            .run_count,
+        1
+    );
+    assert!(
+        stats
+            .borrow()
+            .as_ref()
+            .expect("completed statistics")
+            .stats
+            .active
+            .is_none()
+    );
+    drop(sender);
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while events.recv().await.is_some() {}
+    })
+    .await
+    .expect("statistics observers do not keep the recorder alive");
+    assert!(
+        stats.has_changed().is_err(),
+        "the statistics writer also closes"
+    );
 }

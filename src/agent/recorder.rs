@@ -6,6 +6,7 @@ use tokio::sync::OwnedSemaphorePermit;
 use tokio::sync::Semaphore;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
+use tokio::sync::watch;
 use tokio::time::{Duration, Instant};
 
 use super::EVENT_QUEUE_CAPACITY;
@@ -14,8 +15,10 @@ use crate::Error;
 use crate::Result;
 use crate::backend::checkpoint::Checkpoint;
 use crate::backend::checkpoint::CheckpointStore;
+use crate::backend::checkpoint::CommittedRunStats;
 use crate::backend::checkpoint::ExecutionRecord;
 use crate::backend::checkpoint::JournalEvent;
+use crate::backend::checkpoint::RunStats;
 use crate::backend::checkpoint::TimestampedEvent;
 use crate::backend::checkpoint::ValidatedCheckpoint;
 use crate::protocol::{Event, EventMsg, ModelStepContentPhase};
@@ -25,6 +28,7 @@ pub(super) type EventRecorder = Arc<RecorderIngress>;
 pub(super) struct RecorderIngress {
     commands: mpsc::Sender<RecorderCommand>,
     event_bytes: Arc<Semaphore>,
+    stats: Arc<watch::Sender<Option<CommittedRunStats>>>,
 }
 
 enum RecorderCommand {
@@ -41,6 +45,7 @@ struct AppendCommand {
 
 struct SaveCommand {
     checkpoint: ValidatedCheckpoint,
+    stats: Option<Arc<RunStats>>,
     transcript_delta: Vec<Arc<Value>>,
     execution: Option<ExecutionRecord>,
     events: Vec<TimestampedEvent>,
@@ -112,14 +117,27 @@ impl RecorderIngress {
     ) -> (Arc<Self>, mpsc::Receiver<JournalEvent>) {
         let (commands, receiver) = mpsc::channel(RECORDER_COMMAND_CAPACITY);
         let (events, event_receiver) = mpsc::channel(EVENT_QUEUE_CAPACITY);
-        tokio::spawn(run_recorder(checkpoints, session_id, receiver, events));
+        let (stats, _) = watch::channel(None);
+        let stats = Arc::new(stats);
+        tokio::spawn(run_recorder(
+            checkpoints,
+            session_id,
+            receiver,
+            events,
+            Arc::clone(&stats),
+        ));
         (
             Arc::new(Self {
                 commands,
+                stats,
                 event_bytes: Arc::new(Semaphore::new(RECORDER_EVENT_BYTE_BUDGET)),
             }),
             event_receiver,
         )
+    }
+
+    pub(super) fn subscribe_run_stats(&self) -> watch::Receiver<Option<CommittedRunStats>> {
+        self.stats.subscribe()
     }
 
     pub(super) async fn record(&self, event: Event) -> Result<()> {
@@ -171,11 +189,28 @@ impl RecorderIngress {
                 Ok(event)
             })
             .collect::<Result<Vec<_>>>()?;
+        let stats = events
+            .iter()
+            .rev()
+            .find(|event| {
+                matches!(
+                    event.event.msg,
+                    EventMsg::TurnStarted(_)
+                        | EventMsg::TurnComplete(_)
+                        | EventMsg::TurnAborted(_)
+                        | EventMsg::ModelStepStarted(_)
+                        | EventMsg::ModelStepCompleted(_)
+                        | EventMsg::ToolCallEnd(_)
+                        | EventMsg::TokenCount(_)
+                )
+            })
+            .map(|event| Arc::new(RunStats::from_checkpoint(&checkpoint, event.recorded_at_ms)));
         let byte_permit = self.reserve_bytes(event_bytes).await?;
         let (result, saved) = oneshot::channel();
         self.commands
             .send(RecorderCommand::Save(Box::new(SaveCommand {
                 checkpoint,
+                stats,
                 transcript_delta: transcript_delta.to_vec(),
                 execution,
                 events,
@@ -268,6 +303,7 @@ async fn run_recorder(
     session_id: SessionId,
     mut commands: mpsc::Receiver<RecorderCommand>,
     events: mpsc::Sender<JournalEvent>,
+    stats: Arc<watch::Sender<Option<CommittedRunStats>>>,
 ) {
     let mut terminal_error = None;
     let mut pending: Option<StreamBatch> = None;
@@ -343,7 +379,7 @@ async fn run_recorder(
         terminal_error = match command {
             RecorderCommand::Append(_) => unreachable!("appends were handled above"),
             RecorderCommand::Save(command) => {
-                if !record_save(*command, &checkpoints, &events).await {
+                if !record_save(*command, &checkpoints, &events, &stats).await {
                     return;
                 }
                 None
@@ -372,9 +408,11 @@ async fn record_save(
     command: SaveCommand,
     checkpoints: &Arc<dyn CheckpointStore>,
     events: &mpsc::Sender<JournalEvent>,
+    stats_sender: &watch::Sender<Option<CommittedRunStats>>,
 ) -> bool {
     let SaveCommand {
         checkpoint,
+        stats,
         transcript_delta,
         execution,
         events: pending,
@@ -391,6 +429,21 @@ async fn record_save(
             return false;
         }
     };
+    if let Some(stats) = stats {
+        let Some(last) = recorded.last() else {
+            reply(
+                result,
+                Err(Error::Checkpoint(
+                    "committed run statistics have no journal receipt".into(),
+                )),
+            );
+            return false;
+        };
+        stats_sender.send_replace(Some(CommittedRunStats {
+            after_sequence: last.sequence,
+            stats,
+        }));
+    }
     let published = publish_all(recorded, events).await;
     reply(result, Ok(()));
     match published {
@@ -519,6 +572,14 @@ mod tests {
         }
     }
 
+    fn ingress(commands: mpsc::Sender<RecorderCommand>) -> RecorderIngress {
+        RecorderIngress {
+            commands,
+            event_bytes: Arc::new(Semaphore::new(RECORDER_EVENT_BYTE_BUDGET)),
+            stats: Arc::new(watch::channel(None).0),
+        }
+    }
+
     #[tokio::test]
     async fn invalid_checkpoint_is_rejected_before_it_reaches_the_store() {
         let (commands, mut receiver) = mpsc::channel(1);
@@ -529,14 +590,11 @@ mod tests {
             name: "tool".into(),
             arguments: serde_json::json!({}),
         });
-        let error = RecorderIngress {
-            commands,
-            event_bytes: Arc::new(Semaphore::new(RECORDER_EVENT_BYTE_BUDGET)),
-        }
-        .save(Arc::new(checkpoint), &[], None, Vec::new())
-        .now_or_never()
-        .expect("rejected without waiting for the recorder")
-        .expect_err("pending tool without an execution");
+        let error = ingress(commands)
+            .save(Arc::new(checkpoint), &[], None, Vec::new())
+            .now_or_never()
+            .expect("rejected without waiting for the recorder")
+            .expect_err("pending tool without an execution");
         assert!(error.to_string().contains("no active execution"), "{error}");
         assert!(receiver.try_recv().is_err());
     }
@@ -544,10 +602,7 @@ mod tests {
     #[test]
     fn byte_budget_admits_its_exact_limit_and_releases_on_drop() {
         let (commands, mut receiver) = mpsc::channel(2);
-        let ingress = RecorderIngress {
-            commands,
-            event_bytes: Arc::new(Semaphore::new(RECORDER_EVENT_BYTE_BUDGET)),
-        };
+        let ingress = ingress(commands);
         let overhead = crate::serialized_len(&warning(String::new())).expect("event overhead");
         ingress
             .try_record(warning("x".repeat(RECORDER_EVENT_BYTE_BUDGET - overhead)))

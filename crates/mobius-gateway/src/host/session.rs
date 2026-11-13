@@ -11,9 +11,9 @@ use super::{
     ServerFrame, ServerMessage, SessionActivities, SessionActivity, SessionActivityState,
     SessionHistoryPage, SessionReadyPayload, SessionWidget, SharedFrame, Submission, Utc, Uuid,
     ValidatedSubmission, VecDeque, WorkActivity, WorkspaceFileScope, WorkspaceFiles, WorkspaceRead,
-    active_run_summary, activity_catalog, broadcast, classify_journal_sequence,
-    compact_replay_deltas, delete_workspace_file, durable_history_page, event_sequence, git_status,
-    internal, invalid_config, invalid_workspace, list_workspace_files, load_replay, mpsc, oneshot,
+    activity_catalog, broadcast, classify_journal_sequence, compact_replay_deltas,
+    delete_workspace_file, durable_history_page, event_sequence, git_status, internal,
+    invalid_config, invalid_workspace, list_workspace_files, load_replay, mpsc, oneshot,
     project_record, publish_ready_and_pending, read_workspace_file, receive, record_and_publish,
     reject_pending_bot_deletion, stopped, switch_workspace_branch, update_session_activity,
     update_widgets, validate_gateway_event, validated, workspace_git_diff,
@@ -138,13 +138,7 @@ impl SessionRuntimeState {
     }
 
     fn from_checkpoint(checkpoint: mobius::backend::checkpoint::Checkpoint) -> Self {
-        let stats = RunStats {
-            completed: checkpoint.execution_stats,
-            active: checkpoint
-                .active_execution
-                .as_ref()
-                .map(|active| active_run_summary(&checkpoint.session_id, active)),
-        };
+        let stats = RunStats::from_checkpoint(&checkpoint, Utc::now().timestamp_millis());
         Self {
             active_turn: checkpoint.active_execution.map(|active| ActiveTurn {
                 turn_id: active.turn_id,

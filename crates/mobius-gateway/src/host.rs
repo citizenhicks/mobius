@@ -34,8 +34,8 @@ use chrono::Utc;
 use futures_util::future::{OptionFuture, try_join_all};
 use mobius::backend::checkpoint::sqlite::SqliteCheckpoint;
 use mobius::backend::checkpoint::{
-    ActiveExecution, CheckpointStore, EventPageRequest, ExecutionOutcome, ExecutionRecord,
-    JournalEvent, SessionPageRequest, SessionSummary, event_turn_page,
+    CheckpointStore, EventPageRequest, ExecutionOutcome, ExecutionRecord, JournalEvent,
+    SessionPageRequest, SessionSummary, event_turn_page,
 };
 use mobius::backend::session_files::SessionFileStore;
 use mobius::middleware::FrontendExtensions;
@@ -85,8 +85,8 @@ use self::git::{
     switch_branch as switch_workspace_branch,
 };
 use self::profile::{
-    active_run_summary, gateway_ready, gateway_run_stats, gateway_session_summaries,
-    local_machine_name, provider_usage, recent_run_groups, session_tree_ids,
+    gateway_ready, gateway_run_stats, gateway_session_summaries, local_machine_name,
+    provider_usage, recent_run_groups, session_tree_ids,
 };
 use self::replay::{
     FrameworkPresentation, ReplayEntry, classify_journal_sequence, compact_replay_deltas,
