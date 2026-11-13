@@ -7,7 +7,7 @@ use gpui::{
     AnyElement, App, Bounds, ElementId, GlobalElementId, InspectorElementId, IntoElement, LayoutId,
     Motion, MotionFrame, Pixels, SharedString, Window, point, px,
 };
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use super::spring;
 
@@ -16,32 +16,22 @@ pub fn slide(id: impl Into<SharedString>, child: impl IntoElement) -> Slide {
     Slide {
         id: id.into(),
         child: child.into_any_element(),
-        seed: State {
-            top: 0.,
-            offset: 0.,
-            velocity: 0.,
-            at: Instant::now(),
-        },
     }
 }
 
 pub struct Slide {
     id: SharedString,
     child: AnyElement,
-    /// Where the spring started from, read in paint.
-    seed: State,
 }
 
-/// Longer than the spring takes to come home from any distance a row moves.
-const SETTLE: Duration = Duration::from_millis(600);
-
 #[derive(Clone, Copy)]
-struct State {
+pub struct State {
     /// Where layout last placed it, ignoring scroll.
     top: f32,
     offset: f32,
     velocity: f32,
     at: Instant,
+    until: Instant,
 }
 
 impl IntoElement for Slide {
@@ -54,7 +44,7 @@ impl IntoElement for Slide {
 
 impl gpui::Element for Slide {
     type RequestLayoutState = ();
-    type PrepaintState = ();
+    type PrepaintState = State;
 
     fn id(&self) -> Option<ElementId> {
         Some(ElementId::Name(SharedString::clone(&self.id)))
@@ -82,21 +72,23 @@ impl gpui::Element for Slide {
         (): &mut (),
         window: &mut Window,
         cx: &mut App,
-    ) {
+    ) -> State {
         let top = f32::from(bounds.top() - window.element_offset().y);
         let now = super::now();
         let still = cx.reduce_motion();
-        self.seed = window.with_optional_element_state(id, |state: Option<Option<State>>, _| {
+        let seed = window.with_optional_element_state(id, |state: Option<Option<State>>, _| {
             let next = match state.flatten() {
                 // Moved by layout: carry on from where it is drawn now, toward its new place.
                 Some(last) if !still && last.top != top => {
                     let (offset, velocity) =
                         spring::at(last.offset, last.velocity, 0., now - last.at);
+                    let offset = offset + last.top - top;
                     State {
                         top,
-                        offset: offset + last.top - top,
+                        offset,
                         velocity,
                         at: now,
+                        until: now + spring::settling_time(offset, velocity, 0.),
                     }
                 }
                 Some(last) if !still => last,
@@ -105,11 +97,13 @@ impl gpui::Element for Slide {
                     offset: 0.,
                     velocity: 0.,
                     at: now,
+                    until: now,
                 },
             };
             (next, Some(next))
         });
         self.child.prepaint(window, cx);
+        seed
     }
 
     fn paint(
@@ -118,18 +112,15 @@ impl gpui::Element for Slide {
         _: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         (): &mut (),
-        (): &mut (),
+        seed: &mut State,
         window: &mut Window,
         cx: &mut App,
     ) {
-        let seed = self.seed;
-        let settled =
-            spring::at(seed.offset, seed.velocity, 0., super::now() - seed.at) == (0., 0.);
-        if settled {
+        let seed = *seed;
+        if super::now() >= seed.until {
             self.child.paint(window, cx);
             return;
         }
-        // The spring settles well within this; the motion stops presenting after it.
         let home = Motion::new(move |at| {
             let elapsed = super::sampled(at).saturating_duration_since(seed.at);
             MotionFrame {
@@ -140,7 +131,7 @@ impl gpui::Element for Slide {
                 ..MotionFrame::default()
             }
         })
-        .until(seed.at + SETTLE)
+        .until(seed.until)
         .max_fps(super::SMOOTH_FPS);
         window.with_motion(home, bounds.center(), |window| self.child.paint(window, cx));
     }
