@@ -218,7 +218,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> anyhow::Result<()> {
         anyhow::ensure!(
-            crate::host::browser::ensure_started(),
+            self.ensure_browser_started(cx),
             "The browser isn't available."
         );
         let container = crate::host::platform::browser_container(TAB)

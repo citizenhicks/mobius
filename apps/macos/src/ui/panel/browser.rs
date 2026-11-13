@@ -89,6 +89,28 @@ fn argb(color: Hsla) -> u32 {
 }
 
 impl Workspace {
+    /// Withdraw the embedded renderer if its lazy startup fails after Ready advertised it.
+    pub(super) fn ensure_browser_started(&mut self, cx: &mut Context<Self>) -> bool {
+        let started = crate::host::browser::ensure_started();
+        if !started
+            && self
+                .client
+                .state
+                .gateway
+                .as_ref()
+                .is_some_and(|gateway| gateway.computer_view == ComputerView::EmbeddedBrowser)
+        {
+            self.send(
+                ClientMessage::SetBrowserRuntime {
+                    request_id: crate::gateway::request_id(),
+                    enabled: false,
+                },
+                cx,
+            );
+        }
+        started
+    }
+
     /// Adds a browser tab whose page reports on `channel`, opening `url` in a new page;
     /// a popup's page already exists and arrives on the channel instead.
     fn add_browser(
@@ -101,7 +123,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> anyhow::Result<()> {
         anyhow::ensure!(
-            crate::host::browser::ensure_started(),
+            self.ensure_browser_started(cx),
             "The browser isn't available."
         );
         let page = match url {
