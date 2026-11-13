@@ -1,10 +1,12 @@
 # Vendored UI dependencies
 
-GPUI Kit's `gpui-base`, `gpui-component` and `gpui-kit-assets` 0.9.1 are the
-published Apache-2.0 crates. Only Cargo.toml changes: remove the unused gpui-pre
-and gpui-pre-platform dependencies and route inspector/test-support to Fast.
-Their Rust code and assets are unchanged. The application selects `gpui-fast`.
-Keep licenses and notices when updating these crates.
+GPUI Kit 0.9.1 comes from the registry with its `gpui-fast` feature. It still
+unconditionally declares `gpui-pre` 0.3.12, although its Fast-selected Rust sources
+never use that backend. The empty `gpui-pre` package satisfies only this dependency
+metadata; it contains no renderer, API shim or platform implementation. Its empty
+inspector/test-support features match Kit's declarations. The app enables Fast's
+test support directly. Remove the placeholder when Kit makes the pre dependency
+optional. Keep Kit's published sources and assets out of this vendor directory.
 
 ## GPU-presented motion: proposed API exception
 

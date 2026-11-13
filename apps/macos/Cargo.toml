@@ -196,10 +196,8 @@ strip = "debuginfo"
 tree-sitter = { git = "https://github.com/tree-sitter/tree-sitter", rev = "d97971e24500218865c05ed1febdee2acf41bae1" }
 tree-sitter-language = { git = "https://github.com/tree-sitter/tree-sitter", rev = "d97971e24500218865c05ed1febdee2acf41bae1" }
 
-# Kit 0.9.1 otherwise compiles its unused gpui-pre backend alongside Fast.
-gpui-base = { path = "vendor/gpui-base" }
-gpui-component = { path = "vendor/gpui-component" }
-gpui-kit-assets = { path = "vendor/gpui-kit-assets" }
+# Kit selects Fast but still declares this unused backend; the empty crate has no renderer.
+gpui-pre = { path = "vendor/gpui-pre" }
 
 # GPU-presented motion: implementation and proposed API exception are in vendor/README.md.
 gpui-fast = { path = "vendor/gpui-fast" }
