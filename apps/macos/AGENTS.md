@@ -38,6 +38,8 @@ than branching on middleware names.
   preferably show an icon with text. Treat decorative tags, italic UI words, extra
   dividers and bordered containers, several shades of one color, and section
   numbering as defects.
+- Form and application errors use the shared toast. Inline errors belong only to
+  transcript records retained in chat history.
 - Visual changes attach before and after captures from the snapshot harness
   (`MOBIUS_SNAPSHOT=<dir> cargo run --features snapshot`).
 

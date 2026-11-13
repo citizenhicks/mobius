@@ -112,7 +112,6 @@ impl Workspace {
                 .child(dialog_body().child(dialog_heading("hi.clock", title, inputs.summary(f, cx), &p))
                 .child(labelled("Instructions", textarea(&inputs.instructions).aria_label("Routine instructions").disabled(f.busy()), p.muted))
                 .child(routine_rows(&form, inputs, &workspaces, cx))
-                .when_some(match &f.save { SaveState::Rejected(error) => Some(error), _ => None }, |body, error| body.child(div().typography(Type::Caption).text_color(p.danger).child(SharedString::from(Arc::clone(error)))))
                 .when(pauses, |dialog| {
                     dialog.child(
                         div()
@@ -196,6 +195,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        use gpui_component::dialog::Confirm;
         use std::time::Duration;
         let editor = self.routine_dialog("fixture-mobius".into(), None, window, cx);
         editor.update(cx, |f, cx| {
@@ -205,85 +205,163 @@ impl Workspace {
             f.inputs.instructions.update(cx, |input, cx| {
                 input.set_value("AUDIT_ROUTINE_DRAFT", window, cx);
             });
-            f.inputs
-                .cron
-                .update(cx, |input, cx| input.set_value("invalid cron", window, cx));
+            f.inputs.cron.update(cx, |input, cx| {
+                input.set_value("invalid cron", window, cx);
+            });
             f.inputs.zone.update(cx, |input, cx| {
                 input.set_selected_value(&"Asia/Kathmandu".to_owned(), window, cx);
             });
         });
         let end = editor.read(cx).inputs.end_at.read(cx).value();
         cx.spawn_in(window, async move |this, cx| {
+            let frame = Duration::from_millis(100);
             let capture = |name: &str, window: &mut Window, cx: &mut App| {
                 window.draw(cx).clear(cx);
                 if let Some(dir) = std::env::var_os("MOBIUS_SNAPSHOT") {
                     let path = std::path::PathBuf::from(dir).join(name);
-                    assert!(window.render_to_image().is_ok_and(|image| image.save(path).is_ok()));
+                    assert!(
+                        window
+                            .render_to_image()
+                            .is_ok_and(|image| image.save(path).is_ok()),
+                        "fixture capture"
+                    );
                 }
             };
             let submit = |window: &mut Window, cx: &mut App| {
                 window.draw(cx).clear(cx);
-                window.dispatch_action(Box::new(gpui_component::dialog::Confirm { secondary: false }), cx);
+                window.dispatch_action(Box::new(Confirm { secondary: false }), cx);
             };
-            assert!(cx.update(submit).is_ok(), "fixture window remains open");
-            cx.background_executor().timer(Duration::from_millis(100)).await;
-            assert!(cx.update(|window, cx| capture("routine-submitted.png", window, cx)).is_ok());
-            let reply = this.update_in(cx, |this, window, cx| {
-                assert!(window.has_active_dialog(cx), "enqueue must not discard the form");
-                assert!(matches!(editor.read(cx).save, SaveState::Pending), "real Confirm submits once");
-                assert_eq!(this.bots.pending.len(), 1);
-                let id = this.bots.pending.keys().next().map(Arc::clone).unwrap_or_default();
-                this.shell.notices.clear();
-                this.shell.toast = None;
-                let mut rejection = mobius_gateway::wire::ServerMessage::Rejected {
-                    request_id: Arc::clone(&id), code: "invalid_routine".into(), message: "gateway configuration error: invalid cron expression".into(), fatal: true,
-                };
-                assert!(!this.bots_rejection_is_inline(&rejection), "fatal errors remain global");
-                if let mobius_gateway::wire::ServerMessage::Rejected { fatal, .. } = &mut rejection {
-                    *fatal = false;
-                }
-                this.gateway_update(crate::gateway::Update::Message(Box::new(rejection)), window, cx);
-                assert!(this.shell.notices.is_empty() && this.shell.toast.is_none(), "inline rejection must not queue a duplicate toast");
-                assert!(!this.bots_rejection_is_inline(&mobius_gateway::wire::ServerMessage::Rejected {
-                    request_id: Arc::clone(&id), code: "unowned".into(), message: "Unowned rejection".into(), fatal: false,
-                }), "a request with no pending editor remains global");
-                let f = editor.read(cx);
-                assert!(matches!(&f.save, SaveState::Rejected(error) if &**error == "Invalid cron expression."));
-                assert_eq!(&*f.workspace, "/audit/routine-draft");
-                assert_eq!(f.inputs.instructions.read(cx).value(), "AUDIT_ROUTINE_DRAFT");
-                assert_eq!(f.inputs.cron.read(cx).value(), "invalid cron");
-                assert_eq!(f.inputs.zone.read(cx).selected_value().map(String::as_str), Some("Asia/Kathmandu"));
-                assert_eq!(f.ends, 2);
-                assert_eq!(f.inputs.end_at.read(cx).value(), end, "the end bound is preserved");
+            assert!(cx.update(submit).is_ok(), "submit fixture");
+            cx.background_executor().timer(frame).await;
+            assert!(
+                cx.update(|window, cx| capture("submitted.png", window, cx))
+                    .is_ok(),
+                "capture submission"
+            );
+            let rejected = this.update_in(cx, |this, window, cx| {
+                this.snapshot_reject_routine(&editor, &end, window, cx);
             });
-            assert!(reply.is_ok(), "fixture workspace remains open");
-            assert!(cx.update(|window, cx| capture("routine-rejected-inline.png", window, cx)).is_ok());
-            assert!(this.update_in(cx, |_, window, cx| {
-                editor.update(cx, |f, cx| f.inputs.cron.update(cx, |input, cx| input.set_value("0 9 * * *", window, cx)));
-            }).is_ok());
+            assert!(rejected.is_ok(), "reject fixture");
+            cx.background_executor().timer(frame).await;
+            assert!(
+                cx.update(|window, cx| capture("toast.png", window, cx))
+                    .is_ok(),
+                "capture rejection"
+            );
+            let corrected = this.update_in(cx, |_, window, cx| {
+                editor.update(cx, |f, cx| {
+                    f.inputs.cron.update(cx, |input, cx| {
+                        input.set_value("0 9 * * *", window, cx);
+                    });
+                });
+            });
+            assert!(corrected.is_ok(), "correct fixture");
             assert!(cx.update(submit).is_ok(), "corrected form submits");
-            assert!(cx.update(submit).is_ok(), "a repeated Confirm is harmless");
-            cx.background_executor().timer(Duration::from_millis(100)).await;
+            assert!(cx.update(submit).is_ok(), "repeated Confirm is harmless");
+            cx.background_executor().timer(frame).await;
             let accepted = this.update_in(cx, |this, window, cx| {
-                assert_eq!(this.bots.pending.len(), 1, "no duplicate Create request");
-                let id = this.bots.pending.keys().next().map(Arc::clone).unwrap_or_default();
-                window.open_dialog(cx, |dialog, _, _| dialog.title("Newer dialog"));
-                this.bots_on_message(&mobius_gateway::wire::ServerMessage::Accepted { request_id: id }, window, cx);
-                assert!(matches!(editor.read(cx).save, SaveState::Saved));
+                this.snapshot_accept_routine(&editor, window, cx);
             });
-            assert!(accepted.is_ok(), "fixture receives acceptance");
-            assert!(cx.update(|window, cx| window.draw(cx).clear(cx)).is_ok());
-            cx.background_executor().timer(Duration::from_millis(100)).await;
-            assert!(cx.update(|window, cx| {
-                assert!(window.has_active_dialog(cx), "acceptance must not close the newer dialog");
+            assert!(accepted.is_ok(), "accept fixture");
+            assert!(
+                cx.update(|window, cx| window.draw(cx).clear(cx)).is_ok(),
+                "draw acknowledgement"
+            );
+            cx.background_executor().timer(frame).await;
+            let newer = cx.update(|window, cx| {
+                assert!(window.has_active_dialog(cx), "keep the newer dialog");
                 window.close_dialog(cx);
                 window.draw(cx).clear(cx);
-            }).is_ok());
-            cx.background_executor().timer(Duration::from_millis(100)).await;
-            assert!(cx.update(|window, cx| {
-                assert!(!window.has_active_dialog(cx), "the accepted editor closes after the newer dialog leaves");
-            }).is_ok());
-        }).detach();
+            });
+            assert!(newer.is_ok(), "close newer dialog");
+            cx.background_executor().timer(frame).await;
+            let closed = cx.update(|window, cx| {
+                assert!(!window.has_active_dialog(cx), "accepted editor closes");
+            });
+            assert!(closed.is_ok(), "verify closure");
+        })
+        .detach();
+    }
+
+    fn snapshot_reject_routine(
+        &mut self,
+        editor: &Entity<RoutineForm>,
+        end: &SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::gateway::Update;
+        use mobius_gateway::wire::ServerMessage;
+        assert!(window.has_active_dialog(cx), "enqueue retains the form");
+        assert!(
+            matches!(editor.read(cx).save, SaveState::Pending),
+            "save is pending"
+        );
+        assert_eq!(self.bots.pending.len(), 1);
+        let id = self
+            .bots
+            .pending
+            .keys()
+            .next()
+            .map(Arc::clone)
+            .unwrap_or_default();
+        self.shell.notices.clear();
+        self.shell.toast = None;
+        let rejection = ServerMessage::Rejected {
+            request_id: id,
+            code: "invalid_routine".into(),
+            message: "gateway configuration error: invalid cron expression".into(),
+            fatal: false,
+        };
+        self.gateway_update(Update::Message(Box::new(rejection)), window, cx);
+        assert_eq!(self.shell.notices.len(), 1, "one rejection toast");
+        let notice = self.shell.notices.first().map(|notice| notice.1.as_str());
+        assert_eq!(notice, Some("Invalid cron expression."));
+        self.next_toast(cx);
+        assert!(self.shell.notices.is_empty(), "toast queue drained");
+        assert!(self.shell.toast.is_some(), "shared toast displayed");
+        let f = editor.read(cx);
+        assert!(
+            matches!(f.save, SaveState::Editing),
+            "rejection unlocks the form"
+        );
+        assert_eq!(&*f.workspace, "/audit/routine-draft");
+        assert_eq!(
+            f.inputs.instructions.read(cx).value(),
+            "AUDIT_ROUTINE_DRAFT"
+        );
+        assert_eq!(f.inputs.cron.read(cx).value(), "invalid cron");
+        let zone = f.inputs.zone.read(cx).selected_value().map(String::as_str);
+        assert_eq!(zone, Some("Asia/Kathmandu"));
+        assert_eq!(f.ends, 2);
+        assert_eq!(
+            &f.inputs.end_at.read(cx).value(),
+            end,
+            "end bound preserved"
+        );
+    }
+
+    fn snapshot_accept_routine(
+        &mut self,
+        editor: &Entity<RoutineForm>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use mobius_gateway::wire::ServerMessage;
+        assert_eq!(self.bots.pending.len(), 1, "no duplicate Create request");
+        let id = self
+            .bots
+            .pending
+            .keys()
+            .next()
+            .map(Arc::clone)
+            .unwrap_or_default();
+        window.open_dialog(cx, |dialog, _, _| dialog.title("Newer dialog"));
+        self.bots_on_message(&ServerMessage::Accepted { request_id: id }, window, cx);
+        assert!(
+            matches!(editor.read(cx).save, SaveState::Saved),
+            "saved after ACK"
+        );
     }
 }
 

@@ -54,7 +54,6 @@ pub(super) enum SaveState {
     Editing,
     Pending,
     Saved,
-    Rejected(Arc<str>),
 }
 
 pub(super) struct Inputs {

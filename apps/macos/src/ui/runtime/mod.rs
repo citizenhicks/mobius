@@ -291,9 +291,7 @@ impl Workspace {
         self.storage_message(&message, cx);
         self.forward_native(&message);
         self.provider_event(&message, cx);
-        if let Some(error) = self.client.apply(&mut message)
-            && !self.bots_rejection_is_inline(&message)
-        {
+        if let Some(error) = self.client.apply(&mut message) {
             self.report(error);
         }
         if matches!(message, ServerMessage::Ready { .. }) {
