@@ -708,6 +708,53 @@ mod tests {
     }
 
     #[test]
+    fn provider_failures_are_classified_by_status_code_and_message() {
+        use crate::FailureClass::*;
+        for (status, body, class) in [
+            (401, serde_json::json!({}), Authentication),
+            (
+                429,
+                serde_json::json!({"error":{"code":"insufficient_quota"}}),
+                OutOfCredits,
+            ),
+            (503, serde_json::json!({}), Transient),
+            (
+                529,
+                serde_json::json!({"error":{"type":"overloaded_error"}}),
+                Transient,
+            ),
+            (
+                400,
+                serde_json::json!({"error":{"code":"context_length_exceeded"}}),
+                ContextLengthExceeded,
+            ),
+            (
+                400,
+                serde_json::json!({"error":{"type":"invalid_request_error","message":"prompt is too long: 210000 tokens"}}),
+                ContextLengthExceeded,
+            ),
+            (
+                400,
+                serde_json::json!({"error":{"code":"content_policy_violation"}}),
+                ContentPolicy,
+            ),
+            (
+                400,
+                serde_json::json!({"error":{"message":"bad tool schema"}}),
+                InvalidRequest,
+            ),
+        ] {
+            let error = http_provider_error(
+                "Test",
+                reqwest::StatusCode::from_u16(status).expect("status"),
+                &serde_json::to_vec(&body).expect("JSON error"),
+                None,
+            );
+            assert_eq!(error.class(), class, "{status} {body}");
+        }
+    }
+
+    #[test]
     fn sse_framing_handles_one_byte_chunks_fragmented_utf8_and_a_leading_bom() {
         let input = "\u{feff}data: héllo\r\n\r\ndata: [DONE]\n\n".as_bytes();
         let mut decoder = SseDecoder::default();

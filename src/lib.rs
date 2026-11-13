@@ -173,13 +173,31 @@ pub struct ProviderError {
     status: Option<u16>,
     retryable: bool,
     retry_after: Option<String>,
-    kind: ProviderErrorKind,
+    class: FailureClass,
 }
 
+/// Why a provider call failed, so callers can pick a recovery without parsing messages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProviderErrorKind {
-    Other,
+#[non_exhaustive]
+pub enum FailureClass {
+    /// A timeout, connection failure, 408 or 5xx: the provider itself may be down.
+    Transient,
+    /// The provider is rate limiting this account.
+    RateLimited,
+    /// A response stream ended before its completion record.
     StreamInterrupted,
+    /// The credential was rejected.
+    Authentication,
+    /// The account has no remaining quota or credit.
+    OutOfCredits,
+    /// The request exceeded the model's context window.
+    ContextLengthExceeded,
+    /// The provider refused the content.
+    ContentPolicy,
+    /// Any other request the provider rejected.
+    InvalidRequest,
+    /// Not classified.
+    Other,
 }
 
 impl ProviderError {
@@ -191,7 +209,7 @@ impl ProviderError {
             status: None,
             retryable: false,
             retry_after: None,
-            kind: ProviderErrorKind::Other,
+            class: FailureClass::Other,
         }
     }
 
@@ -200,6 +218,7 @@ impl ProviderError {
     pub fn retryable(message: impl Into<String>) -> Self {
         Self {
             retryable: true,
+            class: FailureClass::Transient,
             ..Self::new(message)
         }
     }
@@ -212,7 +231,7 @@ impl ProviderError {
             status: None,
             retryable: true,
             retry_after,
-            kind: ProviderErrorKind::StreamInterrupted,
+            class: FailureClass::StreamInterrupted,
         }
     }
 
@@ -221,19 +240,53 @@ impl ProviderError {
         status: u16,
         retry_after: Option<String>,
     ) -> Self {
+        let message = message.into();
+        let class = match status {
+            401 | 403 => FailureClass::Authentication,
+            429 => FailureClass::RateLimited,
+            408 | 500..=599 => FailureClass::Transient,
+            // ponytail: providers without a context-length code are matched on their message.
+            400..=499 if Self::mentions_context_length(&message) => {
+                FailureClass::ContextLengthExceeded
+            }
+            400..=499 => FailureClass::InvalidRequest,
+            _ => FailureClass::Other,
+        };
         Self {
-            message: message.into(),
+            message,
             status: Some(status),
             retryable: status == 408 || status == 429 || (500..=599).contains(&status),
             retry_after,
-            kind: ProviderErrorKind::Other,
+            class,
         }
     }
 
+    fn mentions_context_length(message: &str) -> bool {
+        let message = message.to_ascii_lowercase();
+        ["prompt is too long", "context length", "context window"]
+            .iter()
+            .any(|needle| message.contains(needle))
+    }
+
     pub(crate) fn with_code(mut self, code: Option<&str>) -> Self {
-        if code.is_some_and(Self::is_quota_code) {
+        let Some(code) = code else {
+            return self;
+        };
+        if Self::is_quota_code(code) {
             self.retryable = false;
+            self.class = FailureClass::OutOfCredits;
+            return self;
         }
+        self.class = match code {
+            "context_length_exceeded" => FailureClass::ContextLengthExceeded,
+            "content_policy_violation" | "content_filter" => FailureClass::ContentPolicy,
+            "authentication_error" | "permission_error" | "invalid_api_key" => {
+                FailureClass::Authentication
+            }
+            "rate_limit_error" | "rate_limit_exceeded" => FailureClass::RateLimited,
+            "overloaded_error" | "server_error" => FailureClass::Transient,
+            _ => self.class,
+        };
         self
     }
 
@@ -267,7 +320,13 @@ impl ProviderError {
     /// Reports whether a response ended before its completion record arrived.
     #[must_use]
     pub fn is_stream_interrupted(&self) -> bool {
-        self.kind == ProviderErrorKind::StreamInterrupted
+        self.class == FailureClass::StreamInterrupted
+    }
+
+    /// Returns why the call failed.
+    #[must_use]
+    pub fn class(&self) -> FailureClass {
+        self.class
     }
 
     /// Returns the provider's raw `Retry-After` header value.
