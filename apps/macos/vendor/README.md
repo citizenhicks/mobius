@@ -46,3 +46,20 @@ Upstream review reference: https://github.com/longbridge/gpui-fast/blob/main/doc
 Guide revision reviewed: 80be50164adaf4db69eaf4a25037f20b6f447835.
 Published-archive hook checks do not replace `script/check-upstream` against
 GPUI Fast's imported Zed history; that history is absent from crate archives.
+
+## Image eviction: proposed API exception
+
+The manually reviewed ae2c2ba3 memory slice uses one additional owner API,
+`App::take_asset<A>`, implemented entirely in `fast/asset_cache.rs`. It removes
+an existing cache entry and returns completed output without starting a load;
+pending work is cancelled. This proposed extension is within the approved cache-fix scope, not
+upstream approval. Existing public methods keep their contracts. It replaces
+fetch-then-remove during image eviction: no speculative load and one cache-key
+removal rather than loading/looking up an entry merely to discard it. The app
+uses the returned image with the existing `drop_image`, including the current
+window, before deleting the discarded thumbnail off-thread. A cache-boundary
+test covers absent, completed and pending entries and counts loader calls.
+
+Recent-cache retention follows the real tab owner: one chat plus companion tabs.
+Keep open/document references and unsent drafts; keep the four recent chats.
+The memory/dreaming overwrite policy is unchanged.

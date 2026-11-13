@@ -4,7 +4,9 @@
     "version": "0.1.14",
     "archive_sha256": "f8c3a7e25e5a4789656da980b0316857acbdb72347b5d890d7d0c549bb9fee72",
     "source_commit": "a2e2e1bd",
-    "manual_review": "runtime relocated into Fast; scoped replay, culling, frame completion, FPS and opacity repairs"
+    "manual_review": "runtime relocated into Fast; scoped replay, culling, frame completion, FPS and opacity repairs",
+    "memory_source_commit": "ae2c2ba3330a59cb1e1e008c75818d10fe37898b",
+    "memory_review_fix": "take_asset removes ready/pending cached entries without starting new work"
   },
   {
     "crate": "gpui-fast-apple",

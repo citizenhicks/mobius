@@ -159,7 +159,7 @@ impl Workspace {
             Err(error) => self.report(format!("{error:#}")),
         }
         self.request_thumbnails();
-        self.reap_thumbnails(cx);
+        self.reap_thumbnails(window, cx);
         let usage = self.menu_bar_usage();
         if usage != self.shell.menu_bar_usage {
             crate::host::platform::set_status_usage(&usage);

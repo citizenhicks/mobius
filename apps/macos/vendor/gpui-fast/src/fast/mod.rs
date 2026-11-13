@@ -16,6 +16,7 @@
 //! root one by one, in `gpui.rs`.
 
 pub(crate) mod a11y;
+pub(crate) mod asset_cache;
 pub(crate) mod composition;
 pub(crate) mod dependencies;
 pub(crate) mod dispatch;

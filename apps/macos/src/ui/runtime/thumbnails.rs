@@ -2,6 +2,7 @@
 //! from the file the person chose, a sent or received image's from a download, both
 //! downsampled by ImageIO.
 
+use gpui::{ImgResourceLoader, Resource};
 use mobius::SessionId;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -61,7 +62,13 @@ pub(in crate::ui) struct Thumbnails {
     file_generation: u64,
     /// Files no longer referenced by any draft or open transcript, removed off-thread.
     discarded: Vec<Arc<Path>>,
+    /// Chats recently shown, newest first, whose thumbnails and parsed text stay cached
+    /// after they close so switching back redraws nothing.
+    recent: VecDeque<SessionId>,
 }
+
+/// How many recently shown chats keep their thumbnails and parsed text.
+const RECENT_CHATS: usize = 4;
 
 impl Thumbnails {
     pub(in crate::ui) fn cache_paths(&self) -> BTreeSet<Arc<Path>> {
@@ -73,6 +80,7 @@ impl Thumbnails {
     }
 
     pub(in crate::ui) fn clear_files(&mut self) {
+        self.recent.clear();
         self.retain_sessions(&BTreeSet::new());
         self.downloads = 0;
         self.file_generation = self.file_generation.wrapping_add(1);
@@ -123,6 +131,16 @@ impl Thumbnails {
             self.discarded.push(thumbnail.path);
             crate::host::platform::wake();
         }
+    }
+
+    /// Notes `open` chats as the most recently shown, returning the chats to keep cached.
+    fn note_recent<'a>(&mut self, open: impl Iterator<Item = &'a SessionId>) -> Vec<SessionId> {
+        for session in open {
+            self.recent.retain(|recent| recent != session);
+            self.recent.push_front(session.share());
+        }
+        self.recent.truncate(RECENT_CHATS);
+        self.recent.iter().map(SessionId::share).collect()
     }
 
     fn retain_sessions(&mut self, sessions: &BTreeSet<&str>) {
@@ -187,16 +205,17 @@ impl Workspace {
         }
     }
 
-    /// Keep cached files for open chats and documents, including hidden tabs and unsent drafts.
+    /// Keep cached files and parsed text for open chats and documents, including hidden tabs
+    /// and unsent drafts, and for the last few chats shown.
     pub(in crate::ui) fn prune_thumbnails(&mut self) {
-        let mut sessions: BTreeSet<&str> = self
-            .page_tabs
-            .iter()
-            .filter_map(|page| match page {
-                PageTab::Chat(id) => Some(&**id),
+        let recent = self
+            .runtime
+            .thumbnails
+            .note_recent(self.page_tabs.iter().filter_map(|page| match page {
+                PageTab::Chat(id) => Some(id),
                 _ => None,
-            })
-            .collect();
+            }));
+        let mut sessions: BTreeSet<&str> = recent.iter().map(SessionId::as_str).collect();
         sessions.extend(self.content.navigation.sessions().map(SessionId::as_str));
         for tab in self.content.tabs.values() {
             match &tab.content {
@@ -217,8 +236,16 @@ impl Workspace {
         self.runtime.thumbnails.retain_sessions(&sessions);
     }
 
-    pub(super) fn reap_thumbnails(&mut self, cx: &Context<Self>) {
+    pub(super) fn reap_thumbnails(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let discarded = std::mem::take(&mut self.runtime.thumbnails.discarded);
+        // GPUI keeps every image it decodes, by path, until told otherwise; a discarded
+        // thumbnail's path never returns, so its pixels and atlas tile go with it.
+        for path in &discarded {
+            let resource = Resource::Path(Arc::clone(path));
+            if let Some(Ok(image)) = cx.take_asset::<ImgResourceLoader>(&resource) {
+                cx.drop_image(image, Some(window));
+            }
+        }
         if !discarded.is_empty() {
             cx.background_executor()
                 .spawn(async move {
@@ -428,6 +455,10 @@ mod tests {
         let session = "chat".parse().unwrap();
         let key = ThumbnailKey::file(&session, "file");
         runtime.thumbnails.requested.insert(key.clone());
+        assert_eq!(
+            runtime.thumbnails.note_recent(std::iter::once(&session)),
+            vec![session.share()]
+        );
         let generation = runtime.thumbnails.file_generation;
 
         // An explicit reconnect leaves the cache as it is.
@@ -439,6 +470,10 @@ mod tests {
         assert!(runtime.thumbnails.get(&key).is_some());
 
         runtime.thumbnails.clear_files();
+        assert!(
+            runtime.thumbnails.recent.is_empty(),
+            "a gateway change must forget recent cache owners"
+        );
         // A new gateway may request the same key before the previous draw finishes.
         runtime.thumbnails.requested.insert(key.clone());
         assert!(
@@ -463,6 +498,100 @@ mod tests {
             runtime.thumbnails.get(&key).unwrap().path.as_ref(),
             Path::new("/tmp/current.png")
         );
+    }
+
+    /// Switching between chats keeps both chats' pictures: nothing is discarded, so
+    /// nothing is downloaded, drawn or decoded again. A chat older than the recent few
+    /// lets its pictures go.
+    #[test]
+    fn switching_chats_keeps_recent_pictures_and_lets_old_ones_go() {
+        let mut thumbnails = Thumbnails::default();
+        let chats: Vec<mobius::SessionId> = (0..6)
+            .map(|index| format!("chat-{index}").parse().unwrap())
+            .collect();
+        let show = |thumbnails: &mut Thumbnails, chat: &mobius::SessionId| {
+            let recent = thumbnails.note_recent(std::iter::once(chat));
+            let sessions = recent.iter().map(mobius::SessionId::as_str).collect();
+            thumbnails.retain_sessions(&sessions);
+        };
+        // Each chat's picture arrives while it shows.
+        for (index, chat) in chats.iter().take(2).enumerate() {
+            show(&mut thumbnails, chat);
+            let key = ThumbnailKey::file(chat, "picture");
+            thumbnails.requested.insert(key.clone());
+            let generation = thumbnails.file_generation;
+            assert!(
+                thumbnails.complete(key, generation, thumbnail(&format!("/tmp/{index}.png"))),
+                "fixture thumbnail must complete for its current generation"
+            );
+        }
+        for _ in 0..20 {
+            show(&mut thumbnails, &chats[0]);
+            show(&mut thumbnails, &chats[1]);
+        }
+        assert!(
+            thumbnails.discarded.is_empty(),
+            "{:?}",
+            thumbnails.discarded
+        );
+        assert!(
+            thumbnails
+                .get(&ThumbnailKey::file(&chats[0], "picture"))
+                .is_some(),
+            "recent chat thumbnail must remain cached"
+        );
+        for chat in &chats[2..] {
+            show(&mut thumbnails, chat);
+        }
+        assert_eq!(
+            thumbnails.discarded,
+            [
+                Path::new("/tmp/0.png").into(),
+                Path::new("/tmp/1.png").into()
+            ]
+        );
+    }
+
+    #[cfg(feature = "snapshot")]
+    #[gpui::test]
+    fn eviction_returns_cached_data_without_starting_a_load(cx: &gpui::TestAppContext) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static LOADS: AtomicUsize = AtomicUsize::new(0);
+        struct Cached;
+        impl gpui::Asset for Cached {
+            type Source = u8;
+            type Output = u8;
+            fn load(
+                source: u8,
+                _: &mut gpui::App,
+            ) -> impl std::future::Future<Output = u8> + Send + 'static {
+                LOADS.fetch_add(1, Ordering::Relaxed);
+                let value = source;
+                async move {
+                    if value == 0 {
+                        std::future::pending().await
+                    } else {
+                        value
+                    }
+                }
+            }
+        }
+        let initial = LOADS.load(Ordering::Relaxed);
+        cx.update(|cx| {
+            assert_eq!(cx.take_asset::<Cached>(&1), None);
+            assert_eq!(LOADS.load(Ordering::Relaxed), initial);
+            assert_eq!(cx.fetch_asset::<Cached>(&1), None);
+            assert_eq!(cx.fetch_asset::<Cached>(&0), None);
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert_eq!(cx.take_asset::<Cached>(&1), Some(1));
+            assert_eq!(cx.take_asset::<Cached>(&0), None);
+            assert!(!cx.has_asset::<Cached>(&0), "pending entry must be removed");
+            assert!(!cx.has_asset::<Cached>(&1), "loaded entry must be removed");
+            assert_eq!(cx.take_asset::<Cached>(&1), None);
+            assert_eq!(LOADS.load(Ordering::Relaxed), initial + 2);
+        });
     }
 
     #[test]

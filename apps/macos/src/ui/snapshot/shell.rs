@@ -57,6 +57,42 @@ pub(super) const SCENARIOS: &[Scenario] = &[
     }),
     ("perf-idle", |this, window, cx| this.new_chat(window, cx)),
     ("perf-chat", open_chat),
+    // Alternates between the two chats in MOBIUS_SNAPSHOT_SWITCH ("id,id") every two
+    // seconds, MOBIUS_SNAPSHOT_SWITCHES times (40), while MOBIUS_SNAPSHOT_HOLD_MS holds
+    // the window for an outside sampler. Only opens chats.
+    ("perf-chat-switch", |this, window, cx| {
+        let chats: Vec<SessionId> = std::env::var("MOBIUS_SNAPSHOT_SWITCH")
+            .unwrap_or_default()
+            .split(',')
+            .filter_map(|id| SessionId::new(id.trim()).ok())
+            .collect();
+        let [first, second] = chats.as_slice() else {
+            open_chat(this, window, cx);
+            return;
+        };
+        let switches: usize = std::env::var("MOBIUS_SNAPSHOT_SWITCHES")
+            .ok()
+            .and_then(|count| count.parse().ok())
+            .unwrap_or(40);
+        let (first, second) = (first.share(), second.share());
+        this.open_page(PageTab::Chat(first.share()), window, cx);
+        cx.spawn_in(window, async move |this, cx| {
+            for index in 1..=switches {
+                wait(cx.background_executor(), 2000).await;
+                let chat = if index % 2 == 1 { &second } else { &first };
+                let chat = chat.share();
+                report(
+                    "switch",
+                    this.update_in(cx, |this, window, cx| {
+                        this.open_page(PageTab::Chat(chat), window, cx);
+                    }),
+                );
+                eprintln!("switch {index}");
+            }
+            eprintln!("switches done");
+        })
+        .detach();
+    }),
     ("perf-bot", |this, window, cx| {
         let bot = this
             .client
