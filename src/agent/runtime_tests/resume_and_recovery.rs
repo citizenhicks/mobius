@@ -381,21 +381,37 @@ async fn restart_recovers_streamed_calls_without_reexecuting_them() {
     );
 }
 
-struct PanickingModel;
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Failure {
+    ModelPanic,
+    RecoveryPanic,
+    TurnEndPanic,
+    SubmitError,
+    Close,
+}
 
-impl Model for PanickingModel {
+struct SupervisedModel(Failure);
+
+impl Model for SupervisedModel {
     fn respond<'a>(
         &'a self,
         _request: ModelRequest,
         _events: ModelEventSink,
     ) -> BoxFuture<'a, Result<ModelOutput>> {
-        Box::pin(async { panic!("injected model panic") })
+        Box::pin(async move {
+            assert!(
+                !matches!(self.0, Failure::ModelPanic | Failure::RecoveryPanic),
+                "injected model panic"
+            );
+            Ok(scripted_message("done"))
+        })
     }
 }
 
 struct CleanupProbe {
-    ended: Arc<AtomicUsize>,
-    panic_turn_end: bool,
+    ended: Arc<Mutex<Vec<String>>>,
+    turn_ends: Arc<AtomicUsize>,
+    failure: Failure,
 }
 
 impl Middleware for CleanupProbe {
@@ -408,47 +424,86 @@ impl Middleware for CleanupProbe {
         _context: &'a mut crate::middleware::TurnEndContext<'_>,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            assert!(!self.panic_turn_end, "injected turn cleanup panic");
+            self.turn_ends.fetch_add(1, Ordering::SeqCst);
+            assert!(
+                !matches!(self.failure, Failure::TurnEndPanic | Failure::RecoveryPanic),
+                "injected turn cleanup panic"
+            );
             Ok(())
         })
     }
 
     fn session_end<'a>(
         &'a self,
-        _runtime: &'a crate::middleware::RuntimeContext,
+        runtime: &'a crate::middleware::RuntimeContext,
     ) -> BoxFuture<'a, Result<()>> {
-        self.ended.fetch_add(1, Ordering::SeqCst);
+        self.ended
+            .lock()
+            .unwrap()
+            .push(format!("{}:{}", runtime.model_route, runtime.model));
         Box::pin(async { Ok(()) })
     }
 }
 
 #[tokio::test]
-async fn runner_panic_seals_the_durable_turn_and_always_ends_the_session() {
-    for (panic_model, panic_turn_end) in [(true, false), (true, true), (false, false)] {
+async fn supervisor_seals_failures_once_and_ends_the_session_with_its_latest_model() {
+    for failure in [
+        Failure::TurnEndPanic,
+        Failure::ModelPanic,
+        Failure::RecoveryPanic,
+        Failure::SubmitError,
+        Failure::Close,
+    ] {
         let workspace = tempfile::tempdir().expect("workspace");
         let checkpoints =
             Arc::new(SqliteCheckpoint::new(workspace.path().join("state.sqlite3")).unwrap());
-        let ended = Arc::new(AtomicUsize::new(0));
+        let ended = Arc::new(Mutex::new(Vec::new()));
+        let turn_ends = Arc::new(AtomicUsize::new(0));
         let id: crate::SessionId = "supervised-runner".parse().expect("session ID");
         let mut config = config_with_model(
             workspace.path(),
             Arc::<SqliteCheckpoint>::clone(&checkpoints),
             &id,
             "test",
-            Arc::new(PanickingModel),
+            Arc::new(TestModel),
         );
-        config.middleware = Arc::new(test_middleware(vec![Arc::new(CleanupProbe {
+        Arc::get_mut(&mut config.model)
+            .unwrap()
+            .register("changed", Arc::new(SupervisedModel(failure)))
+            .unwrap();
+        let mut middleware: Vec<Arc<dyn Middleware>> = vec![Arc::new(CleanupProbe {
             ended: Arc::clone(&ended),
-            panic_turn_end,
-        })]));
-        let agent = create_agent(config).await.expect("create agent");
+            turn_ends: Arc::clone(&turn_ends),
+            failure,
+        })];
+        if failure == Failure::SubmitError {
+            middleware.push(Arc::new(FailFirstMessageSubmit(Arc::new(AtomicBool::new(
+                false,
+            )))));
+        }
+        config.middleware = Arc::new(test_middleware(middleware));
+        let mut agent = create_agent(config).await.expect("create agent");
+        agent
+            .sender()
+            .submit(Op::SetModel {
+                route: "changed".into(),
+            })
+            .unwrap();
+        while !matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(3), agent.next_event())
+                .await
+                .unwrap()
+                .unwrap()
+                .msg,
+            EventMsg::ModelChanged(_)
+        ) {}
         let (sender, mut events) = agent.into_parts();
-        let sender = if panic_model {
-            sender.submit(user_op("panic once")).expect("submit input");
-            Some(sender)
-        } else {
+        let sender = if failure == Failure::Close {
             drop(sender);
             None
+        } else {
+            sender.submit(user_op("fail once")).expect("submit input");
+            Some(sender)
         };
         let received = tokio::time::timeout(std::time::Duration::from_secs(3), async {
             let mut received = Vec::new();
@@ -460,7 +515,12 @@ async fn runner_panic_seals_the_durable_turn_and_always_ends_the_session() {
         .await
         .expect("the event stream closes after cleanup");
         drop(sender);
-        assert_eq!(ended.load(Ordering::SeqCst), 1);
+        let ran_model = matches!(
+            failure,
+            Failure::ModelPanic | Failure::RecoveryPanic | Failure::TurnEndPanic
+        );
+        assert_eq!(turn_ends.load(Ordering::SeqCst), usize::from(ran_model));
+        assert_eq!(*ended.lock().unwrap(), ["changed:changed"]);
         let saved = checkpoints
             .load(&id)
             .await
@@ -479,27 +539,45 @@ async fn runner_panic_seals_the_durable_turn_and_always_ends_the_session() {
                 _ => None,
             })
             .collect();
-        assert_eq!(completed.len(), usize::from(panic_model));
+        let errors: Vec<_> = received
+            .iter()
+            .filter_map(|event| match event {
+                EventMsg::Error(error) => Some(error),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(completed.len(), usize::from(ran_model));
         assert_eq!(
             received
                 .iter()
                 .filter(|event| matches!(event, EventMsg::TurnAborted(_)))
                 .count(),
-            usize::from(panic_model)
+            usize::from(ran_model)
         );
-        assert_eq!(
-            received
-                .iter()
-                .filter(|event| matches!(event, EventMsg::Error(_)))
-                .count(),
-            usize::from(panic_model)
-        );
-        assert_eq!(
-            saved.execution_stats.failed_run_count,
-            u64::from(panic_model)
-        );
-        if panic_model {
-            assert_eq!(completed[0].outcome, ModelStepOutcome::Failed);
+        assert_eq!(errors.len(), usize::from(failure != Failure::Close));
+        let expected_error = match failure {
+            Failure::TurnEndPanic => Some("injected turn cleanup panic"),
+            Failure::ModelPanic | Failure::RecoveryPanic => Some("injected model panic"),
+            Failure::SubmitError => Some("message submit failed"),
+            Failure::Close => None,
+        };
+        if let Some(expected) = expected_error {
+            assert!(
+                errors[0].message.contains(expected),
+                "failure cause survives cleanup: {:?}",
+                errors[0]
+            );
+        }
+        assert_eq!(saved.execution_stats.failed_run_count, u64::from(ran_model));
+        if ran_model {
+            if failure == Failure::TurnEndPanic {
+                assert!(
+                    matches!(completed[0].outcome, ModelStepOutcome::Completed { .. }),
+                    "model completed before the cleanup panic"
+                );
+            } else {
+                assert_eq!(completed[0].outcome, ModelStepOutcome::Failed);
+            }
             let history = checkpoints
                 .execution_page(
                     &id,

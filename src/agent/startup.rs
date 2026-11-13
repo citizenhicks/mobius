@@ -1,5 +1,8 @@
 use crate::SessionId;
+use std::mem::DropGuard;
 use std::sync::Arc;
+
+use tokio::sync::oneshot;
 
 use super::Agent;
 use super::AgentConfig;
@@ -27,6 +30,11 @@ use crate::protocol::SessionHistoryEvent;
 use crate::protocol::TokenCountEvent;
 use crate::protocol::TokenUsageInfo;
 use crate::protocol::replay_events;
+
+struct RunnerCleanup {
+    runtime: Arc<RuntimeContext>,
+    turn_end_turn_id: Option<Arc<str>>,
+}
 
 fn initial_hook_source(is_new: bool) -> SessionStartSource {
     if is_new {
@@ -228,11 +236,7 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
     state_changed |= session_start.input_changed;
     let pending_session_start_stop = session_start.stop_reason;
     if let Err(error) = recovery
-        .finish(
-            Arc::clone(&config.middleware),
-            session_id.share(),
-            Cause::Restart,
-        )
+        .finish(Arc::clone(&config.middleware), session_id.share(), None)
         .await
     {
         return Err(failed_start(&config, &runtime, error).await);
@@ -307,13 +311,13 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
         frontend(event)
     });
     let middleware = Arc::clone(&config.middleware);
-    let runtime = Arc::new(runtime);
-    let fallback_runtime = Arc::clone(&runtime);
     let events = Arc::clone(&event_tx);
-    let worker = tokio::spawn(async move {
-        let mut runner = Runner {
+    let (finished, returned) = oneshot::channel();
+    // Construct before spawning so cancellation before the first poll still returns cleanup.
+    let runner = DropGuard::new(
+        Runner {
             config,
-            runtime,
+            runtime: Arc::new(runtime),
             system_prompt,
             prompt_estimate,
             context_estimate: None,
@@ -325,35 +329,61 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
             turn_end_turn_id: None,
             idle: crate::middleware::IdleSchedule::default(),
             events: event_tx,
-        };
-        let result = runner.run(inbox).await;
-        (result, runner.runtime)
+        },
+        move |runner| {
+            drop(finished.send(RunnerCleanup {
+                runtime: runner.runtime,
+                turn_end_turn_id: runner.turn_end_turn_id,
+            }));
+        },
+    );
+    let worker = tokio::spawn(async move {
+        let mut runner = runner;
+        runner.run(inbox).await
     });
     tokio::spawn(async move {
-        let (run, runtime) = match worker.await {
-            Ok(result) => result,
-            Err(_join_error) => (
-                Err(Error::Stopped("agent runner panicked".into())),
-                fallback_runtime,
-            ),
-        };
-        let recovered = if run.is_err() {
-            let middleware = Arc::clone(&middleware);
-            let runtime = Arc::clone(&runtime);
-            let events = Arc::clone(&events);
-            tokio::spawn(
-                async move { recovery::seal_failure(&middleware, &runtime, &events).await },
-            )
+        let run = worker
             .await
-            .unwrap_or_else(|_| Err(Error::Stopped("agent recovery panicked".into())))
-        } else {
-            Ok(())
-        };
-        let session_end = tokio::spawn(async move { middleware.session_end(&runtime).await })
-            .await
-            .unwrap_or_else(|_| Err(Error::Stopped("agent session cleanup panicked".into())));
+            .unwrap_or_else(|error| Err(Error::Stopped(format!("agent runner stopped: {error}"))));
+        let cleanup = async {
+            let RunnerCleanup {
+                runtime,
+                turn_end_turn_id,
+            } = returned.await.map_err(|error| {
+                Error::Stopped(format!("agent runner cleanup was lost: {error}"))
+            })?;
+            let recovered = if run.is_err() {
+                let middleware = Arc::clone(&middleware);
+                let runtime = Arc::clone(&runtime);
+                let events = Arc::clone(&events);
+                tokio::spawn(async move {
+                    recovery::seal_failure(
+                        &middleware,
+                        &runtime,
+                        &events,
+                        turn_end_turn_id.as_deref(),
+                    )
+                    .await
+                })
+                .await
+                .unwrap_or_else(|error| {
+                    Err(Error::Stopped(format!("agent recovery stopped: {error}")))
+                })
+            } else {
+                Ok(())
+            };
+            let session_end = tokio::spawn(async move { middleware.session_end(&runtime).await })
+                .await
+                .unwrap_or_else(|error| {
+                    Err(Error::Stopped(format!(
+                        "agent session cleanup stopped: {error}"
+                    )))
+                });
+            recovery::combine(recovered, session_end)
+        }
+        .await;
         drop(root_config);
-        let result = recovery::combine(recovery::combine(run, recovered), session_end);
+        let result = recovery::combine(run, cleanup);
         if let Err(error) = result
             && let Err(send_error) = events
                 .record(Event {

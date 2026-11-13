@@ -26,12 +26,12 @@ pub(super) enum Cause {
     Failure,
 }
 
-#[derive(Default)]
 pub(super) struct Recovery {
     pub(super) delta: Vec<Arc<Value>>,
     pub(super) execution: Option<ExecutionRecord>,
     pub(super) events: Vec<Event>,
     idle: bool,
+    cause: Cause,
 }
 
 impl Recovery {
@@ -40,7 +40,16 @@ impl Recovery {
         middleware: &MiddlewareStack,
         cause: Cause,
     ) -> Result<Self> {
-        let mut recovery = Self::default();
+        let mut recovery = Self {
+            delta: Vec::new(),
+            execution: None,
+            events: Vec::new(),
+            idle: state
+                .active_execution
+                .as_ref()
+                .is_some_and(|execution| execution.idle),
+            cause,
+        };
         let outcome = match cause {
             Cause::Restart => ExecutionOutcome::Aborted,
             Cause::Failure => ExecutionOutcome::Failed,
@@ -56,10 +65,6 @@ impl Recovery {
             Cause::Restart => uncertain_tools || interrupted_model_step,
             Cause::Failure => state.active_execution.is_some(),
         };
-        recovery.idle = state
-            .active_execution
-            .as_ref()
-            .is_some_and(|execution| execution.idle);
         if interrupted_execution && let Some(step) = state.active_model_step.take() {
             let active = state
                 .active_execution
@@ -163,7 +168,7 @@ impl Recovery {
         &mut self,
         middleware: Arc<MiddlewareStack>,
         session_id: SessionId,
-        cause: Cause,
+        turn_end_turn_id: Option<&str>,
     ) -> Result<()> {
         let Some(execution) = &self.execution else {
             return Ok(());
@@ -175,41 +180,39 @@ impl Recovery {
             EventMsg::TurnAborted(TurnAbortedEvent {
                 idle,
                 turn_id: Arc::clone(&turn_id),
-                reason: match cause {
+                reason: match self.cause {
                     Cause::Restart => TURN_RESTARTED_REASON,
                     Cause::Failure => "agent runner failed",
                 }
                 .into(),
             }),
         );
-        let result = tokio::spawn(async move {
-            let mut messages = Vec::new();
-            middleware
-                .turn_end(TurnEndContext {
-                    session_id: &session_id,
-                    turn_id: &turn_id,
-                    owner: None,
-                    idle,
-                    events: &mut messages,
-                })
-                .await?;
-            Ok(messages)
-        })
-        .await
-        .map_err(|_join_error| Error::Stopped("agent turn cleanup panicked".into()))
-        .and_then(|result| result);
-        match result {
-            Ok(messages) => {
-                self.events
-                    .extend(super::turn::turn_events(&execution.submission_id, messages));
-                self.events.push(terminal);
-                Ok(())
-            }
-            Err(error) => {
-                self.events.push(terminal);
-                Err(error)
-            }
-        }
+        let result = if turn_end_turn_id == Some(&*turn_id) {
+            Ok(Vec::new())
+        } else {
+            tokio::spawn(async move {
+                let mut messages = Vec::new();
+                middleware
+                    .turn_end(TurnEndContext {
+                        session_id: &session_id,
+                        turn_id: &turn_id,
+                        owner: None,
+                        idle,
+                        events: &mut messages,
+                    })
+                    .await?;
+                Ok(messages)
+            })
+            .await
+            .map_err(|error| Error::Stopped(format!("agent turn cleanup stopped: {error}")))
+            .and_then(|result| result)
+        };
+        let result = result.map(|messages| {
+            self.events
+                .extend(super::turn::turn_events(&execution.submission_id, messages));
+        });
+        self.events.push(terminal);
+        result
     }
 }
 
@@ -217,6 +220,7 @@ pub(super) async fn seal_failure(
     middleware: &Arc<MiddlewareStack>,
     runtime: &RuntimeContext,
     events: &super::EventRecorder,
+    turn_end_turn_id: Option<&str>,
 ) -> Result<()> {
     // The worker's unwound state is discarded; only its last durable checkpoint is trusted.
     events.flush().await?;
@@ -233,7 +237,7 @@ pub(super) async fn seal_failure(
         .finish(
             Arc::clone(middleware),
             runtime.session_id.share(),
-            Cause::Failure,
+            turn_end_turn_id,
         )
         .await;
     state.sequence = state.next_sequence()?;
