@@ -232,6 +232,26 @@ pub(crate) fn validate_choices(
     Ok(())
 }
 
+/// Clears model-catalog choices the gateway no longer advertises, so a copied default does
+/// not block a new Bot over a setting its user never chose; the setting falls back to its
+/// default.
+pub(crate) fn drop_unadvertised_choices(
+    config: &mut MiddlewareConfig,
+    catalogs: ModelCatalogs<'_>,
+) {
+    for entry in MIDDLEWARE.iter() {
+        for setting in entry.manifest.settings {
+            let value = config.setting(entry.manifest.id, setting.id());
+            if setting
+                .validate_choice(entry.manifest.id, value, catalogs)
+                .is_err()
+            {
+                config.set_setting(entry.manifest.id, setting.id(), None);
+            }
+        }
+    }
+}
+
 pub(crate) fn configured_model_routes(
     config: &MiddlewareConfig,
 ) -> Vec<(&'static str, &'static str, &str)> {

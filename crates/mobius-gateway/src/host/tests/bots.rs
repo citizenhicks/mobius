@@ -483,3 +483,31 @@ async fn deleting_a_bot_removes_owned_state() {
             .contains_key(chat_id.as_str())
     );
 }
+
+#[tokio::test]
+async fn a_new_bot_drops_a_default_model_choice_the_gateway_no_longer_offers() {
+    let (_root, gateway, _bot) = gateway_with_bot().await;
+    {
+        let state = gateway.state.lock().await;
+        let mut config = state.config().unwrap();
+        config
+            .bot_defaults
+            .as_mut()
+            .expect("defaults")
+            .config
+            .middleware
+            .set_setting(
+                "voice",
+                "model",
+                Some(mobius::protocol::FrontendSettingValue::String(
+                    "signed_out::voice".into(),
+                )),
+            );
+    }
+    let bot = gateway
+        .create_bot(crate::wire::HarnessKind::Mobius, "Fresh", "Fresh Bot")
+        .await
+        .expect("an untouched default does not block a new Bot");
+    let config = bot.config.config.mobius().unwrap();
+    assert_eq!(config.middleware.setting("voice", "model"), None);
+}

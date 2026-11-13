@@ -385,19 +385,28 @@ impl GatewayHost {
         if harness != crate::wire::HarnessKind::Mobius {
             return Err(harness_unavailable(crate::harness::unavailable(harness)));
         }
-        let config = HarnessConfig::Mobius(Arc::new(
-            gateway
-                .bot_defaults
-                .as_ref()
-                .map(|defaults| defaults.config.clone()) // rules-allow: the new Bot owns a copy of the configured default composition
-                .ok_or_else(|| {
-                    Rejection::new(
-                        "gateway_setup_required",
-                        "configure a provider before creating a Bot",
-                    )
-                })?,
-        ));
+        let mut composition = gateway
+            .bot_defaults
+            .as_ref()
+            .map(|defaults| defaults.config.clone()) // rules-allow: the new Bot owns a copy of the configured default composition
+            .ok_or_else(|| {
+                Rejection::new(
+                    "gateway_setup_required",
+                    "configure a provider before creating a Bot",
+                )
+            })?;
+        let models = crate::harness::mobius::provider_catalog::configured_model_choices(
+            &gateway,
+            &state.store,
+            &state.credentials,
+        )
+        .map_err(internal)?;
+        crate::harness::mobius::middleware_manifest::drop_unadvertised_choices(
+            &mut composition.middleware,
+            models.catalogs(),
+        );
         drop(gateway);
+        let config = HarnessConfig::Mobius(Arc::new(composition));
         let config = validate_bot_config(&state, config)?;
         let bot = state
             .bots
