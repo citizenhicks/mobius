@@ -166,8 +166,7 @@ pub fn heading(text: impl Into<SharedString>) -> Div {
 
 /// Markdown headings stay on the heading role, so no heading level is larger than body text;
 /// code blocks are SF Mono Medium like `Type::Code`; inline code is bold SF Mono in `color`
-/// on the theme's code wash.
-// ponytail: gpui-base paints inline code as a fill only; the ring needs an upstream border option.
+/// on the theme's code wash, inside the faint ring of [`inline_code_ring`].
 pub fn markdown_style(color: Hsla) -> TextViewStyle {
     let medium = FontWeight::MEDIUM;
     TextViewStyle {
@@ -180,6 +179,13 @@ pub fn markdown_style(color: Hsla) -> TextViewStyle {
     }
     .heading_font_size(|_, _| Type::Headline.size())
     .code_block(StyleRefinement::default().font_weight(medium))
+}
+
+/// The ring around inline code in [`markdown_style`] text.
+pub fn inline_code_ring(color: Hsla) -> StyleRefinement {
+    StyleRefinement::default()
+        .border_1()
+        .border_color(color.opacity(0.24))
 }
 
 /// Centres a leading glyph on the first line of top-aligned `style` text beside it.

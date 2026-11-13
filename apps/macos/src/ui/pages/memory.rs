@@ -851,6 +851,7 @@ impl Workspace {
         )
         .selectable(true)
         .style(markdown_style(self.palette.button_accent))
+        .inline_code_style(inline_code_ring(self.palette.button_accent))
         .on_link_click(move |href, _, _, cx| {
             let Some(name) = href.strip_prefix("memory-page:") else {
                 cx.open_url(href);

@@ -5,7 +5,7 @@ use super::menus::{
     StopTurn, ToggleSidePanel, ToggleSplit, Zoom,
 };
 use crate::ui::{Back, Forward, NewChat, OpenFile, Search, ToggleSide};
-use gpui::{Action, Keystroke};
+use gpui::{Action, Keystroke, OperatingSystem};
 use std::collections::BTreeMap;
 
 /// Keystrokes by action id; an empty keystroke removes the default.
@@ -210,10 +210,10 @@ pub(in crate::ui) fn canonical(source: &str) -> Option<String> {
     if source.contains(char::is_whitespace) {
         return None;
     }
-    Keystroke::parse(source)
+    Keystroke::parse_with_os(source, OperatingSystem::Mac)
         .ok()
         .filter(|keystroke| !keystroke.key.is_empty())
-        .map(|keystroke| keystroke.unparse())
+        .map(|keystroke| keystroke.unparse(OperatingSystem::Mac))
 }
 
 /// A pressed keystroke usable as a shortcut: it needs ⌘, ⌃ or ⌥ unless it is a function key,
@@ -225,9 +225,15 @@ pub(in crate::ui) fn recordable(keystroke: &Keystroke) -> Option<String> {
         .strip_prefix('f')
         .is_some_and(|number| number.parse::<u8>().is_ok());
     (modifiers.control || modifiers.alt || modifiers.platform || function_key)
-        .then(|| Keystroke::parse(&keystroke.unparse()).ok())
+        .then(|| {
+            Keystroke::parse_with_os(
+                &keystroke.unparse(OperatingSystem::Mac),
+                OperatingSystem::Mac,
+            )
+            .ok()
+        })
         .flatten()
-        .map(|keystroke| keystroke.unparse())
+        .map(|keystroke| keystroke.unparse(OperatingSystem::Mac))
 }
 
 /// The keystroke `shortcut` answers to after `overrides`; an unreadable override keeps the default.

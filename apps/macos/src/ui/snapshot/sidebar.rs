@@ -126,11 +126,12 @@ fn scroll_edge_fixture(this: &mut Workspace, window: &mut Window, cx: &mut Conte
                 let bounds = scroll.bounds();
                 for distance in [60., 57.] {
                     window.dispatch_event(
-                        PlatformInput::ScrollWheel(ScrollWheelEvent {
+                        PlatformInput::Scroll(ScrollEvent {
                             position: point(bounds.center().x, bounds.top() + space::XS),
                             delta: ScrollDelta::Pixels(point(px(0.), -px(distance))),
                             modifiers: Modifiers::default(),
                             touch_phase: TouchPhase::Moved,
+                            source: ScrollSource::Pointer,
                         }),
                         cx,
                     );

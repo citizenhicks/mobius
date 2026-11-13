@@ -30,15 +30,15 @@ objc2 = "0.6"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSWorkspace", "NSImage", "NSBitmapImageRep", "NSImageRep"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSArray", "NSString", "NSURL", "NSData", "NSDictionary"] }
 anyhow = "1"
-gpui = { package = "gpui-pre", version = "=0.3.9" }
-gpui_platform = { package = "gpui-pre-platform", version = "=0.3.9", features = ["runtime_shaders", "font-kit"] }
+gpui = { package = "gpui-fast", version = "=0.1.14" }
+gpui_platform = { package = "gpui-fast-platform", version = "=0.1.14", features = ["runtime_shaders", "font-kit"] }
 reqwest = { version = "0.12", default-features = false, features = ["http2", "macos-system-configuration", "rustls-tls-native-roots", "socks", "stream"] }
 tempfile = "3"
 mime_guess = "2"
 pulldown-cmark = { version = "0.13", default-features = false }
 # Snapshot scenarios read the window's text selection, which only the base layer exposes.
-gpui-base = { version = "=0.8.0", optional = true }
-gpui-component = { version = "=0.8.0", features = ["tree-sitter-rust", "tree-sitter-swift", "tree-sitter-javascript", "tree-sitter-typescript", "tree-sitter-tsx", "tree-sitter-toml", "tree-sitter-python", "tree-sitter-bash", "tree-sitter-diff", "tree-sitter-markdown", "tree-sitter-html", "tree-sitter-css", "tree-sitter-yaml", "tree-sitter-markdown-inline", "tree-sitter-go", "tree-sitter-c", "tree-sitter-cpp", "tree-sitter-java", "tree-sitter-kotlin", "tree-sitter-ruby"] }
+gpui-base = { version = "=0.9.1", optional = true, features = ["gpui-fast"] }
+gpui-component = { version = "=0.9.1", features = ["gpui-fast", "tree-sitter-rust", "tree-sitter-swift", "tree-sitter-javascript", "tree-sitter-typescript", "tree-sitter-tsx", "tree-sitter-toml", "tree-sitter-python", "tree-sitter-bash", "tree-sitter-diff", "tree-sitter-markdown", "tree-sitter-html", "tree-sitter-css", "tree-sitter-yaml", "tree-sitter-markdown-inline", "tree-sitter-go", "tree-sitter-c", "tree-sitter-cpp", "tree-sitter-java", "tree-sitter-kotlin", "tree-sitter-ruby"] }
 mobius.workspace = true
 mobius-client = { path = "crates/mobius-client" }
 mobius-gateway.workspace = true
@@ -182,7 +182,7 @@ debug = 0
 [profile.dev.package.taffy]
 opt-level = 3
 
-[profile.dev.package.gpui-pre]
+[profile.dev.package.gpui-fast]
 opt-level = 3
 
 [profile.release]
@@ -193,3 +193,8 @@ strip = "debuginfo"
 [patch.crates-io]
 tree-sitter = { git = "https://github.com/tree-sitter/tree-sitter", rev = "d97971e24500218865c05ed1febdee2acf41bae1" }
 tree-sitter-language = { git = "https://github.com/tree-sitter/tree-sitter", rev = "d97971e24500218865c05ed1febdee2acf41bae1" }
+
+# Kit 0.9.1 otherwise compiles its unused gpui-pre backend alongside Fast.
+gpui-base = { path = "vendor/gpui-base" }
+gpui-component = { path = "vendor/gpui-component" }
+gpui-kit-assets = { path = "vendor/gpui-kit-assets" }

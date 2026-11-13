@@ -138,13 +138,11 @@ impl Workspace {
                                 .min_w_0()
                                 .child(SharedString::clone(&toast.message)),
                         )
-                        .on_scroll_wheel(cx.listener(
-                            move |this, event: &ScrollWheelEvent, window, cx| {
-                                if event.delta.pixel_delta(window.line_height()).y < -RISE / 3. {
-                                    this.dismiss_toast(id, cx);
-                                }
-                            },
-                        ))
+                        .on_scroll(cx.listener(move |this, event: &ScrollEvent, window, cx| {
+                            if event.delta.pixel_delta(window.line_height()).y < -RISE / 3. {
+                                this.dismiss_toast(id, cx);
+                            }
+                        }))
                         .when(toast.action.is_some(), |card| {
                             card.cursor_pointer().on_click(cx.listener(
                                 move |this, _, window, cx| {

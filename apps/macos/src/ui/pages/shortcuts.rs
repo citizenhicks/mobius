@@ -6,6 +6,7 @@ use crate::ui::navigation::shortcuts::{
     recordable,
 };
 use crate::ui::navigation::{ActiveShortcuts, apply_shortcuts};
+use gpui::OperatingSystem;
 use gpui_component::kbd::Kbd;
 
 /// The row being edited, if any.
@@ -145,7 +146,7 @@ impl Workspace {
     ) -> Row {
         let (id, p) = (shortcut.id, self.palette);
         let current = match binding(overrides, shortcut)
-            .and_then(|keystroke| Keystroke::parse(&keystroke).ok())
+            .and_then(|keystroke| Keystroke::parse_with_os(&keystroke, OperatingSystem::Mac).ok())
         {
             Some(keystroke) => key_cap(keystroke, &p).into_any_element(),
             None => div()
@@ -240,7 +241,8 @@ impl Workspace {
         other: &'static Shortcut,
         cx: &Context<Self>,
     ) -> Row {
-        let keystroke = Keystroke::parse(keystroke).unwrap_or_default();
+        let keystroke =
+            Keystroke::parse_with_os(keystroke, OperatingSystem::Mac).unwrap_or_default();
         let shown = Kbd::format(&keystroke);
         row.subtitle(format!("{shown} is used by {}. Replace it?", label(other)))
             .control(key_cap(keystroke, &self.palette))

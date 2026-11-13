@@ -697,11 +697,12 @@ fn check_short_session_card(window: &Window, cx: &Context<Workspace>) {
                 "fixture must overflow: viewport {viewport:?}, totals {totals:?}"
             );
             window.dispatch_event(
-                PlatformInput::ScrollWheel(ScrollWheelEvent {
+                PlatformInput::Scroll(ScrollEvent {
                     position: point(viewport.right() - space::XS, viewport.center().y),
                     delta: ScrollDelta::Pixels(point(px(0.), -px(1000.))),
                     modifiers: Modifiers::default(),
                     touch_phase: TouchPhase::Moved,
+                    source: ScrollSource::Pointer,
                 }),
                 cx,
             );

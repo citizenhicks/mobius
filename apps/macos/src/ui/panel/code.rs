@@ -248,6 +248,7 @@ impl Workspace {
                             SharedString::clone(&doc.text),
                         )
                         .selectable(true)
+                        .inline_code_style(inline_code_ring(self.palette.button_accent))
                         .style({
                             let style = markdown_style(self.palette.button_accent);
                             TextViewStyle {

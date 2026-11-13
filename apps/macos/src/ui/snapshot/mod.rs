@@ -26,7 +26,10 @@ mod shell;
 mod sidebar;
 
 use super::*;
-use gpui::{AsyncWindowContext, BackgroundExecutor, PlatformInput, ScrollDelta, TouchPhase};
+use gpui::{
+    AsyncWindowContext, BackgroundExecutor, PlatformInput, ScrollDelta, ScrollEvent, ScrollSource,
+    TouchPhase,
+};
 use mobius::SessionId;
 use mobius_gateway::wire::SessionActivityState;
 use std::path::PathBuf;

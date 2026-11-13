@@ -324,7 +324,7 @@ impl Workspace {
                     this.send_browser_input(&moved, BrowserInput::Move { x, y });
                 }
             }))
-            .on_scroll_wheel(cx.listener(move |this, event: &ScrollWheelEvent, _, _| {
+            .on_scroll(cx.listener(move |this, event: &ScrollEvent, _, _| {
                 let Some((x, y)) = this.browser_point(&wheel, event.position) else {
                     return;
                 };

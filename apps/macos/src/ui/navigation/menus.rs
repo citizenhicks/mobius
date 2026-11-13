@@ -81,15 +81,7 @@ pub(in crate::ui) fn apply_shortcuts(overrides: Overrides, cx: &mut App) {
             .then(|| workspace.as_ref().map(Rc::clone))
             .flatten();
         let action = (shortcut.action)();
-        KeyBinding::load(
-            &keystroke,
-            action,
-            context,
-            false,
-            None,
-            &DummyKeyboardMapper,
-        )
-        .ok()
+        KeyBinding::load(&keystroke, action, context, false, None, cx).ok()
     });
     let bindings: Vec<KeyBinding> = bindings.collect();
     cx.clear_key_bindings();

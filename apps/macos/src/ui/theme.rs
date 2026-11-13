@@ -482,81 +482,79 @@ impl Palette {
         let black: Hsla = rgb(0).into();
         let hover = mix(self.control, self.muted, 0.12);
         let pressed = mix(self.control, self.muted, 0.20);
-        theme.colors = gpui_component::ThemeColor {
-            background: self.canvas,
-            foreground: self.text,
-            border: self.separator,
-            input: self.separator,
-            accent: self.muted.opacity(if self.is_dark { 0.24 } else { 0.12 }),
-            accent_foreground: self.text,
-            primary: self.button_accent,
-            primary_hover: mix(self.button_accent, self.on_button_accent(), 0.08),
-            primary_active: mix(self.button_accent, black, 0.10),
-            primary_foreground: self.on_button_accent(),
-            button: self.control,
-            button_hover: hover,
-            button_active: pressed,
-            button_foreground: self.text,
-            button_primary: self.button_accent,
-            button_primary_hover: mix(self.button_accent, self.on_button_accent(), 0.08),
-            button_primary_active: mix(self.button_accent, black, 0.10),
-            button_primary_foreground: self.on_button_accent(),
-            button_secondary: self.control,
-            button_secondary_hover: hover,
-            button_secondary_active: pressed,
-            button_secondary_foreground: self.text,
-            button_danger: self.danger,
-            button_danger_hover: mix(self.danger, white, 0.08),
-            button_danger_active: mix(self.danger, black, 0.10),
-            button_danger_foreground: white,
-            danger: self.danger,
-            danger_hover: mix(self.danger, white, 0.08),
-            danger_active: mix(self.danger, black, 0.10),
-            danger_foreground: white,
-            secondary: self.control,
-            secondary_hover: hover,
-            secondary_active: pressed,
-            secondary_foreground: self.text,
-            muted: self.card,
-            muted_foreground: self.muted,
-            caret: self.accent,
-            ring: self.accent,
-            // Links and inline code share the vivid button fill rather than the softened accent.
-            link: self.button_accent,
-            link_hover: self.button_accent,
-            link_active: self.button_accent,
-            popover: self.control,
-            popover_foreground: self.text,
-            list: self.sheet,
-            list_hover: self.hover,
-            list_active: self.accent_soft,
-            list_active_border: self.accent_soft.opacity(0.),
-            sidebar: self.sheet,
-            sidebar_foreground: self.text,
-            sidebar_border: self.separator,
-            sidebar_accent: self.accent_soft,
-            sidebar_accent_foreground: self.accent,
-            switch: self.line,
-            switch_thumb: white,
-            tab: self.chrome,
-            tab_bar: self.chrome,
-            tab_active: self.card,
-            tab_foreground: self.muted,
-            tab_active_foreground: self.text,
-            title_bar: self.chrome,
-            title_bar_border: self.separator,
-            scrollbar: self.muted.opacity(0.),
-            scrollbar_thumb: self.muted.opacity(0.35),
-            scrollbar_thumb_hover: self.muted.opacity(0.55),
-            skeleton: self.muted.opacity(0.18),
-            success: self.signal,
-            warning: self.warning,
-            table: self.canvas.opacity(0.),
-            table_head: self.hover,
-            table_head_foreground: self.text,
-            table_row_border: self.separator,
-            ..theme.colors
-        };
+        let colors = &mut theme.colors;
+        colors.background = self.canvas;
+        colors.foreground = self.text;
+        colors.border = self.separator;
+        colors.input = self.separator;
+        colors.accent = self.muted.opacity(if self.is_dark { 0.24 } else { 0.12 });
+        colors.accent_foreground = self.text;
+        colors.primary = self.button_accent;
+        colors.primary_hover = mix(self.button_accent, self.on_button_accent(), 0.08);
+        colors.primary_active = mix(self.button_accent, black, 0.10);
+        colors.primary_foreground = self.on_button_accent();
+        colors.button = self.control;
+        colors.button_hover = hover;
+        colors.button_active = pressed;
+        colors.button_foreground = self.text;
+        colors.button_primary = self.button_accent;
+        colors.button_primary_hover = mix(self.button_accent, self.on_button_accent(), 0.08);
+        colors.button_primary_active = mix(self.button_accent, black, 0.10);
+        colors.button_primary_foreground = self.on_button_accent();
+        colors.button_secondary = self.control;
+        colors.button_secondary_hover = hover;
+        colors.button_secondary_active = pressed;
+        colors.button_secondary_foreground = self.text;
+        colors.button_danger = self.danger;
+        colors.button_danger_hover = mix(self.danger, white, 0.08);
+        colors.button_danger_active = mix(self.danger, black, 0.10);
+        colors.button_danger_foreground = white;
+        colors.danger = self.danger;
+        colors.danger_hover = mix(self.danger, white, 0.08);
+        colors.danger_active = mix(self.danger, black, 0.10);
+        colors.danger_foreground = white;
+        colors.secondary = self.control;
+        colors.secondary_hover = hover;
+        colors.secondary_active = pressed;
+        colors.secondary_foreground = self.text;
+        colors.muted = self.card;
+        colors.muted_foreground = self.muted;
+        colors.caret = self.accent;
+        colors.ring = self.accent;
+        // Links and inline code share the vivid button fill rather than the softened accent.
+        colors.link = self.button_accent;
+        colors.link_hover = self.button_accent;
+        colors.link_active = self.button_accent;
+        colors.popover = self.control;
+        colors.popover_foreground = self.text;
+        colors.list = self.sheet;
+        colors.list_hover = self.hover;
+        colors.list_active = self.accent_soft;
+        colors.list_active_border = self.accent_soft.opacity(0.);
+        colors.sidebar = self.sheet;
+        colors.sidebar_foreground = self.text;
+        colors.sidebar_border = self.separator;
+        colors.sidebar_accent = self.accent_soft;
+        colors.sidebar_accent_foreground = self.accent;
+        colors.switch = self.line;
+        colors.switch_thumb = white;
+        colors.tab = self.chrome;
+        colors.tab_bar = self.chrome;
+        colors.tab_active = self.card;
+        colors.tab_foreground = self.muted;
+        colors.tab_active_foreground = self.text;
+        colors.title_bar = self.chrome;
+        colors.title_bar_border = self.separator;
+        colors.scrollbar = self.muted.opacity(0.);
+        colors.scrollbar_thumb = self.muted.opacity(0.35);
+        colors.scrollbar_thumb_hover = self.muted.opacity(0.55);
+        colors.skeleton = self.muted.opacity(0.18);
+        colors.success = self.signal;
+        colors.warning = self.warning;
+        colors.table = self.canvas.opacity(0.);
+        colors.table_head = self.hover;
+        colors.table_head_foreground = self.text;
+        colors.table_row_border = self.separator;
         theme.tokens = theme.colors.into();
         let style = &mut Arc::make_mut(&mut theme.highlight_theme).style;
         style.editor_background = Some(self.card);

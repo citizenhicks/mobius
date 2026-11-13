@@ -96,6 +96,7 @@ impl Workspace {
         let session = session.map(SessionId::share);
         let text_view = TextView::new(&view.state)
             .style(markdown_style(self.palette.button_accent))
+            .inline_code_style(inline_code_ring(self.palette.button_accent))
             .text_color(self.palette.ink)
             .selectable(true)
             .selection_format(SelectionFormat::SourceAcrossStyles)
@@ -120,6 +121,7 @@ impl Workspace {
         let session = session.map(SessionId::share);
         TextView::markdown(id, text)
             .style(markdown_style(self.palette.button_accent))
+            .inline_code_style(inline_code_ring(self.palette.button_accent))
             .text_color(self.palette.ink)
             .selectable(true)
             .selection_format(SelectionFormat::SourceAcrossStyles)

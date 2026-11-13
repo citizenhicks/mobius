@@ -333,11 +333,12 @@ fn conversation_pointer(this: &mut Workspace, window: &mut Window, cx: &mut Cont
                         "blank header must pass the copy click through"
                     );
                     window.dispatch_event(
-                        PlatformInput::ScrollWheel(ScrollWheelEvent {
+                        PlatformInput::Scroll(ScrollEvent {
                             position,
                             delta: ScrollDelta::Pixels(point(px(0.), -space::L)),
                             modifiers: Modifiers::default(),
                             touch_phase: TouchPhase::Moved,
+                            source: ScrollSource::Pointer,
                         }),
                         cx,
                     );
