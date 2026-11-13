@@ -16,6 +16,7 @@ enum Action {
         text: SharedString,
     },
     Widget(Box<Op>),
+    Edit(Rc<FrontendAction>),
     Reply {
         target: MessageTarget,
         text: SharedString,
@@ -33,6 +34,7 @@ pub(super) struct Message {
     pub(super) key: SharedString,
     pub(super) text: SharedString,
     pub(super) target: Option<MessageTarget>,
+    pub(super) edit: Option<Rc<FrontendAction>>,
     /// Incoming provenance; generated assistant prose has no input author.
     pub(super) author: Option<MessageAuthor>,
     pub(super) recorded_at_ms: i64,
@@ -113,6 +115,14 @@ impl Workspace {
                 copy.0.into(),
                 copy.1,
                 true,
+            ));
+        }
+        if let Some(edit) = &message.edit {
+            actions.push((
+                Action::Edit(Rc::clone(edit)),
+                edit.label.as_str().into(),
+                symbol_icon_or(Some(&edit.symbol), "hi.dotsThree"),
+                !self.widget_action_blocked(edit),
             ));
         }
         let target = message.target.as_ref().filter(|_| chat);
@@ -225,6 +235,9 @@ impl Workspace {
             }
             Action::Widget(op) => {
                 self.dispatch_widget_operation((**op).clone(), false, cx); // rules-allow: the action runs on every click and each dispatch owns its operation
+            }
+            Action::Edit(action) => {
+                self.activate_widget_action(Rc::clone(action), false, window, cx);
             }
             Action::Reply {
                 target,

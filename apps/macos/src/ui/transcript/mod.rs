@@ -29,6 +29,7 @@ use mobius::protocol::{
 use mobius_gateway::wire::{
     BotShape, TranscriptItemContent, TranscriptRow, TranscriptRowKind, TurnChanges,
 };
+use std::rc::Rc;
 
 /// The longest side of a generated image (TranscriptImageCard's widest card).
 const IMAGE_CARD: f32 = 320.;
@@ -327,6 +328,7 @@ impl Workspace {
             key: format!("{scope}:{}", entry.id).into(),
             text: reply_text,
             target: message.message_target,
+            edit: None,
             author: Some(message.author.clone()), // rules-allow: the 'static message menu owns its author
             recorded_at_ms: entry.recorded_at_ms,
             bot: None,
@@ -374,6 +376,7 @@ impl Workspace {
             key: format!("{scope}:{}", entry.id).into(),
             text: message.text.clone().into(), // rules-allow: the 'static message menu owns its text
             target: entry.message_target().copied(),
+            edit: None,
             author: Some(message.author.clone()), // rules-allow: the 'static message menu owns its author
             recorded_at_ms: entry.recorded_at_ms,
             bot: self.entry_bot(entry),
@@ -450,6 +453,7 @@ impl Workspace {
             key: format!("{scope}:{}", entry.id).into(),
             text,
             target: entry.message_target().copied(),
+            edit: None,
             author: match &entry.content {
                 TranscriptItemContent::Message { message } => Some(message.author.clone()), // rules-allow: the 'static message menu owns its author
                 _ => None,
@@ -873,27 +877,6 @@ impl Workspace {
                         }
                         _ => message_meta(&p, "hi.queue01", Some("queued"), 0),
                     };
-                    let edit = item.action.as_ref().map(|op| {
-                        self.widget_action(
-                            FrontendAction {
-                                id: format!("edit:{}", item.id),
-                                label: "Edit".into(),
-                                symbol: FrontendSymbol::Edit,
-                                tone: FrontendTone::Neutral,
-                                op: op.clone(), // rules-allow: the editor owns its operation while the live widget keeps it
-                                input_from_label: false,
-                                editor: Some(FrontendEditor {
-                                    title: "Edit message".into(),
-                                    label: "Message".into(),
-                                    description: "Update this message before it is delivered."
-                                        .into(),
-                                    submit_label: "Save".into(),
-                                }),
-                            },
-                            false,
-                            cx,
-                        )
-                    });
                     div()
                         .pl(width::BUBBLE_INDENT)
                         .flex()
@@ -912,7 +895,7 @@ impl Workspace {
                                 .whitespace_normal()
                                 .child(item.text.clone()), // rules-allow: the bubble owns its text while the widget keeps it
                         )
-                        .child(meta.children(edit))
+                        .child(meta)
                 } else {
                     div()
                         .min_h(height::COMPACT)
@@ -945,6 +928,22 @@ impl Workspace {
                     key,
                     text: item.text.clone().into(), // rules-allow: the 'static message menu owns its text
                     target: None,
+                    edit: item.action.as_ref().map(|op| {
+                        Rc::new(FrontendAction {
+                            id: format!("edit:{}", item.id),
+                            label: "Edit".into(),
+                            symbol: FrontendSymbol::Edit,
+                            tone: FrontendTone::Neutral,
+                            op: op.clone(), // rules-allow: the editor owns its operation while the live widget keeps it
+                            input_from_label: false,
+                            editor: Some(FrontendEditor {
+                                title: "Edit message".into(),
+                                label: "Message".into(),
+                                description: "Update this message before it is delivered.".into(),
+                                submit_label: "Save".into(),
+                            }),
+                        })
+                    }),
                     author: Some(MessageAuthor::User),
                     recorded_at_ms: 0,
                     bot: None,
