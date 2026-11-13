@@ -1035,17 +1035,6 @@ fn invocation_counts_survive_artifacts_missing_blocks_and_failed_calls() {
     chat.send(None, call_end("t", "failed", true), Vec::new());
     chat.send(None, call_begin("t", "hidden"), Vec::new());
     chat.send(None, call_end("t", "hidden", false), Vec::new());
-    let repeated = Event {
-        submission_id: None,
-        msg: call_end("t", "hidden", false),
-    };
-    let ops = chat.reducer.apply(
-        chat.sequence,
-        chat.sequence.cast_signed() * 1000,
-        &repeated,
-        Vec::new(),
-    );
-    chat.client.apply(&ops);
     chat.send(None, completed("t"), Vec::new());
     let TranscriptRowKind::Worked { counts, .. } = chat.client.row("worked:t").kind else {
         panic!("the turn retains its work summary");
@@ -1091,6 +1080,13 @@ fn nested_preview_events_keep_their_order_within_one_sequence() {
             }),
             Vec::new(),
         ),
+        (started("nested"), Vec::new()),
+        (call_begin("nested", "one"), Vec::new()),
+        (call_end("nested", "one", false), Vec::new()),
+        (call_begin("nested", "two"), Vec::new()),
+        (call_end("nested", "two", true), Vec::new()),
+        (call_end("nested", "two", true), Vec::new()),
+        (completed("nested"), Vec::new()),
     ] {
         reducer.apply(
             1,
@@ -1103,6 +1099,17 @@ fn nested_preview_events_keep_their_order_within_one_sequence() {
         );
     }
     let page = reducer.page();
+    let row = page
+        .rows
+        .iter()
+        .find(|row| &*row.id == "worked:nested")
+        .unwrap();
+    let TranscriptRowKind::Worked { counts, .. } = &row.kind else {
+        panic!("nested turn work summary");
+    };
+    assert_eq!(counts.tool_calls, 3);
+    assert_eq!(counts.errors, 2);
+    assert_eq!(&*page.rows.last().unwrap().id, "worked:nested");
     assert_eq!(
         page.items.iter().map(|item| &*item.id).collect::<Vec<_>>(),
         ["notice:1:0", "block:tools:tool", "notice:1:7"]

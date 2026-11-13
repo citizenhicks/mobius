@@ -37,23 +37,31 @@ struct Slot {
     position: TranscriptPosition,
     /// The started turn holding the item, or `None` for items shown on their own.
     turn: Option<Arc<str>>,
-    invocations: Vec<u64>,
+    invocations: Vec<TranscriptPosition>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum InvocationOutcome {
+    Running,
+    Succeeded,
+    Failed,
 }
 
 #[derive(Debug)]
-// Call IDs may recur across model steps; journal sequences identify invocations.
+// Nested preview events share a journal sequence; their full position identifies each call.
 struct Invocation {
     turn_id: Arc<str>,
     call_id: Arc<str>,
-    ended_at: Option<u64>,
-    failed: bool,
+    outcome: InvocationOutcome,
 }
 
 #[derive(Debug)]
 struct Turn {
     started_at_ms: i64,
-    start_sequence: u64,
+    start: TranscriptPosition,
     ended_at_ms: Option<i64>,
+    tool_calls: u32,
+    failed_tool_calls: u32,
     items: Vec<Arc<str>>,
     rows: Vec<Arc<str>>,
 }
@@ -112,7 +120,7 @@ pub struct TranscriptReducer {
     items: HashMap<Arc<str>, Slot>,
     rows: HashMap<Arc<str>, Arc<TranscriptRow>>,
     turns: HashMap<Arc<str>, Turn>,
-    invocations: BTreeMap<u64, Invocation>,
+    invocations: BTreeMap<TranscriptPosition, Invocation>,
     loose: Vec<Arc<str>>,
     loose_rows: Vec<Arc<str>>,
     /// Each block group's first titled block and its title.
@@ -290,7 +298,7 @@ impl TranscriptReducer {
             .iter()
             .filter(|(id, turn)| {
                 turn.ended_at_ms.is_some()
-                    && turn.start_sequence < sequence
+                    && turn.start.sequence < sequence
                     && self.current_turn.as_ref() != Some(*id)
             })
             .map(|(id, _)| Arc::clone(id))
@@ -369,7 +377,7 @@ impl TranscriptReducer {
         Some(
             self.turns
                 .values()
-                .map(|turn| turn.start_sequence)
+                .map(|turn| turn.start.sequence)
                 .min()
                 .map_or(cut, |start| start.min(cut)),
         )
@@ -432,8 +440,14 @@ impl TranscriptReducer {
         }
         let turn = self.turns.entry(Arc::clone(turn_id)).or_insert(Turn {
             started_at_ms: step.at,
-            start_sequence: step.sequence,
+            start: TranscriptPosition {
+                depth: self.depth,
+                sequence: step.sequence,
+                index: step.base,
+            },
             ended_at_ms: None,
+            tool_calls: 0,
+            failed_tool_calls: 0,
             items: Vec::new(),
             rows: Vec::new(),
         });
@@ -622,55 +636,88 @@ impl TranscriptReducer {
         item.terminal |= terminal;
     }
 
-    fn record_invocation(&mut self, step: &mut Step, event: &EventMsg) -> Option<u64> {
+    fn record_invocation(
+        &mut self,
+        step: &mut Step,
+        event: &EventMsg,
+    ) -> Option<TranscriptPosition> {
         let turn_id = match event {
             EventMsg::ToolCallBegin(call) => &call.turn_id,
             EventMsg::ToolCallEnd(call) => &call.turn_id,
             _ => return None,
         };
         step.touch_turn(self.turns.get_key_value(turn_id).map(|(id, _)| id));
-        let sequence = match event {
+        let position = TranscriptPosition {
+            depth: self.depth,
+            sequence: step.sequence,
+            index: step.base,
+        };
+        let mut new_call = true;
+        let id = match event {
             EventMsg::ToolCallBegin(call) => {
-                self.invocations
-                    .entry(step.sequence)
-                    .or_insert_with(|| Invocation {
+                self.invocations.insert(
+                    position,
+                    Invocation {
                         turn_id: Arc::clone(&call.turn_id),
                         call_id: Arc::clone(&call.call_id),
-                        ended_at: None,
-                        failed: false,
-                    });
-                step.sequence
+                        outcome: InvocationOutcome::Running,
+                    },
+                );
+                position
             }
             EventMsg::ToolCallEnd(call) => {
-                let previous = self.invocations.iter_mut().rev().find(|(_, invocation)| {
-                    invocation.turn_id == call.turn_id
-                        && invocation.call_id == call.call_id
-                        && (invocation.ended_at.is_none()
-                            || invocation.ended_at == Some(step.sequence))
-                });
-                if let Some((sequence, invocation)) = previous {
-                    invocation.ended_at = Some(step.sequence);
-                    invocation.failed = call.is_error;
-                    *sequence
+                let first = self.turns.get(turn_id).map_or(
+                    TranscriptPosition {
+                        depth: self.depth,
+                        sequence: 0,
+                        index: 0,
+                    },
+                    |turn| turn.start,
+                );
+                let previous = self
+                    .invocations
+                    .range_mut(first..)
+                    .rev()
+                    .find(|(_, invocation)| {
+                        invocation.turn_id == call.turn_id
+                            && invocation.call_id == call.call_id
+                            && invocation.outcome == InvocationOutcome::Running
+                    });
+                let outcome = if call.is_error {
+                    InvocationOutcome::Failed
+                } else {
+                    InvocationOutcome::Succeeded
+                };
+                if let Some((id, invocation)) = previous {
+                    invocation.outcome = outcome;
+                    new_call = false;
+                    *id
                 } else {
                     self.invocations.insert(
-                        step.sequence,
+                        position,
                         Invocation {
                             turn_id: Arc::clone(&call.turn_id),
                             call_id: Arc::clone(&call.call_id),
-                            ended_at: Some(step.sequence),
-                            failed: call.is_error,
+                            outcome,
                         },
                     );
-                    step.sequence
+                    position
                 }
             }
             _ => return None,
         };
-        Some(sequence)
+        if let Some(turn) = self.turns.get_mut(turn_id) {
+            if new_call {
+                turn.tool_calls = turn.tool_calls.saturating_add(1);
+            }
+            if matches!(event, EventMsg::ToolCallEnd(call) if call.is_error) {
+                turn.failed_tool_calls = turn.failed_tool_calls.saturating_add(1);
+            }
+        }
+        Some(id)
     }
 
-    fn attach_invocation(&mut self, id: &Arc<str>, invocation: Option<u64>) {
+    fn attach_invocation(&mut self, id: &Arc<str>, invocation: Option<TranscriptPosition>) {
         if let Some(invocation) = invocation
             && let Some(slot) = self.items.get_mut(id)
             && !slot.invocations.contains(&invocation)
@@ -685,7 +732,7 @@ impl TranscriptReducer {
         step: &mut Step,
         blocks: Vec<RenderedBlock>,
         ends_turn: bool,
-        invocation: Option<u64>,
+        invocation: Option<TranscriptPosition>,
     ) -> Option<Arc<str>> {
         let mut first = None;
         for (offset, rendered) in (0_u32..).zip(blocks) {
@@ -1018,12 +1065,7 @@ impl TranscriptReducer {
                 }
             }
         }
-        if !work.is_empty()
-            || self
-                .invocations
-                .values()
-                .any(|call| &*call.turn_id == turn_id)
-        {
+        if !work.is_empty() || turn.tool_calls > 0 {
             let mut items = Vec::new();
             let mut runs = Vec::<TranscriptRow>::new();
             let mut in_run = false;
@@ -1047,11 +1089,10 @@ impl TranscriptReducer {
                 };
             }
             rows.extend(runs);
-            let mut position = work.first().map_or(
-                TranscriptPosition {
-                    depth: self.depth,
-                    sequence: turn.start_sequence,
-                    index: 1,
+            let mut position = work.first().map_or_else(
+                || TranscriptPosition {
+                    index: turn.start.index.saturating_add(1),
+                    ..turn.start
                 },
                 |first| first.position,
             );
@@ -1065,7 +1106,7 @@ impl TranscriptReducer {
                 position,
                 items,
                 kind: TranscriptRowKind::Worked {
-                    counts: self.counts(work.iter().copied(), Some(turn_id)),
+                    counts: self.counts(work.iter().copied(), Some(turn)),
                     started_at_ms: turn.started_at_ms,
                     duration_ms: turn.ended_at_ms.map(|ended| {
                         u64::try_from(ended.saturating_sub(turn.started_at_ms)).unwrap_or(0)
@@ -1244,7 +1285,7 @@ impl TranscriptReducer {
     fn counts<'a>(
         &self,
         slots: impl Iterator<Item = &'a Slot>,
-        turn: Option<&str>,
+        turn: Option<&Turn>,
     ) -> ActivityCounts {
         let mut counts = ActivityCounts::default();
         let mut invocation_ids = HashSet::new();
@@ -1282,12 +1323,10 @@ impl TranscriptReducer {
             *count = count.saturating_add(1);
         }
         match turn {
-            Some(turn) => count_invocations(
-                &mut counts,
-                self.invocations
-                    .values()
-                    .filter(|call| &*call.turn_id == turn),
-            ),
+            Some(turn) => {
+                counts.tool_calls = turn.tool_calls;
+                counts.errors = counts.errors.saturating_add(turn.failed_tool_calls);
+            }
             None => count_invocations(
                 &mut counts,
                 invocation_ids
@@ -1302,7 +1341,9 @@ impl TranscriptReducer {
 fn count_invocations<'a>(counts: &mut ActivityCounts, calls: impl Iterator<Item = &'a Invocation>) {
     for call in calls {
         counts.tool_calls = counts.tool_calls.saturating_add(1);
-        counts.errors = counts.errors.saturating_add(u32::from(call.failed));
+        counts.errors = counts
+            .errors
+            .saturating_add(u32::from(call.outcome == InvocationOutcome::Failed));
     }
 }
 
