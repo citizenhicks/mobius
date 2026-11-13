@@ -1,0 +1,16 @@
+[
+  {
+    "crate": "gpui-fast",
+    "version": "0.1.14",
+    "archive_sha256": "f8c3a7e25e5a4789656da980b0316857acbdb72347b5d890d7d0c549bb9fee72",
+    "source_commit": "a2e2e1bd",
+    "manual_review": "runtime relocated into Fast; scoped replay, culling, frame completion, FPS and opacity repairs"
+  },
+  {
+    "crate": "gpui-fast-apple",
+    "version": "0.1.14",
+    "archive_sha256": "7d1934376409ef93257473cfd1cba16bbc825a3a3afc437410de73208cfd8364",
+    "source_commit": "a2e2e1bd",
+    "manual_review": "runtime relocated into Fast; scoped replay, culling, frame completion, FPS and opacity repairs"
+  }
+]
