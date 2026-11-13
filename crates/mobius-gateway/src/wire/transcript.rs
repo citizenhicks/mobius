@@ -219,7 +219,7 @@ pub struct ActivityCounts {
     /// Reasoning text.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub thoughts: u32,
-    /// Tool invocations, including failed calls and standalone deliverables.
+    /// Invocations observed in the journal, including in-flight and end-only calls.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub tool_calls: u32,
     /// Web search blocks.

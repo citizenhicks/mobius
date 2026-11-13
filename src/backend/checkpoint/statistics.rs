@@ -37,9 +37,9 @@ pub struct RunSummary {
     pub outcome: Option<ExecutionOutcome>,
     /// The model calls.
     pub model_calls: u64,
-    /// The tool calls.
+    /// Tool results accepted in this committed checkpoint; in-flight calls are excluded.
     pub tool_calls: u64,
-    /// The failed tool calls.
+    /// Committed tool results marked as failures.
     pub failed_tool_calls: u64,
     /// The usage.
     pub usage: TokenUsage,

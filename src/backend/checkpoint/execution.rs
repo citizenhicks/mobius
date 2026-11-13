@@ -38,9 +38,9 @@ pub struct ActiveExecution {
     pub started_at_ms: i64,
     /// The model calls.
     pub model_calls: u64,
-    /// The tool calls.
+    /// Tool results accepted by the execution; in-flight calls are excluded.
     pub tool_calls: u64,
-    /// The failed tool calls.
+    /// Accepted tool results marked as failures.
     pub failed_tool_calls: u64,
     /// The usage.
     pub usage: TokenUsage,

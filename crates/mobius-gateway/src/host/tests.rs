@@ -14,6 +14,7 @@ mod live_chats;
 mod memory;
 mod projection;
 mod replay;
+mod statistics;
 
 impl GatewayHost {
     /// A resident session that reports busy while `busy` holds, like one with an armed idle timer.
