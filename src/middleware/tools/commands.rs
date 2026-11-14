@@ -71,7 +71,12 @@ impl Tool for Bash {
                     .and_then(Value::as_str)
                     .filter(|command| !command.is_empty())
                 {
-                    block.title = format!("{} · {}", block.title, command_preview(command));
+                    let preview = command_preview(command);
+                    // The title already shows a short command; the body repeats only a longer one.
+                    if preview == command {
+                        block.text.clear();
+                    }
+                    block.title = format!("{} · {preview}", block.title);
                 }
             }
             EventMsg::ToolCallEnd(result) => end_command_block(&mut block, &result.output),
@@ -216,16 +221,49 @@ fn command_preview(command: &str) -> String {
 }
 
 /// An empty Append title keeps the heading the begin block gave its command, and the
-/// result envelope's background command ID groups this row with every row about it.
+/// result envelope's background command ID groups this row with every row about it. The body
+/// shows the command's own output rather than the envelope the model reads.
 fn end_command_block(block: &mut FrontendBlock, output: &ToolContent) {
     #[derive(Deserialize)]
     struct Envelope {
         command_id: Option<String>,
+        status: String,
+        exit_code: Option<i32>,
+        #[serde(default)]
+        stdout: String,
+        #[serde(default)]
+        stderr: String,
+        error: Option<String>,
     }
     block.title.clear();
-    block.group = serde_json::from_str::<Envelope>(&output.text())
-        .ok()
-        .and_then(|envelope| envelope.command_id);
+    let Ok(envelope) = serde_json::from_str::<Envelope>(&output.text()) else {
+        return;
+    };
+    let mut lines = Vec::new();
+    for stream in [&envelope.stdout, &envelope.stderr] {
+        let stream = stream.trim_end();
+        if !stream.is_empty() {
+            lines.push(stream);
+        }
+    }
+    let status = match (envelope.status.as_str(), envelope.exit_code) {
+        ("running", _) => Some("still running in the background".to_owned()),
+        (_, Some(0)) => None,
+        (_, Some(code)) => Some(format!("exit {code}")),
+        (status, None) => Some(status.to_owned()),
+    };
+    if lines.is_empty() && status.is_none() && envelope.error.is_none() {
+        lines.push("(no output)");
+    }
+    let mut text = lines.join("\n");
+    for note in status.iter().chain(envelope.error.as_ref()) {
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(note);
+    }
+    block.text = super::compact_output(&text);
+    block.group = envelope.command_id;
 }
 
 fn validate_command(command: &str) -> Result<()> {
@@ -370,8 +408,49 @@ mod tests {
             .expect("bash begin");
         assert_eq!(bash.title, format!("Bash · cargo test {}…", "x".repeat(69)));
         assert_eq!(bash.text, command);
+        let short = Bash
+            .render(&begin("bash", serde_json::json!({ "command": "ls" })))
+            .expect("short bash begin");
+        assert_eq!(
+            (short.title.as_str(), short.text.as_str()),
+            ("Bash · ls", "")
+        );
         let bash = Bash.render(&end("bash")).expect("bash end");
         assert_eq!((bash.title.as_str(), bash.group.as_deref()), ("", Some(id)));
+        assert_eq!(bash.text, "still running in the background");
+
+        let finished = |output: serde_json::Value| {
+            Bash.render(&EventMsg::ToolCallEnd(ToolCallEndEvent {
+                turn_id: "turn".into(),
+                call_id: "call".into(),
+                name: "bash".into(),
+                output: output.to_string().into(),
+                is_error: false,
+            }))
+            .expect("bash end")
+            .text
+        };
+        assert_eq!(
+            finished(
+                serde_json::json!({"command_id": null, "status": "exited", "exit_code": 0,
+                "stdout": "tick 1\ntick 2\n", "stderr": "", "truncated": false, "error": null})
+            ),
+            "tick 1\ntick 2"
+        );
+        assert_eq!(
+            finished(
+                serde_json::json!({"command_id": null, "status": "exited", "exit_code": 2,
+                "stdout": "", "stderr": "boom\n", "truncated": false, "error": null})
+            ),
+            "boom\nexit 2"
+        );
+        assert_eq!(
+            finished(
+                serde_json::json!({"command_id": null, "status": "exited", "exit_code": 0,
+                "stdout": "", "stderr": "", "truncated": false, "error": null})
+            ),
+            "(no output)"
+        );
 
         let manage = ManageCommand
             .render(&begin(
