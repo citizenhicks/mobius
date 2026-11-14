@@ -96,6 +96,12 @@ mobius-gateway connect
 mobius pair tcp://127.0.0.1:8741 <one-time-code>
 ```
 
+Closing the terminal interface on a chat with messages prints how to reopen it:
+
+```sh
+mobius resume <chat-id>
+```
+
 Run one task file without the TUI:
 
 ```sh
@@ -174,6 +180,13 @@ Ctrl-T opens a full-screen transcript view, releases mouse capture for native dr
 scrolls with Arrow or Page Up/Page Down. Up/Down and Ctrl-P/Ctrl-N navigate composer history.
 `/files` downloads the selected chat file without overwriting an existing local file; Delete in the
 file picker removes it from the gateway after confirmation.
+
+While a turn works, the row above the composer shows what it is doing and for how long. An
+approval request appears as a card: Up/Down and Enter choose, a digit picks a choice at once, and
+typed text denies the request with that text as the reason. An open question from the Bot appears
+under the chat with numbered answers; on an empty composer a digit answers it. If the gateway
+disconnects, the CLI keeps unsent text in the composer and reconnects to the same chat once the
+gateway answers again.
 
 `/diff [unstaged|staged|committed]` opens a full-screen diff browser. The left pane lists
 changed files; the right pane shows the selected file with syntax highlighting, old/new line
