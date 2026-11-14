@@ -66,8 +66,16 @@ pub enum Command {
 
     /// Open the extension manager.
     Extensions,
+
+    /// Reopen a saved chat by its ID.
+    Resume {
+        /// The chat ID printed when the terminal interface closes.
+        chat: mobius::SessionId,
+    },
 }
 
+/// Characters of a chat's name the exit hint shows before eliding the rest.
+const RESUME_HINT_NAME_CHARS: usize = 60;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const DEFAULT_LOCAL_ENDPOINT: &str = "tcp://127.0.0.1:8741";
 
@@ -78,7 +86,8 @@ impl Cli {
     /// Returns input, gateway connection, authentication, or frontend failures.
     pub async fn run(self) -> std::result::Result<(), Box<dyn std::error::Error>> {
         match self.command {
-            None => run_interactive().await?,
+            None => run_interactive(None).await?,
+            Some(Command::Resume { chat }) => run_interactive(Some(chat)).await?,
             Some(Command::Run { bot, task_file }) => run_task(&bot, &task_file).await?,
             Some(Command::Pair {
                 endpoint,
@@ -94,10 +103,28 @@ impl Cli {
     }
 }
 
-async fn run_interactive() -> Result<()> {
+async fn run_interactive(resume: Option<mobius::SessionId>) -> Result<()> {
     let Some(mut chat) = connect(None, None).await? else {
         return Ok(());
     };
+    if let Some(session_id) = resume {
+        let bootstrap = chat.session.session.session_id.share();
+        chat.session = open_session(
+            &chat.sender,
+            &mut chat.events,
+            &mut chat.gateway,
+            session_id,
+        )
+        .await?;
+        discard_pristine_session(
+            &chat.sender,
+            &mut chat.events,
+            &mut chat.gateway,
+            &bootstrap,
+        )
+        .await?;
+        chat.disposable_session = None;
+    }
     let mut draft = None;
     loop {
         let session_id = &chat.session.session.session_id;
@@ -117,7 +144,20 @@ async fn run_interactive() -> Result<()> {
         chat.sender = sender;
         chat.events = events;
         match exit {
-            FrontendExit::Exit => return Ok(()),
+            FrontendExit::Exit => {
+                let session_id = chat.session.session.session_id.share();
+                refresh_sessions(&chat.sender, &mut chat.events, &mut chat.gateway).await?;
+                if let Some(session) = chat
+                    .gateway
+                    .sessions
+                    .iter()
+                    .find(|session| session.session_id == session_id)
+                    .filter(|session| !pristine_session(session))
+                {
+                    print_resume_hint(session);
+                }
+                return Ok(());
+            }
             FrontendExit::Resume(session_id) => {
                 if session_id != chat.session.session.session_id {
                     let current = chat.session.session.session_id.share();
@@ -209,6 +249,24 @@ async fn read_task_file(path: &Path) -> Result<String> {
     }
     String::from_utf8(bytes)
         .map_err(|error| Error::Config(format!("task file must contain valid UTF-8: {error}")))
+}
+
+#[expect(
+    clippy::print_stdout,
+    reason = "the terminal interface has closed, so the hint goes to the shell it returns to"
+)]
+fn print_resume_hint(session: &SessionRecord) {
+    let first_line = session
+        .title
+        .as_deref()
+        .or(session.first_user_message.as_deref())
+        .and_then(|name| name.lines().next())
+        .unwrap_or("chat");
+    let mut name: String = first_line.chars().take(RESUME_HINT_NAME_CHARS).collect();
+    if name.len() < first_line.len() {
+        name.push('…');
+    }
+    println!("{name} · reopen with: mobius resume {}", session.session_id);
 }
 
 #[expect(
