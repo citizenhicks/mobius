@@ -13,6 +13,7 @@ mod rows;
 mod scroll;
 mod turn_diff;
 mod ui_document;
+pub(in crate::ui) use actions::timestamp;
 pub(in crate::ui) use disclosure::BlockLine;
 pub(in crate::ui) use issue::{IssueAction, ProviderIssue};
 pub(in crate::ui) use links::StreamingMarkdown;

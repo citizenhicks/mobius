@@ -94,6 +94,8 @@ pub struct SessionFileRecord {
     pub origin: SessionFileOrigin,
     /// The file.
     pub file: SessionFileReference,
+    /// When the stored file was last written, in Unix milliseconds.
+    pub modified_at_ms: i64,
 }
 
 /// A command submitted by a frontend.

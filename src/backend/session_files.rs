@@ -325,6 +325,31 @@ impl SessionFileStore {
         self.list_files_for(session_id, origins, false).await
     }
 
+    /// Lists completed files of the requested origins with when each was last written,
+    /// in Unix milliseconds.
+    /// # Errors
+    /// Returns an error if file metadata cannot be read or validated.
+    pub async fn list_files_with_modified(
+        &self,
+        session_id: &SessionId,
+        origins: &[SessionFileOrigin],
+    ) -> Result<Vec<(SessionFileOrigin, SessionFileReference, i64)>> {
+        let directory = self.session_dir(session_id);
+        let mut listed = Vec::new();
+        for (origin, file) in self.list_files(session_id, origins).await? {
+            let modified = tokio::fs::metadata(directory.join(&file.id).join(METADATA_FILE))
+                .await?
+                .modified()?;
+            let modified_at_ms = modified
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map_or(0, |since| {
+                    i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
+                });
+            listed.push((origin, file, modified_at_ms));
+        }
+        Ok(listed)
+    }
+
     /// Lists only files that selective cleanup can remove while retaining chat history.
     /// # Errors
     /// Returns an error if file metadata cannot be read or validated.

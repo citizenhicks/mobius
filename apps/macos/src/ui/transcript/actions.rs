@@ -104,7 +104,7 @@ impl Message {
 }
 
 /// "HH:MM · DD/MM/YY" in local time (MessageTimestamp).
-fn timestamp(milliseconds: i64) -> Option<String> {
+pub(in crate::ui) fn timestamp(milliseconds: i64) -> Option<String> {
     use chrono::TimeZone;
     (milliseconds > 0)
         .then(|| chrono::Local.timestamp_millis_opt(milliseconds).single())

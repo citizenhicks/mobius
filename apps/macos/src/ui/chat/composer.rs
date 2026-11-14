@@ -178,7 +178,7 @@ impl Workspace {
             .child(self.attach_button(cx))
             .child(div().flex_1())
             .child(self.model_selector(cx))
-            .child(self.voice_button(cx))
+            .child(self.dictate_button(cx))
             .child(self.composer_primary(cx))
             .into_any_element()
     }
@@ -203,13 +203,13 @@ impl Workspace {
             .then_some("Wait for the chat to open before dictating.")
     }
 
-    fn voice_button(&self, cx: &Context<Self>) -> AnyElement {
-        let button = composer_button("voice", "Start voice chat", "hi.audioWave01", cx);
-        if let Some(reason) = self.voice_unavailable_reason() {
-            return unavailable("voice-unavailable", button, reason.to_owned(), cx);
+    fn dictate_button(&self, cx: &Context<Self>) -> AnyElement {
+        let button = composer_button("dictate", "Dictate", "hi.mic01", cx);
+        if let Some(reason) = self.dictation_unavailable_reason() {
+            return unavailable("dictate-unavailable", button, reason, cx);
         }
         button
-            .on_click(cx.listener(|this, _, _, cx| this.toggle_voice(cx)))
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_dictation(cx)))
             .into_any_element()
     }
 
@@ -245,7 +245,7 @@ impl Workspace {
         })
     }
 
-    /// Stop while a turn runs with nothing typed, Dictate while empty, otherwise Send.
+    /// Stop while a turn runs with nothing typed, Voice while empty, otherwise Send.
     fn composer_primary(&self, cx: &Context<Self>) -> AnyElement {
         let interrupt = self.interrupt_target(cx);
         let slot = div()
@@ -267,14 +267,14 @@ impl Workspace {
         }
         let empty = self.draft_is_empty(cx);
         if empty && self.queued_draft.is_none() {
-            let dictate = primary_button("dictate", "Dictate", "hi.mic01", cx);
-            let dictate = match self.dictation_unavailable_reason() {
-                Some(reason) => unavailable("dictate-unavailable", dictate, reason, cx),
-                None => dictate
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle_dictation(cx)))
+            let voice = primary_button("voice", "Start voice chat", "hi.audioWave01", cx);
+            let voice = match self.voice_unavailable_reason() {
+                Some(reason) => unavailable("voice-unavailable", voice, reason.to_owned(), cx),
+                None => voice
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_voice(cx)))
                     .into_any_element(),
             };
-            return slot.child(dictate).into_any_element();
+            return slot.child(voice).into_any_element();
         }
         let delivery = self.active_delivery();
         let (label, glyph) = delivery_label(delivery);

@@ -1479,7 +1479,7 @@ async fn list_session_files(
 ) -> Result<()> {
     let listed = match require_selected(selected, &session_id) {
         Ok(_) => session_files
-            .list_files(
+            .list_files_with_modified(
                 &session_id,
                 &[StoredFileOrigin::Upload, StoredFileOrigin::Artifact],
             )
@@ -1493,15 +1493,18 @@ async fn list_session_files(
             session_id,
             files: items
                 .into_iter()
-                .map(|(origin, file)| mobius::protocol::SessionFileRecord {
-                    origin: match origin {
-                        StoredFileOrigin::Upload => mobius::protocol::SessionFileOrigin::User,
-                        StoredFileOrigin::Artifact | StoredFileOrigin::Observation => {
-                            mobius::protocol::SessionFileOrigin::Agent
-                        }
+                .map(
+                    |(origin, file, modified_at_ms)| mobius::protocol::SessionFileRecord {
+                        origin: match origin {
+                            StoredFileOrigin::Upload => mobius::protocol::SessionFileOrigin::User,
+                            StoredFileOrigin::Artifact | StoredFileOrigin::Observation => {
+                                mobius::protocol::SessionFileOrigin::Agent
+                            }
+                        },
+                        file,
+                        modified_at_ms,
                     },
-                    file,
-                })
+                )
                 .collect(),
         }
     })

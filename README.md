@@ -34,8 +34,9 @@
 The iPhone and iPad app connects to the same gateway and is maintained separately.
 
 This checkout prepares **0.17.9** for the framework, gateway and CLI; the released macOS
-app remains **0.17.8** and is compatible. It requires protocol **102**
-clients and gateway configuration version **30**. Protocol 101 clients cannot connect;
+app remains **0.17.8**. It requires protocol **103**
+clients and gateway configuration version **30**. Protocol 102 clients, including the
+released 0.17.8 macOS app, cannot connect;
 update clients before upgrading a gateway. Gateways already on 0.17.2
 can upgrade in place. Existing 0.16.x gateways require an offline configuration
 conversion that preserves usage history in `usage.json`. See the

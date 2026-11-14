@@ -227,7 +227,8 @@ impl Workspace {
     fn open_chat_output(&mut self, session: SessionId, id: &str, cx: &mut Context<Self>) {
         let Some(file) = self
             .chat_outputs()
-            .find(|file| file.id == id)
+            .find(|record| record.file.id == id)
+            .map(|record| &record.file)
             .map(ToOwned::to_owned)
         else {
             return;
@@ -281,7 +282,8 @@ impl Workspace {
         let enabled = self.client.link.is_ready();
         let rows: Vec<_> = self
             .chat_outputs()
-            .map(|file| {
+            .map(|record| {
+                let file = &record.file;
                 let id: Arc<str> = file.id.as_str().into();
                 let session = session.share();
                 div()
@@ -289,7 +291,8 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .gap(space::S)
-                    .h(height::COMPACT)
+                    .min_h(height::COMPACT)
+                    .py(space::XXS)
                     .px(space::S)
                     .mx(-space::S)
                     .control_corners()
@@ -299,14 +302,19 @@ impl Workspace {
                         div()
                             .flex_1()
                             .min_w_0()
-                            .truncate()
-                            .child(file.name.as_str().to_owned()),
+                            .child(div().truncate().child(file.name.as_str().to_owned()))
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_color(p.muted)
+                                    .child(file_detail(&file.name, file.size)),
+                            ),
                     )
                     .child(
                         div()
                             .flex_shrink_0()
                             .text_color(p.muted)
-                            .child(file_detail(&file.name, file.size)),
+                            .children(crate::ui::transcript::timestamp(record.modified_at_ms)),
                     )
                     .when(enabled, |row| {
                         row.role(gpui::Role::Button)

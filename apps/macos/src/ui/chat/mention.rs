@@ -642,12 +642,11 @@ impl Workspace {
     }
 
     /// The files the Bot sent back in the open chat, from the same listing.
-    pub(in crate::ui) fn chat_outputs(&self) -> impl Iterator<Item = &SessionFileReference> {
+    pub(in crate::ui) fn chat_outputs(&self) -> impl Iterator<Item = &SessionFileRecord> {
         self.chat_sources()
             .into_iter()
             .flat_map(|sources| sources.files.iter())
             .filter(|record| record.origin == SessionFileOrigin::Agent)
-            .map(|record| &record.file)
     }
 
     /// Lists two Bot files and one upload as the open chat's files.
@@ -664,6 +663,7 @@ impl Workspace {
                 media_type: media_type.into(),
                 size,
             },
+            modified_at_ms: 1_763_100_000_000,
         };
         self.chat_ui.chat_sources = ChatSources {
             session: Some(session.share()),
@@ -860,6 +860,7 @@ mod tests {
                 media_type: "image/png".into(),
                 size: 100,
             },
+            modified_at_ms: 0,
         }
     }
 

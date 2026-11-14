@@ -42,6 +42,7 @@ fn file_picker_requires_confirmation_before_delete() {
     state.open_session_files(vec![mobius::protocol::SessionFileRecord {
         origin: mobius::protocol::SessionFileOrigin::Agent,
         file: file.clone(),
+        modified_at_ms: 0,
     }]);
 
     assert_eq!(
