@@ -4439,7 +4439,7 @@ dependencies = [
 
 [[package]]
 name = "mobius"
-version = "0.17.8"
+version = "0.17.9"
 dependencies = [
  "base64 0.22.1",
  "bm25",
@@ -4497,7 +4497,7 @@ dependencies = [
 
 [[package]]
 name = "mobius-desktop"
-version = "0.17.8"
+version = "0.17.9"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -4538,7 +4538,7 @@ dependencies = [
 
 [[package]]
 name = "mobius-gateway"
-version = "0.17.8"
+version = "0.17.9"
 dependencies = [
  "base64 0.22.1",
  "chrono",

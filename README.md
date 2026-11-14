@@ -33,12 +33,13 @@
 
 The iPhone and iPad app connects to the same gateway and is maintained separately.
 
-This checkout prepares **0.17.8** for all four packages. It requires protocol **102**
+This checkout prepares **0.17.9** for the framework, gateway and CLI; the released macOS
+app remains **0.17.8** and is compatible. It requires protocol **102**
 clients and gateway configuration version **30**. Protocol 101 clients cannot connect;
 update clients before upgrading a gateway. Gateways already on 0.17.2
 can upgrade in place. Existing 0.16.x gateways require an offline configuration
 conversion that preserves usage history in `usage.json`. See the
-[0.17.8 upgrade notes](.github/release-notes/mobius-gateway-v0.17.8.md)
+[0.17.9 upgrade notes](.github/release-notes/mobius-gateway-v0.17.9.md)
 for client compatibility and rollout details, and the
 [0.17.7 notes](https://github.com/citizenhicks/mobius/releases/tag/mobius-gateway-v0.17.7)
 for older configuration conversions.
