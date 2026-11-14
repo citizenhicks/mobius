@@ -3,7 +3,6 @@ use std::collections::BTreeMap;
 use crate::backend::model::ModelInput;
 use serde::Deserialize;
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
 use super::pages::Scope;
 use super::{Basis, PROJECTION_KIND, text};
@@ -18,16 +17,6 @@ const MAX_INLINE_BODY_BYTES: usize = 500;
 const KNOWN_FIELD: &str = "_memory_known";
 
 type Known = [BTreeMap<String, (u64, String)>; 2];
-
-fn page_version(page: &super::pages::Page) -> (u64, String) {
-    let mut hash = Sha256::new();
-    hash.update(page.description.len().to_be_bytes());
-    hash.update(page.description.as_bytes());
-    hash.update(page.body.len().to_be_bytes());
-    hash.update(page.body.as_bytes());
-    hash.update(page.basis.as_str().as_bytes());
-    (page.updated_at, format!("{:x}", hash.finalize()))
-}
 
 pub(super) fn is_projection_item(item: &Value) -> bool {
     internal_message_kind(item) == Some(PROJECTION_KIND)
@@ -45,7 +34,7 @@ pub(super) fn next_projection(input: ModelInput<'_>, visible: &[Scope; 2]) -> Op
         scope
             .pages
             .iter()
-            .map(|page| (page.name.as_str(), page_version(page)))
+            .map(|page| (page.name.as_str(), page.version()))
             .collect()
     });
     let text = match previous {
@@ -161,11 +150,15 @@ mod tests {
             basis: Basis::AgentObservation,
             updated_at,
             author: None,
+            digest: Default::default(),
         }
     }
 
     fn scopes(global: Vec<Page>, owner: Vec<Page>) -> [Scope; 2] {
-        [global, owner].map(|pages| Scope { owner: None, pages })
+        [global, owner].map(|pages| Scope {
+            owner: None,
+            pages: pages.into(),
+        })
     }
 
     fn content(item: &Value) -> &str {
@@ -180,7 +173,9 @@ mod tests {
         let input: [Value; 0] = [];
         let index = next_projection(input.as_slice().into(), &original).expect("index");
         let mut edited = original;
-        edited[0].pages[0].description = "updated by hand".into();
+        let mut pages = edited[0].pages.to_vec();
+        pages[0].description = "updated by hand".into();
+        edited[0].pages = pages.into();
         let notice = next_projection([index].as_slice().into(), &edited).expect("edit notice");
         assert!(content(&notice).contains("updated by hand"));
     }

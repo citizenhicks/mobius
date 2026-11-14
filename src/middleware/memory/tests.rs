@@ -182,8 +182,8 @@ async fn patches_apply_only_against_the_version_they_read() {
         .load(Some(&alpha))
         .await
         .expect("load")
-        .pages
-        .remove(0);
+        .pages[0]
+        .clone();
     assert_eq!(
         (page.body.as_str(), page.updated_at > version),
         ("make ship --prod", true)
@@ -224,7 +224,7 @@ async fn patches_apply_only_against_the_version_they_read() {
 fn pages_dir(owner: &MemoryOwner) -> String {
     Scope {
         owner: Some(Arc::new(owner.clone())),
-        pages: Vec::new(),
+        pages: Arc::default(),
     }
     .dir_name()
     .expect("dir")

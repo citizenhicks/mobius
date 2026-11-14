@@ -294,6 +294,7 @@ impl MemoryStore {
                         updated_at: next_version(existing),
                         basis: existing.map_or(basis, |page| page.basis.max(basis)),
                         author: op.global.then(|| Arc::clone(owner)),
+                        digest: pages::Digest::default(),
                         name: op.page,
                         description,
                         body,
@@ -349,6 +350,7 @@ impl MemoryStore {
             basis: Basis::UserConfirmed,
             updated_at: next_version(Some(existing)),
             author: existing.author.as_ref().map(Arc::clone),
+            digest: pages::Digest::default(),
             name,
         };
         self.pages.put(owner, &page).await
@@ -387,6 +389,7 @@ impl MemoryStore {
             basis: Basis::UserConfirmed,
             updated_at: next_version(None),
             author: owner.is_none().then_some(author).flatten().map(Arc::clone),
+            digest: pages::Digest::default(),
         };
         self.pages.put(owner, &page).await
     }
@@ -973,7 +976,7 @@ fn items(scopes: &[Scope]) -> Result<Vec<MemoryItem>> {
         .find(|(scope, _)| scope.owner.is_none());
     let mut items = Vec::new();
     for (scope, directory) in scopes.iter().zip(&directories) {
-        for page in &scope.pages {
+        for page in scope.pages.iter() {
             let mut links = Vec::<MemoryLink>::new();
             for name in page.links() {
                 if links.iter().any(|link| &*link.name == name) {

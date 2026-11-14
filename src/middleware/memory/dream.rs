@@ -172,7 +172,7 @@ fn render_pages(visible: &[Scope; 2]) -> Result<String> {
     let mut text = String::from("<memory_pages>\n");
     for scope in visible {
         let global = scope.owner.is_none();
-        for page in &scope.pages {
+        for page in scope.pages.iter() {
             let header = format!(
                 "## [[{}]] global: {global} base_updated_at: {}\n{}\n",
                 page.name, page.updated_at, page.description
@@ -221,6 +221,7 @@ mod tests {
             basis: Basis::AgentObservation,
             updated_at: 1,
             author: None,
+            digest: Default::default(),
         }
     }
 
@@ -238,11 +239,11 @@ mod tests {
         let visible = [
             Scope {
                 owner: None,
-                pages: vec![page("about-the-user", "See [[deploy]].")],
+                pages: vec![page("about-the-user", "See [[deploy]].")].into(),
             },
             Scope {
                 owner: Some(owner),
-                pages: vec![page("deploy", "Run make. See [[missing]].")],
+                pages: vec![page("deploy", "Run make. See [[missing]].")].into(),
             },
         ];
         let text = render_pages(&visible).expect("render");
