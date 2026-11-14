@@ -9,7 +9,6 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
 
 use super::tools::Catalog;
 use super::{
@@ -241,13 +240,13 @@ enum Writer<'a> {
     Dream(&'a SessionId),
 }
 
-type Access<'a> = tokio::sync::MutexGuard<'a, ()>;
+type Access<'a> = tokio::sync::RwLockWriteGuard<'a, ()>;
 
 struct MemoryStore {
     pages: Pages,
     checkpoints: Arc<dyn CheckpointStore>,
-    // Serializes read-modify-write across every scope.
-    access: Mutex<()>,
+    // Writes are exclusive across every scope, so a read never sees half a patch; reads share it.
+    access: tokio::sync::RwLock<()>,
 }
 
 impl MemoryStore {
@@ -492,7 +491,7 @@ impl MemoryPages {
     /// Every page `owner`'s chats can see, global first, each scope newest first.
     pub(crate) async fn documents(&self, owner: &Arc<MemoryOwner>) -> Result<Vec<MemoryItem>> {
         let visible = {
-            let _access = self.store.access.lock().await;
+            let _access = self.store.access.read().await;
             self.store.visible(owner).await?
         };
         items(&visible)
@@ -557,7 +556,7 @@ impl Memory {
             store: Arc::new(MemoryStore {
                 pages: Pages::new(root),
                 checkpoints,
-                access: Mutex::new(()),
+                access: tokio::sync::RwLock::new(()),
             }),
             owner: OnceLock::new(),
             dream_after: None,
@@ -612,7 +611,7 @@ impl Memory {
     ///
     /// Returns an error if the saved pages cannot be loaded.
     pub async fn list(&self) -> Result<Vec<MemoryItem>> {
-        let _access = self.store.access.lock().await;
+        let _access = self.store.access.read().await;
         items(&self.store.pages.all().await?)
     }
 
@@ -621,7 +620,7 @@ impl Memory {
     ///
     /// Returns [`Error::Tool`] for an unknown id or rejected text.
     pub async fn edit(&self, id: &str, description: &str, body: &str) -> Result<()> {
-        let access = self.store.access.lock().await;
+        let access = self.store.access.write().await;
         self.store
             .host_locked(id, Some((Some(description), body)), &access)
             .await
@@ -632,7 +631,7 @@ impl Memory {
     ///
     /// Returns [`Error::Tool`] for an unknown id.
     pub async fn forget(&self, id: &str) -> Result<()> {
-        let access = self.store.access.lock().await;
+        let access = self.store.access.write().await;
         self.store.host_locked(id, None, &access).await
     }
 
@@ -641,7 +640,7 @@ impl Memory {
     ///
     /// Returns an error if the saved pages cannot be loaded.
     pub async fn global_contribution(&self) -> Result<FrontendContribution> {
-        let access = self.store.access.lock().await;
+        let access = self.store.access.write().await;
         self.global_contribution_locked(&access).await
     }
 
@@ -667,7 +666,7 @@ impl Memory {
             return Err(invalid());
         }
         let parsed = parse_command(command, arguments, input.as_deref())?.ok_or_else(invalid)?;
-        let access = self.store.access.lock().await;
+        let access = self.store.access.write().await;
         self.execute_locked(parsed, None, &access).await?;
         self.global_contribution_locked(&access).await
     }
@@ -869,7 +868,7 @@ impl Middleware for Memory {
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             let (visible, all) = {
-                let _access = self.store.access.lock().await;
+                let _access = self.store.access.read().await;
                 (
                     self.store.visible(self.owner()?).await?,
                     self.store.pages.all().await?,
@@ -894,7 +893,7 @@ impl Middleware for Memory {
         context: MiddlewareCommandContext<'a>,
     ) -> BoxFuture<'a, Result<MiddlewareCommandOutput>> {
         Box::pin(async move {
-            let access = self.store.access.lock().await;
+            let access = self.store.access.write().await;
             self.command_locked(context.command, context.arguments, context.input, &access)
                 .await
         })
@@ -905,7 +904,7 @@ impl Middleware for Memory {
         context: &'a mut ActiveCommandContext<'_>,
     ) -> BoxFuture<'a, Result<Option<SubmissionResult>>> {
         Box::pin(async move {
-            let Ok(access) = self.store.access.try_lock() else {
+            let Ok(access) = self.store.access.try_write() else {
                 return Ok(None);
             };
             let output = self
@@ -921,7 +920,7 @@ impl Middleware for Memory {
     fn pre_model<'a>(&'a self, context: &'a mut ModelContext<'_>) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             let visible = {
-                let _access = self.store.access.lock().await;
+                let _access = self.store.access.read().await;
                 self.store.visible(self.owner()?).await?
             };
             if let Some(item) = next_projection(context.input(), &visible) {

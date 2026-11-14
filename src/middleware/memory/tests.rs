@@ -59,7 +59,7 @@ async fn apply(
     ops: Vec<Op>,
     writer: Writer<'_>,
 ) -> Vec<String> {
-    let access = memory.store.access.lock().await;
+    let access = memory.store.access.write().await;
     memory
         .store
         .apply_locked(owner, ops, Basis::AgentObservation, writer, &access)
@@ -154,7 +154,7 @@ async fn patches_apply_only_against_the_version_they_read() {
         set("deploy", false, "stale", Some(version - 1)),
         set("deploy", false, "unversioned", None),
     ] {
-        let access = memory.store.access.lock().await;
+        let access = memory.store.access.write().await;
         assert!(
             memory
                 .store
@@ -303,7 +303,7 @@ async fn a_merge_keeps_its_source_until_every_replacement_succeeds() {
         ]
     };
     let session: SessionId = "dream".parse().unwrap();
-    let access = memory.store.access.lock().await;
+    let access = memory.store.access.write().await;
     assert!(
         memory
             .store
@@ -409,7 +409,7 @@ async fn concurrent_batches_cannot_overfill_a_scope_but_merges_can_reuse_a_slot(
         let memory = &memory;
         let alpha = &alpha;
         async move {
-            let access = memory.store.access.lock().await;
+            let access = memory.store.access.write().await;
             memory
                 .store
                 .apply_locked(

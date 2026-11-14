@@ -48,7 +48,7 @@ async fn dream(memory: &Memory, context: &mut ModelContext<'_>) -> Result<()> {
             .await;
     }
     let visible = {
-        let _access = store.access.lock().await;
+        let _access = store.access.read().await;
         store.visible(owner).await?
     };
     let prompt = format!(
@@ -89,7 +89,7 @@ async fn dream(memory: &Memory, context: &mut ModelContext<'_>) -> Result<()> {
         .filter(|call| &*call.name == "patch_memory")
     {
         let ops = parse_ops(call.arguments)?;
-        let access = store.access.lock().await;
+        let access = store.access.write().await;
         let results = store
             .apply_locked(
                 owner,
@@ -105,7 +105,7 @@ async fn dream(memory: &Memory, context: &mut ModelContext<'_>) -> Result<()> {
     }
     if patched {
         let all = {
-            let _access = store.access.lock().await;
+            let _access = store.access.read().await;
             store.pages.all().await?
         };
         publish_widgets(&context.runtime.frontend, &items(&all)?)?;

@@ -88,7 +88,7 @@ impl Tool for PatchMemory {
     ) -> BoxFuture<'_, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             let ops = parse_ops(arguments)?;
-            let access = self.store.access.lock().await;
+            let access = self.store.access.write().await;
             let results = self
                 .store
                 .apply_locked(
