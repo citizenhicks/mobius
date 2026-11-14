@@ -17,6 +17,8 @@ pub struct ConnectionPolicy {
     pub active_sessions: usize,
     /// Maximum unfinished uploads on each connection.
     pub pending_uploads: usize,
+    /// Minutes a chat with no client and no activity stays loaded before it is released.
+    pub idle_session_minutes: u64,
 }
     defaults = include_str!("policy.toml");
 }
@@ -38,6 +40,11 @@ impl ConnectionPolicy {
                 1..=crate::config::MAX_CAPACITY,
             )?;
         }
+        crate::config::bounded(
+            "connections.idle_session_minutes",
+            self.idle_session_minutes,
+            1..=1_440,
+        )?;
         crate::config::bounded(
             "connections.authentication_timeout_seconds",
             self.authentication_timeout_seconds,

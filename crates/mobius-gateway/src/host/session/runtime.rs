@@ -111,6 +111,7 @@ impl HostState {
                         self.pending_turns = self.pending_turns.saturating_sub(1);
                     }
                     respond(admission.reply, admission.result.map(|_| ()).map_err(source_rejection), "source admission");
+                    self.last_active = std::time::Instant::now();
                     self.settle_idle().await;
                 }
                 command = self.commands.recv() => {
@@ -118,6 +119,7 @@ impl HostState {
                     if !Box::pin(self.handle(command)).await { break; }
                 }
                 event = self.running.events().recv() => if let Some(event) = event {
+                    self.last_active = std::time::Instant::now();
                     if let Err(error) = self.apply_event(event).await {
                         let message: Arc<str> = error.to_string().into();
                         self.broadcast(ServerMessage::Error {
@@ -403,8 +405,11 @@ impl HostState {
                     self.idle_waiters.push(reply);
                 }
             }
-            HostCommand::StopIfIdle { reply } => {
-                if !self.is_idle() {
+            HostCommand::StopIfIdle { quiet_for, reply } => {
+                // A timed release also waits out a running idle turn such as a dream.
+                let quiet = quiet_for.is_zero()
+                    || (self.idle_turn.is_none() && self.last_active.elapsed() >= quiet_for);
+                if !self.is_idle() || !quiet {
                     respond(reply, false, "stop-if-idle");
                     return true;
                 }

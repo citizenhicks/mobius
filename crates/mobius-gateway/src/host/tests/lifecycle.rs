@@ -694,3 +694,40 @@ async fn history_and_a_cut_replay_mark_only_the_turn_after_an_agent_restart_resu
     assert_eq!(resumed("message:same-run"), Some(false));
     drop(gateway);
 }
+
+#[tokio::test]
+async fn quiet_chats_no_client_holds_are_released_and_held_ones_stay() {
+    let TestGateway {
+        root: _root,
+        workspace,
+        gateway,
+    } = test_gateway().await;
+    let held = create_test_session(&gateway, &workspace)
+        .await
+        .expect("held chat");
+    let released = create_test_session(&gateway, &workspace)
+        .await
+        .expect("released chat")
+        .session_id()
+        .clone();
+    let hour = std::time::Duration::from_secs(3_600);
+    assert_eq!(
+        gateway.release_quiet_chats(hour).await,
+        0,
+        "not quiet long enough"
+    );
+    assert!(gateway.is_resident(&released).await);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert_eq!(
+        gateway
+            .release_quiet_chats(std::time::Duration::from_millis(1))
+            .await,
+        1
+    );
+    assert!(!gateway.is_resident(&released).await);
+    assert!(
+        gateway.is_resident(held.session_id()).await,
+        "a client holds it"
+    );
+    drop(gateway);
+}

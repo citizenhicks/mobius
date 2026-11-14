@@ -93,6 +93,8 @@ struct HostState {
     events: broadcast::Sender<SharedFrame>,
     gateway_events: broadcast::Sender<super::GatewayUpdate>,
     idle_waiters: Vec<oneshot::Sender<()>>,
+    /// When the agent last produced an event or a message was admitted.
+    last_active: std::time::Instant,
 }
 
 pub(super) struct LoadedReplay {
@@ -302,6 +304,8 @@ pub(super) enum HostCommand {
         reply: oneshot::Sender<()>,
     },
     StopIfIdle {
+        /// How long the chat must have been quiet; zero stops any idle chat.
+        quiet_for: std::time::Duration,
         reply: oneshot::Sender<bool>,
     },
     Shutdown,
@@ -408,6 +412,7 @@ impl HostHandle {
             events: events.clone(), // rules-allow: the actor publishes on the broadcast sender the handle subscribes to
             gateway_events,
             idle_waiters: Vec::new(),
+            last_active: std::time::Instant::now(),
         };
         if !state.spec.catalog_visible {
             let runtime =
@@ -725,8 +730,14 @@ impl HostHandle {
     }
 
     pub(super) async fn stop_if_idle(&self) -> bool {
+        self.stop_if_quiet(std::time::Duration::ZERO).await
+    }
+
+    /// Stops the chat when it is idle and nothing has happened in it for `quiet_for`.
+    pub(super) async fn stop_if_quiet(&self, quiet_for: std::time::Duration) -> bool {
         let (reply, receiver) = oneshot::channel();
-        let stopped = if self.send(HostCommand::StopIfIdle { reply }).await.is_err() {
+        let command = HostCommand::StopIfIdle { quiet_for, reply };
+        let stopped = if self.send(command).await.is_err() {
             true
         } else {
             receiver.await.unwrap_or(true)

@@ -45,6 +45,7 @@ pre_authentication = 16
 authentication_timeout_seconds = 30
 active_sessions = 64
 pending_uploads = 16
+idle_session_minutes = 60
 
 [auth]
 paired_clients = 64
@@ -70,6 +71,11 @@ Capacity defaults are 32 authenticated connections, 8 pre-authentication connect
 32 resident sessions, 8 pending uploads per connection and 32 paired clients including
 the local operator. Counts accept 1–4096. The authentication deadline defaults to
 5 seconds (1–3600) and covers TCP, TLS/Noise and the authentication frame together.
+A chat with no connected client and nothing happening in it for `idle_session_minutes`
+(default 30, 1–1440) is released from memory and reloads from its checkpoint on the next
+message, so resident memory follows the chats in use rather than the session limit. Set it
+above memory's `dream_minutes` and compaction's `idle_minutes` so their idle work runs
+first; a dream that misses its window catches up after the chat's next turn.
 Pairing lifetime defaults to 600 seconds (1–86400). Lowering the client limit preserves
 existing identities and blocks new pairing beyond that limit.
 

@@ -65,6 +65,11 @@ impl GatewayHost {
                             tracing::debug!("busy probe requester stopped waiting");
                         }
                     }
+                    Some(HostCommand::StopIfIdle { reply, .. }) => {
+                        if reply.send(false).is_err() {
+                            tracing::debug!("busy probe stop requester stopped waiting");
+                        }
+                    }
                     Some(HostCommand::Shutdown) | None => break,
                     Some(_) => {}
                 }
@@ -102,6 +107,12 @@ impl GatewayHost {
                                 }
                             } else if reply.send(Ok(false)).is_err() {
                                 tracing::debug!("activity probe requester stopped waiting");
+                            }
+                        }
+                        // The quiet-chat sweep may ask; a probe is never released.
+                        Some(HostCommand::StopIfIdle { reply, .. }) => {
+                            if reply.send(false).is_err() {
+                                tracing::debug!("activity probe stop requester stopped waiting");
                             }
                         }
                         Some(HostCommand::Shutdown) | None => break,

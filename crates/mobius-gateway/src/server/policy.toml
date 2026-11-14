@@ -3,3 +3,4 @@ pre_authentication = 8
 authentication_timeout_seconds = 5
 active_sessions = 32
 pending_uploads = 8
+idle_session_minutes = 30

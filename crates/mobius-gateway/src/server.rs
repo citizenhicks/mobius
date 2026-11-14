@@ -241,6 +241,7 @@ impl GatewayServer {
         let mut stop_cause = StopCause::Signal;
         let mut connections = JoinSet::new();
         let mut routine_dispatchers = JoinSet::new();
+        let mut releases = JoinSet::new();
         let mut next_nudge = Instant::now();
         let connection_admission = ConnectionAdmission::new(
             self.config.connections.pre_authentication,
@@ -264,6 +265,7 @@ impl GatewayServer {
             || self.bots.storage.has_monitored_sessions()?;
         let inactivity = tokio::time::sleep(inactivity_timeout);
         tokio::pin!(inactivity);
+        let idle_session = Duration::from_secs(self.config.connections.idle_session_minutes * 60);
         let mut routine_timer = tokio::time::interval(ROUTINE_TICK);
         routine_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         tokio::pin!(shutdown);
@@ -297,6 +299,16 @@ impl GatewayServer {
                             break Ok(());
                         }
                         self.tick_telemetry(client_connections, Trigger::Interval, &mut telemetry_tasks).await;
+                        // Off the loop: asking a busy chat waits for it. Dropping the set aborts it.
+                        if releases.is_empty() {
+                            let host = Arc::clone(&self.host);
+                            releases.spawn(async move {
+                                let released = host.release_quiet_chats(idle_session).await;
+                                if released > 0 {
+                                    tracing::info!(released, "released quiet chats from memory");
+                                }
+                            });
+                        }
                         // Keep reservation and the shutdown decision under the same
                         // admission gate; future schedules alone do not keep it open.
                         let Ok(_admission) = self.host.begin_mutation().await else { continue; };
@@ -320,6 +332,11 @@ impl GatewayServer {
                         // hook action worker starts scheduled and manually requested runs.
                         drop(poll.events);
 
+                    }
+                    Some(result) = releases.join_next(), if !releases.is_empty() => {
+                        if let Err(error) = result {
+                            tracing::warn!(%error, "quiet chat release failed");
+                        }
                     }
                     Some(result) = telemetry_tasks.join_next(), if !telemetry_tasks.is_empty() => {
                         if let Err(error) = result {

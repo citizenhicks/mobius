@@ -983,6 +983,46 @@ impl GatewayHost {
 }
 
 impl GatewayHost {
+    /// Releases every chat no client holds that has been quiet for `quiet_for`; it reloads
+    /// from its checkpoint on the next message. Returns how many were released.
+    pub(crate) async fn release_quiet_chats(&self, quiet_for: std::time::Duration) -> usize {
+        let _capacity = self.capacity_gate.lock().await;
+        let mut released = 0;
+        for id in self.unreferenced_chats().await {
+            let Some(host) = self.take_unreferenced(&id).await else {
+                continue;
+            };
+            if host.stop_if_quiet(quiet_for).await {
+                released += 1;
+            } else {
+                self.state.lock().await.sessions.entry(id).or_insert(host);
+            }
+        }
+        released
+    }
+
+    /// The chats no client holds, revisited one by one after the state lock is released.
+    async fn unreferenced_chats(&self) -> Vec<SessionId> {
+        let state = self.state.lock().await;
+        state
+            .sessions
+            .iter()
+            .filter(|(_, host)| host.is_unreferenced())
+            .map(|(id, _)| id.clone()) // rules-allow: candidates outlive the state lock
+            .collect()
+    }
+
+    /// Removes `id` from the registry while still no client holds it.
+    async fn take_unreferenced(&self, id: &SessionId) -> Option<HostHandle> {
+        let mut state = self.state.lock().await;
+        state
+            .sessions
+            .get(id)
+            .is_some_and(HostHandle::is_unreferenced)
+            .then(|| state.sessions.remove(id))
+            .flatten()
+    }
+
     pub(super) async fn ensure_capacity(
         &self,
     ) -> std::result::Result<tokio::sync::MutexGuard<'_, ()>, Rejection> {
@@ -996,23 +1036,11 @@ impl GatewayHost {
                 if state.resident_sessions()? < state.session_capacity()? {
                     return Ok(capacity);
                 }
-                state
-                    .sessions
-                    .iter()
-                    .filter(|(_, host)| host.is_unreferenced())
-                    .map(|(id, _)| id.clone()) // rules-allow: stop candidates are revisited after the state lock is released
-                    .collect::<Vec<_>>()
+                drop(state);
+                self.unreferenced_chats().await
             };
             for id in candidates {
-                let Some(host) = ({
-                    let mut state = self.state.lock().await;
-                    state
-                        .sessions
-                        .get(&id)
-                        .is_some_and(HostHandle::is_unreferenced)
-                        .then(|| state.sessions.remove(&id))
-                        .flatten()
-                }) else {
+                let Some(host) = self.take_unreferenced(&id).await else {
                     continue;
                 };
                 if host.stop_if_idle().await {
