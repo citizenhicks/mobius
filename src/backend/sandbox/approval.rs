@@ -277,12 +277,29 @@ impl Approval {
     }
 }
 
+/// Each call by its tool's own title when the host filled a preview, else its name and arguments.
 fn approval_tools(calls: &[crate::protocol::ApprovalCall]) -> String {
     calls
         .iter()
-        .map(|call| format!("{} {}", call.name, preview_json(&call.arguments)))
+        .map(|call| match &call.preview {
+            Some(preview) if !preview.title.is_empty() => preview.title.clone(), // rules-allow: the row owns its label text
+            _ => match lone_string(&call.arguments) {
+                Some(value) => format!("{} · {value}", call.name),
+                None => format!("{} {}", call.name, preview_json(&call.arguments)),
+            },
+        })
         .collect::<Vec<_>>()
         .join("\n  ")
+}
+
+/// The only string among an object's arguments, such as a command, shown bare.
+fn lone_string(arguments: &serde_json::Value) -> Option<&str> {
+    let mut strings = arguments
+        .as_object()?
+        .values()
+        .filter_map(serde_json::Value::as_str);
+    let value = strings.next()?;
+    strings.next().is_none().then_some(value)
 }
 
 fn widget(policy: ApprovalPolicy) -> FrontendWidget {
