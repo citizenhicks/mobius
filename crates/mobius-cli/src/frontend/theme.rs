@@ -98,11 +98,17 @@ impl Theme {
     }
 }
 
-/// The "◉ MÖBIUS section" line that heads every full-screen view.
+/// Dither shades fading in toward a heading, and back out after it.
+pub(crate) const DITHER_IN: &str = "▓▒░";
+pub(crate) const DITHER_OUT: &str = "░▒▓";
+/// The dither mark a divider carries between its rule segments.
+pub(crate) const DITHER_MARK: &str = "░▒▓▒░";
+
+/// The "▓▒░ MÖBIUS section" line that heads every full-screen view.
 pub(super) fn brand_header(section: &str) -> Line<'static> {
     let theme = current();
     Line::from(vec![
-        Span::styled("◉ ", theme.style(Role::AccentStrong)),
+        Span::styled(format!("{DITHER_IN} "), theme.style(Role::AccentStrong)),
         Span::styled(
             "MÖBIUS",
             theme.style(Role::Accent).add_modifier(Modifier::BOLD),

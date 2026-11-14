@@ -16,7 +16,7 @@ use super::{
 use crate::frontend::catalog::{MenuItem, UiCatalog};
 use crate::frontend::dashboard::centered_area;
 use crate::frontend::terminal::{borrow_line, terminal_text, truncate_bytes};
-use crate::frontend::theme::{Role, current};
+use crate::frontend::theme::{DITHER_IN, DITHER_MARK, DITHER_OUT, Role, current};
 use mobius::protocol::{
     ActiveMessageDelivery, FrontendBlockFormat, FrontendBlockRole, FrontendSlot, FrontendTone,
     FrontendWidget,
@@ -25,6 +25,8 @@ use mobius::protocol::{
 const MAX_MENU_ROWS: usize = 6;
 const COMPOSER_PROMPT: &str = "» ";
 const AGENT_MARKER: &str = "• ";
+/// Rule cells before a divider's dither mark.
+const DIVIDER_LEAD: usize = 9;
 /// Preview lines an approval card shows for one call before folding the rest.
 const MAX_APPROVAL_PREVIEW_LINES: usize = 8;
 /// The narrowest step label worth keeping the key hints beside.
@@ -258,7 +260,7 @@ fn push_question_card(
 ) {
     let theme = current();
     lines.push(Line::from(vec![
-        Span::styled("? ", theme.style(Role::Accent).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("{DITHER_IN} "), theme.style(Role::Accent)),
         Span::styled(
             terminal_text(&question.text),
             theme.style(Role::Text).add_modifier(Modifier::BOLD),
@@ -300,10 +302,13 @@ fn push_approval_card(
     request: &mobius::protocol::ExecApprovalRequestEvent,
 ) {
     let theme = current();
-    let mut heading = vec![Span::styled(
-        "Allow this?",
-        theme.style(Role::Warning).add_modifier(Modifier::BOLD),
-    )];
+    let mut heading = vec![
+        Span::styled(format!("{DITHER_IN} "), theme.style(Role::Warning)),
+        Span::styled(
+            "Allow this?",
+            theme.style(Role::Warning).add_modifier(Modifier::BOLD),
+        ),
+    ];
     if state.approvals.len() > 1 {
         heading.push(Span::styled(
             format!(" · {} pending", state.approvals.len()),
@@ -558,11 +563,22 @@ fn wrapped_line_height(line: &Line<'_>, width: u16) -> usize {
         .line_count(width)
 }
 
+/// The rule before a user message, carrying a small dither mark near its start.
 fn separator_line(width: u16) -> Line<'static> {
-    Line::styled(
-        "─".repeat(usize::from(width)),
-        current().style(Role::Border),
-    )
+    let theme = current();
+    let width = usize::from(width);
+    let mark = DITHER_MARK.chars().count();
+    if width < DIVIDER_LEAD + mark {
+        return Line::styled("─".repeat(width), theme.style(Role::Border));
+    }
+    Line::from(vec![
+        Span::styled("─".repeat(DIVIDER_LEAD), theme.style(Role::Border)),
+        Span::styled(DITHER_MARK, theme.style(Role::Neutral)),
+        Span::styled(
+            "─".repeat(width - DIVIDER_LEAD - mark),
+            theme.style(Role::Border),
+        ),
+    ])
 }
 
 pub(super) fn render_preview(frame: &mut Frame<'_>, state: &mut TuiState) {
@@ -1008,11 +1024,11 @@ fn transcript_role(tone: TranscriptTone) -> Role {
 }
 
 fn responsive_welcome_card(state: &TuiState, width: u16) -> String {
-    let welcome = bordered_card(state.agent_summary.lines().collect());
+    let welcome = dither_banner(state.agent_summary.lines().collect());
     if card_fits(&welcome, width) {
         return welcome;
     }
-    let compact = bordered_card(state.agent_summary.lines().take(2).collect());
+    let compact = dither_banner(state.agent_summary.lines().take(2).collect());
     if card_fits(&compact, width) {
         compact
     } else {
@@ -1025,20 +1041,17 @@ fn card_fits(card: &str, width: u16) -> bool {
         .all(|line| Line::from(line).width() <= usize::from(width))
 }
 
-fn bordered_card(rows: Vec<&str>) -> String {
-    let width = rows
-        .iter()
-        .map(|row| Line::from(*row).width())
-        .max()
-        .unwrap_or_default();
-    let border = "─".repeat(width + 2);
-    let mut lines = vec![format!("╭{border}╮")];
-    lines.extend(rows.into_iter().map(|row| {
-        let padding = width.saturating_sub(Line::from(row).width());
-        format!("│ {row}{} │", " ".repeat(padding))
-    }));
-    lines.push(format!("╰{border}╯"));
-    lines.join("\n")
+/// The welcome rows under a heading that fades in and out through dither shades.
+fn dither_banner(rows: Vec<&str>) -> String {
+    let mut rows = rows.into_iter();
+    let Some(heading) = rows.next() else {
+        return String::new();
+    };
+    let indent = " ".repeat(DITHER_IN.chars().count() + 1);
+    std::iter::once(format!("{DITHER_IN} {heading} {DITHER_OUT}"))
+        .chain(rows.map(|row| format!("{indent}{row}")))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn tone_role(tone: FrontendTone) -> Role {
@@ -1271,14 +1284,7 @@ fn activity_line(state: &TuiState, width: u16) -> Line<'static> {
         spinner,
         theme.style(Role::Accent).add_modifier(Modifier::BOLD),
     )];
-    spans.extend(
-        shimmer::line(
-            &label,
-            theme.color(Role::Accent),
-            theme.color(Role::AccentStrong),
-        )
-        .spans,
-    );
+    spans.extend(shimmer::line(&label, theme.color(Role::Accent), theme.color(Role::Text)).spans);
     spans.push(Span::styled(elapsed, theme.style(Role::Text)));
     spans.push(Span::styled(keys, theme.style(Role::Muted)));
     Line::from(spans)

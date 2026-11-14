@@ -8,6 +8,8 @@ static PROCESS_START: OnceLock<Instant> = OnceLock::new();
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const SPINNER_FRAME_MILLIS: u128 = 80;
+/// A 1×4 ordered-dither threshold row: neighbouring cells light at well-spread intensities.
+const BAYER: [f32; 4] = [0.125, 0.625, 0.375, 0.875];
 
 pub(super) fn line(text: &str, base: Color, highlight: Color) -> Line<'static> {
     line_at(text, elapsed_since_start(), base, highlight)
@@ -58,29 +60,19 @@ fn line_at(text: &str, elapsed: Duration, base: Color, highlight: Color) -> Line
                     }
                     Ok(_) | Err(_) => 0.0,
                 };
+                // Ordered dither: each cell switches fully on or off against its Bayer threshold,
+                // so the band reads as a stipple that thins toward its edges.
+                let threshold = BAYER.get(index % BAYER.len()).copied().unwrap_or(0.5);
+                let color = if intensity > threshold {
+                    highlight
+                } else {
+                    base
+                };
                 Span::styled(
                     character.to_string(),
-                    Style::default()
-                        .fg(blend(highlight, base, intensity * 0.9))
-                        .add_modifier(Modifier::BOLD),
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
                 )
             })
             .collect::<Vec<_>>(),
-    )
-}
-
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "an alpha mix of two u8 channels stays within 0..=255"
-)]
-fn blend(foreground: Color, background: Color, alpha: f32) -> Color {
-    let (Color::Rgb(fr, fg, fb), Color::Rgb(br, bg, bb)) = (foreground, background) else {
-        return if alpha >= 0.5 { foreground } else { background };
-    };
-    Color::Rgb(
-        (f32::from(fr) * alpha + f32::from(br) * (1.0 - alpha)) as u8,
-        (f32::from(fg) * alpha + f32::from(bg) * (1.0 - alpha)) as u8,
-        (f32::from(fb) * alpha + f32::from(bb) * (1.0 - alpha)) as u8,
     )
 }
