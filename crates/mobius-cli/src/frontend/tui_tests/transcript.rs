@@ -153,3 +153,37 @@ fn a_snapshot_answer_continues_under_the_same_item_id() {
     assert_eq!(state.transcript.len(), 1);
     assert_eq!(state.transcript.front().unwrap().text, "Hello!");
 }
+
+#[test]
+fn an_authentication_failure_shows_once_with_the_login_hint() {
+    use mobius::protocol::{ErrorEvent, ErrorKind, TurnAbortedEvent};
+    let mut state = state();
+    state.transcript.clear();
+    let message = "authentication error: the selected provider is not configured";
+    let error = EventMsg::Error(ErrorEvent {
+        kind: ErrorKind::Authentication,
+        message: message.into(),
+        retryable: false,
+        status: None,
+        retry_after: None,
+    });
+    let aborted = EventMsg::TurnAborted(TurnAbortedEvent {
+        idle: false,
+        turn_id: "turn".into(),
+        reason: message.into(),
+    });
+    for event in [error, aborted] {
+        let blocks = event.presentation().into_iter().collect();
+        state.handle_agent_event(event, blocks);
+    }
+
+    let texts: Vec<&str> = state
+        .transcript
+        .iter()
+        .map(|entry| entry.text.as_str())
+        .collect();
+    assert_eq!(
+        texts,
+        [message, "set up or switch the provider with /login"]
+    );
+}

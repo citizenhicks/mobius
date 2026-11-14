@@ -732,6 +732,24 @@ impl TuiState {
             entry.stream = None;
             return;
         }
+        // A failed turn's abort notice repeats the error right above it; the gateway's
+        // transcript drops it the same way.
+        if block.role == FrontendBlockRole::Notice
+            && block.tone != FrontendTone::Error
+            && !text.is_empty()
+            && self
+                .transcript
+                .iter()
+                .rev()
+                .find(|entry| entry.role.is_some())
+                .is_some_and(|last| {
+                    last.role == Some(FrontendBlockRole::Notice)
+                        && matches!(last.tone, TranscriptTone::Error)
+                        && last.text == text
+                })
+        {
+            return;
+        }
         self.transcript.push_back(TranscriptEntry {
             id,
             group,

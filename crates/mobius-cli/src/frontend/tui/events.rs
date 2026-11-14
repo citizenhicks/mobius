@@ -7,8 +7,8 @@ use super::{
 };
 use crate::frontend::terminal::terminal_text;
 use mobius::protocol::{
-    EventMsg, FrontendEvent, FrontendPreviewUpdate, FrontendTone, MessageAuthor, MessageEvent,
-    ModelStepCompletedEvent, ModelStepContentPhase, ModelStepOutcome, RenderedBlock,
+    ErrorKind, EventMsg, FrontendEvent, FrontendPreviewUpdate, FrontendTone, MessageAuthor,
+    MessageEvent, ModelStepCompletedEvent, ModelStepContentPhase, ModelStepOutcome, RenderedBlock,
     TokenUsageInfo,
 };
 use mobius_gateway::wire::{
@@ -80,6 +80,12 @@ impl TuiState {
             EventMsg::Error(error) => {
                 if !was_rendered {
                     self.push(format!("error: {}", error.message), TranscriptTone::Error);
+                }
+                if error.kind == ErrorKind::Authentication {
+                    self.push(
+                        "set up or switch the provider with /login",
+                        TranscriptTone::Warning,
+                    );
                 }
             }
             EventMsg::Warning(warning) => {
