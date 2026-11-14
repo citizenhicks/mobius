@@ -26,6 +26,8 @@ use mobius::protocol::{
 const MAX_MENU_ROWS: usize = 6;
 const COMPOSER_PROMPT: &str = "» ";
 const AGENT_MARKER: &str = "• ";
+/// The narrowest step label worth keeping the key hints beside.
+const MIN_ACTIVITY_LABEL_WIDTH: usize = 12;
 
 pub(super) fn render(frame: &mut Frame<'_>, state: &mut TuiState, catalog: &UiCatalog) {
     let theme = current();
@@ -94,7 +96,10 @@ pub(super) fn render(frame: &mut Frame<'_>, state: &mut TuiState, catalog: &UiCa
             .min(suggestions.len().saturating_sub(1));
         render_menu(frame, menu_area, &suggestions, state.slash_selection);
     }
-    frame.render_widget(Paragraph::new(composer_header_line(state)), header_area);
+    frame.render_widget(
+        Paragraph::new(composer_header_line(state, header_area.width)),
+        header_area,
+    );
     frame.render_widget(
         Paragraph::new(input)
             .style(theme.style(Role::Text))
@@ -300,8 +305,17 @@ fn render_transcript_window<'a>(
             window.cursor = window.cursor.saturating_add(rendered.height);
             continue;
         }
-        for (line, height) in rendered.lines.iter().zip(&rendered.wrapped_heights) {
-            window.push(*height, || borrow_line(line));
+        for (index, (line, height)) in rendered
+            .lines
+            .iter()
+            .zip(&rendered.wrapped_heights)
+            .enumerate()
+        {
+            if index == 0 && rendered.spinner {
+                window.push(*height, || spinning_marker(line));
+            } else {
+                window.push(*height, || borrow_line(line));
+            }
         }
     }
     for (line, line_height) in tail.into_iter().zip(tail_heights) {
@@ -423,14 +437,30 @@ fn ensure_rendered(entry: &mut TranscriptEntry, width: u16) {
         .iter()
         .map(|line| wrapped_line_height(line, width))
         .collect();
+    let spinner = entry.pending
+        && entry.role == Some(FrontendBlockRole::Tool)
+        && entry
+            .title
+            .as_deref()
+            .is_some_and(|title| !title.is_empty());
     entry.rendered = Some((
         width,
         RenderedTranscript {
             lines,
             height: heights.iter().sum(),
             wrapped_heights: heights,
+            spinner,
         },
     ));
+}
+
+/// A running tool's header line with its marker swapped for the current spinner frame.
+fn spinning_marker<'a>(line: &'a Line<'_>) -> Line<'a> {
+    let mut line = borrow_line(line);
+    if let Some(marker) = line.spans.first_mut() {
+        marker.content = format!("{} ", shimmer::spinner()).into();
+    }
+    line
 }
 
 fn wrapped_line_height(line: &Line<'_>, width: u16) -> usize {
@@ -1069,8 +1099,8 @@ fn widget_line(widgets: &[(Arc<str>, Arc<FrontendWidget>)], slot: FrontendSlot) 
     Line::from(spans)
 }
 
-fn composer_header_line(state: &TuiState) -> Line<'_> {
-    let mut line = status_line(state);
+fn composer_header_line(state: &TuiState, width: u16) -> Line<'_> {
+    let mut line = status_line(state, width);
     let widgets = widget_line(&state.widgets, FrontendSlot::ComposerHeader);
     if line.width() > 0 && widgets.width() > 0 {
         line.push_span(Span::styled(" · ", current().style(Role::Muted)));
@@ -1094,32 +1124,78 @@ fn composer_title(state: &TuiState) -> Line<'static> {
     } else if state.disconnected {
         ("disconnected", Role::Error)
     } else if state.is_working() {
-        (
-            state.reasoning_title.as_deref().unwrap_or("working"),
-            Role::Accent,
-        )
+        ("working", Role::Accent)
     } else {
         ("ready", Role::Accent)
     };
+    Line::styled(format!(" mobius · {status} "), theme.style(role))
+}
+
+/// What the running turn is doing now: its newest running tool, else its reasoning headline.
+fn activity_label(state: &TuiState) -> &str {
+    state
+        .transcript
+        .iter()
+        .rev()
+        .find(|entry| entry.pending && entry.role == Some(FrontendBlockRole::Tool))
+        .and_then(|entry| entry.title.as_deref())
+        .or(state.reasoning_title.as_deref())
+        .and_then(|label| label.lines().next())
+        .filter(|label| !label.trim().is_empty())
+        .unwrap_or("Working")
+}
+
+/// The working turn's spinner, step and elapsed time, then its keys. The keys drop first and
+/// the step label shrinks next, so the clock always fits.
+fn activity_line(state: &TuiState, width: u16) -> Line<'static> {
+    let theme = current();
     let elapsed = state.turn_started_at.map_or_default(|started| {
         format!(
             " · {}",
             crate::frontend::terminal::elapsed_label(started.elapsed())
         )
     });
-    let title = format!(" mobius · {status}{elapsed} ");
-    if state.is_working() {
+    let keys = if state.composer_target_turn().is_some() {
+        format!(
+            " · Esc stop · Enter {} · Alt+Enter {}",
+            delivery_label(state.message_delivery()),
+            delivery_label(state.alternate_message_delivery())
+        )
+    } else {
+        " · Esc stop".to_owned()
+    };
+    let spinner = format!("{} ", shimmer::spinner());
+    let room = usize::from(width)
+        .saturating_sub(Span::raw(spinner.as_str()).width() + Span::raw(elapsed.as_str()).width());
+    let keys = if Span::raw(keys.as_str()).width() + MIN_ACTIVITY_LABEL_WIDTH <= room {
+        keys
+    } else {
+        String::new()
+    };
+    let room = room.saturating_sub(Span::raw(keys.as_str()).width()).max(1);
+    let mut label = terminal_text(activity_label(state));
+    if Span::raw(label.as_str()).width() > room {
+        label = label.chars().take(room.saturating_sub(1)).collect();
+        label.push('…');
+    }
+    let mut spans = vec![Span::styled(
+        spinner,
+        theme.style(Role::Accent).add_modifier(Modifier::BOLD),
+    )];
+    spans.extend(
         shimmer::line(
-            &title,
+            &label,
             theme.color(Role::Accent),
             theme.color(Role::AccentStrong),
         )
-    } else {
-        Line::styled(title, theme.style(role))
-    }
+        .spans,
+    );
+    spans.push(Span::styled(elapsed, theme.style(Role::Text)));
+    spans.push(Span::styled(keys, theme.style(Role::Muted)));
+    Line::from(spans)
 }
 
-fn status_line(state: &TuiState) -> Line<'static> {
+fn status_line(state: &TuiState, width: u16) -> Line<'static> {
     let theme = current();
     if state.approval().is_some() {
         return Line::styled(
@@ -1147,15 +1223,8 @@ fn status_line(state: &TuiState) -> Line<'static> {
             theme.style(Role::Warning),
         );
     }
-    if state.is_working() && state.composer_target_turn().is_some() {
-        return Line::styled(
-            format!(
-                "Enter {} · Alt+Enter {} · Esc/Ctrl-C stop · Ctrl-J newline",
-                delivery_label(state.message_delivery()),
-                delivery_label(state.alternate_message_delivery())
-            ),
-            theme.style(Role::Muted),
-        );
+    if state.is_working() {
+        return activity_line(state, width);
     }
     Line::styled(UiCatalog::COMPOSER_HINT, theme.style(Role::Muted))
 }

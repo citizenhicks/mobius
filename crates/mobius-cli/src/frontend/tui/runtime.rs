@@ -36,7 +36,9 @@ use mobius_gateway::wire::{
     apply_session_changes,
 };
 
-const ELAPSED_INTERVAL: Duration = Duration::from_secs(1);
+/// Spinner and shimmer frames while a turn works; otherwise the screen redraws only on input
+/// or gateway events.
+const ANIMATION_INTERVAL: Duration = Duration::from_millis(80);
 const FRAME_INTERVAL: Duration = Duration::from_millis(16);
 const CLEAR_SCREEN_AND_SCROLLBACK: &str = "\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H";
 const FILE_READ_CHUNK_BYTES: usize = 256 * 1024;
@@ -82,8 +84,8 @@ pub(in crate::frontend) async fn run(
     let mut uploads = ClipboardUploads::default();
     let mut tick = tokio::time::interval(INPUT_POLL);
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut elapsed = tokio::time::interval(ELAPSED_INTERVAL);
-    elapsed.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut animation = tokio::time::interval(ANIMATION_INTERVAL);
+    animation.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut events_open = true;
     let mut dirty = true;
     // Frames are drawn only once the session's replay completes (or the gateway disconnects).
@@ -199,7 +201,7 @@ pub(in crate::frontend) async fn run(
                 ).await;
                 dirty = true;
             }
-            _ = elapsed.tick(), if state.active_turn().is_some() => {
+            _ = animation.tick(), if state.is_working() => {
                 dirty = true;
             }
         }

@@ -91,6 +91,8 @@ struct RenderedTranscript {
     wrapped_heights: Vec<usize>,
     /// The sum of `wrapped_heights`: the rows this entry fills.
     height: usize,
+    /// A running tool whose first line leads with a marker the frame replaces with a spinner.
+    spinner: bool,
 }
 
 #[derive(Clone, PartialEq, Eq)]

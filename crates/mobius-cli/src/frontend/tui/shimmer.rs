@@ -6,8 +6,25 @@ use ratatui::text::{Line, Span};
 
 static PROCESS_START: OnceLock<Instant> = OnceLock::new();
 
+const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const SPINNER_FRAME_MILLIS: u128 = 80;
+
 pub(super) fn line(text: &str, base: Color, highlight: Color) -> Line<'static> {
     line_at(text, elapsed_since_start(), base, highlight)
+}
+
+/// The spinner glyph for now, on the same clock as the shimmer so every spinner turns together.
+pub(super) fn spinner() -> &'static str {
+    spinner_at(elapsed_since_start())
+}
+
+fn spinner_at(elapsed: Duration) -> &'static str {
+    let frame = elapsed.as_millis() / SPINNER_FRAME_MILLIS % SPINNER.len() as u128;
+    usize::try_from(frame)
+        .ok()
+        .and_then(|frame| SPINNER.get(frame))
+        .copied()
+        .unwrap_or("•")
 }
 
 fn elapsed_since_start() -> Duration {
