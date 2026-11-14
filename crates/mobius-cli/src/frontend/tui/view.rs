@@ -17,7 +17,7 @@ use super::{
 use crate::frontend::catalog::{MenuItem, UiCatalog};
 use crate::frontend::dashboard::centered_area;
 use crate::frontend::terminal::{borrow_line, terminal_text, truncate_bytes};
-use crate::frontend::theme::{LOGO, LOGO_LOBE, Role, current};
+use crate::frontend::theme::{LOGO, Role, current};
 use mobius::protocol::{
     ActiveMessageDelivery, FrontendBlockFormat, FrontendBlockRole, FrontendSlot, FrontendTone,
     FrontendWidget,
@@ -956,33 +956,29 @@ fn welcome_lines(state: &TuiState, width: u16) -> Vec<Line<'static>> {
         "möbius",
         theme.style(Role::Text).add_modifier(Modifier::BOLD),
     );
-    let logo_columns = LOGO[0].chars().count();
+    let logo_columns = LOGO[0].len();
     if usize::from(width) < logo_columns + WELCOME_MIN_TEXT_WIDTH {
         return vec![Line::from(vec![
             name,
             Span::styled(format!(" {heading}"), theme.style(Role::Muted)),
         ])];
     }
-    let lobes = |row: &'static str| {
-        let split = row
-            .char_indices()
-            .nth(LOGO_LOBE)
-            .map_or(row.len(), |(index, _)| index);
-        let (left, right) = row.split_at(split);
-        [
-            Span::raw(" "),
-            Span::styled(left, theme.style(Role::Accent)),
-            Span::styled(right, theme.style(Role::Neutral)),
-            Span::raw("  "),
-        ]
+    let mark = |row: &[(&'static str, Role); 6]| {
+        let mut spans = vec![Span::raw(" ")];
+        spans.extend(
+            row.iter()
+                .map(|(cell, role)| Span::styled(*cell, theme.style(*role))),
+        );
+        spans.push(Span::raw("  "));
+        spans
     };
-    let mut top = lobes(LOGO[0]).to_vec();
+    let mut top = mark(&LOGO[0]);
     top.push(name);
     top.push(Span::styled(
         format!("  {heading}"),
         theme.style(Role::Muted),
     ));
-    let mut bottom = lobes(LOGO[1]).to_vec();
+    let mut bottom = mark(&LOGO[1]);
     bottom.push(Span::styled(details, theme.style(Role::Muted)));
     vec![
         Line::from(top),

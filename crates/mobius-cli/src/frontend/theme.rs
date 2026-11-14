@@ -94,12 +94,29 @@ impl Theme {
     }
 }
 
-/// The möbius loop in braille, two rows for the chat header. The header colours its two lobes
-/// differently, split after `LOGO_LOBE` cells, so the band reads as turning over.
-pub(crate) const LOGO: [&str; 2] = ["⣴⠋⠙⢦⣀⡴⠋⠙⣦", "⠻⣄⣠⠞⠉⠳⣄⣠⠟"];
-pub(crate) const LOGO_LOBE: usize = 5;
-/// The same loop in one row, for single-line headings.
-pub(crate) const LOGO_LINE: &str = "⢎⡑⠤⢊⡱";
+/// The mark: a sun setting on a horizon, over ground that thins out through a hand-placed
+/// dither. Two braille rows for the chat header; each cell carries its own shade, the sun
+/// brightest at its centre and the ground fading through the frost blues.
+pub(crate) const LOGO: [[(&str, Role); 6]; 2] = [
+    [
+        ("⣠", Role::Accent),
+        ("⣶", Role::Text),
+        ("⣿", Role::Text),
+        ("⣿", Role::Text),
+        ("⣶", Role::Text),
+        ("⣄", Role::Accent),
+    ],
+    [
+        ("⢒", Role::Neutral),
+        ("⠐", Role::Neutral),
+        ("⢂", Role::Accent),
+        ("⠒", Role::Accent),
+        ("⢐", Role::Neutral),
+        ("⠂", Role::Neutral),
+    ],
+];
+/// The same sun as one row, for single-line headings.
+pub(crate) const LOGO_LINE: &str = "⣠⣶⣿⣿⣶⣄";
 /// Text on a filled chip, dark enough to read on every accent.
 const CHIP_TEXT: Color = Color::Rgb(46, 52, 64);
 
