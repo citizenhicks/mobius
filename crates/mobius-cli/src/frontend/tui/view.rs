@@ -242,7 +242,54 @@ fn append_live_decorations(lines: &mut Vec<Line<'static>>, state: &TuiState, has
             lines.push(Line::default());
         }
         push_approval_card(lines, state, request);
+    } else if let Some(question) = state.inline_question() {
+        if has_content {
+            lines.push(Line::default());
+        }
+        push_question_card(lines, state, question);
     }
+}
+
+/// An open capability question with its choices numbered for a single key press.
+fn push_question_card(
+    lines: &mut Vec<Line<'static>>,
+    state: &TuiState,
+    question: &mobius::protocol::FrontendActionListItem,
+) {
+    let theme = current();
+    lines.push(Line::from(vec![
+        Span::styled("? ", theme.style(Role::Accent).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            terminal_text(&question.text),
+            theme.style(Role::Text).add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    let mut choices = vec![Span::raw("  ")];
+    for (index, action) in question.actions.iter().enumerate() {
+        if index > 0 {
+            choices.push(Span::styled("  ", theme.style(Role::Muted)));
+        }
+        choices.push(Span::styled(
+            format!("{}.", index + 1),
+            theme.style(Role::Accent).add_modifier(Modifier::BOLD),
+        ));
+        choices.push(Span::styled(
+            format!(" {}", terminal_text(&action.label)),
+            theme.style(Role::Text),
+        ));
+    }
+    lines.push(Line::from(choices));
+    lines.push(if state.question_answer.is_some() {
+        Line::styled(
+            "  type your answer and press Enter · Esc cancels",
+            theme.style(Role::Warning),
+        )
+    } else {
+        Line::styled(
+            "  press a number to answer, or keep chatting · /attention lists every open item",
+            theme.style(Role::Muted).add_modifier(Modifier::ITALIC),
+        )
+    });
 }
 
 /// The front approval request as a decision card: each call by its tool's own preview, then the

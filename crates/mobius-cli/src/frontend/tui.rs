@@ -375,6 +375,8 @@ struct TuiState {
     approval_draft: Option<InputDraft>,
     /// The highlighted choice on the front approval card.
     approval_selection: usize,
+    /// A question answer whose text the composer is collecting.
+    question_answer: Option<Op>,
     active_turns: Vec<Arc<str>>,
     active_message_delivery: Option<ActiveMessageDelivery>,
     turn_started_at: Option<Instant>,
@@ -467,6 +469,13 @@ impl TuiState {
 
     fn approval(&self) -> Option<&ExecApprovalRequestEvent> {
         self.approvals.front()
+    }
+
+    /// The first open decision a capability asks of the reader, shown inline under the chat.
+    fn inline_question(&self) -> Option<&mobius::protocol::FrontendActionListItem> {
+        self.widgets
+            .iter()
+            .find_map(|(_, widget)| widget.pending_attention_items().next())
     }
 
     fn begin_approval(&mut self, request: ExecApprovalRequestEvent) {

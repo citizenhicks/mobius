@@ -66,7 +66,10 @@ impl TuiState {
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             return self.handle_control_key(key.code, catalog);
         }
-        if let Some(action) = self.handle_approval_key(key.code) {
+        if let Some(action) = self
+            .handle_approval_key(key.code)
+            .or_else(|| self.handle_question_key(key.code))
+        {
             return action;
         }
         match key.code {
@@ -195,6 +198,46 @@ impl TuiState {
             _ => return None,
         }
         Some(UiAction::None)
+    }
+
+    /// Answers the inline question: a digit on an empty composer picks a choice, and a choice
+    /// that needs text turns the composer into its answer until Enter sends it or Esc drops it.
+    fn handle_question_key(&mut self, code: KeyCode) -> Option<UiAction> {
+        if self.approval().is_some() {
+            return None;
+        }
+        if self.question_answer.is_some() {
+            return match code {
+                KeyCode::Esc => {
+                    self.question_answer = None;
+                    Some(UiAction::None)
+                }
+                KeyCode::Enter if !self.composer.text.trim().is_empty() => {
+                    let mut op = self.question_answer.take()?;
+                    let text = std::mem::take(&mut self.composer.text);
+                    self.composer.cursor = 0;
+                    self.composer.pastes.clear();
+                    if let Op::CapabilityCommand { input, .. } = &mut op {
+                        *input = Some(text.trim().to_owned());
+                    }
+                    Some(UiAction::submit(op))
+                }
+                _ => None,
+            };
+        }
+        let KeyCode::Char(digit) = code else {
+            return None;
+        };
+        if !self.composer.text.is_empty() {
+            return None;
+        }
+        let index = usize::try_from(digit.to_digit(10)?.checked_sub(1)?).ok()?;
+        let action = self.inline_question()?.actions.get(index)?;
+        if action.editor.is_some() {
+            self.question_answer = Some(action.op.clone()); // rules-allow: the widget keeps its action while the composer fills a copy
+            return Some(UiAction::None);
+        }
+        Some(UiAction::submit(action.clone().into_operation())) // rules-allow: the widget keeps its action until the gateway closes it
     }
 
     fn decide_approval(&mut self, decision: ReviewDecision) -> UiAction {
