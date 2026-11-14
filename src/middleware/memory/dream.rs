@@ -62,7 +62,7 @@ async fn dream(memory: &Memory, context: &mut ModelContext<'_>) -> Result<()> {
         let tool = definitions
             .iter()
             .find(|tool| tool.name == "patch_memory")
-            .ok_or_else(|| Error::Config("patch_memory is not registered".into()))?;
+            .ok_or_else(|| Error::Internal("patch_memory is not registered".into()))?;
         let request = ModelRequest {
             session_id: Some(context.session_id),
             cancellation: context.cancellation,

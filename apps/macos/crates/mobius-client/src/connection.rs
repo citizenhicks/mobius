@@ -652,7 +652,7 @@ impl Transport {
                     Error::WebSocketUpgrade { status: 503, .. } => {
                         self.fail("The gateway is starting, but its server did not provide a valid retry delay. Try connecting again.".into()).await?;
                     }
-                    Error::Config(_) | Error::Unauthorized => {
+                    Error::Invalid(_) | Error::Internal(_) | Error::Unauthorized => {
                         self.fail(super::describe(&error)).await?;
                     }
                     error if retryable => self.lost(super::describe(&error)).await?,
@@ -981,7 +981,7 @@ async fn connect(
         Connection::Saved(endpoint) => {
             let endpoint = endpoint.parse()?;
             let token = load_local_client(&endpoint)?
-                .ok_or_else(|| Error::Config("Pair this gateway before connecting.".into()))?;
+                .ok_or_else(|| Error::Invalid("Pair this gateway before connecting.".into()))?;
             let client = connect_as(&endpoint, &token, APP_CLIENT, options).await?;
             Ok((endpoint, token, client))
         }
@@ -1333,7 +1333,7 @@ mod tests {
     async fn fatal_authentication_failures_do_not_enter_retry() {
         for error in [
             super::Error::Unauthorized,
-            super::Error::Config("invalid gateway configuration".into()),
+            super::Error::Invalid("invalid gateway configuration".into()),
         ] {
             let (updates, mut output) = tokio::sync::mpsc::channel(1);
             let mut transport = transport(updates);

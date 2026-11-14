@@ -618,7 +618,7 @@ impl CheckpointStore for SqliteCheckpoint {
                     crate::MAX_IDENTIFIER_BYTES,
                 )
                 .map_err(|error| match error {
-                    Error::Config(message) => Error::Checkpoint(message),
+                    Error::Invalid(message) => Error::Checkpoint(message),
                     error => error,
                 })?;
             }

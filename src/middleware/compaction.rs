@@ -155,7 +155,7 @@ impl Compaction {
     /// Returns an error if configuration is invalid or a required resource cannot be initialized.
     pub fn new(at_tokens: i64) -> Result<Self> {
         if at_tokens <= 0 {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "compaction threshold must be positive".into(),
             ));
         }
@@ -170,7 +170,7 @@ impl Compaction {
     /// Returns an error unless the reserve is positive.
     pub fn reserve_tokens(mut self, tokens: i64) -> Result<Self> {
         if tokens <= 0 {
-            return Err(Error::Config("compaction reserve must be positive".into()));
+            return Err(Error::Invalid("compaction reserve must be positive".into()));
         }
         self.reserve_tokens = tokens;
         Ok(self)
@@ -190,7 +190,7 @@ impl Compaction {
                 id,
             )),
             Some(FrontendSettingValue::Integer(value)) => Ok(*value),
-            Some(FrontendSettingValue::String(_)) => Err(Error::Config(format!(
+            Some(FrontendSettingValue::String(_)) => Err(Error::Invalid(format!(
                 "middleware setting `{}.{id}` must be integer",
                 MANIFEST.id
             ))),
@@ -200,7 +200,7 @@ impl Compaction {
             Some(FrontendSettingValue::String(value)) if value == "on" => true,
             Some(FrontendSettingValue::String(value)) if value == "off" => false,
             Some(_) => {
-                return Err(Error::Config(
+                return Err(Error::Invalid(
                     "compaction.allow_model_compaction must be on or off".into(),
                 ));
             }
@@ -210,7 +210,7 @@ impl Compaction {
             Some(FrontendSettingValue::String(value)) if value == "on" => true,
             Some(FrontendSettingValue::String(value)) if value == "off" => false,
             Some(_) => {
-                return Err(Error::Config(
+                return Err(Error::Invalid(
                     "compaction.idle_compaction must be on or off".into(),
                 ));
             }
@@ -219,7 +219,7 @@ impl Compaction {
             None => None,
             Some(FrontendSettingValue::String(route)) => Some(route.to_owned()),
             Some(_) => {
-                return Err(Error::Config(
+                return Err(Error::Invalid(
                     "compaction.model_route must be a model route".into(),
                 ));
             }
@@ -260,7 +260,7 @@ impl Compaction {
                 delay.is_zero() || std::time::Instant::now().checked_add(delay).is_none()
             })
         {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "idle compaction requires a positive token minimum and valid positive delay".into(),
             ));
         }

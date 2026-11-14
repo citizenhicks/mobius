@@ -45,7 +45,7 @@ pub(in crate::frontend) async fn run_bot(
         .bots
         .iter()
         .find(|bot| *bot.id == *bot_id)
-        .ok_or_else(|| Error::Config("the selected Bot is not in the gateway catalog".into()))?;
+        .ok_or_else(|| Error::Invalid("the selected Bot is not in the gateway catalog".into()))?;
     let mut state = SetupState::new(
         mode,
         preferred_provider,

@@ -77,7 +77,7 @@ impl GatewayAccounts {
     /// Returns an error if validation or an operation required by this function fails.
     pub fn select(&mut self, endpoint: &str) -> Result<()> {
         if !self.record.tokens.contains_key(endpoint) {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "gateway endpoint `{endpoint}` is not saved"
             )));
         }
@@ -93,7 +93,7 @@ impl GatewayAccounts {
         validate_token(&token)?;
         let key = endpoint.to_string();
         if !self.record.tokens.contains_key(&key) && self.record.tokens.len() >= MAX_ACCOUNTS {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "gateway token file has too many endpoints".into(),
             ));
         }
@@ -130,7 +130,7 @@ impl GatewayAccounts {
         validate_record(&self.record)?;
         let contents = serde_json::to_vec(&self.record)?;
         if contents.len() > MAX_STORE_BYTES {
-            return Err(Error::Config("gateway token file is too large".into()));
+            return Err(Error::Invalid("gateway token file is too large".into()));
         }
         let parent = parent(&self.path)?;
         std::fs::create_dir_all(parent)?;
@@ -149,18 +149,18 @@ impl GatewayAccounts {
             Err(error) => return Err(error.into()),
         };
         if !metadata.is_file() {
-            return Err(Error::Config("gateway token path is not a file".into()));
+            return Err(Error::Invalid("gateway token path is not a file".into()));
         }
         if metadata.permissions().mode() & 0o077 != 0 {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "gateway token file must be readable only by its owner".into(),
             ));
         }
         if metadata.len() > MAX_STORE_BYTES as u64 {
-            return Err(Error::Config("gateway token file is too large".into()));
+            return Err(Error::Invalid("gateway token file is too large".into()));
         }
         let record = serde_json::from_slice(&std::fs::read(&path)?).map_err(|error| {
-            Error::Config(format!(
+            Error::Invalid(format!(
                 "gateway token file has an unsupported format ({error}); delete {} and pair again",
                 path.display()
             ))
@@ -202,7 +202,7 @@ pub fn dashboard_gateway_endpoint(state_dir: &Path) -> Result<Endpoint> {
     let (_, config) = ConfigStore::open(state_dir.to_path_buf())?;
     if config.tls.is_some() {
         if env::var_os("MOBIUS_GATEWAY_ENDPOINT").is_none() {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "TLS dashboards require MOBIUS_GATEWAY_ENDPOINT with the certificate hostname"
                     .into(),
             ));
@@ -224,7 +224,7 @@ pub fn validate_local_gateway_config(
     let (_, config) = ConfigStore::open(state_dir.to_path_buf())?;
     let configured_endpoint = endpoint_from_config(&config)?;
     if endpoint != &configured_endpoint {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "saved endpoint {endpoint} is not the local gateway configured at {configured_endpoint}; start it separately or select the configured endpoint"
         )));
     }
@@ -236,7 +236,7 @@ pub fn validate_local_gateway_config(
 
 /// Returns the missing local token.
 pub fn missing_local_token(endpoint: &Endpoint) -> Error {
-    Error::Config(format!(
+    Error::Invalid(format!(
         "local gateway state exists but mobius-cli is not paired; stop the gateway, run `mobius-gateway connect` in another terminal, then run `mobius pair {endpoint} <one-time-code>`"
     ))
 }
@@ -262,14 +262,14 @@ pub fn environment_override_message() -> Option<&'static str> {
 
 fn validate_record(record: &TokenStoreRecord) -> Result<()> {
     if record.tokens.len() > MAX_ACCOUNTS {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "gateway token file has too many endpoints".into(),
         ));
     }
     for (endpoint, token) in &record.tokens {
         let parsed = endpoint.parse::<Endpoint>()?;
         if parsed.to_string() != *endpoint {
-            return Err(Error::Config(
+            return Err(Error::Internal(
                 "saved gateway endpoint is not canonical".into(),
             ));
         }
@@ -280,7 +280,7 @@ fn validate_record(record: &TokenStoreRecord) -> Result<()> {
         .as_ref()
         .is_some_and(|endpoint| !record.tokens.contains_key(endpoint))
     {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "selected gateway endpoint is not saved".into(),
         ));
     }
@@ -298,7 +298,7 @@ fn endpoint_from_config(config: &GatewayConfig) -> Result<Endpoint> {
 
 fn validate_token(token: &str) -> Result<()> {
     if token.is_empty() || token.len() > MAX_TOKEN_BYTES || token.trim() != token {
-        return Err(Error::Config("saved gateway token is invalid".into()));
+        return Err(Error::Internal("saved gateway token is invalid".into()));
     }
     Ok(())
 }
@@ -310,13 +310,13 @@ fn token_path() -> Result<PathBuf> {
     env::home_dir()
         .map(|path| path.join(".mobius").join("gateway-tokens.json"))
         .ok_or_else(|| {
-            Error::Config("cannot determine token path; set MOBIUS_GATEWAY_TOKEN_FILE".into())
+            Error::Invalid("cannot determine token path; set MOBIUS_GATEWAY_TOKEN_FILE".into())
         })
 }
 
 fn parent(path: &Path) -> Result<&Path> {
     path.parent()
-        .ok_or_else(|| Error::Config("token path has no parent".into()))
+        .ok_or_else(|| Error::Invalid("token path has no parent".into()))
 }
 
 fn secure(file: &tempfile::NamedTempFile) -> Result<()> {

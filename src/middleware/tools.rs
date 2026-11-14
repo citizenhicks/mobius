@@ -509,12 +509,12 @@ impl Catalog {
     /// Returns an error if validation or an operation required by this function fails.
     pub fn register(&mut self, tool: Arc<dyn Tool>) -> Result<()> {
         if self.finalized {
-            return Err(Error::Config("tool catalog is already finalized".into()));
+            return Err(Error::Internal("tool catalog is already finalized".into()));
         }
         let definition = Arc::clone(tool.definition());
         definition.validate()?;
         if definition.name == TOOLS_SEARCH_NAME {
-            return Err(Error::Config(format!(
+            return Err(Error::Internal(format!(
                 "tool name `{TOOLS_SEARCH_NAME}` is reserved"
             )));
         }
@@ -533,7 +533,7 @@ impl Catalog {
 
     fn register_search(&mut self) -> Result<()> {
         if self.finalized {
-            return Err(Error::Config("tool catalog is already finalized".into()));
+            return Err(Error::Internal("tool catalog is already finalized".into()));
         }
         let definition = tools_search_definition();
         definition.validate()?;
@@ -555,12 +555,12 @@ impl Catalog {
     /// Returns an error if validation or an operation required by this function fails.
     pub fn finalize(&mut self) -> Result<()> {
         if self.finalized {
-            return Err(Error::Config("tool catalog is already finalized".into()));
+            return Err(Error::Internal("tool catalog is already finalized".into()));
         }
         let has_deferred = !self.deferred_definitions.is_empty();
         let has_search = self.tools.contains(TOOLS_SEARCH_NAME);
         if has_deferred && !has_search {
-            return Err(Error::Config(
+            return Err(Error::Internal(
                 "deferred tools require an owning tools_search middleware".into(),
             ));
         }
@@ -634,7 +634,7 @@ impl Catalog {
         if self.finalized {
             Ok(&self.revision)
         } else {
-            Err(Error::Config(
+            Err(Error::Internal(
                 "tool catalog must be finalized before reading its revision".into(),
             ))
         }
@@ -791,7 +791,7 @@ impl Catalog {
         searchable: &BTreeSet<String>,
     ) -> Result<&RegisteredTool> {
         if !self.finalized {
-            return Err(Error::Config(
+            return Err(Error::Internal(
                 "tool catalog must be finalized before binding calls".into(),
             ));
         }

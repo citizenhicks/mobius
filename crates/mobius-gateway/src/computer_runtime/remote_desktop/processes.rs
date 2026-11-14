@@ -37,9 +37,9 @@ impl OwnedProcess {
         let group = ProcessGroupGuard::new(&child)?;
         let pid = child
             .id()
-            .ok_or_else(|| Error::Config("desktop child PID unavailable".into()))?;
+            .ok_or_else(|| Error::Internal("desktop child PID unavailable".into()))?;
         let identity = identity(pid)?
-            .ok_or_else(|| Error::Config("desktop child exited during startup".into()))?;
+            .ok_or_else(|| Error::Internal("desktop child exited during startup".into()))?;
         if let Err(error) = fs::write(&record, serde_json::to_vec(&identity)?) {
             if let Err(kill_error) = child.start_kill() {
                 tracing::debug!(%kill_error, "desktop child was already gone");
@@ -65,7 +65,7 @@ impl OwnedProcess {
                 .file_stem()
                 .unwrap_or_default()
                 .to_string_lossy();
-            return Err(Error::Config(format!("desktop {name} exited ({status})")));
+            return Err(Error::Internal(format!("desktop {name} exited ({status})")));
         }
         Ok(())
     }
@@ -99,7 +99,7 @@ pub(super) async fn clean_record(path: &Path) -> Result<()> {
         Err(error) => return Err(error.into()),
     };
     if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > 4096 {
-        return Err(Error::Config("invalid desktop process record".into()));
+        return Err(Error::Internal("invalid desktop process record".into()));
     }
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
@@ -107,31 +107,31 @@ pub(super) async fn clean_record(path: &Path) -> Result<()> {
         Err(error) => return Err(error.into()),
     };
     if bytes.len() > 4096 || fs::symlink_metadata(path)?.file_type().is_symlink() {
-        return Err(Error::Config("invalid desktop process record".into()));
+        return Err(Error::Internal("invalid desktop process record".into()));
     }
     let recorded: Identity = serde_json::from_slice(&bytes)?;
     if recorded.pid <= 1 {
-        return Err(Error::Config("invalid desktop child PID".into()));
+        return Err(Error::Internal("invalid desktop child PID".into()));
     }
     if let Some(current) = identity(recorded.pid)? {
         if current != recorded {
-            return Err(Error::Config(
+            return Err(Error::Internal(
                 "desktop child identity changed; refusing stale process cleanup".into(),
             ));
         }
         // Records are advisory; refuse cleanup unless the live group leader matches.
         let pid = i32::try_from(recorded.pid)
-            .map_err(|error| Error::Config(format!("invalid desktop child PID: {error}")))?;
+            .map_err(|error| Error::Internal(format!("invalid desktop child PID: {error}")))?;
         kill(Pid::from_raw(-pid), Signal::SIGTERM)
-            .map_err(|error| Error::Config(error.to_string()))?;
+            .map_err(|error| Error::Internal(error.to_string()))?;
         wait_gone(&recorded, Duration::from_secs(2)).await?;
         if identity(recorded.pid)?.as_ref() == Some(&recorded) {
             kill(Pid::from_raw(-pid), Signal::SIGKILL)
-                .map_err(|error| Error::Config(error.to_string()))?;
+                .map_err(|error| Error::Internal(error.to_string()))?;
             wait_gone(&recorded, Duration::from_secs(2)).await?;
         }
         if identity(recorded.pid)?.as_ref() == Some(&recorded) {
-            return Err(Error::Config(
+            return Err(Error::Internal(
                 "desktop child did not stop; refusing to start another desktop".into(),
             ));
         }
@@ -159,7 +159,7 @@ fn identity(pid: u32) -> Result<Option<Identity>> {
     };
     let fields: Vec<_> = stat
         .rsplit_once(')')
-        .ok_or_else(|| Error::Config("invalid desktop process identity".into()))?
+        .ok_or_else(|| Error::Internal("invalid desktop process identity".into()))?
         .1
         .split_whitespace()
         .collect();
@@ -167,13 +167,13 @@ fn identity(pid: u32) -> Result<Option<Identity>> {
         return Ok(None);
     }
     if fields.get(2).and_then(|value| value.parse::<u32>().ok()) != Some(pid) {
-        return Err(Error::Config(
+        return Err(Error::Internal(
             "desktop process is not its group leader".into(),
         ));
     }
     let ticks = fields
         .get(19)
-        .ok_or_else(|| Error::Config("desktop start time unavailable".into()))?;
+        .ok_or_else(|| Error::Internal("desktop start time unavailable".into()))?;
     Ok(Some(Identity {
         pid,
         start: format!(
@@ -203,20 +203,20 @@ fn identity(pid: u32) -> Result<Option<Identity>> {
         return Ok(None);
     }
     let text = String::from_utf8(output.stdout)
-        .map_err(|error| Error::Config(format!("invalid desktop child identity: {error}")))?;
+        .map_err(|error| Error::Internal(format!("invalid desktop child identity: {error}")))?;
     let text = text.trim();
     let (group, text) = text
         .split_once(char::is_whitespace)
-        .ok_or_else(|| Error::Config("invalid desktop child identity".into()))?;
+        .ok_or_else(|| Error::Internal("invalid desktop child identity".into()))?;
     if group.parse::<u32>().ok() != Some(pid) {
-        return Err(Error::Config(
+        return Err(Error::Internal(
             "desktop process is not its group leader".into(),
         ));
     }
     let text = text.trim_start();
     let (start, executable) = text
         .split_at_checked(24)
-        .ok_or_else(|| Error::Config("invalid desktop child identity".into()))?;
+        .ok_or_else(|| Error::Internal("invalid desktop child identity".into()))?;
     Ok(Some(Identity {
         pid,
         start: start.into(),
@@ -228,7 +228,7 @@ pub(super) fn private_directory(path: &Path) -> Result<()> {
     fs::create_dir_all(path)?;
     let metadata = fs::symlink_metadata(path)?;
     if !metadata.is_dir() || metadata.file_type().is_symlink() {
-        return Err(Error::Config(
+        return Err(Error::Internal(
             "desktop state must be a private directory".into(),
         ));
     }

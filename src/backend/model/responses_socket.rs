@@ -45,7 +45,7 @@ mod connection;
 pub(super) fn responses_socket_url(base_url: &BaseUrl) -> Result<reqwest::Url> {
     super::transport::socket_url(
         reqwest::Url::parse(&format!("{}/responses", base_url.root()))
-            .map_err(|error| Error::Config(format!("invalid Responses endpoint: {error}")))?,
+            .map_err(|error| Error::Invalid(format!("invalid Responses endpoint: {error}")))?,
     )
 }
 
@@ -106,7 +106,7 @@ impl OpenAiSocket {
     ) -> Result<Self> {
         let model = model.into();
         if model.trim().is_empty() {
-            return Err(Error::Config("OPENAI_MODEL is empty".into()));
+            return Err(Error::Invalid("OPENAI_MODEL is empty".into()));
         }
         Self::from_api_key(
             api_key.into(),
@@ -125,7 +125,7 @@ impl OpenAiSocket {
         settings: super::ModelTransportSettings,
     ) -> Result<Self> {
         if api_key.trim().is_empty() {
-            return Err(Error::Config("provider API key cannot be empty".into()));
+            return Err(Error::Invalid("provider API key cannot be empty".into()));
         }
         let socket_url = responses_socket_url(&base_url)?;
         let mut provider = Self::from_authorization(
@@ -194,7 +194,7 @@ impl OpenAiSocket {
             .find(|model| model.id == self.http.model_id())
             .is_some_and(|model| model.reasoning.iter().any(|preset| preset.id == effort));
         if !supported {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "model `{}` does not support reasoning effort `{effort}`",
                 self.http.model_id()
             )));

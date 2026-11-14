@@ -235,7 +235,7 @@ impl Extensions {
         workspace: impl AsRef<Path>,
     ) -> Result<Self> {
         if !self.plugins.is_empty() {
-            return Err(Error::Config("plugins were activated twice".into()));
+            return Err(Error::Internal("plugins were activated twice".into()));
         }
         let roots = roots.into_iter().collect::<Vec<_>>();
         if roots.is_empty() {
@@ -255,17 +255,19 @@ impl Extensions {
         }
         let data_root = canonical_directory(&data_root, "plugin data root")?;
         if !data_root.starts_with(&workspace) {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "plugin data root escapes the workspace".into(),
             ));
         }
         for (root, authorization) in roots {
             if self.plugins.len() == MAX_PLUGINS {
-                return Err(Error::Config(format!("plugin count exceeds {MAX_PLUGINS}")));
+                return Err(Error::Invalid(format!(
+                    "plugin count exceeds {MAX_PLUGINS}"
+                )));
             }
             let root = package::canonical_root(&root)?;
             if root.starts_with(&workspace) || workspace.starts_with(&root) {
-                return Err(Error::Config(
+                return Err(Error::Invalid(
                     "plugin snapshot and writable workspace must not overlap".into(),
                 ));
             }
@@ -276,7 +278,9 @@ impl Extensions {
                 hooks,
             } = package::load(root)?;
             if package.kind != ExtensionPackageKind::Plugin {
-                return Err(Error::Config("activated extension is not a plugin".into()));
+                return Err(Error::Internal(
+                    "activated extension is not a plugin".into(),
+                ));
             }
             let inserted = self.plugins.insert(package.name.clone()); // rules-allow: the plugin set and the hook set each own the name
             if !inserted {
@@ -287,7 +291,7 @@ impl Extensions {
             data_root_dir.create_dir_all(&package.name)?;
             let data = canonical_directory(&data, "plugin data directory")?;
             if !data.starts_with(&data_root) {
-                return Err(Error::Config(format!(
+                return Err(Error::Invalid(format!(
                     "plugin `{}` data directory escapes its root",
                     package.name
                 )));
@@ -297,7 +301,7 @@ impl Extensions {
                     return Err(Error::Duplicate(format!("skill `{name}`")));
                 }
                 if self.skills.len() == MAX_SKILLS {
-                    return Err(Error::Config(format!("skill count exceeds {MAX_SKILLS}")));
+                    return Err(Error::Invalid(format!("skill count exceeds {MAX_SKILLS}")));
                 }
                 self.skills.insert(name, skill);
             }
@@ -508,22 +512,22 @@ pub fn valid_package_name(name: &str) -> bool {
 
 fn canonical_directory(path: &Path, name: &str) -> Result<PathBuf> {
     let path = std::fs::canonicalize(path)
-        .map_err(|error| Error::Config(format!("invalid {name}: {error}")))?;
+        .map_err(|error| Error::Invalid(format!("invalid {name}: {error}")))?;
     if !path.is_dir() {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "{name} is not a directory: {}",
             path.display()
         )));
     }
     if path.as_os_str().len() > hooks::MAX_PATH_BYTES {
-        return Err(Error::Config(format!("{name} path is too long")));
+        return Err(Error::Invalid(format!("{name} path is too long")));
     }
     Ok(path)
 }
 
 fn confined_path(root: &Path, value: &str, require_dot_prefix: bool) -> Result<PathBuf> {
     if value.is_empty() || (require_dot_prefix && !value.starts_with("./")) {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "plugin path `{value}` must start with `./`"
         )));
     }
@@ -533,7 +537,7 @@ fn confined_path(root: &Path, value: &str, require_dot_prefix: bool) -> Result<P
             .components()
             .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
     {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "plugin path `{value}` is not confined to its package"
         )));
     }
@@ -547,14 +551,14 @@ fn confined_path(root: &Path, value: &str, require_dot_prefix: bool) -> Result<P
             .file_type()
             .is_symlink()
         {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "plugin path `{value}` contains a symlink"
             )));
         }
     }
     let path = std::fs::canonicalize(current)?;
     if !path.starts_with(root) {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "plugin path `{value}` escapes its package"
         )));
     }
@@ -563,14 +567,14 @@ fn confined_path(root: &Path, value: &str, require_dot_prefix: bool) -> Result<P
 
 fn read_bounded_file(path: &Path, max_bytes: u64, name: &str) -> Result<Vec<u8>> {
     if !std::fs::symlink_metadata(path)?.file_type().is_file() {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "{name} is not a regular file: {}",
             path.display()
         )));
     }
     let file = File::open(path)?;
     if !file.metadata()?.is_file() {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "{name} is not a regular file: {}",
             path.display()
         )));
@@ -578,7 +582,7 @@ fn read_bounded_file(path: &Path, max_bytes: u64, name: &str) -> Result<Vec<u8>>
     let mut bytes = Vec::new();
     file.take(max_bytes + 1).read_to_end(&mut bytes)?;
     if bytes.len() as u64 > max_bytes {
-        return Err(Error::Config(format!("{name} exceeds {max_bytes} bytes")));
+        return Err(Error::Invalid(format!("{name} exceeds {max_bytes} bytes")));
     }
     Ok(bytes)
 }
@@ -657,7 +661,7 @@ fn discover_roots(
                 return Err(Error::Duplicate(format!("skill `{name}`")));
             }
             if skills.len() == MAX_SKILLS {
-                return Err(Error::Config(format!("skill count exceeds {MAX_SKILLS}")));
+                return Err(Error::Invalid(format!("skill count exceeds {MAX_SKILLS}")));
             }
             skills.insert(
                 name,
@@ -998,7 +1002,7 @@ impl Middleware for Extensions {
                     .calls
                     .iter()
                     .find(|call| call.call_id == *call_id)
-                    .ok_or_else(|| Error::Config("approval hook call is missing".into()))?;
+                    .ok_or_else(|| Error::Internal("approval hook call is missing".into()))?;
                 let tool = context.tools.hook_tool(call, Some(context.reason));
                 let outcomes = self
                     .run_tool_hook(

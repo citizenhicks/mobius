@@ -428,7 +428,7 @@ pub(super) fn classify_journal_sequence(
     }
     let expected = current
         .checked_add(1)
-        .ok_or_else(|| Error::Config("event sequence overflow".into()))?;
+        .ok_or_else(|| Error::Internal("event sequence overflow".into()))?;
     if incoming != expected {
         return Err(Error::Mobius(mobius::Error::Checkpoint(format!(
             "event journal delivery sequence is {incoming}, expected {expected}"

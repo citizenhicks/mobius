@@ -104,7 +104,7 @@ impl ExecutionConfig {
             .flatten()
         {
             if !path.is_absolute() || !path.is_file() {
-                return Err(Error::Config(
+                return Err(Error::Invalid(
                     "execution executable must be an existing absolute file".into(),
                 ));
             }

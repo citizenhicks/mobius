@@ -73,7 +73,8 @@ pub const GATEWAY_STARTING: &str = "Your gateway is starting.";
 pub fn describe(error: &mobius_gateway::Error) -> String {
     use mobius_gateway::Error;
     match error {
-        Error::Config(message) | Error::Protocol(message) => sentence(message),
+        Error::Invalid(message) | Error::Protocol(message) => sentence(message),
+        Error::Internal(_) => sentence(&error.to_string()),
         Error::WebSocketUpgrade { status, .. } => {
             format!("WebSocket handshake failed: HTTP {status}.")
         }

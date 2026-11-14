@@ -212,7 +212,7 @@ impl ConfigStore {
                 return Err(error);
             }
             fs::remove_dir_all(&store.state_dir).map_err(|cleanup| {
-                Error::Config(format!(
+                Error::Internal(format!(
                     "{error}; failed to remove incomplete gateway state at {}: {cleanup}",
                     store.state_dir.display()
                 ))
@@ -236,7 +236,7 @@ impl ConfigStore {
             "gateway configuration",
         )?;
         let config: GatewayConfig = toml::from_slice(&contents).map_err(|error| {
-            Error::Config(format!(
+            Error::Invalid(format!(
                 "gateway configuration at {} could not be read; preserve the state directory and correct the configuration or follow the release upgrade instructions: {error}",
                 store.path.display()
             ))
@@ -324,11 +324,11 @@ impl ConfigStore {
 
     fn publish_config(&self, config: &GatewayConfig, create_new: bool) -> Result<()> {
         let config = toml::to_string_pretty(config).map_err(|error| {
-            Error::Config(format!("cannot encode gateway configuration: {error}"))
+            Error::Internal(format!("cannot encode gateway configuration: {error}"))
         })?;
         let contents = config;
         if u64::try_from(contents.len()).unwrap_or(u64::MAX) > MAX_CONFIG_BYTES {
-            return Err(Error::Config("gateway configuration is too large".into()));
+            return Err(Error::Invalid("gateway configuration is too large".into()));
         }
         crate::publication::publish(&self.path, contents.as_bytes(), create_new)
     }
@@ -386,7 +386,7 @@ impl CredentialStore {
         if let Some(credential) = values.get(instance)
             && credential.provider != provider_id
         {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "provider instance `{instance}` already belongs to `{}`",
                 credential.provider
             )));
@@ -506,7 +506,7 @@ impl CredentialStore {
 pub fn state_dir() -> Result<PathBuf> {
     if let Some(path) = env::var_os("MOBIUS_GATEWAY_STATE_DIR") {
         if path.is_empty() {
-            return Err(Error::Config("MOBIUS_GATEWAY_STATE_DIR is empty".into()));
+            return Err(Error::Invalid("MOBIUS_GATEWAY_STATE_DIR is empty".into()));
         }
         return Ok(path.into());
     }
@@ -514,7 +514,7 @@ pub fn state_dir() -> Result<PathBuf> {
         .filter(|path| !path.as_os_str().is_empty())
         .map(|path| path.join(".mobius").join("gateway"))
         .ok_or_else(|| {
-            Error::Config(
+            Error::Invalid(
                 "cannot determine the home directory; set MOBIUS_GATEWAY_STATE_DIR".into(),
             )
         })
@@ -531,30 +531,30 @@ pub fn load_secret_file(path: &Path) -> Result<String> {
         .open(path)
         .map_err(|error| -> Error {
             if error.raw_os_error() == Some(nix::libc::ELOOP) {
-                Error::Config("secret must be stored in a regular file".into())
+                Error::Invalid("secret must be stored in a regular file".into())
             } else {
                 error.into()
             }
         })?;
     let metadata = file.metadata()?;
     if !metadata.file_type().is_file() {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "secret must be stored in a regular file".into(),
         ));
     }
     if metadata.permissions().mode() & 0o077 != 0 {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "secret file must not be accessible by group or others (use mode 0600)".into(),
         ));
     }
     if metadata.len() > MAX_CLOUDFLARE_TOKEN_BYTES as u64 {
-        return Err(Error::Config("secret file token is too large".into()));
+        return Err(Error::Invalid("secret file token is too large".into()));
     }
     let mut contents = String::new();
     file.take(MAX_CLOUDFLARE_TOKEN_BYTES as u64 + 1)
         .read_to_string(&mut contents)?;
     let token = validate_cloudflare_token(&contents).map_err(|error| {
-        Error::Config(format!("secret file contains an invalid token: {error}"))
+        Error::Invalid(format!("secret file contains an invalid token: {error}"))
     })?;
     Ok(token.to_owned())
 }
@@ -562,7 +562,7 @@ pub fn load_secret_file(path: &Path) -> Result<String> {
 fn prepare_state_dir(path: &Path) -> Result<PathBuf> {
     let name = path
         .file_name()
-        .ok_or_else(|| Error::Config("gateway state directory must have a name".into()))?
+        .ok_or_else(|| Error::Invalid("gateway state directory must have a name".into()))?
         .to_owned();
     let parent = path
         .parent()
@@ -573,7 +573,7 @@ fn prepare_state_dir(path: &Path) -> Result<PathBuf> {
     match fs::create_dir(&path) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "gateway state directory already exists".into(),
             ));
         }
@@ -586,12 +586,12 @@ fn prepare_state_dir(path: &Path) -> Result<PathBuf> {
 fn validate_private_state_dir(path: &Path) -> Result<()> {
     let metadata = fs::metadata(path)?;
     if !metadata.is_dir() {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "gateway state path must be a directory".into(),
         ));
     }
     if metadata.permissions().mode() & 0o077 != 0 {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "gateway state directory must not be accessible by group or others (use mode 0700)"
                 .into(),
         ));
@@ -606,24 +606,24 @@ fn validate_credential(
     expires_at: Option<u64>,
 ) -> Result<()> {
     if expires_at.is_some_and(|seconds| seconds == 0 || seconds > 253_402_300_799) {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "credential expiry must be a valid Unix timestamp".into(),
         ));
     }
     super::validation::validate_instance_id(instance)?;
     let definition = provider(provider_id)?;
     if !matches!(definition.auth(), ProviderAuth::ApiKey(_)) {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "provider `{provider_id}` does not accept an API key"
         )));
     }
     if api_key.is_empty() || api_key.len() > MAX_PROVIDER_API_KEY_BYTES {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "API key must be 1–{MAX_PROVIDER_API_KEY_BYTES} bytes"
         )));
     }
     if !api_key.bytes().all(|byte| byte.is_ascii_graphic()) {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "API key must contain only visible ASCII characters without whitespace".into(),
         ));
     }
@@ -645,7 +645,7 @@ fn validate_credential_state(values: &BTreeMap<String, StoredCredential>) -> Res
 fn save_private_map(path: &Path, values: &BTreeMap<String, StoredCredential>) -> Result<()> {
     let contents = serde_json::to_vec(values)?;
     if contents.len() > MAX_CREDENTIAL_STATE_BYTES {
-        return Err(Error::Config(
+        return Err(Error::Internal(
             "provider credential state is too large".into(),
         ));
     }
@@ -674,7 +674,7 @@ impl UsageHistory {
                 || TokenUsage::default().checked_sum(usage),
                 |bucket| bucket.checked_sum(usage),
             )
-            .ok_or_else(|| Error::Config("daily token usage overflow".into()))?;
+            .ok_or_else(|| Error::Internal("daily token usage overflow".into()))?;
         let created_day = !self.days.contains_key(&day);
         let previous = self
             .days
@@ -725,14 +725,16 @@ impl UsageUpdate {
 pub fn unix_day(now: SystemTime) -> Result<u64> {
     Ok(now
         .duration_since(UNIX_EPOCH)
-        .map_err(|error| Error::Config(format!("system clock is before the Unix epoch: {error}")))?
+        .map_err(|error| {
+            Error::Internal(format!("system clock is before the Unix epoch: {error}"))
+        })?
         .as_secs()
         / SECONDS_PER_DAY)
 }
 
 fn validate_usage(usage: &TokenUsage) -> Result<()> {
     if !usage_nonnegative(usage) {
-        return Err(Error::Config("token usage cannot be negative".into()));
+        return Err(Error::Internal("token usage cannot be negative".into()));
     }
     Ok(())
 }
@@ -743,7 +745,7 @@ fn validate_usage_provider(provider: &str) -> Result<()> {
         || provider.len() > 256
         || provider.chars().any(char::is_control)
     {
-        return Err(Error::Config(
+        return Err(Error::Internal(
             "usage provider ID must be canonical and 1–256 bytes".into(),
         ));
     }

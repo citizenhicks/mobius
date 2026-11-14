@@ -123,14 +123,14 @@ impl StoredRoutineBinding {
                 RoutineScheduleKind::Interval => Some(
                     now.checked_add(
                         i64::try_from(schedule.every_seconds.ok_or_else(|| {
-                            Error::Config("interval schedule is missing its interval".into())
+                            Error::Internal("interval schedule is missing its interval".into())
                         })?)
                         .map_err(|error| {
-                            Error::Config(format!("interval schedule is too large: {error}"))
+                            Error::Internal(format!("interval schedule is too large: {error}"))
                         })?,
                     )
                     .ok_or_else(|| {
-                        Error::Config("interval schedule overflows its timestamp".into())
+                        Error::Internal("interval schedule overflows its timestamp".into())
                     })?,
                 ),
                 RoutineScheduleKind::Cron => Some(next_cron_occurrence(schedule, now, !resume)?),
@@ -163,16 +163,16 @@ impl StoredRoutineBinding {
                 let every = i64::try_from(
                     schedule
                         .every_seconds
-                        .ok_or_else(|| Error::Config("interval is missing".into()))?,
+                        .ok_or_else(|| Error::Internal("interval is missing".into()))?,
                 )
-                .map_err(|error| Error::Config(format!("interval is too large: {error}")))?;
+                .map_err(|error| Error::Internal(format!("interval is too large: {error}")))?;
                 let next = self
                     .next_due_at
-                    .ok_or_else(|| Error::Config("interval has no next occurrence".into()))?;
+                    .ok_or_else(|| Error::Internal("interval has no next occurrence".into()))?;
                 let missed = (now.saturating_sub(next) / every).saturating_add(1);
                 Some(
                     next.checked_add(every.saturating_mul(missed))
-                        .ok_or_else(|| Error::Config("interval timestamp overflows".into()))?,
+                        .ok_or_else(|| Error::Internal("interval timestamp overflows".into()))?,
                 )
             }
         };
@@ -207,20 +207,20 @@ fn next_cron_occurrence(
     let expression = schedule
         .expression
         .as_deref()
-        .ok_or_else(|| Error::Config("cron schedule is missing its expression".into()))?;
+        .ok_or_else(|| Error::Internal("cron schedule is missing its expression".into()))?;
     let cron = Cron::from_str(expression)
-        .map_err(|error| Error::Config(format!("invalid persisted cron schedule: {error}")))?;
+        .map_err(|error| Error::Internal(format!("invalid persisted cron schedule: {error}")))?;
     let time_zone = schedule
         .time_zone
         .as_deref()
-        .ok_or_else(|| Error::Config("cron schedule is missing its time zone".into()))?
+        .ok_or_else(|| Error::Internal("cron schedule is missing its time zone".into()))?
         .parse::<Tz>()
-        .map_err(|error| Error::Config(format!("invalid persisted cron time zone: {error}")))?;
+        .map_err(|error| Error::Internal(format!("invalid persisted cron time zone: {error}")))?;
     let utc_minute = Utc
         .timestamp_opt(now, 0)
         .single()
         .and_then(|time| time.with_second(0))
-        .ok_or_else(|| Error::Config("cron timestamp is outside the supported range".into()))?;
+        .ok_or_else(|| Error::Internal("cron timestamp is outside the supported range".into()))?;
     let local_time = utc_minute.with_timezone(&time_zone);
     let minimum = local_time.timestamp();
     let mut cursor = local_time;
@@ -229,13 +229,15 @@ fn next_cron_occurrence(
     loop {
         let next = cron
             .find_next_occurrence(&cursor, inclusive)
-            .map_err(|error| Error::Config(format!("invalid persisted cron schedule: {error}")))?;
+            .map_err(|error| {
+                Error::Internal(format!("invalid persisted cron schedule: {error}"))
+            })?;
         let timestamp = next.timestamp();
         if timestamp > minimum || (inclusive_current_minute && timestamp == minimum) {
             return Ok(timestamp);
         }
         if previous.is_some_and(|previous| timestamp <= previous) {
-            return Err(Error::Config(
+            return Err(Error::Internal(
                 "persisted cron schedule did not advance its timestamp".into(),
             ));
         }
@@ -457,7 +459,7 @@ impl BotStore {
         };
         let state = store.fresh_state()?;
         if persisted && !state.bots.iter().any(|bot| &*bot.handle == MOBIUS_HANDLE) {
-            return Err(Error::Config(
+            return Err(Error::Internal(
                 "persisted Bot state has no built-in @mobius Bot".into(),
             ));
         }
@@ -620,7 +622,7 @@ impl BotStore {
         let mut routine_locks = Vec::with_capacity(routine_ids.len());
         for routine_id in &routine_ids {
             let Some(lock) = self.try_routine_lock(routine_id)? else {
-                return Err(Error::Config(format!(
+                return Err(Error::Invalid(format!(
                     "routine {routine_id} is currently running"
                 )));
             };
@@ -664,7 +666,7 @@ impl BotStore {
         if let Some(pending) = &state.pending_bot_deletion
             && pending != &intent
         {
-            return Err(Error::Config(
+            return Err(Error::Internal(
                 "another Bot deletion is awaiting recovery".into(),
             ));
         }
@@ -674,7 +676,7 @@ impl BotStore {
         deletion.release_state_lock();
         state
             .pending_bot_deletion
-            .ok_or_else(|| Error::Config("recorded Bot deletion is missing".into()))
+            .ok_or_else(|| Error::Internal("recorded Bot deletion is missing".into()))
     }
 
     pub(crate) fn pending_bot_deletion(&self) -> Result<Option<PendingBotDeletion>> {
@@ -691,9 +693,9 @@ impl BotStore {
             let pending = state
                 .pending_bot_deletion
                 .as_ref()
-                .ok_or_else(|| Error::Config("Bot deletion recovery is not pending".into()))?;
+                .ok_or_else(|| Error::Internal("Bot deletion recovery is not pending".into()))?;
             if *pending.bot_id != *bot_id {
-                return Err(Error::Config(
+                return Err(Error::Internal(
                     "a different Bot deletion is awaiting recovery".into(),
                 ));
             }
@@ -705,7 +707,7 @@ impl BotStore {
     pub(crate) fn cleanup_bot_deletion_files(&self, intent: &PendingBotDeletion) -> Result<()> {
         for path in &intent.instruction_paths {
             if path.parent() != Some(self.routines_dir.as_path()) {
-                return Err(Error::Config(
+                return Err(Error::Internal(
                     "pending Bot deletion instructions left the private routine directory".into(),
                 ));
             }
@@ -733,7 +735,7 @@ impl BotStore {
             if let Some(pending) = &state.pending_bot_deletion
                 && (pending.bot_id != bot_id || pending.expected_revision != expected_revision)
             {
-                return Err(Error::Config(
+                return Err(Error::Internal(
                     "a different Bot deletion is awaiting recovery".into(),
                 ));
             }
@@ -753,7 +755,7 @@ impl BotStore {
                 .into_iter()
                 .eq(routine_ids.iter().map(|id| &**id))
             {
-                return Err(Error::Config(
+                return Err(Error::Internal(
                     "Bot routine state changed during deletion".into(),
                 ));
             }
@@ -764,7 +766,7 @@ impl BotStore {
                 .map(|routine| &routine.instructions)
                 .collect::<BTreeSet<_>>();
             if !current_instructions.into_iter().eq(&instructions) {
-                return Err(Error::Config(
+                return Err(Error::Internal(
                     "Bot routine instructions changed during deletion".into(),
                 ));
             }
@@ -822,7 +824,7 @@ impl BotStore {
         let (HarnessConfig::Mobius(composition), ApprovalMode::Mobius(settings)) =
             (&bot.config.versioned.config, &bot.config.approval)
         else {
-            return Err(Error::Config(format!("Bot `{id}` does not run on möbius")));
+            return Err(Error::Invalid(format!("Bot `{id}` does not run on möbius")));
         };
         Ok(RuntimeBot {
             record: Arc::new(bot.record(&voices)?),
@@ -916,7 +918,7 @@ impl BotStore {
             .min()
             .map(|timestamp| {
                 chrono::DateTime::from_timestamp(timestamp, 0)
-                    .ok_or_else(|| Error::Config("routine timestamp is invalid".into()))
+                    .ok_or_else(|| Error::Internal("routine timestamp is invalid".into()))
             })
             .transpose()
     }
@@ -959,7 +961,7 @@ impl BotStore {
             return Ok(state.routines.swap_remove(index));
         }
         let Some(_lock) = self.try_routine_lock(&existing.id)? else {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "routine {} is currently running",
                 existing.id
             )));
@@ -1067,7 +1069,7 @@ impl BotStore {
         let state_lock = self.lock_state()?;
         let routine = self.routine(id)?;
         let Some(lock) = self.try_routine_lock(&routine.id)? else {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "routine {} is currently running",
                 routine.id
             )));
@@ -1107,7 +1109,7 @@ impl BotStore {
         let index = {
             let index = resolve_routine(&state.routines, &routine_id)?;
             if routine_at(&state.routines, index)?.instructions != instructions {
-                return Err(Error::Config(
+                return Err(Error::Internal(
                     "routine instructions changed during deletion".into(),
                 ));
             }
@@ -1117,7 +1119,7 @@ impl BotStore {
                 .into_iter()
                 .collect::<BTreeSet<_>>();
             if current_session_ids != session_ids {
-                return Err(Error::Config(
+                return Err(Error::Internal(
                     "routine run state changed during deletion".into(),
                 ));
             }
@@ -1183,7 +1185,7 @@ impl BotStore {
     fn read_routine_instructions(&self, routine: &StoredRoutine) -> Result<String> {
         let path = std::fs::canonicalize(&routine.instructions)?;
         if !path.is_file() || path.parent() != Some(self.routines_dir.as_path()) {
-            return Err(Error::Config(
+            return Err(Error::Internal(
                 "routine instructions must remain inside the private gateway routine directory"
                     .into(),
             ));
@@ -1193,7 +1195,7 @@ impl BotStore {
         let verified = std::fs::canonicalize(&routine.instructions)?;
         let current = std::fs::metadata(&verified)?;
         if verified != path || !same_file(&opened, &current) {
-            return Err(Error::Config(
+            return Err(Error::Internal(
                 "routine instructions changed while they were being opened".into(),
             ));
         }
@@ -1203,7 +1205,7 @@ impl BotStore {
             .take(limit + 1)
             .read_to_end(&mut bytes)?;
         let input = String::from_utf8(bytes).map_err(|error| {
-            Error::Config(format!("routine instructions are not valid UTF-8: {error}"))
+            Error::Internal(format!("routine instructions are not valid UTF-8: {error}"))
         })?;
         validate_instructions(&input)?;
         Ok(input)
@@ -1299,18 +1301,18 @@ impl BotStore {
         let lock = self.try_routine_lock(&routine.id)?;
         if let Some(run) = self.storage.command_run(command_id)? {
             if run.routine_id != routine.id {
-                return Err(Error::Config(
+                return Err(Error::Internal(
                     "routine command identity targets another routine".into(),
                 ));
             }
             return Ok(BeginRun::AlreadyRecorded);
         }
         if !routine.enabled {
-            return Err(Error::Config("routine is paused".into()));
+            return Err(Error::Invalid("routine is paused".into()));
         }
         let Some(lock) = lock else {
             if !self.storage.has_running(&routine.id)? {
-                return Err(Error::Config("routine is currently being modified".into()));
+                return Err(Error::Invalid("routine is currently being modified".into()));
             }
             self.storage.insert_run_with_cause(
                 &new_run(
@@ -1330,7 +1332,7 @@ impl BotStore {
             run_id: run.id,
             session_id: run
                 .session_id
-                .ok_or_else(|| Error::Config("running routine has no session".into()))?,
+                .ok_or_else(|| Error::Internal("running routine has no session".into()))?,
             _lock: lock,
         }))
     }
@@ -1347,7 +1349,7 @@ impl BotStore {
         message: Option<Arc<str>>,
     ) -> Result<RoutineRun> {
         if status == RoutineRunStatus::Running {
-            return Err(Error::Config(
+            return Err(Error::Internal(
                 "a completed routine run cannot remain running".into(),
             ));
         }
@@ -1384,9 +1386,9 @@ impl BotStore {
         }
         let resolved = ids
             .pop_first()
-            .ok_or_else(|| Error::Config(format!("unknown routine `{id}`")))?;
+            .ok_or_else(|| Error::Invalid(format!("unknown routine `{id}`")))?;
         if !ids.is_empty() {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "routine ID prefix `{id}` is ambiguous"
             )));
         }
@@ -1402,7 +1404,7 @@ impl BotStore {
         let _file_lock = self.lock_state()?;
         let state = self.fresh_state()?;
         if state.pending_bot_deletion.is_some() {
-            return Err(Error::Config(
+            return Err(Error::Internal(
                 "Bot deletion recovery must finish before changing Bot state".into(),
             ));
         }
@@ -1447,16 +1449,16 @@ impl BotStore {
     pub(crate) fn resume_run(&self, id: &str) -> Result<ActiveRoutineRun> {
         let run = self.storage.run(id)?;
         if run.status != RoutineRunStatus::Running {
-            return Err(Error::Config("only running routines can resume".into()));
+            return Err(Error::Invalid("only running routines can resume".into()));
         }
         let lock = self
             .try_routine_lock(&run.routine_id)?
-            .ok_or_else(|| Error::Config("routine is already resident".into()))?;
+            .ok_or_else(|| Error::Internal("routine is already resident".into()))?;
         Ok(ActiveRoutineRun {
             run_id: run.id,
             session_id: run
                 .session_id
-                .ok_or_else(|| Error::Config("running routine has no session".into()))?,
+                .ok_or_else(|| Error::Internal("running routine has no session".into()))?,
             _lock: lock,
         })
     }
@@ -1490,7 +1492,7 @@ impl BotStore {
         let _file_lock = self.lock_state()?;
         self.update_locked(|state| {
             if state.pending_bot_deletion.is_some() {
-                return Err(Error::Config(
+                return Err(Error::Internal(
                     "Bot deletion recovery must finish before changing Bot state".into(),
                 ));
             }
@@ -1534,7 +1536,7 @@ impl BotStore {
         cache
             .as_ref()
             .map(|(_, state)| std::sync::Arc::clone(state))
-            .ok_or_else(|| Error::Config("Bot catalog is unavailable".into()))
+            .ok_or_else(|| Error::Internal("Bot catalog is unavailable".into()))
     }
 
     fn parse_state(&self, contents: Option<String>) -> Result<BotState> {
@@ -1550,7 +1552,7 @@ impl BotStore {
 fn catalog_json(state: &BotState) -> Result<String> {
     let contents = serde_json::to_string_pretty(state)?;
     if u64::try_from(contents.len()).unwrap_or(u64::MAX) > MAX_STATE_BYTES {
-        return Err(Error::Config("Bot state is too large".into()));
+        return Err(Error::Internal("Bot state is too large".into()));
     }
     Ok(contents)
 }
@@ -1632,12 +1634,12 @@ fn validate_handle(handle: &str) -> Result<String> {
         mobius::identifier::AsciiCase::Lower,
         b"_-",
     ) {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "Bot handle must be 1–{MAX_HANDLE_BYTES} lowercase ASCII letters, digits, dashes, or underscores"
         )));
     }
     if handle == USER_HANDLE {
-        return Err(Error::Config("Bot handle `user` is reserved".into()));
+        return Err(Error::Invalid("Bot handle `user` is reserved".into()));
     }
     Ok(handle.into())
 }
@@ -1645,7 +1647,7 @@ fn validate_handle(handle: &str) -> Result<String> {
 fn validate_name(name: &str) -> Result<String> {
     let name = name.trim();
     if name.is_empty() || name.len() > MAX_BOT_NAME_BYTES {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "Bot name must be 1–{MAX_BOT_NAME_BYTES} bytes"
         )));
     }
@@ -1655,7 +1657,7 @@ fn validate_name(name: &str) -> Result<String> {
 fn validate_description(description: &str) -> Result<String> {
     let description = description.trim();
     if description.is_empty() || description.len() > MAX_BOT_DESCRIPTION_BYTES {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "Bot description must be 1–{MAX_BOT_DESCRIPTION_BYTES} bytes"
         )));
     }
@@ -1668,7 +1670,7 @@ fn validate_stored_workspace(workspace: &Path) -> Result<()> {
             .components()
             .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
     {
-        return Err(Error::Config(
+        return Err(Error::Internal(
             "persisted routine workspace must be an absolute normalized path".into(),
         ));
     }
@@ -1677,7 +1679,7 @@ fn validate_stored_workspace(workspace: &Path) -> Result<()> {
 
 fn validate_routine_id_prefix(id: &str) -> Result<()> {
     if id.is_empty() || id.chars().any(char::is_whitespace) {
-        return Err(Error::Config("routine ID cannot be empty".into()));
+        return Err(Error::Invalid("routine ID cannot be empty".into()));
     }
     Ok(())
 }
@@ -1685,10 +1687,12 @@ fn validate_routine_id_prefix(id: &str) -> Result<()> {
 fn validate_instructions(instructions: &str) -> Result<()> {
     let instructions = instructions.trim();
     if instructions.is_empty() {
-        return Err(Error::Config("routine instructions cannot be empty".into()));
+        return Err(Error::Invalid(
+            "routine instructions cannot be empty".into(),
+        ));
     }
     if instructions.len() > MAX_ROUTINE_INSTRUCTIONS_BYTES {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "routine instructions exceed the {MAX_ROUTINE_INSTRUCTIONS_BYTES}-byte input limit"
         )));
     }
@@ -1711,7 +1715,7 @@ fn validate_bindings<'a>(
     timestamp_limit: Option<i64>,
 ) -> Result<()> {
     if depth > 4 || bindings.len() > events::MAX_ROUTINE_BINDINGS {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "routine bindings exceed their count or nesting bound".into(),
         ));
     }
@@ -1722,7 +1726,7 @@ fn validate_bindings<'a>(
             || binding.id.chars().any(char::is_control)
             || !ids.insert(&binding.id)
         {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "routine binding identities must be distinct and contain 1 to 128 safe bytes"
                     .into(),
             ));
@@ -1750,7 +1754,7 @@ pub(crate) fn validate_routine_action(
                 || run_id.len() > 256
                 || run_id.chars().any(char::is_control) =>
         {
-            Err(Error::Config(
+            Err(Error::Invalid(
                 "stop action requires a safe invocation identity".into(),
             ))
         }
@@ -1772,7 +1776,7 @@ fn validate_schedule(
         .is_some_and(|at| timestamp_limit.is_some_and(|limit| !(1..=limit).contains(&at)))
         || ends_at.is_some_and(|end| !(1..=timestamp_limit.unwrap_or(i64::MAX)).contains(&end))
     {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "schedule timestamps must be Unix epoch seconds within the supported range, not milliseconds".into(),
         ));
     }
@@ -1789,7 +1793,7 @@ fn validate_schedule(
             if populated == 1 && schedule.at.is_some() && schedule.time_zone.is_none() =>
         {
             if ends_at.is_some_and(|ends_at| schedule.at.is_some_and(|at| at > ends_at)) {
-                return Err(Error::Config(
+                return Err(Error::Invalid(
                     "a once schedule cannot end before it runs".into(),
                 ));
             }
@@ -1800,7 +1804,9 @@ fn validate_schedule(
                 && schedule.time_zone.is_none() =>
         {
             if schedule.every_seconds.unwrap_or_default() < 60 {
-                return Err(Error::Config("interval must be at least 60 seconds".into()));
+                return Err(Error::Invalid(
+                    "interval must be at least 60 seconds".into(),
+                ));
             }
         }
         RoutineScheduleKind::Cron
@@ -1809,7 +1815,7 @@ fn validate_schedule(
             let time_zone = schedule.time_zone.as_deref().unwrap_or_default();
             time_zone
                 .parse::<Tz>()
-                .map_err(|error| Error::Config(format!("invalid cron time zone: {error}")))?;
+                .map_err(|error| Error::Invalid(format!("invalid cron time zone: {error}")))?;
             let expression = schedule.expression.as_deref().unwrap_or_default();
             let fields = expression.split_ascii_whitespace().collect::<Vec<_>>();
             if fields.len() != 5
@@ -1821,15 +1827,15 @@ fn validate_schedule(
                         })
                 })
             {
-                return Err(Error::Config(
+                return Err(Error::Invalid(
                     "schedule must be a five-field cron expression".into(),
                 ));
             }
             Cron::from_str(expression)
-                .map_err(|error| Error::Config(format!("invalid cron schedule: {error}")))?;
+                .map_err(|error| Error::Invalid(format!("invalid cron schedule: {error}")))?;
         }
         _ => {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "schedule fields do not match the selected schedule kind".into(),
             ));
         }
@@ -1840,42 +1846,42 @@ fn validate_schedule(
 /// Checks each record read from disk; in-process records are built from checked input.
 fn validate_records(state: &BotState, routines_dir: &Path) -> Result<()> {
     if state.version != STATE_VERSION {
-        return Err(Error::Config(format!(
+        return Err(Error::Internal(format!(
             "unsupported Bot state version {}",
             state.version
         )));
     }
     for bot in &state.bots {
         let parsed = Uuid::parse_str(&bot.id)
-            .map_err(|error| Error::Config(format!("invalid persisted Bot ID: {error}")))?;
+            .map_err(|error| Error::Internal(format!("invalid persisted Bot ID: {error}")))?;
         if *parsed.to_string() != *bot.id {
-            return Err(Error::Config("invalid persisted Bot ID".into()));
+            return Err(Error::Internal("invalid persisted Bot ID".into()));
         }
         if *validate_handle(&bot.handle)? != *bot.handle
             || *validate_name(&bot.name)? != *bot.name
             || *validate_description(&bot.description)? != *bot.description
         {
-            return Err(Error::Config(
+            return Err(Error::Internal(
                 "persisted Bot identity is not normalized".into(),
             ));
         }
         if bot.config.versioned.revision == 0 {
-            return Err(Error::Config(
+            return Err(Error::Internal(
                 "persisted Bot revision must be positive".into(),
             ));
         }
     }
     for routine in &state.routines {
         let parsed = Uuid::parse_str(&routine.id)
-            .map_err(|error| Error::Config(format!("invalid persisted routine ID: {error}")))?;
+            .map_err(|error| Error::Internal(format!("invalid persisted routine ID: {error}")))?;
         if *parsed.to_string() != *routine.id {
-            return Err(Error::Config("invalid persisted routine ID".into()));
+            return Err(Error::Internal("invalid persisted routine ID".into()));
         }
         validate_stored_workspace(&routine.workspace)?;
         if !routine.instructions.is_absolute()
             || routine.instructions.parent() != Some(routines_dir)
         {
-            return Err(Error::Config(
+            return Err(Error::Internal(
                 "persisted routine path is outside the private gateway routine directory".into(),
             ));
         }
@@ -1889,21 +1895,22 @@ fn validate_records(state: &BotState, routines_dir: &Path) -> Result<()> {
             .iter()
             .any(|binding| binding.next_due_at.is_some_and(|next| next <= 0))
         {
-            return Err(Error::Config("invalid persisted routine next run".into()));
+            return Err(Error::Internal("invalid persisted routine next run".into()));
         }
     }
     if let Some(pending) = &state.pending_bot_deletion {
-        let parsed = Uuid::parse_str(&pending.bot_id)
-            .map_err(|error| Error::Config(format!("invalid pending Bot deletion ID: {error}")))?;
+        let parsed = Uuid::parse_str(&pending.bot_id).map_err(|error| {
+            Error::Internal(format!("invalid pending Bot deletion ID: {error}"))
+        })?;
         if *parsed.to_string() != *pending.bot_id || pending.expected_revision == 0 {
-            return Err(Error::Config("invalid pending Bot deletion".into()));
+            return Err(Error::Internal("invalid pending Bot deletion".into()));
         }
         if pending
             .session_roots
             .iter()
             .any(|root| !pending.session_ids.contains(root))
         {
-            return Err(Error::Config(
+            return Err(Error::Internal(
                 "pending Bot deletion root is outside its session set".into(),
             ));
         }
@@ -1912,7 +1919,7 @@ fn validate_records(state: &BotState, routines_dir: &Path) -> Result<()> {
             .iter()
             .any(|path| !path.is_absolute() || path.parent() != Some(routines_dir))
         {
-            return Err(Error::Config(
+            return Err(Error::Internal(
                 "pending Bot deletion instructions are outside the private routine directory"
                     .into(),
             ));
@@ -1927,23 +1934,23 @@ fn validate_state(state: &BotState) -> Result<()> {
     let mut handles = BTreeSet::new();
     for bot in &state.bots {
         if !bot_ids.insert(&*bot.id) {
-            return Err(Error::Config("duplicate persisted Bot ID".into()));
+            return Err(Error::Internal("duplicate persisted Bot ID".into()));
         }
         if !handles.insert(&*bot.handle) {
-            return Err(Error::Config("duplicate persisted Bot handle".into()));
+            return Err(Error::Internal("duplicate persisted Bot handle".into()));
         }
     }
     let mut ids = BTreeSet::new();
     let mut paths = BTreeSet::new();
     for routine in &state.routines {
         if !ids.insert(&*routine.id) {
-            return Err(Error::Config("duplicate persisted routine ID".into()));
+            return Err(Error::Internal("duplicate persisted routine ID".into()));
         }
         if !bot_ids.contains(&*routine.bot_id) {
-            return Err(Error::Config("persisted routine has no Bot".into()));
+            return Err(Error::Internal("persisted routine has no Bot".into()));
         }
         if !paths.insert(routine.instructions.as_path()) {
-            return Err(Error::Config(
+            return Err(Error::Internal(
                 "persisted routine path is outside the private gateway routine directory".into(),
             ));
         }
@@ -1952,7 +1959,7 @@ fn validate_state(state: &BotState) -> Result<()> {
         && let Some(bot) = state.bots.iter().find(|bot| *bot.id == *pending.bot_id)
         && bot.config.versioned.revision != pending.expected_revision
     {
-        return Err(Error::Config(
+        return Err(Error::Internal(
             "pending Bot deletion revision changed".into(),
         ));
     }
@@ -1970,9 +1977,9 @@ fn resolve_routine(routines: &[StoredRoutine], id: &str) -> Result<usize> {
         .filter(|(_, routine)| routine.id.starts_with(id));
     let (index, _) = matches
         .next()
-        .ok_or_else(|| Error::Config(format!("unknown routine `{id}`")))?;
+        .ok_or_else(|| Error::Invalid(format!("unknown routine `{id}`")))?;
     if matches.next().is_some() {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "routine ID prefix `{id}` is ambiguous"
         )));
     }
@@ -2009,13 +2016,13 @@ fn discard_staged(path: &Path, error: Error) -> Error {
 fn routine_at(routines: &[StoredRoutine], index: usize) -> Result<&StoredRoutine> {
     routines
         .get(index)
-        .ok_or_else(|| Error::Config("resolved routine is missing from the catalog".into()))
+        .ok_or_else(|| Error::Internal("resolved routine is missing from the catalog".into()))
 }
 
 fn routine_at_mut(routines: &mut [StoredRoutine], index: usize) -> Result<&mut StoredRoutine> {
     routines
         .get_mut(index)
-        .ok_or_else(|| Error::Config("resolved routine is missing from the catalog".into()))
+        .ok_or_else(|| Error::Internal("resolved routine is missing from the catalog".into()))
 }
 
 /// A lifecycle event for one routine, owned apart from the catalog entry.
@@ -2054,13 +2061,13 @@ fn stored_bot<'a>(state: &'a BotState, id: &str) -> Result<&'a StoredBot> {
 }
 
 fn unknown_bot(id: &str) -> Error {
-    Error::Config(format!("unknown Bot `{id}`"))
+    Error::Invalid(format!("unknown Bot `{id}`"))
 }
 
 /// Fails unless `bot` is still at the revision the caller saw.
 fn check_revision(bot: &StoredBot, expected: u64) -> Result<()> {
     if bot.config.versioned.revision != expected {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "Bot configuration revision changed from {expected} to {}",
             bot.config.versioned.revision
         )));
@@ -2070,7 +2077,7 @@ fn check_revision(bot: &StoredBot, expected: u64) -> Result<()> {
 
 fn check_deletable(bot: &StoredBot, expected_revision: u64) -> Result<()> {
     if &*bot.handle == MOBIUS_HANDLE {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "the built-in @mobius Bot cannot be deleted".into(),
         ));
     }
@@ -2082,7 +2089,7 @@ fn take_routine(routines: Vec<StoredRoutine>, id: &str) -> Result<StoredRoutine>
     routines
         .into_iter()
         .find(|routine| *routine.id == *id)
-        .ok_or_else(|| Error::Config(format!("unknown routine `{id}`")))
+        .ok_or_else(|| Error::Invalid(format!("unknown routine `{id}`")))
 }
 
 fn open_private_lock(path: &Path) -> Result<File> {
@@ -2095,7 +2102,7 @@ fn private_routines_dir(state_dir: &Path) -> Result<PathBuf> {
     std::fs::create_dir_all(&path)?;
     let path = std::fs::canonicalize(path)?;
     if path.parent() != Some(state_dir) || !path.is_dir() {
-        return Err(Error::Config(
+        return Err(Error::Internal(
             "gateway routine directory must be a real directory inside gateway state".into(),
         ));
     }
@@ -2147,7 +2154,7 @@ pub(crate) fn is_listed_root(
 
 fn reject_bot_mutation_if_deleting(state: &BotState) -> Result<()> {
     if state.pending_bot_deletion.is_some() {
-        return Err(Error::Config(
+        return Err(Error::Internal(
             "Bot deletion recovery must finish before changing Bot work".into(),
         ));
     }

@@ -91,7 +91,7 @@ impl TokenEstimate {
     /// Returns an error for a nonfinite or nonpositive ratio.
     pub fn new(bytes_per_token: f64) -> Result<Self> {
         if !bytes_per_token.is_finite() || bytes_per_token <= 0.0 {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "bytes per token must be positive and finite".into(),
             ));
         }
@@ -316,7 +316,7 @@ pub trait Middleware: Send + Sync {
         _context: &'a mut MessageRouteContext<'_>,
     ) -> BoxFuture<'a, Result<SubmissionResult>> {
         Box::pin(async move {
-            Err(Error::Config(format!(
+            Err(Error::Internal(format!(
                 "middleware `{}` claimed messages but did not prepare them",
                 self.name()
             )))
@@ -517,7 +517,7 @@ impl MiddlewareStack {
             if entry.handles_messages()
                 && let Some(owner) = message_handler.replace(entry.name())
             {
-                return Err(Error::Config(format!(
+                return Err(Error::Internal(format!(
                     "conversation messages are owned by both `{owner}` and `{}`",
                     entry.name()
                 )));
@@ -597,14 +597,14 @@ impl MiddlewareStack {
             };
             let body = section.body.trim();
             if body.is_empty() {
-                return Err(Error::Config(format!(
+                return Err(Error::Internal(format!(
                     "middleware `{}` returned an empty prompt section",
                     entry.name()
                 )));
             }
             let title = section.title.unwrap_or_else(|| entry.name()).trim();
             if title.is_empty() || title.lines().count() != 1 {
-                return Err(Error::Config(format!(
+                return Err(Error::Internal(format!(
                     "middleware `{}` returned an invalid prompt section title",
                     entry.name()
                 )));
@@ -645,8 +645,9 @@ impl MiddlewareStack {
     }
 
     fn message_handler_required(&self) -> Result<&Arc<dyn Middleware>> {
-        self.message_handler()
-            .ok_or_else(|| Error::Config("conversation message middleware is not installed".into()))
+        self.message_handler().ok_or_else(|| {
+            Error::Internal("conversation message middleware is not installed".into())
+        })
     }
 
     /// The message handler with the queue scoped to it.
@@ -1050,7 +1051,7 @@ fn validate_tool_rendering(
     ];
     for (event_name, event) in events {
         if middleware.render(&event, session_id).is_none() {
-            return Err(Error::Config(format!(
+            return Err(Error::Internal(format!(
                 "middleware `{}` registered tool `{tool_name}` but does not render `{event_name}`",
                 middleware.name()
             )));
@@ -1066,7 +1067,7 @@ fn validate_frontend(contributions: &[FrontendContribution]) -> Result<()> {
     for contribution in contributions {
         for command in &contribution.commands {
             if command.name.is_empty() || command.name.chars().any(char::is_whitespace) {
-                return Err(Error::Config(format!(
+                return Err(Error::Internal(format!(
                     "invalid frontend command `{}`",
                     command.name
                 )));
@@ -1089,7 +1090,7 @@ fn validate_frontend(contributions: &[FrontendContribution]) -> Result<()> {
                 && (item.text.trim().is_empty()
                     || (item.content.is_none() && item.action.is_none()))
             {
-                return Err(Error::Config(format!(
+                return Err(Error::Internal(format!(
                     "frontend surface `{}/{}` requires a label and content or action",
                     contribution.capability, item.id
                 )));
@@ -1110,7 +1111,7 @@ fn validate_frontend(contributions: &[FrontendContribution]) -> Result<()> {
                 || reference.value.is_empty()
                 || reference.value.chars().any(char::is_whitespace)
             {
-                return Err(Error::Config(format!(
+                return Err(Error::Internal(format!(
                     "invalid frontend reference `{}{}`",
                     reference.trigger, reference.value
                 )));
@@ -1128,12 +1129,14 @@ fn validate_frontend(contributions: &[FrontendContribution]) -> Result<()> {
 
 fn validate_action_list(title: &str, items: &[FrontendActionListItem]) -> Result<()> {
     if title.trim().is_empty() {
-        return Err(Error::Config("frontend action list title is empty".into()));
+        return Err(Error::Internal(
+            "frontend action list title is empty".into(),
+        ));
     }
     let mut item_ids = BTreeSet::new();
     for item in items {
         if item.id.trim().is_empty() || item.text.trim().is_empty() {
-            return Err(Error::Config(
+            return Err(Error::Internal(
                 "frontend action list item requires an ID and text".into(),
             ));
         }
@@ -1166,7 +1169,7 @@ fn validate_actions(actions: &[crate::protocol::FrontendAction]) -> Result<()> {
                     || editor.submit_label.trim().is_empty()
             })
         {
-            return Err(Error::Config(
+            return Err(Error::Internal(
                 "frontend list action requires an ID, label, and symbol".into(),
             ));
         }

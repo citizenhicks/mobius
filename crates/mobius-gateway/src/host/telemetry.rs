@@ -168,7 +168,7 @@ impl GatewayHost {
                 match state.store.publish_live(&live) {
                     Ok(()) => return Err(error),
                     Err(rollback @ Error::PublicationApplied { .. }) => {
-                        return Err(crate::publication::applied_error(Error::Config(format!(
+                        return Err(crate::publication::applied_error(Error::Internal(format!(
                             "{error}; telemetry rollback applied but completion failed: {rollback}"
                         ))));
                     }
@@ -176,7 +176,7 @@ impl GatewayHost {
                         // Rollback never replaced the file: keep the published configuration live.
                         live.telemetry.sinks = previous;
                         live.telemetry.revision = revision;
-                        let failure = crate::publication::applied_error(Error::Config(format!(
+                        let failure = crate::publication::applied_error(Error::Internal(format!(
                             "telemetry configuration remains changed; cursor synchronization failed: {error}; rollback failed: {rollback}"
                         )));
                         // Runtime follows the visible config; missing cursor state continues to fail closed.
@@ -281,7 +281,7 @@ impl GatewayHost {
             super::catalog::refresh_catalog(&checkpoints, &mut catalog).await?;
         }
         let Some(snapshot) = &catalog.snapshot else {
-            return Err(Error::Config(
+            return Err(Error::Internal(
                 "session catalog snapshot is unavailable".into(),
             ));
         };
@@ -327,7 +327,7 @@ impl GatewayHost {
             let activity = self
                 .runtime_activity()
                 .await
-                .map_err(|e| Error::Config(e.message.to_string()))?;
+                .map_err(|e| Error::Internal(e.message.to_string()))?;
             snapshot.insert("activity".into(), json!({"idle": activity.idle && connected_clients == 0, "connected_clients": connected_clients, "activity_revision": activity.activity_revision, "next_routine_at": activity.next_routine_at, "active_sessions": activity.active_sessions, "running_routines": activity.running_routines}));
         }
         if sections.contains(&TelemetrySection::Resources) {
@@ -431,7 +431,7 @@ impl GatewayHost {
                 }
                 value
                     .as_object_mut()
-                    .ok_or_else(|| Error::Config("telemetry event is not a JSON object".into()))?
+                    .ok_or_else(|| Error::Internal("telemetry event is not a JSON object".into()))?
                     .insert("session".into(), Value::Object(enrichment));
             }
             let size = serde_json::to_vec(&value)?.len();
@@ -466,7 +466,7 @@ impl GatewayHost {
             let state = tokio::time::timeout_at(budget.deadline(), self.state.lock())
                 .await
                 .map_err(|error| {
-                    Error::Config(format!(
+                    Error::Internal(format!(
                         "storage measurement timed out waiting for gateway state: {error}"
                     ))
                 })?;

@@ -577,13 +577,13 @@ impl Memory {
             None => super::manifest::string_default(&text::DEFINITION.settings, "dreaming") == "on",
             Some(FrontendSettingValue::String(value)) if value == "on" => true,
             Some(FrontendSettingValue::String(value)) if value == "off" => false,
-            Some(_) => return Err(Error::Config("memory.dreaming must be on or off".into())),
+            Some(_) => return Err(Error::Invalid("memory.dreaming must be on or off".into())),
         };
         let minutes = match setting("dream_minutes") {
             None => super::manifest::integer_default(&text::DEFINITION.settings, "dream_minutes"),
             Some(FrontendSettingValue::Integer(minutes)) => *minutes,
             Some(_) => {
-                return Err(Error::Config(
+                return Err(Error::Invalid(
                     "memory.dream_minutes must be an integer".into(),
                 ));
             }
@@ -686,13 +686,13 @@ impl Memory {
     fn owner(&self) -> Result<&Arc<MemoryOwner>> {
         self.owner
             .get()
-            .ok_or_else(|| Error::Config("memory is not registered for a chat".into()))
+            .ok_or_else(|| Error::Internal("memory is not registered for a chat".into()))
     }
 
     fn dreamable(&self) -> Result<std::sync::MutexGuard<'_, BTreeSet<SessionId>>> {
         self.dreamable
             .lock()
-            .map_err(|_poisoned| Error::Config("memory dream state is poisoned".into()))
+            .map_err(|_poisoned| Error::Internal("memory dream state is poisoned".into()))
     }
 
     async fn command_locked(
@@ -817,7 +817,7 @@ impl Middleware for Memory {
         if let Err(owner) = self.owner.set(owner)
             && self.owner.get() != Some(&owner)
         {
-            return Err(Error::Config(
+            return Err(Error::Internal(
                 "one memory middleware serves one Bot and project".into(),
             ));
         }

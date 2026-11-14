@@ -20,7 +20,7 @@ pub(crate) fn validate_bot_compatibility(
     let configured = gateway
         .configured_providers
         .get(&selection.instance)
-        .ok_or_else(|| Error::Config("active provider is not in the configured catalog".into()))?;
+        .ok_or_else(|| Error::Invalid("active provider is not in the configured catalog".into()))?;
     validate_configured_provider_selection(configured, selection)?;
     let definition = provider(&selection.provider)?;
     let route = crate::harness::mobius::provider_catalog::selected_route(
@@ -35,7 +35,7 @@ pub(crate) fn validate_bot_compatibility(
         .iter()
         .any(|candidate| *candidate.choice.route == *route)
     {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "active model route is not in the configured catalog".into(),
         ));
     }
@@ -52,7 +52,7 @@ fn validate_computer_control_policy(
     if config.middleware.enabled(computer_control::MANIFEST.id)
         && !computer_control::supports_approval_policy(approval_policy)
     {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "computer control middleware requires Full access or Allow · no network".into(),
         ));
     }
@@ -82,12 +82,14 @@ pub(crate) fn validate_agent_composition_with_ceilings(
     ceilings: mobius::middleware::subagents::SubagentCeilings,
 ) -> Result<MobiusSettings> {
     if config.max_model_steps == 0 {
-        return Err(Error::Config("maximum model steps must be positive".into()));
+        return Err(Error::Invalid(
+            "maximum model steps must be positive".into(),
+        ));
     }
     if config.system_prompt.trim().is_empty()
         || config.system_prompt.len() > MAX_SYSTEM_PROMPT_BYTES
     {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "system prompt must be 1–{MAX_SYSTEM_PROMPT_BYTES} bytes"
         )));
     }
@@ -102,7 +104,7 @@ pub(crate) fn validate_agent_composition_with_ceilings(
 pub(super) fn validate_provider_config(config: &ProviderConfig) -> Result<()> {
     validate_provider_transport(config)?;
     if config.model.trim().is_empty() || config.model.len() > 1024 {
-        return Err(Error::Config("model must be 1–1024 bytes".into()));
+        return Err(Error::Invalid("model must be 1–1024 bytes".into()));
     }
     provider(&config.provider)?
         .model_config_is_valid(&config.model, config.reasoning_effort.as_deref())?;
@@ -112,7 +114,7 @@ pub(super) fn validate_provider_config(config: &ProviderConfig) -> Result<()> {
 fn validate_provider_transport(config: &ProviderConfig) -> Result<()> {
     validate_instance_id(&config.instance)?;
     if config.provider.trim().is_empty() || config.provider.len() > 256 {
-        return Err(Error::Config("provider ID must be 1–256 bytes".into()));
+        return Err(Error::Invalid("provider ID must be 1–256 bytes".into()));
     }
     let definition = provider(&config.provider)?;
     if let Some(mode) = config.tool_discovery {
@@ -139,7 +141,7 @@ pub(super) fn validate_configured_provider(configured: &ConfiguredProvider) -> R
         validate_provider_transport(&configured.selection)?;
         provider(&configured.selection.provider)?;
         if !configured.models.is_empty() || configured.selection.reasoning_effort.is_some() {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "a chat catalog requires a selected chat model".into(),
             ));
         }
@@ -149,7 +151,7 @@ pub(super) fn validate_configured_provider(configured: &ConfiguredProvider) -> R
     validate_provider_label(&configured.label)?;
     let definition = provider(&configured.selection.provider)?;
     if definition.locked_models() && !configured.models.is_empty() {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "provider `{}` uses its advertised model and reasoning catalogs",
             configured.selection.provider
         )));
@@ -177,7 +179,7 @@ pub(super) fn validate_configured_provider(configured: &ConfiguredProvider) -> R
             ),
         )?;
         if model.context_window <= 0 {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "model `{}` requires a positive context window",
                 model.id
             )));
@@ -191,7 +193,7 @@ pub(super) fn validate_configured_provider(configured: &ConfiguredProvider) -> R
             (Some(default), false)
                 if model.reasoning.iter().any(|effort| &effort.id == default) => {}
             _ => {
-                return Err(Error::Config(format!(
+                return Err(Error::Invalid(format!(
                     "model `{}` must have an explicit default reasoning effort from its nonempty catalog, and no default when its catalog is empty",
                     model.id
                 )));
@@ -200,7 +202,7 @@ pub(super) fn validate_configured_provider(configured: &ConfiguredProvider) -> R
     }
     if !configured.image_model_ids.is_empty() {
         if !definition.supports(mobius::protocol::ModelCapability::ImageGeneration) {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "provider `{}` does not accept listed image model IDs",
                 configured.selection.provider
             )));
@@ -223,7 +225,7 @@ pub(super) fn validate_configured_provider(configured: &ConfiguredProvider) -> R
         mobius::protocol::ModelCapability::RealtimeVoice,
     )?;
     if configured.image_models.is_some() && !configured.image_model_ids.is_empty() {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "configure either image_models or image_model_ids, not both".into(),
         ));
     }
@@ -246,7 +248,7 @@ fn validate_media_catalog(
         return Ok(());
     }
     if !definition.supports(capability) {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "provider `{}` does not support {capability:?}",
             definition.id()
         )));
@@ -262,7 +264,7 @@ fn validate_media_catalog(
         .sum::<usize>()
         > MAX_CUSTOM_MODEL_ROUTES
     {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "a configured media catalog may generate at most {MAX_CUSTOM_MODEL_ROUTES} routes"
         )));
     }
@@ -278,7 +280,7 @@ fn validate_media_catalog(
             .chain(model.variants.is_empty().then_some(None))
         {
             if !routes.insert(model_route_id(definition.id(), &model.id, variant)) {
-                return Err(Error::Config(
+                return Err(Error::Invalid(
                     "media catalog generates an ambiguous route".into(),
                 ));
             }
@@ -287,7 +289,7 @@ fn validate_media_catalog(
         if model.variants.is_empty()
             && capability == mobius::protocol::ModelCapability::RealtimeVoice
         {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "a live model requires at least one voice".into(),
             ));
         }
@@ -302,14 +304,14 @@ fn validate_media_catalog(
             if capability == mobius::protocol::ModelCapability::ImageGeneration
                 && variant.id.len() > 64
             {
-                return Err(Error::Config(
+                return Err(Error::Invalid(
                     "image quality IDs must be at most 64 bytes".into(),
                 ));
             }
             if capability == mobius::protocol::ModelCapability::RealtimeVoice
                 && variant.id.len() > 256
             {
-                return Err(Error::Config("voice IDs must be at most 256 bytes".into()));
+                return Err(Error::Invalid("voice IDs must be at most 256 bytes".into()));
             }
             validate_display(&variant.label, &variant.description)?;
         }
@@ -319,7 +321,7 @@ fn validate_media_catalog(
 
 fn validate_image_ids<'a>(ids: impl Iterator<Item = &'a str>) -> Result<()> {
     if ids.into_iter().any(|id| id.len() > 256) {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "image model IDs must be at most 256 bytes".into(),
         ));
     }
@@ -328,7 +330,7 @@ fn validate_image_ids<'a>(ids: impl Iterator<Item = &'a str>) -> Result<()> {
 
 fn validate_display(label: &str, description: &str) -> Result<()> {
     if label.trim().is_empty() || label.len() > 1024 || description.len() > 16 * 1024 {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "catalog labels must be 1–1024 bytes and descriptions at most 16 KiB".into(),
         ));
     }
@@ -342,7 +344,7 @@ pub(super) fn validate_configured_provider_selection(
     if selection.instance != configured.selection.instance
         || selection.provider != configured.selection.provider
     {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "provider selection does not match its configured provider entry".into(),
         ));
     }
@@ -363,13 +365,13 @@ pub(super) fn validate_configured_provider_selection(
                 .as_str(),
         ),
     ) {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "browser-auth provider selection must use its operator-registered endpoint".into(),
         ));
     }
     let models = crate::harness::mobius::provider_catalog::models(definition, configured);
     if !models.iter().any(|model| model.id == selection.model) {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "provider `{}` selection model is not in its configured model catalog",
             selection.provider
         )));
@@ -381,7 +383,7 @@ pub(super) fn validate_configured_provider_selection(
             .find(|model| model.id == selection.model)
             .is_some_and(|model| model.reasoning.iter().any(|item| item.id == effort))
     }) {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "provider `{}` selection reasoning effort is not in its configured reasoning catalog",
             selection.provider
         )));
@@ -410,12 +412,12 @@ pub(super) fn validate_custom_model_route_count(
                     &model.id,
                     effort,
                 )) {
-                    return Err(Error::Config(
+                    return Err(Error::Invalid(
                         "custom model and reasoning catalogs generate an ambiguous route".into(),
                     ));
                 }
                 if routes.len() > MAX_CUSTOM_MODEL_ROUTES {
-                    return Err(Error::Config(format!(
+                    return Err(Error::Invalid(format!(
                         "custom provider catalogs may generate at most {MAX_CUSTOM_MODEL_ROUTES} model routes"
                     )));
                 }
@@ -431,7 +433,7 @@ fn validate_catalog_entries<'a>(
     singular_name: &str,
 ) -> Result<()> {
     if entries.len() == 0 || entries.len() > MAX_PROVIDER_CATALOG_ENTRIES {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "{plural_name} must contain 1–{MAX_PROVIDER_CATALOG_ENTRIES} entries"
         )));
     }
@@ -442,26 +444,26 @@ fn validate_catalog_entries<'a>(
             || entry.len() > MAX_PROVIDER_CATALOG_ENTRY_BYTES
             || entry != entry.trim()
         {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "each {singular_name} must be canonical and 1–{MAX_PROVIDER_CATALOG_ENTRY_BYTES} bytes"
             )));
         }
         if entry.chars().any(char::is_control) {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "each {singular_name} must not contain control characters"
             )));
         }
         if !seen.insert(entry) {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "duplicate {singular_name} `{entry}`"
             )));
         }
         bytes = bytes
             .checked_add(entry.len())
-            .ok_or_else(|| Error::Config(format!("{singular_name} catalog is too large")))?;
+            .ok_or_else(|| Error::Invalid(format!("{singular_name} catalog is too large")))?;
     }
     if bytes > MAX_PROVIDER_CATALOG_BYTES {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "{plural_name} are limited to {MAX_PROVIDER_CATALOG_BYTES} bytes in total"
         )));
     }
@@ -475,7 +477,7 @@ pub(crate) fn model_route_id(instance: &str, model: &str, effort: Option<&str>) 
 /// An instance ID names one durable provider setup and appears in model route IDs.
 pub(super) fn validate_instance_id(instance: &str) -> Result<()> {
     if instance.is_empty() || instance.len() > 256 {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "provider instance ID must be 1–256 bytes".into(),
         ));
     }
@@ -483,7 +485,7 @@ pub(super) fn validate_instance_id(instance: &str) -> Result<()> {
         .bytes()
         .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
     {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "provider instance ID accepts only letters, digits, `_`, `-`, and `.`".into(),
         ));
     }
@@ -493,12 +495,12 @@ pub(super) fn validate_instance_id(instance: &str) -> Result<()> {
 /// A label is the user-facing name of one provider instance.
 pub(super) fn validate_provider_label(label: &str) -> Result<()> {
     if label.trim().is_empty() || label.len() > MAX_PROVIDER_LABEL_BYTES {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "provider label must be 1–{MAX_PROVIDER_LABEL_BYTES} bytes"
         )));
     }
     if label.chars().any(char::is_control) {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "provider label must not contain control characters".into(),
         ));
     }
@@ -519,7 +521,7 @@ pub(crate) fn effective_reasoning_effort<'a>(
 }
 
 pub(super) fn invalid_cloudflare_hostname() -> Error {
-    Error::Config(
+    Error::Invalid(
         "Cloudflare hostname must be a DNS name such as mobius.example.com, without a scheme, path, or port"
             .into(),
     )
@@ -537,7 +539,7 @@ pub(super) fn validate_cloudflare_token(token: &str) -> Result<&str> {
 }
 
 pub(super) fn invalid_cloudflare_token() -> Error {
-    Error::Config(format!(
+    Error::Invalid(format!(
         "Cloudflare tunnel token must be 1–{MAX_CLOUDFLARE_TOKEN_BYTES} visible ASCII bytes"
     ))
 }

@@ -54,7 +54,7 @@ impl VoiceManifest {
     fn validate(&self) -> Result<()> {
         for api in [&self.openai, &self.codex] {
             if api.models.is_empty() || api.models.iter().any(|model| model.variants.is_empty()) {
-                return Err(Error::Config(
+                return Err(Error::Invalid(
                     "realtime APIs require a voice model and a voice".into(),
                 ));
             }

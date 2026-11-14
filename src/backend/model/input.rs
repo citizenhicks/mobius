@@ -76,7 +76,7 @@ impl<'a> ModelInput<'a> {
                 continue;
             }
             let destination = sources.get_mut(count).ok_or_else(|| {
-                Error::Config("model input supports at most three borrowed slices".into())
+                Error::Internal("model input supports at most three borrowed slices".into())
             })?;
             *destination = source;
             count += 1;

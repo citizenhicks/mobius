@@ -32,7 +32,10 @@ pub struct ErrorEvent {
 impl ErrorEvent {
     pub(crate) fn from_error(error: &crate::Error) -> Self {
         let (kind, retryable, status, retry_after) = match error {
-            crate::Error::Config(_) => (ErrorKind::Configuration, false, None, None),
+            // ponytail: both map to the old kind so protocol 103 clients keep parsing; add wire kinds with the next protocol bump.
+            crate::Error::Invalid(_) | crate::Error::Internal(_) => {
+                (ErrorKind::Configuration, false, None, None)
+            }
             crate::Error::Duplicate(_) => (ErrorKind::DuplicateRegistration, false, None, None),
             crate::Error::Unknown(_) => (ErrorKind::UnknownRegistration, false, None, None),
             crate::Error::Provider(error) => (

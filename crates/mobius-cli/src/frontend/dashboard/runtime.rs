@@ -35,7 +35,7 @@ pub(super) async fn connect(
     let token = configured_token(&endpoint)
         .map_err(gateway_error)?
         .ok_or_else(|| {
-            Error::Config(format!(
+            Error::Invalid(format!(
                 "this machine is not paired with {endpoint}; pair it before opening the gateway dashboard"
             ))
         })?;

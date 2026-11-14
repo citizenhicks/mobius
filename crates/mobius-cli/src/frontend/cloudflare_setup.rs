@@ -96,7 +96,7 @@ impl State {
     reason = "used as a map_err adapter, which hands over the error by value"
 )]
 fn configuration_error(error: mobius_gateway::Error) -> Error {
-    Error::Config(error.to_string())
+    Error::Invalid(error.to_string())
 }
 
 /// Collects an existing tunnel hostname and connector token without echoing the token.

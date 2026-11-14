@@ -264,7 +264,7 @@ impl ComputerConfig {
         deadline(self.download_connect_timeout_seconds)?;
         deadline(self.download_timeout_seconds)?;
         let url = url::Url::parse(&self.node_download_base_url)
-            .map_err(|error| Error::Config(format!("invalid Node download mirror: {error}")))?;
+            .map_err(|error| Error::Invalid(format!("invalid Node download mirror: {error}")))?;
         if url.scheme() != "https"
             || url.host_str().is_none()
             || !url.username().is_empty()
@@ -272,7 +272,7 @@ impl ComputerConfig {
             || url.query().is_some()
             || url.fragment().is_some()
         {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "Node download mirror must be HTTPS without credentials".into(),
             ));
         }
@@ -285,7 +285,7 @@ impl ComputerConfig {
 impl BrowserConfig {
     pub(crate) fn validate_root_sandbox(&self, root: bool) -> Result<()> {
         if root && self.sandbox {
-            return Err(Error::Config(super::ROOT_SANDBOX_ERROR.into()));
+            return Err(Error::Invalid(super::ROOT_SANDBOX_ERROR.into()));
         }
         Ok(())
     }
@@ -300,7 +300,7 @@ impl BrowserConfig {
         dimensions(self.window_size)?;
         dimensions(self.viewport)?;
         if self.arguments.len() > 128 {
-            return Err(Error::Config("too many browser arguments".into()));
+            return Err(Error::Invalid("too many browser arguments".into()));
         }
         valid_text(&self.start_page)?;
         for argument in self.arguments.iter() {
@@ -325,19 +325,19 @@ impl BrowserConfig {
                 ]
                 .contains(&switch)
             {
-                return Err(Error::Config(
+                return Err(Error::Invalid(
                     "browser arguments cannot override private control or sandbox policy".into(),
                 ));
             }
         }
         let url = url::Url::parse(&self.start_page)
-            .map_err(|error| Error::Config(format!("invalid browser start page: {error}")))?;
+            .map_err(|error| Error::Invalid(format!("invalid browser start page: {error}")))?;
         if !matches!(url.scheme(), "http" | "https" | "about")
             || (url.scheme() == "about" && self.start_page != "about:blank")
             || !url.username().is_empty()
             || url.password().is_some()
         {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "browser start page must be HTTP(S) or about:blank".into(),
             ));
         }
@@ -384,7 +384,7 @@ impl DesktopConfig {
             || self.display_end > 60000
             || self.display_end - self.display_start > 256
         {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "invalid desktop depth or display range".into(),
             ));
         }
@@ -410,7 +410,7 @@ impl DesktopConfig {
             }
             if let Some(arguments) = &application.arguments {
                 if arguments.len() > 128 {
-                    return Err(Error::Config("too many desktop arguments".into()));
+                    return Err(Error::Invalid("too many desktop arguments".into()));
                 }
                 for argument in arguments {
                     valid_argument(argument)?;
@@ -489,7 +489,7 @@ pub(crate) fn resolve_executable(command: &Path) -> Result<PathBuf> {
             .map(Cow::Owned)
     };
     let path = path.filter(|path| is_executable(path)).ok_or_else(|| {
-        Error::Config(format!(
+        Error::Invalid(format!(
             "computer runtime executable is unavailable: {}",
             command.display()
         ))
@@ -503,7 +503,7 @@ pub(crate) fn resolve_candidates(commands: &[String]) -> Result<PathBuf> {
             return Ok(path);
         }
     }
-    Err(Error::Config(format!(
+    Err(Error::Invalid(format!(
         "desktop requires {}",
         commands.join(" or ")
     )))
@@ -515,10 +515,9 @@ pub(crate) fn node_version() -> &'static str {
 
 pub(crate) fn node_distribution(os: &str, arch: &str) -> Result<(&'static str, &'static str)> {
     let key = format!("{os}-{arch}");
-    let distribution =
-        CATALOG.node.distributions.get(&key).ok_or_else(|| {
-            Error::Config(format!("computer control has no runtime for {os}/{arch}"))
-        })?;
+    let distribution = CATALOG.node.distributions.get(&key).ok_or_else(|| {
+        Error::Internal(format!("computer control has no runtime for {os}/{arch}"))
+    })?;
     Ok((&distribution.platform, &distribution.checksum))
 }
 
@@ -536,7 +535,7 @@ fn absolute_path(path: &Path) -> Result<()> {
             .components()
             .any(|part| matches!(part, std::path::Component::ParentDir))
     {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "computer resource paths must be absolute without parent traversal".into(),
         ));
     }
@@ -573,7 +572,7 @@ fn valid_argument(value: &str) -> Result<()> {
 }
 
 fn invalid_command() -> Error {
-    Error::Config("invalid computer executable, argument, or path".into())
+    Error::Invalid("invalid computer executable, argument, or path".into())
 }
 
 fn deadline(seconds: u64) -> Result<()> {
@@ -583,7 +582,7 @@ fn deadline(seconds: u64) -> Result<()> {
 fn dimensions([width, height]: [u32; 2]) -> Result<()> {
     if !mobius::backend::session_files::ImagePresentation::default().fits(width, height) {
         let limits = mobius::backend::session_files::ImagePresentation::default();
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "computer capture dimensions must be positive and fit {} pixels on the longest side and {} patches of 32 × 32 pixels; reduce the viewport, window size or desktop resolution",
             limits.max_dimension, limits.max_patches
         )));

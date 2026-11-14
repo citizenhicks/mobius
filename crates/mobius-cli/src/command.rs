@@ -226,7 +226,7 @@ async fn run_task(bot_handle: &str, task_file: &Path) -> Result<()> {
         if let Some(session_id) = disposable_session.as_ref() {
             discard_session(&sender, &mut events, &mut gateway, session_id).await?;
         }
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "configure the selected Bot's provider before using `mobius run`".into(),
         ));
     }
@@ -245,10 +245,12 @@ async fn read_task_file(path: &Path) -> Result<String> {
         .read_to_end(&mut bytes)
         .await?;
     if bytes.len() > MAX_MESSAGE_BYTES {
-        return Err(Error::Config("task file exceeds message size limit".into()));
+        return Err(Error::Invalid(
+            "task file exceeds message size limit".into(),
+        ));
     }
     String::from_utf8(bytes)
-        .map_err(|error| Error::Config(format!("task file must contain valid UTF-8: {error}")))
+        .map_err(|error| Error::Invalid(format!("task file must contain valid UTF-8: {error}")))
 }
 
 #[expect(
@@ -370,7 +372,7 @@ async fn connect(
             (session, disposable_session)
         }
         None if preferred_bot.is_some() => {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "`mobius run` requires a local gateway workspace".into(),
             ));
         }
@@ -389,7 +391,7 @@ async fn connect(
                     .find(|bot| &*bot.handle == "mobius")
                     .or_else(|| gateway.bots.first())
                     .map(|bot| bot.conversation_session_id.share())
-                    .ok_or_else(|| Error::Config("create a Bot before starting a chat".into()))?;
+                    .ok_or_else(|| Error::Invalid("create a Bot before starting a chat".into()))?;
                 let session = open_session(&sender, &mut events, &mut gateway, session_id).await?;
                 (session, None)
             }
@@ -511,7 +513,7 @@ async fn start_local_gateway(endpoint: &Endpoint) -> mobius_gateway::Result<Gate
     if configured {
         validate_local_gateway_config(&configured_state_dir, endpoint, saved_token.is_some())?;
     } else if endpoint.to_string() != DEFAULT_LOCAL_ENDPOINT {
-        return Err(mobius_gateway::Error::Config(format!(
+        return Err(mobius_gateway::Error::Invalid(format!(
             "saved local gateway {endpoint} is stopped; start it separately before reconnecting"
         )));
     }
@@ -537,7 +539,7 @@ fn lock_local_gateway_startup(state_dir: &Path) -> mobius_gateway::Result<File> 
     let mut name = state_dir
         .file_name()
         .ok_or_else(|| {
-            mobius_gateway::Error::Config("gateway state directory has no file name".into())
+            mobius_gateway::Error::Invalid("gateway state directory has no file name".into())
         })?
         .to_os_string();
     name.push(".startup.lock");
@@ -563,7 +565,7 @@ async fn bootstrap_local_gateway(
         Ok(client) => Ok(client),
         Err(error) => {
             if let Err(cleanup) = cleanup_failed_bootstrap(endpoint, state_dir) {
-                return Err(mobius_gateway::Error::Config(format!(
+                return Err(mobius_gateway::Error::Internal(format!(
                     "{error}; failed to clean up incomplete gateway state: {cleanup}"
                 )));
             }
@@ -585,7 +587,7 @@ fn cleanup_failed_bootstrap(endpoint: &Endpoint, state_dir: &Path) -> mobius_gat
     match (state, client) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-        (Err(state), Err(client)) => Err(mobius_gateway::Error::Config(format!(
+        (Err(state), Err(client)) => Err(mobius_gateway::Error::Internal(format!(
             "{state}; failed to forget the local gateway credential: {client}"
         ))),
     }
@@ -604,7 +606,7 @@ fn gateway_binary_beside(current_executable: &Path) -> mobius_gateway::Result<Pa
     let candidate = current_executable.with_file_name(name);
     let metadata = std::fs::metadata(&candidate).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
-            mobius_gateway::Error::Config(
+            mobius_gateway::Error::Invalid(
                 "install mobius-cli to provide mobius-gateway beside mobius (`cargo install --locked mobius-cli`)"
                     .into(),
             )
@@ -613,12 +615,12 @@ fn gateway_binary_beside(current_executable: &Path) -> mobius_gateway::Result<Pa
         }
     })?;
     if !metadata.is_file() {
-        return Err(mobius_gateway::Error::Config(
+        return Err(mobius_gateway::Error::Invalid(
             "the mobius-gateway path is not a file".into(),
         ));
     }
     if metadata.permissions().mode() & 0o111 == 0 {
-        return Err(mobius_gateway::Error::Config(
+        return Err(mobius_gateway::Error::Invalid(
             "the mobius-gateway binary is not executable".into(),
         ));
     }
@@ -706,7 +708,7 @@ fn resolve_bot(bots: &[BotRecord], preferred: &str) -> Result<Arc<str>> {
     bots.iter()
         .find(|bot| *bot.handle == *preferred || *bot.id == *preferred)
         .map(|bot| Arc::clone(&bot.id))
-        .ok_or_else(|| Error::Config(format!("Bot `@{preferred}` was not found")))
+        .ok_or_else(|| Error::Invalid(format!("Bot `@{preferred}` was not found")))
 }
 
 async fn discard_session(
@@ -789,7 +791,7 @@ fn pristine_session(session: &SessionRecord) -> bool {
 }
 
 fn missing_token(endpoint: &Endpoint) -> mobius_gateway::Error {
-    mobius_gateway::Error::Config(format!("pair mobius-cli with {endpoint} before connecting"))
+    mobius_gateway::Error::Invalid(format!("pair mobius-cli with {endpoint} before connecting"))
 }
 
 #[cfg(test)]

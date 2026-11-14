@@ -204,7 +204,7 @@ impl ToolDefinition {
     pub(crate) fn validate(&self) -> Result<()> {
         crate::validate_identifier("tool name", &self.name, MAX_TOOL_NAME_BYTES)?;
         if !self.parameters.is_object() {
-            return Err(Error::Config(format!(
+            return Err(Error::Internal(format!(
                 "tool `{}` parameters must be a JSON object",
                 self.name
             )));

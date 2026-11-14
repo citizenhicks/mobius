@@ -126,7 +126,7 @@ impl GatewayServer {
             Ok(result) => Ok(result),
             Err(error) => {
                 fs::remove_dir_all(&initialized_state).map_err(|cleanup| {
-                    Error::Config(format!(
+                    Error::Internal(format!(
                         "{error}; failed to remove incomplete gateway state at {}: {cleanup}",
                         initialized_state.display()
                     ))
@@ -229,7 +229,7 @@ impl GatewayServer {
     ) -> Result<()> {
         let tls = self.config.tls.as_ref().map(tls_acceptor).transpose()?;
         if tls.is_none() && !self.listener.local_addr()?.ip().is_loopback() {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "plaintext listeners are restricted to loopback".into(),
             ));
         }
@@ -461,7 +461,7 @@ impl GatewayServer {
                         None => std::future::pending().await,
                     }
                 } => (Ok(()), true),
-                () = &mut activity => (Err(Error::Config("telemetry activity worker stopped".into())), false),
+                () = &mut activity => (Err(Error::Internal("telemetry activity worker stopped".into())), false),
                 result = &mut serving => (result, false),
             }
         };
@@ -510,7 +510,7 @@ impl GatewayServer {
                     .hostname()
                     .map(|hostname| Arc::new(OnceLock::from(hostname.to_owned())))
                     .ok_or_else(|| {
-                        Error::Config(
+                        Error::Internal(
                             "quick tunnel hostname is unavailable before cloudflared starts".into(),
                         )
                     })
@@ -541,7 +541,7 @@ fn configured_access_lease(runtime: &crate::config::RuntimeConfig) -> Result<Opt
     let expires_at = match std::env::var(ACCESS_EXPIRY_ENV) {
         Ok(value) => Some(value),
         Err(std::env::VarError::NotPresent) => None,
-        Err(_) => return Err(Error::Config("gateway access expiry is invalid".into())),
+        Err(_) => return Err(Error::Invalid("gateway access expiry is invalid".into())),
     };
     access_lease(
         expires_at.as_deref(),
@@ -559,30 +559,30 @@ fn access_lease(
 ) -> Result<Option<AccessLease>> {
     let Some(expires_at) = expires_at else {
         return if required {
-            Err(Error::Config("gateway access expiry is required".into()))
+            Err(Error::Invalid("gateway access expiry is required".into()))
         } else {
             Ok(None)
         };
     };
     if expires_at.is_empty() || !expires_at.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err(Error::Config("gateway access expiry is invalid".into()));
+        return Err(Error::Invalid("gateway access expiry is invalid".into()));
     }
     let seconds = expires_at
         .parse::<u64>()
-        .map_err(|error| Error::Config(format!("gateway access expiry is invalid: {error}")))?;
+        .map_err(|error| Error::Invalid(format!("gateway access expiry is invalid: {error}")))?;
     let expires_at = UNIX_EPOCH
         .checked_add(Duration::from_secs(seconds))
         .and_then(|expiry| expiry.checked_add(grace))
-        .ok_or_else(|| Error::Config("gateway access expiry is invalid".into()))?;
+        .ok_or_else(|| Error::Invalid("gateway access expiry is invalid".into()))?;
     let remaining = expires_at
         .duration_since(now)
-        .map_err(|error| Error::Config(format!("gateway access has expired: {error}")))?;
+        .map_err(|error| Error::Invalid(format!("gateway access has expired: {error}")))?;
     if remaining.is_zero() {
-        return Err(Error::Config("gateway access has expired".into()));
+        return Err(Error::Invalid("gateway access has expired".into()));
     }
     let deadline = Instant::now()
         .checked_add(remaining)
-        .ok_or_else(|| Error::Config("gateway access expiry is invalid".into()))?;
+        .ok_or_else(|| Error::Invalid("gateway access expiry is invalid".into()))?;
     Ok(Some(AccessLease {
         expires_at,
         deadline,

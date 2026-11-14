@@ -160,7 +160,7 @@ impl AgentSender {
         submission: ValidatedSubmission,
     ) -> Result<MessageAdmission> {
         if !matches!(submission.submission().op, Op::Message { .. }) {
-            return Err(Error::Config(
+            return Err(Error::Internal(
                 "admission acknowledgments require a message".into(),
             ));
         }
@@ -312,7 +312,7 @@ pub fn validate_submission(submission: &Submission) -> Result<()> {
             crate::validate_identifier("capability ID", capability, MAX_OPERATION_BYTES)?;
             crate::validate_identifier("command", command, MAX_OPERATION_BYTES)?;
             if arguments.len() > crate::protocol::MAX_CAPABILITY_INPUT_BYTES {
-                return Err(Error::Config(
+                return Err(Error::Invalid(
                     "middleware command arguments exceed size limit".into(),
                 ));
             }
@@ -320,7 +320,7 @@ pub fn validate_submission(submission: &Submission) -> Result<()> {
                 .as_ref()
                 .is_some_and(|input| input.len() > crate::protocol::MAX_CAPABILITY_INPUT_BYTES)
             {
-                return Err(Error::Config(
+                return Err(Error::Invalid(
                     "middleware command input exceeds size limit".into(),
                 ));
             }

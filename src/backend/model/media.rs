@@ -284,7 +284,7 @@ pub(super) async fn hydrate<M: super::Model + ?Sized>(
                 continue;
             }
             let files = files.ok_or_else(|| {
-                Error::Config(
+                Error::Internal(
                     "model router requires session file storage for image observations".into(),
                 )
             })?;

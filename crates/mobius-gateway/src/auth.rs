@@ -121,7 +121,7 @@ impl AuthStore {
         let path = path.into();
         fs::create_dir_all(
             path.parent()
-                .ok_or_else(|| Error::Config("authentication path has no parent".into()))?,
+                .ok_or_else(|| Error::Internal("authentication path has no parent".into()))?,
         )?;
         let channel_identity = crate::channel::Identity::open(&path)?;
         let grant = new_pairing_grant(&channel_identity, config.pairing_lifetime_seconds)?;
@@ -179,7 +179,7 @@ impl AuthStore {
             return Err(Error::Unauthorized);
         }
         if state.clients.len() >= self.config.paired_clients {
-            return Err(Error::Config("paired client limit reached".into()));
+            return Err(Error::Invalid("paired client limit reached".into()));
         }
 
         let token = self.channel_identity.credential(&random_secret(2));
@@ -276,7 +276,7 @@ impl AuthStore {
             })?;
         } else {
             if state.clients.len() >= self.config.paired_clients {
-                return Err(Error::Config("paired client limit reached".into()));
+                return Err(Error::Invalid("paired client limit reached".into()));
             }
             state.clients.push(ClientToken {
                 id: LOCAL_CLIENT_ID.into(),
@@ -423,7 +423,7 @@ fn validate_client_label(label: &str) -> Result<()> {
         || label.len() > MAX_CLIENT_LABEL_BYTES
         || label.chars().any(char::is_control)
     {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "client label must be canonical, control-free, and 1–{MAX_CLIENT_LABEL_BYTES} bytes"
         )));
     }
@@ -432,12 +432,12 @@ fn validate_client_label(label: &str) -> Result<()> {
 
 fn validate_auth_state(state: &AuthState) -> Result<()> {
     if state.clients.len() > crate::config::MAX_CAPACITY {
-        return Err(Error::Config(
+        return Err(Error::Internal(
             "authentication state exceeds the client limit".into(),
         ));
     }
     if state.pending_pairing.is_none() && state.clients.is_empty() {
-        return Err(Error::Config(
+        return Err(Error::Internal(
             "authentication state has neither pairing nor client access".into(),
         ));
     }
@@ -445,20 +445,20 @@ fn validate_auth_state(state: &AuthState) -> Result<()> {
     let mut token_digests = BTreeSet::new();
     for client in &state.clients {
         let id = Uuid::parse_str(&client.id).map_err(|error| {
-            Error::Config(format!("authentication client ID is invalid: {error}"))
+            Error::Internal(format!("authentication client ID is invalid: {error}"))
         })?;
         if id.to_string() != client.id {
-            return Err(Error::Config(
+            return Err(Error::Internal(
                 "authentication client ID must be canonical".into(),
             ));
         }
         if !client_ids.insert(client.id.as_str()) {
-            return Err(Error::Config(
+            return Err(Error::Internal(
                 "authentication state contains duplicate client IDs".into(),
             ));
         }
         if !token_digests.insert(client.digest) {
-            return Err(Error::Config(
+            return Err(Error::Internal(
                 "authentication state contains duplicate token digests".into(),
             ));
         }
@@ -493,9 +493,9 @@ fn new_pairing_grant(
         expires_at: chrono::Utc::now()
             .timestamp()
             .checked_add(i64::try_from(lifetime_seconds).map_err(|error| {
-                Error::Config(format!("pairing lifetime is too large: {error}"))
+                Error::Invalid(format!("pairing lifetime is too large: {error}"))
             })?)
-            .ok_or_else(|| Error::Config("pairing expiry overflow".into()))?,
+            .ok_or_else(|| Error::Internal("pairing expiry overflow".into()))?,
     })
 }
 
@@ -508,7 +508,7 @@ fn random_secret(parts: usize) -> String {
 fn save_auth_state(path: &Path, state: &AuthState, create_new: bool) -> Result<()> {
     let parent = path
         .parent()
-        .ok_or_else(|| Error::Config("authentication path has no parent".into()))?;
+        .ok_or_else(|| Error::Internal("authentication path has no parent".into()))?;
     fs::create_dir_all(parent)?;
     validate_auth_state(state)?;
     let contents = serde_json::to_vec_pretty(state)?;

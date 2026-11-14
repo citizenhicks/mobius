@@ -48,7 +48,7 @@ impl Middleware for LifecycleProbe {
                 .push(format!("start:{}", self.id));
             context.push_input(serde_json::json!(self.id));
             if self.fail {
-                return Err(Error::Config(format!("{} failed", self.id)));
+                return Err(Error::Internal(format!("{} failed", self.id)));
             }
             Ok(())
         })

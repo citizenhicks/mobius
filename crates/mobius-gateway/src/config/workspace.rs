@@ -34,7 +34,7 @@ pub(crate) fn validate_chat_workspace(
 ) -> Result<CanonicalWorkspace> {
     let path = fs::canonicalize(path)?;
     if !path.is_dir() || path.parent().is_none() {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "workspace must be an existing non-root directory".into(),
         ));
     }
@@ -50,7 +50,9 @@ pub(crate) fn create_workspace_directory(
 ) -> Result<PathBuf> {
     let parent = fs::canonicalize(parent)?;
     if !parent.is_dir() {
-        return Err(Error::Config("workspace parent must be a directory".into()));
+        return Err(Error::Invalid(
+            "workspace parent must be a directory".into(),
+        ));
     }
 
     let name = name.trim();
@@ -59,13 +61,13 @@ pub(crate) fn create_workspace_directory(
         || name.as_bytes().contains(&0)
         || name.bytes().any(|byte| byte == b'/' || byte == b'\\')
     {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "workspace directory name must be 1–{MAX_WORKSPACE_DIRECTORY_NAME_BYTES} bytes and contain no path separators"
         )));
     }
     let mut components = Path::new(name).components();
     if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "workspace directory name must be one path component".into(),
         ));
     }
@@ -74,7 +76,7 @@ pub(crate) fn create_workspace_directory(
     validate_workspace_boundaries(&path, state_dir, tls)?;
     match fs::symlink_metadata(&path) {
         Ok(_) => {
-            return Err(Error::Config("workspace directory already exists".into()));
+            return Err(Error::Invalid("workspace directory already exists".into()));
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
@@ -103,7 +105,7 @@ fn initialize_workspace_repository(path: &Path) -> Result<()> {
         .current_dir(path);
     let output = command.output()?;
     if !output.status.success() {
-        return Err(Error::Config(
+        return Err(Error::Internal(
             "failed to initialize workspace Git repository".into(),
         ));
     }
@@ -117,7 +119,7 @@ fn validate_workspace_boundaries(
 ) -> Result<()> {
     let state_dir = fs::canonicalize(state_dir)?;
     if path.starts_with(&state_dir) || state_dir.starts_with(path) {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "gateway state directory and chat workspace must not overlap".into(),
         ));
     }
@@ -127,14 +129,14 @@ fn validate_workspace_boundaries(
         || fs::canonicalize(&extensions)
             .is_ok_and(|extensions| path.starts_with(&extensions) || extensions.starts_with(path))
     {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "extension store and chat workspace must not overlap".into(),
         ));
     }
     if tls.is_some_and(|tls| {
         fs::canonicalize(&tls.private_key).is_ok_and(|key| key.starts_with(path))
     }) {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "TLS private key must be stored outside every chat workspace".into(),
         ));
     }

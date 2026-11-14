@@ -15,7 +15,7 @@ pub fn authenticated_endpoint(
     match (var("MOBIUS_GATEWAY_BEARER_ENDPOINT"), var("MOBIUS_GATEWAY_BEARER_TOKEN")) {
         (Err(VarError::NotPresent), Err(VarError::NotPresent)) => Ok(endpoint),
         (Ok(scope), Ok(token)) => scoped_bearer(endpoint, &scope, &token),
-        _ => Err(mobius_gateway::Error::Config(
+        _ => Err(mobius_gateway::Error::Invalid(
             "set both MOBIUS_GATEWAY_BEARER_ENDPOINT and MOBIUS_GATEWAY_BEARER_TOKEN for WebSocket admission".into(),
         )),
     }
@@ -28,7 +28,7 @@ fn scoped_bearer(
 ) -> mobius_gateway::Result<mobius_gateway::client::Endpoint> {
     let scope: mobius_gateway::client::Endpoint = scope.parse()?;
     if !scope.is_websocket() {
-        return Err(mobius_gateway::Error::Config(
+        return Err(mobius_gateway::Error::Invalid(
             "WebSocket admission requires a wss:// endpoint".into(),
         ));
     }

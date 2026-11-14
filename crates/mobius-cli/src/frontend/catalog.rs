@@ -649,7 +649,7 @@ fn validate(commands: &[UiCommand], references: &[UiReference]) -> Result<()> {
     let mut identifiers = BTreeSet::new();
     for command in commands {
         if command.name.starts_with(COMMAND_PREFIX) {
-            return Err(Error::Config(format!(
+            return Err(Error::Internal(format!(
                 "invalid frontend command `{}`",
                 command.name
             )));
@@ -664,7 +664,7 @@ fn validate(commands: &[UiCommand], references: &[UiReference]) -> Result<()> {
 
     for reference in references {
         if reference.trigger == COMMAND_PREFIX {
-            return Err(Error::Config(format!(
+            return Err(Error::Internal(format!(
                 "invalid frontend reference `{}{}`",
                 reference.trigger, reference.value
             )));

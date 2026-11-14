@@ -18,7 +18,7 @@ impl SessionId {
     pub fn new(value: impl Into<Arc<str>>) -> Result<Self> {
         let value = value.into();
         if value.trim().is_empty() || value.len() > 4_096 {
-            return Err(Error::Config("session ID must be 1–4096 bytes".into()));
+            return Err(Error::Invalid("session ID must be 1–4096 bytes".into()));
         }
         Ok(Self(value))
     }

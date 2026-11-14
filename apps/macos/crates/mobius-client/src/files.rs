@@ -611,7 +611,7 @@ async fn download(
         let parent = destination
             .parent()
             .filter(|path| path.is_dir())
-            .ok_or_else(|| Error::Config("The download folder does not exist.".into()))?;
+            .ok_or_else(|| Error::Invalid("The download folder does not exist.".into()))?;
         Ok::<_, Error>((tempfile::NamedTempFile::new_in(parent)?, destination))
     })
     .await

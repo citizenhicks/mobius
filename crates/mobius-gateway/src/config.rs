@@ -59,7 +59,7 @@ where
     T: Copy + PartialOrd + std::fmt::Display,
 {
     if !range.contains(&value) {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "{name} must be between {} and {}",
             range.start(),
             range.end()
@@ -353,7 +353,7 @@ impl GatewayConfig {
             .get(&configured.selection.instance)
             && current.selection.provider != configured.selection.provider
         {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "provider instance `{}` already belongs to `{}`",
                 configured.selection.instance, current.selection.provider
             )));
@@ -476,7 +476,7 @@ impl GatewayConfig {
     /// Removes one non-default provider and lets middleware inherit the primary model.
     pub(crate) fn removing_provider(&self, instance: &str) -> Result<ValidatedGatewayConfig> {
         if !self.configured_providers.contains_key(instance) {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "provider instance `{instance}` is not configured"
             )));
         }
@@ -485,7 +485,7 @@ impl GatewayConfig {
             .as_ref()
             .is_some_and(|default| default.config.provider.instance == instance)
         {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "choose another provider for Bot defaults before removing this provider".into(),
             ));
         }
@@ -496,7 +496,7 @@ impl GatewayConfig {
                 default.revision = default
                     .revision
                     .checked_add(1)
-                    .ok_or_else(|| Error::Config("configuration revision overflow".into()))?;
+                    .ok_or_else(|| Error::Internal("configuration revision overflow".into()))?;
             }
             next.bot_defaults = Some(default);
         }
@@ -513,9 +513,9 @@ impl GatewayConfig {
         let current = self
             .bot_defaults
             .as_ref()
-            .ok_or_else(|| Error::Config("configure a provider before saving defaults".into()))?;
+            .ok_or_else(|| Error::Invalid("configure a provider before saving defaults".into()))?;
         if current.revision != expected_revision {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "configuration revision changed from {expected_revision} to {}",
                 current.revision
             )));
@@ -525,7 +525,7 @@ impl GatewayConfig {
             revision: current
                 .revision
                 .checked_add(1)
-                .ok_or_else(|| Error::Config("configuration revision overflow".into()))?,
+                .ok_or_else(|| Error::Internal("configuration revision overflow".into()))?,
             config: composition,
         });
         next.validate_bot_defaults()?;
@@ -538,7 +538,7 @@ impl GatewayConfig {
     /// Returns an error if the supplied value is invalid.
     pub fn validate(&self) -> Result<()> {
         if self.version != CONFIG_VERSION {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "unsupported gateway config version {}",
                 self.version
             )));
@@ -555,18 +555,18 @@ impl GatewayConfig {
                 || self.tls.is_some()
                 || self.cloudflare.is_some())
         {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "ingress must differ from listen and cannot use TLS or Cloudflare".into(),
             ));
         }
         if self.listen.port() == 0 {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "gateway listen port must be greater than zero".into(),
             ));
         }
         match (&self.tls, self.listen.ip().is_loopback()) {
             (None, false) => {
-                return Err(Error::Config(
+                return Err(Error::Invalid(
                     "non-loopback gateway listeners require a TLS certificate and private key"
                         .into(),
                 ));
@@ -575,7 +575,7 @@ impl GatewayConfig {
             (None, true) => {}
         }
         if self.cloudflare.is_some() && (!self.listen.ip().is_loopback() || self.tls.is_some()) {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "Cloudflare gateways require a plaintext loopback listener".into(),
             ));
         }
@@ -584,7 +584,7 @@ impl GatewayConfig {
         }
         for (instance, configured) in &self.configured_providers {
             if instance != &configured.selection.instance {
-                return Err(Error::Config(format!(
+                return Err(Error::Invalid(format!(
                     "configured provider key `{instance}` does not match `{}`",
                     configured.selection.instance
                 )));
@@ -603,7 +603,7 @@ impl GatewayConfig {
             .values()
             .any(|configured| !configured.selection.model.is_empty());
         if self.bot_defaults.is_some() != has_chat {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "Bot defaults must exist exactly when a chat provider is configured".into(),
             ));
         }
@@ -615,7 +615,7 @@ impl GatewayConfig {
     fn validate_bot_defaults(&self) -> Result<()> {
         if let Some(default) = &self.bot_defaults {
             if default.revision == 0 {
-                return Err(Error::Config(
+                return Err(Error::Invalid(
                     "configuration revision must be positive".into(),
                 ));
             }
@@ -628,7 +628,7 @@ impl GatewayConfig {
                 .configured_providers
                 .get(&selection.instance)
                 .ok_or_else(|| {
-                    Error::Config("provider selection must use a configured provider entry".into())
+                    Error::Invalid("provider selection must use a configured provider entry".into())
                 })?;
             validate_configured_provider_selection(configured, selection)?;
             for (middleware, setting, route) in
@@ -638,7 +638,7 @@ impl GatewayConfig {
             {
                 if !crate::harness::mobius::provider_catalog::configured_route_exists(self, route)?
                 {
-                    return Err(Error::Config(format!(
+                    return Err(Error::Invalid(format!(
                         "Bot default middleware setting `{middleware}.{setting}` is not a configured model route"
                     )));
                 }
@@ -692,7 +692,7 @@ impl ChatSpec {
         tls: Option<&TlsConfig>,
     ) -> Result<Self> {
         Self::from_metadata_if_present(metadata, bots, state_dir, tls)?.ok_or_else(|| {
-            Error::Config("chat checkpoint has no gateway runtime configuration".into())
+            Error::Internal("chat checkpoint has no gateway runtime configuration".into())
         })
     }
 
@@ -760,7 +760,7 @@ impl ChatSpec {
         tls: Option<&TlsConfig>,
     ) -> Result<Option<Self>> {
         let workspace = self.workspace.as_ref().ok_or_else(|| {
-            Error::Config(
+            Error::Invalid(
                 "Persistent Chat has no project; open a project chat to attach folders".into(),
             )
         })?;
@@ -769,7 +769,7 @@ impl ChatSpec {
             return Ok(None);
         }
         if self.attached_folders.len() == MAX_ATTACHED_FOLDERS {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "a chat cannot attach more than {MAX_ATTACHED_FOLDERS} folders"
             )));
         }
@@ -788,28 +788,28 @@ impl ChatSpec {
 
     fn validate(&self, state_dir: &Path, tls: Option<&TlsConfig>) -> Result<()> {
         if self.version != CHAT_SPEC_VERSION {
-            return Err(Error::Config(format!(
+            return Err(Error::Internal(format!(
                 "unsupported chat configuration version {}",
                 self.version
             )));
         }
         if self.bot_id.is_empty() {
-            return Err(Error::Config("chat Bot ownership is invalid".into()));
+            return Err(Error::Internal("chat Bot ownership is invalid".into()));
         }
         if let Some(path) = &self.workspace {
             let workspace = validate_chat_workspace(path, state_dir, tls)?;
             if *workspace != **path {
-                return Err(Error::Config(
+                return Err(Error::Internal(
                     "chat workspace must use its canonical path".into(),
                 ));
             }
         } else if !self.attached_folders.is_empty() {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "project-free chats cannot attach folders".into(),
             ));
         }
         if self.attached_folders.len() > MAX_ATTACHED_FOLDERS {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "a chat cannot attach more than {MAX_ATTACHED_FOLDERS} folders"
             )));
         }
@@ -817,12 +817,12 @@ impl ChatSpec {
         for attached in &self.attached_folders {
             let workspace = validate_chat_workspace(attached, state_dir, tls)?;
             if *workspace != **attached {
-                return Err(Error::Config(
+                return Err(Error::Internal(
                     "attached folders must use canonical paths".into(),
                 ));
             }
             if !folders.insert(attached) {
-                return Err(Error::Config("chat folders must be unique".into()));
+                return Err(Error::Internal("chat folders must be unique".into()));
             }
         }
         Ok(())
@@ -859,7 +859,7 @@ impl TlsConfig {
             ("TLS private key", &self.private_key),
         ] {
             if !path.is_absolute() || !path.is_file() {
-                return Err(Error::Config(format!(
+                return Err(Error::Invalid(format!(
                     "{name} must be an existing absolute file"
                 )));
             }

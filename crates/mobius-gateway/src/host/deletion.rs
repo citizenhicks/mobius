@@ -36,7 +36,7 @@ pub(super) async fn recover_session_hook_closures(state: &GatewayState) -> Resul
     let mut committed = Vec::new();
     for event in pending {
         let HookSource::Session { session_id } = &event.source else {
-            return Err(Error::Config("invalid session closing fact".into()));
+            return Err(Error::Internal("invalid session closing fact".into()));
         };
         if state
             .checkpoints

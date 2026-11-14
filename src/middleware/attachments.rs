@@ -94,7 +94,7 @@ impl Attachments {
     pub fn with_workspace(mut self, workspace: impl AsRef<Path>) -> Result<Self> {
         let workspace = std::fs::canonicalize(workspace)?;
         if !workspace.is_dir() {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "attachment workspace is not a directory".into(),
             ));
         }

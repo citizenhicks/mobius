@@ -30,9 +30,12 @@ pub use host::TranscriptReducer;
 /// Errors returned by the gateway library.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("gateway configuration error: {0}")]
-    /// Selects the config case.
-    Config(String),
+    /// A request, setting or input the caller can fix; the message says what to change.
+    #[error("{0}")]
+    Invalid(String),
+    /// A failure the caller cannot fix: a broken invariant, damaged saved state or failed system call.
+    #[error("gateway internal error: {0}")]
+    Internal(String),
     #[error("gateway protocol error: {0}")]
     /// Selects the protocol case.
     Protocol(String),
@@ -76,5 +79,5 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// Maps a poisoned standard-library lock to an error naming that lock.
 pub(crate) fn poisoned<T>(lock: &'static str) -> impl FnOnce(std::sync::PoisonError<T>) -> Error {
-    move |error| Error::Config(format!("{lock} lock is poisoned: {error}"))
+    move |error| Error::Internal(format!("{lock} lock is poisoned: {error}"))
 }

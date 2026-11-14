@@ -245,7 +245,7 @@ impl ToolProgress {
                 } else if record.arguments.take().is_some() {
                     record.arguments_omitted = true;
                 } else {
-                    return Err(Error::Config(
+                    return Err(Error::Internal(
                         "tool progress guidance exceeds its byte limit".into(),
                     ));
                 }

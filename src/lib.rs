@@ -357,9 +357,12 @@ pub enum Error {
     /// The gateway data allowance cannot admit another file.
     #[error("storage is full; free up space before adding files")]
     StorageFull,
-    #[error("configuration error: {0}")]
-    /// Selects the config case.
-    Config(String),
+    /// A request, setting or input the caller can fix; the message says what to change.
+    #[error("{0}")]
+    Invalid(String),
+    /// A failure the caller cannot fix: a broken invariant, damaged saved state or failed system call.
+    #[error("internal error: {0}")]
+    Internal(String),
     #[error("duplicate registration: {0}")]
     /// Selects the duplicate case.
     Duplicate(String),
@@ -424,10 +427,10 @@ pub(crate) const MAX_IDENTIFIER_BYTES: usize = 4 * 1024;
 
 pub(crate) fn validate_identifier(name: &str, value: &str, limit: usize) -> Result<()> {
     if value.trim().is_empty() {
-        return Err(Error::Config(format!("{name} cannot be empty")));
+        return Err(Error::Invalid(format!("{name} cannot be empty")));
     }
     if value.len() > limit {
-        return Err(Error::Config(format!("{name} exceeds size limit")));
+        return Err(Error::Invalid(format!("{name} exceeds size limit")));
     }
     Ok(())
 }

@@ -37,7 +37,7 @@ impl RuntimeConfig {
             .storage_limit_bytes
             .is_some_and(|limit| limit < 64 * 1024 * 1024)
         {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "storage_limit_bytes must be at least 64 MiB".into(),
             ));
         }

@@ -37,7 +37,7 @@ pub(super) struct LoadedPackage {
 pub(super) fn load(root: PathBuf) -> Result<LoadedPackage> {
     match agent_plugin_schema(&root)? {
         Some(schema) if schema == AGENT_PLUGIN_SCHEMA => load_agent_plugin(root),
-        Some(schema) => Err(Error::Config(format!(
+        Some(schema) => Err(Error::Invalid(format!(
             "unsupported Agent Plugin schema `{schema}`"
         ))),
         None if root.join(OPENAI_PLUGIN_MANIFEST).exists() => load_openai_plugin(root),
@@ -53,7 +53,7 @@ fn load_openai_plugin(root: PathBuf) -> Result<LoadedPackage> {
     let hooks = hooks::HookDefinitions::load(&root, manifest.hooks.as_ref())?;
     let inspected_hooks = hooks.inspect();
     if skills.is_empty() && inspected_hooks.is_empty() {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "plugin `{}` has no supported contributions",
             manifest.name
         )));
@@ -79,7 +79,7 @@ fn load_agent_plugin(root: PathBuf) -> Result<LoadedPackage> {
     let mut skills = BTreeMap::new();
     discover_agent_plugin_skills(&root, &manifest.name, &mut skills)?;
     if skills.is_empty() {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "plugin `{}` has no supported contributions",
             manifest.name
         )));
@@ -103,11 +103,11 @@ fn load_skill(root: PathBuf) -> Result<LoadedPackage> {
     let path = root.join(SKILL_FILE);
     let content = String::from_utf8(read_bounded_file(&path, MAX_SKILL_BYTES, "skill manifest")?)
         .map_err(|error| {
-        Error::Config(format!("skill manifest is not valid UTF-8: {error}"))
+        Error::Invalid(format!("skill manifest is not valid UTF-8: {error}"))
     })?;
     let (name, description) = skill_metadata(&path, &content);
     if !valid_openai_package_name(&name) {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "skill name `{name}` must be kebab-case"
         )));
     }
@@ -166,7 +166,7 @@ impl OpenAiPluginManifest {
             "$schema",
         ];
         if !valid_openai_package_name(&self.name) {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "plugin name `{}` must be kebab-case",
                 self.name
             )));
@@ -176,7 +176,7 @@ impl OpenAiPluginManifest {
                 || version.len() > MAX_PLUGIN_VERSION_BYTES
                 || !version.bytes().all(|byte| byte.is_ascii_graphic())
         }) {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "plugin `{}` has an invalid version",
                 self.name
             )));
@@ -186,7 +186,7 @@ impl OpenAiPluginManifest {
             .as_ref()
             .is_some_and(|description| description.is_empty() || description.len() > 4_096)
         {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "plugin `{}` has an invalid description",
                 self.name
             )));
@@ -196,7 +196,7 @@ impl OpenAiPluginManifest {
             .keys()
             .find(|field| !METADATA.contains(&field.as_str()))
         {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "plugin `{}` has unknown manifest field `{field}`",
                 self.name
             )));
@@ -214,7 +214,7 @@ fn load_openai_plugin_manifest(root: &Path) -> Result<OpenAiPluginManifest> {
     )?)?;
     manifest.validate()?;
     if manifest.mcp_servers.is_some() || manifest.apps.is_some() {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "legacy plugin `{}` declares an unsupported remote contribution",
             manifest.name
         )));
@@ -318,7 +318,7 @@ fn load_agent_plugin_manifest(root: &Path) -> Result<AgentPluginManifest> {
             .as_ref()
             .is_some_and(|values| values.len() > 64 || values.iter().any(|value| value.len() > 256))
     {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "plugin `{}` has an invalid Agent Plugins v1 manifest",
             manifest.name
         )));
@@ -341,7 +341,7 @@ fn reject_mcp_components(root: &Path, plugin_name: &str) -> Result<()> {
     for component in MCP_COMPONENTS {
         match root.join(component).symlink_metadata() {
             Ok(_) => {
-                return Err(Error::Config(format!(
+                return Err(Error::Invalid(format!(
                     "plugin `{plugin_name}` declares an unsupported MCP contribution"
                 )));
             }
@@ -362,7 +362,7 @@ fn discover_openai_plugin_skills(
     };
     let root = confined_path(root, path, true)?;
     if !root.is_dir() {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "plugin `{}` skills path is not a directory",
             manifest.name
         )));
@@ -399,7 +399,7 @@ fn valid_openai_package_name(name: &str) -> bool {
 
 pub(super) fn canonical_root(path: &Path) -> Result<PathBuf> {
     if std::fs::symlink_metadata(path)?.file_type().is_symlink() {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "plugin root cannot be a symlink: {}",
             path.display()
         )));

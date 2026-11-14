@@ -34,7 +34,7 @@ impl GatewayHost {
             let next = {
                 let current = state.config()?;
                 if current.installed_extensions.contains_key(&staged.id) {
-                    return Err(invalid_config(Error::Config(format!(
+                    return Err(invalid_config(Error::Invalid(format!(
                         "extension `{}` is already installed",
                         staged.id
                     ))));
@@ -96,7 +96,7 @@ impl GatewayHost {
             {
                 tracing::warn!(%error, "failed to remove a rejected extension snapshot");
             }
-            return Err(invalid_config(Error::Config(
+            return Err(invalid_config(Error::Invalid(
                 "an extension update cannot change package identity".into(),
             )));
         }
@@ -227,7 +227,7 @@ impl GatewayHost {
                 ));
             }
             if installed.hooks.is_empty() {
-                return Err(invalid_config(Error::Config(format!(
+                return Err(invalid_config(Error::Invalid(format!(
                     "extension `{id}` has no executable hooks"
                 ))));
             }

@@ -67,7 +67,7 @@ impl ActivityHookConfig {
         let executable = self.executable()?;
         for root in roots {
             if executable.starts_with(std::fs::canonicalize(root)?) {
-                return Err(Error::Config(
+                return Err(Error::Invalid(
                     "activity hook executable must be outside state and workspace roots".into(),
                 ));
             }
@@ -83,7 +83,7 @@ impl ActivityHookConfig {
         )?;
         for argument in &self.command {
             if argument.len() > 4096 || argument.chars().any(char::is_control) {
-                return Err(Error::Config(
+                return Err(Error::Invalid(
                     "activity hook arguments must be at most 4096 bytes without control characters"
                         .into(),
                 ));
@@ -107,24 +107,26 @@ impl ActivityHookConfig {
         let path = Path::new(
             self.command
                 .first()
-                .ok_or_else(|| Error::Config("activity hook command is empty".into()))?,
+                .ok_or_else(|| Error::Invalid("activity hook command is empty".into()))?,
         );
         if !path.is_absolute() {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "activity hook executable must be absolute".into(),
             ));
         }
         let path = std::fs::canonicalize(path)?;
         let metadata = path.metadata()?;
         if !metadata.is_file() {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "activity hook executable must be a file".into(),
             ));
         }
         {
             use std::os::unix::fs::PermissionsExt as _;
             if metadata.permissions().mode() & 0o111 == 0 {
-                return Err(Error::Config("activity hook file is not executable".into()));
+                return Err(Error::Invalid(
+                    "activity hook file is not executable".into(),
+                ));
             }
         }
         Ok(path)
@@ -323,7 +325,7 @@ impl<'a> ActivityHook<'a> {
         let stdin = child
             .stdin
             .take()
-            .ok_or_else(|| Error::Config("activity hook stdin unavailable".into()))?;
+            .ok_or_else(|| Error::Internal("activity hook stdin unavailable".into()))?;
         self.process = Some(HookProcess {
             child,
             group,

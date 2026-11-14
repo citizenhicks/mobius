@@ -328,7 +328,7 @@ pub(super) fn parse_init(state_dir: PathBuf, arguments: InitArgs) -> Result<Init
         }),
         (None, None) => None,
         _ => {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "--tls-cert and --tls-key must be supplied together".into(),
             ));
         }
@@ -342,7 +342,7 @@ pub(super) fn parse_init(state_dir: PathBuf, arguments: InitArgs) -> Result<Init
         )),
         (None, None) => None,
         _ => {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "--cloudflare-hostname and --cloudflare-token-file must be supplied together"
                     .into(),
             ));

@@ -70,7 +70,7 @@ pub async fn run(
             EventMsg::ExecApprovalRequest(request)
                 if turn_id.as_deref() == Some(&*request.turn_id) =>
             {
-                approval_error = Some(Error::Config(
+                approval_error = Some(Error::Invalid(
                     "headless run requested tool approval; configure a no-prompt gateway sandbox policy"
                         .into(),
                 ));

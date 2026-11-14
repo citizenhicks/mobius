@@ -108,7 +108,7 @@ impl Anthropic {
             config,
             max_output_tokens: MANIFEST
                 .max_output_tokens
-                .ok_or_else(|| Error::Config("Anthropic output default is required".into()))?,
+                .ok_or_else(|| Error::Internal("Anthropic output default is required".into()))?,
             tool_discovery,
             web_search: false,
         })
@@ -1339,7 +1339,7 @@ fn build_provider(
     match config.web_search {
         HostedWebSearch::Off => {}
         HostedWebSearch::Cached => {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "Anthropic does not support cached web search".into(),
             ));
         }

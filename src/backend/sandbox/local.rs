@@ -201,7 +201,7 @@ impl LocalSandbox {
         {
             let root = std::fs::canonicalize(root)?;
             if !root.is_dir() {
-                return Err(Error::Config(format!(
+                return Err(Error::Invalid(format!(
                     "sandbox root is not a directory: {}",
                     root.display()
                 )));
@@ -292,7 +292,7 @@ impl LocalSandbox {
     /// Returns an error if validation or an operation required by this function fails.
     pub fn command_timeout(mut self, timeout: Duration) -> Result<Self> {
         if timeout.is_zero() {
-            return Err(Error::Config("command timeout must be positive".into()));
+            return Err(Error::Invalid("command timeout must be positive".into()));
         }
         self.command_timeout = timeout;
         Ok(self)
@@ -338,7 +338,7 @@ impl LocalSandbox {
             b"_",
         ) || name.as_bytes().first().is_some_and(u8::is_ascii_digit)
         {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "environment name must be an identifier".into(),
             ));
         }
@@ -355,7 +355,7 @@ impl LocalSandbox {
     pub fn deny_read(mut self, path: impl AsRef<Path>) -> Result<Self> {
         let path = std::fs::canonicalize(path)?;
         if paths_overlap(&self.root, &path) {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "sandbox root and denied read path must not overlap".into(),
             ));
         }
@@ -365,7 +365,7 @@ impl LocalSandbox {
             .iter()
             .any(|root| paths_overlap(&root.path, &path))
         {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "workspace root and denied read path must not overlap".into(),
             ));
         }
@@ -375,13 +375,13 @@ impl LocalSandbox {
             .iter()
             .any(|root| paths_overlap(&root.path, &path))
         {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "read root and denied read path must not overlap".into(),
             ));
         }
         let metadata = std::fs::metadata(&path)?;
         if !metadata.is_dir() && !metadata.is_file() {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "denied read path is not a file or directory: {}",
                 path.display()
             )));
@@ -432,7 +432,7 @@ impl LocalSandbox {
         let path = std::fs::canonicalize(path)?;
         validate_public_root(&path)?;
         if !path.is_dir() {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "{kind} is not a directory: {}",
                 path.display()
             )));
@@ -443,7 +443,7 @@ impl LocalSandbox {
             .iter()
             .any(|denied| paths_overlap(&path, &denied.path))
         {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "{kind} and denied read path must not overlap"
             )));
         }
@@ -784,7 +784,7 @@ printf '%s/usr/bin/git\n' "$developer"
                 .iter()
                 .any(|denied| executable.starts_with(&denied.path))
         {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "execution helper must be outside writable and protected sandbox paths".into(),
             ));
         }
@@ -1230,7 +1230,7 @@ fn validate_public_root(path: &Path) -> Result<()> {
         .as_ref()
         .map_err(|error| Error::Sandbox(format!("temporary storage unavailable: {error}")))?;
     if paths_overlap(path, &std::fs::canonicalize(parent.path())?) {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "sandbox roots must not overlap private temporary storage".into(),
         ));
     }
@@ -1304,17 +1304,17 @@ fn validate_root(path: &Path, directory: &Dir) -> Result<()> {
 
 fn validated_executable(executable: &Path) -> Result<PathBuf> {
     if !executable.is_absolute() {
-        return Err(Error::Config("executable path must be absolute".into()));
+        return Err(Error::Invalid("executable path must be absolute".into()));
     }
     let path = std::fs::canonicalize(executable)?;
     let metadata = std::fs::metadata(&path)?;
     if !metadata.is_file() {
-        return Err(Error::Config("executable path must be a file".into()));
+        return Err(Error::Invalid("executable path must be a file".into()));
     }
     {
         use std::os::unix::fs::PermissionsExt;
         if metadata.permissions().mode() & 0o111 == 0 {
-            return Err(Error::Config("executable path is not executable".into()));
+            return Err(Error::Invalid("executable path is not executable".into()));
         }
     }
     Ok(path)

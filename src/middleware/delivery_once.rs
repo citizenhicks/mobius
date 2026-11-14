@@ -44,7 +44,7 @@ impl<'a> DeliveryOnce<'a> {
             return Ok(true);
         };
         if self.owner.is_empty() || !valid_ascii_identifier(key, 384, AsciiCase::Any, b"_-.:/") {
-            return Err(Error::Config("invalid once-only guidance key".into()));
+            return Err(Error::Internal("invalid once-only guidance key".into()));
         }
         if contains(self.receipts, self.owner, key)
             || input
@@ -57,7 +57,7 @@ impl<'a> DeliveryOnce<'a> {
         let internal_user = item.get("role").and_then(Value::as_str) == Some("user")
             && crate::protocol::internal_message_kind(&item).is_some();
         let Some(object) = item.as_object_mut().filter(|_| internal_user) else {
-            return Err(Error::Config(
+            return Err(Error::Internal(
                 "once-only guidance requires an internal user message".into(),
             ));
         };

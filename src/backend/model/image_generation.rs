@@ -153,7 +153,7 @@ crate::embedded_config! {
 pub(super) fn image_api(name: &str) -> Result<&'static ImageApi> {
     IMAGE_APIS
         .get(name)
-        .ok_or_else(|| Error::Config(format!("image API `{name}` is not configured")))
+        .ok_or_else(|| Error::Invalid(format!("image API `{name}` is not configured")))
 }
 
 #[derive(Deserialize)]

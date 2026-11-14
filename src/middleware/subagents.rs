@@ -140,12 +140,12 @@ impl SubagentCeilings {
             .find(|setting| setting.id() == id)
         {
             Some(MiddlewareSettingManifest::Integer { max: Some(max), .. }) => Ok(*max),
-            _ => Err(Error::Config(format!(
+            _ => Err(Error::Internal(format!(
                 "missing embedded subagent ceiling {id}"
             ))),
         };
         let out_of_range = |name: &str, error: std::num::TryFromIntError| {
-            Error::Config(format!(
+            Error::Internal(format!(
                 "embedded subagent {name} ceiling must fit: {error}"
             ))
         };
@@ -173,7 +173,7 @@ impl SubagentCeilings {
             || i64::try_from(max_concurrency).is_err()
             || i64::try_from(max_agents).is_err()
         {
-            return Err(Error::Config("subagent ceilings require positive depth and at least two agents and concurrent slots within signed integer bounds".into()));
+            return Err(Error::Invalid("subagent ceilings require positive depth and at least two agents and concurrent slots within signed integer bounds".into()));
         }
         Ok(Self {
             max_depth,
@@ -236,19 +236,19 @@ impl SubagentCeilings {
         max_agents: usize,
     ) -> Result<SubagentLimits> {
         if max_depth == 0 || max_depth > self.max_depth {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "subagent max depth must be between 1 and {}",
                 self.max_depth
             )));
         }
         if !(2..=self.max_concurrency).contains(&max_concurrency) {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "subagent max concurrency must be between 2 and {}",
                 self.max_concurrency
             )));
         }
         if max_agents < max_concurrency || max_agents > self.max_agents {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "subagent max agents must be at least concurrency and no greater than {}",
                 self.max_agents
             )));
@@ -359,7 +359,7 @@ impl AgentScope {
 
     fn next_depth(&self) -> Result<u8> {
         self.depth.checked_add(1).ok_or_else(|| {
-            Error::Config("subagent depth exceeds its integer representation".into())
+            Error::Internal("subagent depth exceeds its integer representation".into())
         })
     }
 

@@ -323,7 +323,7 @@ fn finish_admission<T>(
             Ok(value)
         }
         Ok((value, AdmissionOutcome::Rejected(message))) => {
-            reply_admission(reply, Err(Error::Config(message)));
+            reply_admission(reply, Err(Error::Invalid(message)));
             Ok(value)
         }
         Err(error) => {
@@ -588,7 +588,7 @@ mod tests {
                 match self.0 {
                     MutatingRoute::Handled => Ok(SubmissionResult::Handled),
                     MutatingRoute::Rejected => Ok(SubmissionResult::Rejected("rejected".into())),
-                    MutatingRoute::Failed => Err(Error::Config("failed".into())),
+                    MutatingRoute::Failed => Err(Error::Internal("failed".into())),
                 }
             })
         }

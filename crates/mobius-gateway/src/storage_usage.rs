@@ -333,7 +333,7 @@ pub(crate) async fn measure_usage(
                         break 'pages;
                     };
                     match spec.map_err(|error| {
-                        crate::Error::Config(format!("storage metadata task failed: {error}"))
+                        crate::Error::Internal(format!("storage metadata task failed: {error}"))
                     })? {
                         Ok(Some(spec)) => {
                             if let Some(path) = spec.workspace {
@@ -402,11 +402,11 @@ pub(crate) async fn measure_usage(
     let (categories, projects, used_bytes) = tokio::time::timeout_at(deadline, measurement)
         .await
         .map_err(|error| {
-            crate::Error::Config(format!(
+            crate::Error::Internal(format!(
                 "storage measurement exceeded its time budget: {error}"
             ))
         })?
-        .map_err(|error| crate::Error::Config(format!("storage measurement failed: {error}")))?;
+        .map_err(|error| crate::Error::Internal(format!("storage measurement failed: {error}")))?;
     let mut gateway_total = StorageSize {
         complete: complete && projects.iter().all(|project| project.size.complete),
         ..Default::default()

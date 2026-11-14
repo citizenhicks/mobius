@@ -1524,7 +1524,7 @@ fn session_bot<'a>(
         .iter()
         .find(|bot| bot.id == session.session.context.owner_id)
         .ok_or_else(|| {
-            Error::Config(format!(
+            Error::Internal(format!(
                 "session {} references unknown Bot {}",
                 session.session.session_id, session.session.context.owner_id
             ))

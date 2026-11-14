@@ -21,7 +21,7 @@ pub(super) async fn run(
     }
     if matches!(command, TelemetryCommand::List | TelemetryCommand::Ready) && running {
         let token = load(&endpoint)?
-            .ok_or_else(|| Error::Config("local control credential unavailable".into()))?;
+            .ok_or_else(|| Error::Internal("local control credential unavailable".into()))?;
         let response = request(&endpoint, &token, |request_id| {
             ClientMessage::GetTelemetry { request_id }
         })
@@ -42,7 +42,7 @@ pub(super) async fn run(
         && !matches!(command, TelemetryCommand::List | TelemetryCommand::Ready))
     .then(|| config.telemetry.clone()); // rules-allow: the persisted sinks are kept to roll back a failed cursor sync
     match command {
-        TelemetryCommand::Ready => return Err(Error::Config("gateway is not running".into())),
+        TelemetryCommand::Ready => return Err(Error::Invalid("gateway is not running".into())),
         TelemetryCommand::List => {
             for sink in &mut config.telemetry.sinks {
                 sink.redact_report()?;
@@ -70,7 +70,7 @@ pub(super) async fn run(
                     field
                         .split_once('=')
                         .map(|(key, value)| (key.to_owned(), value.to_owned()))
-                        .ok_or_else(|| Error::Config("--field requires key=value".into()))
+                        .ok_or_else(|| Error::Invalid("--field requires key=value".into()))
                 })
                 .collect::<Result<_>>()?;
             let sections = sections
@@ -104,11 +104,11 @@ pub(super) async fn run(
     }
     config.telemetry.revision = expected_revision
         .checked_add(1)
-        .ok_or_else(|| Error::Config("telemetry revision overflow".into()))?;
+        .ok_or_else(|| Error::Internal("telemetry revision overflow".into()))?;
     let config = config.validated()?;
     if running {
         let token = load(&endpoint)?
-            .ok_or_else(|| Error::Config("local control credential unavailable".into()))?;
+            .ok_or_else(|| Error::Internal("local control credential unavailable".into()))?;
         request(&endpoint, &token, |request_id| {
             ClientMessage::ConfigureTelemetry {
                 request_id,
@@ -126,7 +126,7 @@ pub(super) async fn run(
                 let mut config = config.into_inner();
                 config.telemetry = previous;
                 if let Err(rollback) = store.publish_live(&config) {
-                    return Err(crate::publication::applied_error(Error::Config(format!(
+                    return Err(crate::publication::applied_error(Error::Internal(format!(
                         "{error}; telemetry rollback did not complete: {rollback}"
                     ))));
                 }

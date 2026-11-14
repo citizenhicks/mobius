@@ -112,7 +112,7 @@ pub(super) async fn apply(
         .bots
         .iter()
         .find(|bot| *bot.id == *bot_id)
-        .ok_or_else(|| Error::Config("this chat's Bot is not in the gateway catalog".into()))?;
+        .ok_or_else(|| Error::Invalid("this chat's Bot is not in the gateway catalog".into()))?;
     let config = state.agent_composition(mobius_composition(bot)?)?;
     let expected_revision = bot.config.revision;
     if state.mode == SetupMode::Login {
@@ -128,7 +128,7 @@ pub(super) async fn apply(
         .bots
         .iter()
         .find(|bot| *bot.id == *bot_id)
-        .ok_or_else(|| Error::Config("this chat's Bot is not in the gateway catalog".into()))?;
+        .ok_or_else(|| Error::Invalid("this chat's Bot is not in the gateway catalog".into()))?;
     if mobius_composition(bot)?.as_ref() == &config {
         return Ok(());
     }
@@ -180,7 +180,7 @@ pub(super) async fn apply_gateway(
         .agent_catalog
         .bot_defaults
         .as_ref()
-        .ok_or_else(|| Error::Config("configure a provider before saving defaults".into()))?;
+        .ok_or_else(|| Error::Invalid("configure a provider before saving defaults".into()))?;
     if config == default.config {
         return Ok(());
     }
@@ -249,7 +249,7 @@ pub(super) async fn configure_bot_defaults(
 /// The composition setup edits; only möbius Bots are composed from providers and middleware.
 pub(super) fn mobius_composition(bot: &BotRecord) -> Result<&Arc<AgentComposition>> {
     bot.config.config.mobius().ok_or_else(|| {
-        Error::Config("this Bot does not run on möbius; configure it in the app".into())
+        Error::Invalid("this Bot does not run on möbius; configure it in the app".into())
     })
 }
 
@@ -374,7 +374,7 @@ fn response_error(message: &ServerMessage, request_id: &str, failure: Failure) -
         Failure::Configuration if matches!(message, ServerMessage::Rejected { code, .. } if code == "revision_conflict") => {
             Error::Stopped(format!("{}; reopen setup to refresh", error.message))
         }
-        Failure::Configuration => Error::Config(error.message.into()),
+        Failure::Configuration => Error::Invalid(error.message.into()),
     })
 }
 

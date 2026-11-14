@@ -171,7 +171,7 @@ pub(crate) fn validate(config: &MiddlewareConfig, ceilings: SubagentCeilings) ->
     let features = features(ModelCatalogs::default(), ceilings);
     for id in config.entries() {
         if let Some(policy) = config.disabled_by(&features, id) {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "middleware `{id}` is incompatible with the selected `{policy}` policy"
             )));
         }
@@ -179,7 +179,7 @@ pub(crate) fn validate(config: &MiddlewareConfig, ceilings: SubagentCeilings) ->
     for id in config.entries() {
         let manifest = definition(id)?.manifest;
         if manifest.required {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "required middleware `{id}` cannot be configured"
             )));
         }
@@ -187,7 +187,7 @@ pub(crate) fn validate(config: &MiddlewareConfig, ceilings: SubagentCeilings) ->
     for (middleware_id, settings) in &config.settings {
         let manifest = definition(middleware_id)?.manifest;
         if manifest.settings.is_empty() {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "middleware `{middleware_id}` has no settings"
             )));
         }
@@ -197,7 +197,7 @@ pub(crate) fn validate(config: &MiddlewareConfig, ceilings: SubagentCeilings) ->
                 .iter()
                 .any(|setting| setting.id() == setting_id)
             {
-                return Err(Error::Config(format!(
+                return Err(Error::Invalid(format!(
                     "unknown setting `{middleware_id}.{setting_id}`"
                 )));
             }
@@ -302,7 +302,7 @@ impl MobiusSettings {
         let tools = mobius::middleware::tools::MANIFEST.id;
         let required = |middleware: &str, setting: &str| {
             string_setting(config, middleware, setting)?.ok_or_else(|| {
-                Error::Config(format!(
+                Error::Invalid(format!(
                     "missing middleware setting `{middleware}.{setting}`"
                 ))
             })
@@ -337,7 +337,7 @@ pub(crate) fn integer_setting(
     match config.setting(middleware, setting) {
         Some(FrontendSettingValue::Integer(value)) => Ok(*value),
         Some(FrontendSettingValue::String(_)) => Err(setting_type(middleware, setting, "integer")),
-        None => Err(Error::Config(format!(
+        None => Err(Error::Invalid(format!(
             "missing integer middleware setting `{middleware}.{setting}`"
         ))),
     }
@@ -349,17 +349,17 @@ pub(crate) fn subagent_limits(
 ) -> Result<SubagentLimits> {
     let value = |id| integer_setting(config, mobius::middleware::subagents::MANIFEST.id, id);
     let max_depth = u8::try_from(value("max_depth")?).map_err(|error| {
-        Error::Config(format!(
+        Error::Invalid(format!(
             "subagent max depth must fit an unsigned byte: {error}"
         ))
     })?;
     let max_concurrency = usize::try_from(value("max_concurrency")?).map_err(|error| {
-        Error::Config(format!(
+        Error::Invalid(format!(
             "subagent max concurrency must fit an unsigned integer: {error}"
         ))
     })?;
     let max_agents = usize::try_from(value("max_agents")?).map_err(|error| {
-        Error::Config(format!(
+        Error::Invalid(format!(
             "subagent max agents must fit an unsigned integer: {error}"
         ))
     })?;
@@ -375,7 +375,7 @@ fn count_setting(
         .ok()
         .and_then(std::num::NonZeroUsize::new)
         .ok_or_else(|| {
-            Error::Config(format!(
+            Error::Invalid(format!(
                 "middleware setting `{middleware}.{setting}` must be a positive count"
             ))
         })
@@ -397,11 +397,11 @@ fn definition(id: &str) -> Result<&'static MiddlewareRegistration> {
     MIDDLEWARE
         .iter()
         .find(|entry| entry.manifest.id == id)
-        .ok_or_else(|| Error::Config(format!("unknown middleware `{id}`")))
+        .ok_or_else(|| Error::Invalid(format!("unknown middleware `{id}`")))
 }
 
 fn setting_type(middleware: &str, setting: &str, expected: &str) -> Error {
-    Error::Config(format!(
+    Error::Invalid(format!(
         "middleware setting `{middleware}.{setting}` must be {expected}"
     ))
 }

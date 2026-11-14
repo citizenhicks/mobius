@@ -118,7 +118,7 @@ pub async fn run(
             error.print()?;
             return Ok(());
         }
-        Err(error) => return Err(Error::Config(error.to_string())),
+        Err(error) => return Err(Error::Invalid(error.to_string())),
     };
     run_cli(cli, save_local_client, load_local_client).await
 }
@@ -139,7 +139,7 @@ pub async fn run_cli(
             let config =
                 toml::to_string_pretty(&GatewayConfig::new(crate::config::DEFAULT_LISTEN, None)?)
                     .map_err(|error| {
-                    Error::Config(format!(
+                    Error::Internal(format!(
                         "cannot encode default gateway configuration: {error}"
                     ))
                 })?;
@@ -209,7 +209,7 @@ pub async fn run_cli(
             serve(state_dir()?, false, save_local_client, load_local_client).await
         }
         Some(GatewaySubcommand::Exit) => exit_gateway(state_dir()?),
-        None | Some(GatewaySubcommand::Provider) => Err(Error::Config(
+        None | Some(GatewaySubcommand::Provider) => Err(Error::Invalid(
             "an executable gateway command is required".into(),
         )),
     }

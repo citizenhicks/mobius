@@ -125,7 +125,7 @@ impl OpenAi {
     ) -> Result<Self> {
         let model = model.into();
         if model.trim().is_empty() {
-            return Err(Error::Config("OPENAI_MODEL is empty".into()));
+            return Err(Error::Invalid("OPENAI_MODEL is empty".into()));
         }
         Self::from_api_key(
             Some(api_key.into()),
@@ -145,7 +145,7 @@ impl OpenAi {
         settings: super::ModelTransportSettings,
     ) -> Result<Self> {
         if api_key.as_deref().is_some_and(|key| key.trim().is_empty()) {
-            return Err(Error::Config("provider API key cannot be empty".into()));
+            return Err(Error::Invalid("provider API key cannot be empty".into()));
         }
         let auth = api_key
             .map(|key| Arc::new(ApiKeyAuthorization::new(key)) as Arc<dyn OpenAiAuthorization>);
@@ -184,7 +184,7 @@ impl OpenAi {
         let auth = self
             .auth
             .as_ref()
-            .ok_or_else(|| Error::Config("Codex voice requires authorization".into()))?;
+            .ok_or_else(|| Error::Invalid("Codex voice requires authorization".into()))?;
         self.realtime = Some(Arc::new(RealtimeTransport::new_codex(
             &self.base_url,
             default_endpoint,
@@ -240,7 +240,7 @@ impl OpenAi {
     pub fn with_reasoning_effort(mut self, effort: impl Into<String>) -> Result<Self> {
         let effort = effort.into();
         if effort.trim().is_empty() {
-            return Err(Error::Config("reasoning effort cannot be empty".into()));
+            return Err(Error::Invalid("reasoning effort cannot be empty".into()));
         }
         self.reasoning_effort = Some(effort.into());
         Ok(self)

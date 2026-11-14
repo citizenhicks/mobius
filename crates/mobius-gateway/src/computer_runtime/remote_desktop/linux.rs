@@ -328,7 +328,7 @@ impl Desktop {
         }
         let request = serde_json::from_value(value).map_err(|error| {
             self.last_action = None;
-            Error::Config(format!(
+            Error::Invalid(format!(
                 "unsupported or invalid Linux desktop action: {error}"
             ))
         })?;
@@ -1197,10 +1197,10 @@ fn atom(connection: &impl Connection, name: &[u8]) -> Result<Atom> {
 }
 
 fn failure(message: &str) -> Error {
-    Error::Config(message.to_owned())
+    Error::Internal(message.to_owned())
 }
 fn xerror(error: impl std::fmt::Display) -> Error {
-    Error::Config(format!("private X11 desktop: {error}"))
+    Error::Internal(format!("private X11 desktop: {error}"))
 }
 
 #[cfg(test)]

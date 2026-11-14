@@ -802,7 +802,7 @@ impl Runner {
                     let transport = model.transport_settings_for(&provider)?;
                     let retry_limit =
                         usize::try_from(transport.stream_retry_limit).map_err(|error| {
-                            Error::Config(format!(
+                            Error::Internal(format!(
                                 "stream retry limit exceeds platform range: {error}"
                             ))
                         })?;

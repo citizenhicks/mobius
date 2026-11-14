@@ -135,24 +135,24 @@ impl GatewaySandbox {
         credential_environment: &[&str],
     ) -> Result<Self> {
         if timeout.is_zero() {
-            return Err(Error::Config("command timeout must be positive".into()));
+            return Err(Error::Invalid("command timeout must be positive".into()));
         }
         let root = std::fs::canonicalize(workspace)?;
         let state_dir = std::fs::canonicalize(state_dir)?;
         let tls_key = tls_key.map(std::fs::canonicalize).transpose()?;
         let tls_key = tls_key.as_deref().unwrap_or(&state_dir);
         if root.starts_with(&state_dir) || state_dir.starts_with(&root) {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "gateway state directory and chat workspace must not overlap".into(),
             ));
         }
         if tls_key.starts_with(&root) {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "TLS private key must be stored outside every chat workspace".into(),
             ));
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "gateway command sandbox supports macOS and Linux only".into(),
         ));
 
@@ -271,7 +271,7 @@ impl GatewaySandbox {
         paths: impl IntoIterator<Item = PathBuf>,
     ) -> Result<Self> {
         let mut delegate = std::sync::Arc::try_unwrap(self.delegate).map_err(|delegate| {
-            Error::Config(format!(
+            Error::Internal(format!(
                 "sandbox paths must be configured before execution: {} handles share the delegate",
                 std::sync::Arc::strong_count(&delegate)
             ))
@@ -288,7 +288,7 @@ impl GatewaySandbox {
         roots: impl IntoIterator<Item = PathBuf>,
     ) -> Result<Self> {
         let mut delegate = std::sync::Arc::try_unwrap(self.delegate).map_err(|delegate| {
-            Error::Config(format!(
+            Error::Internal(format!(
                 "sandbox roots must be configured before execution: {} handles share the delegate",
                 std::sync::Arc::strong_count(&delegate)
             ))
@@ -305,7 +305,7 @@ impl GatewaySandbox {
         roots: impl IntoIterator<Item = PathBuf>,
     ) -> Result<Self> {
         let mut delegate = std::sync::Arc::try_unwrap(self.delegate).map_err(|delegate| {
-            Error::Config(format!(
+            Error::Internal(format!(
                 "sandbox roots must be configured before execution: {} handles share the delegate",
                 std::sync::Arc::strong_count(&delegate)
             ))

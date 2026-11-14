@@ -139,8 +139,9 @@ impl BotStorage {
         )?;
         let events = query
             .query_map(
-                [i64::try_from(limit)
-                    .map_err(|error| Error::Config(format!("hook page is too large: {error}")))?],
+                [i64::try_from(limit).map_err(|error| {
+                    Error::Internal(format!("hook page is too large: {error}"))
+                })?],
                 |row| row.get::<_, String>(0),
             )?
             .map(|row| Ok(serde_json::from_str(&row?)?))
@@ -170,7 +171,7 @@ impl BotStorage {
         };
         drop(connection);
         let sequence = u64::try_from(sequence)
-            .map_err(|error| Error::Config(format!("negative session cursor: {error}")))?;
+            .map_err(|error| Error::Internal(format!("negative session cursor: {error}")))?;
         Ok((sequence, Some(owner.into())))
     }
     pub(crate) fn advance_source_cursor(
@@ -186,7 +187,7 @@ impl BotStorage {
     }
     pub(crate) fn project_session(&self, event: &HookEvent, sequence: u64) -> Result<bool> {
         let HookSource::Session { session_id } = &event.source else {
-            return Err(Error::Config(
+            return Err(Error::Internal(
                 "session projection requires a session source".into(),
             ));
         };
@@ -201,7 +202,7 @@ impl BotStorage {
     pub(crate) fn pending_actions(&self, now: i64, limit: usize) -> Result<Vec<PendingHookAction>> {
         let connection = self.lock()?;
         let limit = i64::try_from(limit)
-            .map_err(|error| Error::Config(format!("hook page is too large: {error}")))?;
+            .map_err(|error| Error::Internal(format!("hook page is too large: {error}")))?;
         let mut query=connection.prepare("SELECT outbox.id, events.event_json, outbox.action_json, outbox.bot_id FROM hook_outbox AS outbox JOIN hook_events AS events ON events.id=outbox.event_id WHERE outbox.accepted=0 AND outbox.retry_at<=?1 ORDER BY outbox.retry_at,outbox.rowid LIMIT ?2")?;
         let actions = query
             .query_map(params![now, limit], |row| {
@@ -268,11 +269,11 @@ impl BotStorage {
     ) -> Result<()> {
         self.transaction(|tx| {
             for event in events {
-                let HookSource::Session { session_id } = &event.source else {return Err(Error::Config("closing a source requires a session event".into()));};
-                if !matches!(event.data, HookData::SessionDeleted { .. } | HookData::SessionOwnerChanged { .. }) {return Err(Error::Config("closing a source requires deletion or owner change".into()));}
+                let HookSource::Session { session_id } = &event.source else {return Err(Error::Internal("closing a source requires a session event".into()));};
+                if !matches!(event.data, HookData::SessionDeleted { .. } | HookData::SessionOwnerChanged { .. }) {return Err(Error::Internal("closing a source requires deletion or owner change".into()));}
                 let existing = tx.query_row("SELECT event_json FROM hook_events WHERE id=?1", [&event.id], |row|row.get::<_,String>(0)).optional()?;
                 if let Some(existing)=existing {
-                    if existing!=serde_json::to_string(event)? {return Err(Error::Config("closure event identity has conflicting content".into()));}
+                    if existing!=serde_json::to_string(event)? {return Err(Error::Internal("closure event identity has conflicting content".into()));}
                     continue;
                 }
                 cancel_source_pending(tx, &event.source)?;
@@ -336,7 +337,8 @@ fn cursor(connection: &Connection, session_id: &SessionId) -> Result<u64> {
         )
         .optional()?
         .unwrap_or(0);
-    u64::try_from(value).map_err(|error| Error::Config(format!("negative session cursor: {error}")))
+    u64::try_from(value)
+        .map_err(|error| Error::Internal(format!("negative session cursor: {error}")))
 }
 fn advance_cursor(
     tx: &Transaction<'_>,
@@ -353,12 +355,12 @@ fn advance_cursor(
         .optional()?
         && owner != bot_id
     {
-        return Err(Error::Config(
+        return Err(Error::Internal(
             "session cursor belongs to another Bot".into(),
         ));
     }
     let sequence = i64::try_from(sequence)
-        .map_err(|error| Error::Config(format!("session sequence is too large: {error}")))?;
+        .map_err(|error| Error::Internal(format!("session sequence is too large: {error}")))?;
     Ok(tx.execute("INSERT INTO bot_session_cursors(session_id,bot_id,sequence) VALUES(?1,?2,?3) ON CONFLICT(session_id) DO UPDATE SET sequence=excluded.sequence WHERE excluded.sequence>bot_session_cursors.sequence",params![session_id,bot_id,sequence])?!=0)
 }
 fn cancel_source_pending(tx: &Transaction<'_>, source: &HookSource) -> Result<()> {
@@ -385,7 +387,7 @@ fn save_binding(
     now: i64,
 ) -> Result<()> {
     let sequence = i64::try_from(after_sequence)
-        .map_err(|error| Error::Config(format!("binding sequence is too large: {error}")))?;
+        .map_err(|error| Error::Internal(format!("binding sequence is too large: {error}")))?;
     let previous = tx
         .query_row(
             "SELECT routine_id,selector_json,action_json FROM hook_bindings WHERE bot_id=?1 AND id=?2",
@@ -397,7 +399,7 @@ fn save_binding(
         .as_ref()
         .is_some_and(|previous| previous.0.as_deref() != routine_id)
     {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "hook binding identity is already in use".into(),
         ));
     }
@@ -537,7 +539,7 @@ pub(super) fn record_event(
         .optional()?
     {
         if previous != json {
-            return Err(Error::Config(
+            return Err(Error::Internal(
                 "hook event ID has conflicting content".into(),
             ));
         }
@@ -547,7 +549,7 @@ pub(super) fn record_event(
     tx.execute("INSERT INTO hook_events(rowid,id,bot_id,source_json,occurred_at,event_json) VALUES(MAX(COALESCE((SELECT MAX(rowid) FROM hook_events),0),COALESCE((SELECT MAX(after_rowid) FROM telemetry_cursors),0))+1,?1,?2,?3,?4,?5)",params![event.id,event.bot_id,serde_json::to_string(&event.source)?,event.occurred_at,json])?;
     if let Some(sequence) = sequence {
         let sequence = i64::try_from(sequence).map_err(|error| {
-            Error::Config(format!("hook journal sequence is too large: {error}"))
+            Error::Internal(format!("hook journal sequence is too large: {error}"))
         })?;
         tx.execute(
             "INSERT INTO hook_journal_sequences(event_id,sequence) VALUES(?1,?2)",
@@ -638,19 +640,19 @@ pub(crate) fn validate_selector(selector: &HookSelector) -> Result<()> {
                     Some(RoutineRunStatus::Running | RoutineRunStatus::Skipped)
                 ))
         {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "routine outcome filter requires a terminal run_finished event".into(),
             ));
         }
         if session_outcome.is_some() && *kind != HookKind::SessionTurnFinished {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "session outcome filter requires session_turn_finished".into(),
             ));
         }
         if let Some(name) = custom_name
             && (*kind != HookKind::CustomReceived || name.is_empty() || name.len() > 128)
         {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "custom name filter requires custom_received and 1 to 128 bytes".into(),
             ));
         }
@@ -662,7 +664,7 @@ pub(crate) fn subscription_source(binding: &HookBinding<BotAction>) -> Result<&H
     validate_bot_binding(binding, Some(super::MAX_SCHEDULE_TIMESTAMP))?;
     match &binding.on {
         HookSelector::Event { source, .. } => Ok(source),
-        HookSelector::Schedule { .. } => Err(Error::Config(
+        HookSelector::Schedule { .. } => Err(Error::Invalid(
             "timer selectors belong to routine bindings".into(),
         )),
     }
@@ -679,7 +681,7 @@ pub(crate) fn validate_bot_binding(
                 || instruction.len() > 8192
                 || instruction.contains('\0')
             {
-                return Err(Error::Config(
+                return Err(Error::Invalid(
                     "reporting instruction must contain 1 to 8192 bytes".into(),
                 ));
             }
@@ -694,7 +696,7 @@ pub(crate) fn validate_bot_binding(
             }
             mobius::protocol::Op::Interrupt { turn_id } => validate_id(turn_id)?,
             _ => {
-                return Err(Error::Config(
+                return Err(Error::Invalid(
                     "session hooks support only message and interrupt operations".into(),
                 ));
             }
@@ -732,7 +734,7 @@ fn validate_event(event: &HookEvent) -> Result<String> {
             .len()
             != event.ancestry.len()
     {
-        return Err(Error::Config(
+        return Err(Error::Internal(
             "hook causal chain exceeds its bound or revisits an event".into(),
         ));
     }
@@ -744,13 +746,13 @@ fn validate_event(event: &HookEvent) -> Result<String> {
     }
     let json = serde_json::to_string(event)?;
     if json.len() > mobius::protocol::MAX_MESSAGE_BYTES / 2 + 8192 {
-        return Err(Error::Config("hook event is too large".into()));
+        return Err(Error::Internal("hook event is too large".into()));
     }
     Ok(json)
 }
 fn validate_id(id: &str) -> Result<()> {
     if id.trim().is_empty() || id.len() > 256 || id.chars().any(char::is_control) {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "hook identity must contain 1 to 256 safe bytes".into(),
         ));
     }
@@ -792,12 +794,12 @@ impl super::BotStore {
                 |row| row.get(0),
             )
             .optional()?
-            .ok_or_else(|| Error::Config(format!("telemetry cursor missing for {}", sink.id)))?;
+            .ok_or_else(|| Error::Internal(format!("telemetry cursor missing for {}", sink.id)))?;
         let kinds = serde_json::to_string(&sink.events)?;
         let count = connection.query_row("SELECT COUNT(*) FROM hook_events WHERE rowid > ?1 AND json_extract(event_json,'$.data.type') IN (SELECT value FROM json_each(?2))", params![after,kinds], |row| row.get::<_, i64>(0))?;
         drop(connection);
         u64::try_from(count)
-            .map_err(|error| Error::Config(format!("invalid telemetry event count: {error}")))
+            .map_err(|error| Error::Internal(format!("invalid telemetry event count: {error}")))
     }
 
     pub(crate) fn telemetry_batch(
@@ -812,7 +814,7 @@ impl super::BotStore {
                 |row| row.get(0),
             )
             .optional()?
-            .ok_or_else(|| Error::Config(format!("telemetry cursor missing for {}", sink.id)))?;
+            .ok_or_else(|| Error::Internal(format!("telemetry cursor missing for {}", sink.id)))?;
         let kinds = serde_json::to_string(&sink.events)?;
         let filter = "WHERE events.rowid > ?1 AND json_extract(event_json,'$.data.type') IN (SELECT value FROM json_each(?2))";
         let count = connection.query_row(
@@ -821,7 +823,7 @@ impl super::BotStore {
             |row| row.get::<_, i64>(0),
         )?;
         let count = u64::try_from(count)
-            .map_err(|error| Error::Config(format!("invalid event count: {error}")))?;
+            .map_err(|error| Error::Internal(format!("invalid event count: {error}")))?;
         let mut query = connection.prepare(&format!(
             "SELECT events.rowid,event_json,journal.sequence FROM hook_events AS events LEFT JOIN hook_journal_sequences AS journal ON journal.event_id=events.id {filter} ORDER BY events.rowid LIMIT 32"
         ))?;
@@ -836,7 +838,7 @@ impl super::BotStore {
             .map(|row| {
                 let (id, json, sequence) = row?;
                 let sequence = sequence.map(u64::try_from).transpose().map_err(|error| {
-                    Error::Config(format!("negative hook journal sequence: {error}"))
+                    Error::Internal(format!("negative hook journal sequence: {error}"))
                 })?;
                 Ok(TelemetryEvent {
                     rowid: id,
@@ -856,7 +858,7 @@ impl super::BotStore {
                 params![sink_id, rowid],
             )? == 0
             {
-                return Err(Error::Config(format!(
+                return Err(Error::Internal(format!(
                     "telemetry cursor missing for {sink_id}"
                 )));
             }

@@ -41,14 +41,14 @@ impl CloudflareTunnel {
         };
         command.kill_on_drop(true);
         let mut child = command.spawn().map_err(|error| {
-            Error::Config(format!(
+            Error::Invalid(format!(
                 "failed to start bundled cloudflared; install it beside mobius-gateway or on PATH: {error}"
             ))
         })?;
         let stderr = child
             .stderr
             .take()
-            .ok_or_else(|| Error::Config("failed to capture cloudflared output".into()))?;
+            .ok_or_else(|| Error::Internal("failed to capture cloudflared output".into()))?;
         let (endpoint, quick_endpoint) = match cloudflare {
             CloudflareConfig::Quick => {
                 let (sender, receiver) = oneshot::channel();
@@ -59,7 +59,7 @@ impl CloudflareTunnel {
                 tokio::spawn(drain_stderr(stderr));
                 let endpoint = cloudflare
                     .endpoint()
-                    .ok_or_else(|| Error::Config("named Cloudflare endpoint is missing".into()))?
+                    .ok_or_else(|| Error::Internal("named Cloudflare endpoint is missing".into()))?
                     .parse()?;
                 (Some(endpoint), None)
             }
@@ -74,7 +74,7 @@ impl CloudflareTunnel {
     /// Hands over the public endpoint once the tunnel has one, however long that takes.
     pub(crate) async fn endpoint(&mut self) -> Result<Endpoint> {
         if let Some(status) = self.child.try_wait()? {
-            return Err(Error::Config(format!(
+            return Err(Error::Internal(format!(
                 "cloudflared stopped during startup with {status}"
             )));
         }
@@ -82,15 +82,15 @@ impl CloudflareTunnel {
             return Ok(endpoint);
         }
         let receiver = self.quick_endpoint.take().ok_or_else(|| {
-            Error::Config("Cloudflare Quick Tunnel address is no longer available".into())
+            Error::Internal("Cloudflare Quick Tunnel address is no longer available".into())
         })?;
         let endpoint = receiver.await.map_err(|error| {
-            Error::Config(format!(
+            Error::Internal(format!(
                 "cloudflared stopped before assigning an address: {error}"
             ))
         })??;
         if let Some(status) = self.child.try_wait()? {
-            return Err(Error::Config(format!(
+            return Err(Error::Internal(format!(
                 "cloudflared stopped during startup with {status}"
             )));
         }
@@ -99,7 +99,7 @@ impl CloudflareTunnel {
 
     pub(crate) async fn wait(&mut self) -> Result<()> {
         let status = self.child.wait().await?;
-        Err(Error::Config(format!(
+        Err(Error::Internal(format!(
             "cloudflared stopped unexpectedly with {status}"
         )))
     }
@@ -132,7 +132,7 @@ async fn drain_quick_stderr(
     if let Some(sender) = sender {
         report_quick_endpoint(
             sender,
-            Err(Error::Config(
+            Err(Error::Internal(
                 "cloudflared stopped before assigning an address".into(),
             )),
         );

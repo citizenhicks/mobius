@@ -547,7 +547,7 @@ mod tests {
                     serde_json::json!({"prompt": "a red square"})
                 )
                 .await,
-            Err(Error::Config(_))
+            Err(Error::Invalid(_))
         ));
     }
 }

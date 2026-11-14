@@ -348,7 +348,7 @@ async fn image_generation_does_not_replay_ambiguous_failures() {
             _: ModelRequest<'a>,
             _: ModelEventSink,
         ) -> BoxFuture<'a, Result<ModelOutput>> {
-            Box::pin(async { Err(Error::Config("image-only fixture".into())) })
+            Box::pin(async { Err(Error::Internal("image-only fixture".into())) })
         }
         fn generate_image<'a>(
             &'a self,

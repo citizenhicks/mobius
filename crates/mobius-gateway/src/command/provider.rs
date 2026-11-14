@@ -22,7 +22,7 @@ pub(super) async fn register_provider_command(
         .transpose()?;
     let credential = if options.credential_stdin {
         if std::io::stdin().is_terminal() {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "--credential-stdin requires piped standard input".into(),
             ));
         }
@@ -35,7 +35,7 @@ pub(super) async fn register_provider_command(
         direct_loopback_endpoint(&config)?
     };
     let token = load_local_client(&endpoint)?
-        .ok_or_else(|| Error::Config("gateway local control credential is unavailable".into()))?;
+        .ok_or_else(|| Error::Internal("gateway local control credential is unavailable".into()))?;
     let definition = provider(&options.provider)?;
     let base_url = Some(definition.resolve_base_url(options.base_url.as_ref()));
     let instance = options.instance.unwrap_or_else(|| definition.id().into());
@@ -110,12 +110,12 @@ pub(super) fn read_provider_credential(mut input: impl Read) -> Result<String> {
         .take((MAX_PROVIDER_API_KEY_BYTES + 1) as u64)
         .read_to_end(&mut bytes)?;
     if bytes.len() > MAX_PROVIDER_API_KEY_BYTES {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "API key must be 1–{MAX_PROVIDER_API_KEY_BYTES} bytes"
         )));
     }
     String::from_utf8(bytes)
-        .map_err(|error| Error::Config(format!("provider credential is not valid UTF-8: {error}")))
+        .map_err(|error| Error::Invalid(format!("provider credential is not valid UTF-8: {error}")))
 }
 
 pub(super) fn register_provider_json(provider: &str) -> Result<String> {
@@ -224,7 +224,7 @@ pub(super) async fn clear_provider_credential(
     let (_, config) = ConfigStore::open(state_dir)?;
     let endpoint = direct_loopback_endpoint(&config)?;
     let token = load_local_client(&endpoint)?
-        .ok_or_else(|| Error::Config("gateway local control credential is unavailable".into()))?;
+        .ok_or_else(|| Error::Internal("gateway local control credential is unavailable".into()))?;
     let (sender, mut events) = provider_command_connection(&endpoint, &token).await?;
     crate::client::request(
         &sender,

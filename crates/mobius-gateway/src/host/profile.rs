@@ -131,7 +131,7 @@ pub(super) fn gateway_run_stats(sessions: &[SessionSummary]) -> Result<RunStats>
             .completed
             .checked_add(&session.execution_stats)
             .ok_or_else(|| {
-                Error::Config("gateway execution statistics exceed the supported range".into())
+                Error::Internal("gateway execution statistics exceed the supported range".into())
             })?;
     }
     Ok(totals)
@@ -312,17 +312,17 @@ pub(super) async fn gateway_ready(
 
 pub(super) fn local_machine_name() -> Result<String> {
     let name = nix::unistd::gethostname()
-        .map_err(|error| Error::Config(format!("failed to read the machine hostname: {error}")))?
+        .map_err(|error| Error::Internal(format!("failed to read the machine hostname: {error}")))?
         .into_string()
         .map_err(|name| {
-            Error::Config(format!(
+            Error::Internal(format!(
                 "the machine hostname is not valid UTF-8: {}",
                 name.display()
             ))
         })?;
     let name = name.trim();
     if name.is_empty() || name.len() > 255 || name.chars().any(char::is_control) {
-        return Err(Error::Config("the machine hostname is invalid".into()));
+        return Err(Error::Internal("the machine hostname is invalid".into()));
     }
     Ok(name.to_owned())
 }

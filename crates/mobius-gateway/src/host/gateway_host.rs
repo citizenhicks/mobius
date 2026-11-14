@@ -115,7 +115,7 @@ impl GatewayHost {
             Ok(Self {
                 state: state
                     .upgrade()
-                    .ok_or_else(|| Error::Config("gateway stopped".into()))?,
+                    .ok_or_else(|| Error::Internal("gateway stopped".into()))?,
                 desktop: Arc::clone(&desktop),
                 remote_desktop: Arc::clone(&remote_desktop),
                 capacity_gate: Arc::clone(&capacity_gate),
@@ -225,7 +225,7 @@ impl GatewayHost {
         }
         host.reconcile_pending_bot_deletion()
             .await
-            .map_err(|rejection| Error::Config(rejection.message.to_string()))?;
+            .map_err(|rejection| Error::Internal(rejection.message.to_string()))?;
         host.recover_routine_outcomes().await?;
         let files = Arc::clone(&host.state.lock().await.session_files);
         let events = host.events.clone(); // rules-allow: the cleanup task owns an event sender

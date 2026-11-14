@@ -72,7 +72,7 @@ impl SessionFileStore {
     /// Rejects zero or decoder-exceeding dimensions and patch budgets.
     pub fn image_presentation(mut self, policy: ImagePresentation) -> Result<Self> {
         if policy.max_dimension == 0 || policy.max_dimension > 16_384 || policy.max_patches == 0 {
-            return Err(Error::Config("invalid image presentation limits".into()));
+            return Err(Error::Invalid("invalid image presentation limits".into()));
         }
         self.image_policy = policy;
         Ok(self)
@@ -668,11 +668,11 @@ pub async fn grant_context<T: std::borrow::Borrow<serde_json::Value> + Sync>(
                 continue;
             }
             let files = files.ok_or_else(|| {
-                Error::Config("forking media requires session file storage".into())
+                Error::Internal("forking media requires session file storage".into())
             })?;
             if kind == Some("input_image") {
                 let image = part.get("image").ok_or_else(|| {
-                    Error::Config("forked observation requires an image reference".into())
+                    Error::Internal("forked observation requires an image reference".into())
                 })?;
                 let image: ImageReference = serde::Deserialize::deserialize(image)?;
                 files.grant_file(parent, child, &image.file).await?;
@@ -680,7 +680,7 @@ pub async fn grant_context<T: std::borrow::Borrow<serde_json::Value> + Sync>(
                 files.grant_file(parent, child, &rendition.file).await?;
             } else {
                 let file = part.get("file").ok_or_else(|| {
-                    Error::Config("forked observation requires a file reference".into())
+                    Error::Internal("forked observation requires a file reference".into())
                 })?;
                 files
                     .grant_file(parent, child, &serde::Deserialize::deserialize(file)?)

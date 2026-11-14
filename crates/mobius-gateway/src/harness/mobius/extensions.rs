@@ -143,7 +143,7 @@ impl ExtensionStore {
         let package = staging.path().join("package");
         tokio::task::spawn_blocking(move || export_package(&selected, &package))
             .await
-            .map_err(|error| Error::Config(format!("extension export failed: {error}")))??;
+            .map_err(|error| Error::Internal(format!("extension export failed: {error}")))??;
         let package = staging.path().join("package");
         let inspected = inspect_package(&package)?;
         let kind = inspected.kind.into();
@@ -178,14 +178,14 @@ impl ExtensionStore {
                 .installed_extensions
                 .get_key_value(id.as_str())
                 .ok_or_else(|| {
-                    Error::Config(format!("selected extension `{id}` is not installed"))
+                    Error::Invalid(format!("selected extension `{id}` is not installed"))
                 })?;
             let package = self.snapshot_root(&installed.digest);
             match installed.kind {
                 ExtensionKind::Skill => resolved.skill_roots.push(
                     package
                         .parent()
-                        .ok_or_else(|| Error::Config("skill snapshot has no parent".into()))?
+                        .ok_or_else(|| Error::Internal("skill snapshot has no parent".into()))?
                         .to_path_buf(),
                 ),
                 ExtensionKind::Plugin => resolved.plugins.push(ResolvedPlugin {
@@ -210,14 +210,16 @@ impl ExtensionStore {
 
     pub(crate) fn remove_snapshot(&self, digest: &str) -> Result<()> {
         if !valid_digest(digest) {
-            return Err(Error::Config("extension snapshot digest is invalid".into()));
+            return Err(Error::Internal(
+                "extension snapshot digest is invalid".into(),
+            ));
         }
         let snapshots = self.root.join("snapshots");
         let directory = self.snapshot_directory(digest);
         for path in [&self.root, &snapshots, &directory] {
             match fs::symlink_metadata(path) {
                 Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
-                    return Err(Error::Config(format!(
+                    return Err(Error::Internal(format!(
                         "extension store path is not a regular directory: {}",
                         path.display()
                     )));
@@ -240,7 +242,7 @@ impl ExtensionStore {
             Err(error) => return Err(error.into()),
         };
         if metadata.file_type().is_symlink() || !metadata.is_dir() {
-            return Err(Error::Config(
+            return Err(Error::Internal(
                 "extension snapshot store is not a regular directory".into(),
             ));
         }
@@ -277,7 +279,7 @@ impl ExtensionStore {
         let snapshot = self.snapshot_root(&digest);
         let parent = snapshot
             .parent()
-            .ok_or_else(|| Error::Config("extension snapshot has no parent directory".into()))?;
+            .ok_or_else(|| Error::Internal("extension snapshot has no parent directory".into()))?;
         let created = !snapshot.exists();
         if created {
             fs::create_dir_all(parent)?;
@@ -309,7 +311,7 @@ impl ExtensionStore {
 impl ExtensionSource {
     fn parse(url: &str, reference: Option<&str>, subdirectory: Option<&str>) -> Result<Self> {
         let mut url = Url::parse(url.trim())
-            .map_err(|error| Error::Config(format!("invalid extension URL: {error}")))?;
+            .map_err(|error| Error::Invalid(format!("invalid extension URL: {error}")))?;
         let mut reference = reference
             .map(str::trim)
             .filter(|value| !value.is_empty())
@@ -324,7 +326,7 @@ impl ExtensionSource {
                 .map_or_default(std::iter::Iterator::collect::<Vec<_>>);
             if let [owner, repository, "tree", branch, rest @ ..] = segments.as_slice() {
                 if reference.is_some() || subdirectory.is_some() {
-                    return Err(Error::Config(
+                    return Err(Error::Invalid(
                         "a GitHub tree URL cannot be combined with ref or subdirectory fields"
                             .into(),
                     ));
@@ -350,10 +352,10 @@ impl ExtensionSource {
 
     fn validate(&self) -> Result<()> {
         if self.url.len() > MAX_EXTENSION_SOURCE_BYTES || self.url.trim() != &*self.url {
-            return Err(Error::Config("extension URL is invalid".into()));
+            return Err(Error::Invalid("extension URL is invalid".into()));
         }
         let parsed = Url::parse(&self.url)
-            .map_err(|error| Error::Config(format!("invalid extension URL: {error}")))?;
+            .map_err(|error| Error::Invalid(format!("invalid extension URL: {error}")))?;
         let ssh = parsed.scheme() == "ssh";
         let invalid_username = if ssh {
             parsed.username().starts_with('-')
@@ -371,7 +373,7 @@ impl ExtensionSource {
             || parsed.query().is_some()
             || parsed.fragment().is_some()
         {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "extension source must be an HTTPS or SSH Git URL without a password, query, or fragment".into(),
             ));
         }
@@ -381,7 +383,7 @@ impl ExtensionSource {
                 || reference.starts_with('-')
                 || reference.chars().any(char::is_whitespace)
         }) {
-            return Err(Error::Config("extension Git ref is invalid".into()));
+            return Err(Error::Invalid("extension Git ref is invalid".into()));
         }
         if let Some(path) = self.subdirectory.as_deref() {
             validate_relative_path(path)?;
@@ -415,20 +417,20 @@ pub(crate) fn records(config: &GatewayConfig) -> Vec<ExtensionRecord> {
 
 pub(crate) fn validate_ids(ids: &BTreeSet<String>) -> Result<()> {
     if ids.len() > MAX_EXTENSIONS {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "an agent may activate at most {MAX_EXTENSIONS} extensions"
         )));
     }
     for id in ids {
         let Some((kind, name)) = id.split_once(':') else {
-            return Err(Error::Config(format!("invalid extension ID `{id}`")));
+            return Err(Error::Invalid(format!("invalid extension ID `{id}`")));
         };
         if ![ExtensionKind::Skill, ExtensionKind::Plugin]
             .iter()
             .any(|known| known.as_str() == kind)
             || !valid_package_name(name)
         {
-            return Err(Error::Config(format!("invalid extension ID `{id}`")));
+            return Err(Error::Invalid(format!("invalid extension ID `{id}`")));
         }
     }
     Ok(())
@@ -436,7 +438,7 @@ pub(crate) fn validate_ids(ids: &BTreeSet<String>) -> Result<()> {
 
 pub(crate) fn validate_installed(installed: &BTreeMap<Arc<str>, InstalledExtension>) -> Result<()> {
     if installed.len() > MAX_EXTENSIONS {
-        return Err(Error::Config(format!(
+        return Err(Error::Internal(format!(
             "installed extension count exceeds {MAX_EXTENSIONS}"
         )));
     }
@@ -446,7 +448,7 @@ pub(crate) fn validate_installed(installed: &BTreeMap<Arc<str>, InstalledExtensi
         if **id != *extension_id(extension.kind, &extension.name)
             || !valid_package_name(&extension.name)
         {
-            return Err(Error::Config(format!(
+            return Err(Error::Internal(format!(
                 "invalid installed extension ID `{id}`"
             )));
         }
@@ -457,12 +459,12 @@ pub(crate) fn validate_installed(installed: &BTreeMap<Arc<str>, InstalledExtensi
                 .as_ref()
                 .is_some_and(|digest| digest != &extension.digest)
         {
-            return Err(Error::Config(format!(
+            return Err(Error::Internal(format!(
                 "extension `{id}` has invalid snapshot metadata"
             )));
         }
         if !digests.insert(&extension.digest) {
-            return Err(Error::Config(format!(
+            return Err(Error::Internal(format!(
                 "extension `{id}` reuses another extension snapshot"
             )));
         }
@@ -520,9 +522,9 @@ async fn clone_source(source: &ExtensionSource, checkout: &Path) -> Result<()> {
     command.stdout(Stdio::null()).stderr(Stdio::null());
     let status = tokio::time::timeout(GIT_TIMEOUT, command.status())
         .await
-        .map_err(|error| Error::Config(format!("extension Git clone timed out: {error}")))??;
+        .map_err(|error| Error::Internal(format!("extension Git clone timed out: {error}")))??;
     if !status.success() {
-        return Err(Error::Config("extension Git clone failed".into()));
+        return Err(Error::Invalid("extension Git clone failed".into()));
     }
     Ok(())
 }
@@ -536,13 +538,14 @@ async fn git_revision(checkout: &Path) -> Result<String> {
     let output = tokio::time::timeout(GIT_TIMEOUT, command.output())
         .await
         .map_err(|error| {
-            Error::Config(format!("extension Git revision lookup timed out: {error}"))
+            Error::Internal(format!("extension Git revision lookup timed out: {error}"))
         })??;
-    let revision = String::from_utf8(output.stdout)
-        .map_err(|error| Error::Config(format!("extension Git revision is not UTF-8: {error}")))?;
+    let revision = String::from_utf8(output.stdout).map_err(|error| {
+        Error::Internal(format!("extension Git revision is not UTF-8: {error}"))
+    })?;
     let revision = revision.trim().to_owned();
     if !output.status.success() || !valid_revision(&revision) {
-        return Err(Error::Config("extension Git revision is invalid".into()));
+        return Err(Error::Internal("extension Git revision is invalid".into()));
     }
     Ok(revision)
 }
@@ -581,18 +584,18 @@ fn confined_checkout_path(checkout: &Path, subdirectory: Option<&str>) -> Result
     let mut path = checkout.clone(); // rules-allow: the canonical root stays for the final confinement check
     for component in Path::new(subdirectory).components() {
         let Component::Normal(component) = component else {
-            return Err(Error::Config("extension subdirectory is invalid".into()));
+            return Err(Error::Invalid("extension subdirectory is invalid".into()));
         };
         path.push(component);
         if fs::symlink_metadata(&path)?.file_type().is_symlink() {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "extension subdirectory contains a symlink".into(),
             ));
         }
     }
     let path = fs::canonicalize(path)?;
     if !path.is_dir() || !path.starts_with(&checkout) {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "extension subdirectory escapes its checkout".into(),
         ));
     }
@@ -609,7 +612,7 @@ fn validate_relative_path(value: &str) -> Result<()> {
             .components()
             .any(|component| !matches!(component, Component::Normal(_)))
     {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "extension subdirectory must be a bounded relative path".into(),
         ));
     }
@@ -640,9 +643,9 @@ fn copy_directory(
         let child = relative.join(entry.file_name());
         let text = child
             .to_str()
-            .ok_or_else(|| Error::Config("extension paths must be UTF-8".into()))?;
+            .ok_or_else(|| Error::Invalid("extension paths must be UTF-8".into()))?;
         if text.len() > MAX_PATH_BYTES {
-            return Err(Error::Config("extension path is too long".into()));
+            return Err(Error::Invalid("extension path is too long".into()));
         }
         let metadata = fs::symlink_metadata(&source_path)?;
         let destination_path = destination.join(entry.file_name());
@@ -653,12 +656,12 @@ fn copy_directory(
             *files += 1;
             *bytes = bytes.saturating_add(metadata.len());
             if *files > MAX_PACKAGE_FILES || *bytes > MAX_PACKAGE_BYTES {
-                return Err(Error::Config("extension package is too large".into()));
+                return Err(Error::Invalid("extension package is too large".into()));
             }
             fs::copy(&source_path, &destination_path)?;
             preserve_executable(&metadata, &destination_path)?;
         } else {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "extension package contains unsupported entry `{text}`"
             )));
         }
@@ -686,13 +689,13 @@ fn hash_directory(
     for entry in entries {
         let path = entry.path();
         let relative = path.strip_prefix(root).map_err(|error| {
-            Error::Config(format!("extension path escaped its snapshot: {error}"))
+            Error::Internal(format!("extension path escaped its snapshot: {error}"))
         })?;
         let relative = relative
             .to_str()
-            .ok_or_else(|| Error::Config("extension paths must be UTF-8".into()))?;
+            .ok_or_else(|| Error::Invalid("extension paths must be UTF-8".into()))?;
         if relative.len() > MAX_PATH_BYTES {
-            return Err(Error::Config("extension path is too long".into()));
+            return Err(Error::Invalid("extension path is too long".into()));
         }
         let metadata = fs::symlink_metadata(&path)?;
         if metadata.is_dir() {
@@ -704,7 +707,7 @@ fn hash_directory(
             *files += 1;
             *bytes = bytes.saturating_add(metadata.len());
             if *files > MAX_PACKAGE_FILES || *bytes > MAX_PACKAGE_BYTES {
-                return Err(Error::Config("extension package is too large".into()));
+                return Err(Error::Invalid("extension package is too large".into()));
             }
             hash.update(b"f");
             hash.update((relative.len() as u64).to_le_bytes());
@@ -719,11 +722,11 @@ fn hash_directory(
                     break;
                 }
                 hash.update(buffer.get(..read).ok_or_else(|| {
-                    Error::Config("extension file read overflowed its buffer".into())
+                    Error::Internal("extension file read overflowed its buffer".into())
                 })?);
             }
         } else {
-            return Err(Error::Config(format!(
+            return Err(Error::Internal(format!(
                 "extension snapshot contains unsupported entry `{relative}`"
             )));
         }
@@ -750,7 +753,7 @@ fn verify_installed_metadata(
         || *installed.skills != *inspected.skills
         || *installed.hooks != *hooks
     {
-        return Err(Error::Config(format!(
+        return Err(Error::Internal(format!(
             "extension `{id}` metadata does not match its snapshot"
         )));
     }
@@ -759,16 +762,16 @@ fn verify_installed_metadata(
 
 fn verify_snapshot(root: &Path, expected: &str) -> Result<()> {
     let metadata = fs::symlink_metadata(root)
-        .map_err(|error| Error::Config(format!("extension snapshot is unavailable: {error}")))?;
+        .map_err(|error| Error::Internal(format!("extension snapshot is unavailable: {error}")))?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(Error::Config(
+        return Err(Error::Internal(
             "extension snapshot root is not a regular directory".into(),
         ));
     }
     let actual = tree_digest(root)
-        .map_err(|error| Error::Config(format!("extension snapshot is unavailable: {error}")))?;
+        .map_err(|error| Error::Internal(format!("extension snapshot is unavailable: {error}")))?;
     if actual != expected {
-        return Err(Error::Config("extension snapshot digest changed".into()));
+        return Err(Error::Internal("extension snapshot digest changed".into()));
     }
     Ok(())
 }
@@ -778,7 +781,7 @@ fn prepare_private_directory(path: &Path) -> Result<()> {
         .symlink_metadata()
         .is_ok_and(|metadata| metadata.file_type().is_symlink())
     {
-        return Err(Error::Config(
+        return Err(Error::Internal(
             "extension store root cannot be a symlink".into(),
         ));
     }
@@ -814,7 +817,7 @@ fn freeze_tree(path: &Path) -> Result<()> {
 fn thaw_tree(path: &Path) -> Result<()> {
     let metadata = fs::symlink_metadata(path)?;
     if metadata.file_type().is_symlink() || (!metadata.is_dir() && !metadata.is_file()) {
-        return Err(Error::Config(
+        return Err(Error::Internal(
             "extension snapshot contains an unsupported entry".into(),
         ));
     }

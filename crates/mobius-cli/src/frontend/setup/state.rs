@@ -148,7 +148,7 @@ impl SetupState {
         save_to: SaveTarget,
     ) -> Result<Self> {
         if providers.is_empty() {
-            return Err(Error::Config("the gateway advertises no providers".into()));
+            return Err(Error::Invalid("the gateway advertises no providers".into()));
         }
         let provider = providers
             .iter()
@@ -306,7 +306,7 @@ impl SetupState {
             .iter()
             .position(|entry| entry.status.provider == provider)
             .ok_or_else(|| {
-                Error::Config(format!(
+                Error::Invalid(format!(
                     "provider `{provider}` is not advertised by this gateway; run `/login` to choose an available provider"
                 ))
             })?;
@@ -333,7 +333,7 @@ impl SetupState {
             })
             .collect();
         if routes.is_empty() {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "no available models; configure a provider first".into(),
             ));
         }
@@ -744,7 +744,7 @@ impl SetupState {
         let record = self
             .available_extensions
             .get(extension)
-            .ok_or_else(|| Error::Config("unknown extension".into()))?;
+            .ok_or_else(|| Error::Internal("unknown extension".into()))?;
         if self.selected_extensions.remove(&*record.id) {
             return Ok(());
         }
@@ -758,10 +758,10 @@ impl SetupState {
         let id = &self
             .features
             .get(feature)
-            .ok_or_else(|| Error::Config("unknown middleware feature".into()))?
+            .ok_or_else(|| Error::Internal("unknown middleware feature".into()))?
             .id;
         if enabled && let Some(label) = self.middleware.disabled_by(&self.features, id) {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "Unavailable while {label} is selected."
             )));
         }
@@ -806,11 +806,11 @@ impl SetupState {
         let feature = self
             .features
             .get(feature)
-            .ok_or_else(|| Error::Config("unknown middleware feature".into()))?;
+            .ok_or_else(|| Error::Internal("unknown middleware feature".into()))?;
         let setting = feature
             .settings
             .get(setting)
-            .ok_or_else(|| Error::Config("unknown middleware setting".into()))?;
+            .ok_or_else(|| Error::Internal("unknown middleware setting".into()))?;
         if !feature.required && !self.middleware.enabled(&feature.id) {
             return Ok(());
         }
@@ -1037,14 +1037,14 @@ impl SetupState {
     }
 
     pub(super) fn recover_error(&mut self, error: Error) -> Result<()> {
-        match error {
-            Error::Auth(message) | Error::Config(message) => {
-                self.progress = None;
-                self.error = Some(message);
-                Ok(())
-            }
-            error => Err(error),
-        }
+        let message = match error {
+            Error::Auth(message) => message,
+            error @ (Error::Invalid(_) | Error::Internal(_)) => error.to_string(),
+            error => return Err(error),
+        };
+        self.progress = None;
+        self.error = Some(message);
+        Ok(())
     }
 
     pub(super) fn has_matching_credential(&self) -> bool {
@@ -1072,7 +1072,7 @@ impl SetupState {
             return Ok(());
         }
         if self.selected_base_url().is_empty() {
-            return Err(Error::Config("base URL is required".into()));
+            return Err(Error::Invalid("base URL is required".into()));
         }
         Ok(())
     }
@@ -1129,12 +1129,12 @@ impl SetupState {
             let (choice, provider) = self
                 .bot_model_routes
                 .get(self.model)
-                .ok_or_else(|| Error::Config("select an available model".into()))?;
+                .ok_or_else(|| Error::Invalid("select an available model".into()))?;
             let instance = self
                 .providers
                 .get(*provider)
                 .and_then(|entry| entry.instance.as_ref())
-                .ok_or_else(|| Error::Config("selected model setup is missing".into()))?;
+                .ok_or_else(|| Error::Internal("selected model setup is missing".into()))?;
             let selection = &instance.selection;
             return Ok(ProviderConfig {
                 instance: selection.instance.clone(), // rules-allow: the provider request owns a copy of the chosen route
@@ -1149,7 +1149,7 @@ impl SetupState {
                     .definition()
                     .web_search
                     .get(self.web_search)
-                    .ok_or_else(|| Error::Config("hosted web-search selection is invalid".into()))?
+                    .ok_or_else(|| Error::Invalid("hosted web-search selection is invalid".into()))?
                     .value
                     .parse::<HostedWebSearch>()?,
             });
@@ -1175,7 +1175,7 @@ impl SetupState {
         let web_search = definition
             .web_search
             .get(self.web_search)
-            .ok_or_else(|| Error::Config("hosted web-search selection is invalid".into()))?
+            .ok_or_else(|| Error::Invalid("hosted web-search selection is invalid".into()))?
             .value
             .parse::<HostedWebSearch>()?;
         let base_url = Some(self.selected_base_url());

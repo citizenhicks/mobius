@@ -179,7 +179,7 @@ impl GatewayHost {
             {
                 self.open_session(session_id)
                     .await
-                    .map_err(|error| Error::Config(error.message.to_string()))?;
+                    .map_err(|error| Error::Internal(error.message.to_string()))?;
                 continue;
             }
             let outcome = if runtime.is_some() {
@@ -559,7 +559,7 @@ async fn lifecycle_event(
         TurnLifecycle::Finished { turn_id, .. } => {
             let execution = execution_for_turn(checkpoints, session_id, turn_id)
                 .await?
-                .ok_or_else(|| Error::Config("terminal event has no execution record".into()))?;
+                .ok_or_else(|| Error::Internal("terminal event has no execution record".into()))?;
             (
                 HookData::SessionTurnFinished {
                     session_id: session_id.share(),
@@ -744,7 +744,7 @@ async fn project_session_journal(
             return Ok(());
         }
         if cursor == previous_cursor {
-            return Err(Error::Config(
+            return Err(Error::Internal(
                 "session journal ended before the owner change".into(),
             ));
         }
@@ -795,7 +795,7 @@ pub(super) async fn close_reassigned_source(
         .events
         .iter()
         .find(|record| matches!(record.event.msg, EventMsg::SessionConfigured(_)))
-        .ok_or_else(|| Error::Config("reassigned session has no configuration event".into()))?;
+        .ok_or_else(|| Error::Internal("reassigned session has no configuration event".into()))?;
     // Preserve committed facts before revoking the previous source's actions.
     project_session_journal(
         checkpoints,

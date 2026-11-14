@@ -228,7 +228,7 @@ impl RemoteDesktop {
         let _lease = self
             .control
             .try_lock()
-            .map_err(|busy| Error::Config(format!("the desktop is busy: {busy}")))?;
+            .map_err(|busy| Error::Invalid(format!("the desktop is busy: {busy}")))?;
         self.check_execution()?;
         if cfg!(target_os = "macos") {
             self.binding(session_id, true).await?;
@@ -409,7 +409,7 @@ impl RemoteDesktop {
                     linux::Desktop::connect(&display, &authentication.stdout)
                 })
                 .await
-                .map_err(|error| Error::Config(error.to_string()))??;
+                .map_err(|error| Error::Internal(error.to_string()))??;
                 runtime.native = Some(Arc::new(Mutex::new(desktop)));
             }
             let native = Arc::clone(runtime.native.as_ref().ok_or_else(unavailable)?);
@@ -434,7 +434,7 @@ impl RemoteDesktop {
                 Ok((result, desktop.timed_out(), desktop.input_submitted()))
             })
             .await
-            .map_err(|error| Error::Config(error.to_string()))??;
+            .map_err(|error| Error::Internal(error.to_string()))??;
         if timed_out {
             let mut guard = self.runtime.lock().await;
             if !guard
@@ -496,7 +496,7 @@ impl RemoteDesktop {
                 .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
                 .is_err()
         {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "desktop control is unavailable or already held".into(),
             ));
         }
@@ -555,7 +555,7 @@ impl RemoteDesktop {
         let remote = Arc::clone(self);
         tokio::spawn(async move { remote.release_control_inner(connection).await })
             .await
-            .map_err(|error| Error::Config(format!("desktop release failed: {error}")))?
+            .map_err(|error| Error::Internal(format!("desktop release failed: {error}")))?
     }
 
     async fn release_control_inner(self: &Arc<Self>, connection: Uuid) -> Result<()> {
@@ -635,7 +635,7 @@ impl DesktopStream {
         tokio::time::timeout(Duration::from_secs(5), self.socket.write_all(bytes))
             .await
             .map_err(|elapsed| {
-                Error::Config(format!("desktop viewer stopped accepting data: {elapsed}"))
+                Error::Internal(format!("desktop viewer stopped accepting data: {elapsed}"))
             })??;
         Ok(())
     }
@@ -792,7 +792,7 @@ impl Runtime {
             self.websocket = websocket;
             return Ok(());
         }
-        Err(Error::Config(
+        Err(Error::Internal(
             "desktop browser is not accepting connections".into(),
         ))
     }
@@ -826,7 +826,7 @@ impl Runtime {
         });
         if !present {
             if self.tabs.len() >= MAX_TABS && !self.tabs.contains_key(session_id) {
-                return Err(Error::Config("desktop tab limit reached".into()));
+                return Err(Error::Invalid("desktop tab limit reached".into()));
             }
             let mut target = cdp(
                 &self.websocket,
@@ -868,7 +868,7 @@ impl Runtime {
         }
         let output = short_output(&mut command).await?;
         if !output.stderr.is_empty() {
-            return Err(Error::Config("desktop input configuration failed".into()));
+            return Err(Error::Internal("desktop input configuration failed".into()));
         }
         for parameter in parameters {
             let output = short_output(
@@ -878,7 +878,7 @@ impl Runtime {
             )
             .await?;
             if !output.stderr.is_empty() || input_enabled(&output.stdout) != Some(enabled) {
-                return Err(Error::Config(
+                return Err(Error::Internal(
                     "desktop input configuration was not applied".into(),
                 ));
             }
@@ -925,9 +925,9 @@ async fn chromium_executable(runtime: &Path, config: &ComputerConfig) -> Result<
         command.output(),
     )
     .await
-    .map_err(|elapsed| Error::Config(format!("Chromium discovery timed out: {elapsed}")))??;
+    .map_err(|elapsed| Error::Internal(format!("Chromium discovery timed out: {elapsed}")))??;
     if !output.status.success() || output.stdout.len() > 4096 {
-        return Err(Error::Config(
+        return Err(Error::Internal(
             "installed headed Chromium is unavailable".into(),
         ));
     }
@@ -1009,7 +1009,9 @@ async fn wait_devtools(
             return Ok(endpoint);
         }
         if tokio::time::Instant::now() >= deadline {
-            return Err(Error::Config("headed Chromium did not become ready".into()));
+            return Err(Error::Internal(
+                "headed Chromium did not become ready".into(),
+            ));
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -1056,7 +1058,7 @@ async fn cdp(endpoint: &str, method: &str, params: Value) -> Result<Value> {
         Err(unavailable())
     })
     .await
-    .map_err(|elapsed| Error::Config(format!("desktop browser control timed out: {elapsed}")))?
+    .map_err(|elapsed| Error::Internal(format!("desktop browser control timed out: {elapsed}")))?
 }
 
 #[cfg(target_os = "linux")]
@@ -1072,7 +1074,7 @@ async fn start_display(
             !Path::new(&format!("/tmp/.X{display}-lock")).exists()
                 && !Path::new(&format!("/tmp/.X11-unix/X{display}")).exists()
         })
-        .ok_or_else(|| Error::Config("no virtual display is available".into()))?;
+        .ok_or_else(|| Error::Internal("no virtual display is available".into()))?;
     let display = format!(":{display}");
     run_short(
         Command::new(config::resolve_executable(Path::new(
@@ -1119,7 +1121,9 @@ async fn start_display(
         tokio::time::Instant::now() + Duration::from_secs(config.desktop.startup_timeout_seconds);
     while UnixStream::connect(socket).await.is_err() {
         if tokio::time::Instant::now() >= deadline {
-            return Err(Error::Config("virtual desktop did not become ready".into()));
+            return Err(Error::Internal(
+                "virtual desktop did not become ready".into(),
+            ));
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -1163,14 +1167,14 @@ async fn clean_socket(socket: &Path) -> Result<()> {
         Err(error) => return Err(error.into()),
     };
     if !metadata.file_type().is_socket() {
-        return Err(Error::Config(
+        return Err(Error::Internal(
             "desktop socket is not an owned stale socket".into(),
         ));
     }
     match UnixStream::connect(socket).await {
         Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {}
         _ => {
-            return Err(Error::Config(
+            return Err(Error::Internal(
                 "desktop socket is not an owned stale socket".into(),
             ));
         }
@@ -1188,9 +1192,9 @@ async fn run_short(command: &mut Command) -> Result<()> {
         .kill_on_drop(true);
     let status = tokio::time::timeout(Duration::from_secs(5), command.status())
         .await
-        .map_err(|elapsed| Error::Config(format!("desktop setup timed out: {elapsed}")))??;
+        .map_err(|elapsed| Error::Internal(format!("desktop setup timed out: {elapsed}")))??;
     if !status.success() {
-        return Err(Error::Config("desktop setup command failed".into()));
+        return Err(Error::Internal("desktop setup command failed".into()));
     }
     Ok(())
 }
@@ -1202,20 +1206,20 @@ async fn short_output(command: &mut Command) -> Result<std::process::Output> {
     let output = tokio::time::timeout(Duration::from_secs(5), command.output())
         .await
         .map_err(|elapsed| {
-            Error::Config(format!("desktop configuration timed out: {elapsed}"))
+            Error::Internal(format!("desktop configuration timed out: {elapsed}"))
         })??;
     if !output.status.success() || output.stdout.len() > 4096 || output.stderr.len() > 4096 {
-        return Err(Error::Config("desktop configuration failed".into()));
+        return Err(Error::Internal("desktop configuration failed".into()));
     }
     Ok(output)
 }
 
 fn unavailable() -> Error {
-    Error::Config("gateway desktop is unavailable".into())
+    Error::Internal("gateway desktop is unavailable".into())
 }
 
 fn unavailable_after(error: impl std::fmt::Display) -> Error {
-    Error::Config(format!("gateway desktop is unavailable: {error}"))
+    Error::Internal(format!("gateway desktop is unavailable: {error}"))
 }
 
 /// Locks desktop state; a poisoned lock fails the operation instead of being read.

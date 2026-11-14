@@ -41,7 +41,7 @@ pub(crate) const MAX_QUEUED_MESSAGES: usize = 1_024;
 
 pub(super) fn validate_session_context(context: &SessionContext) -> Result<()> {
     context.validate().map_err(|error| match error {
-        Error::Config(message) => Error::Checkpoint(message),
+        Error::Invalid(message) => Error::Checkpoint(message),
         error => error,
     })
 }

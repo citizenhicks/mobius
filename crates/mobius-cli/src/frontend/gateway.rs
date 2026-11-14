@@ -270,7 +270,7 @@ impl State {
 
     fn require_saved_management(&self) -> mobius_gateway::Result<()> {
         if let Some(message) = self.override_message {
-            return Err(mobius_gateway::Error::Config(message.into()));
+            return Err(mobius_gateway::Error::Invalid(message.into()));
         }
         Ok(())
     }

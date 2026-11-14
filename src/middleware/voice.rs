@@ -166,7 +166,7 @@ fn instructions(
     // Preserve the complete persona and call policy; only historical context may be trimmed.
     let available = (64 * 1024_usize)
         .checked_sub(identity.len() + 256)
-        .ok_or_else(|| Error::Config("Bot instructions exceed the voice prompt limit".into()))?;
+        .ok_or_else(|| Error::Invalid("Bot instructions exceed the voice prompt limit".into()))?;
     let voice_context = tail(voice_context, (16 * 1024).min(available / 3));
     let context = parent_context(checkpoint, voice_session_id);
     Ok(format!(

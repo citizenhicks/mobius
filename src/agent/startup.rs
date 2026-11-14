@@ -60,13 +60,15 @@ async fn failed_start(config: &AgentConfig, runtime: &RuntimeContext, primary: E
 /// Returns an error if validation or an operation required by this function fails.
 pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
     if config.context_window <= 0 {
-        return Err(Error::Config("context window must be positive".into()));
+        return Err(Error::Invalid("context window must be positive".into()));
     }
     if config.system_prompt.trim().is_empty() {
-        return Err(Error::Config("system prompt cannot be empty".into()));
+        return Err(Error::Invalid("system prompt cannot be empty".into()));
     }
     if config.max_model_steps == 0 {
-        return Err(Error::Config("maximum model steps must be positive".into()));
+        return Err(Error::Invalid(
+            "maximum model steps must be positive".into(),
+        ));
     }
     let session_id = config.session_id.take().unwrap_or_else(SessionId::generate);
     let (children, root_config) = if let Some(children) = config.children.take() {

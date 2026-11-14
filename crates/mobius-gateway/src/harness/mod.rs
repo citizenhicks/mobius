@@ -240,7 +240,7 @@ impl From<HarnessConfig> for ValidatedConfig {
 /// for a harness this gateway has no adapter for.
 pub(crate) fn validate_cli(config: HarnessConfig) -> Result<ValidatedConfig> {
     match config {
-        HarnessConfig::Mobius(_) => Err(Error::Config(
+        HarnessConfig::Mobius(_) => Err(Error::Internal(
             "möbius compositions are checked against the gateway".into(),
         )),
         config => Err(unavailable(config.kind())),
@@ -356,7 +356,7 @@ pub(crate) async fn adopt_checkpoint_owner(
     checkpoint.sequence = checkpoint
         .sequence
         .checked_add(1)
-        .ok_or_else(|| Error::Config("checkpoint sequence overflow".into()))?;
+        .ok_or_else(|| Error::Internal("checkpoint sequence overflow".into()))?;
     Arc::make_mut(&mut checkpoint.session_context).owner_id = Arc::clone(&spec.bot_id);
     checkpoint.metadata.extend(spec.metadata()?);
     checkpoints.save(checkpoint, Vec::new(), None).await?;

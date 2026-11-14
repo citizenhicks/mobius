@@ -75,7 +75,7 @@ impl Middleware for PersistentChat {
             || *runtime.session_context.owner_id != *self.bot_id
             || runtime.session_context.workspace_id.is_some()
         {
-            return Err(mobius::Error::Config(
+            return Err(mobius::Error::Invalid(
                 "Persistent Chat can only be installed in its Bot's main conversation".into(),
             ));
         }
@@ -364,7 +364,8 @@ mod tests {
 
     #[test]
     fn only_snapshot_actions_are_read_only() {
-        let host: crate::host::HostAccess = Arc::new(|| Err(crate::Error::Config("unused".into())));
+        let host: crate::host::HostAccess =
+            Arc::new(|| Err(crate::Error::Internal("unused".into())));
         let read_only = ACTIONS
             .into_iter()
             .zip(&TEXT.tools)

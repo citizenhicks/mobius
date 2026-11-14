@@ -93,16 +93,16 @@ async fn output(program: &str, args: &[&str]) -> crate::Result<Vec<u8>> {
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(|| crate::Error::Config("GPU probe stdout missing".into()))?;
+        .ok_or_else(|| crate::Error::Internal("GPU probe stdout missing".into()))?;
     let mut bytes = Vec::new();
     stdout.take(MAX_BYTES + 1).read_to_end(&mut bytes).await?;
     if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_BYTES {
-        return Err(crate::Error::Config(
+        return Err(crate::Error::Internal(
             "GPU probe output exceeded limit".into(),
         ));
     }
     if !child.wait().await?.success() {
-        return Err(crate::Error::Config("GPU probe failed".into()));
+        return Err(crate::Error::Internal("GPU probe failed".into()));
     }
     Ok(bytes)
 }
@@ -110,10 +110,10 @@ async fn output(program: &str, args: &[&str]) -> crate::Result<Vec<u8>> {
 #[cfg(target_os = "macos")]
 fn apple(bytes: &[u8]) -> crate::Result<Value> {
     let value = plist::Value::from_reader_xml(bytes)
-        .map_err(|error| crate::Error::Config(format!("invalid GPU property list: {error}")))?;
+        .map_err(|error| crate::Error::Internal(format!("invalid GPU property list: {error}")))?;
     let entries = value
         .as_array()
-        .ok_or_else(|| crate::Error::Config("invalid GPU device list".into()))?;
+        .ok_or_else(|| crate::Error::Internal("invalid GPU device list".into()))?;
     let devices = entries
         .iter()
         .take(64)
@@ -137,12 +137,12 @@ fn apple(bytes: &[u8]) -> crate::Result<Value> {
 #[cfg(target_os = "linux")]
 fn nvidia(bytes: &[u8]) -> crate::Result<Value> {
     let text = std::str::from_utf8(bytes)
-        .map_err(|error| crate::Error::Config(format!("invalid GPU output: {error}")))?;
+        .map_err(|error| crate::Error::Internal(format!("invalid GPU output: {error}")))?;
     let mut devices = Vec::new();
     for line in text.lines().take(64) {
         let fields: Vec<_> = line.split(',').map(str::trim).collect();
         let [name, usage, used, total] = fields.as_slice() else {
-            return Err(crate::Error::Config("invalid GPU counter row".into()));
+            return Err(crate::Error::Internal("invalid GPU counter row".into()));
         };
         let mib = |value: &str| value.parse::<u64>().ok()?.checked_mul(1024 * 1024);
         devices.push(json!({"name": name,

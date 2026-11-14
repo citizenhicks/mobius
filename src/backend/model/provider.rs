@@ -169,7 +169,7 @@ impl TryFrom<CatalogFile> for ModelCatalog {
             file.reasoning
                 .iter()
                 .find(|preset| preset.id == id)
-                .ok_or_else(|| Error::Config(format!("reasoning `{id}` is not in the catalog")))
+                .ok_or_else(|| Error::Internal(format!("reasoning `{id}` is not in the catalog")))
         };
         let models = file
             .models
@@ -213,7 +213,7 @@ impl ModelCatalog {
         unique_ids(self.image_input_models.iter().map(String::as_str))?;
         for id in &self.image_input_models {
             if !self.models.iter().any(|model| &model.id == id) {
-                return Err(Error::Config(format!(
+                return Err(Error::Internal(format!(
                     "image input model `{id}` is not in the catalog"
                 )));
             }
@@ -236,7 +236,7 @@ impl ModelCatalog {
                     .take(index)
                     .any(|other| other.id == model.id)
             {
-                return Err(Error::Config(format!(
+                return Err(Error::Internal(format!(
                     "model id `{}` is empty or duplicated",
                     model.id
                 )));
@@ -247,7 +247,7 @@ impl ModelCatalog {
                     .iter()
                     .any(|reasoning| &reasoning.id == effort)
             {
-                return Err(Error::Config(format!(
+                return Err(Error::Internal(format!(
                     "model `{}` default reasoning `{effort}` is not advertised",
                     model.id
                 )));
@@ -256,7 +256,7 @@ impl ModelCatalog {
         if let Some(default) = &self.default_model
             && !self.models.iter().any(|model| &model.id == default)
         {
-            return Err(Error::Config(format!(
+            return Err(Error::Internal(format!(
                 "default model `{default}` is not in the catalog"
             )));
         }
@@ -268,7 +268,7 @@ pub(super) fn unique_ids<'a>(ids: impl Iterator<Item = &'a str>) -> Result<()> {
     let mut seen = std::collections::BTreeSet::new();
     for id in ids {
         if id.trim().is_empty() || !seen.insert(id) {
-            return Err(Error::Config(format!(
+            return Err(Error::Internal(format!(
                 "model id `{id}` is empty or duplicated"
             )));
         }
@@ -344,7 +344,7 @@ impl std::str::FromStr for HostedWebSearch {
             "off" => Ok(Self::Off),
             "cached" => Ok(Self::Cached),
             "live" => Ok(Self::Live),
-            _ => Err(Error::Config(format!(
+            _ => Err(Error::Invalid(format!(
                 "unknown hosted web-search mode `{value}`"
             ))),
         }
@@ -433,7 +433,7 @@ impl ProviderCredential {
     pub(super) fn into_api_key(self, provider: &str) -> Result<String> {
         match self {
             Self::ApiKey(api_key) => Ok(api_key),
-            Self::Browser(_) | Self::Credentialless => Err(Error::Config(format!(
+            Self::Browser(_) | Self::Credentialless => Err(Error::Invalid(format!(
                 "provider `{provider}` requires an API key"
             ))),
         }
@@ -443,7 +443,7 @@ impl ProviderCredential {
         match self {
             Self::ApiKey(api_key) => Ok(Some(api_key)),
             Self::Credentialless => Ok(None),
-            Self::Browser(_) => Err(Error::Config(format!(
+            Self::Browser(_) => Err(Error::Invalid(format!(
                 "provider `{provider}` requires an API key or credentialless endpoint"
             ))),
         }
@@ -457,12 +457,12 @@ impl ProviderCredential {
         match self {
             Self::Browser(credential) => match Arc::downcast(credential) {
                 Ok(credential) => Ok(credential),
-                Err(_) => Err(Error::Config(format!(
+                Err(_) => Err(Error::Invalid(format!(
                     "provider `{provider}` received wrong login; expected {}",
                     std::any::type_name::<T>()
                 ))),
             },
-            Self::ApiKey(_) | Self::Credentialless => Err(Error::Config(format!(
+            Self::ApiKey(_) | Self::Credentialless => Err(Error::Invalid(format!(
                 "provider `{provider}` requires browser login"
             ))),
         }
@@ -737,7 +737,7 @@ impl ProviderDefinition {
     /// Returns an error when the transport does not implement this mode.
     pub fn validate_tool_discovery(&self, mode: ToolDiscoveryMode) -> Result<()> {
         if !self.supports_tool_discovery(mode) {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "provider `{}` does not support {mode:?} tool discovery",
                 self.id
             )));
@@ -794,7 +794,7 @@ impl ProviderDefinition {
             self.validate_model(&config.model, config.reasoning_effort.as_deref())?;
             self.validate_web_search(config.web_search)?;
         } else if config.model.trim().is_empty() {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "provider `{}` requires a model",
                 self.id
             )));
@@ -805,7 +805,7 @@ impl ProviderDefinition {
         self.validate_tool_discovery(tool_discovery)?;
         let model = (self.builder)(config, base_url, tool_discovery)?;
         if model.tool_discovery() != tool_discovery {
-            return Err(Error::Config(format!(
+            return Err(Error::Internal(format!(
                 "provider `{}` built a model with inconsistent tool discovery",
                 self.id
             )));
@@ -829,7 +829,7 @@ impl ProviderDefinition {
 
     fn validate_web_search(&self, web_search: HostedWebSearch) -> Result<()> {
         if !self.web_search.contains(&web_search) {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "provider `{}` does not support web search mode `{}`",
                 self.id,
                 web_search.id()
@@ -848,14 +848,14 @@ impl ProviderDefinition {
 
     fn validate_model(&self, model: &str, reasoning_effort: Option<&str>) -> Result<()> {
         if model.trim().is_empty() {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "provider `{}` requires a model",
                 self.id
             )));
         }
         let preset = self.model(model);
         if self.locked_models && preset.is_none() {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "provider `{}` does not advertise model `{model}`",
                 self.id
             )));
@@ -865,7 +865,7 @@ impl ProviderDefinition {
             && let Some(preset) = preset
             && !preset.reasoning.iter().any(|preset| preset.id == effort)
         {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "model `{model}` does not support reasoning effort `{effort}`"
             )));
         }
@@ -884,24 +884,24 @@ impl ProviderDefinition {
     /// Returns an error if the supplied value is invalid.
     pub fn validate_credentialless_endpoint(&self, base_url: Option<&BaseUrl>) -> Result<()> {
         if !self.supports_credentialless_endpoints() {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "provider `{}` does not support credentialless endpoints",
                 self.id
             )));
         }
         let base_url = base_url
-            .ok_or_else(|| Error::Config("credentialless endpoint requires a base URL".into()))?;
+            .ok_or_else(|| Error::Invalid("credentialless endpoint requires a base URL".into()))?;
         let endpoint = reqwest::Url::parse(base_url.as_str())
-            .map_err(|error| Error::Config(format!("invalid base URL: {error}")))?;
+            .map_err(|error| Error::Invalid(format!("invalid base URL: {error}")))?;
         if endpoint.scheme() != "https" {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "credentialless endpoint must use HTTPS".into(),
             ));
         }
         if reqwest::Url::parse(self.default_base_url.as_str())
             .is_ok_and(|default| same_origin(&default, &endpoint))
         {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "provider `{}` default endpoint requires provider authentication",
                 self.id
             )));
@@ -934,13 +934,13 @@ impl BaseUrl {
     pub fn new(base_url: impl Into<Arc<str>>) -> Result<Self> {
         let base_url = base_url.into();
         let url = reqwest::Url::parse(&base_url)
-            .map_err(|error| Error::Config(format!("invalid base URL: {error}")))?;
+            .map_err(|error| Error::Invalid(format!("invalid base URL: {error}")))?;
         let host = url
             .host_str()
-            .ok_or_else(|| Error::Config("base URL requires a host".into()))?;
+            .ok_or_else(|| Error::Invalid("base URL requires a host".into()))?;
         let loopback = matches!(host, "localhost" | "127.0.0.1" | "::1" | "[::1]");
         if url.scheme() != "https" && !(url.scheme() == "http" && loopback) {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "base URL must use HTTPS, except for loopback HTTP".into(),
             ));
         }
@@ -949,7 +949,7 @@ impl BaseUrl {
             || url.query().is_some()
             || url.fragment().is_some()
         {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "base URL cannot contain credentials, a query, or a fragment".into(),
             ));
         }

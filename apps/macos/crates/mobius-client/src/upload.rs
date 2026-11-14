@@ -45,7 +45,7 @@ pub(super) async fn upload(
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or_else(|| Error::Config("The file needs a valid UTF-8 name.".into()))?;
+        .ok_or_else(|| Error::Invalid("The file needs a valid UTF-8 name.".into()))?;
     let media_type = mime_guess::from_path(path).first_or_octet_stream();
     let response = link
         .request(|request_id| ClientMessage::BeginSessionFileUpload {
@@ -86,7 +86,7 @@ pub(super) async fn upload(
     let after = input.metadata().await.map_err(Error::from)?;
     if after.len() != size || after.modified().ok() != metadata.modified().ok() {
         return Err(
-            Error::Config("The file changed during upload; attach it again.".into()).into(),
+            Error::Invalid("The file changed during upload; attach it again.".into()).into(),
         );
     }
     let response = link
@@ -176,7 +176,7 @@ fn regular_file(metadata: &std::fs::Metadata) -> Result<()> {
     if metadata.is_file() {
         Ok(())
     } else {
-        Err(Error::Config("Only regular files can be attached.".into()))
+        Err(Error::Invalid("Only regular files can be attached.".into()))
     }
 }
 

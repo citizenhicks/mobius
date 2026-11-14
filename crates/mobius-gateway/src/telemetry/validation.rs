@@ -11,7 +11,7 @@ impl TelemetryConfig {
             hook.validate()?;
         }
         if self.sinks.len() > 16 {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "telemetry.sinks accepts at most 16 destinations".into(),
             ));
         }
@@ -23,13 +23,13 @@ impl TelemetryConfig {
             .count()
             > 1
         {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "telemetry accepts one enabled upload admission collector".into(),
             ));
         }
         for (index, sink) in self.sinks.iter().enumerate() {
             let invalid = |field: &str, requirement: &str| {
-                Error::Config(format!("telemetry.sinks[{index}].{field} {requirement}"))
+                Error::Invalid(format!("telemetry.sinks[{index}].{field} {requirement}"))
             };
             if sink.id.is_empty()
                 || sink.id.len() > 64

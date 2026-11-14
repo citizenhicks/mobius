@@ -212,7 +212,7 @@ impl MiddlewareSettingManifest {
                 Ok(())
             }
             (Self::Integer { id, .. }, Some(FrontendSettingValue::Integer(_))) => {
-                Err(Error::Config(format!(
+                Err(Error::Invalid(format!(
                     "middleware setting `{middleware}.{id}` is out of range"
                 )))
             }
@@ -238,7 +238,7 @@ impl MiddlewareSettingManifest {
                 Ok(())
             }
             (Self::Select { id, max_bytes, .. }, Some(FrontendSettingValue::String(_))) => {
-                Err(Error::Config(format!(
+                Err(Error::Invalid(format!(
                     "middleware setting `{middleware}.{id}` must be an advertised choice of 1–{max_bytes} bytes"
                 )))
             }
@@ -252,7 +252,7 @@ impl MiddlewareSettingManifest {
                 },
                 None,
             ) => Ok(()),
-            (Self::Integer { id, .. } | Self::Select { id, .. }, None) => Err(Error::Config(
+            (Self::Integer { id, .. } | Self::Select { id, .. }, None) => Err(Error::Invalid(
                 format!("missing middleware setting `{middleware}.{id}`"),
             )),
         }
@@ -280,7 +280,7 @@ impl MiddlewareSettingManifest {
         if choices.contains(catalogs, value) {
             Ok(())
         } else {
-            Err(Error::Config(format!(
+            Err(Error::Invalid(format!(
                 "middleware setting `{middleware}.{id}` is not an advertised choice"
             )))
         }
@@ -446,7 +446,7 @@ pub(crate) fn string_default<'a>(settings: &'a [MiddlewareSettingManifest], id: 
 }
 
 fn setting_type(middleware: &str, setting: &str, expected: &str) -> Error {
-    Error::Config(format!(
+    Error::Invalid(format!(
         "middleware setting `{middleware}.{setting}` must be {expected}"
     ))
 }

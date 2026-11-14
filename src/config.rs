@@ -163,7 +163,7 @@ mod tests {
         let positive = |value: &u8| {
             (*value > 0)
                 .then_some(())
-                .ok_or_else(|| crate::Error::Config("zero".into()))
+                .ok_or_else(|| crate::Error::Internal("zero".into()))
         };
         let load = |name: &str| -> toml::Table {
             super::overridable(name, "n = 1", |table: &toml::Table| {

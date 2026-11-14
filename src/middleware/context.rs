@@ -233,7 +233,7 @@ impl<'a> MessageQueue<'a> {
 
     fn owner(&self) -> Result<&'static str> {
         self.owner
-            .ok_or_else(|| Error::Config("message queue is not scoped to a middleware".into()))
+            .ok_or_else(|| Error::Internal("message queue is not scoped to a middleware".into()))
     }
 
     /// Returns the number of queued items owned by this middleware.
@@ -1177,7 +1177,7 @@ impl StopContext<'_> {
     /// Returns an error if validation or an operation required by this function fails.
     pub fn continue_with(&mut self, prompt: impl Into<String>) -> Result<()> {
         if self.stop_hook_active {
-            return Err(Error::Config(
+            return Err(Error::Internal(
                 "a stop hook may continue a turn only once".into(),
             ));
         }
@@ -1192,7 +1192,7 @@ impl StopContext<'_> {
 fn hook_message(name: &str, value: impl Into<String>) -> Result<String> {
     let value = value.into();
     if value.trim().is_empty() || value.len() > MAX_CAPABILITY_INPUT_BYTES {
-        return Err(Error::Config(format!("{name} is empty or too long")));
+        return Err(Error::Invalid(format!("{name} is empty or too long")));
     }
     Ok(value)
 }

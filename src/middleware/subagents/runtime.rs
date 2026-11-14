@@ -206,7 +206,7 @@ impl Shared {
             return Ok(());
         }
         if identity.depth > 0 {
-            return Err(Error::Config(
+            return Err(Error::Internal(
                 "a subagent must be resumed through its parent".into(),
             ));
         }
@@ -311,7 +311,7 @@ impl Shared {
         let root = self.root(root_id).await?;
         let mut executions = root.executions.lock().await;
         if root.closing.load(Ordering::Acquire) {
-            return Err(Error::Config("the parent agent is stopping".into()));
+            return Err(Error::Internal("the parent agent is stopping".into()));
         }
         executions.retain(|execution| {
             execution
@@ -745,7 +745,7 @@ fn validate_tree(tree: &Tree, max_agents: usize) -> Result<()> {
                 .is_some_and(|message| message.len() > MAX_MESSAGE_BYTES)
         })
     {
-        return Err(Error::Config(
+        return Err(Error::Internal(
             "subagent checkpoint exceeds safety limits".into(),
         ));
     }

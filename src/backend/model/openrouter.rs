@@ -45,7 +45,7 @@ fn build_provider(
         MANIFEST
             .web_search_type
             .as_deref()
-            .ok_or_else(|| Error::Config("OpenRouter web search wire type is required".into()))?,
+            .ok_or_else(|| Error::Internal("OpenRouter web search wire type is required".into()))?,
     )
     .with_service_tier(config.service_tier)
     .with_max_output_tokens(MANIFEST.max_output_tokens)
@@ -54,7 +54,7 @@ fn build_provider(
     let provider = match tool_discovery {
         ToolDiscoveryMode::Native => {
             provider.with_inline_tool_search(MANIFEST.tool_search_type.as_deref().ok_or_else(
-                || Error::Config("OpenRouter tool search wire type is required".into()),
+                || Error::Internal("OpenRouter tool search wire type is required".into()),
             )?)
         }
         ToolDiscoveryMode::Rebuild => provider.with_tool_discovery(ToolDiscoveryMode::Rebuild),
@@ -63,7 +63,7 @@ fn build_provider(
     let provider = match config.web_search {
         HostedWebSearch::Off => provider,
         HostedWebSearch::Cached => {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "OpenRouter does not support cached web search".into(),
             ));
         }

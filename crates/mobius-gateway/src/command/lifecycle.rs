@@ -76,7 +76,7 @@ pub(super) async fn serve(
     tokio::select! {
         biased;
         result = &mut serving => return result,
-        result = ready => result.map_err(|error| Error::Config(format!("gateway stopped before becoming ready: {error}")))?,
+        result = ready => result.map_err(|error| Error::Internal(format!("gateway stopped before becoming ready: {error}")))?,
     }
     // The parent treats this locked record as readiness, so publish it only after
     // the serving loop has completed initialization and can accept connections.
@@ -97,7 +97,7 @@ pub(super) async fn serve(
         .and_then(CloudflareConfig::hostname)
         .is_some_and(|configured| configured != endpoint.host())
     {
-        return Err(Error::Config(
+        return Err(Error::Internal(
             "runtime Cloudflare hostname does not match gateway configuration".into(),
         ));
     }
@@ -229,7 +229,9 @@ pub(super) async fn start_background_gateway(
     let mut child = command.spawn()?;
     let Some(pid) = child.id() else {
         stop_background_child(&mut child, &process_path).await;
-        return Err(Error::Config("background gateway has no process ID".into()));
+        return Err(Error::Internal(
+            "background gateway has no process ID".into(),
+        ));
     };
     let started = Instant::now();
     loop {
@@ -317,7 +319,7 @@ pub(super) async fn reuse_current_gateway(
             None => std::borrow::Cow::Owned(Endpoint::from_env()?),
         };
         if endpoint.is_plaintext() || endpoint.is_websocket() {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "TLS gateway upgrades require MOBIUS_GATEWAY_ENDPOINT with the certificate hostname".into(),
             ));
         }
@@ -326,21 +328,21 @@ pub(super) async fn reuse_current_gateway(
         std::borrow::Cow::Owned(loopback_endpoint(config)?)
     };
     let token = load_local_client(&endpoint)?.ok_or_else(|| {
-        Error::Config("local gateway credential is unavailable; cannot check its version".into())
+        Error::Internal("local gateway credential is unavailable; cannot check its version".into())
     })?;
     let version = tokio::time::timeout(
         Duration::from_secs(2),
         endpoint.local_gateway_version(config.listen, &token),
     )
     .await
-    .map_err(|elapsed| Error::Config(format!("gateway version check timed out: {elapsed}")))??;
+    .map_err(|elapsed| Error::Internal(format!("gateway version check timed out: {elapsed}")))??;
     if !gateway_version_is_older(&version, env!("CARGO_PKG_VERSION"))? {
         return Ok(Some(process));
     }
     let state_dir = store.state_dir().to_path_buf();
     tokio::task::spawn_blocking(move || stop_gateway(&state_dir, Some(process.pid)))
         .await
-        .map_err(|error| Error::Config(format!("gateway stop task failed: {error}")))??;
+        .map_err(|error| Error::Internal(format!("gateway stop task failed: {error}")))??;
     Ok(None)
 }
 
@@ -363,7 +365,7 @@ pub(super) async fn runtime_endpoint(
         }
         if started.elapsed() >= PUBLIC_ENDPOINT_TIMEOUT {
             let detail = unreadable.map_or_else(String::new, |error| format!(" ({error})"));
-            return Err(Error::Config(format!(
+            return Err(Error::Internal(format!(
                 "Cloudflare Quick Tunnel did not assign an address within {} seconds{detail}",
                 PUBLIC_ENDPOINT_TIMEOUT.as_secs()
             )));
@@ -372,7 +374,7 @@ pub(super) async fn runtime_endpoint(
         match running_process_record(&store.state_dir().join(PROCESS_FILE)) {
             Ok(Some(current)) if current.pid == process.pid => latest = Some(current),
             Ok(_) => {
-                return Err(Error::Config(
+                return Err(Error::Internal(
                     "gateway stopped before its tunnel assigned an address".into(),
                 ));
             }
@@ -383,8 +385,9 @@ pub(super) async fn runtime_endpoint(
 
 pub(super) fn gateway_version_is_older(running: &str, starting: &str) -> Result<bool> {
     let parse = |version: &str| {
-        semver::Version::parse(version)
-            .map_err(|error| Error::Config(format!("invalid gateway version `{version}`: {error}")))
+        semver::Version::parse(version).map_err(|error| {
+            Error::Internal(format!("invalid gateway version `{version}`: {error}"))
+        })
     };
     Ok(parse(running)?.cmp_precedence(&parse(starting)?).is_lt())
 }
@@ -424,7 +427,7 @@ fn background_startup_error(
         tracing::warn!(%error, "failed to read gateway startup log");
     }
     let details = details.trim();
-    Error::Config(if details.is_empty() {
+    Error::Internal(if details.is_empty() {
         message.to_string()
     } else {
         format!("{message}: {details}")
@@ -470,26 +473,26 @@ pub(super) fn stop_gateway(state_dir: &Path, expected_pid: Option<u32>) -> Resul
     if let Some(expected_pid) = expected_pid
         && record.pid != expected_pid
     {
-        return Err(Error::Config(format!(
+        return Err(Error::Internal(format!(
             "gateway process changed from {expected_pid} to {}",
             record.pid
         )));
     }
     let pid = i32::try_from(record.pid)
         .map(Pid::from_raw)
-        .map_err(|error| Error::Config(format!("invalid gateway process record: {error}")))?;
+        .map_err(|error| Error::Internal(format!("invalid gateway process record: {error}")))?;
     if let Err(error) = kill(pid, Signal::SIGINT) {
         if !process_is_running(&file)? {
             return Ok(eprint_line(format_args!("gateway is stopped"))?);
         }
-        return Err(Error::Config(format!(
+        return Err(Error::Internal(format!(
             "failed to interrupt gateway: {error}"
         )));
     }
     let started = Instant::now();
     while process_is_running(&file)? {
         if started.elapsed() >= EXIT_TIMEOUT {
-            return Err(Error::Config(format!(
+            return Err(Error::Internal(format!(
                 "gateway process {} did not stop within {} seconds",
                 record.pid,
                 EXIT_TIMEOUT.as_secs()
@@ -503,12 +506,12 @@ pub(super) fn stop_gateway(state_dir: &Path, expected_pid: Option<u32>) -> Resul
 impl ProcessRecord {
     pub(super) fn validate(&self) -> Result<()> {
         if self.pid == 0 || i32::try_from(self.pid).is_err() {
-            return Err(Error::Config("invalid gateway process record".into()));
+            return Err(Error::Internal("invalid gateway process record".into()));
         }
         if let Some(endpoint) = self.endpoint()?
             && !endpoint.is_websocket()
         {
-            return Err(Error::Config(
+            return Err(Error::Internal(
                 "gateway process endpoint must use wss://".into(),
             ));
         }
@@ -526,7 +529,7 @@ impl ProcessRecordGuard {
         let path = state_dir.join(PROCESS_FILE);
         let file = mobius::owner_only::open(&path)?;
         file.try_lock().map_err(|error| match error {
-            TryLockError::WouldBlock => Error::Config("gateway is already running".into()),
+            TryLockError::WouldBlock => Error::Invalid("gateway is already running".into()),
             TryLockError::Error(error) => error.into(),
         })?;
         let mut guard = Self { path, file };
@@ -573,7 +576,7 @@ impl StartupGuard {
         let file = mobius::owner_only::open(&path)?;
         file.try_lock().map_err(|error| match error {
             TryLockError::WouldBlock => {
-                Error::Config("gateway startup is already in progress".into())
+                Error::Invalid("gateway startup is already in progress".into())
             }
             TryLockError::Error(error) => error.into(),
         })?;
@@ -596,7 +599,9 @@ pub(super) fn open_process_record(path: &Path) -> Result<Option<(ProcessRecord, 
         Err(error) => return Err(error.into()),
     };
     if file.metadata()?.len() > MAX_PROCESS_RECORD_BYTES as u64 {
-        return Err(Error::Config("gateway process record is too large".into()));
+        return Err(Error::Internal(
+            "gateway process record is too large".into(),
+        ));
     }
     file.seek(SeekFrom::Start(0))?;
     let mut contents = Vec::new();
@@ -604,7 +609,9 @@ pub(super) fn open_process_record(path: &Path) -> Result<Option<(ProcessRecord, 
         .take(MAX_PROCESS_RECORD_BYTES as u64 + 1)
         .read_to_end(&mut contents)?;
     if contents.len() > MAX_PROCESS_RECORD_BYTES {
-        return Err(Error::Config("gateway process record is too large".into()));
+        return Err(Error::Internal(
+            "gateway process record is too large".into(),
+        ));
     }
     let record: ProcessRecord = serde_json::from_slice(&contents)?;
     record.validate()?;

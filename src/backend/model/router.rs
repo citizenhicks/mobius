@@ -84,7 +84,7 @@ fn select_media<'a>(
             .ok_or_else(|| Error::Unknown(format!("{kind} model `{route}`"))),
         None => routes
             .first()
-            .ok_or_else(|| Error::Config(format!("no {kind} model is configured"))),
+            .ok_or_else(|| Error::Invalid(format!("no {kind} model is configured"))),
     }
 }
 
@@ -132,7 +132,7 @@ impl ModelRouter {
     /// Returns an error if validation or an operation required by this function fails.
     pub fn image_input_limits(mut self, limits: super::ImageInputLimits) -> Result<Self> {
         if limits.max_images == 0 || limits.max_encoded_bytes == 0 {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "image request limits must be positive".into(),
             ));
         }
@@ -193,7 +193,7 @@ impl ModelRouter {
         credential: ModelCredentialLifetime,
     ) -> Result<()> {
         if !provider.supports_image_generation() {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "provider cannot generate images for `{}`",
                 choice.route
             )));
@@ -212,7 +212,7 @@ impl ModelRouter {
         credential: ModelCredentialLifetime,
     ) -> Result<()> {
         if !provider.supports_realtime_voice() || choice.reasoning_effort.is_none() {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "provider cannot serve voice `{}`",
                 choice.route
             )));
@@ -327,7 +327,7 @@ impl ModelRouter {
     pub fn set_context_group(&mut self, route: &str, group: impl Into<String>) -> Result<()> {
         let group = group.into();
         if group.trim().is_empty() {
-            return Err(Error::Config("model context group cannot be empty".into()));
+            return Err(Error::Invalid("model context group cannot be empty".into()));
         }
         let route = self
             .routes
@@ -344,12 +344,12 @@ impl ModelRouter {
     /// Returns an error if validation or an operation required by this function fails.
     pub fn configure_choice(&mut self, mut choice: ModelChoice) -> Result<()> {
         if choice.group.trim().is_empty() || choice.model.trim().is_empty() {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "model choice group and model cannot be empty".into(),
             ));
         }
         if choice.context_window.is_some_and(|window| window <= 0) {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "model choice context window must be positive".into(),
             ));
         }
@@ -482,7 +482,7 @@ impl ModelRouter {
         if *media.choice.model != *request.model
             || media.choice.reasoning_effort.as_deref() != request.quality
         {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "image route `{image_route}` does not serve model `{}`",
                 request.model
             )));

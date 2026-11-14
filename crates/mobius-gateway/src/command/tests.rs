@@ -8,7 +8,7 @@ use super::*;
 use clap::CommandFactory as _;
 
 fn reject_bootstrap_test_client(_endpoint: &Endpoint, _token: String) -> Result<()> {
-    Err(Error::Config("test token save failed".into()))
+    Err(Error::Internal("test token save failed".into()))
 }
 
 #[test]

@@ -409,7 +409,7 @@ impl std::str::FromStr for ActiveMessageDelivery {
             serde::de::value::StrDeserializer::<serde::de::value::Error>::new(value),
         )
         .map_err(|error| {
-            crate::Error::Config(format!("unsupported messages delivery `{value}`: {error}"))
+            crate::Error::Invalid(format!("unsupported messages delivery `{value}`: {error}"))
         })
     }
 }
@@ -446,12 +446,12 @@ impl MessageSubmission {
         }
         if let Some(reply) = &self.reply {
             if reply.text.is_empty() {
-                return Err(crate::Error::Config(
+                return Err(crate::Error::Invalid(
                     "quoted message cannot be empty".into(),
                 ));
             }
             if reply.text.len() > MAX_MESSAGE_BYTES {
-                return Err(crate::Error::Config(
+                return Err(crate::Error::Invalid(
                     "quoted message exceeds size limit".into(),
                 ));
             }
@@ -460,7 +460,7 @@ impl MessageSubmission {
         validate_message_attachments(&self.attachments, limits)?;
         // A queued event never serializes larger than its submission, so queueing cannot fail later.
         if crate::serialized_len(self)? > MAX_SERIALIZED_MESSAGE_BYTES {
-            return Err(crate::Error::Config(
+            return Err(crate::Error::Invalid(
                 "message exceeds serialized size limit".into(),
             ));
         }
@@ -476,11 +476,11 @@ pub(crate) fn validate_message_content(
     const MAX_HANDLE_BYTES: usize = 256;
 
     if text.len() > MAX_MESSAGE_BYTES {
-        return Err(crate::Error::Config("message exceeds size limit".into()));
+        return Err(crate::Error::Invalid("message exceeds size limit".into()));
     }
     match author {
         MessageAuthor::User if text.trim().is_empty() && attachments.is_empty() => {
-            return Err(crate::Error::Config("user message cannot be empty".into()));
+            return Err(crate::Error::Invalid("user message cannot be empty".into()));
         }
         MessageAuthor::Source {
             message_id,
@@ -497,7 +497,7 @@ pub(crate) fn validate_message_content(
                     .len()
                     != ancestry.len()
             {
-                return Err(crate::Error::Config(
+                return Err(crate::Error::Internal(
                     "source causal ancestry exceeds its bound or repeats an event".into(),
                 ));
             }
@@ -530,12 +530,12 @@ pub(crate) fn validate_message_content(
                 crate::validate_identifier("source symbol", symbol.as_str(), MAX_HANDLE_BYTES)?;
             }
             if text.trim().is_empty() {
-                return Err(crate::Error::Config(
+                return Err(crate::Error::Invalid(
                     "source message cannot be empty".into(),
                 ));
             }
             if !attachments.is_empty() {
-                return Err(crate::Error::Config(
+                return Err(crate::Error::Invalid(
                     "source messages cannot carry attachments".into(),
                 ));
             }
@@ -545,17 +545,17 @@ pub(crate) fn validate_message_content(
     let mut ids = std::collections::BTreeSet::new();
     for attachment in attachments {
         if !ids.insert(&attachment.id) {
-            return Err(crate::Error::Config(
+            return Err(crate::Error::Invalid(
                 "attachment IDs must be unique per message".into(),
             ));
         }
         if Uuid::parse_str(&attachment.id).is_err() {
-            return Err(crate::Error::Config("attachment ID must be a UUID".into()));
+            return Err(crate::Error::Invalid("attachment ID must be a UUID".into()));
         }
         crate::validate_identifier("attachment name", &attachment.name, 255)?;
         crate::validate_identifier("attachment media type", &attachment.media_type, 127)?;
         if attachment.size == 0 {
-            return Err(crate::Error::Config(
+            return Err(crate::Error::Invalid(
                 "attachment size must be positive".into(),
             ));
         }
@@ -568,7 +568,7 @@ fn validate_message_attachments(
     limits: SessionFileLimits,
 ) -> crate::Result<()> {
     if attachments.len() > limits.max_attachment_references {
-        return Err(crate::Error::Config(format!(
+        return Err(crate::Error::Invalid(format!(
             "message cannot reference more than {} attachments",
             limits.max_attachment_references
         )));
@@ -576,17 +576,17 @@ fn validate_message_attachments(
     let mut bytes = 0_u64;
     for attachment in attachments {
         if attachment.size > limits.max_file_bytes {
-            return Err(crate::Error::Config(format!(
+            return Err(crate::Error::Invalid(format!(
                 "attachment size must be 1–{} bytes",
                 limits.max_file_bytes
             )));
         }
         bytes = bytes
             .checked_add(attachment.size)
-            .ok_or_else(|| crate::Error::Config("attachment sizes overflowed".into()))?;
+            .ok_or_else(|| crate::Error::Internal("attachment sizes overflowed".into()))?;
     }
     if bytes > limits.max_session_bytes {
-        return Err(crate::Error::Config(format!(
+        return Err(crate::Error::Invalid(format!(
             "message attachments exceed the {}-byte session limit",
             limits.max_session_bytes
         )));

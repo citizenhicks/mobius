@@ -152,12 +152,12 @@ impl Endpoint {
             || token.is_empty()
             || token.bytes().any(|byte| !byte.is_ascii_graphic())
         {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "invalid secure WebSocket bearer credential".into(),
             ));
         }
         let mut value = HeaderValue::from_str(&format!("Bearer {token}")).map_err(|error| {
-            Error::Config(format!(
+            Error::Invalid(format!(
                 "invalid secure WebSocket bearer credential: {error}"
             ))
         })?;
@@ -197,7 +197,7 @@ impl Endpoint {
         if self.security == Security::Plaintext {
             let peer = stream.peer_addr()?;
             if !peer.ip().is_loopback() {
-                return Err(Error::Config(
+                return Err(Error::Invalid(
                     "plaintext gateway connections are restricted to loopback".into(),
                 ));
             }
@@ -211,7 +211,7 @@ impl Endpoint {
             .with_no_client_auth();
         let name = ServerName::try_from(self.host.clone()) // rules-allow: the TLS session owns its server name
             .map_err(|error| {
-                Error::Config(format!("TLS endpoint has an invalid server name: {error}"))
+                Error::Invalid(format!("TLS endpoint has an invalid server name: {error}"))
             })?;
         let stream = TlsConnector::from(Arc::new(config))
             .connect(name, stream)
@@ -228,7 +228,7 @@ impl Endpoint {
         token: &str,
     ) -> Result<String> {
         if self.is_websocket() {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "local gateway control requires TCP or TLS".into(),
             ));
         }
@@ -314,7 +314,7 @@ impl Endpoint {
                         if self.websocket_authorization.is_some()
                             && matches!(response.status().as_u16(), 401 | 403) =>
                     {
-                        Error::Config(
+                        Error::Invalid(
                             "gateway access was denied; sign in to the gateway service again"
                                 .into(),
                         )
@@ -327,7 +327,7 @@ impl Endpoint {
             .and_then(|value| value.to_str().ok())
             != Some(crate::channel::SUBPROTOCOL)
         {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "gateway does not support the encrypted WebSocket protocol; update the gateway"
                     .into(),
             ));
@@ -379,17 +379,17 @@ impl FromStr for Endpoint {
         } else if let Some(authority) = value.strip_prefix("wss://") {
             (Security::WebSocketTls, authority)
         } else {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "gateway endpoint must use tcp://, tls://, or wss://".into(),
             ));
         };
         if authority.contains(['/', '?', '#', '@']) {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "gateway endpoint must contain only a host and port".into(),
             ));
         }
         let authority = authority.parse::<Authority>().map_err(|error| {
-            Error::Config(format!(
+            Error::Invalid(format!(
                 "gateway endpoint has an invalid host or port: {error}"
             ))
         })?;
@@ -399,23 +399,25 @@ impl FromStr for Endpoint {
             .and_then(|host| host.strip_suffix(']'))
             .unwrap_or_else(|| authority.host());
         if host.is_empty() {
-            return Err(Error::Config("gateway endpoint requires a host".into()));
+            return Err(Error::Invalid("gateway endpoint requires a host".into()));
         }
         let port = match authority.port_u16() {
             Some(port) => port,
             None if authority.as_str().len() != authority.host().len() => {
-                return Err(Error::Config("gateway endpoint has an invalid port".into()));
+                return Err(Error::Invalid(
+                    "gateway endpoint has an invalid port".into(),
+                ));
             }
             None if security == Security::WebSocketTls => 443,
-            None => return Err(Error::Config("gateway endpoint requires a port".into())),
+            None => return Err(Error::Invalid("gateway endpoint requires a port".into())),
         };
         if port == 0 {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "gateway endpoint port must be greater than zero".into(),
             ));
         }
         if security == Security::Plaintext && !plaintext_host_is_loopback(host) {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "tcp:// endpoints are restricted to loopback; use tls:// or wss:// remotely".into(),
             ));
         }
@@ -478,7 +480,7 @@ impl GatewayClient {
             serde_json::to_vec(message).map(|encoded| total + encoded.len())
         })?;
         if pipelined_bytes > MAX_PRE_AUTH_FRAME_BYTES / 2 {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "requests sent with authentication must stay under 2 KiB".into(),
             ));
         }
@@ -742,7 +744,7 @@ pub fn token_from_env() -> Result<String> {
     env::var("MOBIUS_GATEWAY_TOKEN")
         .ok()
         .filter(|token| !token.trim().is_empty())
-        .ok_or_else(|| Error::Config("set MOBIUS_GATEWAY_TOKEN before connecting".into()))
+        .ok_or_else(|| Error::Invalid("set MOBIUS_GATEWAY_TOKEN before connecting".into()))
 }
 
 fn plaintext_host_is_loopback(host: &str) -> bool {

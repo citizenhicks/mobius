@@ -69,7 +69,7 @@ impl ComputerRuntime {
     /// Rejects relative executable or documentation paths.
     pub fn new(worker: WorkerCommand, documentation: PathBuf) -> Result<Self> {
         if !worker.executable.is_absolute() || !documentation.is_absolute() {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "computer runtime and documentation paths must be absolute".into(),
             ));
         }

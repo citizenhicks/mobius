@@ -102,7 +102,7 @@ pub(crate) async fn prepare_desktop(state_dir: &Path, config: &ComputerConfig) -
         return Ok(fs::canonicalize(path)?);
     }
     install(&path, config).await.map_err(|error| {
-        Error::Config(format!(
+        Error::Internal(format!(
             "computer control setup failed: {error}; check the operator computer configuration"
         ))
     })?;
@@ -157,7 +157,7 @@ async fn install(destination: &Path, config: &ComputerConfig) -> Result<()> {
         install_locked(destination, config),
     )
     .await
-    .map_err(|elapsed| Error::Config(format!("runtime installation timed out: {elapsed}")))?
+    .map_err(|elapsed| Error::Internal(format!("runtime installation timed out: {elapsed}")))?
 }
 
 async fn install_locked(destination: &Path, config: &ComputerConfig) -> Result<()> {
@@ -166,7 +166,7 @@ async fn install_locked(destination: &Path, config: &ComputerConfig) -> Result<(
     }
     let parent = destination
         .parent()
-        .ok_or_else(|| Error::Config("runtime directory has no parent".into()))?;
+        .ok_or_else(|| Error::Internal("runtime directory has no parent".into()))?;
     fs::create_dir_all(parent)?;
     let lock_path = parent.join("install.lock");
     let file = OpenOptions::new()
@@ -200,12 +200,12 @@ async fn install_locked(destination: &Path, config: &ComputerConfig) -> Result<(
 
 fn validate(path: &Path, config: &ComputerConfig) -> Result<()> {
     if !path.is_absolute() {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "computer runtime directory must be absolute".into(),
         ));
     }
     if config.node_executable.is_none() && !path.join("node").is_file() {
-        return Err(Error::Config(format!(
+        return Err(Error::Internal(format!(
             "computer runtime is missing node in {}",
             path.display()
         )));
@@ -213,7 +213,7 @@ fn validate(path: &Path, config: &ComputerConfig) -> Result<()> {
     node_executable(path, config)?;
     for file in ["worker.cjs", DOCUMENTATION_FILE] {
         if !path.join(file).is_file() {
-            return Err(Error::Config(format!(
+            return Err(Error::Internal(format!(
                 "computer runtime is missing {file} in {}",
                 path.display()
             )));
@@ -224,7 +224,7 @@ fn validate(path: &Path, config: &ComputerConfig) -> Result<()> {
         .take(128 * 1024)
         .read_to_end(&mut worker)?;
     if worker != WORKER.as_bytes() {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "computer worker does not match this gateway; export its current computer resources"
                 .into(),
         ));
@@ -233,14 +233,14 @@ fn validate(path: &Path, config: &ComputerConfig) -> Result<()> {
         .join("package.json")
         .is_file()
     {
-        return Err(Error::Config(
+        return Err(Error::Internal(
             "computer runtime is missing Playwright".into(),
         ));
     }
     if let Some(executable) = &config.browser.executable {
         config::resolve_executable(executable)?;
     } else if !browsers_directory(path, config).is_dir() {
-        return Err(Error::Config(
+        return Err(Error::Internal(
             "computer runtime is missing its browser installation".into(),
         ));
     }
@@ -290,7 +290,7 @@ async fn install_node(path: &Path, config: &ComputerConfig) -> Result<()> {
 /// Returns an error if the destination is not absolute or a resource cannot be written.
 pub fn export_resources(path: &Path) -> Result<()> {
     if !path.is_absolute() {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "computer resource destination must be absolute".into(),
         ));
     }
@@ -458,7 +458,7 @@ pub(crate) fn resource_roots(
     .collect::<std::io::Result<Vec<_>>>()?;
     for root in &roots {
         if !root.is_dir() {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "computer resource roots must be directories".into(),
             ));
         }
@@ -466,7 +466,7 @@ pub(crate) fn resource_roots(
             .iter()
             .any(|path| root.starts_with(path) || path.starts_with(root))
         {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "computer resources must remain outside gateway state and all writable workspaces"
                     .into(),
             ));
@@ -498,24 +498,24 @@ async fn download(
     }
     let client = client
         .build()
-        .map_err(|error| Error::Config(error.to_string()))?;
+        .map_err(|error| Error::Internal(error.to_string()))?;
     let mut response = client
         .get(url)
         .send()
         .await
         .and_then(HttpResponse::error_for_status)
-        .map_err(|error| Error::Config(error.to_string()))?;
+        .map_err(|error| Error::Internal(error.to_string()))?;
     let mut file = tokio::fs::File::create(destination).await?;
     let mut hash = Sha256::new();
     let mut size = 0_usize;
     while let Some(chunk) = response
         .chunk()
         .await
-        .map_err(|error| Error::Config(error.to_string()))?
+        .map_err(|error| Error::Internal(error.to_string()))?
     {
         size = size.saturating_add(chunk.len());
         if size > MAX_DOWNLOAD_BYTES {
-            return Err(Error::Config(
+            return Err(Error::Internal(
                 "runtime download exceeds its size limit".into(),
             ));
         }
@@ -523,7 +523,9 @@ async fn download(
         file.write_all(&chunk).await?;
     }
     if format!("{:x}", hash.finalize()) != checksum {
-        return Err(Error::Config("Node runtime checksum did not match".into()));
+        return Err(Error::Internal(
+            "Node runtime checksum did not match".into(),
+        ));
     }
     file.flush().await?;
     Ok(())
@@ -562,7 +564,7 @@ async fn run(mut command: Command, path: &Path, config: &ComputerConfig) -> Resu
     if !child.wait().await?.success() {
         // npm/download errors can contain authenticated proxy URLs. Keep them
         // inside the private installation directory rather than returning them to a client.
-        return Err(Error::Config("runtime installer failed".into()));
+        return Err(Error::Internal("runtime installer failed".into()));
     }
     Ok(())
 }
@@ -571,14 +573,14 @@ fn installer_path(path: &Path, config: &ComputerConfig) -> Result<OsString> {
     let directory = match &config.node_executable {
         Some(node) => config::resolve_executable(node)?
             .parent()
-            .ok_or_else(|| Error::Config("Node executable has no parent".into()))?
+            .ok_or_else(|| Error::Internal("Node executable has no parent".into()))?
             .to_path_buf(),
         None => path.join("distribution/bin"),
     };
     // npm/Playwright subprocesses inherit the selected Node directory and
     // standard system tools, never the gateway's ambient executable search path.
     std::env::join_paths([directory, PathBuf::from("/usr/bin"), PathBuf::from("/bin")])
-        .map_err(|error| Error::Config(error.to_string()))
+        .map_err(|error| Error::Internal(error.to_string()))
 }
 
 fn forward_installer_environment(command: &mut Command, get: impl Fn(&str) -> Option<OsString>) {
@@ -610,21 +612,21 @@ async fn ca_certificates(path: &Path) -> Result<Vec<HttpCertificate>> {
         .await?
         .take(
             u64::try_from(MAX_CA_BYTES.saturating_add(1)).map_err(|error| {
-                Error::Config(format!("computer CA limit is not representable: {error}"))
+                Error::Internal(format!("computer CA limit is not representable: {error}"))
             })?,
         )
         .read_to_end(&mut bytes)
         .await?;
     if bytes.len() > MAX_CA_BYTES {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "computer CA bundle exceeds its size limit".into(),
         ));
     }
     let certificates = HttpCertificate::from_pem_bundle(&bytes).map_err(|error| {
-        Error::Config(format!("invalid computer CA certificate bundle: {error}"))
+        Error::Invalid(format!("invalid computer CA certificate bundle: {error}"))
     })?;
     if certificates.is_empty() {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "computer CA bundle contains no certificates".into(),
         ));
     }

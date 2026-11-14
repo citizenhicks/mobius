@@ -41,27 +41,29 @@ impl Identity {
         }
         let metadata = std::fs::symlink_metadata(&path)?;
         if !metadata.is_file() || metadata.len() != 32 {
-            return Err(Error::Config(
+            return Err(Error::Internal(
                 "gateway channel key must be a 32-byte private file".into(),
             ));
         }
         {
             use std::os::unix::fs::PermissionsExt as _;
             if metadata.permissions().mode() & 0o077 != 0 {
-                return Err(Error::Config(
+                return Err(Error::Internal(
                     "gateway channel key must be readable only by its owner".into(),
                 ));
             }
         }
         let private: [u8; 32] = std::fs::read(&path)?.try_into().map_err(|bytes: Vec<u8>| {
-            Error::Config(format!(
+            Error::Internal(format!(
                 "gateway channel key changed while reading: {} bytes",
                 bytes.len()
             ))
         })?;
         let mut dh = DefaultResolver
             .resolve_dh(&snow::params::DHChoice::Curve25519)
-            .ok_or_else(|| Error::Config("gateway channel key agreement is unavailable".into()))?;
+            .ok_or_else(|| {
+                Error::Internal("gateway channel key agreement is unavailable".into())
+            })?;
         dh.set(&private);
         let public = dh
             .pubkey()
@@ -124,7 +126,7 @@ const fn hex_value(digit: u8) -> u8 {
 
 pub(crate) fn credential_key(credential: &str) -> Result<[u8; 32]> {
     let invalid = || {
-        Error::Config("this WebSocket gateway requires a new pairing code with its encryption identity; pair again".into())
+        Error::Invalid("this WebSocket gateway requires a new pairing code with its encryption identity; pair again".into())
     };
     let (key, secret) = credential
         .strip_prefix("m1.")

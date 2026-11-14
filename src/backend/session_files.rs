@@ -212,14 +212,14 @@ impl AttachmentWorkspaceIdentity {
                     uuid::Uuid::from_bytes(bytes).to_string()
                 }
                 _ => {
-                    return Err(Error::Config(
+                    return Err(Error::Internal(
                         "attachment workspace volume has no persistent UUID".into(),
                     ));
                 }
             };
             let path_metadata = std::fs::metadata(path)?;
             if metadata.dev() != path_metadata.dev() || metadata.ino() != path_metadata.ino() {
-                return Err(Error::Config(
+                return Err(Error::Internal(
                     "attachment workspace changed while resolving its identity".into(),
                 ));
             }
@@ -399,7 +399,7 @@ impl SessionFileStore {
         let destination = directory.join(ATTACHMENT_WORKSPACE_FILE);
         match load_attachment_workspace(&destination).await {
             Ok(existing) if existing == stored => Ok(()),
-            Ok(_) => Err(Error::Config(
+            Ok(_) => Err(Error::Internal(
                 "attachment workspace changed for the active session".into(),
             )),
             Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {

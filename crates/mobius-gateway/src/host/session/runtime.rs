@@ -70,7 +70,7 @@ impl HostState {
         }
         loop {
             let record = self.running.events().recv().await.ok_or_else(|| {
-                Error::Config("agent stopped before the startup high-water was delivered".into())
+                Error::Internal("agent stopped before the startup high-water was delivered".into())
             })?;
             let sequence = record.sequence;
             if let Some(frame) = self.project_and_publish(record, delivery)?
@@ -93,7 +93,7 @@ impl HostState {
                 }
                 Err(mpsc::error::TryRecvError::Empty) => break,
                 Err(mpsc::error::TryRecvError::Disconnected) => {
-                    return Err(Error::Config(
+                    return Err(Error::Internal(
                         "agent stopped while startup events were reconciled".into(),
                     ));
                 }
@@ -110,7 +110,7 @@ impl HostState {
                         && admission.reserved && self.pending_messages.remove(&admission.id) {
                         self.pending_turns = self.pending_turns.saturating_sub(1);
                     }
-                    respond(admission.reply, admission.result.map(|_| ()).map_err(source_rejection), "source admission");
+                    respond(admission.reply, admission.result.map(|_| ()).map_err(|error| source_rejection(&error)), "source admission");
                     self.last_active = std::time::Instant::now();
                     self.settle_idle().await;
                 }
@@ -619,7 +619,7 @@ impl HostState {
         self.running
             .submit(submission)
             .ok_or_else(stopped)?
-            .map_err(agent_rejection)?;
+            .map_err(|error| agent_rejection(&error))?;
         self.work_activity.mark();
         if let Some(submission_id) = message_submission_id {
             self.pending_turns += 1;
@@ -741,16 +741,16 @@ impl HostState {
                         Ok(recovery) => recovery,
                         Err(rollback) => {
                             return Err(internal(mobius::Error::Rollback {
-                                primary: Box::new(mobius::Error::Config(primary.to_string())),
-                                rollback: Box::new(mobius::Error::Config(rollback.to_string())),
+                                primary: Box::new(mobius::Error::Internal(primary.to_string())),
+                                rollback: Box::new(mobius::Error::Internal(rollback.to_string())),
                             }));
                         }
                     };
                     self.running = recovery;
                     if let Err(rollback) = self.reconcile_replacement_startup().await {
                         return Err(internal(mobius::Error::Rollback {
-                            primary: Box::new(mobius::Error::Config(primary.to_string())),
-                            rollback: Box::new(mobius::Error::Config(rollback.to_string())),
+                            primary: Box::new(mobius::Error::Internal(primary.to_string())),
+                            rollback: Box::new(mobius::Error::Internal(rollback.to_string())),
                         }));
                     }
                     return Err(super::super::harness_unavailable(primary));
@@ -806,27 +806,25 @@ pub(in crate::host) fn fail_queued_routine_commands(
 }
 
 /// Maps an agent ingress or admission failure to the rejection its requester receives.
-fn agent_rejection(error: mobius::Error) -> Rejection {
-    let code = match &error {
+fn agent_rejection(error: &mobius::Error) -> Rejection {
+    let code = match error {
         mobius::Error::Busy(_) => "agent_busy",
         mobius::Error::Stopped(_) => "agent_stopped",
-        mobius::Error::Checkpoint(_) | mobius::Error::Sqlite(_) => "gateway_error",
+        mobius::Error::Checkpoint(_) | mobius::Error::Sqlite(_) | mobius::Error::Internal(_) => {
+            "gateway_error"
+        }
         _ => "invalid_submission",
     };
     let fatal = matches!(error, mobius::Error::Stopped(_));
-    let message = match error {
-        mobius::Error::Config(message) => message.into(),
-        error => error.to_string().into(),
-    };
     Rejection {
         code,
-        message,
+        message: error.to_string().into(),
         fatal,
     }
 }
 
 /// A source sender keeps its own connection when the target agent refuses delivery.
-fn source_rejection(error: mobius::Error) -> Rejection {
+fn source_rejection(error: &mobius::Error) -> Rejection {
     Rejection {
         fatal: false,
         ..agent_rejection(error)

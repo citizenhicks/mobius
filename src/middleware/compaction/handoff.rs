@@ -216,7 +216,7 @@ async fn prepare_checkpoint(
     let definition = definitions
         .iter()
         .find(|tool| tool.name == "write_handoff")
-        .ok_or_else(|| Error::Config("checkpoint writer is not registered".into()))?;
+        .ok_or_else(|| Error::Internal("checkpoint writer is not registered".into()))?;
     let tools = std::slice::from_ref(definition);
     let source = policy
         .model_route
@@ -422,7 +422,7 @@ async fn prepare_response(
     };
     let transport = context.model.transport_settings_for(route)?;
     let retry_limit = usize::try_from(transport.stream_retry_limit).map_err(|error| {
-        Error::Config(format!(
+        Error::Internal(format!(
             "stream retry limit exceeds platform range: {error}"
         ))
     })?;

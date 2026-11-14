@@ -47,7 +47,7 @@ impl OutputLimit {
     /// Returns an error for a zero budget or one above the internal safety bound.
     pub fn new(bytes: usize) -> Result<Self> {
         if !(1..=MAX_TOOL_OUTPUT_BYTES).contains(&bytes) {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "tool output limit must be between 1 and {MAX_TOOL_OUTPUT_BYTES} bytes"
             )));
         }

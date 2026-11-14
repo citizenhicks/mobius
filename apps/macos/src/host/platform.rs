@@ -99,7 +99,7 @@ pub fn gateway_endpoint(
 ) -> mobius_gateway::Result<mobius_gateway::client::Endpoint> {
     let address = CString::new(endpoint.to_string()).map_err(|error| {
         tracing::warn!(%error, "Gateway endpoint contains a NUL byte");
-        mobius_gateway::Error::Config("Invalid gateway endpoint.".into())
+        mobius_gateway::Error::Invalid("Invalid gateway endpoint.".into())
     })?;
     let mut token = [0u8; 43];
     // SAFETY: Swift reads the valid C string and writes at most token.len() bytes synchronously.
@@ -110,9 +110,9 @@ pub fn gateway_endpoint(
         0 => Ok(endpoint),
         1 => endpoint.with_websocket_bearer(std::str::from_utf8(&token).map_err(|error| {
             tracing::warn!(%error, "Cloud gateway token from Keychain is not UTF-8");
-            mobius_gateway::Error::Config("Invalid Cloud sign-in credential.".into())
+            mobius_gateway::Error::Invalid("Invalid Cloud sign-in credential.".into())
         })?),
-        _ => Err(mobius_gateway::Error::Config(
+        _ => Err(mobius_gateway::Error::Invalid(
             "Sign in to the Cloud gateway's account in Settings → Account before connecting."
                 .into(),
         )),

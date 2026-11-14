@@ -120,19 +120,19 @@ impl BotStorage {
                 |row| row.get::<_, bool>(0),
             )?
         {
-            return Err(Error::Config(
+            return Err(Error::Internal(
                 "Bot storage is unversioned and not empty; remove that database".into(),
             ));
         }
         if version != 0 && version != SCHEMA_VERSION {
-            return Err(Error::Config(format!(
+            return Err(Error::Internal(format!(
                 "unsupported Bot storage schema version {version}; expected {SCHEMA_VERSION}"
             )));
         }
         let journal_mode: String =
             connection.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0))?;
         if !journal_mode.eq_ignore_ascii_case("wal") {
-            return Err(Error::Config(format!(
+            return Err(Error::Internal(format!(
                 "SQLite could not enable Bot storage WAL mode: {journal_mode}"
             )));
         }
@@ -262,7 +262,7 @@ impl BotStorage {
         let run = run_id
             .map(|id| {
                 query_run(&connection, &id)?
-                    .ok_or_else(|| Error::Config("routine command receipt has no run".into()))
+                    .ok_or_else(|| Error::Internal("routine command receipt has no run".into()))
             })
             .transpose();
         drop(connection);
@@ -300,11 +300,11 @@ impl BotStorage {
     ) -> Result<()> {
         self.transaction(|transaction| {
             if let Some(previous) = transaction.query_row("SELECT run_id FROM routine_stop_requests WHERE command_id = ?1", [command_id], |row| row.get::<_,String>(0)).optional()? {
-                if previous != run_id {return Err(Error::Config("stop command identity targets another run".into()));}
+                if previous != run_id {return Err(Error::Internal("stop command identity targets another run".into()));}
                 return Ok(());
             }
-            let run = query_run(transaction, run_id)?.ok_or_else(||Error::Config("unknown routine run".into()))?;
-            if run.status != RoutineRunStatus::Running {return Err(Error::Config("only an active invocation can be stopped".into()));}
+            let run = query_run(transaction, run_id)?.ok_or_else(||Error::Invalid("unknown routine run".into()))?;
+            if run.status != RoutineRunStatus::Running {return Err(Error::Invalid("only an active invocation can be stopped".into()));}
             transaction.execute("INSERT INTO routine_stop_requests(run_id,command_id,cause_json) VALUES(?1,?2,?3) ON CONFLICT(run_id) DO NOTHING",params![run_id,command_id,cause.map(serde_json::to_string).transpose()?])?;
             Ok(())
         })
@@ -340,7 +340,7 @@ impl BotStorage {
         )?;
         drop(connection);
         u64::try_from(count)
-            .map_err(|error| Error::Config(format!("invalid routine count: {error}")))
+            .map_err(|error| Error::Internal(format!("invalid routine count: {error}")))
     }
 
     pub(crate) fn has_running_routines(&self) -> Result<bool> {
@@ -363,7 +363,7 @@ impl BotStorage {
         drop(connection);
         match first_failure {
             None => Ok(()),
-            Some(Ok(_)) => Err(Error::Config("persisted routine run has no Bot".into())),
+            Some(Ok(_)) => Err(Error::Internal("persisted routine run has no Bot".into())),
             Some(Err(error)) => Err(error.into()),
         }
     }
@@ -404,15 +404,15 @@ impl BotStorage {
     ) -> Result<RoutineRun> {
         self.transaction(|transaction| {
             let mut run = query_run(transaction, id)?
-                .ok_or_else(|| Error::Config(format!("unknown routine run `{id}`")))?;
+                .ok_or_else(|| Error::Invalid(format!("unknown routine run `{id}`")))?;
             if status == RoutineRunStatus::Running {
-                return Err(Error::Config("cannot finish a run with running status".into()));
+                return Err(Error::Internal("cannot finish a run with running status".into()));
             }
             if run.status != RoutineRunStatus::Running {
                 if run.status == status && run.message == message {
                     return Ok(run);
                 }
-                return Err(Error::Config("routine run already has a different terminal result".into()));
+                return Err(Error::Internal("routine run already has a different terminal result".into()));
             }
             run.status = status;
             run.finished_at = Some(finished_at);
@@ -466,16 +466,16 @@ impl BotStorage {
     pub(super) fn run(&self, id: &str) -> Result<RoutineRun> {
         let connection = self.lock()?;
         query_run(&connection, id)?
-            .ok_or_else(|| Error::Config(format!("unknown routine run `{id}`")))
+            .ok_or_else(|| Error::Invalid(format!("unknown routine run `{id}`")))
             .and_then(|run| validate_run(&run).map(|()| run))
     }
 
     pub(super) fn delete_run(&self, id: &str) -> Result<RoutineRun> {
         self.transaction(|transaction| {
             let run = query_run(transaction, id)?
-                .ok_or_else(|| Error::Config(format!("unknown routine run `{id}`")))?;
+                .ok_or_else(|| Error::Invalid(format!("unknown routine run `{id}`")))?;
             if run.status == RoutineRunStatus::Running {
-                return Err(Error::Config(format!(
+                return Err(Error::Invalid(format!(
                     "routine run {id} is currently running"
                 )));
             }
@@ -518,7 +518,7 @@ fn read_catalog(connection: &Connection) -> Result<Option<String>> {
             let catalog = row.get_ref(0)?.as_str()?;
             Ok(
                 if u64::try_from(catalog.len()).unwrap_or(u64::MAX) > super::MAX_STATE_BYTES {
-                    Err(Error::Config("Bot state is too large".into()))
+                    Err(Error::Internal("Bot state is too large".into()))
                 } else {
                     Ok(catalog.to_owned())
                 },
@@ -616,10 +616,10 @@ fn run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RoutineRun> {
 
 fn validate_run(run: &RoutineRun) -> Result<()> {
     if uuid::Uuid::parse_str(&run.id).is_err() {
-        return Err(Error::Config("invalid persisted routine run ID".into()));
+        return Err(Error::Internal("invalid persisted routine run ID".into()));
     }
     if run.routine_id.is_empty() || run.bot_id.is_empty() {
-        return Err(Error::Config(
+        return Err(Error::Internal(
             "persisted routine run has an empty owner ID".into(),
         ));
     }

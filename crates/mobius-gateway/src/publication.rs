@@ -44,9 +44,9 @@ pub(crate) fn read_private(path: &Path, max_bytes: u64, what: &str) -> Result<Ve
         .open(path)?;
     let metadata = file.metadata()?;
     if !metadata.is_file() {
-        return Err(Error::Config(format!("{what} must be a regular file")));
+        return Err(Error::Invalid(format!("{what} must be a regular file")));
     }
-    let too_large = || Error::Config(format!("{what} is too large"));
+    let too_large = || Error::Invalid(format!("{what} is too large"));
     if metadata.len() > max_bytes {
         return Err(too_large());
     }
@@ -66,7 +66,7 @@ pub(crate) fn publish(path: &Path, contents: &[u8], create_new: bool) -> Result<
     }
     let parent = path
         .parent()
-        .ok_or_else(|| crate::Error::Config("publication path has no parent".into()))?;
+        .ok_or_else(|| crate::Error::Internal("publication path has no parent".into()))?;
     let parent_file = fs::File::open(parent)?;
     let mut file = tempfile::NamedTempFile::new_in(parent)?;
     file.as_file().set_permissions(mobius::owner_only::file())?;

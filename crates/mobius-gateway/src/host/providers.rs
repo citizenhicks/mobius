@@ -448,7 +448,7 @@ impl GatewayHost {
             if !credential_is_configured(selection, &state.store, &state.credentials)
                 .map_err(invalid_config)?
             {
-                return Err(invalid_config(Error::Config(format!(
+                return Err(invalid_config(Error::Invalid(format!(
                     "provider `{}` is not configured on this gateway",
                     selection.provider
                 ))));
@@ -618,13 +618,13 @@ fn commit_provider_removal(
             match state.store.publish_live(&current) {
                 Ok(()) => Err(error),
                 Err(rollback @ Error::PublicationApplied { .. }) => {
-                    Err(crate::publication::applied_error(Error::Config(format!(
+                    Err(crate::publication::applied_error(Error::Internal(format!(
                         "{error}; rollback was applied but completion failed: {rollback}"
                     ))))
                 }
                 Err(rollback) => {
                     *current = next;
-                    Err(crate::publication::applied_error(Error::Config(format!(
+                    Err(crate::publication::applied_error(Error::Internal(format!(
                         "{error}; provider configuration remains changed because rollback failed: {rollback}"
                     ))))
                 }

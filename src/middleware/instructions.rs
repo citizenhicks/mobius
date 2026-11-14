@@ -90,7 +90,7 @@ fn read_optional(directory: &Dir, name: &str) -> Result<Option<String>> {
         Err(error) => return Err(error.into()),
     };
     if metadata.is_symlink() || !metadata.is_file() {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "workspace instruction `{name}` must be a regular file"
         )));
     }
@@ -102,7 +102,7 @@ fn read_optional(directory: &Dir, name: &str) -> Result<Option<String>> {
         || !same_file(&metadata, &opened)
         || !same_file(&opened, &current)
     {
-        return Err(Error::Config(format!(
+        return Err(Error::Internal(format!(
             "workspace instruction `{name}` changed while opening"
         )));
     }
@@ -110,12 +110,12 @@ fn read_optional(directory: &Dir, name: &str) -> Result<Option<String>> {
     file.take(MAX_INSTRUCTIONS_BYTES + 1)
         .read_to_end(&mut bytes)?;
     if bytes.len() as u64 > MAX_INSTRUCTIONS_BYTES {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "workspace instruction `{name}` exceeds {MAX_INSTRUCTIONS_BYTES} bytes"
         )));
     }
     String::from_utf8(bytes).map(Some).map_err(|error| {
-        Error::Config(format!(
+        Error::Invalid(format!(
             "workspace instruction `{name}` is not valid UTF-8: {error}"
         ))
     })

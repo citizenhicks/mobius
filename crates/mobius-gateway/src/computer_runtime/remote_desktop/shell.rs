@@ -223,5 +223,5 @@ fn quote(value: &str) -> Result<String> {
 }
 
 fn invalid_path() -> Error {
-    Error::Config("invalid desktop launcher path".into())
+    Error::Internal("invalid desktop launcher path".into())
 }

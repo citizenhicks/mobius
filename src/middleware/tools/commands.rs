@@ -444,7 +444,7 @@ pub(super) fn hook_command(input: &Value) -> Result<&str> {
     input
         .get("command")
         .and_then(Value::as_str)
-        .ok_or_else(|| Error::Config("hook tool rewrite requires `command`".into()))
+        .ok_or_else(|| Error::Invalid("hook tool rewrite requires `command`".into()))
 }
 
 fn validate_command_id(id: &str) -> Result<()> {

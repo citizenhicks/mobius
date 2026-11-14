@@ -143,7 +143,9 @@ impl TryFrom<RawModelTransportSettings> for ModelTransportSettings {
     /// Rejects zero deadlines, excessive retry budgets and overflowing backoff policy.
     fn try_from(raw: RawModelTransportSettings) -> Result<Self> {
         if raw.max_request_bytes == 0 {
-            return Err(Error::Config("model request limit must be positive".into()));
+            return Err(Error::Invalid(
+                "model request limit must be positive".into(),
+            ));
         }
         let deadlines = [
             raw.http_connect_timeout_ms,
@@ -163,17 +165,17 @@ impl TryFrom<RawModelTransportSettings> for ModelTransportSettings {
             .into_iter()
             .any(|value| value == 0 || value > 365 * 24 * 60 * 60 * 1_000)
         {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "model transport deadlines must be positive and at most one year".into(),
             ));
         }
         if raw.stream_retry_limit > 100 {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "model transport retry limits must be at most 100".into(),
             ));
         }
         if raw.stream_retry_backoff_ms > raw.stream_retry_max_backoff_ms {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "initial model retry backoff exceeds its ceiling".into(),
             ));
         }
@@ -393,7 +395,7 @@ pub(super) fn handshake_error(
 pub(super) fn socket_url(mut url: reqwest::Url) -> Result<reqwest::Url> {
     let scheme = if url.scheme() == "https" { "wss" } else { "ws" };
     url.set_scheme(scheme)
-        .map_err(|()| Error::Config("invalid provider socket scheme".into()))?;
+        .map_err(|()| Error::Invalid("invalid provider socket scheme".into()))?;
     Ok(url)
 }
 
@@ -475,7 +477,7 @@ impl ApiKeyModel {
         transport: ModelTransportSettings,
     ) -> Result<Self> {
         if api_key.as_deref().is_some_and(|key| key.trim().is_empty()) {
-            return Err(Error::Config("provider API key cannot be empty".into()));
+            return Err(Error::Invalid("provider API key cannot be empty".into()));
         }
         Ok(Self {
             client,
@@ -495,7 +497,7 @@ impl ApiKeyModel {
         transport: ModelTransportSettings,
     ) -> Result<Self> {
         if model.trim().is_empty() {
-            return Err(Error::Config("model is empty".into()));
+            return Err(Error::Invalid("model is empty".into()));
         }
         Self::new(
             Some(api_key),
@@ -509,7 +511,7 @@ impl ApiKeyModel {
     pub(super) fn set_reasoning(&mut self, effort: impl Into<String>) -> Result<()> {
         let effort = effort.into();
         if effort.trim().is_empty() {
-            return Err(Error::Config("reasoning effort cannot be empty".into()));
+            return Err(Error::Invalid("reasoning effort cannot be empty".into()));
         }
         self.reasoning_effort = Some(effort.into());
         Ok(())

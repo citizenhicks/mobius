@@ -29,7 +29,7 @@ impl HostState {
             return Ok(());
         };
         let ServerMessage::AgentEvent { record, .. } = &frame.message else {
-            return Err(Error::Config(
+            return Err(Error::Internal(
                 "projected journal frame omitted agent event".into(),
             ));
         };
@@ -96,7 +96,7 @@ impl HostState {
             self.set_activity(activity).await?;
             self.broadcast_sessions()
                 .await
-                .map_err(|rejection| Error::Config(rejection.message.to_string()))?;
+                .map_err(|rejection| Error::Internal(rejection.message.to_string()))?;
         }
 
         self.settle_idle().await;
@@ -233,11 +233,10 @@ impl HostState {
         // Checkpoint reads stay in sequence on one SQLite lane; only Git overlaps them. A runtime
         // failure still wins at once; a pin failure keeps its place after the contributions below.
         let checkpoint = async {
-            let runtime = self
-                .running
-                .runtime_state()
-                .await?
-                .ok_or_else(|| Error::Config("the running session has no checkpoint".into()))?;
+            let runtime =
+                self.running.runtime_state().await?.ok_or_else(|| {
+                    Error::Internal("the running session has no checkpoint".into())
+                })?;
             Ok::<_, Error>((runtime, self.message_pins().await))
         };
         let git = async {
@@ -461,7 +460,7 @@ impl HostState {
         self.set_activity(resumed).await?;
         self.broadcast_sessions()
             .await
-            .map_err(|rejection| Error::Config(rejection.message.to_string()))
+            .map_err(|rejection| Error::Internal(rejection.message.to_string()))
     }
 
     pub(super) async fn fail_activity(&mut self, message: &str) -> Result<()> {
@@ -476,7 +475,7 @@ impl HostState {
         .await?;
         self.broadcast_sessions()
             .await
-            .map_err(|rejection| Error::Config(rejection.message.to_string()))
+            .map_err(|rejection| Error::Internal(rejection.message.to_string()))
     }
 
     pub(super) async fn set_activity(&mut self, mut activity: SessionActivity) -> Result<()> {

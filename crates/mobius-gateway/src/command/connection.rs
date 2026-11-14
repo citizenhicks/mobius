@@ -27,7 +27,7 @@ pub(super) async fn connect(
     {
         let client_endpoint = local_endpoint.as_ref().unwrap_or(&pairing_endpoint);
         let token = load_local_client(client_endpoint)?.ok_or_else(|| {
-            Error::Config(
+            Error::Invalid(
                 "this machine has no local gateway credential; restart the gateway once and retry"
                     .into(),
             )
@@ -62,7 +62,7 @@ pub(super) async fn connect(
             if let Err(revoke) =
                 AuthStore::open(store.auth_path(), config.auth)?.revoke_pairing_code(&grant.code)
             {
-                return Err(Error::Config(format!(
+                return Err(Error::Internal(format!(
                     "{error}; failed to revoke one-time code: {revoke}"
                 )));
             }
@@ -80,7 +80,7 @@ pub(super) async fn connect(
     let endpoint = match runtime.and_then(|runtime| {
         runtime
             .or(configured_endpoint)
-            .ok_or_else(|| Error::Config("gateway did not publish its runtime endpoint".into()))
+            .ok_or_else(|| Error::Internal("gateway did not publish its runtime endpoint".into()))
     }) {
         Ok(endpoint) => endpoint,
         Err(error) => return stop_connect_gateway(&store, config.auth, pid, &grant.code, error),
@@ -119,7 +119,7 @@ pub(super) async fn connect(
         match running {
             Some(running) if running == pid => {}
             Some(running) => {
-                return Err(Error::Config(format!(
+                return Err(Error::Internal(format!(
                     "gateway process changed from {pid} to {running} while waiting for a client"
                 )));
             }
@@ -129,7 +129,7 @@ pub(super) async fn connect(
                     config.auth,
                     pid,
                     &grant.code,
-                    Error::Config("gateway stopped before a client paired".into()),
+                    Error::Internal("gateway stopped before a client paired".into()),
                 );
             }
         }
@@ -162,7 +162,7 @@ pub(super) async fn connect(
                 config.auth,
                 pid,
                 &grant.code,
-                Error::Config("one-time code expired before a client paired".into()),
+                Error::Invalid("one-time code expired before a client paired".into()),
             );
         }
 
@@ -190,7 +190,7 @@ pub(super) async fn running_connection_endpoints<'a>(
         .await?
         .map(std::borrow::Cow::Owned)
         .or_else(|| configured_endpoint.map(std::borrow::Cow::Borrowed))
-        .ok_or_else(|| Error::Config("gateway did not publish its runtime endpoint".into()))?;
+        .ok_or_else(|| Error::Internal("gateway did not publish its runtime endpoint".into()))?;
     let local_endpoint = config
         .cloudflare
         .as_ref()
@@ -230,7 +230,7 @@ pub(super) async fn pairing_code(
     let (_, config) = ConfigStore::open(state_dir)?;
     let endpoint = direct_loopback_endpoint(&config)?;
     let token = load_local_client(&endpoint)?
-        .ok_or_else(|| Error::Config("gateway local control credential is unavailable".into()))?;
+        .ok_or_else(|| Error::Internal("gateway local control credential is unavailable".into()))?;
     let grant = request_running_pairing_code(&endpoint, &token).await?;
     Ok(print_line(format_args!("{}", pairing_code_json(&grant)?))?)
 }
@@ -254,7 +254,7 @@ pub(super) fn connection_endpoint(
 ) -> Result<Option<Endpoint>> {
     if let Some(cloudflare) = &config.cloudflare {
         if endpoint.is_some() {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "Cloudflare gateways determine their endpoint at startup; do not use --endpoint"
                     .into(),
             ));
@@ -262,13 +262,13 @@ pub(super) fn connection_endpoint(
         return cloudflare.endpoint().as_deref().map(str::parse).transpose();
     }
     match (config.tls.is_some(), endpoint) {
-        (true, None) => Err(Error::Config(
+        (true, None) => Err(Error::Invalid(
             "TLS gateways require --endpoint tls://HOST:PORT using the certificate hostname".into(),
         )),
         (true, Some(endpoint)) if endpoint.is_plaintext() || endpoint.is_websocket() => Err(
-            Error::Config("a TLS gateway connection endpoint must use tls://".into()),
+            Error::Invalid("a TLS gateway connection endpoint must use tls://".into()),
         ),
-        (false, Some(endpoint)) if !endpoint.is_plaintext() => Err(Error::Config(
+        (false, Some(endpoint)) if !endpoint.is_plaintext() => Err(Error::Invalid(
             "a plaintext gateway connection endpoint must use tcp://".into(),
         )),
         (_, Some(endpoint)) => Ok(Some(endpoint)),
@@ -278,13 +278,13 @@ pub(super) fn connection_endpoint(
 
 pub(super) fn ensure_gateway_stopped(store: &ConfigStore, config: &GatewayConfig) -> Result<()> {
     if running_process_pid(&store.state_dir().join(PROCESS_FILE))?.is_some() {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "gateway is already running; create a code from a connected client or run `mobius-gateway exit` first"
                 .into(),
         ));
     }
     let _listener = std::net::TcpListener::bind(config.listen).map_err(|error| {
-        Error::Config(format!(
+        Error::Invalid(format!(
             "gateway listener {} is unavailable; stop it before connecting: {error}",
             config.listen
         ))
@@ -295,17 +295,19 @@ pub(super) fn ensure_gateway_stopped(store: &ConfigStore, config: &GatewayConfig
 pub(super) fn pairing_deadline(expires_at: i64) -> Result<Instant> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|error| Error::Config(format!("system clock is before the Unix epoch: {error}")))?
+        .map_err(|error| {
+            Error::Internal(format!("system clock is before the Unix epoch: {error}"))
+        })?
         .as_secs();
     let expires_at = u64::try_from(expires_at).map_err(|error| {
-        Error::Config(format!("pairing expiry {expires_at} is invalid: {error}"))
+        Error::Internal(format!("pairing expiry {expires_at} is invalid: {error}"))
     })?;
     let remaining = expires_at
         .checked_sub(now)
-        .ok_or_else(|| Error::Config("one-time code expired before startup".into()))?;
+        .ok_or_else(|| Error::Invalid("one-time code expired before startup".into()))?;
     Instant::now()
         .checked_add(Duration::from_secs(remaining))
-        .ok_or_else(|| Error::Config("pairing deadline overflow".into()))
+        .ok_or_else(|| Error::Internal("pairing deadline overflow".into()))
 }
 
 pub(super) fn stop_connect_gateway<T>(
@@ -317,7 +319,7 @@ pub(super) fn stop_connect_gateway<T>(
 ) -> Result<T> {
     match cleanup_connect(store, policy, pid, code) {
         Ok(()) => Err(error),
-        Err(stop) => Err(Error::Config(format!(
+        Err(stop) => Err(Error::Internal(format!(
             "{error}; failed to clean up connection: {stop}"
         ))),
     }

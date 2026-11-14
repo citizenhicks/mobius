@@ -92,14 +92,14 @@ impl Snapshot {
                     .as_object_mut()
                     .and_then(|object| object.remove(section.key()))
                     .ok_or_else(|| {
-                        Error::Config(format!("telemetry {} section is missing", section.key()))
+                        Error::Internal(format!("telemetry {} section is missing", section.key()))
                     })?;
                 self.sections.insert(*section, value);
             }
             if let Some(value) = self.sections.get(section) {
                 result
                     .as_object_mut()
-                    .ok_or_else(|| Error::Config("telemetry snapshot is not an object".into()))?
+                    .ok_or_else(|| Error::Internal("telemetry snapshot is not an object".into()))?
                     .insert(section.key().into(), value.clone()); // rules-allow: each in-flight request owns its payload after this tick's snapshot is dropped
             }
         }
@@ -149,7 +149,7 @@ pub struct TelemetrySink {
 impl TelemetrySink {
     pub(crate) fn redact_report(&mut self) -> Result<()> {
         let url = url::Url::parse(&self.url)
-            .map_err(|error| Error::Config(format!("telemetry endpoint is invalid: {error}")))?;
+            .map_err(|error| Error::Invalid(format!("telemetry endpoint is invalid: {error}")))?;
         // A collector can carry credentials in its path, query or custom headers.
         self.url = url.origin().ascii_serialization();
         self.headers.clear();
@@ -309,7 +309,7 @@ impl Telemetry {
                 .timeout(Duration::from_secs(config.policy.request_timeout_seconds))
                 .build()
                 .map_err(|error| {
-                    Error::Config(format!(
+                    Error::Internal(format!(
                         "telemetry HTTP client initialization failed: {error}"
                     ))
                 }),
@@ -525,7 +525,7 @@ impl Telemetry {
         let sink = config
             .sinks
             .get(index)
-            .ok_or_else(|| Error::Config("telemetry sink disappeared".into()))?;
+            .ok_or_else(|| Error::Internal("telemetry sink disappeared".into()))?;
         let (snapshot_due, retry_due) = {
             let statuses = host
                 .telemetry
@@ -605,7 +605,7 @@ impl Telemetry {
                 pending = count;
                 header
                     .as_object_mut()
-                    .ok_or_else(|| Error::Config("telemetry snapshot is not an object".into()))?
+                    .ok_or_else(|| Error::Internal("telemetry snapshot is not an object".into()))?
                     .insert("events".into(), json!(events));
             }
             header
@@ -624,7 +624,7 @@ impl Telemetry {
             if let Some(report) = &snapshot.session_activity {
                 envelope
                     .as_object_mut()
-                    .ok_or_else(|| Error::Config("telemetry snapshot is not an object".into()))?
+                    .ok_or_else(|| Error::Internal("telemetry snapshot is not an object".into()))?
                     .insert("session_activity".into(), report.payload.clone()); // rules-allow: each in-flight delivery owns its bounded catalog snapshot
                 delivered_session_revision = Some(report.revision);
             }
@@ -632,7 +632,7 @@ impl Telemetry {
         let header = host.telemetry.header(sink, now);
         let object = envelope
             .as_object_mut()
-            .ok_or_else(|| Error::Config("telemetry snapshot is not an object".into()))?;
+            .ok_or_else(|| Error::Internal("telemetry snapshot is not an object".into()))?;
         if let Value::Object(header) = header {
             object.extend(header);
         }

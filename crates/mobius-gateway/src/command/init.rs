@@ -62,7 +62,7 @@ pub(super) fn reset_bot_defaults(state_dir: PathBuf) -> Result<()> {
             config.execution.subagent_ceilings,
         );
         let current = config.bot_defaults.as_mut().ok_or_else(|| {
-            Error::Config("configure a provider before resetting defaults".into())
+            Error::Invalid("configure a provider before resetting defaults".into())
         })?;
         let revision = current.revision;
         // The replaced defaults are discarded, so their provider moves into the new ones.
@@ -87,7 +87,7 @@ pub(super) fn set_desktop(state_dir: PathBuf, enabled: bool) -> Result<()> {
 
 pub(super) fn direct_loopback_endpoint(config: &GatewayConfig) -> Result<Endpoint> {
     if !config.listen.ip().is_loopback() || config.tls.is_some() || config.cloudflare.is_some() {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "bootstrap commands require a direct plaintext loopback gateway".into(),
         ));
     }
@@ -99,7 +99,7 @@ fn cleanup_failed_initialization<T>(store: &ConfigStore, error: Error) -> Result
         return Err(error);
     }
     std::fs::remove_dir_all(store.state_dir()).map_err(|cleanup| {
-        Error::Config(format!(
+        Error::Internal(format!(
             "{error}; failed to remove incomplete gateway state at {}: {cleanup}",
             store.state_dir().display()
         ))
@@ -186,7 +186,7 @@ pub(super) fn validate_reset_target(path: &Path, ignore_startup_lock: bool) -> R
         return Ok(false);
     }
     let marker = fs::symlink_metadata(path.join(STATE_MARKER_FILE))
-        .map_err(|error| Error::Config(format!("{}: {error}", invalid_reset_target(path))))?;
+        .map_err(|error| Error::Invalid(format!("{}: {error}", invalid_reset_target(path))))?;
     if !marker.is_file() || marker.file_type().is_symlink() {
         return Err(invalid_reset_target(path));
     }
@@ -194,7 +194,7 @@ pub(super) fn validate_reset_target(path: &Path, ignore_startup_lock: bool) -> R
 }
 
 pub(super) fn invalid_reset_target(path: &Path) -> Error {
-    Error::Config(format!(
+    Error::Invalid(format!(
         "refusing to reset {}: expected an empty directory or möbius gateway state with a regular {STATE_MARKER_FILE}",
         path.display()
     ))

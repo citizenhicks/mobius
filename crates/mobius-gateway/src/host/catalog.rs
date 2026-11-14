@@ -163,7 +163,7 @@ pub(super) async fn update_session_activity(
     let summary = checkpoints
         .session_summary(session_id)
         .await?
-        .ok_or_else(|| Error::Config("the running session has no catalog entry".into()))?;
+        .ok_or_else(|| Error::Internal("the running session has no catalog entry".into()))?;
     activities.lock().await.update(summary, activity)
 }
 
@@ -180,12 +180,12 @@ impl SessionCatalog {
                     .turn_id
                     .as_ref()
                     .map(Arc::clone)
-                    .ok_or_else(|| Error::Config("approval activity has no turn id".into()))?,
+                    .ok_or_else(|| Error::Internal("approval activity has no turn id".into()))?,
                 request_id: activity
                     .approval_request_id
                     .as_ref()
                     .map(Arc::clone)
-                    .ok_or_else(|| Error::Config("approval activity has no request id".into()))?,
+                    .ok_or_else(|| Error::Internal("approval activity has no request id".into()))?,
             }))
         } else {
             None

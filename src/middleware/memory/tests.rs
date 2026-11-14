@@ -536,7 +536,7 @@ async fn compaction_discards_projections_before_a_post_hook_stops_or_fails() {
             Box::pin(async move {
                 assert!(!context.input.iter().any(is_projection_item));
                 if self.0 {
-                    Err(Error::Config("post-compact failure".into()))
+                    Err(Error::Internal("post-compact failure".into()))
                 } else {
                     context.stop("post-compact stop")
                 }

@@ -78,7 +78,7 @@ impl FromStr for ApprovalPolicy {
             "allow" => Ok(Self::Allow),
             "allow_network" => Ok(Self::AllowNetwork),
             "full_access" => Ok(Self::FullAccess),
-            _ => Err(Error::Config(format!(
+            _ => Err(Error::Invalid(format!(
                 "unknown sandbox approval policy `{value}`"
             ))),
         }

@@ -362,7 +362,7 @@ fn record_client_presence(bots: &BotStore, client_id: &str, connected: bool) -> 
 impl ClientConnections {
     pub(super) fn presence_count(&self) -> Result<usize> {
         let presence = self.presence.try_lock().map_err(|error| {
-            Error::Config(format!("client-connection count is unavailable: {error}"))
+            Error::Internal(format!("client-connection count is unavailable: {error}"))
         })?;
         Ok(presence.values().sum())
     }
@@ -382,7 +382,7 @@ impl ClientConnections {
             let connections = entries.entry(client_id.clone()).or_default(); // rules-allow: the registry and the guard each keep the client ID
             *connections = connections
                 .checked_add(1)
-                .ok_or_else(|| Error::Config("client connection count overflow".into()))?;
+                .ok_or_else(|| Error::Internal("client connection count overflow".into()))?;
             if first && let Err(error) = record_client_presence(&bots, &client_id, true) {
                 tracing::warn!(
                     error = %connection_diagnostic(&error), "client lifecycle persistence failed"
@@ -464,7 +464,8 @@ pub(super) fn connection_diagnostic(error: &Error) -> impl std::fmt::Display + '
             error.line(),
             error.column()
         ),
-        Error::Config(_) => formatter.write_str("configuration"),
+        Error::Invalid(_) => formatter.write_str("invalid request"),
+        Error::Internal(_) => formatter.write_str("internal"),
         Error::Protocol(_) | Error::WebSocketUpgrade { .. } => formatter.write_str("protocol"),
         Error::Unauthorized => formatter.write_str("authentication"),
         Error::Mobius(_) | Error::HarnessUnavailable(_) => formatter.write_str("agent"),
@@ -608,7 +609,7 @@ async fn register_client_connection(
         tokio::task::spawn_blocking(move || connections.register(id, presence, bots))
             .await
             .map_err(|error| {
-                Error::Config(format!("client registration task failed: {error}"))
+                Error::Internal(format!("client registration task failed: {error}"))
             })??;
     if admission.is_some() {
         host.mark_runtime_activity();
@@ -1148,7 +1149,7 @@ pub(super) fn tls_acceptor(config: &TlsConfig) -> Result<TlsAcceptor> {
     let config = ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(certificates, private_key)
-        .map_err(|error| Error::Config(format!("invalid TLS certificate or key: {error}")))?;
+        .map_err(|error| Error::Invalid(format!("invalid TLS certificate or key: {error}")))?;
     Ok(TlsAcceptor::from(Arc::new(config)))
 }
 
@@ -1157,7 +1158,7 @@ pub(super) fn load_certificates(path: &Path) -> Result<Vec<CertificateDer<'stati
         .collect::<std::result::Result<Vec<_>, _>>()
         .map_err(pem_error)?;
     if certificates.is_empty() {
-        return Err(Error::Config("TLS certificate file is empty".into()));
+        return Err(Error::Invalid("TLS certificate file is empty".into()));
     }
     Ok(certificates)
 }
@@ -1167,7 +1168,7 @@ pub(super) fn load_private_key(path: &Path) -> Result<PrivateKeyDer<'static>> {
         .next()
         .transpose()
         .map_err(pem_error)?
-        .ok_or_else(|| Error::Config("TLS private-key file is empty".into()))
+        .ok_or_else(|| Error::Invalid("TLS private-key file is empty".into()))
 }
 
 fn pem_error(error: pem::Error) -> std::io::Error {

@@ -127,7 +127,9 @@ impl QueuedMessage {
         event: MessageEvent,
     ) -> Result<QueuedMessageData> {
         if event.delivery != boundary.delivery() || event.message_target.is_some() {
-            return Err(Error::Config("queued message event is inconsistent".into()));
+            return Err(Error::Internal(
+                "queued message event is inconsistent".into(),
+            ));
         }
         Ok(QueuedMessageData {
             owner: owner.into(),
@@ -216,17 +218,17 @@ impl QueuedMessage {
 
 fn validate_queued_message(message: &QueuedMessageData) -> Result<()> {
     if message.owner.trim().is_empty() || message.owner.len() > MAX_QUEUED_OWNER_BYTES {
-        return Err(Error::Config("queued message owner is invalid".into()));
+        return Err(Error::Internal("queued message owner is invalid".into()));
     }
     if message.id.trim().is_empty() || message.id.len() > MAX_QUEUED_ID_BYTES {
-        return Err(Error::Config("queued message ID is invalid".into()));
+        return Err(Error::Internal("queued message ID is invalid".into()));
     }
     if matches!(
         &message.boundary,
         QueuedMessageBoundary::Steer { turn_id }
             if turn_id.trim().is_empty() || turn_id.len() > MAX_QUEUED_TURN_ID_BYTES
     ) {
-        return Err(Error::Config("queued message turn ID is invalid".into()));
+        return Err(Error::Internal("queued message turn ID is invalid".into()));
     }
     crate::protocol::validate_message_content(
         &message.author,
@@ -237,7 +239,7 @@ fn validate_queued_message(message: &QueuedMessageData) -> Result<()> {
         .ok()
         .is_none_or(|bytes| bytes > crate::protocol::MAX_SERIALIZED_MESSAGE_BYTES)
     {
-        return Err(Error::Config("queued message is invalid".into()));
+        return Err(Error::Internal("queued message is invalid".into()));
     }
     Ok(())
 }

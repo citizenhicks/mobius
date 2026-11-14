@@ -225,7 +225,7 @@ impl HookRuntime {
         Box::pin(async move {
             for subject in matcher_subjects {
                 if subject.len() > MAX_MATCHER_BYTES {
-                    return Err(Error::Config("hook matcher subject is too long".into()));
+                    return Err(Error::Invalid("hook matcher subject is too long".into()));
                 }
             }
 
@@ -238,7 +238,7 @@ impl HookRuntime {
                 for (index, hook) in hooks.iter().enumerate() {
                     if hook.matches(event, matcher_subjects) {
                         if matching.len() == MAX_MATCHING_HOOKS {
-                            return Err(Error::Config(format!(
+                            return Err(Error::Invalid(format!(
                                 "matching hook count exceeds {MAX_MATCHING_HOOKS}"
                             )));
                         }
@@ -371,7 +371,9 @@ impl CommandHook {
             asynchronous,
         } = raw;
         if asynchronous == Some(true) && event != HookEvent::SessionEnd {
-            return Err(Error::Config("asynchronous hooks are not supported".into()));
+            return Err(Error::Invalid(
+                "asynchronous hooks are not supported".into(),
+            ));
         }
         validate_text(&command, 1, MAX_COMMAND_BYTES, "hook command")?;
         // Plugins share hook documents across hosts; these fields do not change Unix execution.
@@ -400,7 +402,7 @@ impl CommandHook {
             MAX_TIMEOUT
         };
         if timeout.is_zero() || timeout > max_timeout {
-            return Err(Error::Config(format!(
+            return Err(Error::Invalid(format!(
                 "{} hook timeout must be between 1 and {} seconds",
                 event.as_str(),
                 max_timeout.as_secs()
@@ -420,7 +422,7 @@ impl CommandHook {
                         .size_limit(1 << 20)
                         .build()
                         .map_err(|error| {
-                            Error::Config(format!("invalid hook matcher `{matcher}`: {error}"))
+                            Error::Invalid(format!("invalid hook matcher `{matcher}`: {error}"))
                         })?,
                 )
             }
@@ -454,7 +456,7 @@ fn load_manifest_sources(
         .as_array()
         .map_or_else(|| std::slice::from_ref(value), Vec::as_slice);
     if sources.len() > MAX_HOOK_FILES {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "plugin hook source count exceeds {MAX_HOOK_FILES}"
         )));
     }
@@ -463,7 +465,7 @@ fn load_manifest_sources(
             Value::String(path) => read_document(&plugin_hook_path(plugin_root, path)?)?,
             Value::Object(object) => inline_document(object)?,
             _ => {
-                return Err(Error::Config(
+                return Err(Error::Invalid(
                     "plugin hooks must be a path, hooks object, or array of those".into(),
                 ));
             }
@@ -485,7 +487,7 @@ fn inline_document(object: &Map<String, Value>) -> Result<HookDocument> {
             hooks,
         })
     };
-    document.map_err(|error| Error::Config(format!("invalid inline plugin hooks: {error}")))
+    document.map_err(|error| Error::Invalid(format!("invalid inline plugin hooks: {error}")))
 }
 
 fn read_document(path: &Path) -> Result<HookDocument> {
@@ -495,7 +497,7 @@ fn read_document(path: &Path) -> Result<HookDocument> {
         "plugin hook document",
     )?)
     .map_err(|error| {
-        Error::Config(format!(
+        Error::Invalid(format!(
             "invalid plugin hook document {}: {error}",
             path.display()
         ))
@@ -514,7 +516,7 @@ fn append_document(
         for group in groups {
             for raw in group.hooks {
                 if *count == MAX_HOOKS {
-                    return Err(Error::Config(format!(
+                    return Err(Error::Invalid(format!(
                         "plugin hook count exceeds {MAX_HOOKS}"
                     )));
                 }
@@ -532,7 +534,7 @@ fn append_document(
 
 fn plugin_hook_path(plugin_root: &Path, path: &str) -> Result<PathBuf> {
     if path.len() > MAX_PATH_BYTES || !path.starts_with("./") {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "plugin hook paths must be ./-prefixed and bounded".into(),
         ));
     }
@@ -547,7 +549,7 @@ fn context_bytes(limit: Option<usize>) -> Result<usize> {
             .checked_mul(4)
             .filter(|bytes| *bytes <= MAX_CONTEXT_BYTES)
             .ok_or_else(|| {
-                Error::Config(format!(
+                Error::Invalid(format!(
                     "hook additional context limit exceeds {} tokens",
                     MAX_CONTEXT_BYTES / 4
                 ))
@@ -557,7 +559,7 @@ fn context_bytes(limit: Option<usize>) -> Result<usize> {
 
 fn hook_input(input: Value, event: HookEvent, workspace: &Path) -> Result<String> {
     let Value::Object(mut input) = input else {
-        return Err(Error::Config("hook input must be a JSON object".into()));
+        return Err(Error::Invalid("hook input must be a JSON object".into()));
     };
     input.insert(
         "cwd".into(),
@@ -569,7 +571,7 @@ fn hook_input(input: Value, event: HookEvent, workspace: &Path) -> Result<String
     );
     let input = serde_json::to_string(&input)?;
     if input.len() > MAX_INPUT_BYTES {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "hook input exceeds {MAX_INPUT_BYTES} bytes"
         )));
     }
@@ -599,7 +601,7 @@ fn shell_quote(value: &str) -> String {
 
 fn path_text<'a>(path: &'a Path, label: &str) -> Result<&'a str> {
     path.to_str()
-        .ok_or_else(|| Error::Config(format!("{label} must be valid UTF-8")))
+        .ok_or_else(|| Error::Invalid(format!("{label} must be valid UTF-8")))
 }
 
 #[derive(Default, Deserialize)]
@@ -647,10 +649,10 @@ fn parse_output(
     output: CommandOutput,
 ) -> Result<HookOutcome> {
     if output.stdout.len() > MAX_OUTPUT_BYTES || output.stderr.len() > MAX_OUTPUT_BYTES {
-        return Err(Error::Config("hook output is too large".into()));
+        return Err(Error::Invalid("hook output is too large".into()));
     }
     if output.stdout_truncated || output.stderr_truncated {
-        return Err(Error::Config("hook output was truncated".into()));
+        return Err(Error::Invalid("hook output was truncated".into()));
     }
     let stderr = output.stderr;
     if output.exit_code != 0 {
@@ -670,7 +672,7 @@ fn parse_output(
                     ..HookOutcome::default()
                 })
             }
-            HookEvent::SubagentStop | HookEvent::Stop => Err(Error::Config(format!(
+            HookEvent::SubagentStop | HookEvent::Stop => Err(Error::Invalid(format!(
                 "{} hook output must be JSON",
                 event.as_str()
             ))),
@@ -679,7 +681,7 @@ fn parse_output(
     }
 
     let raw: RawHookOutput = serde_json::from_str(stdout).map_err(|error| {
-        Error::Config(format!("invalid {} hook output: {error}", event.as_str()))
+        Error::Invalid(format!("invalid {} hook output: {error}", event.as_str()))
     })?;
     normalize_output(event, context_bytes, raw)
 }
@@ -760,7 +762,7 @@ fn normalize_output(
         None => (None, None, None, None, None, None),
         Some(specific) => {
             if specific.hook_event_name != event {
-                return Err(Error::Config(format!(
+                return Err(Error::Invalid(format!(
                     "{} hook returned output for {}",
                     event.as_str(),
                     specific.hook_event_name.as_str()
@@ -808,7 +810,7 @@ fn normalize_output(
             Some(RawToolPermissionDecision::Allow) => Some(PermissionDecision::Allow),
             Some(RawToolPermissionDecision::Deny) => Some(PermissionDecision::Deny),
             Some(RawToolPermissionDecision::Ask) => {
-                return Err(Error::Config(
+                return Err(Error::Invalid(
                     "PreToolUse permissionDecision `ask` is not supported".into(),
                 ));
             }
@@ -849,13 +851,13 @@ fn validate_deliver_once(key: Option<&str>, context: Option<&str>) -> Result<()>
         crate::identifier::AsciiCase::Any,
         b"_-.",
     ) {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "hook deliverOnce must be 1–128 ASCII letters, digits, underscores, hyphens or dots"
                 .into(),
         ));
     }
     if context.is_none_or(|value| value.trim().is_empty()) {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "hook deliverOnce requires nonempty additionalContext".into(),
         ));
     }
@@ -895,12 +897,12 @@ fn validate_output_shape(
 ) -> Result<()> {
     let has = |field| fields & field != 0;
     if has(DECISION) != has(REASON) {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "hook decision `block` requires a reason".into(),
         ));
     }
     if has(UPDATED_INPUT) && !matches!(tool_permission, Some(RawToolPermissionDecision::Allow)) {
-        return Err(Error::Config(
+        return Err(Error::Invalid(
             "updatedInput requires permissionDecision `allow`".into(),
         ));
     }
@@ -921,7 +923,7 @@ fn validate_output_shape(
         HookEvent::SubagentStop | HookEvent::Stop => CONTINUE | STOP_REASON | DECISION | REASON,
     };
     if fields & !allowed != 0 {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "{} hook returned unsupported output fields",
             event.as_str()
         )));
@@ -947,7 +949,7 @@ fn validate_optional_text(value: Option<&str>, max: usize, label: &str) -> Resul
 
 fn validate_text(value: &str, min: usize, max: usize, label: &str) -> Result<()> {
     if value.len() < min || value.len() > max || value.contains('\0') {
-        return Err(Error::Config(format!(
+        return Err(Error::Invalid(format!(
             "{label} must be {min}–{max} bytes and contain no nulls"
         )));
     }

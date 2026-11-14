@@ -59,7 +59,7 @@ where
         operation()
     })
     .await
-    .map_err(|error| Error::Config(format!("agent discovery task failed: {error}")))?
+    .map_err(|error| Error::Internal(format!("agent discovery task failed: {error}")))?
 }
 
 /// Each Bot's cached preparation. A refresh advances the generation, so a preparation
@@ -435,14 +435,14 @@ pub(crate) async fn assemble(
     let usage_resources = Arc::clone(&prepared);
     let max_model_steps =
         usize::try_from(prepared.composition.max_model_steps).map_err(|error| {
-            Error::Config(format!(
+            Error::Invalid(format!(
                 "maximum model steps exceed this platform's supported range: {error}"
             ))
         })?;
     let persistent = session_id == prepared.bot.conversation_session_id;
     if persistent {
         if project || !chat.catalog_visible {
-            return Err(Error::Config(
+            return Err(Error::Invalid(
                 "Persistent Chat must be visible and project-free".into(),
             ));
         }
@@ -473,7 +473,7 @@ pub(crate) async fn assemble(
         let store = Arc::clone(&usage_store);
         Box::pin(async move {
             let provider = resources.model_providers.get(route).ok_or_else(|| {
-                MobiusError::Config(
+                MobiusError::Invalid(
                     "model route is not in the configured gateway usage catalog".into(),
                 )
             })?;
@@ -515,10 +515,10 @@ async fn publish_usage(
         let _guard = guard;
         store
             .record(&provider, &usage)
-            .map_err(|error| MobiusError::Config(error.to_string()))
+            .map_err(|error| MobiusError::Internal(error.to_string()))
     })
     .await
-    .map_err(|error| MobiusError::Config(format!("usage publication task failed: {error}")))?
+    .map_err(|error| MobiusError::Internal(format!("usage publication task failed: {error}")))?
 }
 
 // ponytail: one gateway per process, so every Bot shares one provider outage table.
@@ -536,7 +536,7 @@ fn build_models(
     let configured = gateway
         .configured_providers
         .get(&selection.instance)
-        .ok_or_else(|| Error::Config("active provider is not in the configured catalog".into()))?;
+        .ok_or_else(|| Error::Invalid("active provider is not in the configured catalog".into()))?;
     let selected = crate::harness::mobius::provider_catalog::selected_route(
         definition,
         Some(configured),
@@ -567,7 +567,7 @@ fn build_models(
     let mut routes = routes.into_iter();
     let first = routes
         .next()
-        .ok_or_else(|| Error::Config("provider has no model routes".into()))?;
+        .ok_or_else(|| Error::Invalid("provider has no model routes".into()))?;
     let mut router = ModelRouter::new(Arc::clone(&first.choice.route), first.model)
         .session_files(session_files)
         .provider_health(Arc::clone(&PROVIDER_HEALTH));
@@ -670,19 +670,19 @@ fn resolve_credential(
             if !definition.uses_default_endpoint(
                 base_url.map(mobius::backend::model::provider::BaseUrl::as_str),
             ) {
-                return Err(Error::Config(format!(
+                return Err(Error::Invalid(format!(
                     "set a credential for `{}`",
                     definition.id()
                 )));
             }
             let value = std::env::var(default_env).map_err(|error| {
-                Error::Config(format!(
+                Error::Invalid(format!(
                     "set a credential for `{}` ({default_env}: {error})",
                     definition.id()
                 ))
             })?;
             if value.trim().is_empty() {
-                return Err(Error::Config(format!(
+                return Err(Error::Invalid(format!(
                     "credential environment variable {default_env} is empty"
                 )));
             }
@@ -865,99 +865,98 @@ fn build_middleware(
         .iter()
         .filter(|feature| installs(feature, settings, memory.chat_override))
     {
-        let middleware: Arc<dyn Middleware> = match feature.kind {
-            BuiltinMiddleware::Sandbox | BuiltinMiddleware::PersistentChat => continue,
-            BuiltinMiddleware::Attachments => {
-                let attachments = Attachments::new(Arc::clone(session_files));
-                Arc::new(if project {
-                    attachments.with_workspace(workspace)?
-                } else {
-                    attachments
-                })
-            }
-            BuiltinMiddleware::Artifacts => Arc::new(Artifacts::new(Arc::clone(session_files))),
-            BuiltinMiddleware::IntelligentUi => {
-                Arc::new(mobius::middleware::intelligent_ui::IntelligentUi)
-            }
-            BuiltinMiddleware::ImageGeneration => Arc::new(ImageGeneration::from_settings(
-                Arc::clone(&prepared.models),
-                Arc::clone(session_files),
-                |id| settings.setting(mobius::middleware::image_generation::MANIFEST.id, id),
-            )),
-            BuiltinMiddleware::Tools => {
-                let tools = if project {
-                    Tools::coding(Arc::clone(session_files))
-                } else {
-                    Tools::reading(Arc::clone(session_files))
-                };
-                Arc::new(tools.repeat_limits(
-                    prepared.settings.repeat_warning_calls,
-                    prepared.settings.repeat_stop_calls,
-                ))
-            }
-            BuiltinMiddleware::Instructions => {
-                Arc::new(Instructions::discover(project.then_some(workspace))?)
-            }
-            BuiltinMiddleware::Memory => Arc::new(
-                memory
-                    .store
-                    .for_chat(|id| settings.setting(feature.manifest.id, id))?,
-            ),
-            BuiltinMiddleware::Extensions => {
-                let (extensions, backend) = extensions
-                    .take()
-                    .ok_or_else(|| Error::Config("extensions were not discovered".into()))?;
-                Arc::new(extensions.start_hooks(backend)?)
-            }
-            BuiltinMiddleware::Questions => {
-                Arc::new(mobius::middleware::questions::Questions::default())
-            }
-            BuiltinMiddleware::Tasks => Arc::new(Tasks),
-            BuiltinMiddleware::Subagents => {
-                let middleware =
-                    Subagents::new(prepared.subagent_limits.ok_or_else(|| {
-                        Error::Config("subagent limits were not prepared".into())
+        let middleware: Arc<dyn Middleware> =
+            match feature.kind {
+                BuiltinMiddleware::Sandbox | BuiltinMiddleware::PersistentChat => continue,
+                BuiltinMiddleware::Attachments => {
+                    let attachments = Attachments::new(Arc::clone(session_files));
+                    Arc::new(if project {
+                        attachments.with_workspace(workspace)?
+                    } else {
+                        attachments
+                    })
+                }
+                BuiltinMiddleware::Artifacts => Arc::new(Artifacts::new(Arc::clone(session_files))),
+                BuiltinMiddleware::IntelligentUi => {
+                    Arc::new(mobius::middleware::intelligent_ui::IntelligentUi)
+                }
+                BuiltinMiddleware::ImageGeneration => Arc::new(ImageGeneration::from_settings(
+                    Arc::clone(&prepared.models),
+                    Arc::clone(session_files),
+                    |id| settings.setting(mobius::middleware::image_generation::MANIFEST.id, id),
+                )),
+                BuiltinMiddleware::Tools => {
+                    let tools = if project {
+                        Tools::coding(Arc::clone(session_files))
+                    } else {
+                        Tools::reading(Arc::clone(session_files))
+                    };
+                    Arc::new(tools.repeat_limits(
+                        prepared.settings.repeat_warning_calls,
+                        prepared.settings.repeat_stop_calls,
+                    ))
+                }
+                BuiltinMiddleware::Instructions => {
+                    Arc::new(Instructions::discover(project.then_some(workspace))?)
+                }
+                BuiltinMiddleware::Memory => Arc::new(
+                    memory
+                        .store
+                        .for_chat(|id| settings.setting(feature.manifest.id, id))?,
+                ),
+                BuiltinMiddleware::Extensions => {
+                    let (extensions, backend) = extensions
+                        .take()
+                        .ok_or_else(|| Error::Internal("extensions were not discovered".into()))?;
+                    Arc::new(extensions.start_hooks(backend)?)
+                }
+                BuiltinMiddleware::Questions => {
+                    Arc::new(mobius::middleware::questions::Questions::default())
+                }
+                BuiltinMiddleware::Tasks => Arc::new(Tasks),
+                BuiltinMiddleware::Subagents => {
+                    let middleware = Subagents::new(prepared.subagent_limits.ok_or_else(|| {
+                        Error::Internal("subagent limits were not prepared".into())
                     })?)
                     .session_files(Arc::clone(session_files));
-                let middleware = match prepared.settings.subagent_model_route.as_deref() {
-                    Some(route) => middleware.default_model(route),
-                    None => middleware,
-                };
-                Arc::new(middleware)
-            }
-            BuiltinMiddleware::Messages => Arc::new(Messages::new(
-                prepared.settings.max_pending_messages,
-                prepared.settings.message_delivery,
-            )),
-            BuiltinMiddleware::Voice => Arc::new(mobius::middleware::voice::Voice),
-            BuiltinMiddleware::ComputerControl => {
-                let prepared = prepared
-                    .computer_runtime
-                    .as_ref()
-                    .ok_or_else(|| Error::Config("computer runtime was not prepared".into()))?;
-                Arc::new(mobius::middleware::computer_control::ComputerControl::new(
-                    Arc::clone(session_files),
-                    Arc::clone(&prepared.runtime),
-                ))
-            }
-            BuiltinMiddleware::Compaction => {
-                Arc::new(mobius::middleware::compaction::Compaction::from_settings(
-                    |id| settings.setting(feature.manifest.id, id),
-                )?)
-            }
-            BuiltinMiddleware::Sessions => {
-                let sessions = Sessions::new(
-                    prepared.settings.session_page_size,
-                    Some(Arc::clone(session_files)),
-                    live_chats.take(),
-                );
-                Arc::new(if memory_installed {
-                    sessions.memory_pages(memory.store.pages())
-                } else {
-                    sessions
-                })
-            }
-        };
+                    let middleware = match prepared.settings.subagent_model_route.as_deref() {
+                        Some(route) => middleware.default_model(route),
+                        None => middleware,
+                    };
+                    Arc::new(middleware)
+                }
+                BuiltinMiddleware::Messages => Arc::new(Messages::new(
+                    prepared.settings.max_pending_messages,
+                    prepared.settings.message_delivery,
+                )),
+                BuiltinMiddleware::Voice => Arc::new(mobius::middleware::voice::Voice),
+                BuiltinMiddleware::ComputerControl => {
+                    let prepared = prepared.computer_runtime.as_ref().ok_or_else(|| {
+                        Error::Internal("computer runtime was not prepared".into())
+                    })?;
+                    Arc::new(mobius::middleware::computer_control::ComputerControl::new(
+                        Arc::clone(session_files),
+                        Arc::clone(&prepared.runtime),
+                    ))
+                }
+                BuiltinMiddleware::Compaction => {
+                    Arc::new(mobius::middleware::compaction::Compaction::from_settings(
+                        |id| settings.setting(feature.manifest.id, id),
+                    )?)
+                }
+                BuiltinMiddleware::Sessions => {
+                    let sessions = Sessions::new(
+                        prepared.settings.session_page_size,
+                        Some(Arc::clone(session_files)),
+                        live_chats.take(),
+                    );
+                    Arc::new(if memory_installed {
+                        sessions.memory_pages(memory.store.pages())
+                    } else {
+                        sessions
+                    })
+                }
+            };
         entries.push(middleware);
     }
     Ok(entries)
