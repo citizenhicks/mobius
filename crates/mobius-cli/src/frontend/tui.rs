@@ -373,6 +373,8 @@ struct TuiState {
     failed_message_drafts: VecDeque<InputDraft>,
     approvals: VecDeque<ExecApprovalRequestEvent>,
     approval_draft: Option<InputDraft>,
+    /// The highlighted choice on the front approval card.
+    approval_selection: usize,
     active_turns: Vec<Arc<str>>,
     active_message_delivery: Option<ActiveMessageDelivery>,
     turn_started_at: Option<Instant>,
@@ -478,6 +480,7 @@ impl TuiState {
         }
         if self.approvals.is_empty() {
             self.approval_draft = Some(self.take_input_draft());
+            self.approval_selection = 0;
         }
         self.approvals.push_back(request);
         self.sync_attention_approvals();
@@ -494,6 +497,7 @@ impl TuiState {
 
     fn take_approval(&mut self) -> Option<Arc<str>> {
         let request = self.approvals.pop_front()?;
+        self.approval_selection = 0;
         self.sync_attention_approvals();
         self.composer.text.clear();
         self.composer.pastes.clear();

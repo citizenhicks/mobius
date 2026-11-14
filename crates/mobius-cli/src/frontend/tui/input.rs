@@ -66,6 +66,9 @@ impl TuiState {
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             return self.handle_control_key(key.code, catalog);
         }
+        if let Some(action) = self.handle_approval_key(key.code) {
+            return action;
+        }
         match key.code {
             KeyCode::Enter if self.approval().is_some() => {
                 self.submit_input_with_delivery(catalog, None)
@@ -167,6 +170,37 @@ impl TuiState {
             }
             _ => UiAction::None,
         }
+    }
+
+    /// Moves through or picks from the approval card; other keys keep editing the reason.
+    fn handle_approval_key(&mut self, code: KeyCode) -> Option<UiAction> {
+        self.approval()?;
+        let last = APPROVAL_CHOICES.len() - 1;
+        match code {
+            KeyCode::Up => {
+                self.approval_selection = self.approval_selection.checked_sub(1).unwrap_or(last);
+            }
+            KeyCode::Down => {
+                self.approval_selection = if self.approval_selection >= last {
+                    0
+                } else {
+                    self.approval_selection + 1
+                };
+            }
+            KeyCode::Char(digit) if self.composer.text.is_empty() => {
+                let index = digit.to_digit(10)?.checked_sub(1)?;
+                let decision = approval_choice(usize::try_from(index).ok()?)?;
+                return Some(self.decide_approval(decision));
+            }
+            _ => return None,
+        }
+        Some(UiAction::None)
+    }
+
+    fn decide_approval(&mut self, decision: ReviewDecision) -> UiAction {
+        self.take_approval().map_or(UiAction::None, |id| {
+            UiAction::submit(Op::ExecApproval { id, decision })
+        })
     }
 
     fn handle_ctrl_c(&mut self, kind: KeyEventKind) -> UiAction {
@@ -923,11 +957,11 @@ impl TuiState {
             self.input_limit_reached = true;
             return UiAction::None;
         }
-        if let Some(id) = self.take_approval() {
-            return UiAction::submit(Op::ExecApproval {
-                id,
-                decision: approval_decision(line.trim()),
-            });
+        if self.approval().is_some() {
+            let decision = approval_decision(line.trim())
+                .or_else(|| approval_choice(self.approval_selection))
+                .unwrap_or(ReviewDecision::Abort);
+            return self.decide_approval(decision);
         }
         if self.upload_in_progress {
             self.push(
@@ -1123,18 +1157,38 @@ fn picker_action(action: super::PickerAction) -> UiAction {
     }
 }
 
-fn approval_decision(input: &str) -> ReviewDecision {
-    match input.to_ascii_lowercase().as_str() {
+/// The approval card's choices, in order; a digit key picks one directly.
+pub(super) const APPROVAL_CHOICES: [&str; 4] = ["Yes", "Yes, for this chat", "No", "Stop the turn"];
+
+fn approval_choice(index: usize) -> Option<ReviewDecision> {
+    Some(match index {
+        0 => ReviewDecision::Approved,
+        1 => ReviewDecision::ApprovedForSession,
+        2 => denied_by_user(),
+        3 => ReviewDecision::Abort,
+        _ => return None,
+    })
+}
+
+fn denied_by_user() -> ReviewDecision {
+    ReviewDecision::Denied {
+        rejection: "denied by user".into(),
+    }
+}
+
+/// A typed answer: a known word decides, other text denies with itself as the reason, and an
+/// empty composer defers to the highlighted choice.
+fn approval_decision(input: &str) -> Option<ReviewDecision> {
+    Some(match input.to_ascii_lowercase().as_str() {
+        "" => return None,
         "y" | "yes" => ReviewDecision::Approved,
         "a" | "always" => ReviewDecision::ApprovedForSession,
         "q" | "abort" => ReviewDecision::Abort,
-        "" | "n" | "no" => ReviewDecision::Denied {
-            rejection: "denied by user".into(),
-        },
+        "n" | "no" => denied_by_user(),
         _ => ReviewDecision::Denied {
             rejection: input.to_owned(),
         },
-    }
+    })
 }
 
 fn previous_boundary(value: &str, cursor: usize) -> usize {

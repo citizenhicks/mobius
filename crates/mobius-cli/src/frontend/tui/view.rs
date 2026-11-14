@@ -1,5 +1,4 @@
 use std::collections::VecDeque;
-use std::fmt::Write as _;
 use std::sync::Arc;
 
 use diffy::Line as DiffLine;
@@ -11,7 +10,7 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 
 use super::{
-    MAX_ENTRY_BYTES, PreviewContent, RenderedTranscript, TranscriptEntry, TranscriptTone, TuiState,
+    PreviewContent, RenderedTranscript, TranscriptEntry, TranscriptTone, TuiState,
     attachment_label, highlight, markdown, shimmer,
 };
 use crate::frontend::catalog::{MenuItem, UiCatalog};
@@ -26,6 +25,8 @@ use mobius::protocol::{
 const MAX_MENU_ROWS: usize = 6;
 const COMPOSER_PROMPT: &str = "» ";
 const AGENT_MARKER: &str = "• ";
+/// Preview lines an approval card shows for one call before folding the rest.
+const MAX_APPROVAL_PREVIEW_LINES: usize = 8;
 /// The narrowest step label worth keeping the key hints beside.
 const MIN_ACTIVITY_LABEL_WIDTH: usize = 12;
 
@@ -147,7 +148,7 @@ pub(super) fn live_transcript_lines(
         start > 0,
     );
     let has_content = !lines.is_empty();
-    append_live_decorations(&mut lines, state, width, has_content);
+    append_live_decorations(&mut lines, state, has_content);
     if lines.is_empty() {
         let card = responsive_welcome_card(state, width);
         push_lines(
@@ -170,7 +171,7 @@ fn live_window(
     let (content_height, has_transcript) = transcript_height(&mut state.transcript, width);
     let mut decorations = Vec::new();
     let has_content = has_transcript;
-    append_live_decorations(&mut decorations, state, width, has_content);
+    append_live_decorations(&mut decorations, state, has_content);
     if !has_content && decorations.is_empty() {
         let card = responsive_welcome_card(state, width);
         push_lines(
@@ -196,16 +197,7 @@ fn live_window(
     )
 }
 
-#[expect(
-    clippy::expect_used,
-    reason = "fmt::Write for String never returns an error"
-)]
-fn append_live_decorations(
-    lines: &mut Vec<Line<'static>>,
-    state: &TuiState,
-    width: u16,
-    has_content: bool,
-) {
+fn append_live_decorations(lines: &mut Vec<Line<'static>>, state: &TuiState, has_content: bool) {
     let mut has_content = has_content;
     for (capability, item) in state
         .widgets
@@ -249,22 +241,72 @@ fn append_live_decorations(
         if has_content {
             lines.push(Line::default());
         }
-        let mut detail = format!(
-            "Approval required · {} pending\n{}",
-            state.approvals.len(),
-            request.reason
+        push_approval_card(lines, state, request);
+    }
+}
+
+/// The front approval request as a decision card: each call by its tool's own preview, then the
+/// choices with the highlighted one marked.
+fn push_approval_card(
+    lines: &mut Vec<Line<'static>>,
+    state: &TuiState,
+    request: &mobius::protocol::ExecApprovalRequestEvent,
+) {
+    let theme = current();
+    let mut heading = vec![Span::styled(
+        "Allow this?",
+        theme.style(Role::Warning).add_modifier(Modifier::BOLD),
+    )];
+    if state.approvals.len() > 1 {
+        heading.push(Span::styled(
+            format!(" · {} pending", state.approvals.len()),
+            theme.style(Role::Muted),
+        ));
+    }
+    lines.push(Line::from(heading));
+    for reason in terminal_text(&request.reason).lines() {
+        lines.push(Line::styled(
+            format!("  {reason}"),
+            theme.style(Role::Muted),
+        ));
+    }
+    for call in &request.calls {
+        let (title, body) = call.preview.as_ref().map_or_else(
+            || (call.name.to_string(), call.arguments.to_string()),
+            |preview| (preview.title.clone(), preview.text.clone()), // rules-allow: the card owns display copies of the preview
         );
-        for call in &request.calls {
-            write!(detail, "\n{} {}", call.name, call.arguments)
-                .expect("writing to String cannot fail");
+        lines.push(Line::styled(
+            format!("  {}", terminal_text(&title)),
+            theme.style(Role::Code).add_modifier(Modifier::BOLD),
+        ));
+        let body = terminal_text(&body);
+        let mut body_lines = body.lines();
+        for line in body_lines.by_ref().take(MAX_APPROVAL_PREVIEW_LINES) {
+            lines.push(Line::styled(format!("    {line}"), theme.style(Role::Code)));
         }
-        push_lines(
-            lines,
-            &bounded_terminal_text(&detail, MAX_ENTRY_BYTES),
-            TranscriptTone::Warning,
-            FrontendBlockFormat::PlainText,
-            width,
+        let hidden = body_lines.count();
+        if hidden > 0 {
+            lines.push(Line::styled(
+                format!("    … +{hidden} lines"),
+                theme.style(Role::Muted),
+            ));
+        }
+    }
+    for (index, label) in super::input::APPROVAL_CHOICES.iter().enumerate() {
+        let selected = index == state.approval_selection;
+        let text = format!(
+            "{} {}. {label}",
+            if selected { "›" } else { " " },
+            index + 1
         );
+        lines.push(Line::styled(
+            text,
+            if selected {
+                theme.style(Role::Accent).add_modifier(Modifier::BOLD)
+            } else {
+                theme.style(Role::Text)
+            },
+        ));
     }
 }
 
@@ -1199,7 +1241,7 @@ fn status_line(state: &TuiState, width: u16) -> Line<'static> {
     let theme = current();
     if state.approval().is_some() {
         return Line::styled(
-            "approval · type y once / a session / n deny / q abort, then Enter · Esc abort",
+            "↑↓ choose · Enter confirm · 1-4 pick · or type what to do instead · Esc stop",
             theme.style(Role::Warning),
         );
     }

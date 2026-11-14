@@ -182,24 +182,28 @@ fn queued_approvals_keep_the_draft_until_the_last_decision() {
             .join("\n");
         assert!(detail.contains(&format!("@bot-{suffix}: approve work")));
         assert!(state.composer.text.is_empty());
-        assert_eq!(
-            state.handle_key(
-                KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
-                &default_catalog()
-            ),
-            UiAction::None,
-        );
-        assert_eq!(state.composer.text, "y");
-        assert_eq!(
-            state.handle_key(
-                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-                &default_catalog()
-            ),
-            UiAction::submit(Op::ExecApproval {
-                id: format!("approval-{suffix}").into(),
-                decision: ReviewDecision::Approved,
-            }),
-        );
+        let approved = UiAction::submit(Op::ExecApproval {
+            id: format!("approval-{suffix}").into(),
+            decision: ReviewDecision::Approved,
+        });
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        if suffix == "a" {
+            assert_eq!(
+                state.handle_key(key(KeyCode::Char('y')), &default_catalog()),
+                UiAction::None,
+            );
+            assert_eq!(state.composer.text, "y");
+            assert_eq!(
+                state.handle_key(key(KeyCode::Enter), &default_catalog()),
+                approved
+            );
+        } else {
+            // A digit picks a card choice at once; letters would have typed a reason.
+            assert_eq!(
+                state.handle_key(key(KeyCode::Char('1')), &default_catalog()),
+                approved
+            );
+        }
     }
     assert_eq!(state.composer.text, "continue after both approvals");
     assert!(state.approval().is_none());
