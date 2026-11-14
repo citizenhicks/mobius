@@ -405,3 +405,21 @@ fn explicit_api_key_replaces_credentialless_auth() {
         ProviderEndpointAuth::ProviderDefault
     );
 }
+
+#[test]
+fn unsaved_bot_settings_survive_one_escape_and_apply_with_ctrl_s() {
+    let mut state = state(SetupMode::Bot, "openai_socket", true);
+    let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+    assert_eq!(state.handle_key(key(KeyCode::Esc)), Flow::Cancel);
+
+    let mut state = self::state(SetupMode::Bot, "openai_socket", true);
+    state.row = feature_row(&state, "plain");
+    state.handle_key(key(KeyCode::Char(' ')));
+    assert_eq!(state.handle_key(key(KeyCode::Esc)), Flow::Continue);
+    assert_eq!(
+        state.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)),
+        Flow::Finish
+    );
+    assert_eq!(state.handle_key(key(KeyCode::Esc)), Flow::Continue);
+    assert_eq!(state.handle_key(key(KeyCode::Esc)), Flow::Cancel);
+}

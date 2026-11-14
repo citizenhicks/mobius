@@ -101,6 +101,10 @@ pub(super) struct SetupState {
     pub(super) error: Option<String>,
     pub(super) progress: Option<Progress>,
     pub(super) remove_confirmation: Option<String>,
+    /// Bot settings were changed since the page opened.
+    pub(super) unsaved: bool,
+    /// One Esc has warned about unsaved settings; the next discards them.
+    pub(super) discard_armed: bool,
 }
 
 impl SetupState {
@@ -195,6 +199,8 @@ impl SetupState {
             error: None,
             progress: None,
             remove_confirmation: None,
+            unsaved: false,
+            discard_armed: false,
         };
         state.reset_provider_fields();
         Ok(state)
@@ -672,6 +678,23 @@ impl SetupState {
     }
 
     pub(super) fn handle_agent_key(&mut self, key: KeyEvent) -> Flow {
+        if key.code == KeyCode::Esc && self.unsaved && !self.discard_armed {
+            self.discard_armed = true;
+            return Flow::Continue;
+        }
+        self.discard_armed = false;
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
+            return self.finish();
+        }
+        let changes = matches!(
+            (key.code, self.middleware_row(self.row)),
+            (KeyCode::Char(' '), Some(_))
+                | (
+                    KeyCode::Right | KeyCode::Left,
+                    Some(MiddlewareRow::Setting { .. })
+                )
+        );
+        self.unsaved |= changes;
         match (key.code, self.middleware_row(self.row)) {
             (KeyCode::Esc, _) => return Flow::Cancel,
             (KeyCode::Up | KeyCode::BackTab, _) => self.move_selection(-1),

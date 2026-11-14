@@ -107,7 +107,11 @@ pub(super) fn render_editing(lines: &mut Vec<Line<'static>>, state: &SetupState,
     ));
     lines.push(Line::styled(
         format!("  {context}"),
-        theme.style(Role::Muted),
+        theme.style(if state.discard_armed {
+            Role::Warning
+        } else {
+            Role::Muted
+        }),
     ));
     lines.push(Line::from(""));
     render_page(lines, state, width);
@@ -148,6 +152,10 @@ pub(super) fn page_prompt(state: &SetupState) -> (&'static str, String) {
         Page::Models => (
             "Models & reasoning",
             "Choose a model and reasoning level, or enter a custom model ID.".into(),
+        ),
+        Page::Agent if state.discard_armed => (
+            "Bot settings",
+            "Unsaved changes · Esc again discards them · Ctrl-S applies them".into(),
         ),
         Page::Agent => (
             "Bot settings",
@@ -812,7 +820,7 @@ pub(super) fn footer(state: &SetupState) -> &'static str {
         }
         Page::Models => "  ↑↓ move · space select · enter activate · esc back",
         Page::Agent => {
-            "  ↑↓ move · space change · ←→ close/open/adjust · enter open/apply · esc cancel"
+            "  ↑↓ move · space change · ←→ close/open/adjust · enter open/apply · ctrl+s apply · esc cancel"
         }
     }
 }
