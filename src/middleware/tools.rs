@@ -123,6 +123,7 @@ pub struct ToolContext {
     pub turn_id: Arc<str>,
     model_route: Arc<str>,
     usage: ToolUsage,
+    frontend: Option<super::FrontendEventSink>,
 }
 
 impl std::fmt::Debug for ToolContext {
@@ -151,7 +152,18 @@ impl ToolContext {
             turn_id: turn_id.into(),
             model_route: Arc::default(),
             usage: ToolUsage::default(),
+            frontend: None,
         }
+    }
+
+    pub(crate) fn with_frontend(mut self, frontend: Option<super::FrontendEventSink>) -> Self {
+        self.frontend = frontend;
+        self
+    }
+
+    /// The sink for transient progress while this call runs, when a frontend is attached.
+    pub(crate) fn frontend(&self) -> Option<&super::FrontendEventSink> {
+        self.frontend.as_ref()
     }
 
     pub(crate) fn with_model_route(mut self, route: impl Into<Arc<str>>) -> Self {
@@ -356,6 +368,8 @@ pub struct Catalog {
     revision: String,
     finalized: bool,
     repeats: Arc<repeats::RepeatGuard>,
+    /// Where running tools publish transient progress for this agent's frontends.
+    frontend: Option<super::FrontendEventSink>,
 }
 
 /// One catalog snapshot resolved for a model boundary.
@@ -454,6 +468,11 @@ impl std::fmt::Debug for Catalog {
 }
 
 impl Catalog {
+    /// Lets running tools publish transient progress, such as a command's live output.
+    pub(crate) fn publish_progress_to(&mut self, frontend: super::FrontendEventSink) {
+        self.frontend = Some(frontend);
+    }
+
     fn observe_hosted(
         &self,
         turn_id: &str,
@@ -1315,7 +1334,8 @@ async fn run_call(
     )
     .with_model_route(Arc::clone(model_route))
     .with_call_id(Arc::clone(&call.call_id))
-    .with_author(Arc::clone(author));
+    .with_author(Arc::clone(author))
+    .with_frontend(catalog.frontend.as_ref().map(Arc::clone));
     let pending_usage = ToolUsage(Arc::clone(&context.usage.0));
     let Some(tool) = catalog.get(&call.name) else {
         return ToolResult::error(&call, format!("unknown tool `{}`", call.name), output_limit);

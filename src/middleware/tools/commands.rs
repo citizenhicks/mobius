@@ -1,13 +1,18 @@
 use serde::Deserialize;
 use serde_json::Value;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use super::{
     ApprovalRequirement, HookIdentity, MAX_COMMAND_BYTES, Tool, ToolContext, ToolExposure,
 };
 use crate::backend::model::ToolDefinition;
-use crate::backend::sandbox::BackgroundCommandPoll;
-use crate::protocol::{EventMsg, FrontendBlock, ToolContent};
+use crate::backend::sandbox::{BackgroundCommandPoll, CommandOutputSink};
+use crate::middleware::FrontendEventSink;
+use crate::protocol::{
+    EventMsg, FrontendBlock, FrontendEvent, FrontendPriority, FrontendSlot, FrontendTone,
+    FrontendWidget, ToolContent,
+};
 use crate::{BoxFuture, Error, Result};
 
 #[derive(serde::Deserialize)]
@@ -113,13 +118,159 @@ impl Tool for Bash {
             let arguments: BashArgs = serde_json::from_value(arguments)?;
             validate_command(&arguments.command)?;
             let wait = arguments.wait()?;
+            let live = context
+                .frontend()
+                .filter(|_| !arguments.run_in_background)
+                .map(|frontend| LiveOutput::new(frontend, &context.call_id));
+            let observer = live
+                .as_ref()
+                .map_or_else(CommandOutputSink::default, LiveOutput::sink);
             let output = context
                 .sandbox
-                .run_command(arguments.command, context.permissions.mutation()?, wait)
-                .await?;
-            Ok(background_output(&output, context.sandbox.output_limit()).into())
+                .run_command(
+                    arguments.command,
+                    context.permissions.mutation()?,
+                    wait,
+                    observer,
+                )
+                .await;
+            if let Some(live) = live {
+                live.finish();
+            }
+            Ok(background_output(&output?, context.sandbox.output_limit()).into())
         })
     }
+}
+
+/// Newest output lines a running command shows, and how often they refresh.
+const LIVE_LINES: usize = 5;
+const LIVE_BYTES: usize = 600;
+const LIVE_INTERVAL: Duration = Duration::from_millis(250);
+
+/// A running command's newest output lines, published as a transient transcript-tail widget and
+/// removed when the call returns; the call's result row stays the durable record.
+struct LiveOutput(Arc<LiveTail>);
+
+struct LiveTail {
+    frontend: FrontendEventSink,
+    id: Arc<str>,
+    state: Mutex<LiveState>,
+}
+
+#[derive(Default)]
+struct LiveState {
+    tail: String,
+    published: Option<Instant>,
+}
+
+impl LiveOutput {
+    fn new(frontend: &FrontendEventSink, call_id: &str) -> Self {
+        Self(Arc::new(LiveTail {
+            frontend: Arc::clone(frontend),
+            id: format!("live-output:{call_id}").into(),
+            state: Mutex::default(),
+        }))
+    }
+
+    fn sink(&self) -> CommandOutputSink {
+        let tail = Arc::clone(&self.0);
+        CommandOutputSink::new(move |_, bytes| tail.push(bytes))
+    }
+
+    fn finish(self) {
+        let published = self
+            .0
+            .state
+            .lock()
+            .is_ok_and(|state| state.published.is_some());
+        if published {
+            self.0.publish(FrontendEvent::RemoveWidget {
+                capability: super::MANIFEST.id.into(),
+                id: self.0.id.to_string(),
+            });
+        }
+    }
+}
+
+impl LiveTail {
+    fn push(&self, bytes: &[u8]) {
+        let text = {
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
+            state.tail.push_str(&String::from_utf8_lossy(bytes));
+            state.tail = live_tail(&state.tail);
+            if state
+                .published
+                .is_some_and(|at| at.elapsed() < LIVE_INTERVAL)
+                || state.tail.trim().is_empty()
+            {
+                return;
+            }
+            state.published = Some(Instant::now());
+            state.tail.trim_end().to_owned()
+        };
+        self.publish(FrontendEvent::Widget {
+            capability: super::MANIFEST.id.into(),
+            item: Arc::new(FrontendWidget {
+                id: Arc::clone(&self.id),
+                slot: FrontendSlot::TranscriptTail,
+                text,
+                tone: FrontendTone::Neutral,
+                symbol: None,
+                icon_only: false,
+                progress: None,
+                content: None,
+                action: None,
+                count: None,
+                priority: FrontendPriority::default(),
+            }),
+        });
+    }
+
+    fn publish(&self, event: FrontendEvent) {
+        if let Err(error) = (self.frontend)(event) {
+            tracing::debug!(%error, "live command output was not published");
+        }
+    }
+}
+
+/// `line` without control characters or terminal escape sequences such as colours.
+fn printable(line: &str) -> String {
+    let mut text = String::with_capacity(line.len());
+    let mut escape = false;
+    for character in line.chars() {
+        if character == '\x1b' {
+            escape = true;
+        } else if escape {
+            // A sequence ends at its final letter; `[` and parameters come before it.
+            escape = !character.is_ascii_alphabetic();
+        } else if !character.is_control() || character == '\t' {
+            text.push(character);
+        }
+    }
+    text
+}
+
+/// The last lines of `output` as a terminal would show them: a carriage return redraws its
+/// line, control characters drop out, and the tail stays within its line and byte bounds.
+fn live_tail(output: &str) -> String {
+    let lines: Vec<String> = output
+        .split('\n')
+        .map(|line| printable(line.rsplit('\r').next().unwrap_or_default()))
+        .collect();
+    // One more than the kept lines: the text after the last newline is the line still being written.
+    let skipped = lines.len().saturating_sub(LIVE_LINES + 1);
+    let mut tail = lines
+        .into_iter()
+        .skip(skipped)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if tail.len() > LIVE_BYTES {
+        let start = tail.ceil_char_boundary(tail.len() - LIVE_BYTES);
+        tail.drain(..start);
+    }
+    tail
 }
 
 #[derive(Deserialize)]
@@ -378,6 +529,17 @@ mod tests {
             .expect("arguments");
             assert!(arguments.wait().is_err());
         }
+    }
+
+    #[test]
+    fn live_tail_keeps_the_newest_lines_as_a_terminal_shows_them() {
+        let output = "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\n\
+                      progress 10%\rprogress 90%\x1b[0m";
+        assert_eq!(
+            live_tail(output),
+            "line 5\nline 6\nline 7\nline 8\nline 9\nprogress 90%"
+        );
+        assert!(live_tail(&"x".repeat(5_000)).len() <= LIVE_BYTES);
     }
 
     #[test]

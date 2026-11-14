@@ -216,6 +216,7 @@ impl Sandbox {
         command: String,
         permit: MutationPermit<'_>,
         initial_wait: std::time::Duration,
+        observer: super::CommandOutputSink,
     ) -> Result<BackgroundCommandPoll> {
         let permissions = permit.0;
         self.background
@@ -225,6 +226,7 @@ impl Sandbox {
                 command,
                 permissions.sandbox_mode,
                 permissions.network_access,
+                observer,
             )?
             .wait(&permissions.session_id, initial_wait)
             .await

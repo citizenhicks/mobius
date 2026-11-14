@@ -152,6 +152,7 @@ impl BackgroundCommands {
         command: String,
         sandbox_mode: SandboxMode,
         network_access: NetworkAccess,
+        observer: CommandOutputSink,
     ) -> Result<StartingCommand<'_>> {
         let listener = self
             .listeners
@@ -205,6 +206,7 @@ impl BackgroundCommands {
             if let Ok(mut output) = streamed.lock() {
                 output.push(stream, bytes);
             }
+            observer.write(stream, bytes);
         });
         let (finished, completion) = oneshot::channel();
         let state = Arc::new(AtomicU8::new(0));
@@ -535,6 +537,7 @@ mod tests {
                 "printf first".into(),
                 SandboxMode::DangerFullAccess,
                 NetworkAccess::Denied,
+                CommandOutputSink::default(),
             )
         };
         let first = start().expect("first command");
@@ -598,6 +601,7 @@ mod tests {
                     name.into(),
                     SandboxMode::DangerFullAccess,
                     NetworkAccess::Denied,
+                    CommandOutputSink::default(),
                 )
                 .expect("start");
             started.notified().await;
@@ -677,6 +681,7 @@ mod tests {
                 "command".into(),
                 SandboxMode::WorkspaceWrite,
                 NetworkAccess::Denied,
+                CommandOutputSink::default(),
             )
             .expect("start");
         started.notified().await;
@@ -706,6 +711,7 @@ mod tests {
                 "command".into(),
                 SandboxMode::WorkspaceWrite,
                 NetworkAccess::Denied,
+                CommandOutputSink::default(),
             )
             .expect("start");
         let mut waiting = Box::pin(command.wait(&session, std::time::Duration::from_secs(60)));

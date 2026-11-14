@@ -568,6 +568,7 @@ impl MiddlewareStack {
                 validate_tool_rendering(entry.as_ref(), &definition.name, &runtime.session_id)?;
             }
         }
+        catalog.publish_progress_to(Arc::clone(&runtime.frontend));
         catalog.finalize()?;
         Ok(catalog)
     }
