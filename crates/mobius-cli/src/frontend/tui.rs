@@ -85,6 +85,8 @@ struct TranscriptEntry {
     rendered: Option<(u16, RenderedTranscript)>,
     /// Incremental Markdown state while gateway text deltas extend this entry.
     stream: Option<Box<markdown::StreamCache>>,
+    /// When a running tool row first appeared, so its title can decode into place.
+    appeared: Option<Instant>,
 }
 
 struct RenderedTranscript {
@@ -94,6 +96,8 @@ struct RenderedTranscript {
     height: usize,
     /// A running tool whose first line leads with a marker the frame replaces with a spinner.
     spinner: bool,
+    /// When that tool row appeared; its title scrambles for a moment after.
+    appeared: Option<Instant>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -763,6 +767,9 @@ impl TuiState {
             pending: block.state == FrontendBlockState::Pending,
             rendered: None,
             stream: None,
+            appeared: (block.state == FrontendBlockState::Pending
+                && block.role == FrontendBlockRole::Tool)
+                .then(Instant::now),
         });
         self.trim_transcript();
     }
@@ -889,6 +896,7 @@ impl TuiState {
             pending: false,
             rendered: None,
             stream: None,
+            appeared: None,
         });
         self.trim_transcript();
     }

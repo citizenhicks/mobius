@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::time::Instant;
 
 use diffy::Line as DiffLine;
 use diffy::Patch;
@@ -308,7 +309,7 @@ fn render_transcript_window<'a>(
             .enumerate()
         {
             if index == 0 && rendered.spinner {
-                window.push(*height, || spinning_marker(line));
+                window.push(*height, || spinning_marker(line, rendered.appeared));
             } else {
                 window.push(*height, || borrow_line(line));
             }
@@ -437,15 +438,23 @@ fn ensure_rendered(entry: &mut TranscriptEntry, width: u16) {
             height: heights.iter().sum(),
             wrapped_heights: heights,
             spinner,
+            appeared: entry.appeared.filter(|_| spinner),
         },
     ));
 }
 
-/// A running tool's header line with its marker swapped for the current spinner frame.
-fn spinning_marker<'a>(line: &'a Line<'_>) -> Line<'a> {
+/// A running tool's header line with its marker swapped for the current spinner frame, and its
+/// title still decoding into place if the row appeared only a moment ago.
+fn spinning_marker<'a>(line: &'a Line<'_>, appeared: Option<Instant>) -> Line<'a> {
     let mut line = borrow_line(line);
     if let Some(marker) = line.spans.first_mut() {
         marker.content = format!("{} ", motion::spinner()).into();
+    }
+    if let Some(appeared) = appeared
+        && let Some(title) = line.spans.get_mut(1)
+        && let Some(scrambled) = motion::scramble(&title.content, appeared.elapsed())
+    {
+        title.content = scrambled.into();
     }
     line
 }
