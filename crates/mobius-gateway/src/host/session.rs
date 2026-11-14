@@ -221,6 +221,8 @@ fn no_workspace() -> Rejection {
 }
 
 pub(super) enum HostCommand {
+    /// Adopt the Bot's saved settings now if the chat is idle, instead of at its next message.
+    RefreshBot,
     RuntimeIsIdle {
         reply: oneshot::Sender<std::result::Result<bool, Rejection>>,
     },
@@ -658,6 +660,19 @@ impl HostHandle {
     pub(super) async fn runtime_is_idle(&self) -> std::result::Result<bool, Rejection> {
         self.request(|reply| HostCommand::RuntimeIsIdle { reply })
             .await
+    }
+
+    /// Asks an idle chat to adopt its Bot's saved settings now; a busy chat adopts them on its
+    /// next message, so a full queue is not an error.
+    pub(super) fn refresh_bot(&self) {
+        if self
+            .inner
+            .commands
+            .try_send(HostCommand::RefreshBot)
+            .is_err()
+        {
+            tracing::debug!("chat request queue full; Bot settings apply on its next message");
+        }
     }
 
     pub(super) async fn provider_cutover_status(

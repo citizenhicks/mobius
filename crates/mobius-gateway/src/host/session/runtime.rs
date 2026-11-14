@@ -184,6 +184,7 @@ impl HostState {
 
     pub(super) async fn handle(&mut self, command: HostCommand) -> bool {
         match command {
+            HostCommand::RefreshBot => self.refresh_bot().await,
             HostCommand::RuntimeIsIdle { reply } => {
                 let result = if self.is_idle() {
                     self.runtime_is_idle().await
@@ -623,6 +624,14 @@ impl HostState {
             self.approval_active = false;
         }
         Ok(())
+    }
+
+    async fn refresh_bot(&mut self) {
+        if let Ok(_mutation) = self.begin_session_mutation()
+            && let Err(rejection) = self.bind_bot().await
+        {
+            tracing::warn!(code = %rejection.code, "could not adopt updated Bot settings");
+        }
     }
 
     async fn bind_bot(&mut self) -> std::result::Result<(), Rejection> {

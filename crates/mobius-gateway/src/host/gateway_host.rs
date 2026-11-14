@@ -460,7 +460,7 @@ impl GatewayHost {
             .await
             .map_err(invalid_config)?;
         }
-        let _mutation = self.begin_mutation().await?;
+        let mutation = self.begin_mutation().await?;
         let state = self.state.lock().await;
         let previous = state.bots.bot(id).map_err(invalid_bot)?;
         let (config, approval) = validate_bot_config(&state, config)?.into_parts();
@@ -509,7 +509,13 @@ impl GatewayHost {
             prepared.bot = Arc::clone(&bot);
             state.bots.prepared.replace(prepared).await;
         }
+        let residents: Vec<_> = state.sessions.values().cloned().collect(); // rules-allow: handles are shared channels, released before the chats rebind
         drop(state);
+        drop(mutation);
+        // Idle chats show the new settings (such as the approval policy) without waiting for a message.
+        for host in &residents {
+            host.refresh_bot();
+        }
         self.broadcast_bots();
         Ok(bot)
     }
