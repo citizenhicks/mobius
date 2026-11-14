@@ -84,7 +84,7 @@ impl Cli {
     ///
     /// # Errors
     /// Returns input, gateway connection, authentication, or frontend failures.
-    pub async fn run(self) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    pub async fn run(self) -> anyhow::Result<()> {
         match self.command {
             None => run_interactive(None).await?,
             Some(Command::Resume { chat }) => run_interactive(Some(chat)).await?,

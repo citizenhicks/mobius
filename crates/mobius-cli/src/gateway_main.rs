@@ -7,7 +7,7 @@ use mobius_gateway::command::{FrontendCommand, GatewayCli};
 use mobius_gateway::gateway_accounts::GatewayAccounts;
 
 #[tokio::main]
-async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
+async fn main() -> anyhow::Result<()> {
     let cli = GatewayCli::parse();
     let filter =
         std::env::var("RUST_LOG").unwrap_or_else(|_| "off,mobius=info,mobius_gateway=info".into());

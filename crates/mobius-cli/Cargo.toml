@@ -22,6 +22,7 @@ path = "src/gateway_main.rs"
 doc = false
 
 [dependencies]
+anyhow = "1"
 arboard = { version = "3", features = ["wayland-data-control"] }
 chrono.workspace = true
 clap.workspace = true
