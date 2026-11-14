@@ -1,15 +1,49 @@
 # mobius-desktop 0.17.8
 
-Use the framework's ring-backed HTTP stack for remote interface images. Remove the
-unused GPUI TLS dependency that enabled a second crypto backend and caused the
-embedded gateway to panic when opening secure model connections.
+Bundle gateway **0.17.8** and use protocol **102**. A matching protocol-102 gateway is required; protocol 101 is incompatible. Configuration 30 and retained gateway state do not require conversion from 0.17.7. Coordinate remote gateway and client upgrades.
 
-Memory settings live under Capabilities for both individual Bots and defaults,
-using the same controls.
+- Use one ring-backed HTTP/TLS stack, removing the unused second crypto backend that could panic when opening secure model connections; reject unsupported image redirect policies before sending. [08019d6b](https://github.com/citizenhicks/mobius/commit/08019d6b), [3507a8cc](https://github.com/citizenhicks/mobius/commit/3507a8cc)
+- Move to GPUI Kit 0.9.1 with one Fast rendering backend and GPU-presented motion; preserve animations while bounding frame scheduling and sharing motion data. [a5fa6fd8](https://github.com/citizenhicks/mobius/commit/a5fa6fd8), [059d7a99](https://github.com/citizenhicks/mobius/commit/059d7a99), [832a415c](https://github.com/citizenhicks/mobius/commit/832a415c), [0947bb7b](https://github.com/citizenhicks/mobius/commit/0947bb7b), [e485b16d](https://github.com/citizenhicks/mobius/commit/e485b16d)
+- Keep retained motion indices local to each scroll scene, preventing animated scroll layers from using another layer’s transforms. [61e6a423](https://github.com/citizenhicks/mobius/commit/61e6a423)
+- Finish row motion at the calculated spring rest deadline, including large moves and reversals. [720e47a9](https://github.com/citizenhicks/mobius/commit/720e47a9)
+- Cache recent chat images and release evicted or deleted-chat pixels without fetching them again. [a98eeea2](https://github.com/citizenhicks/mobius/commit/a98eeea2), [ad5f229e](https://github.com/citizenhicks/mobius/commit/ad5f229e)
+- Count nested tool invocations correctly and avoid rescanning completed transcript history for each live update. [00db7c5c](https://github.com/citizenhicks/mobius/commit/00db7c5c), [796dccee](https://github.com/citizenhicks/mobius/commit/796dccee)
+- Keep a single transcript row when a streamed final answer completes as commentary. [259e4b44](https://github.com/citizenhicks/mobius/commit/259e4b44)
+- Show committed execution statistics through live gateway events; reconcile terminal totals with the transcript after real tool success and failure. [cca1042b](https://github.com/citizenhicks/mobius/commit/cca1042b), [cc27b053](https://github.com/citizenhicks/mobius/commit/cc27b053), [d4135fd9](https://github.com/citizenhicks/mobius/commit/d4135fd9)
+- Keep token usage paired with its request and attribute paid image usage to the actual model route. [b2813784](https://github.com/citizenhicks/mobius/commit/b2813784), [c27338ea](https://github.com/citizenhicks/mobius/commit/c27338ea), [c1487f22](https://github.com/citizenhicks/mobius/commit/c1487f22), [a043e34e](https://github.com/citizenhicks/mobius/commit/a043e34e)
+- Compact extension skill catalogs while retaining their metadata and complete on-demand skill reads. [fc635970](https://github.com/citizenhicks/mobius/commit/fc635970)
+- Edit held messages from their right-click menu, constructing the edit operation only when selected. [d3f8461d](https://github.com/citizenhicks/mobius/commit/d3f8461d), [886e68ad](https://github.com/citizenhicks/mobius/commit/886e68ad), [8e5a6899](https://github.com/citizenhicks/mobius/commit/8e5a6899)
+- Retain routine and dialog drafts until accepted, recover a saved routine when its reply is lost, and report application errors through the shared toast. [38c05764](https://github.com/citizenhicks/mobius/commit/38c05764), [9dacff05](https://github.com/citizenhicks/mobius/commit/9dacff05), [d75302e2](https://github.com/citizenhicks/mobius/commit/d75302e2), [7d747aa1](https://github.com/citizenhicks/mobius/commit/7d747aa1), [80711c75](https://github.com/citizenhicks/mobius/commit/80711c75)
+- Preserve non-chat pages on resume and clear gateway-specific draft selections when changing gateways. [01bc5b57](https://github.com/citizenhicks/mobius/commit/01bc5b57), [c554ecae](https://github.com/citizenhicks/mobius/commit/c554ecae), [94b2279f](https://github.com/citizenhicks/mobius/commit/94b2279f)
+- Use the gateway-resolved model and reasoning choice; discard unavailable inherited model choices when creating a Bot. [c3560212](https://github.com/citizenhicks/mobius/commit/c3560212), [017860d7](https://github.com/citizenhicks/mobius/commit/017860d7), [347dabe9](https://github.com/citizenhicks/mobius/commit/347dabe9)
+- Group Memory controls under Capabilities consistently for Bot defaults and individual Bots; keep memory behavior unchanged. [21b2eebc](https://github.com/citizenhicks/mobius/commit/21b2eebc), [3936bf1e](https://github.com/citizenhicks/mobius/commit/3936bf1e)
+- Register the embedded browser before lazy startup and withdraw its advertised availability if startup fails. [cb0ddfec](https://github.com/citizenhicks/mobius/commit/cb0ddfec), [41275886](https://github.com/citizenhicks/mobius/commit/41275886)
+- Check Cloud refresh independently of other native events and bound activity reports rather than collecting every matching chat. [84fef9f3](https://github.com/citizenhicks/mobius/commit/84fef9f3), [1ced754c](https://github.com/citizenhicks/mobius/commit/1ced754c), [d1b62f11](https://github.com/citizenhicks/mobius/commit/d1b62f11)
+- Supervise failed agent runners, preserve the current recovery context and attempt durable turn cleanup once. [7ff9acc8](https://github.com/citizenhicks/mobius/commit/7ff9acc8), [dd839ba7](https://github.com/citizenhicks/mobius/commit/dd839ba7)
+- Classify provider failures and fail promptly with a truthful message while the provider’s circuit breaker is open. [d536b930](https://github.com/citizenhicks/mobius/commit/d536b930), [2b167a84](https://github.com/citizenhicks/mobius/commit/2b167a84), [1fd06a05](https://github.com/citizenhicks/mobius/commit/1fd06a05)
+- Check that calculation categories have populated source fields and verify the basis and impact of material assumption changes. [08019d6b](https://github.com/citizenhicks/mobius/commit/08019d6b)
+- Clarify that the model’s scratch directory is separate from the task workspace. [a9c7ff5f](https://github.com/citizenhicks/mobius/commit/a9c7ff5f)
+- Require Rust 1.100.0 and replace local workarounds with its standard primitives. Retain the experimental eight-worker compiler frontend. [1d6341bc](https://github.com/citizenhicks/mobius/commit/1d6341bc), [46ebfc0f](https://github.com/citizenhicks/mobius/commit/46ebfc0f)
+- Reduce renderer vendoring and give Bots, transcript documents, snapshots and gateway state explicit owners; retain focused regression coverage. [7711d8da](https://github.com/citizenhicks/mobius/commit/7711d8da), [d99e6314](https://github.com/citizenhicks/mobius/commit/d99e6314), [433d341b](https://github.com/citizenhicks/mobius/commit/433d341b), [809bb560](https://github.com/citizenhicks/mobius/commit/809bb560), [fbbfbfed](https://github.com/citizenhicks/mobius/commit/fbbfbfed), [0f9630e7](https://github.com/citizenhicks/mobius/commit/0f9630e7)
+- Restore the live gateway after offline snapshot fixtures so later QA scenarios can open real chats. [eace2a41](https://github.com/citizenhicks/mobius/commit/eace2a41)
 
-Bundle gateway **0.17.8**. Use protocol **102** with a matching local or remote gateway.
-Protocol 101 gateways are incompatible.
+Measured locally on 14 November 2026: M4 Max (16 CPU cores, 128 GiB), macOS 27.2.1, 1600 × 1000 app window. Both builds were optimized, Developer ID signed, without snapshot instrumentation. **Before** is the retained pre-GPU 0.17.8 build [cc27b053](https://github.com/citizenhicks/mobius/commit/cc27b053); **after** is [eace2a41](https://github.com/citizenhicks/mobius/commit/eace2a41). This is a comparison within 0.17.8 development, not a released-0.17.7 comparison or an isolated measurement of one commit.
 
-Keep GPU-presented animations and recent-chat image caching. Held messages can be
-edited from their context menu. Rust 1.100.0 builds retain the experimental
-eight-worker compiler frontend.
+Idle CPU is the median of three consecutive 20-second samples with the completed audit chat and sidebar visible. Waiting CPU, memory, disk and network counters cover 60 seconds while the same audit Bot runs one `sleep 110` command, with the sidebar hidden. Separate 10-second Metal traces measure the union of the app’s explicitly active GPU intervals; they are not hardware utilization or energy. No compilation ran during these captures. CPU uses calibrated process counters; 100% means one core. Memory is the median over the window. The same chat accumulated additional short audit turns between runs, and process lifetimes and caches differ; these short samples do not establish leak behavior or battery life. The earlier baseline window that crossed tool completion was excluded.
+
+Animations remain enabled. Waiting CPU and GPU active time decreased, while app memory and idle GPU active time increased in these samples. Both waiting tasks returned the exact expected result using two model calls and one tool call, without polling. No token reduction is inferred from this task because its accumulated context differs. Simulator checks are separate from this macOS table and do not represent physical iOS device performance.
+
+| macOS workload / metric | Before: cc27b053 | After: eace2a41 | Observed change / limit |
+| --- | ---: | ---: | --- |
+| Completed chat, sidebar visible: app CPU (% of one core) | 10.93% | 3.73% | 65.9% lower; median of 3 × 20 s |
+| Completed chat: app GPU active interval union (ms / 10 s) | 48.53 | 87.45 | Higher; separate diagnostic trace |
+| Completed chat: app RSS / physical footprint (MiB) | 225.42 / 383.42 | 244.94 / 399.66 | Higher; cache and lifetime effects apply |
+| Tool waiting, sidebar hidden: app CPU (% of one core) | 61.32% | 9.12% | 85.1% lower over 60 s |
+| Tool waiting: app GPU active interval union (ms / 10 s) | 1,231.42 | 401.11 | 67.4% lower; separate diagnostic trace |
+| Tool waiting: app RSS / physical footprint (MiB) | 223.19 / 373.66 | 247.17 / 401.47 | Higher; no memory saving claimed |
+| Tool waiting: gateway CPU (% of one core) | 0.288% | 0.255% | Both below 0.3% |
+| Tool waiting: app physical read / write (bytes / 60 s) | 0 / 0 | 0 / 0 | Physical counters, not logical writes |
+| Tool waiting: gateway physical read / write (bytes / 60 s) | 0 / 16,384 | 0 / 0 | Short-window persistence timing differs |
+| Tool waiting: app network in / out (bytes / 60 s) | 0 / 0 | 0 / 0 | Process counters during the wait only |
+| Tool waiting: gateway network in / out (bytes / 60 s) | 84 / 96 | 84 / 96 | Excludes model request/result outside the window |
+| Complete controlled task: model calls / tool calls | 2 / 1 | 2 / 1 | Same correct marker; no polling calls |

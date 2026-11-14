@@ -1,14 +1,10 @@
 # mobius 0.17.8
 
-Coordinated release with the gateway, CLI, and macOS app.
+- Expose committed execution statistics through `Agent::subscribe_run_stats` and `CommittedRunStats`. `RunStats` and `RunSummary` move into the framework and become non-exhaustive; downstream struct literals and exhaustive matches need updating. [cca1042b](https://github.com/citizenhicks/mobius/commit/cca1042b), [cc27b053](https://github.com/citizenhicks/mobius/commit/cc27b053), [d4135fd9](https://github.com/citizenhicks/mobius/commit/d4135fd9)
+- Preserve the current runner context after failure and attempt durable turn cleanup once, retaining cancellation and recovery behavior. [7ff9acc8](https://github.com/citizenhicks/mobius/commit/7ff9acc8), [dd839ba7](https://github.com/citizenhicks/mobius/commit/dd839ba7)
+- Keep usage paired with its originating request. `ToolContext::report_usage` now takes the paid operation’s model route before its usage, preserving the foreground model identity. Retain overflow validation before usage observers run. [c1487f22](https://github.com/citizenhicks/mobius/commit/c1487f22), [a043e34e](https://github.com/citizenhicks/mobius/commit/a043e34e)
+- Classify provider failures and admit one recovery probe per configured instance; an open circuit fails promptly rather than consuming the model retry loop. [d536b930](https://github.com/citizenhicks/mobius/commit/d536b930), [2b167a84](https://github.com/citizenhicks/mobius/commit/2b167a84), [1fd06a05](https://github.com/citizenhicks/mobius/commit/1fd06a05)
+- Compact extension catalogs without dropping skill metadata or partial-reading the selected skill, and honor explicit skill opt-outs. [3e5b70d4](https://github.com/citizenhicks/mobius/commit/3e5b70d4) Clarify the distinction between scratch space and the task workspace. [fc635970](https://github.com/citizenhicks/mobius/commit/fc635970), [a9c7ff5f](https://github.com/citizenhicks/mobius/commit/a9c7ff5f)
+- Require Rust **1.100.0** and use its standard never-type, `DropGuard`, default-mapping and prefix/suffix primitives in place of local workarounds. Builds retain the experimental eight-worker compiler frontend. [1d6341bc](https://github.com/citizenhicks/mobius/commit/1d6341bc), [46ebfc0f](https://github.com/citizenhicks/mobius/commit/46ebfc0f)
 
-Expose committed execution statistics through `Agent::subscribe_run_stats` and
-`CommittedRunStats`. `RunStats` and `RunSummary` move into the framework and become
-non-exhaustive; downstream struct literals and exhaustive matches must be updated.
-The gateway and clients use protocol **102** for live statistics.
-
-`ToolContext::report_usage` now takes the paid operation's model route before its
-usage, keeping the tool's foreground model identity unchanged.
-
-Builds pin Rust 1.100.0 and opt into its experimental eight-worker compiler frontend.
-The minimum supported Rust version is 1.100.0.
+Coordinated with gateway/CLI/macOS **0.17.8** and protocol **102** clients.
