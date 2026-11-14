@@ -1315,6 +1315,22 @@ fn status_line(state: &TuiState, width: u16) -> Line<'static> {
     if state.is_working() {
         return activity_line(state, width);
     }
+    if let Some(at) = state.reconnect_at {
+        let wait = at
+            .saturating_duration_since(std::time::Instant::now())
+            .as_secs()
+            + 1;
+        return Line::from(vec![
+            Span::styled(
+                format!("{} ", shimmer::spinner()),
+                theme.style(Role::Warning).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("Reconnecting to the gateway · next try in {wait}s · Ctrl-C exits"),
+                theme.style(Role::Warning),
+            ),
+        ]);
+    }
     Line::styled(UiCatalog::COMPOSER_HINT, theme.style(Role::Muted))
 }
 

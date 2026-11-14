@@ -98,6 +98,7 @@ async fn run_interactive() -> Result<()> {
     let Some(mut chat) = connect(None, None).await? else {
         return Ok(());
     };
+    let mut draft = None;
     loop {
         let session_id = &chat.session.session.session_id;
         let choose_initial_bot = chat.disposable_session.as_ref() == Some(session_id);
@@ -107,7 +108,10 @@ async fn run_interactive() -> Result<()> {
             &mut chat.gateway,
             &mut chat.session,
             chat.endpoint.to_string(),
-            choose_initial_bot,
+            frontend::Opening {
+                choose_bot: choose_initial_bot,
+                draft: draft.take(),
+            },
         )
         .await?;
         chat.sender = sender;
@@ -147,7 +151,8 @@ async fn run_interactive() -> Result<()> {
                     .await?;
                 }
             }
-            FrontendExit::Reconnect => {
+            FrontendExit::Reconnect { draft: unsent } => {
+                draft = unsent;
                 let selected = Some((chat.endpoint, chat.session.session.session_id.share()));
                 let Some(connection) = connect(selected, None).await? else {
                     return Ok(());

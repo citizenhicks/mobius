@@ -209,3 +209,14 @@ fn queued_approvals_keep_the_draft_until_the_last_decision() {
     assert!(state.approval().is_none());
     assert!(state.is_working());
 }
+
+#[test]
+fn a_message_typed_while_disconnected_stays_in_the_composer() {
+    let mut state = state();
+    state.disconnected = true;
+    state.composer.text = "hello again".into();
+    state.composer.cursor = state.composer.text.len();
+
+    assert_eq!(state.submit_input(&default_catalog()), UiAction::None);
+    assert_eq!(state.composer.text, "hello again");
+}

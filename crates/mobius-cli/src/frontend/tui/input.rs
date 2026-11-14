@@ -1088,6 +1088,19 @@ impl TuiState {
         if line.is_empty() && self.composer.attachments.is_empty() {
             return UiAction::None;
         }
+        if self.disconnected {
+            self.composer.text = if had_pastes {
+                line.to_owned()
+            } else {
+                submitted_input
+            };
+            self.composer.cursor = self.composer.text.len();
+            self.push(
+                "not sent · the gateway is disconnected; your message stays here until it reconnects",
+                TranscriptTone::Warning,
+            );
+            return UiAction::None;
+        }
         let op = Op::Message {
             message: MessageSubmission {
                 author: MessageAuthor::User,

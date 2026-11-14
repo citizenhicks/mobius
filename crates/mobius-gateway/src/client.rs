@@ -166,6 +166,16 @@ impl Endpoint {
         Ok(self)
     }
 
+    /// Reports whether the endpoint accepts a TCP connection within `timeout`, without
+    /// authenticating; a client uses it to decide when a full reconnect is worth trying.
+    pub async fn is_reachable(&self, timeout: std::time::Duration) -> bool {
+        let address = format_address(&self.host, self.port);
+        matches!(
+            tokio::time::timeout(timeout, TcpStream::connect(address)).await,
+            Ok(Ok(_))
+        )
+    }
+
     /// Returns the validated endpoint host for server-side routing policy.
     #[must_use]
     pub(crate) fn host(&self) -> &str {

@@ -375,6 +375,8 @@ struct TuiState {
     approval_draft: Option<InputDraft>,
     /// The highlighted choice on the front approval card.
     approval_selection: usize,
+    /// When the next reconnect probe runs while the gateway is unreachable.
+    reconnect_at: Option<Instant>,
     /// A question answer whose text the composer is collecting.
     question_answer: Option<Op>,
     active_turns: Vec<Arc<str>>,
@@ -434,6 +436,19 @@ impl TuiState {
 
     fn is_working(&self) -> bool {
         self.active_turn().is_some() && self.approval().is_none() && !self.disconnected
+    }
+
+    /// Whether a spinner is on screen: a working turn or a pending reconnect.
+    fn is_animating(&self) -> bool {
+        self.is_working() || self.reconnect_at.is_some()
+    }
+
+    /// Puts composer text carried over from a previous connection back in place.
+    fn restore_unsent(&mut self, draft: Option<String>) {
+        if let Some(draft) = draft {
+            self.composer.cursor = draft.len();
+            self.composer.text = draft;
+        }
     }
 
     fn message_delivery(&self) -> ActiveMessageDelivery {

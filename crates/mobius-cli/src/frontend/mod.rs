@@ -116,7 +116,7 @@ pub async fn run(
     gateway: &mut ReadyPayload,
     session: &mut SessionReadyPayload,
     gateway_endpoint: String,
-    choose_initial_bot: bool,
+    opening: Opening,
 ) -> Result<(FrontendExit, GatewaySender, GatewayEvents)> {
     let workspace = session
         .workspace
@@ -130,9 +130,18 @@ pub async fn run(
         session,
         catalog,
         gateway_endpoint,
-        choose_initial_bot,
+        opening,
     )
     .await
+}
+
+/// How the terminal frontend opens a chat.
+#[derive(Debug, Default)]
+pub struct Opening {
+    /// Offer the Bot picker before the first message.
+    pub choose_bot: bool,
+    /// Composer text carried over from a previous connection.
+    pub draft: Option<String>,
 }
 
 /// Why a frontend returned control to its launcher.
@@ -144,8 +153,11 @@ pub enum FrontendExit {
     Resume(mobius::SessionId),
     /// Selects the reload case.
     Reload,
-    /// Selects the reconnect case.
-    Reconnect,
+    /// Reconnects to the same chat, carrying the composer text that was not sent.
+    Reconnect {
+        /// The unsent composer text.
+        draft: Option<String>,
+    },
     /// Selects the fresh-session case after deleting the open chat.
     Fresh,
 }

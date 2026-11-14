@@ -39,6 +39,15 @@ use mobius_gateway::wire::{
 /// Spinner and shimmer frames while a turn works; otherwise the screen redraws only on input
 /// or gateway events.
 const ANIMATION_INTERVAL: Duration = Duration::from_millis(80);
+/// Waits between reconnect probes after a disconnect; the last repeats.
+const RECONNECT_BACKOFF: [Duration; 5] = [
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(4),
+    Duration::from_secs(8),
+    Duration::from_secs(15),
+];
+const RECONNECT_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 const FRAME_INTERVAL: Duration = Duration::from_millis(16);
 const CLEAR_SCREEN_AND_SCROLLBACK: &str = "\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H";
 const FILE_READ_CHUNK_BYTES: usize = 256 * 1024;
@@ -56,7 +65,7 @@ pub(in crate::frontend) async fn run(
     session: &mut SessionReadyPayload,
     mut catalog: UiCatalog,
     gateway_endpoint: String,
-    choose_initial_bot: bool,
+    opening: crate::frontend::Opening,
 ) -> Result<(FrontendExit, GatewaySender, GatewayEvents)> {
     let mut guard = TerminalGuard::alternate()?;
     let mut terminal = Screen::new(CrosstermBackend::new(io::stdout()))?;
@@ -69,7 +78,9 @@ pub(in crate::frontend) async fn run(
         String::new(),
     );
     sync_session(&mut state, session, gateway)?;
-    if choose_initial_bot && gateway.bots.len() > 1 {
+    state.restore_unsent(opening.draft);
+    let mut reconnect_attempt = 0_usize;
+    if opening.choose_bot && gateway.bots.len() > 1 {
         choose_bot(
             gateway,
             session,
@@ -140,23 +151,16 @@ pub(in crate::frontend) async fn run(
                         }
                         request_git_summary(&sender, &session.session.session_id, &mut state).await;
                     }
-                    Ok(None) => {
+                    closed => {
                         disconnect(
                             &mut state,
                             &mut uploads,
                             &mut clipboard_preparation,
                             &mut replaying,
-                            "gateway disconnected · Ctrl-C to exit",
-                        );
-                        events_open = false;
-                    }
-                    Err(error) => {
-                        disconnect(
-                            &mut state,
-                            &mut uploads,
-                            &mut clipboard_preparation,
-                            &mut replaying,
-                            error.to_string(),
+                            closed.err().map_or_else(
+                                || "gateway disconnected · reconnecting".into(),
+                                |error| error.to_string(),
+                            ),
                         );
                         events_open = false;
                     }
@@ -201,8 +205,16 @@ pub(in crate::frontend) async fn run(
                 ).await;
                 dirty = true;
             }
-            _ = animation.tick(), if state.is_working() => {
+            _ = animation.tick(), if state.is_animating() => {
                 dirty = true;
+            }
+            () = sleep_until_reconnect(state.reconnect_at), if state.reconnect_at.is_some() => {
+                if let Some(next_exit) =
+                    probe_reconnect(&gateway_endpoint, &mut state, &mut reconnect_attempt).await
+                {
+                    exit = next_exit;
+                    break 'ui;
+                }
             }
         }
         guard.set_mouse_capture(
@@ -212,16 +224,8 @@ pub(in crate::frontend) async fn run(
                 .is_none_or(|preview| matches!(preview.content, super::PreviewContent::Diff(_))),
         )?;
     }
-    if let Some(preparation) = clipboard_preparation.take() {
-        drop(preparation);
-    }
-    let mut cleanup_error = None;
-    if let Some(download) = state.file_download.take() {
-        drop(download.output);
-        if let Err(error) = tokio::fs::remove_file(&download.destination).await {
-            cleanup_error = Some(partial_download_error(&download.destination, &error));
-        }
-    }
+    drop(clipboard_preparation);
+    let cleanup_error = discard_partial_download(&mut state).await;
     drop(terminal);
     drop(guard);
     if clear_on_exit {
@@ -231,6 +235,16 @@ pub(in crate::frontend) async fn run(
         report_exit_error(&error);
     }
     Ok((exit, sender, events))
+}
+
+/// Removes a download the closing chat left half written, returning what could not be removed.
+async fn discard_partial_download(state: &mut TuiState) -> Option<String> {
+    let download = state.file_download.take()?;
+    drop(download.output);
+    tokio::fs::remove_file(&download.destination)
+        .await
+        .err()
+        .map(|error| partial_download_error(&download.destination, &error))
 }
 
 fn partial_download_error(destination: &Path, error: &io::Error) -> String {
@@ -445,7 +459,10 @@ async fn handle_terminal_input(
             }
             UiAction::GatewaySettings => {
                 if open_gateway_settings(terminal, gateway_endpoint, state).await {
-                    return Ok(Some(FrontendExit::Reconnect));
+                    return Ok(Some(FrontendExit::Reconnect {
+                        draft: Some(std::mem::take(&mut state.composer.text))
+                            .filter(|draft| !draft.is_empty()),
+                    }));
                 }
                 *dirty = true;
             }
@@ -870,11 +887,47 @@ fn disconnect(
     uploads.abort();
     state.upload_in_progress = false;
     state.disconnected = true;
+    state.reconnect_at = Some(Instant::now() + reconnect_delay(0));
     while let Some(turn_id) = state.active_turns.pop() {
         state.finish_turn(&turn_id);
     }
     state.recover_unconfirmed_messages();
     state.push(message, TranscriptTone::Error);
+}
+
+/// Reconnects once the gateway accepts connections again, else schedules the next probe.
+async fn probe_reconnect(
+    gateway_endpoint: &str,
+    state: &mut TuiState,
+    attempt: &mut usize,
+) -> Option<FrontendExit> {
+    let reachable = match gateway_endpoint.parse::<mobius_gateway::client::Endpoint>() {
+        Ok(endpoint) => endpoint.is_reachable(RECONNECT_PROBE_TIMEOUT).await,
+        Err(_) => false,
+    };
+    if reachable {
+        return Some(FrontendExit::Reconnect {
+            draft: Some(std::mem::take(&mut state.composer.text)).filter(|draft| !draft.is_empty()),
+        });
+    }
+    *attempt += 1;
+    state.reconnect_at = Some(Instant::now() + reconnect_delay(*attempt));
+    None
+}
+
+fn reconnect_delay(attempt: usize) -> Duration {
+    RECONNECT_BACKOFF
+        .get(attempt)
+        .or(RECONNECT_BACKOFF.last())
+        .copied()
+        .unwrap_or(Duration::from_secs(15))
+}
+
+async fn sleep_until_reconnect(at: Option<Instant>) {
+    match at {
+        Some(at) => tokio::time::sleep_until(at.into()).await,
+        None => std::future::pending().await,
+    }
 }
 
 fn terminal_action(
