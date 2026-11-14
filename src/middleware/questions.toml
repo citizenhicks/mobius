@@ -12,6 +12,7 @@ editor_title = "Answer question"
 editor_label = "Your answer"
 editor_description = "Choose a suggested answer or provide your own."
 editor_submit_label = "Send answer"
+result_waiting = "Waiting for your answer"
 answer_message = "> {title}\n\n{answer}"
 message_not_found = "question was not found"
 message_closed = "question has already been answered or skipped"
@@ -23,7 +24,7 @@ message_unavailable = "questions are unavailable for this session"
 
 [ask_user]
 title = "Ask user"
-result_title = "ask_user"
+result_title = "Asked"
 detail = "title"
 
 [ask_user.tool]

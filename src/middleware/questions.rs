@@ -42,6 +42,7 @@ struct Definition {
     editor_label: String,
     editor_description: String,
     editor_submit_label: String,
+    result_waiting: String,
     answer_message: String,
     message_not_found: String,
     message_closed: String,
@@ -204,7 +205,14 @@ impl Middleware for Questions {
     }
 
     fn render(&self, event: &EventMsg, _session_id: &str) -> Option<FrontendBlock> {
-        DEFINITION.ask_user.render(event)
+        let mut block = DEFINITION.ask_user.render(event)?;
+        // The model reads the acceptance receipt; the reader sees that the question is now theirs.
+        if let EventMsg::ToolCallEnd(result) = event
+            && !result.is_error
+        {
+            block.text.clone_from(&DEFINITION.result_waiting);
+        }
+        Some(block)
     }
 
     fn session_start<'a>(
