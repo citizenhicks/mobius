@@ -34,8 +34,6 @@ pub(crate) struct Theme {
     success: Color,
     warning: Color,
     error: Color,
-    diff_add: Color,
-    diff_delete: Color,
 }
 
 const NORD: Theme = Theme {
@@ -52,8 +50,6 @@ const NORD: Theme = Theme {
     success: Color::Rgb(163, 190, 140),
     warning: Color::Rgb(235, 203, 139),
     error: Color::Rgb(191, 97, 106),
-    diff_add: Color::Rgb(33, 58, 43),
-    diff_delete: Color::Rgb(74, 34, 29),
 };
 
 pub(crate) const fn current() -> &'static Theme {
@@ -89,26 +85,29 @@ impl Theme {
         }
     }
 
-    pub(crate) const fn diff_add_background(&self) -> Color {
-        self.diff_add
-    }
-
-    pub(crate) const fn diff_delete_background(&self) -> Color {
-        self.diff_delete
+    /// A small filled label, such as a mode or a card's kind: dark text on the role's colour.
+    pub(crate) fn chip(&self, role: Role) -> Style {
+        Style::default()
+            .fg(CHIP_TEXT)
+            .bg(self.color(role))
+            .add_modifier(Modifier::BOLD)
     }
 }
 
-/// Dither shades fading in toward a heading, and back out after it.
-pub(crate) const DITHER_IN: &str = "▓▒░";
-pub(crate) const DITHER_OUT: &str = "░▒▓";
-/// The dither mark a divider carries between its rule segments.
-pub(crate) const DITHER_MARK: &str = "░▒▓▒░";
+/// The möbius loop in braille, two rows for the chat header. The header colours its two lobes
+/// differently, split after `LOGO_LOBE` cells, so the band reads as turning over.
+pub(crate) const LOGO: [&str; 2] = ["⣴⠋⠙⢦⣀⡴⠋⠙⣦", "⠻⣄⣠⠞⠉⠳⣄⣠⠟"];
+pub(crate) const LOGO_LOBE: usize = 5;
+/// The same loop in one row, for single-line headings.
+pub(crate) const LOGO_LINE: &str = "⢎⡑⠤⢊⡱";
+/// Text on a filled chip, dark enough to read on every accent.
+const CHIP_TEXT: Color = Color::Rgb(46, 52, 64);
 
-/// The "▓▒░ MÖBIUS section" line that heads every full-screen view.
+/// The "loop MÖBIUS section" line that heads every full-screen view.
 pub(super) fn brand_header(section: &str) -> Line<'static> {
     let theme = current();
     Line::from(vec![
-        Span::styled(format!("{DITHER_IN} "), theme.style(Role::AccentStrong)),
+        Span::styled(format!("{LOGO_LINE} "), theme.style(Role::Accent)),
         Span::styled(
             "MÖBIUS",
             theme.style(Role::Accent).add_modifier(Modifier::BOLD),

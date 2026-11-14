@@ -342,10 +342,9 @@ pub(super) fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, state: &
             Line::from(vec![
                 Span::styled(
                     format!(
-                        " {} MÖBIUS GATEWAY v{} {} ",
-                        crate::frontend::theme::DITHER_IN,
+                        " {} MÖBIUS GATEWAY v{} ",
+                        crate::frontend::theme::LOGO_LINE,
                         terminal_text(&state.gateway.gateway_version),
-                        crate::frontend::theme::DITHER_OUT,
                     ),
                     theme.style(Role::AccentStrong).add_modifier(Modifier::BOLD),
                 ),

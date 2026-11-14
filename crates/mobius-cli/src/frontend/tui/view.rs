@@ -11,24 +11,44 @@ use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 
 use super::{
     PreviewContent, RenderedTranscript, TranscriptEntry, TranscriptTone, TuiState,
-    attachment_label, highlight, markdown, shimmer,
+    attachment_label, cards, dither, highlight, markdown, motion,
 };
 use crate::frontend::catalog::{MenuItem, UiCatalog};
 use crate::frontend::dashboard::centered_area;
 use crate::frontend::terminal::{borrow_line, terminal_text, truncate_bytes};
-use crate::frontend::theme::{DITHER_IN, DITHER_MARK, DITHER_OUT, Role, current};
+use crate::frontend::theme::{LOGO, LOGO_LOBE, Role, current};
 use mobius::protocol::{
     ActiveMessageDelivery, FrontendBlockFormat, FrontendBlockRole, FrontendSlot, FrontendTone,
     FrontendWidget,
 };
+use ratatui::symbols::border;
 
 const MAX_MENU_ROWS: usize = 6;
 const COMPOSER_PROMPT: &str = "» ";
 const AGENT_MARKER: &str = "• ";
-/// Rule cells before a divider's dither mark.
-const DIVIDER_LEAD: usize = 9;
-/// Preview lines an approval card shows for one call before folding the rest.
-const MAX_APPROVAL_PREVIEW_LINES: usize = 8;
+/// The reasoning marker: dense braille, read as a thought rather than a statement.
+const REASONING_MARKER: &str = "⠿ ";
+/// A finished tool row, and one that failed.
+const DONE_MARKER: &str = "■ ";
+const FAILED_MARKER: &str = "✕ ";
+/// Your messages lead with this bar instead of their stored "› " prefix.
+const USER_BAR: &str = "▍ ";
+const USER_PREFIX: &str = "› ";
+/// The composer's rim: braille dots on every side, matching the decision cards.
+const DOTTED: border::Set<'static> = border::Set {
+    top_left: "⢀",
+    top_right: "⡀",
+    bottom_left: "⠈",
+    bottom_right: "⠁",
+    vertical_left: "⢸",
+    vertical_right: "⡇",
+    horizontal_top: "⡀",
+    horizontal_bottom: "⠁",
+};
+const WELCOME_MIN_TEXT_WIDTH: usize = 24;
+const WELCOME_RULE_WIDTH: u16 = 64;
+/// Columns of the sweeping loader at the start of the activity row.
+const LOADER_COLUMNS: u16 = 8;
 /// The narrowest step label worth keeping the key hints beside.
 const MIN_ACTIVITY_LABEL_WIDTH: usize = 12;
 
@@ -108,7 +128,8 @@ pub(super) fn render(frame: &mut Frame<'_>, state: &mut TuiState, catalog: &UiCa
             .style(theme.style(Role::Text))
             .block(
                 Block::bordered()
-                    .border_style(theme.style(Role::Border))
+                    .border_set(DOTTED)
+                    .border_style(theme.style(Role::Neutral))
                     .title(composer_title(state)),
             )
             .scroll((
@@ -150,16 +171,9 @@ pub(super) fn live_transcript_lines(
         start > 0,
     );
     let has_content = !lines.is_empty();
-    append_live_decorations(&mut lines, state, has_content);
+    append_live_decorations(&mut lines, state, has_content, width);
     if lines.is_empty() {
-        let card = responsive_welcome_card(state, width);
-        push_lines(
-            &mut lines,
-            &card,
-            TranscriptTone::Welcome,
-            FrontendBlockFormat::PlainText,
-            width,
-        );
+        lines = welcome_lines(state, width);
     }
     lines
 }
@@ -173,16 +187,9 @@ fn live_window(
     let (content_height, has_transcript) = transcript_height(&mut state.transcript, width);
     let mut decorations = Vec::new();
     let has_content = has_transcript;
-    append_live_decorations(&mut decorations, state, has_content);
+    append_live_decorations(&mut decorations, state, has_content, width);
     if !has_content && decorations.is_empty() {
-        let card = responsive_welcome_card(state, width);
-        push_lines(
-            &mut decorations,
-            &card,
-            TranscriptTone::Welcome,
-            FrontendBlockFormat::PlainText,
-            width,
-        );
+        decorations = welcome_lines(state, width);
     }
     let tail = decorations;
     let viewport = match state.preview.as_mut() {
@@ -199,7 +206,12 @@ fn live_window(
     )
 }
 
-fn append_live_decorations(lines: &mut Vec<Line<'static>>, state: &TuiState, has_content: bool) {
+fn append_live_decorations(
+    lines: &mut Vec<Line<'static>>,
+    state: &TuiState,
+    has_content: bool,
+    width: u16,
+) {
     let mut has_content = has_content;
     for (capability, item) in state
         .widgets
@@ -243,122 +255,12 @@ fn append_live_decorations(lines: &mut Vec<Line<'static>>, state: &TuiState, has
         if has_content {
             lines.push(Line::default());
         }
-        push_approval_card(lines, state, request);
+        cards::push_approval_card(lines, state, request, width);
     } else if let Some(question) = state.inline_question() {
         if has_content {
             lines.push(Line::default());
         }
-        push_question_card(lines, state, question);
-    }
-}
-
-/// An open capability question with its choices numbered for a single key press.
-fn push_question_card(
-    lines: &mut Vec<Line<'static>>,
-    state: &TuiState,
-    question: &mobius::protocol::FrontendActionListItem,
-) {
-    let theme = current();
-    lines.push(Line::from(vec![
-        Span::styled(format!("{DITHER_IN} "), theme.style(Role::Accent)),
-        Span::styled(
-            terminal_text(&question.text),
-            theme.style(Role::Text).add_modifier(Modifier::BOLD),
-        ),
-    ]));
-    let mut choices = vec![Span::raw("  ")];
-    for (index, action) in question.actions.iter().enumerate() {
-        if index > 0 {
-            choices.push(Span::styled("  ", theme.style(Role::Muted)));
-        }
-        choices.push(Span::styled(
-            format!("{}.", index + 1),
-            theme.style(Role::Accent).add_modifier(Modifier::BOLD),
-        ));
-        choices.push(Span::styled(
-            format!(" {}", terminal_text(&action.label)),
-            theme.style(Role::Text),
-        ));
-    }
-    lines.push(Line::from(choices));
-    lines.push(if state.question_answer.is_some() {
-        Line::styled(
-            "  type your answer and press Enter · Esc cancels",
-            theme.style(Role::Warning),
-        )
-    } else {
-        Line::styled(
-            "  press a number to answer, or keep chatting · /attention lists every open item",
-            theme.style(Role::Muted).add_modifier(Modifier::ITALIC),
-        )
-    });
-}
-
-/// The front approval request as a decision card: each call by its tool's own preview, then the
-/// choices with the highlighted one marked.
-fn push_approval_card(
-    lines: &mut Vec<Line<'static>>,
-    state: &TuiState,
-    request: &mobius::protocol::ExecApprovalRequestEvent,
-) {
-    let theme = current();
-    let mut heading = vec![
-        Span::styled(format!("{DITHER_IN} "), theme.style(Role::Warning)),
-        Span::styled(
-            "Allow this?",
-            theme.style(Role::Warning).add_modifier(Modifier::BOLD),
-        ),
-    ];
-    if state.approvals.len() > 1 {
-        heading.push(Span::styled(
-            format!(" · {} pending", state.approvals.len()),
-            theme.style(Role::Muted),
-        ));
-    }
-    lines.push(Line::from(heading));
-    for reason in terminal_text(&request.reason).lines() {
-        lines.push(Line::styled(
-            format!("  {reason}"),
-            theme.style(Role::Muted),
-        ));
-    }
-    for call in &request.calls {
-        let (title, body) = call.preview.as_ref().map_or_else(
-            || (call.name.to_string(), call.arguments.to_string()),
-            |preview| (preview.title.clone(), preview.text.clone()), // rules-allow: the card owns display copies of the preview
-        );
-        lines.push(Line::styled(
-            format!("  {}", terminal_text(&title)),
-            theme.style(Role::Code).add_modifier(Modifier::BOLD),
-        ));
-        let body = terminal_text(&body);
-        let mut body_lines = body.lines();
-        for line in body_lines.by_ref().take(MAX_APPROVAL_PREVIEW_LINES) {
-            lines.push(Line::styled(format!("    {line}"), theme.style(Role::Code)));
-        }
-        let hidden = body_lines.count();
-        if hidden > 0 {
-            lines.push(Line::styled(
-                format!("    … +{hidden} lines"),
-                theme.style(Role::Muted),
-            ));
-        }
-    }
-    for (index, label) in super::input::APPROVAL_CHOICES.iter().enumerate() {
-        let selected = index == state.approval_selection;
-        let text = format!(
-            "{} {}. {label}",
-            if selected { "›" } else { " " },
-            index + 1
-        );
-        lines.push(Line::styled(
-            text,
-            if selected {
-                theme.style(Role::Accent).add_modifier(Modifier::BOLD)
-            } else {
-                theme.style(Role::Text)
-            },
-        ));
+        cards::push_question_card(lines, state, question, width);
     }
 }
 
@@ -504,16 +406,7 @@ fn ensure_rendered(entry: &mut TranscriptEntry, width: u16) {
     {
         return;
     }
-    let text = if matches!(entry.tone, TranscriptTone::Welcome)
-        && entry
-            .text
-            .lines()
-            .any(|line| Line::from(line).width() > usize::from(width))
-    {
-        concat!("MÖBIUS v", env!("CARGO_PKG_VERSION"))
-    } else {
-        &entry.text
-    };
+    let text = &entry.text;
     let mut lines = Vec::new();
     match entry.stream.as_deref_mut() {
         Some(cache)
@@ -522,7 +415,7 @@ fn ensure_rendered(entry: &mut TranscriptEntry, width: u16) {
                 && entry.format != FrontendBlockFormat::UnifiedDiff =>
         {
             let rendered = cache.render(text, tone_style(entry.tone), markdown_width(width));
-            push_markdown(&mut lines, rendered.iter().cloned()); // rules-allow: the stream cache keeps its lines to extend on the next delta
+            push_markdown(&mut lines, rendered.iter().cloned(), entry.tone); // rules-allow: the stream cache keeps its lines to extend on the next delta
         }
         _ if entry.role.is_some() => push_block_lines(&mut lines, entry, width),
         _ => push_lines(&mut lines, text, entry.tone, entry.format, width),
@@ -552,7 +445,7 @@ fn ensure_rendered(entry: &mut TranscriptEntry, width: u16) {
 fn spinning_marker<'a>(line: &'a Line<'_>) -> Line<'a> {
     let mut line = borrow_line(line);
     if let Some(marker) = line.spans.first_mut() {
-        marker.content = format!("{} ", shimmer::spinner()).into();
+        marker.content = format!("{} ", motion::spinner()).into();
     }
     line
 }
@@ -563,22 +456,9 @@ fn wrapped_line_height(line: &Line<'_>, width: u16) -> usize {
         .line_count(width)
 }
 
-/// The rule before a user message, carrying a small dither mark near its start.
+/// The rule before a user message: dotted, densest in the middle, fading out at both ends.
 fn separator_line(width: u16) -> Line<'static> {
-    let theme = current();
-    let width = usize::from(width);
-    let mark = DITHER_MARK.chars().count();
-    if width < DIVIDER_LEAD + mark {
-        return Line::styled("─".repeat(width), theme.style(Role::Border));
-    }
-    Line::from(vec![
-        Span::styled("─".repeat(DIVIDER_LEAD), theme.style(Role::Border)),
-        Span::styled(DITHER_MARK, theme.style(Role::Neutral)),
-        Span::styled(
-            "─".repeat(width - DIVIDER_LEAD - mark),
-            theme.style(Role::Border),
-        ),
-    ])
+    Line::styled(dither::fading_rule(width), current().style(Role::Neutral))
 }
 
 pub(super) fn render_preview(frame: &mut Frame<'_>, state: &mut TuiState) {
@@ -697,6 +577,13 @@ fn push_block_lines(lines: &mut Vec<Line<'static>>, entry: &TranscriptEntry, wid
     } else {
         transcript_role(entry.tone)
     };
+    let marker = if entry.pending {
+        AGENT_MARKER
+    } else if matches!(entry.tone, TranscriptTone::Error) {
+        FAILED_MARKER
+    } else {
+        DONE_MARKER
+    };
     let detail = entry.detail.as_deref();
     let compact = detail
         .filter(|_| entry.pending && entry.role == Some(FrontendBlockRole::Tool))
@@ -708,7 +595,7 @@ fn push_block_lines(lines: &mut Vec<Line<'static>>, entry: &TranscriptEntry, wid
     });
     let mut header = vec![
         Span::styled(
-            AGENT_MARKER,
+            marker,
             theme.style(marker_role).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
@@ -769,11 +656,29 @@ fn push_lines(
         push_markdown(
             lines,
             markdown::render(text, tone_style(tone), markdown_width(width)),
+            tone,
         );
         return;
     }
     let theme = current();
     let style = tone_style(tone);
+    if matches!(tone, TranscriptTone::User) {
+        lines.extend(text.split('\n').map(|line| {
+            line.strip_prefix(USER_PREFIX).map_or_else(
+                || Line::styled(line.to_owned(), style),
+                |content| {
+                    Line::from(vec![
+                        Span::styled(
+                            USER_BAR,
+                            theme.style(Role::Accent).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(content.to_owned(), style.add_modifier(Modifier::BOLD)),
+                    ])
+                },
+            )
+        }));
+        return;
+    }
     lines.extend(text.split('\n').map(|line| {
         line.strip_prefix(AGENT_MARKER).map_or_else(
             || Line::styled(line.to_owned(), style),
@@ -796,7 +701,6 @@ fn tone_style(tone: TranscriptTone) -> Style {
     let style = current().style(transcript_role(tone));
     match tone {
         TranscriptTone::Reasoning => style.add_modifier(Modifier::ITALIC),
-        TranscriptTone::Welcome => style.add_modifier(Modifier::BOLD),
         _ => style,
     }
 }
@@ -809,12 +713,18 @@ fn markdown_width(width: u16) -> usize {
 fn push_markdown(
     lines: &mut Vec<Line<'static>>,
     rendered: impl IntoIterator<Item = Line<'static>>,
+    tone: TranscriptTone,
 ) {
-    let marker = current().style(Role::Accent);
+    let (first, role) = if matches!(tone, TranscriptTone::Reasoning) {
+        (REASONING_MARKER, Role::Reasoning)
+    } else {
+        (AGENT_MARKER, Role::Accent)
+    };
+    let marker = current().style(role);
     for (index, mut line) in rendered.into_iter().enumerate() {
         line.spans.insert(
             0,
-            Span::styled(if index == 0 { AGENT_MARKER } else { "  " }, marker),
+            Span::styled(if index == 0 { first } else { "  " }, marker),
         );
         lines.push(line);
     }
@@ -903,7 +813,7 @@ pub(super) fn push_diff_patch(lines: &mut Vec<Line<'static>>, text: &str, width:
                 (added, removed, max)
             });
     lines.push(Line::from(vec![
-        Span::styled(AGENT_MARKER, theme.style(Role::Accent)),
+        Span::styled(DONE_MARKER, theme.style(Role::Success)),
         Span::styled(
             "Edited ",
             theme.style(Role::Text).add_modifier(Modifier::BOLD),
@@ -950,7 +860,7 @@ pub(super) fn push_diff_patch(lines: &mut Vec<Line<'static>>, text: &str, width:
                         number.to_string(),
                         "+",
                         Role::Success,
-                        Some(theme.diff_add_background()),
+                        None,
                         content,
                     )
                 }
@@ -962,7 +872,7 @@ pub(super) fn push_diff_patch(lines: &mut Vec<Line<'static>>, text: &str, width:
                         String::new(),
                         "-",
                         Role::Error,
-                        Some(theme.diff_delete_background()),
+                        None,
                         content,
                     )
                 }
@@ -1013,7 +923,6 @@ pub(super) fn push_diff_patch(lines: &mut Vec<Line<'static>>, text: &str, width:
 
 fn transcript_role(tone: TranscriptTone) -> Role {
     match tone {
-        TranscriptTone::Welcome => Role::Accent,
         TranscriptTone::Assistant | TranscriptTone::User => Role::Text,
         TranscriptTone::Reasoning => Role::Reasoning,
         TranscriptTone::Neutral => Role::Neutral,
@@ -1023,35 +932,58 @@ fn transcript_role(tone: TranscriptTone) -> Role {
     }
 }
 
-fn responsive_welcome_card(state: &TuiState, width: u16) -> String {
-    let welcome = dither_banner(state.agent_summary.lines().collect());
-    if card_fits(&welcome, width) {
-        return welcome;
+/// The chat header shown before the first message: the dithered loop beside the name and the
+/// Bot's summary, over a rule that fades out to the right.
+fn welcome_lines(state: &TuiState, width: u16) -> Vec<Line<'static>> {
+    let theme = current();
+    let mut summary = state.agent_summary.lines().map(terminal_text);
+    let heading = summary.next().unwrap_or_default();
+    let heading = heading
+        .strip_prefix("MÖBIUS ")
+        .unwrap_or(&heading)
+        .to_owned();
+    let details = summary.next().unwrap_or_default();
+    let name = Span::styled(
+        "möbius",
+        theme.style(Role::Text).add_modifier(Modifier::BOLD),
+    );
+    let logo_columns = LOGO[0].chars().count();
+    if usize::from(width) < logo_columns + WELCOME_MIN_TEXT_WIDTH {
+        return vec![Line::from(vec![
+            name,
+            Span::styled(format!(" {heading}"), theme.style(Role::Muted)),
+        ])];
     }
-    let compact = dither_banner(state.agent_summary.lines().take(2).collect());
-    if card_fits(&compact, width) {
-        compact
-    } else {
-        concat!("MÖBIUS v", env!("CARGO_PKG_VERSION")).into()
-    }
-}
-
-fn card_fits(card: &str, width: u16) -> bool {
-    card.lines()
-        .all(|line| Line::from(line).width() <= usize::from(width))
-}
-
-/// The welcome rows under a heading that fades in and out through dither shades.
-fn dither_banner(rows: Vec<&str>) -> String {
-    let mut rows = rows.into_iter();
-    let Some(heading) = rows.next() else {
-        return String::new();
+    let lobes = |row: &'static str| {
+        let split = row
+            .char_indices()
+            .nth(LOGO_LOBE)
+            .map_or(row.len(), |(index, _)| index);
+        let (left, right) = row.split_at(split);
+        [
+            Span::raw(" "),
+            Span::styled(left, theme.style(Role::Accent)),
+            Span::styled(right, theme.style(Role::Neutral)),
+            Span::raw("  "),
+        ]
     };
-    let indent = " ".repeat(DITHER_IN.chars().count() + 1);
-    std::iter::once(format!("{DITHER_IN} {heading} {DITHER_OUT}"))
-        .chain(rows.map(|row| format!("{indent}{row}")))
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut top = lobes(LOGO[0]).to_vec();
+    top.push(name);
+    top.push(Span::styled(
+        format!("  {heading}"),
+        theme.style(Role::Muted),
+    ));
+    let mut bottom = lobes(LOGO[1]).to_vec();
+    bottom.push(Span::styled(details, theme.style(Role::Muted)));
+    vec![
+        Line::from(top),
+        Line::from(bottom),
+        Line::default(),
+        Line::styled(
+            dither::trailing_rule(width.min(WELCOME_RULE_WIDTH)),
+            theme.style(Role::Neutral),
+        ),
+    ]
 }
 
 fn tone_role(tone: FrontendTone) -> Role {
@@ -1215,7 +1147,7 @@ fn composer_header_line(state: &TuiState, width: u16) -> Line<'_> {
 
 fn separator(spans: &mut Vec<Span<'_>>) {
     if !spans.is_empty() {
-        spans.push(Span::styled(" · ", current().style(Role::Muted)));
+        spans.push(Span::styled(" ⠶ ", current().style(Role::Border)));
     }
 }
 
@@ -1266,9 +1198,9 @@ fn activity_line(state: &TuiState, width: u16) -> Line<'static> {
     } else {
         " · Esc stop".to_owned()
     };
-    let spinner = format!("{} ", shimmer::spinner());
+    let loader = format!("{} ", dither::sweep(LOADER_COLUMNS, motion::elapsed()));
     let room = usize::from(width)
-        .saturating_sub(Span::raw(spinner.as_str()).width() + Span::raw(elapsed.as_str()).width());
+        .saturating_sub(Span::raw(loader.as_str()).width() + Span::raw(elapsed.as_str()).width());
     let keys = if Span::raw(keys.as_str()).width() + MIN_ACTIVITY_LABEL_WIDTH <= room {
         keys
     } else {
@@ -1280,11 +1212,10 @@ fn activity_line(state: &TuiState, width: u16) -> Line<'static> {
         label = label.chars().take(room.saturating_sub(1)).collect();
         label.push('…');
     }
-    let mut spans = vec![Span::styled(
-        spinner,
-        theme.style(Role::Accent).add_modifier(Modifier::BOLD),
-    )];
-    spans.extend(shimmer::line(&label, theme.color(Role::Accent), theme.color(Role::Text)).spans);
+    let mut spans = vec![
+        Span::styled(loader, theme.style(Role::Accent)),
+        Span::styled(label, theme.style(Role::Text).add_modifier(Modifier::BOLD)),
+    ];
     spans.push(Span::styled(elapsed, theme.style(Role::Text)));
     spans.push(Span::styled(keys, theme.style(Role::Muted)));
     Line::from(spans)
@@ -1294,7 +1225,7 @@ fn status_line(state: &TuiState, width: u16) -> Line<'static> {
     let theme = current();
     if state.approval().is_some() {
         return Line::styled(
-            "↑↓ choose · Enter confirm · 1-4 pick · or type what to do instead · Esc stop",
+            "approval needed · Esc stops the turn",
             theme.style(Role::Warning),
         );
     }
@@ -1328,7 +1259,7 @@ fn status_line(state: &TuiState, width: u16) -> Line<'static> {
             + 1;
         return Line::from(vec![
             Span::styled(
-                format!("{} ", shimmer::spinner()),
+                format!("{} ", motion::spinner()),
                 theme.style(Role::Warning).add_modifier(Modifier::BOLD),
             ),
             Span::styled(

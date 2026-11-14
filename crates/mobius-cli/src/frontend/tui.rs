@@ -1,15 +1,17 @@
 //! Minimal state-driven möbius terminal frontend.
 
 mod attention;
+mod cards;
 mod clipboard;
 mod diff;
+mod dither;
 mod events;
 mod highlight;
 mod input;
 mod markdown;
+mod motion;
 mod references;
 pub(super) mod runtime;
-mod shimmer;
 mod view;
 
 use std::sync::Arc;
@@ -50,7 +52,6 @@ fn attachment_label(file: &SessionFileReference) -> String {
 
 #[derive(Clone, Copy)]
 enum TranscriptTone {
-    Welcome,
     Assistant,
     Reasoning,
     User,

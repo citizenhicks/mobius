@@ -180,10 +180,10 @@ impl TuiState {
         self.approval()?;
         let last = APPROVAL_CHOICES.len() - 1;
         match code {
-            KeyCode::Up => {
+            KeyCode::Up | KeyCode::Left => {
                 self.approval_selection = self.approval_selection.checked_sub(1).unwrap_or(last);
             }
-            KeyCode::Down => {
+            KeyCode::Down | KeyCode::Right => {
                 self.approval_selection = if self.approval_selection >= last {
                     0
                 } else {

@@ -36,7 +36,7 @@ use mobius_gateway::wire::{
     apply_session_changes,
 };
 
-/// Spinner and shimmer frames while a turn works; otherwise the screen redraws only on input
+/// Spinner and loader frames while a turn works; otherwise the screen redraws only on input
 /// or gateway events.
 const ANIMATION_INTERVAL: Duration = Duration::from_millis(80);
 /// Waits between reconnect probes after a disconnect; the last repeats.
