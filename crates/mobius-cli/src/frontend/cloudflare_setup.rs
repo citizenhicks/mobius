@@ -9,9 +9,8 @@ use mobius_gateway::config::{
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-use tokio::time::MissedTickBehavior;
 
-use super::terminal::{INPUT_POLL, input_batch, open_screen};
+use super::terminal::{input_batch, input_interval, open_screen};
 use super::terminal_text;
 use super::theme::{Role, current};
 
@@ -107,8 +106,7 @@ pub async fn run() -> Result<Option<CloudflareInit>> {
     let (_guard, mut terminal) = open_screen()?;
     let mut state = State::new();
     terminal.clear()?;
-    let mut tick = tokio::time::interval(INPUT_POLL);
-    tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut tick = input_interval();
     let mut dirty = true;
     loop {
         if dirty {

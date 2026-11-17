@@ -52,28 +52,30 @@ impl Rejected {
 }
 
 pub(super) fn read_file(root: Dir, relative: &Path, requested: &str) -> Result<String> {
-    let file = open_regular_file(root, relative, requested)?;
-    let mut bytes = Vec::new();
-    file.take(MAX_FILE_BYTES as u64 + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > MAX_FILE_BYTES {
-        return Err(Error::Sandbox("file exceeds read limit".into()));
-    }
+    let bytes = read_limited(
+        root,
+        relative,
+        requested,
+        MAX_FILE_BYTES,
+        "file exceeds read limit",
+    )?;
     String::from_utf8(bytes)
         .map_err(|error| Error::Sandbox(format!("{requested} is not valid UTF-8: {error}")))
 }
 
-pub(super) fn read_binary_file(
+pub(super) fn read_limited(
     root: Dir,
     relative: &Path,
     requested: &str,
     max_bytes: usize,
+    limit_error: &'static str,
 ) -> Result<Vec<u8>> {
     let file = open_regular_file(root, relative, requested)?;
     let mut bytes = Vec::new();
-    file.take(max_bytes as u64 + 1).read_to_end(&mut bytes)?;
+    file.take((max_bytes as u64).saturating_add(1))
+        .read_to_end(&mut bytes)?;
     if bytes.len() > max_bytes {
-        return Err(Error::Sandbox("file exceeds binary read limit".into()));
+        return Err(Error::Sandbox(limit_error.into()));
     }
     Ok(bytes)
 }

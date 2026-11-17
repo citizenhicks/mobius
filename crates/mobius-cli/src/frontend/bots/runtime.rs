@@ -1,18 +1,18 @@
 use std::sync::Arc;
 
-use mobius::{Error, Result};
+use mobius::Result;
 use mobius_gateway::client::{GatewayEvents, GatewaySender};
 use mobius_gateway::wire::{
     ClientMessage, ReadyPayload, RoutineChange, ServerFrame, ServerMessage, apply_session_changes,
 };
 use ratatui::crossterm::event::Event;
-use tokio::time::MissedTickBehavior;
 
 use super::Action;
 use super::render::render;
 use super::state::{BotsState, Page};
+use crate::frontend::response::ScreenEvents;
 use crate::frontend::setup;
-use crate::frontend::terminal::{INPUT_POLL, Screen, input_batch};
+use crate::frontend::terminal::{Screen, input_batch, input_interval};
 use crate::gateway_error;
 
 pub(in crate::frontend) async fn run(
@@ -26,10 +26,8 @@ pub(in crate::frontend) async fn run(
     terminal.clear()?;
     let mut state = BotsState::new(gateway, preferred_bot_id, protected_bot_id);
     request_routines(sender, &mut state).await?;
-    let mut tick = tokio::time::interval(INPUT_POLL);
-    tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut events = events.scoped();
-    let mut events_open = true;
+    let mut tick = input_interval();
+    let mut events = ScreenEvents::new(events);
     let mut dirty = true;
 
     'screen: loop {
@@ -38,20 +36,12 @@ pub(in crate::frontend) async fn run(
             dirty = false;
         }
         tokio::select! {
-            frame = events.next(), if events_open => {
-                let frame = match frame {
-                    Ok(frame) => frame,
-                    Err(error) => break 'screen Err(gateway_error(error)),
-                };
-                if let Some(frame) = frame {
-                    if let Some(error) = frame.message.response_error(None) {
-                        break 'screen Err(Error::Stopped(error.message.into()));
-                    }
+            frame = events.next() => {
+                if let Some(frame) = frame? {
                     if let Some(frame) = handle_frame(frame.message, gateway, &mut state) {
-                        events.defer(frame).map_err(gateway_error)?;
+                        events.frames.defer(frame).map_err(gateway_error)?;
                     }
                 } else {
-                    events_open = false;
                     state.fail("Gateway disconnected. Press q to close.");
                 }
                 state.clamp(gateway);
@@ -87,7 +77,7 @@ pub(in crate::frontend) async fn run(
                                 mode,
                                 None,
                                 sender,
-                                events.reborrow(),
+                                events.frames.reborrow(),
                                 gateway,
                                 bot_id,
                             ).await {

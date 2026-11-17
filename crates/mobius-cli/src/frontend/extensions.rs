@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use mobius::{Error, Result};
+use mobius::Result;
 use mobius_gateway::client::{GatewayEvents, GatewaySender};
 use mobius_gateway::wire::{
     ClientMessage, ExtensionHookRecord, ExtensionRecord, ReadyPayload, ServerFrame, ServerMessage,
@@ -13,13 +13,13 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, ListState, Paragraph, Wrap};
-use tokio::time::MissedTickBehavior;
 
 use super::terminal::{
-    INPUT_POLL, MAX_ENDPOINT_BYTES, Screen, append_text, input_batch, open_screen,
+    MAX_ENDPOINT_BYTES, Screen, append_text, input_batch, input_interval, open_screen,
 };
 use super::terminal_text;
 use super::theme::{Role, brand_header, current, selectable_list};
+use crate::frontend::response::ScreenEvents;
 use crate::gateway_error;
 
 enum Confirmation {
@@ -366,10 +366,8 @@ pub(in crate::frontend) async fn run(
 ) -> Result<()> {
     terminal.clear()?;
     let mut state = ExtensionsState::new(gateway);
-    let mut tick = tokio::time::interval(INPUT_POLL);
-    tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut events = events.scoped();
-    let mut events_open = true;
+    let mut tick = input_interval();
+    let mut events = ScreenEvents::new(events);
     let mut dirty = true;
 
     'screen: loop {
@@ -378,48 +376,40 @@ pub(in crate::frontend) async fn run(
             dirty = false;
         }
         tokio::select! {
-            frame = events.next(), if events_open => {
-                let frame = match frame {
-                    Ok(frame) => frame,
-                    Err(error) => break 'screen Err(gateway_error(error)),
-                };
-                if let Some(frame) = frame {
+            frame = events.next() => {
+                if let Some(frame) = frame? {
                     let ServerFrame { version, message } = frame;
-                    if let Some(error) = message.response_error(None) {
-                        break 'screen Err(Error::Stopped(error.message.into()));
-                    }
                     match message {
-                    ServerMessage::Ready { payload } => {
-                        gateway.update(payload);
-                        state.clamp_selection(gateway);
+                        ServerMessage::Ready { payload } => {
+                            gateway.update(payload);
+                            state.clamp_selection(gateway);
+                        }
+                        ServerMessage::GatewayConfigured { request_id, payload }
+                            if state.pending.as_ref().is_some_and(|pending| {
+                                pending.request_id == request_id
+                            }) =>
+                        {
+                            gateway.update(payload);
+                            state.clamp_selection(gateway);
+                            state.complete();
+                        }
+                        ServerMessage::Rejected { request_id, message, .. }
+                            if state.pending.as_ref().is_some_and(|pending| {
+                                *pending.request_id == *request_id
+                            }) =>
+                        {
+                            state.pending = None;
+                            state.fail(&*message);
+                        }
+                        ServerMessage::Sessions { sessions, .. } => gateway.sessions = sessions,
+                        ServerMessage::SessionsChanged { sessions, .. } => {
+                            apply_session_changes(&mut gateway.sessions, sessions);
+                        }
+                        message => events.frames
+                            .defer(ServerFrame { version, message })
+                            .map_err(gateway_error)?,
                     }
-                    ServerMessage::GatewayConfigured { request_id, payload }
-                        if state.pending.as_ref().is_some_and(|pending| {
-                            pending.request_id == request_id
-                        }) =>
-                    {
-                        gateway.update(payload);
-                        state.clamp_selection(gateway);
-                        state.complete();
-                    }
-                    ServerMessage::Rejected { request_id, message, .. }
-                        if state.pending.as_ref().is_some_and(|pending| {
-                            *pending.request_id == *request_id
-                        }) =>
-                    {
-                        state.pending = None;
-                        state.fail(&*message);
-                    }
-                    ServerMessage::Sessions { sessions, .. } => gateway.sessions = sessions,
-                    ServerMessage::SessionsChanged { sessions, .. } => {
-                        apply_session_changes(&mut gateway.sessions, sessions);
-                    }
-                    message => events
-                        .defer(ServerFrame { version, message })
-                        .map_err(gateway_error)?,
-                }
                 } else {
-                    events_open = false;
                     state.pending = None;
                     state.fail("Gateway disconnected. Press q to close.");
                 }

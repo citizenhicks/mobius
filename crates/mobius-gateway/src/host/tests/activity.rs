@@ -15,7 +15,7 @@ async fn runtime_activity_tracks_reservations_and_pending_deliveries() {
     let routine = bots
         .create_routine(
             &bot.id,
-            &timer_definition(
+            &crate::wire::RoutineDefinition::scheduled_for_test(
                 &workspace,
                 "Future work",
                 RoutineSchedule {

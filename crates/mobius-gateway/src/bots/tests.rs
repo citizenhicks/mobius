@@ -33,6 +33,19 @@ fn create_bot(store: &BotStore, handle: &str) -> BotRecord {
         .expect("Bot")
 }
 
+fn scheduled_fixture(
+    handle: &str,
+    instructions: &str,
+    schedule: RoutineSchedule,
+) -> (tempfile::TempDir, BotStore, BotRecord, StoredRoutine) {
+    let (root, store, workspace) = fixture();
+    let bot = create_bot(&store, handle);
+    let routine = store
+        .create_scheduled(&bot.id, &workspace, instructions, schedule, None)
+        .expect("routine");
+    (root, store, bot, routine)
+}
+
 fn once(at: i64) -> RoutineSchedule {
     RoutineSchedule {
         kind: RoutineScheduleKind::Once,
@@ -74,7 +87,7 @@ impl BotStore {
     ) -> Result<StoredRoutine> {
         self.create_routine(
             bot_id,
-            &scheduled_definition(workspace, instructions, schedule, ends_at),
+            &RoutineDefinition::scheduled_for_test(workspace, instructions, schedule, ends_at),
             crate::config::CanonicalWorkspace::for_test(workspace),
             None,
         )
@@ -101,22 +114,6 @@ impl BotStore {
             self.storage.action_accepted(&pending.id)?;
         }
         Ok(runs)
-    }
-}
-fn scheduled_definition(
-    workspace: &Path,
-    instructions: &str,
-    schedule: RoutineSchedule,
-    ends_at: Option<i64>,
-) -> RoutineDefinition {
-    RoutineDefinition {
-        workspace: workspace.to_path_buf(),
-        instructions: instructions.into(),
-        bindings: vec![RoutineBinding {
-            id: Uuid::new_v4().to_string().into(),
-            on: HookSelector::Schedule { schedule, ends_at },
-            action: RoutineAction::Start,
-        }],
     }
 }
 fn schedule_of(routine: &StoredRoutine) -> RoutineSchedule {
@@ -223,17 +220,11 @@ fn concurrent_bot_stores_refresh_the_catalog_before_reads_and_seed() {
 
 #[test]
 fn bot_deletion_removes_owned_routines_history_and_scripts() {
-    let (root, store, workspace) = fixture();
-    let bot = create_bot(&store, "retired");
-    let routine = store
-        .create_scheduled(
-            &bot.id,
-            &workspace,
-            "retire owned state",
-            once(Utc::now().timestamp() + 60),
-            None,
-        )
-        .expect("routine");
+    let (root, store, bot, routine) = scheduled_fixture(
+        "retired",
+        "retire owned state",
+        once(Utc::now().timestamp() + 60),
+    );
     let BeginRun::Started(run) = store.begin_run(&routine.id).expect("begin run") else {
         panic!("routine must start");
     };
@@ -312,17 +303,8 @@ async fn routine_creation_cannot_commit_after_its_bot_is_deleted() {
 
 #[test]
 fn managed_instructions_cannot_be_replaced_with_an_outside_symlink() {
-    let (root, store, workspace) = fixture();
-    let bot = create_bot(&store, "symlink_guard");
-    let routine = store
-        .create_scheduled(
-            &bot.id,
-            &workspace,
-            "inside",
-            cron("0 9 * * *", "UTC"),
-            None,
-        )
-        .expect("routine");
+    let (root, store, _, routine) =
+        scheduled_fixture("symlink_guard", "inside", cron("0 9 * * *", "UTC"));
     let outside = root.path().join("outside.md");
     std::fs::write(&outside, "outside").expect("outside instructions");
     std::fs::remove_file(&routine.instructions).expect("remove instructions");
@@ -333,17 +315,8 @@ fn managed_instructions_cannot_be_replaced_with_an_outside_symlink() {
 
 #[test]
 fn routines_and_history_persist_with_bot_ownership() {
-    let (root, store, workspace) = fixture();
-    let bot = create_bot(&store, "persistent");
-    let routine = store
-        .create_scheduled(
-            &bot.id,
-            &workspace,
-            "do work",
-            cron("0 9 * * MON", "UTC"),
-            None,
-        )
-        .expect("routine");
+    let (root, store, bot, routine) =
+        scheduled_fixture("persistent", "do work", cron("0 9 * * MON", "UTC"));
     let BeginRun::Started(run) = store.begin_run(&routine.id).expect("begin run") else {
         panic!("first run must start");
     };
@@ -412,17 +385,8 @@ fn once_and_interval_schedules_advance_without_replay_storms() {
 
 #[test]
 fn cron_next_occurrence_uses_iana_timezone_across_dst() {
-    let (_root, store, workspace) = fixture();
-    let bot = create_bot(&store, "dst");
-    let routine = store
-        .create_scheduled(
-            &bot.id,
-            &workspace,
-            "cross DST",
-            cron("30 1 * * *", "America/New_York"),
-            None,
-        )
-        .expect("routine");
+    let (_root, _store, _, routine) =
+        scheduled_fixture("dst", "cross DST", cron("30 1 * * *", "America/New_York"));
     let now = Utc
         .with_ymd_and_hms(2024, 3, 10, 7, 0, 0)
         .single()
@@ -442,17 +406,8 @@ fn cron_next_occurrence_uses_iana_timezone_across_dst() {
 
 #[test]
 fn run_history_exceeds_one_megabyte_without_evicting_sessions() {
-    let (root, store, workspace) = fixture();
-    let bot = create_bot(&store, "long_history");
-    let routine = store
-        .create_scheduled(
-            &bot.id,
-            &workspace,
-            "keep every run",
-            cron("0 9 * * *", "UTC"),
-            None,
-        )
-        .expect("routine");
+    let (root, store, _, routine) =
+        scheduled_fixture("long_history", "keep every run", cron("0 9 * * *", "UTC"));
     let message = "x".repeat(20 * 1024);
     let mut newest = None;
     for _ in 0..64 {

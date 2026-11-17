@@ -16,6 +16,13 @@ use ratatui::crossterm::terminal::{
 use ratatui::text::{Line, Span};
 
 pub(super) const INPUT_POLL: Duration = Duration::from_millis(16);
+
+pub(super) fn input_interval() -> tokio::time::Interval {
+    let mut input = tokio::time::interval(INPUT_POLL);
+    input.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    input
+}
+
 const MAX_INPUT_BATCH: usize = 64;
 /// Terminal input cap for gateway and provider endpoint fields.
 pub(super) const MAX_ENDPOINT_BYTES: usize = 4 * 1024;

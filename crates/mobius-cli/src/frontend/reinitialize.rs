@@ -6,9 +6,8 @@ use mobius::Result;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-use tokio::time::MissedTickBehavior;
 
-use super::terminal::{INPUT_POLL, input_batch, open_screen};
+use super::terminal::{input_batch, input_interval, open_screen};
 use super::terminal_text;
 use super::theme::{Role, current};
 
@@ -19,8 +18,7 @@ use super::theme::{Role, current};
 pub async fn confirm(state_dir: &Path) -> Result<bool> {
     let (_guard, mut terminal) = open_screen()?;
     terminal.clear()?;
-    let mut tick = tokio::time::interval(INPUT_POLL);
-    tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut tick = input_interval();
     loop {
         terminal.draw(|frame| render(frame, state_dir))?;
         tick.tick().await;

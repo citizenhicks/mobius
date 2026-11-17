@@ -9,12 +9,11 @@ use mobius_gateway::wire::{
     ServerFrame, ServerMessage,
 };
 use ratatui::crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
-use tokio::time::MissedTickBehavior;
 
 use super::SetupMode;
 use super::state::{Authentication, Flow, SetupState};
 use super::view::draw;
-use crate::frontend::terminal::{INPUT_POLL, Screen, input_batch};
+use crate::frontend::terminal::{INPUT_POLL, Screen, input_batch, input_interval};
 use crate::gateway_error;
 
 pub(super) async fn edit(
@@ -24,8 +23,7 @@ pub(super) async fn edit(
     events: &mut GatewayEvents,
     gateway: &mut ReadyPayload,
 ) -> Result<bool> {
-    let mut tick = tokio::time::interval(INPUT_POLL);
-    tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut tick = input_interval();
     let mut dirty = true;
     loop {
         if dirty {

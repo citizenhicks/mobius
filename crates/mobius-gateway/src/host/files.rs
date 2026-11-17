@@ -437,7 +437,7 @@ mod tests {
             Duration::from_secs(5),
         )
         .expect("gateway sandbox")
-        .deny_read_paths([profile, protected[3].clone()])
+        .with_file_roots([profile, protected[3].clone()], &[], &[])
         .expect("protected paths");
         let root = Some(workspace.path());
         let public = host.path().join("public.txt");

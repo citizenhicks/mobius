@@ -39,9 +39,9 @@ mod platform;
 use self::files::Location;
 use self::files::Rejected;
 use self::files::atomic_write;
-use self::files::read_binary_file;
 use self::files::read_file;
 use self::files::read_file_range;
+use self::files::read_limited;
 
 static TEMP_PARENT: LazyLock<std::io::Result<tempfile::TempDir>> = LazyLock::new(|| {
     tempfile::Builder::new()
@@ -1127,7 +1127,13 @@ impl SandboxBackend for LocalSandbox {
                 WorkspaceAccess::ReadOnly,
                 "file reader",
                 move |root, relative, requested| {
-                    read_binary_file(root, relative, requested, max_bytes)
+                    read_limited(
+                        root,
+                        relative,
+                        requested,
+                        max_bytes,
+                        "file exceeds binary read limit",
+                    )
                 },
             )
             .await

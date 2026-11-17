@@ -720,7 +720,7 @@ async fn shutdown_stops_a_blocked_routine_and_fails_its_durable_run() {
     let routine = bots
         .create_routine(
             &bot.id,
-            &timer_definition(
+            &crate::wire::RoutineDefinition::scheduled_for_test(
                 &workspace,
                 "wait for shutdown",
                 crate::wire::RoutineSchedule {
@@ -730,6 +730,7 @@ async fn shutdown_stops_a_blocked_routine_and_fails_its_durable_run() {
                     expression: None,
                     time_zone: None,
                 },
+                None,
             ),
             crate::config::CanonicalWorkspace::for_test(&workspace),
             None,

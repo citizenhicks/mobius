@@ -2,12 +2,42 @@ use std::ops::ControlFlow;
 use std::sync::Arc;
 
 use mobius::{Error, Result};
-use mobius_gateway::client::{GatewayEvents, GatewaySender};
+use mobius_gateway::client::{GatewayEventScope, GatewayEvents, GatewaySender};
 use mobius_gateway::wire::{
     ClientMessage, ReadyPayload, ServerFrame, ServerMessage, apply_session_changes,
 };
 
 use crate::gateway_error;
+
+/// A nested screen reports disconnection once and retains deferred frames until it closes.
+pub(super) struct ScreenEvents<'a> {
+    pub(super) frames: GatewayEventScope<'a>,
+    connected: bool,
+}
+
+impl<'a> ScreenEvents<'a> {
+    pub(super) fn new(events: &'a mut GatewayEvents) -> Self {
+        Self {
+            frames: events.scoped(),
+            connected: true,
+        }
+    }
+
+    pub(super) async fn next(&mut self) -> Result<Option<ServerFrame>> {
+        if !self.connected {
+            return std::future::pending().await;
+        }
+        let frame = self.frames.next().await.map_err(gateway_error)?;
+        if let Some(frame) = &frame {
+            if let Some(error) = frame.message.response_error(None) {
+                return Err(Error::Stopped(error.message.into()));
+            }
+        } else {
+            self.connected = false;
+        }
+        Ok(frame)
+    }
+}
 
 /// Sends the request `message` builds under a fresh request id and waits for its response.
 /// # Errors

@@ -6,6 +6,25 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 use super::*;
 
+impl RoutineDefinition {
+    pub(crate) fn scheduled_for_test(
+        workspace: &std::path::Path,
+        instructions: &str,
+        schedule: RoutineSchedule,
+        ends_at: Option<i64>,
+    ) -> Self {
+        Self {
+            workspace: workspace.to_path_buf(),
+            instructions: instructions.into(),
+            bindings: vec![RoutineBinding {
+                id: uuid::Uuid::new_v4().to_string().into(),
+                on: HookSelector::Schedule { schedule, ends_at },
+                action: RoutineAction::Start,
+            }],
+        }
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn stalled_frame_write_times_out_after_partial_output() {
     let (mut writer, mut reader) = duplex(4);

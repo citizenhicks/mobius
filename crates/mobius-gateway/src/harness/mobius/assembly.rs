@@ -386,6 +386,12 @@ pub(crate) async fn assemble(
             .iter()
             .filter_map(|sink| sink.bearer_env.as_deref())
             .collect::<Vec<_>>();
+        let bearer_files = telemetry
+            .sinks
+            .iter()
+            .filter_map(|sink| sink.bearer_file.as_ref())
+            .map(|file| state_dir.join(file))
+            .filter(|path| path.exists());
         let gateway_sandbox = Arc::new(
             GatewaySandbox::new_configured(
                 &workspace_path,
@@ -397,23 +403,11 @@ pub(crate) async fn assemble(
             )?
             .with_desktop(desktop)
             .with_remote_desktop(remote_desktop)
-            .deny_read_paths(profile_directory.into_iter().chain(
-                telemetry.sinks.iter().filter_map(|sink| {
-                    sink.bearer_file
-                        .as_ref()
-                        .map(|file| {
-                            let path = std::path::PathBuf::from(file);
-                            if path.is_absolute() {
-                                path
-                            } else {
-                                state_dir.join(path)
-                            }
-                        })
-                        .filter(|path| path.exists())
-                }),
-            ))?
-            .allow_attached_folders(attached_folders.iter().cloned())? // rules-allow: the backend and the sandbox each own the folder list
-            .allow_read_roots(read_roots)?,
+            .with_file_roots(
+                profile_directory.into_iter().chain(bearer_files),
+                &attached_folders,
+                &read_roots,
+            )?,
         );
         let backend: Arc<dyn SandboxBackend> = Arc::<GatewaySandbox>::clone(&gateway_sandbox); // rules-allow: the sandbox and the returned agent share the backend
         let sandbox = Sandbox::new(Arc::clone(&backend), approval_policy)

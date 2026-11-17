@@ -173,23 +173,6 @@ pub(crate) async fn create_test_session(
     gateway.create_session(workspace, &bot.id).await
 }
 
-pub(crate) fn timer_definition(
-    workspace: &Path,
-    instructions: &str,
-    schedule: crate::wire::RoutineSchedule,
-    ends_at: Option<i64>,
-) -> crate::wire::RoutineDefinition {
-    crate::wire::RoutineDefinition {
-        workspace: workspace.into(),
-        instructions: instructions.into(),
-        bindings: vec![crate::wire::RoutineBinding {
-            id: Uuid::new_v4().to_string().into(),
-            on: crate::wire::HookSelector::Schedule { schedule, ends_at },
-            action: crate::wire::RoutineAction::Start,
-        }],
-    }
-}
-
 /// A resident chat handle whose commands the test receives instead of an actor.
 pub(crate) fn probe_handle(
     session_id: &str,

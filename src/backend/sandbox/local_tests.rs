@@ -535,6 +535,13 @@ async fn absolute_reads_and_writes_are_confined_to_workspace_roots() {
             .expect("primary read"),
         "primary"
     );
+    assert_eq!(
+        sandbox
+            .read_bytes("source.txt", usize::MAX, SandboxMode::WorkspaceWrite)
+            .await
+            .unwrap(),
+        b"primary"
+    );
     sandbox
         .write(
             primary_target.to_str().expect("UTF-8 primary path"),

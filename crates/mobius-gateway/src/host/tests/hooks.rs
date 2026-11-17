@@ -179,8 +179,7 @@ fn subscription(bot_id: &str, session_id: &SessionId, kind: HookKind, id: &str) 
     }
 }
 
-#[tokio::test]
-async fn idle_compaction_keeps_the_last_answer_and_emits_no_turn_hooks() {
+async fn idle_compaction_gateway() -> (tempfile::TempDir, GatewayHost, crate::wire::BotRecord) {
     let (root, gateway, original) = gateway_with_bot().await;
     let mut composition = (**original.config.config.mobius().unwrap()).clone();
     for (setting, value) in [("idle_min_tokens", 1), ("idle_minutes", 1)] {
@@ -197,6 +196,12 @@ async fn idle_compaction_keeps_the_last_answer_and_emits_no_turn_hooks() {
         .bots
         .create_bot("Idle test", "Tests idle compaction.", composition.into())
         .unwrap();
+    (root, gateway, bot)
+}
+
+#[tokio::test]
+async fn idle_compaction_keeps_the_last_answer_and_emits_no_turn_hooks() {
+    let (root, gateway, bot) = idle_compaction_gateway().await;
     let model = Arc::new(CaptureModel::default());
     model.release.notify_one();
     install_model(&gateway, &bot, Arc::clone(&model)).await;
@@ -309,26 +314,7 @@ async fn a_steered_idle_turn_publishes_normal_activity_and_hooks_without_an_extr
         }
     }
 
-    let (root, gateway, original) = gateway_with_bot().await;
-    let mut composition = (**original.config.config.mobius().unwrap()).clone();
-    for (setting, value) in [("idle_min_tokens", 1), ("idle_minutes", 1)] {
-        composition.middleware.set_setting(
-            "compaction",
-            setting,
-            Some(mobius::protocol::FrontendSettingValue::Integer(value)),
-        );
-    }
-    let bot = gateway
-        .state
-        .lock()
-        .await
-        .bots
-        .create_bot(
-            "Idle promotion",
-            "Tests promoted idle work.",
-            composition.into(),
-        )
-        .unwrap();
+    let (root, gateway, bot) = idle_compaction_gateway().await;
     let model = Arc::new(PausedCompactor::default());
     install_model(&gateway, &bot, Arc::clone(&model)).await;
     let workspace = root.path().join("workspace");

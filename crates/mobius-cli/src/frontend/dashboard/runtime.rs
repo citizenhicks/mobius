@@ -20,7 +20,9 @@ use tokio::time::MissedTickBehavior;
 use super::REFRESH_INTERVAL;
 use super::state::{ActionInput, CapabilityOverlay, DashboardFocus, DashboardState, Selection};
 use super::view::{dashboard_areas, render};
-use crate::frontend::terminal::{INPUT_POLL, Screen, input_batch, terminal_text, truncate_bytes};
+use crate::frontend::terminal::{
+    Screen, input_batch, input_interval, terminal_text, truncate_bytes,
+};
 use crate::frontend::{bots, setup};
 use crate::gateway_error;
 use mobius_gateway::gateway_accounts::{configured_token, dashboard_gateway_endpoint};
@@ -71,8 +73,7 @@ pub(super) async fn dashboard_loop(
     events: &mut GatewayEvents,
     state: &mut DashboardState,
 ) -> Result<()> {
-    let mut input = tokio::time::interval(INPUT_POLL);
-    input.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut input = input_interval();
     let mut refresh = tokio::time::interval(REFRESH_INTERVAL);
     refresh.set_missed_tick_behavior(MissedTickBehavior::Skip);
     sync_chat_selection(state);

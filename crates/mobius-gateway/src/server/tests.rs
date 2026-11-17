@@ -92,25 +92,6 @@ mod telemetry;
 mod transport;
 mod upload_admission;
 
-fn timer_definition(
-    workspace: &Path,
-    instructions: &str,
-    schedule: crate::wire::RoutineSchedule,
-) -> crate::wire::RoutineDefinition {
-    crate::wire::RoutineDefinition {
-        workspace: workspace.into(),
-        instructions: instructions.into(),
-        bindings: vec![crate::wire::RoutineBinding {
-            id: "timer".into(),
-            on: crate::wire::HookSelector::Schedule {
-                schedule,
-                ends_at: None,
-            },
-            action: crate::wire::RoutineAction::Start,
-        }],
-    }
-}
-
 async fn create_bot_chat(
     sender: &GatewaySender,
     events: &mut GatewayEvents,

@@ -23,7 +23,7 @@ use super::{Evict, InputDraft, TranscriptTone, TuiState};
 use crate::frontend::catalog::{GatewayAction, UiCatalog};
 use crate::frontend::dashboard::render_capability_overlay;
 use crate::frontend::gateway_actions::{ResponseSeverity, prepare, render_response};
-use crate::frontend::terminal::{INPUT_POLL, Screen, TerminalGuard, input_batch};
+use crate::frontend::terminal::{Screen, TerminalGuard, input_batch, input_interval};
 use crate::frontend::{FrontendExit, bots, extensions, gateway, setup};
 use mobius::backend::checkpoint::ExecutionOutcome;
 use mobius::protocol::{
@@ -93,8 +93,7 @@ pub(in crate::frontend) async fn run(
         );
     }
     let mut uploads = ClipboardUploads::default();
-    let mut tick = tokio::time::interval(INPUT_POLL);
-    tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut tick = input_interval();
     let mut animation = tokio::time::interval(ANIMATION_INTERVAL);
     animation.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut events_open = true;

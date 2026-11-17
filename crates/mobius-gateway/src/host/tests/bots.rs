@@ -223,7 +223,7 @@ async fn bot_delete_preflight_preserves_sessions_when_instructions_are_invalid()
     let routine = bots
         .create_routine(
             &bot.id,
-            &timer_definition(
+            &crate::wire::RoutineDefinition::scheduled_for_test(
                 &workspace,
                 "retain on failed preflight",
                 crate::wire::RoutineSchedule {
@@ -381,7 +381,7 @@ async fn deleting_a_bot_removes_owned_state() {
     let routine = bots
         .create_routine(
             &bot.id,
-            &timer_definition(
+            &crate::wire::RoutineDefinition::scheduled_for_test(
                 &workspace,
                 "delete routine state",
                 crate::wire::RoutineSchedule {

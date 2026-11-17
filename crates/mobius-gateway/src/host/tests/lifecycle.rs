@@ -1,6 +1,14 @@
 use super::*;
 use mobius::SessionId;
 
+async fn gateway_with_session() -> (tempfile::TempDir, GatewayHost, HostHandle) {
+    let fixture = test_gateway().await;
+    let session = create_test_session(&fixture.gateway, &fixture.workspace)
+        .await
+        .expect("create test session");
+    (fixture.root, fixture.gateway, session)
+}
+
 #[tokio::test]
 async fn full_session_queue_rejects_external_work_but_preserves_shutdown() {
     let (handle, mut pending) = probe_handle("saturated", 1, true);
@@ -97,14 +105,7 @@ async fn concurrent_catalog_updates_preserve_both_fields_for_resident_and_stoppe
 
 #[tokio::test]
 async fn durable_event_journal_restores_complete_turn_pages() {
-    let TestGateway {
-        root: _root,
-        workspace,
-        gateway,
-    } = test_gateway().await;
-    let host = create_test_session(&gateway, &workspace)
-        .await
-        .expect("create session");
+    let (_root, gateway, host) = gateway_with_session().await;
     let checkpoints = Arc::clone(&gateway.state.lock().await.checkpoints);
     let session_id = host.session_id().share();
     assert!(host.stop_if_idle().await);
@@ -343,14 +344,7 @@ async fn opening_a_chat_rejects_tampered_bot_identity() {
 
 #[tokio::test]
 async fn message_pins_accept_only_assistant_messages_and_survive_reopen() {
-    let TestGateway {
-        root: _root,
-        workspace,
-        gateway,
-    } = test_gateway().await;
-    let host = create_test_session(&gateway, &workspace)
-        .await
-        .expect("create session");
+    let (_root, gateway, host) = gateway_with_session().await;
     let checkpoints = Arc::clone(&gateway.state.lock().await.checkpoints);
     let session_id = host.session_id().share();
     assert!(host.stop_if_idle().await);
@@ -433,14 +427,7 @@ async fn fork_history_continues_into_the_parent_above_the_fork_point() {
     use crate::wire::{HistoryCursor, TranscriptItemContent};
     use mobius::protocol::{AssistantMessageEvent, MessageTarget, ModelStepContent};
 
-    let TestGateway {
-        root: _root,
-        workspace,
-        gateway,
-    } = test_gateway().await;
-    let parent = create_test_session(&gateway, &workspace)
-        .await
-        .expect("create parent");
+    let (_root, gateway, parent) = gateway_with_session().await;
     let parent_id = parent.session_id().share();
     assert!(parent.stop_if_idle().await);
     let checkpoints = Arc::clone(&gateway.state.lock().await.checkpoints);
@@ -583,14 +570,7 @@ async fn fork_history_continues_into_the_parent_above_the_fork_point() {
 async fn history_and_a_cut_replay_mark_only_the_turn_after_an_agent_restart_resumed() {
     use crate::wire::TranscriptItemContent;
 
-    let TestGateway {
-        root: _root,
-        workspace,
-        gateway,
-    } = test_gateway().await;
-    let chat = create_test_session(&gateway, &workspace)
-        .await
-        .expect("create chat");
+    let (_root, gateway, chat) = gateway_with_session().await;
     let chat_id = chat.session_id().share();
     assert!(chat.stop_if_idle().await);
     let checkpoints = Arc::clone(&gateway.state.lock().await.checkpoints);

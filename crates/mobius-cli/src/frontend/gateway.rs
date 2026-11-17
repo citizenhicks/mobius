@@ -9,9 +9,8 @@ use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModif
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Wrap};
-use tokio::time::MissedTickBehavior;
 
-use super::terminal::{INPUT_POLL, MAX_ENDPOINT_BYTES, Screen, TextForm, input_batch};
+use super::terminal::{MAX_ENDPOINT_BYTES, Screen, TextForm, input_batch, input_interval};
 use super::terminal_text;
 use super::theme::{Role, brand_header, current};
 use crate::gateway_error;
@@ -22,8 +21,7 @@ const MAX_PAIRING_CODE_BYTES: usize = 512;
 pub(crate) async fn run(terminal: &mut Screen, connected: &str) -> Result<bool> {
     let accounts = GatewayAccounts::load().map_err(gateway_error)?;
     let mut state = State::new(accounts, connected);
-    let mut tick = tokio::time::interval(INPUT_POLL);
-    tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut tick = input_interval();
     terminal.clear()?;
 
     loop {

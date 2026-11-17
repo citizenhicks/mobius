@@ -266,9 +266,11 @@ impl GatewaySandbox {
         }
     }
 
-    pub(crate) fn deny_read_paths(
+    pub(crate) fn with_file_roots(
         mut self,
-        paths: impl IntoIterator<Item = PathBuf>,
+        denied: impl IntoIterator<Item = PathBuf>,
+        attached: &[PathBuf],
+        read_only: &[PathBuf],
     ) -> Result<Self> {
         let mut delegate = std::sync::Arc::try_unwrap(self.delegate).map_err(|delegate| {
             Error::Internal(format!(
@@ -276,42 +278,14 @@ impl GatewaySandbox {
                 std::sync::Arc::strong_count(&delegate)
             ))
         })?;
-        for path in paths {
+        for path in denied {
             delegate = delegate.deny_read(path)?;
         }
-        self.delegate = std::sync::Arc::new(delegate);
-        Ok(self)
-    }
-
-    pub(crate) fn allow_read_roots(
-        mut self,
-        roots: impl IntoIterator<Item = PathBuf>,
-    ) -> Result<Self> {
-        let mut delegate = std::sync::Arc::try_unwrap(self.delegate).map_err(|delegate| {
-            Error::Internal(format!(
-                "sandbox roots must be configured before execution: {} handles share the delegate",
-                std::sync::Arc::strong_count(&delegate)
-            ))
-        })?;
-        for root in roots {
-            delegate = delegate.allow_read_root(root)?;
+        for path in attached {
+            delegate = delegate.allow_workspace_root(path)?;
         }
-        self.delegate = std::sync::Arc::new(delegate);
-        Ok(self)
-    }
-
-    pub(crate) fn allow_attached_folders(
-        mut self,
-        roots: impl IntoIterator<Item = PathBuf>,
-    ) -> Result<Self> {
-        let mut delegate = std::sync::Arc::try_unwrap(self.delegate).map_err(|delegate| {
-            Error::Internal(format!(
-                "sandbox roots must be configured before execution: {} handles share the delegate",
-                std::sync::Arc::strong_count(&delegate)
-            ))
-        })?;
-        for root in roots {
-            delegate = delegate.allow_workspace_root(root)?;
+        for path in read_only {
+            delegate = delegate.allow_read_root(path)?;
         }
         self.delegate = std::sync::Arc::new(delegate);
         Ok(self)
@@ -332,32 +306,45 @@ impl GatewaySandbox {
         }
     }
 
+    // The spawned operation keeps the lease until I/O finishes, even if its caller is cancelled.
+    async fn file_task<T, F>(
+        &self,
+        delegate: &std::sync::Arc<LocalSandbox>,
+        name: &'static str,
+        prepare: impl FnOnce(std::sync::Arc<LocalSandbox>) -> F,
+    ) -> Result<T>
+    where
+        T: Send + 'static,
+        F: Future<Output = Result<T>> + Send + 'static,
+    {
+        let lease = self.execution_lease().await?;
+        let operation = prepare(std::sync::Arc::clone(delegate));
+        tokio::spawn(async move {
+            let _lease = lease;
+            operation.await
+        })
+        .await
+        .map_err(|error| Error::Sandbox(format!("{name} failed: {error}")))?
+    }
+
     pub(crate) async fn read_workspace_range(
         &self,
         path: PathBuf,
         offset: u64,
         max_bytes: usize,
     ) -> Result<(Vec<u8>, Option<u64>)> {
-        let execution = self.execution_lease().await?;
-        let delegate = std::sync::Arc::clone(&self.delegate);
-        tokio::spawn(async move {
-            let _execution = execution;
+        self.file_task(&self.delegate, "file reader", |delegate| async move {
             delegate.read_host_range(path, offset, max_bytes).await
         })
         .await
-        .map_err(|error| Error::Sandbox(format!("file reader failed: {error}")))?
     }
 
     pub(crate) async fn remove(&self, path: &str) -> Result<()> {
-        let execution = self.execution_lease().await?;
-        let delegate = std::sync::Arc::clone(&self.delegate);
-        let path = path.to_owned();
-        tokio::spawn(async move {
-            let _execution = execution;
-            delegate.remove_file(&path).await
+        self.file_task(&self.delegate, "file deletion", |delegate| {
+            let path = path.to_owned();
+            async move { delegate.remove_file(&path).await }
         })
         .await
-        .map_err(|error| Error::Sandbox(format!("file deletion failed: {error}")))?
     }
 
     pub(crate) async fn switch_git_branch(&self, branch: &str) -> Result<CommandOutput> {
@@ -493,17 +480,14 @@ impl SandboxBackend for GatewaySandbox {
         path: &'a str,
         sandbox_mode: SandboxMode,
     ) -> BoxFuture<'a, Result<String>> {
-        Box::pin(async move {
-            let execution = self.execution_lease().await?;
-            let delegate = std::sync::Arc::clone(self.command_delegate(sandbox_mode));
-            let path = path.to_owned();
-            tokio::spawn(async move {
-                let _execution = execution;
-                delegate.read(&path, sandbox_mode).await
-            })
-            .await
-            .map_err(|error| Error::Sandbox(format!("file reader failed: {error}")))?
-        })
+        Box::pin(self.file_task(
+            self.command_delegate(sandbox_mode),
+            "file reader",
+            move |delegate| {
+                let path = path.to_owned();
+                async move { delegate.read(&path, sandbox_mode).await }
+            },
+        ))
     }
 
     fn read_bytes<'a>(
@@ -512,17 +496,14 @@ impl SandboxBackend for GatewaySandbox {
         max_bytes: usize,
         sandbox_mode: SandboxMode,
     ) -> BoxFuture<'a, Result<Vec<u8>>> {
-        Box::pin(async move {
-            let execution = self.execution_lease().await?;
-            let delegate = std::sync::Arc::clone(self.command_delegate(sandbox_mode));
-            let path = path.to_owned();
-            tokio::spawn(async move {
-                let _execution = execution;
-                delegate.read_bytes(&path, max_bytes, sandbox_mode).await
-            })
-            .await
-            .map_err(|error| Error::Sandbox(format!("file reader failed: {error}")))?
-        })
+        Box::pin(self.file_task(
+            self.command_delegate(sandbox_mode),
+            "file reader",
+            move |delegate| {
+                let path = path.to_owned();
+                async move { delegate.read_bytes(&path, max_bytes, sandbox_mode).await }
+            },
+        ))
     }
 
     fn write<'a>(
@@ -531,18 +512,15 @@ impl SandboxBackend for GatewaySandbox {
         content: &'a str,
         sandbox_mode: SandboxMode,
     ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            let execution = self.execution_lease().await?;
-            let delegate = std::sync::Arc::clone(self.command_delegate(sandbox_mode));
-            let path = path.to_owned();
-            let content = content.to_owned();
-            tokio::spawn(async move {
-                let _execution = execution;
-                delegate.write(&path, &content, sandbox_mode).await
-            })
-            .await
-            .map_err(|error| Error::Sandbox(format!("file writer failed: {error}")))?
-        })
+        Box::pin(self.file_task(
+            self.command_delegate(sandbox_mode),
+            "file writer",
+            move |delegate| {
+                let path = path.to_owned();
+                let content = content.to_owned();
+                async move { delegate.write(&path, &content, sandbox_mode).await }
+            },
+        ))
     }
 
     fn check_file_change<'a>(
@@ -630,6 +608,44 @@ mod tests {
     const WORKSPACE_GIT_TEST_CHILD: &str = "MOBIUS_GATEWAY_WORKSPACE_GIT_TEST_CHILD";
     const WORKSPACE_GIT_TEST_NAME: &str =
         "sandbox::tests::workspace_git_inherits_home_config_and_ignores_repository_redirects";
+
+    #[tokio::test]
+    async fn cancelled_file_caller_keeps_desktop_lease_until_io_completes() {
+        use crate::computer_runtime::remote_desktop::RemoteDesktop;
+        let workspace = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let remote = std::sync::Arc::new(RemoteDesktop::new(
+            state.path(),
+            true,
+            crate::computer_runtime::ComputerConfig::default(),
+        ));
+        let sandbox =
+            GatewaySandbox::new(workspace.path(), state.path(), None, Duration::from_secs(5))
+                .unwrap()
+                .with_remote_desktop(std::sync::Arc::clone(&remote));
+        let (started, running) = tokio::sync::oneshot::channel();
+        let (finish, release) = tokio::sync::oneshot::channel();
+        tokio::select! {
+            result = sandbox.file_task(&sandbox.delegate, "test file", |_| async move {
+                started.send(()).unwrap();
+                release.await.unwrap();
+                Ok(())
+            }) => panic!("file task completed early: {result:?}"),
+            result = running => result.unwrap(),
+        }
+        drop(sandbox);
+        let mut takeover = Box::pin(remote.cancel_takeover());
+        assert!(
+            tokio::time::timeout(Duration::ZERO, &mut takeover)
+                .await
+                .is_err()
+        );
+        finish.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), takeover)
+            .await
+            .unwrap();
+        drop(remote);
+    }
 
     #[test]
     fn every_provider_api_key_environment_is_hidden_from_commands() {

@@ -60,3 +60,36 @@ async fn execution_insert_failure_rolls_back_checkpoint_and_transcript() {
             .is_empty()
     );
 }
+
+#[tokio::test]
+async fn transcript_cursor_includes_the_largest_sequence_and_excludes_the_boundary() {
+    let workspace = tempfile::tempdir().unwrap();
+    let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3")).unwrap();
+    let id = session("session");
+    store
+        .save(checkpoint("session"), Vec::new(), None)
+        .await
+        .unwrap();
+    store.run(|db, _| {
+        db.execute("INSERT INTO transcript_delta(session_id, sequence, items_json) VALUES ('session', ?1, '[]'), ('session', 0, '[]')", [i64::MAX])?;
+        Ok(())
+    }).await.unwrap();
+    let page = async |before_sequence| {
+        store
+            .transcript_page(
+                &id,
+                TranscriptPageRequest {
+                    before_sequence,
+                    max_batches: 1,
+                },
+            )
+            .await
+    };
+    let first = page(None).await.unwrap();
+    assert_eq!(first.next_before_sequence, Some(i64::MAX as u64));
+    let last = page(first.next_before_sequence).await.unwrap();
+    assert_eq!(last.batches[0].sequence, 0);
+    assert_eq!(last.next_before_sequence, None);
+    assert!(page(Some(0)).await.unwrap().batches.is_empty());
+    assert!(page(Some(u64::MAX)).await.is_err());
+}
