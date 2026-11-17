@@ -74,10 +74,7 @@ async fn failed_checkpoint_save_does_not_journal_an_approval_decision() {
 #[tokio::test]
 async fn rejected_prompt_aborts_without_persisting_or_wedging_the_next_turn() {
     let workspace = tempfile::tempdir().expect("workspace");
-    let checkpoints = Arc::new(
-        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
-            .expect("checkpoint store"),
-    );
+    let checkpoints = test_checkpoints(workspace.path());
     let model = Arc::new(HandoffModel::default());
     let config = AgentConfig::new(
         Arc::new(ModelRouter::new("main", Arc::<HandoffModel>::clone(&model))),
@@ -200,9 +197,7 @@ async fn compaction_notice_is_live_and_closes_on_success_failure_and_interrupt()
                 release: Notify::new(),
                 fail: outcome == "failure",
             });
-            let checkpoints = Arc::new(
-                SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3")).unwrap(),
-            );
+            let checkpoints = test_checkpoints(workspace.path());
             let mut checkpoint = Checkpoint::empty(outcome.parse().expect("session ID"));
             checkpoint.model_route = Some("main".into());
             checkpoint.session_context = test_session_context().into();
@@ -352,10 +347,7 @@ async fn compaction_notice_is_live_and_closes_on_success_failure_and_interrupt()
 #[tokio::test]
 async fn compaction_marker_survives_transcript_replay() {
     let workspace = tempfile::tempdir().expect("workspace");
-    let checkpoints = Arc::new(
-        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
-            .expect("checkpoint store"),
-    );
+    let checkpoints = test_checkpoints(workspace.path());
     let checkpoint_store: Arc<dyn CheckpointStore> = Arc::<SqliteCheckpoint>::clone(&checkpoints);
     let config = AgentConfig::new(
         Arc::new(ModelRouter::new("main", Arc::new(HandoffModel::default()))),
@@ -476,10 +468,7 @@ async fn compaction_marker_survives_transcript_replay() {
 #[tokio::test]
 async fn failing_usage_observer_aborts_before_checkpoint_usage_is_committed() {
     let workspace = tempfile::tempdir().expect("workspace");
-    let checkpoints = Arc::new(
-        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
-            .expect("checkpoint store"),
-    );
+    let checkpoints = test_checkpoints(workspace.path());
     let checkpoint_store: Arc<dyn CheckpointStore> = Arc::<SqliteCheckpoint>::clone(&checkpoints);
     let model = Arc::new(ScriptedModel {
         outputs: Mutex::new(VecDeque::from([scripted_message("done")])),
@@ -543,10 +532,7 @@ async fn failing_usage_observer_aborts_before_checkpoint_usage_is_committed() {
 async fn idle_compaction_runs_once_without_a_model_reply() {
     for (min_tokens, compacts) in [(1_000, true), (10_000_000, false)] {
         let workspace = tempfile::tempdir().expect("workspace");
-        let checkpoints = Arc::new(
-            SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
-                .expect("checkpoint store"),
-        );
+        let checkpoints = test_checkpoints(workspace.path());
         let mut checkpoint = Checkpoint::empty("idle".parse().expect("session ID"));
         checkpoint.model_route = Some("main".into());
         checkpoint.session_context = test_session_context().into();
@@ -679,10 +665,7 @@ async fn a_message_steered_into_the_idle_turn_is_answered_after_compaction() {
     for reject in [false, true] {
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             let workspace = tempfile::tempdir().expect("workspace");
-            let checkpoints = Arc::new(
-                SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
-                    .expect("checkpoint store"),
-            );
+            let checkpoints = test_checkpoints(workspace.path());
             let mut checkpoint = Checkpoint::empty("idle-steer".parse().expect("session ID"));
             checkpoint.model_route = Some("main".into());
             checkpoint.session_context = test_session_context().into();
@@ -840,10 +823,7 @@ async fn a_message_steered_into_the_idle_turn_is_answered_after_compaction() {
 async fn failed_idle_compaction_disarms_without_losing_the_chat() {
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         let workspace = tempfile::tempdir().expect("workspace");
-        let checkpoints = Arc::new(
-            SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
-                .expect("checkpoint store"),
-        );
+        let checkpoints = test_checkpoints(workspace.path());
         let model = Arc::new(ScriptedModel {
             outputs: Mutex::new(VecDeque::from([scripted_message("done")])),
             tool_counts: Mutex::default(),

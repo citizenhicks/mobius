@@ -198,7 +198,7 @@ impl GatewayHost {
             .iter()
             .filter(|sink| sink.enabled && !sink.events.is_empty())
         {
-            if self.telemetry.can_drain(&sink.id)? && state.bots.telemetry_count(sink)? > 0 {
+            if self.telemetry.can_drain(&sink.id)? && state.bots.has_pending_telemetry(sink)? {
                 return Ok(true);
             }
         }

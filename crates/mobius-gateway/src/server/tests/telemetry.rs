@@ -66,6 +66,7 @@ async fn committed_events_retry_and_advance_only_after_delivery() {
         .configure_telemetry(0, vec![endpoint.clone()], &[])
         .await
         .unwrap();
+    assert!(!server.bots.has_pending_telemetry(&endpoint).unwrap());
     let bot = server.bots.bots().unwrap().remove(0);
     let event = HookEvent {
         id: "telemetry-fact".into(),
@@ -82,6 +83,7 @@ async fn committed_events_retry_and_advance_only_after_delivery() {
         },
     };
     server.bots.storage.record_hook(&event).unwrap();
+    assert!(server.bots.has_pending_telemetry(&endpoint).unwrap());
     assert_eq!(server.bots.telemetry_batch(&endpoint).unwrap().1, 1);
     let receiver = tokio::spawn(async move {
         for status in [500, 202, 400] {
@@ -111,6 +113,10 @@ async fn committed_events_retry_and_advance_only_after_delivery() {
         .await
         .unwrap();
         while tasks.join_next().await.is_some() {}
+        assert_eq!(
+            server.bots.has_pending_telemetry(&endpoint).unwrap(),
+            pending > 0
+        );
         assert_eq!(server.bots.telemetry_batch(&endpoint).unwrap().1, pending);
     }
     let mut second = event;

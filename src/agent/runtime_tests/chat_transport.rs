@@ -63,9 +63,7 @@ async fn run_chat(replies: &'static [Reply]) -> (Vec<Value>, Vec<EventMsg>) {
     )
     .expect("Kimi provider");
     let workspace = tempfile::tempdir().expect("workspace");
-    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
-        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3")).expect("store"),
-    );
+    let checkpoints: Arc<dyn CheckpointStore> = test_checkpoints(workspace.path());
     let mut agent = create_agent(config_with_model(
         workspace.path(),
         checkpoints,

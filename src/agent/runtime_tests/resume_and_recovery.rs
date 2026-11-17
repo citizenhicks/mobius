@@ -25,10 +25,7 @@ impl Middleware for FailFirstMessageSubmit {
 #[tokio::test]
 async fn failed_message_submit_leaves_the_accepted_message_for_restart() {
     let workspace = tempfile::tempdir().expect("workspace");
-    let checkpoints = Arc::new(
-        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
-            .expect("checkpoint store"),
-    );
+    let checkpoints = test_checkpoints(workspace.path());
     let failed = Arc::new(AtomicBool::new(false));
     let model = Arc::new(HandoffModel::default());
     let make_config = |checkpoints: Arc<dyn CheckpointStore>| {
@@ -97,10 +94,7 @@ async fn failed_message_submit_leaves_the_accepted_message_for_restart() {
 #[tokio::test]
 async fn route_change_omits_private_reasoning_but_keeps_visible_history_and_tool_pairs() {
     let workspace = tempfile::tempdir().expect("workspace");
-    let checkpoints = Arc::new(
-        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
-            .expect("checkpoint store"),
-    );
+    let checkpoints = test_checkpoints(workspace.path());
     let (mut first_output, _, _) = scripted_tool_call().into_parts();
     first_output.insert(
         0,
@@ -262,10 +256,7 @@ async fn route_change_omits_private_reasoning_but_keeps_visible_history_and_tool
 #[tokio::test]
 async fn stale_save_does_not_leapfrog_winning_checkpoint() {
     let workspace = tempfile::tempdir().expect("workspace");
-    let checkpoints = Arc::new(
-        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
-            .expect("checkpoint store"),
-    );
+    let checkpoints = test_checkpoints(workspace.path());
     let checkpoint_store: Arc<dyn CheckpointStore> = Arc::<SqliteCheckpoint>::clone(&checkpoints);
     let agent = create_agent(config(workspace.path(), checkpoint_store, "target"))
         .await
@@ -303,10 +294,7 @@ async fn stale_save_does_not_leapfrog_winning_checkpoint() {
 #[tokio::test]
 async fn restart_recovers_streamed_calls_without_reexecuting_them() {
     let workspace = tempfile::tempdir().expect("workspace");
-    let checkpoints = Arc::new(
-        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
-            .expect("checkpoint store"),
-    );
+    let checkpoints = test_checkpoints(workspace.path());
     let mut checkpoint = Checkpoint::empty("recover-streamed-call".parse().expect("session ID"));
     checkpoint.session_context = test_session_context().into();
     checkpoint.model_route = Some("test".into());

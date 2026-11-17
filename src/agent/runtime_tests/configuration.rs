@@ -36,9 +36,7 @@ async fn auxiliary_usage_preserves_the_last_foreground_context() {
     }
 
     let workspace = tempfile::tempdir().expect("workspace");
-    let checkpoints = Arc::new(
-        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3")).expect("checkpoints"),
-    );
+    let checkpoints = test_checkpoints(workspace.path());
     let mut output = scripted_message("done");
     let usage = TokenUsage {
         input_tokens: 1_000,
@@ -115,10 +113,7 @@ async fn auxiliary_usage_preserves_the_last_foreground_context() {
 #[tokio::test]
 async fn completed_pre_model_usage_is_settled_when_a_later_hook_rejects_preparation() {
     let workspace = tempfile::tempdir().expect("workspace");
-    let checkpoints = Arc::new(
-        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
-            .expect("checkpoint store"),
-    );
+    let checkpoints = test_checkpoints(workspace.path());
     let checkpoint_store: Arc<dyn CheckpointStore> = Arc::<SqliteCheckpoint>::clone(&checkpoints);
     let observed_usage = Arc::new(Mutex::new(Vec::new()));
     let usage_observer = Arc::clone(&observed_usage);
@@ -226,9 +221,7 @@ async fn retained_agent_closes_its_event_stream_after_a_fatal_routing_error() {
         }
     }
     let workspace = tempfile::tempdir().expect("workspace");
-    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
-        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3")).expect("checkpoints"),
-    );
+    let checkpoints: Arc<dyn CheckpointStore> = test_checkpoints(workspace.path());
     let mut config = config(workspace.path(), checkpoints, "retained-agent");
     config.middleware =
         Arc::new(MiddlewareStack::new(vec![Arc::new(FailingMessages)]).expect("middleware"));

@@ -156,10 +156,7 @@ async fn rejected_input_refill_cannot_starve_model_completion() {
                 Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
                 ApprovalPolicy::Allow,
             )),
-            Arc::new(
-                SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
-                    .expect("checkpoint store"),
-            ),
+            test_checkpoints(workspace.path()),
             test_middleware(vec![Arc::<RefillMiddleware>::clone(&refill)]),
             "test prompt",
         )
@@ -211,10 +208,7 @@ async fn rejected_input_refill_cannot_starve_model_completion() {
 #[tokio::test]
 async fn steer_is_durable_before_a_blocked_model_completes() {
     let workspace = tempfile::tempdir().expect("workspace");
-    let checkpoints = Arc::new(
-        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
-            .expect("checkpoint store"),
-    );
+    let checkpoints = test_checkpoints(workspace.path());
     let started = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
     let model = blocking_model(&started, &release);
@@ -285,10 +279,7 @@ async fn steer_is_durable_before_a_blocked_model_completes() {
 #[tokio::test]
 async fn interrupt_discards_partial_pre_model_context() {
     let workspace = tempfile::tempdir().expect("workspace");
-    let checkpoints = Arc::new(
-        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
-            .expect("checkpoint store"),
-    );
+    let checkpoints = test_checkpoints(workspace.path());
     let started = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
     let middleware = PartiallyBlockingBeforeModel {

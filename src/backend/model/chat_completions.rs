@@ -527,7 +527,11 @@ pub(super) fn content_text(content: Option<&Value>) -> Cow<'_, str> {
 }
 
 #[derive(Default)]
-pub(super) struct ToolCalls(BTreeMap<usize, PendingTool>);
+pub(super) struct ChatStreamState {
+    tools: BTreeMap<usize, PendingTool>,
+    usage: TokenUsage,
+    done: bool,
+}
 
 #[derive(Default)]
 struct PendingTool {
@@ -536,8 +540,25 @@ struct PendingTool {
     arguments: String,
 }
 
-impl ToolCalls {
-    pub(super) fn append(&mut self, delta: &Value, provider: &str) -> Result<()> {
+impl ChatStreamState {
+    pub(super) fn read_chunk(&mut self, data: &str, provider: &str) -> Result<Option<Value>> {
+        if data == "[DONE]" {
+            self.done = true;
+            return Ok(None);
+        }
+        let chunk: Value = serde_json::from_str(data)?;
+        if let Some(message) = chunk.pointer("/error/message").and_then(Value::as_str) {
+            return Err(Error::Provider(
+                format!("{provider} stream error: {message}").into(),
+            ));
+        }
+        if let Some(usage) = chunk.get("usage") {
+            self.usage = decode_usage(Some(usage), provider)?;
+        }
+        Ok(Some(chunk))
+    }
+
+    pub(super) fn append_tools(&mut self, delta: &Value, provider: &str) -> Result<()> {
         for (position, call) in delta
             .get("tool_calls")
             .and_then(Value::as_array)
@@ -550,12 +571,12 @@ impl ToolCalls {
                 .and_then(Value::as_u64)
                 .and_then(|index| usize::try_from(index).ok())
                 .unwrap_or(position);
-            if self.0.len() >= MAX_TOOL_CALLS && !self.0.contains_key(&index) {
+            if self.tools.len() >= MAX_TOOL_CALLS && !self.tools.contains_key(&index) {
                 return Err(Error::Provider(
                     format!("{provider} returned more than {MAX_TOOL_CALLS} tool calls").into(),
                 ));
             }
-            let pending = self.0.entry(index).or_default();
+            let pending = self.tools.entry(index).or_default();
             set_fragment(
                 &mut pending.id,
                 call.get("id").and_then(Value::as_str),
@@ -575,8 +596,14 @@ impl ToolCalls {
         Ok(())
     }
 
-    pub(super) fn finish(self, provider: &str) -> Result<Vec<Value>> {
-        self.0
+    pub(super) fn finish(self, provider: &str) -> Result<(Vec<Value>, TokenUsage)> {
+        if !self.done {
+            return Err(Error::Provider(
+                format!("{provider} stream ended before the [DONE] event").into(),
+            ));
+        }
+        let calls = self
+            .tools
             .into_values()
             .map(|call| {
                 let arguments = if call.arguments.is_empty() {
@@ -590,7 +617,8 @@ impl ToolCalls {
                     &arguments,
                 ))
             })
-            .collect()
+            .collect::<Result<_>>()?;
+        Ok((calls, self.usage))
     }
 }
 
@@ -642,7 +670,7 @@ fn set_fragment(
     Ok(())
 }
 
-pub(super) fn decode_usage(usage: Option<&Value>, provider: &str) -> Result<TokenUsage> {
+fn decode_usage(usage: Option<&Value>, provider: &str) -> Result<TokenUsage> {
     let value =
         |pointer| -> Result<i64> { Ok(usage_i64(usage, pointer, provider)?.unwrap_or_default()) };
     let cached_input_tokens =

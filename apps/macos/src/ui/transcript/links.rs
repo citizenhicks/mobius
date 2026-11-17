@@ -101,22 +101,7 @@ impl Workspace {
                     .get_or_insert_with(|| SharedString::from(text.to_owned())),
             )
         });
-        let entity = cx.entity().downgrade();
-        let session = session.map(SessionId::share);
-        let text_view = TextView::new(&view.state)
-            .style(markdown_style(self.palette.button_accent))
-            .inline_code_style(inline_code_ring(self.palette.button_accent))
-            .text_color(self.palette.ink)
-            .selectable(true)
-            .selection_format(SelectionFormat::SourceAcrossStyles)
-            .on_link_click(move |href, _, _, cx| {
-                let opened = entity.update(cx, |this, cx| {
-                    this.open_transcript_link(href, session.as_ref(), cx);
-                });
-                if let Err(error) = opened {
-                    tracing::debug!(%error, "transcript link on a released workspace");
-                }
-            });
+        let text_view = self.configure_transcript_markdown(TextView::new(&view.state), session, cx);
         (text_view, shared)
     }
     pub(super) fn transcript_markdown(
@@ -126,10 +111,18 @@ impl Workspace {
         session: Option<&SessionId>,
         cx: &Context<Self>,
     ) -> TextView {
+        self.configure_transcript_markdown(TextView::markdown(id, text), session, cx)
+    }
+
+    fn configure_transcript_markdown(
+        &self,
+        view: TextView,
+        session: Option<&SessionId>,
+        cx: &Context<Self>,
+    ) -> TextView {
         let entity = cx.entity().downgrade();
         let session = session.map(SessionId::share);
-        TextView::markdown(id, text)
-            .style(markdown_style(self.palette.button_accent))
+        view.style(markdown_style(self.palette.button_accent))
             .inline_code_style(inline_code_ring(self.palette.button_accent))
             .text_color(self.palette.ink)
             .selectable(true)

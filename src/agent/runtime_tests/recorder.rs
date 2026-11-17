@@ -199,9 +199,7 @@ async fn recorder_stops_without_delivering_when_persistence_fails() {
 #[tokio::test]
 async fn interrupted_response_delivers_accepted_text_before_aborting_and_rejects_late_text() {
     let workspace = tempfile::tempdir().expect("workspace");
-    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
-        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3")).expect("store"),
-    );
+    let checkpoints: Arc<dyn CheckpointStore> = test_checkpoints(workspace.path());
     let retained = Arc::new(Mutex::new(None));
     let started = Arc::new(Notify::new());
     let mut agent = create_agent(config_with_model(
@@ -312,10 +310,7 @@ async fn fast_model_burst_coalesces_without_losing_text_before_completion() {
         }
     }
     let workspace = tempfile::tempdir().expect("workspace");
-    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
-        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
-            .expect("checkpoint store"),
-    );
+    let checkpoints: Arc<dyn CheckpointStore> = test_checkpoints(workspace.path());
     let agent = create_agent(config_with_model(
         workspace.path(),
         checkpoints,

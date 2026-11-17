@@ -130,17 +130,6 @@ pub(super) fn require_selected<'a>(
     Ok(host)
 }
 
-pub(super) async fn require_uploads_enabled<'a>(
-    selected: Option<&'a SelectedChat>,
-    session_id: &SessionId,
-) -> std::result::Result<&'a HostHandle, Rejection> {
-    let host = require_selected(selected, session_id)?;
-    if !host.accepts_file_attachments().await? {
-        return Err(uploads_disabled_rejection());
-    }
-    Ok(host)
-}
-
 pub(super) fn uploads_disabled_rejection() -> Rejection {
     Rejection::new(
         "uploads_disabled",

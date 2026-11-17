@@ -7,13 +7,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::chat_completions::{
-    ChatCompletions, ChatStream, Dialect, MessageSource, ToolCalls, WireContent, content_text,
-    decode_usage,
+    ChatCompletions, ChatStream, ChatStreamState, Dialect, MessageSource, WireContent, content_text,
 };
 use super::provider::ProviderDefinition;
 use super::transport::SseHandler;
 use super::{ModelEventSink, ModelOutput, REPLAY_REASONING_FIELD};
-use crate::protocol::{ModelEvent, TokenUsage};
+use crate::protocol::ModelEvent;
 use crate::{Error, Result};
 
 pub(super) static MANIFEST: std::sync::LazyLock<super::provider::ProviderMetadata> =
@@ -128,9 +127,7 @@ pub(super) struct MistralStream {
     text: String,
     reasoning: String,
     thinking: Vec<ThinkingBlock>,
-    tools: ToolCalls,
-    usage: TokenUsage,
-    done: bool,
+    stream: ChatStreamState,
 }
 
 #[derive(Default, Serialize)]
@@ -155,19 +152,9 @@ struct ThinkingChunk {
 
 impl SseHandler for MistralStream {
     async fn apply_data(&mut self, data: &str, events: &ModelEventSink) -> Result<()> {
-        if data == "[DONE]" {
-            self.done = true;
+        let Some(mut chunk) = self.stream.read_chunk(data, MistralDialect::NAME)? else {
             return Ok(());
-        }
-        let mut chunk: Value = serde_json::from_str(data)?;
-        if let Some(message) = chunk.pointer("/error/message").and_then(Value::as_str) {
-            return Err(Error::Provider(
-                format!("Mistral stream error: {message}").into(),
-            ));
-        }
-        if let Some(usage) = chunk.get("usage") {
-            self.usage = decode_usage(Some(usage), "Mistral")?;
-        }
+        };
         if chunk
             .pointer("/choices/0/finish_reason")
             .and_then(Value::as_str)
@@ -178,7 +165,7 @@ impl SseHandler for MistralStream {
         let Some(delta) = chunk.pointer_mut("/choices/0/delta") else {
             return Ok(());
         };
-        self.tools.append(delta, "Mistral")?;
+        self.stream.append_tools(delta, MistralDialect::NAME)?;
         if let Some(content) = delta.get_mut("content") {
             self.append_content(content.take(), events).await?;
         }
@@ -290,12 +277,7 @@ impl MistralStream {
 
 impl ChatStream for MistralStream {
     fn finish(self) -> Result<ModelOutput> {
-        if !self.done {
-            return Err(Error::Provider(
-                "Mistral stream ended before the [DONE] event".into(),
-            ));
-        }
-        let calls = self.tools.finish("Mistral")?;
+        let (calls, usage) = self.stream.finish(MistralDialect::NAME)?;
         let end_turn = calls.is_empty();
         let mut output = Vec::new();
         if !self.text.is_empty() || !self.thinking.is_empty() {
@@ -320,7 +302,7 @@ impl ChatStream for MistralStream {
             output.push(message);
         }
         output.extend(calls);
-        ModelOutput::from_output(output, end_turn, self.usage)
+        ModelOutput::from_output(output, end_turn, usage)
     }
 }
 

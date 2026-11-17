@@ -226,8 +226,14 @@ async fn generation_error_never_commits_partial_tools_or_text() {
         }}]
     }).to_string(), &sink()).await.expect_err("failed generation");
     assert!(error.to_string().contains("Mistral generation failed"));
-    assert!(stream.text.is_empty());
-    assert!(stream.tools.finish("Mistral").unwrap().is_empty());
+    stream.apply_data("[DONE]", &sink()).await.unwrap();
+    assert!(
+        stream
+            .finish()
+            .unwrap_err()
+            .to_string()
+            .contains("model returned no output")
+    );
     let mut stream = MistralStream::default();
     assert!(
         stream

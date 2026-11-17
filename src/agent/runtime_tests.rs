@@ -84,6 +84,12 @@ use crate::protocol::internal_message_kind;
 use serde_json::Value;
 use tokio::sync::Notify;
 
+fn test_checkpoints(workspace: &Path) -> Arc<SqliteCheckpoint> {
+    Arc::new(
+        SqliteCheckpoint::new(workspace.join("checkpoints.sqlite3")).expect("checkpoint store"),
+    )
+}
+
 fn test_session_context() -> SessionContext {
     SessionContext {
         owner_id: "test-bot".into(),

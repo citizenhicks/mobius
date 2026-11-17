@@ -56,8 +56,8 @@ use self::dispatch::{
 };
 use self::responses::{
     directory_rejection, list_directories, open_selected, require_selected,
-    require_uploads_enabled, uploads_disabled_rejection, write_client_inventory,
-    write_gateway_result, write_rejection, write_result, write_server_error, write_session_history,
+    uploads_disabled_rejection, write_client_inventory, write_gateway_result, write_rejection,
+    write_result, write_server_error, write_session_history,
 };
 use self::transport::{
     ClientConnections, ConnectionAdmission, ConnectionContext, ConnectionShared,

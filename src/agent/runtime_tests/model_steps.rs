@@ -2,31 +2,35 @@
 
 use super::*;
 
-#[tokio::test(start_paused = true)]
-async fn interrupted_stream_retries_in_a_fresh_model_step() {
-    let workspace = tempfile::tempdir().expect("workspace");
-    let checkpoints = Arc::new(
-        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
-            .expect("checkpoint store"),
-    );
-    let model = Arc::new(RecoveringStreamModel {
-        calls: AtomicUsize::new(0),
-        inputs: Mutex::new(Vec::new()),
-    });
-    let checkpoint_store: Arc<dyn CheckpointStore> = Arc::<SqliteCheckpoint>::clone(&checkpoints);
-    let mut agent = create_agent(config_with_model(
-        workspace.path(),
-        checkpoint_store,
-        "stream-retry",
+async fn start_stream<M: Model + 'static>(
+    workspace: &Path,
+    session: &str,
+    model: &Arc<M>,
+) -> (Agent, Arc<SqliteCheckpoint>) {
+    let checkpoints = test_checkpoints(workspace);
+    let config = config_with_model(
+        workspace,
+        Arc::<SqliteCheckpoint>::clone(&checkpoints),
+        session,
         "test",
-        Arc::<RecoveringStreamModel>::clone(&model),
-    ))
-    .await
-    .expect("create agent");
+        Arc::<M>::clone(model),
+    );
+    let agent = create_agent(config).await.expect("create agent");
     agent
         .sender()
         .submit(user_op("hello"))
         .expect("submit input");
+    (agent, checkpoints)
+}
+
+#[tokio::test(start_paused = true)]
+async fn interrupted_stream_retries_in_a_fresh_model_step() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let model = Arc::new(RecoveringStreamModel {
+        calls: AtomicUsize::new(0),
+        inputs: Mutex::new(Vec::new()),
+    });
+    let (mut agent, checkpoints) = start_stream(workspace.path(), "stream-retry", &model).await;
 
     let mut started = Vec::new();
     let mut completed = Vec::new();
@@ -98,28 +102,12 @@ async fn interrupted_stream_retries_in_a_fresh_model_step() {
 #[tokio::test(start_paused = true)]
 async fn interrupted_stream_exhaustion_surfaces_only_the_safe_provider_error() {
     let workspace = tempfile::tempdir().expect("workspace");
-    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
-        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
-            .expect("checkpoint store"),
-    );
     let model = Arc::new(InterruptedStreamModel {
         transport: ModelTransportSettings::default(),
         calls: AtomicUsize::new(0),
         retry_after: None,
     });
-    let mut agent = create_agent(config_with_model(
-        workspace.path(),
-        checkpoints,
-        "stream-exhaustion",
-        "test",
-        Arc::<InterruptedStreamModel>::clone(&model),
-    ))
-    .await
-    .expect("create agent");
-    agent
-        .sender()
-        .submit(user_op("hello"))
-        .expect("submit input");
+    let (mut agent, _) = start_stream(workspace.path(), "stream-exhaustion", &model).await;
 
     let mut started = Vec::new();
     let mut outcomes = Vec::new();
@@ -159,28 +147,12 @@ async fn interrupted_stream_exhaustion_surfaces_only_the_safe_provider_error() {
 #[tokio::test]
 async fn interrupt_during_stream_retry_backoff_cancels_the_retry() {
     let workspace = tempfile::tempdir().expect("workspace");
-    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
-        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
-            .expect("checkpoint store"),
-    );
     let model = Arc::new(InterruptedStreamModel {
         transport: ModelTransportSettings::default(),
         calls: AtomicUsize::new(0),
         retry_after: Some("3".into()),
     });
-    let mut agent = create_agent(config_with_model(
-        workspace.path(),
-        checkpoints,
-        "stream-backoff-interrupt",
-        "test",
-        Arc::<InterruptedStreamModel>::clone(&model),
-    ))
-    .await
-    .expect("create agent");
-    agent
-        .sender()
-        .submit(user_op("hello"))
-        .expect("submit input");
+    let (mut agent, _) = start_stream(workspace.path(), "stream-backoff-interrupt", &model).await;
     let turn_id = loop {
         if let EventMsg::ModelStepCompleted(completed) =
             agent.next_event().await.expect("model step completion").msg
@@ -258,10 +230,7 @@ impl crate::middleware::tools::Tool for RepeatedTool {
 /// Runs a turn whose model calls the tool `calls` times, then answers.
 async fn run_repeated_tool(polls: bool, calls: usize) -> (Arc<ScriptedModel>, usize, Vec<String>) {
     let workspace = tempfile::tempdir().expect("workspace");
-    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
-        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
-            .expect("checkpoint store"),
-    );
+    let checkpoints: Arc<dyn CheckpointStore> = test_checkpoints(workspace.path());
     let mut outputs: VecDeque<ModelOutput> = (0..calls)
         .map(|index| {
             ModelOutput::from_output(
@@ -333,10 +302,7 @@ async fn repeated_tool_results_warn_the_model_then_stop_the_turn() {
 /// each ended call in order with its output, and how many model requests there were.
 async fn run_repeated_batch(parallel: bool) -> (usize, Vec<(String, String)>, usize) {
     let workspace = tempfile::tempdir().expect("workspace");
-    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
-        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
-            .expect("checkpoint store"),
-    );
+    let checkpoints: Arc<dyn CheckpointStore> = test_checkpoints(workspace.path());
     let calls = (0..5)
         .map(|index| {
             serde_json::json!({

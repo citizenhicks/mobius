@@ -7,14 +7,13 @@ use super::ModelEventSink;
 use super::ModelOutput;
 use super::REPLAY_REASONING_FIELD;
 use super::chat_completions::{
-    ChatCompletions, ChatStream, Dialect, MessageSource, ToolCalls, WireContent,
+    ChatCompletions, ChatStream, ChatStreamState, Dialect, MessageSource, WireContent,
 };
 use super::provider::ProviderDefinition;
 use super::transport::SseHandler;
 use crate::Error;
 use crate::Result;
 use crate::protocol::ModelEvent;
-use crate::protocol::TokenUsage;
 
 pub(super) static MANIFEST: std::sync::LazyLock<super::provider::ProviderMetadata> =
     std::sync::LazyLock::new(|| crate::config::embedded(include_str!("kimi_provider.toml")));
@@ -75,30 +74,15 @@ pub(super) struct KimiMessage<'a> {
 pub(super) struct KimiStream {
     text: String,
     reasoning: String,
-    tools: ToolCalls,
-    usage: TokenUsage,
-    done: bool,
+    stream: ChatStreamState,
 }
 
 impl SseHandler for KimiStream {
     async fn apply_data(&mut self, data: &str, events: &ModelEventSink) -> Result<()> {
-        if data == "[DONE]" {
-            self.done = true;
-            return Ok(());
-        }
-        let chunk: Value = serde_json::from_str(data)?;
-        if let Some(message) = chunk.pointer("/error/message").and_then(Value::as_str) {
-            return Err(Error::Provider(
-                format!("Kimi stream error: {message}").into(),
-            ));
-        }
-        if let Some(usage) = chunk.get("usage") {
-            self.usage = decode_usage(Some(usage))?;
-        }
-        let Some(choice) = chunk.pointer("/choices/0") else {
+        let Some(chunk) = self.stream.read_chunk(data, KimiDialect::NAME)? else {
             return Ok(());
         };
-        let Some(delta) = choice.get("delta") else {
+        let Some(delta) = chunk.pointer("/choices/0/delta") else {
             return Ok(());
         };
         if let Some(reasoning) = delta.get("reasoning_content").and_then(Value::as_str) {
@@ -113,19 +97,14 @@ impl SseHandler for KimiStream {
                 events(ModelEvent::TextDelta(text.to_owned())).await?;
             }
         }
-        self.tools.append(delta, "Kimi")?;
+        self.stream.append_tools(delta, KimiDialect::NAME)?;
         Ok(())
     }
 }
 
 impl ChatStream for KimiStream {
     fn finish(self) -> Result<ModelOutput> {
-        if !self.done {
-            return Err(Error::Provider(
-                "Kimi stream ended before the [DONE] event".into(),
-            ));
-        }
-        let calls = self.tools.finish("Kimi")?;
+        let (calls, usage) = self.stream.finish(KimiDialect::NAME)?;
         let has_tools = !calls.is_empty();
         if self.text.is_empty() && self.reasoning.is_empty() && calls.is_empty() {
             return Err(Error::Provider("Kimi returned no output".into()));
@@ -143,12 +122,8 @@ impl ChatStream for KimiStream {
             }));
         }
         output.extend(calls);
-        ModelOutput::from_output(output, !has_tools, self.usage)
+        ModelOutput::from_output(output, !has_tools, usage)
     }
-}
-
-fn decode_usage(usage: Option<&Value>) -> Result<TokenUsage> {
-    super::chat_completions::decode_usage(usage, "Kimi")
 }
 
 pub(super) fn provider() -> ProviderDefinition {

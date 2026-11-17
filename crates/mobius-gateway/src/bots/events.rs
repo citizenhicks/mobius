@@ -766,6 +766,30 @@ pub(crate) fn stable_id(prefix: &str, first: &str, second: &str) -> String {
     format!("{prefix}-{:x}", hash.finalize())
 }
 
+const PENDING_TELEMETRY: &str = "WHERE events.rowid > ?1 AND json_extract(events.event_json,'$.data.type') IN (SELECT value FROM json_each(?2))";
+
+fn telemetry_cursor(
+    connection: &Connection,
+    sink: &crate::telemetry::TelemetrySink,
+) -> Result<(i64, String)> {
+    let after = connection
+        .prepare_cached("SELECT after_rowid FROM telemetry_cursors WHERE sink_id=?1")?
+        .query_row([&sink.id], |row| row.get(0))
+        .optional()?
+        .ok_or_else(|| Error::Internal(format!("telemetry cursor missing for {}", sink.id)))?;
+    Ok((after, serde_json::to_string(&sink.events)?))
+}
+
+fn pending_event_count(connection: &Connection, after: i64, kinds: &str) -> Result<u64> {
+    let count: i64 = connection
+        .prepare_cached(&format!(
+            "SELECT COUNT(*) FROM hook_events AS events {PENDING_TELEMETRY}"
+        ))?
+        .query_row((after, kinds), |row| row.get(0))?;
+    u64::try_from(count)
+        .map_err(|error| Error::Internal(format!("invalid telemetry event count: {error}")))
+}
+
 impl super::BotStore {
     pub(crate) fn sync_telemetry_cursors(
         &self,
@@ -785,21 +809,23 @@ impl super::BotStore {
         })
     }
 
+    pub(crate) fn has_pending_telemetry(
+        &self,
+        sink: &crate::telemetry::TelemetrySink,
+    ) -> Result<bool> {
+        let connection = self.storage.lock()?;
+        let params = telemetry_cursor(&connection, sink)?;
+        Ok(connection
+            .prepare_cached(&format!(
+                "SELECT 1 FROM hook_events AS events {PENDING_TELEMETRY} LIMIT 1"
+            ))?
+            .exists(params)?)
+    }
+
     pub(crate) fn telemetry_count(&self, sink: &crate::telemetry::TelemetrySink) -> Result<u64> {
         let connection = self.storage.lock()?;
-        let after: i64 = connection
-            .query_row(
-                "SELECT after_rowid FROM telemetry_cursors WHERE sink_id=?1",
-                [&sink.id],
-                |row| row.get(0),
-            )
-            .optional()?
-            .ok_or_else(|| Error::Internal(format!("telemetry cursor missing for {}", sink.id)))?;
-        let kinds = serde_json::to_string(&sink.events)?;
-        let count = connection.query_row("SELECT COUNT(*) FROM hook_events WHERE rowid > ?1 AND json_extract(event_json,'$.data.type') IN (SELECT value FROM json_each(?2))", params![after,kinds], |row| row.get::<_, i64>(0))?;
-        drop(connection);
-        u64::try_from(count)
-            .map_err(|error| Error::Internal(format!("invalid telemetry event count: {error}")))
+        let (after, kinds) = telemetry_cursor(&connection, sink)?;
+        pending_event_count(&connection, after, &kinds)
     }
 
     pub(crate) fn telemetry_batch(
@@ -807,25 +833,10 @@ impl super::BotStore {
         sink: &crate::telemetry::TelemetrySink,
     ) -> Result<(Vec<TelemetryEvent>, u64)> {
         let connection = self.storage.lock()?;
-        let after: i64 = connection
-            .query_row(
-                "SELECT after_rowid FROM telemetry_cursors WHERE sink_id=?1",
-                [&sink.id],
-                |row| row.get(0),
-            )
-            .optional()?
-            .ok_or_else(|| Error::Internal(format!("telemetry cursor missing for {}", sink.id)))?;
-        let kinds = serde_json::to_string(&sink.events)?;
-        let filter = "WHERE events.rowid > ?1 AND json_extract(event_json,'$.data.type') IN (SELECT value FROM json_each(?2))";
-        let count = connection.query_row(
-            &format!("SELECT COUNT(*) FROM hook_events AS events {filter}"),
-            params![after, kinds],
-            |row| row.get::<_, i64>(0),
-        )?;
-        let count = u64::try_from(count)
-            .map_err(|error| Error::Internal(format!("invalid event count: {error}")))?;
-        let mut query = connection.prepare(&format!(
-            "SELECT events.rowid,event_json,journal.sequence FROM hook_events AS events LEFT JOIN hook_journal_sequences AS journal ON journal.event_id=events.id {filter} ORDER BY events.rowid LIMIT 32"
+        let (after, kinds) = telemetry_cursor(&connection, sink)?;
+        let count = pending_event_count(&connection, after, &kinds)?;
+        let mut query = connection.prepare_cached(&format!(
+            "SELECT events.rowid,event_json,journal.sequence FROM hook_events AS events LEFT JOIN hook_journal_sequences AS journal ON journal.event_id=events.id {PENDING_TELEMETRY} ORDER BY events.rowid LIMIT 32"
         ))?;
         let events = query
             .query_map(params![after, kinds], |row| {

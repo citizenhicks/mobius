@@ -403,9 +403,7 @@ fn canonical_tool_items(context: &[Arc<Value>]) -> Vec<String> {
 async fn argument_repair_preserves_the_provider_history_prefix() {
     for (streaming, rewrite) in [(false, false), (true, false), (false, true), (true, true)] {
         let workspace = tempfile::tempdir().expect("workspace");
-        let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
-            SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3")).expect("store"),
-        );
+        let checkpoints: Arc<dyn CheckpointStore> = test_checkpoints(workspace.path());
         let finished = Arc::new(Notify::new());
         let model = Arc::new(StreamingModel {
             calls: AtomicUsize::new(0),
@@ -477,10 +475,7 @@ async fn streaming_tool_error_or_mismatch_does_not_retry_and_records_unknown_res
         ),
     ] {
         let workspace = tempfile::tempdir().expect("workspace");
-        let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
-            SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
-                .expect("checkpoint store"),
-        );
+        let checkpoints: Arc<dyn CheckpointStore> = test_checkpoints(workspace.path());
         let tool_started = Arc::new(Notify::new());
         let tool_finished = Arc::new(Notify::new());
         let model = Arc::new(StreamingModel {
@@ -541,10 +536,7 @@ async fn streaming_tool_error_or_mismatch_does_not_retry_and_records_unknown_res
 #[tokio::test]
 async fn streaming_mixed_parallel_and_exclusive_tools_respect_barriers() {
     let workspace = tempfile::tempdir().expect("workspace");
-    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
-        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
-            .expect("checkpoint store"),
-    );
+    let checkpoints: Arc<dyn CheckpointStore> = test_checkpoints(workspace.path());
     let barrier = Arc::new(BarrierState {
         a_started: Notify::new(),
         b_started: Notify::new(),
@@ -666,10 +658,7 @@ async fn streaming_mixed_parallel_and_exclusive_tools_respect_barriers() {
 #[tokio::test]
 async fn interrupt_drops_a_running_streaming_tool() {
     let workspace = tempfile::tempdir().expect("workspace");
-    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
-        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
-            .expect("checkpoint store"),
-    );
+    let checkpoints: Arc<dyn CheckpointStore> = test_checkpoints(workspace.path());
     let tool_started = Arc::new(Notify::new());
     let tool_finished = Arc::new(Notify::new());
     let tool_done = Arc::new(AtomicBool::new(false));

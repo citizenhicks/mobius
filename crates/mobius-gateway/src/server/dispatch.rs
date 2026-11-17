@@ -3,9 +3,9 @@ use super::{
     ClientConnections, ClientMessage, ClientView, Error, GatewayHost, GatewayNotification,
     HostHandle, JoinSet, Op, PathBuf, PendingSessionFileWrite, Rejection, Result, ServerFrame,
     ServerMessage, SessionFileStore, SharedFrame, Utc, Uuid, broadcast, directory_rejection,
-    list_directories, open_selected, require_selected, require_uploads_enabled,
-    session_file_rejection, uploads_disabled_rejection, write_client_inventory, write_frame,
-    write_gateway_result, write_rejection, write_result, write_server_error, write_session_history,
+    list_directories, open_selected, require_selected, session_file_rejection,
+    uploads_disabled_rejection, write_client_inventory, write_frame, write_gateway_result,
+    write_rejection, write_result, write_server_error, write_session_history,
 };
 use crate::host::{event_sequence, internal, invalid_routine};
 use mobius::SessionId;
@@ -399,14 +399,13 @@ pub(super) async fn handle_message(
             offset,
             data,
         } => {
-            return upload_session_file_chunk(
+            return update_session_file_upload(
                 writer,
                 &mut connection,
                 request_id,
                 session_id,
                 upload_id,
-                offset,
-                data,
+                UploadStep::Chunk { offset, data },
             )
             .await;
         }
@@ -415,12 +414,13 @@ pub(super) async fn handle_message(
             session_id,
             upload_id,
         } => {
-            return finish_session_file_upload(
+            return update_session_file_upload(
                 writer,
                 &mut connection,
                 request_id,
                 session_id,
                 upload_id,
+                UploadStep::Finish,
             )
             .await;
         }
@@ -1308,6 +1308,18 @@ async fn contribution_response(
     .await
 }
 
+async fn begin_upload_mutation(
+    selected: Option<&SelectedChat>,
+    bots: &BotStore,
+    session_id: &SessionId,
+) -> std::result::Result<tokio::sync::OwnedRwLockReadGuard<()>, Rejection> {
+    let host = require_selected(selected, session_id)?;
+    if !host.accepts_file_attachments().await? {
+        return Err(uploads_disabled_rejection());
+    }
+    host.begin_session_file_mutation(bots)
+}
+
 async fn begin_session_file_upload(
     writer: &mut (impl AsyncWrite + Unpin),
     connection: &mut ConnectionSessionState<'_>,
@@ -1317,14 +1329,13 @@ async fn begin_session_file_upload(
     size: u64,
     media_type: String,
 ) -> Result<()> {
-    let host = match require_uploads_enabled(connection.selected.as_ref(), &session_id).await {
-        Ok(host) => host,
-        Err(rejection) => return write_rejection(writer, request_id, rejection).await,
-    };
-    let _mutation = match host.begin_session_file_mutation(connection.bots) {
-        Ok(mutation) => mutation,
-        Err(rejection) => return write_rejection(writer, request_id, rejection).await,
-    };
+    let _mutation =
+        match begin_upload_mutation(connection.selected.as_ref(), connection.bots, &session_id)
+            .await
+        {
+            Ok(mutation) => mutation,
+            Err(rejection) => return write_rejection(writer, request_id, rejection).await,
+        };
     let capacity = connection.gateway.pending_upload_capacity().await?;
     if connection.uploads.len() >= capacity {
         return write_rejection(
@@ -1368,108 +1379,71 @@ async fn begin_session_file_upload(
     }
 }
 
-async fn upload_session_file_chunk(
+enum UploadStep {
+    Chunk { offset: u64, data: Vec<u8> },
+    Finish,
+}
+
+async fn update_session_file_upload(
     writer: &mut (impl AsyncWrite + Unpin),
     connection: &mut ConnectionSessionState<'_>,
     request_id: Arc<str>,
     session_id: SessionId,
     upload_id: String,
-    offset: u64,
-    data: Vec<u8>,
+    step: UploadStep,
 ) -> Result<()> {
     let key = (session_id, upload_id);
-    let host = match require_uploads_enabled(connection.selected.as_ref(), &key.0).await {
-        Ok(host) => host,
-        Err(rejection) => {
-            connection.uploads.remove(&key);
-            return write_rejection(writer, request_id, rejection).await;
-        }
-    };
-    let _mutation = match host.begin_session_file_mutation(connection.bots) {
-        Ok(mutation) => mutation,
-        Err(rejection) => {
-            connection.uploads.remove(&key);
-            return write_rejection(writer, request_id, rejection).await;
-        }
-    };
-    let Some(upload) = connection.uploads.get_mut(&key) else {
-        return write_rejection(
-            writer,
-            request_id,
-            session_file_rejection(mobius::Error::Tool(
-                "session file upload is not active".into(),
-            )),
-        )
-        .await;
-    };
-    let result = upload.append(offset, &data).await;
-    match result {
-        Ok(next_offset) => {
-            write_frame(
-                writer,
-                &ServerFrame::new(ServerMessage::SessionFileUploadChunkAccepted {
+    let _mutation =
+        match begin_upload_mutation(connection.selected.as_ref(), connection.bots, &key.0).await {
+            Ok(mutation) => mutation,
+            Err(rejection) => {
+                connection.uploads.remove(&key);
+                return write_rejection(writer, request_id, rejection).await;
+            }
+        };
+    let inactive = || mobius::Error::Tool("session file upload is not active".into());
+    let reply = match step {
+        UploadStep::Chunk { offset, data } => {
+            let result = match connection.uploads.get_mut(&key) {
+                Some(upload) => upload.append(offset, &data).await,
+                None => Err(inactive()),
+            };
+            match result {
+                Ok(next_offset) => ServerMessage::SessionFileUploadChunkAccepted {
                     request_id,
                     session_id: key.0,
                     upload_id: key.1,
                     next_offset,
-                }),
-            )
-            .await
+                },
+                Err(error) => {
+                    connection.uploads.remove(&key);
+                    return write_rejection(writer, request_id, session_file_rejection(error))
+                        .await;
+                }
+            }
         }
-        Err(error) => {
-            connection.uploads.remove(&key);
-            write_rejection(writer, request_id, session_file_rejection(error)).await
-        }
-    }
-}
-
-async fn finish_session_file_upload(
-    writer: &mut (impl AsyncWrite + Unpin),
-    connection: &mut ConnectionSessionState<'_>,
-    request_id: Arc<str>,
-    session_id: SessionId,
-    upload_id: String,
-) -> Result<()> {
-    let key = (session_id, upload_id);
-    let host = match require_uploads_enabled(connection.selected.as_ref(), &key.0).await {
-        Ok(host) => host,
-        Err(rejection) => {
-            connection.uploads.remove(&key);
-            return write_rejection(writer, request_id, rejection).await;
-        }
-    };
-    let _mutation = match host.begin_session_file_mutation(connection.bots) {
-        Ok(mutation) => mutation,
-        Err(rejection) => {
-            connection.uploads.remove(&key);
-            return write_rejection(writer, request_id, rejection).await;
+        UploadStep::Finish => {
+            let result = match connection.uploads.remove(&key) {
+                Some(upload) => upload.finish().await,
+                None => Err(inactive()),
+            };
+            match result {
+                Ok(file) => {
+                    connection.gateway.invalidate_storage_usage();
+                    ServerMessage::SessionFileUploadCompleted {
+                        request_id,
+                        session_id: key.0,
+                        file,
+                    }
+                }
+                Err(error) => {
+                    return write_rejection(writer, request_id, session_file_rejection(error))
+                        .await;
+                }
+            }
         }
     };
-    let Some(upload) = connection.uploads.remove(&key) else {
-        return write_rejection(
-            writer,
-            request_id,
-            session_file_rejection(mobius::Error::Tool(
-                "session file upload is not active".into(),
-            )),
-        )
-        .await;
-    };
-    match upload.finish().await {
-        Ok(file) => {
-            connection.gateway.invalidate_storage_usage();
-            write_frame(
-                writer,
-                &ServerFrame::new(ServerMessage::SessionFileUploadCompleted {
-                    request_id,
-                    session_id: key.0,
-                    file,
-                }),
-            )
-            .await
-        }
-        Err(error) => write_rejection(writer, request_id, session_file_rejection(error)).await,
-    }
+    write_frame(writer, &ServerFrame::new(reply)).await
 }
 
 async fn authorize_stored_read(

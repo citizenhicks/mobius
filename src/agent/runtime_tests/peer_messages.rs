@@ -23,10 +23,7 @@ impl Middleware for CountUserPromptSubmits {
 #[tokio::test]
 async fn idle_peer_messages_start_turns_and_replay_without_becoming_user_prompts() {
     let workspace = tempfile::tempdir().expect("workspace");
-    let checkpoints = Arc::new(
-        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
-            .expect("checkpoint store"),
-    );
+    let checkpoints = test_checkpoints(workspace.path());
     let model = Arc::new(ScriptedModel {
         outputs: Mutex::new(VecDeque::from([
             scripted_message("First peer handled."),
