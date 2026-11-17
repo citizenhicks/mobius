@@ -6,7 +6,9 @@ use std::ops::Deref;
 
 use serde::Serialize;
 
-use super::{Arc, AsyncWrite, BTreeMap, BTreeSet, Result, ServerFrame, ServerMessage, write_frame};
+use super::{
+    Arc, AsyncWrite, BTreeMap, BTreeSet, Error, Result, ServerFrame, ServerMessage, write_frame,
+};
 use crate::host::SessionCatalogUpdate;
 use crate::wire::{
     AgentCatalog, BackgroundApproval, BotRecord, CatalogHint, ComputerView, HarnessDescriptor,
@@ -119,7 +121,17 @@ impl ClientView {
         }
         if !self.skip.contains(&ReadySection::Sessions) {
             // Sent or omitted, the client now holds exactly this catalog.
-            self.sessions = Some(HeldSessions::Ready(frame));
+            self.sessions = Some(match Arc::try_unwrap(frame) {
+                Ok(frame) => {
+                    let (ServerMessage::Ready { payload }
+                    | ServerMessage::GatewayConfigured { payload, .. }) = frame.message
+                    else {
+                        return Err(Error::Internal("catalog frame lost its payload".into()));
+                    };
+                    HeldSessions::Catalog(payload.sessions.into())
+                }
+                Err(frame) => HeldSessions::Ready(frame),
+            });
         }
         Ok(())
     }

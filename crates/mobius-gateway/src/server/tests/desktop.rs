@@ -71,12 +71,13 @@ async fn computer_view_follows_local_and_encrypted_connection_authority() {
         let mut payload = ready.clone();
         payload.computer_view = available;
         let mut bytes = Vec::new();
-        view.write_catalog(
-            &mut bytes,
-            Arc::new(ServerFrame::new(ServerMessage::Ready { payload })),
-        )
-        .await
-        .unwrap();
+        let frame = Arc::new(ServerFrame::new(ServerMessage::Ready { payload }));
+        let retired = Arc::downgrade(&frame);
+        view.write_catalog(&mut bytes, frame).await.unwrap();
+        assert!(
+            retired.upgrade().is_none(),
+            "a connection must not retain an unshared full catalog after sending it"
+        );
         let frame = read_frame::<ServerFrame>(&mut FrameReader::new(bytes.as_slice()))
             .await
             .unwrap()
