@@ -22,6 +22,28 @@ async fn assistant_message_compacts_progressive_deltas_and_preserves_citations()
         submission_id: Some("submission".into()),
         msg,
     };
+    let expected_content = vec![
+        ModelStepContent {
+            output_index: 0,
+            part_index: 0,
+            phase: ModelStepContentPhase::Reasoning,
+            text: "Plan".into(),
+            annotations: Vec::new(),
+        },
+        ModelStepContent {
+            output_index: 1,
+            part_index: 0,
+            phase: ModelStepContentPhase::FinalAnswer,
+            text: "Done".into(),
+            annotations: vec![ModelStepAnnotation::UrlCitation {
+                url: "https://example.com".into(),
+                title: "Example".into(),
+                content: Some("Relevant excerpt.".into()),
+                start_index: 0,
+                end_index: 4,
+            }],
+        },
+    ];
     let events = [
         event(EventMsg::ModelStepStarted(Arc::new(
             ModelStepStartedEvent {
@@ -68,28 +90,7 @@ async fn assistant_message_compacts_progressive_deltas_and_preserves_citations()
             session_id: session_id.share(),
             turn_id: "turn".into(),
             model_step_id: "step".into(),
-            content: vec![
-                ModelStepContent {
-                    output_index: 0,
-                    part_index: 0,
-                    phase: ModelStepContentPhase::Reasoning,
-                    text: "Plan".into(),
-                    annotations: Vec::new(),
-                },
-                ModelStepContent {
-                    output_index: 1,
-                    part_index: 0,
-                    phase: ModelStepContentPhase::FinalAnswer,
-                    text: "Done".into(),
-                    annotations: vec![ModelStepAnnotation::UrlCitation {
-                        url: "https://example.com".into(),
-                        title: "Example".into(),
-                        content: Some("Relevant excerpt.".into()),
-                        start_index: 0,
-                        end_index: 4,
-                    }],
-                },
-            ],
+            content: expected_content.clone(),
             message_target: None,
         })),
     ];
@@ -124,31 +125,7 @@ async fn assistant_message_compacts_progressive_deltas_and_preserves_citations()
     else {
         panic!("expected assistant message");
     };
-    assert_eq!(
-        content,
-        &[
-            ModelStepContent {
-                output_index: 0,
-                part_index: 0,
-                phase: ModelStepContentPhase::Reasoning,
-                text: "Plan".into(),
-                annotations: Vec::new(),
-            },
-            ModelStepContent {
-                output_index: 1,
-                part_index: 0,
-                phase: ModelStepContentPhase::FinalAnswer,
-                text: "Done".into(),
-                annotations: vec![ModelStepAnnotation::UrlCitation {
-                    url: "https://example.com".into(),
-                    title: "Example".into(),
-                    content: Some("Relevant excerpt.".into()),
-                    start_index: 0,
-                    end_index: 4,
-                }],
-            },
-        ]
-    );
+    assert_eq!(content, &expected_content);
     assert_eq!(
         page[1]
             .stream_metrics

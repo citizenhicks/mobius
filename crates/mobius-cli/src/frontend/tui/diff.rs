@@ -85,7 +85,7 @@ impl FileDiff {
             text: text.to_owned(),
             path,
             status,
-            counts: UnifiedDiffCounts::from_diff(text),
+            counts: patch.as_ref().map(UnifiedDiffCounts::from),
         }
     }
 }

@@ -16,26 +16,12 @@ use crate::backend::checkpoint::JournalEvent;
 use crate::backend::checkpoint::TimestampedEvent;
 use crate::protocol::Event;
 
+#[derive(Default)]
 struct TestStore {
     saves: AtomicUsize,
     fail_next_save: AtomicBool,
     block_at: Option<usize>,
-    retry_started: Notify,
-    release_retry: Notify,
     saved_state: StdMutex<Option<Value>>,
-}
-
-impl TestStore {
-    fn new() -> Self {
-        Self {
-            saves: AtomicUsize::new(0),
-            fail_next_save: AtomicBool::new(false),
-            block_at: None,
-            retry_started: Notify::new(),
-            release_retry: Notify::new(),
-            saved_state: StdMutex::new(None),
-        }
-    }
 }
 
 fn test_presentation() -> AgentPresentation {
@@ -130,8 +116,7 @@ impl CheckpointStore for TestStore {
                 return Err(Error::Checkpoint("forced state save failure".into()));
             }
             if block {
-                self.retry_started.notify_one();
-                self.release_retry.notified().await;
+                std::future::pending::<()>().await;
             }
             Ok(())
         })
@@ -143,40 +128,17 @@ async fn failed_persist_does_not_mutate_runtime_state() {
     let shared = test_shared();
     let checkpoints: Arc<dyn CheckpointStore> = Arc::new(TestStore {
         fail_next_save: AtomicBool::new(true),
-        ..TestStore::new()
+        ..TestStore::default()
     });
-    shared
-        .session_start(&test_context(checkpoints, Arc::new(|_| Ok(()))))
-        .await
-        .expect("initialize runtime");
+    start_root(&shared, checkpoints).await;
 
-    let failed = shared
-        .reserve(
-            &"root".parse().expect("session ID"),
-            "/root/child",
-            "/root",
-            "child".parse().expect("session ID"),
-            1,
-            test_presentation(),
-        )
-        .await
-        .is_err();
+    let failed = reserve_child(&shared).await.is_err();
     let after_failure = shared
         .list(&"root".parse().expect("session ID"), None)
         .await
         .expect("list agents")
         .len();
-    let retried = shared
-        .reserve(
-            &"root".parse().expect("session ID"),
-            "/root/child",
-            "/root",
-            "child".parse().expect("session ID"),
-            1,
-            test_presentation(),
-        )
-        .await
-        .is_ok();
+    let retried = reserve_child(&shared).await.is_ok();
     let after_retry = shared
         .list(&"root".parse().expect("session ID"), None)
         .await
@@ -192,11 +154,8 @@ async fn failed_persist_does_not_mutate_runtime_state() {
 #[tokio::test]
 async fn reserve_enforces_configured_concurrency_including_root() {
     let shared = Shared::new(3, 4);
-    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(TestStore::new());
-    shared
-        .session_start(&test_context(checkpoints, Arc::new(|_| Ok(()))))
-        .await
-        .expect("initialize runtime");
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(TestStore::default());
+    start_root(&shared, checkpoints).await;
     for index in 0..2 {
         shared
             .reserve(
@@ -232,23 +191,10 @@ async fn reserve_enforces_configured_concurrency_including_root() {
 #[tokio::test]
 async fn terminal_update_is_retained_until_its_checkpoint_marker_is_acknowledged() {
     let shared = test_shared();
-    let store = Arc::new(TestStore::new());
+    let store = Arc::new(TestStore::default());
     let checkpoints: Arc<dyn CheckpointStore> = Arc::<TestStore>::clone(&store);
-    shared
-        .session_start(&test_context(checkpoints, Arc::new(|_| Ok(()))))
-        .await
-        .expect("initialize runtime");
-    shared
-        .reserve(
-            &"root".parse().expect("session ID"),
-            "/root/child",
-            "/root",
-            "child".parse().expect("session ID"),
-            1,
-            test_presentation(),
-        )
-        .await
-        .expect("reserve child");
+    start_root(&shared, checkpoints).await;
+    reserve_child(&shared).await.expect("reserve child");
     shared
         .finished(
             &"root".parse().expect("session ID"),
@@ -277,14 +223,16 @@ async fn terminal_update_is_retained_until_its_checkpoint_marker_is_acknowledged
         text,
         "<subagent_update agent=\"/root/child\" status=\"completed\">\ndone\n</subagent_update>"
     );
-    let updates_len = store
-        .saved_state
-        .lock()
-        .expect("saved state")
-        .as_ref()
-        .and_then(|state| state["updates"].as_array())
-        .map(Vec::len);
-    assert_eq!(updates_len, Some(1));
+    let updates_len = || {
+        store
+            .saved_state
+            .lock()
+            .expect("saved state")
+            .as_ref()
+            .and_then(|state| state["updates"].as_array())
+            .map(Vec::len)
+    };
+    assert_eq!(updates_len(), Some(1));
 
     shared
         .receive_updates(
@@ -296,38 +244,15 @@ async fn terminal_update_is_retained_until_its_checkpoint_marker_is_acknowledged
         .await
         .expect("acknowledge update");
 
-    let updates_len = store
-        .saved_state
-        .lock()
-        .expect("saved state")
-        .as_ref()
-        .and_then(|state| state["updates"].as_array())
-        .map(Vec::len);
-    assert_eq!(updates_len, Some(0));
+    assert_eq!(updates_len(), Some(0));
 }
 
 #[tokio::test]
 async fn stale_root_teardown_cannot_evict_a_reconnected_root() {
     let shared = Arc::new(test_shared());
-    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(TestStore::new());
-    shared
-        .session_start(&test_context(
-            Arc::clone(&checkpoints),
-            Arc::new(|_| Ok(())),
-        ))
-        .await
-        .expect("initialize runtime");
-    shared
-        .reserve(
-            &"root".parse().expect("session ID"),
-            "/root/child",
-            "/root",
-            "child".parse().expect("session ID"),
-            1,
-            test_presentation(),
-        )
-        .await
-        .expect("reserve child");
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(TestStore::default());
+    start_root(&shared, Arc::clone(&checkpoints)).await;
+    reserve_child(&shared).await.expect("reserve child");
 
     let old_root = shared
         .root(&"root".parse().expect("session ID"))
@@ -351,13 +276,7 @@ async fn stale_root_teardown_cannot_evict_a_reconnected_root() {
     );
 
     assert!(shared.roots.lock().await.remove("root").is_some());
-    shared
-        .session_start(&test_context(
-            Arc::clone(&checkpoints),
-            Arc::new(|_| Ok(())),
-        ))
-        .await
-        .expect("reinitialize runtime");
+    start_root(&shared, Arc::clone(&checkpoints)).await;
     drop(writer);
 
     removing
@@ -377,27 +296,11 @@ async fn detached_root_mutation_cannot_persist_after_root_eviction() {
     let shared = Arc::new(test_shared());
     let store = Arc::new(TestStore {
         block_at: Some(2),
-        ..TestStore::new()
+        ..TestStore::default()
     });
     let checkpoints: Arc<dyn CheckpointStore> = Arc::<TestStore>::clone(&store);
-    shared
-        .session_start(&test_context(
-            Arc::clone(&checkpoints),
-            Arc::new(|_| Ok(())),
-        ))
-        .await
-        .expect("initialize runtime");
-    shared
-        .reserve(
-            &"root".parse().expect("session ID"),
-            "/root/child",
-            "/root",
-            "child".parse().expect("session ID"),
-            1,
-            test_presentation(),
-        )
-        .await
-        .expect("reserve child");
+    start_root(&shared, Arc::clone(&checkpoints)).await;
+    reserve_child(&shared).await.expect("reserve child");
 
     let old_root = shared
         .root(&"root".parse().expect("session ID"))
@@ -447,13 +350,7 @@ async fn detached_root_mutation_cannot_persist_after_root_eviction() {
     drop(writer);
 
     removing.await.expect("teardown task").expect("remove root");
-    shared
-        .session_start(&test_context(
-            Arc::clone(&checkpoints),
-            Arc::new(|_| Ok(())),
-        ))
-        .await
-        .expect("reinitialize runtime");
+    start_root(&shared, Arc::clone(&checkpoints)).await;
 
     let racing = tokio::time::timeout(Duration::from_millis(100), stale_mutation).await;
     assert!(
@@ -475,7 +372,7 @@ async fn detached_root_mutation_cannot_persist_after_root_eviction() {
 #[tokio::test]
 async fn terminal_persist_failure_is_retried_as_a_durable_error() {
     let shared = test_shared();
-    let store = Arc::new(TestStore::new());
+    let store = Arc::new(TestStore::default());
     let frontend_events = Arc::new(StdMutex::new(Vec::new()));
     let events = Arc::clone(&frontend_events);
     let checkpoints: Arc<dyn CheckpointStore> = Arc::<TestStore>::clone(&store);
@@ -489,17 +386,7 @@ async fn terminal_persist_failure_is_retried_as_a_durable_error() {
         ))
         .await
         .expect("initialize runtime");
-    shared
-        .reserve(
-            &"root".parse().expect("session ID"),
-            "/root/child",
-            "/root",
-            "child".parse().expect("session ID"),
-            1,
-            test_presentation(),
-        )
-        .await
-        .expect("reserve child");
+    reserve_child(&shared).await.expect("reserve child");
     store.fail_next_save.store(true, Ordering::SeqCst);
 
     shared
@@ -554,6 +441,26 @@ async fn terminal_persist_failure_is_retried_as_a_durable_error() {
         ),
         (Some("errored"), true, Some("errored"), true, true)
     );
+}
+
+async fn reserve_child(shared: &Shared) -> Result<()> {
+    shared
+        .reserve(
+            &"root".parse().expect("session ID"),
+            "/root/child",
+            "/root",
+            "child".parse().expect("session ID"),
+            1,
+            test_presentation(),
+        )
+        .await
+}
+
+async fn start_root(shared: &Shared, checkpoints: Arc<dyn CheckpointStore>) {
+    shared
+        .session_start(&test_context(checkpoints, Arc::new(|_| Ok(()))))
+        .await
+        .expect("start root");
 }
 
 fn test_context(

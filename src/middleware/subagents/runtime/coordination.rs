@@ -123,108 +123,88 @@ impl Shared {
         {
             return Err(Error::Unknown(format!("agent tree `{root_id}`")));
         }
-        if target == "/root" {
-            let mut root = root_slot.state.lock().await;
-            let sender = root
+        let mut root = root_slot.state.lock().await;
+        let sender = if target == "/root" {
+            &root
                 .root_sender
                 .as_ref()
                 .and_then(crate::agent::WeakAgentSender::upgrade)
-                .ok_or_else(|| Error::Stopped("agent `/root` is not running".into()))?;
-            let reports_to_parent = root
+                .ok_or_else(|| Error::Stopped("agent `/root` is not running".into()))?
+        } else {
+            let status = root
                 .tree
                 .agents
-                .get(from)
-                .is_some_and(|entry| &*entry.parent == target);
-            let report = reports_to_parent
-                .then(|| super::ParentReport::of(&message))
-                .flatten();
-            let admission = sender.send_with_admission(Submission::message(message))?;
-            if let Some(report) = report {
-                root.parent_reports
-                    .entry(from.into())
-                    .or_default()
-                    .push(report);
-            }
-            drop(root);
-            drop(writer);
-            admission.wait().await?;
-            return Ok(None);
-        }
-        let mut root = root_slot.state.lock().await;
-        let status = root
-            .tree
-            .agents
-            .get(target)
-            .ok_or_else(|| unknown_target(target))?
-            .status;
-        match &status {
-            AgentStatus::PendingInit => {
-                Err(Error::Busy(format!("agent `{target}` is initializing")))
-            }
-            AgentStatus::Running => {
-                let reports_to_parent = root
-                    .tree
-                    .agents
-                    .get(from)
-                    .is_some_and(|entry| &*entry.parent == target);
-                let sender = root
+                .get(target)
+                .ok_or_else(|| unknown_target(target))?
+                .status;
+            match status {
+                AgentStatus::Running => root
                     .senders
                     .get(target)
-                    .ok_or_else(|| Error::Stopped("agent runtime is unavailable".into()))?;
-                let report = reports_to_parent
-                    .then(|| super::ParentReport::of(&message))
-                    .flatten();
-                let admission = sender.send_with_admission(Submission::message(message))?;
-                if let Some(report) = report {
-                    root.parent_reports
-                        .entry(from.into())
-                        .or_default()
-                        .push(report);
+                    .ok_or_else(|| Error::Stopped("agent runtime is unavailable".into()))?,
+                AgentStatus::PendingInit => {
+                    return Err(Error::Busy(format!("agent `{target}` is initializing")));
                 }
-                drop(root);
-                drop(writer);
-                admission.wait().await?;
-                Ok(None)
-            }
-            AgentStatus::Errored => Err(Error::Stopped(format!(
-                "agent `{target}` is {}",
-                status.label()
-            ))),
-            AgentStatus::Interrupted | AgentStatus::Completed => {
-                drop(root);
-                let max_concurrency = self.max_concurrency;
-                self.commit_locked_root(
-                    root_id,
-                    &root_slot,
-                    |root| {
-                        ensure_concurrency_available(&root.tree, max_concurrency)?;
-                        let entry = root
-                            .tree
-                            .agents
-                            .get_mut(target)
-                            .ok_or_else(|| unknown_target(target))?;
-                        let wake_target = match root.senders.get(target) {
-                            Some(sender) => WakeTarget::Live(sender.clone()), // rules-allow: the root keeps the live sender
-                            None => WakeTarget::Resume {
-                                session_id: entry.session_id.share(),
-                                depth: entry.depth,
-                                model: Arc::clone(&entry.model),
+                AgentStatus::Errored => {
+                    return Err(Error::Stopped(format!(
+                        "agent `{target}` is {}",
+                        status.label()
+                    )));
+                }
+                AgentStatus::Interrupted | AgentStatus::Completed => {
+                    drop(root);
+                    let max_concurrency = self.max_concurrency;
+                    return self
+                        .commit_locked_root(
+                            root_id,
+                            &root_slot,
+                            |root| {
+                                ensure_concurrency_available(&root.tree, max_concurrency)?;
+                                let entry = root
+                                    .tree
+                                    .agents
+                                    .get_mut(target)
+                                    .ok_or_else(|| unknown_target(target))?;
+                                let wake_target = match root.senders.get(target) {
+                                    Some(sender) => WakeTarget::Live(sender.clone()), // rules-allow: the root keeps the live sender
+                                    None => WakeTarget::Resume {
+                                        session_id: entry.session_id.share(),
+                                        depth: entry.depth,
+                                        model: Arc::clone(&entry.model),
+                                    },
+                                };
+                                entry.status = AgentStatus::PendingInit;
+                                entry.last_message = None;
+                                Ok(Stage::Changed(Some(Wake {
+                                    message,
+                                    target: wake_target,
+                                    previous: status,
+                                })))
                             },
-                        };
-                        entry.status = AgentStatus::PendingInit;
-                        entry.last_message = None;
-                        Ok(Stage::Changed(Some(Wake {
-                            message,
-                            target: wake_target,
-                            previous: status,
-                        })))
-                    },
-                    OnPersistFailure::Abort,
-                )
-                .await
-                .map(Stage::into_output)
+                            OnPersistFailure::Abort,
+                        )
+                        .await
+                        .map(Stage::into_output);
+                }
             }
+        };
+        let report = root
+            .tree
+            .agents
+            .get(from)
+            .filter(|entry| &*entry.parent == target)
+            .and_then(|_| super::ParentReport::of(&message));
+        let admission = sender.send_with_admission(Submission::message(message))?;
+        if let Some(report) = report {
+            root.parent_reports
+                .entry(from.into())
+                .or_default()
+                .push(report);
         }
+        drop(root);
+        drop(writer);
+        admission.wait().await?;
+        Ok(None)
     }
 
     pub(in crate::middleware::subagents) async fn wait(

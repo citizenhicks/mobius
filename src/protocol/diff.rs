@@ -28,15 +28,25 @@ impl UnifiedDiffCounts {
         let mut counts = Self::default();
         for file in unified_diff_files(diff) {
             let patch = Patch::from_str(file).ok()?;
-            for line in patch.hunks().iter().flat_map(Hunk::lines) {
-                match line {
-                    Line::Insert(_) => counts.additions += 1,
-                    Line::Delete(_) => counts.deletions += 1,
-                    Line::Context(_) => {}
-                }
-            }
+            let file_counts = Self::from(&patch);
+            counts.additions += file_counts.additions;
+            counts.deletions += file_counts.deletions;
         }
         Some(counts)
+    }
+}
+
+impl From<&Patch<'_, str>> for UnifiedDiffCounts {
+    fn from(patch: &Patch<'_, str>) -> Self {
+        let mut counts = Self::default();
+        for line in patch.hunks().iter().flat_map(Hunk::lines) {
+            match line {
+                Line::Insert(_) => counts.additions += 1,
+                Line::Delete(_) => counts.deletions += 1,
+                Line::Context(_) => {}
+            }
+        }
+        counts
     }
 }
 
