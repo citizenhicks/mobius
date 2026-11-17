@@ -15,6 +15,8 @@ use cap_std::fs::Dir;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncReadExt;
 
+use super::FileChange;
+use super::FileChangeFailure;
 use super::NetworkAccess;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use super::ProcessGroupGuard;
@@ -34,6 +36,7 @@ use crate::Result;
 mod files;
 mod platform;
 
+use self::files::Location;
 use self::files::Rejected;
 use self::files::atomic_write;
 use self::files::read_binary_file;
@@ -593,18 +596,33 @@ impl LocalSandbox {
         work: &'static str,
         operation: impl FnOnce(Dir, &Path, &str) -> Result<T> + Send + 'static,
     ) -> Result<T> {
-        let requested = path.to_owned();
-        if sandbox_mode == SandboxMode::DangerFullAccess && Path::new(path).is_absolute() {
-            let policy = Arc::clone(&self.policy);
-            return blocking_file(work, move || {
-                let (root, relative) =
-                    full_access_target(Path::new(&requested), &policy.denied_reads)?;
-                operation(root, &relative, &requested)
-            })
-            .await;
-        }
-        let (root, relative) = self.target(path, access)?;
-        blocking_file(work, move || operation(root, &relative, &requested)).await
+        let target = self.file_target(path, sandbox_mode, access)?;
+        let policy = Arc::clone(&self.policy);
+        blocking_file(work, move || {
+            let location = target.open(&policy.denied_reads)?;
+            operation(location.root, &location.relative, &location.requested)
+        })
+        .await
+    }
+
+    /// Pins a file-tool path's root; a full-access absolute path is opened later, off the
+    /// executor.
+    fn file_target(
+        &self,
+        path: &str,
+        sandbox_mode: SandboxMode,
+        access: WorkspaceAccess,
+    ) -> Result<FileTarget> {
+        let pinned =
+            if sandbox_mode == SandboxMode::DangerFullAccess && Path::new(path).is_absolute() {
+                None
+            } else {
+                Some(self.target(path, access)?)
+            };
+        Ok(FileTarget {
+            requested: path.to_owned(),
+            pinned,
+        })
     }
 
     /// Resolves a file-tool path to its pinned root; reads also reach the read-only roots.
@@ -1135,6 +1153,91 @@ impl SandboxBackend for LocalSandbox {
         })
     }
 
+    fn check_file_change<'a>(
+        &'a self,
+        change: &'a FileChange,
+        sandbox_mode: SandboxMode,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let (path, destination) = match change {
+                FileChange::Create { path, .. } => (None, Some(path)),
+                FileChange::Update {
+                    path, destination, ..
+                } => (Some(path), destination.as_ref()),
+                FileChange::Delete { path, .. } => (Some(path), None),
+            };
+            let source = path
+                .map(|path| self.file_target(path, sandbox_mode, WorkspaceAccess::Writable))
+                .transpose()?;
+            let created = destination
+                .map(|path| self.file_target(path, sandbox_mode, WorkspaceAccess::Writable))
+                .transpose()?;
+            let policy = Arc::clone(&self.policy);
+            blocking_file("file change check", move || {
+                if let Some(source) = source {
+                    files::check_regular(source.open(&policy.denied_reads)?)?;
+                }
+                if let Some(created) = created {
+                    files::check_create(created.open(&policy.denied_reads)?)?;
+                }
+                Ok(())
+            })
+            .await
+        })
+    }
+
+    fn apply_file_change(
+        &self,
+        change: FileChange,
+        sandbox_mode: SandboxMode,
+    ) -> BoxFuture<'_, std::result::Result<(), FileChangeFailure>> {
+        Box::pin(async move {
+            let (path, destination) = match &change {
+                FileChange::Create { path, .. } | FileChange::Delete { path, .. } => (path, None),
+                FileChange::Update {
+                    path, destination, ..
+                } => (path, destination.as_deref()),
+            };
+            let source = self.file_target(path, sandbox_mode, WorkspaceAccess::Writable)?;
+            let destination = destination
+                .map(|path| self.file_target(path, sandbox_mode, WorkspaceAccess::Writable))
+                .transpose()?;
+            let policy = Arc::clone(&self.policy);
+            let applied = tokio::task::spawn_blocking(move || {
+                let source = source.open(&policy.denied_reads)?;
+                match (change, destination) {
+                    (FileChange::Create { content, .. }, _) => {
+                        files::create_file(source, content.as_bytes())
+                    }
+                    (FileChange::Delete { expected, .. }, _) => {
+                        files::delete_file(source, expected.as_bytes())
+                    }
+                    (
+                        FileChange::Update {
+                            expected, content, ..
+                        },
+                        None,
+                    ) => files::replace_file(source, expected.as_bytes(), content.as_bytes()),
+                    (
+                        FileChange::Update {
+                            expected, content, ..
+                        },
+                        Some(destination),
+                    ) => files::move_file(
+                        source,
+                        destination.open(&policy.denied_reads)?,
+                        expected.as_bytes(),
+                        content.as_bytes(),
+                    ),
+                }
+            })
+            .await;
+            applied.map_err(|error| {
+                FileChangeFailure::Uncertain(Error::Sandbox(format!("file change failed: {error}")))
+            })?
+        })
+    }
+
     fn execute<'a>(
         &'a self,
         script: &'a str,
@@ -1187,16 +1290,54 @@ async fn blocking_file<T: Send + 'static>(
         .map_err(|error| Error::Sandbox(format!("{work} failed: {error}")))?
 }
 
+/// A file-tool path, pinned on the executor or, under full access, resolved off it.
+struct FileTarget {
+    requested: String,
+    pinned: Option<(Dir, PathBuf)>,
+}
+
+impl FileTarget {
+    fn open(self, denied_reads: &[DeniedRead]) -> Result<Location> {
+        let (root, relative) = match self.pinned {
+            Some(pinned) => pinned,
+            None => full_access_target(Path::new(&self.requested), denied_reads)?,
+        };
+        Ok(Location {
+            root,
+            relative,
+            requested: self.requested,
+        })
+    }
+}
+
+/// Roots a full-access path at its deepest existing ancestor, so a new file may also create
+/// its missing parent directories.
 fn full_access_target(requested: &Path, denied_reads: &[DeniedRead]) -> Result<(Dir, PathBuf)> {
-    let name = requested
-        .file_name()
+    if requested.file_name().is_none() {
+        return Err(Rejected::NoFileName.path(requested.display()));
+    }
+    let mut ancestor = requested
+        .parent()
         .ok_or_else(|| Rejected::NoFileName.path(requested.display()))?;
-    let parent = std::fs::canonicalize(
-        requested
-            .parent()
-            .ok_or_else(|| Rejected::NoFileName.path(requested.display()))?,
-    )?;
-    let target = parent.join(name);
+    let parent = loop {
+        match std::fs::canonicalize(ancestor) {
+            Ok(parent) => break parent,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                ancestor = ancestor.parent().ok_or(error)?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    };
+    let relative = requested
+        .strip_prefix(ancestor)
+        .map_err(|error| Error::Sandbox(format!("{}: {error}", requested.display())))?;
+    if relative
+        .components()
+        .any(|part| !matches!(part, Component::Normal(_)))
+    {
+        return Err(Rejected::OutsideRoots.path(requested.display()));
+    }
+    let target = parent.join(relative);
     if denied_reads.iter().any(|denied| {
         target == denied.path || (denied.directory && target.starts_with(&denied.path))
     }) {
@@ -1204,7 +1345,7 @@ fn full_access_target(requested: &Path, denied_reads: &[DeniedRead]) -> Result<(
     }
     let directory = Dir::open_ambient_dir(&parent, ambient_authority())?;
     validate_root(&parent, &directory)?;
-    Ok((directory, name.into()))
+    Ok((directory, relative.into()))
 }
 
 fn find_executable_in(

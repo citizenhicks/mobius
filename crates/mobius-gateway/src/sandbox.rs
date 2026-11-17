@@ -10,8 +10,8 @@ use std::time::Duration;
 use mobius::backend::model::provider::{ProviderAuth, providers};
 use mobius::backend::sandbox::local::{LocalSandbox, ReadOnlyCommand};
 use mobius::backend::sandbox::{
-    CommandAuthorization, CommandMode, CommandOutput, CommandOutputSink, NetworkAccess,
-    OutputLimit, SandboxBackend, SandboxMode,
+    CommandAuthorization, CommandMode, CommandOutput, CommandOutputSink, FileChange,
+    FileChangeFailure, NetworkAccess, OutputLimit, SandboxBackend, SandboxMode,
 };
 use mobius::{BoxFuture, Error, Result, SessionId};
 
@@ -542,6 +542,39 @@ impl SandboxBackend for GatewaySandbox {
             })
             .await
             .map_err(|error| Error::Sandbox(format!("file writer failed: {error}")))?
+        })
+    }
+
+    fn check_file_change<'a>(
+        &'a self,
+        change: &'a FileChange,
+        sandbox_mode: SandboxMode,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let _execution = self.execution_lease().await?;
+            self.command_delegate(sandbox_mode)
+                .check_file_change(change, sandbox_mode)
+                .await
+        })
+    }
+
+    fn apply_file_change(
+        &self,
+        change: FileChange,
+        sandbox_mode: SandboxMode,
+    ) -> BoxFuture<'_, std::result::Result<(), FileChangeFailure>> {
+        Box::pin(async move {
+            let execution = self.execution_lease().await?;
+            let delegate = std::sync::Arc::clone(self.command_delegate(sandbox_mode));
+            // A dropped caller must not cancel a change halfway; it finishes or never starts.
+            tokio::spawn(async move {
+                let _execution = execution;
+                delegate.apply_file_change(change, sandbox_mode).await
+            })
+            .await
+            .map_err(|error| {
+                FileChangeFailure::Uncertain(Error::Sandbox(format!("file change failed: {error}")))
+            })?
         })
     }
 

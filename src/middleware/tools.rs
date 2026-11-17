@@ -63,7 +63,7 @@ use repeats::RepeatDecision;
 use coding::{ApplyPatch, ReadFile, WriteFile};
 use commands::{Bash, ManageCommand};
 #[cfg(test)]
-use patch::{apply_patch_document, parse_patch_document, validate_patch_complexity};
+use patch::{apply_chunks, parse_patch};
 
 const MAX_TOOL_UI_BYTES: usize = 512;
 const MAX_TOOL_UI_LINES: usize = 5;
@@ -74,6 +74,8 @@ const MAX_COMMAND_BYTES: usize = 64_000;
 // Commands run as one `sh -c` argument, which Linux caps at 128 KiB (MAX_ARG_STRLEN).
 const _: () = assert!(MAX_COMMAND_BYTES < 128 * 1024);
 const MAX_PATCH_MATCH_WORK: usize = 32 * 1024 * 1024;
+/// File contents one patch may hold between preparing and committing it.
+const MAX_PATCH_PREPARED_BYTES: usize = 16 * 1024 * 1024;
 
 super::manifest::middleware_manifest! {
 /// Configuration and presentation metadata for workspace tools.

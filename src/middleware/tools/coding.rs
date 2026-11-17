@@ -1,14 +1,24 @@
-use diffy::{DiffOptions, Patch};
 use serde::Deserialize;
 use serde_json::Value;
+use std::collections::BTreeSet;
+use std::fmt;
+use std::fmt::Write as _;
+use std::iter;
+use std::path::Component;
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use super::patch::{apply_patch_document, parse_patch_document};
+use super::patch::{Hunk, PatchDocument, apply_chunks, committed_diff, parse_patch, proposed_diff};
 use super::{
-    ApprovalRequirement, ExecutionMode, HookIdentity, MAX_MUTATION_BYTES, Tool, ToolContext,
-    ToolExposure,
+    ApprovalRequirement, ExecutionMode, HookIdentity, MAX_MUTATION_BYTES, MAX_PATCH_PREPARED_BYTES,
+    Tool, ToolContext, ToolExposure,
 };
 use crate::backend::model::ToolDefinition;
+use crate::backend::sandbox::FileChange;
+use crate::backend::sandbox::FileChangeFailure;
+use crate::backend::sandbox::MutationPermit;
+use crate::backend::sandbox::Sandbox;
 use crate::backend::session_files::SessionFileStore;
 use crate::protocol::{
     ContentPart, EventMsg, FrontendBlock, FrontendBlockFormat, FrontendBlockUpdate, ImageDetail,
@@ -190,7 +200,7 @@ impl Tool for WriteFile {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct ApplyPatchArgs {
+struct ApplyPatchArgs {
     patch: String,
 }
 
@@ -213,21 +223,35 @@ impl Tool for ApplyPatch {
                     .arguments
                     .get("patch")
                     .and_then(Value::as_str)
-                    .and_then(|patch| parse_patch_document(patch).ok())
-                    && let Ok(diff) = document.unified_diff()
+                    .and_then(|patch| parse_patch(patch).ok())
+                    && let Ok(diff) = proposed_diff(&document)
                 {
                     block.text = diff;
                     block.format = FrontendBlockFormat::UnifiedDiff;
-                    block.links.extend(super::file_link(&document.path));
+                    for hunk in &document.hunks {
+                        let linked = match hunk {
+                            Hunk::Add { path, .. }
+                            | Hunk::Update {
+                                move_path: None,
+                                path,
+                                ..
+                            }
+                            | Hunk::Update {
+                                move_path: Some(path),
+                                ..
+                            } => path,
+                            Hunk::Delete { .. } => continue,
+                        };
+                        block.links.extend(super::file_link(linked));
+                    }
                 }
             }
             EventMsg::ToolCallEnd(result) if !result.is_error => {
                 let diff = result.output.text();
-                // A Replace sets the links, so the patched file is linked again.
-                if let Ok(patch) = Patch::from_str(&diff) {
-                    block
-                        .links
-                        .extend(patch.modified().and_then(super::file_link));
+                // A Replace sets the links, so the patched files are linked again.
+                if diff.starts_with("diff --git ") {
+                    let paths = diff.lines().filter_map(|line| line.strip_prefix("+++ b/"));
+                    block.links.extend(paths.filter_map(super::file_link));
                     block.update = FrontendBlockUpdate::Replace;
                     block.text = diff;
                     block.format = FrontendBlockFormat::UnifiedDiff;
@@ -275,36 +299,290 @@ impl Tool for ApplyPatch {
                     "patch exceeds {MAX_MUTATION_BYTES} bytes"
                 )));
             }
-            let document = parse_patch_document(&arguments.patch)?;
-            let content = context
-                .sandbox
-                .read(&document.path, &context.permissions)
-                .await?;
-            let updated = apply_patch_document(&content, &document)?;
-            if updated == content {
-                return Err(Error::Tool(
-                    "patch rejected: patch applies but makes no changes".into(),
-                ));
-            }
-            context
-                .sandbox
-                .write(&document.path, &updated, context.permissions.mutation()?)
-                .await?;
-            let mut options = DiffOptions::new();
-            options
-                .set_original_filename(document.path.clone()) // rules-allow: diffy requires a second 'static filename
-                .set_modified_filename(document.path);
-            let patch = options.create_patch(&content, &updated);
-            let diff = patch.to_string();
-            Ok((if diff.len() <= context.sandbox.output_limit() {
-                diff
-            } else {
-                format!(
-                    "patched {} (diff too large to display)",
-                    patch.modified().unwrap_or_default()
-                )
-            })
-            .into())
+            let document = parse_patch(&arguments.patch)?;
+            let permit = context.permissions.mutation()?;
+            let plan = prepare_patch(&context, permit, document).await?;
+            commit_patch(&context.sandbox, permit, plan)
+                .await
+                .map(Into::into)
         })
     }
+}
+
+/// One operation whose result is known and whose paths the sandbox has authorized.
+struct PlannedChange {
+    label: String,
+    change: FileChange,
+    /// Its committed diff, while the patch's diffs still fit the display budget.
+    diff: Option<String>,
+}
+
+/// Parses, authorizes and computes every operation before the first write, so a patch that
+/// cannot apply writes nothing. File contents held for the commit count toward
+/// [`MAX_PATCH_PREPARED_BYTES`]; diffs are kept only while they fit the output budget.
+async fn prepare_patch(
+    context: &ToolContext,
+    permit: MutationPermit<'_>,
+    document: PatchDocument<'_>,
+) -> Result<Vec<PlannedChange>> {
+    reject_conflicts(&document)?;
+    let mut work = 0;
+    let mut prepared = 0;
+    let mut diff_budget = Some(context.sandbox.output_limit());
+    let mut plan = Vec::with_capacity(document.hunks.len());
+    for (number, hunk) in (1..).zip(document.hunks) {
+        let label = hunk.to_string();
+        let rejected = |error: Error| {
+            Error::Tool(format!(
+                "Patch rejected: operation {number} ({label}): {error}. No changes were written."
+            ))
+        };
+        let (change, diff) = match hunk {
+            Hunk::Add { path, contents } => {
+                hold_prepared(&mut prepared, contents.len())?;
+                let diff = retained_diff(&mut diff_budget, None, Some((path, &contents)))?;
+                // The change owns its paths: it moves into the sandbox's blocking task.
+                let change = FileChange::Create {
+                    path: path.to_owned(),
+                    content: contents,
+                };
+                (change, diff)
+            }
+            // ponytail: a delete compares UTF-8 text, so binary files are refused; compare
+            // file identity instead if models need to delete them.
+            Hunk::Delete { path } => {
+                let expected = context
+                    .sandbox
+                    .read(path, &context.permissions)
+                    .await
+                    .map_err(rejected)?;
+                hold_prepared(&mut prepared, expected.len())?;
+                let diff = retained_diff(&mut diff_budget, Some((path, &expected)), None)?;
+                (
+                    FileChange::Delete {
+                        path: path.to_owned(),
+                        expected,
+                    },
+                    diff,
+                )
+            }
+            Hunk::Update {
+                path,
+                move_path,
+                chunks,
+            } => {
+                let expected = context
+                    .sandbox
+                    .read(path, &context.permissions)
+                    .await
+                    .map_err(rejected)?;
+                hold_prepared(&mut prepared, expected.len())?;
+                let content = apply_chunks(&expected, path, &chunks, &mut work)?;
+                hold_prepared(&mut prepared, content.len())?;
+                if move_path.is_none() && content == expected {
+                    return Err(Error::Tool(format!(
+                        "Patch rejected: {path}: the update makes no changes. No changes were written."
+                    )));
+                }
+                let destination = move_path.unwrap_or(path);
+                let diff = retained_diff(
+                    &mut diff_budget,
+                    Some((path, &expected)),
+                    Some((destination, &content)),
+                )?;
+                let change = FileChange::Update {
+                    path: path.to_owned(),
+                    expected,
+                    content,
+                    destination: move_path.map(str::to_owned),
+                };
+                (change, diff)
+            }
+        };
+        context
+            .sandbox
+            .check_file_change(&change, permit)
+            .await
+            .map_err(rejected)?;
+        plan.push(PlannedChange {
+            label,
+            change,
+            diff,
+        });
+    }
+    Ok(plan)
+}
+
+fn hold_prepared(prepared: &mut usize, bytes: usize) -> Result<()> {
+    *prepared = prepared.saturating_add(bytes);
+    if *prepared > MAX_PATCH_PREPARED_BYTES {
+        return Err(Error::Tool(format!(
+            "Patch rejected: its files exceed {MAX_PATCH_PREPARED_BYTES} bytes in all; split it into smaller patches. No changes were written."
+        )));
+    }
+    Ok(())
+}
+
+/// Returns one operation's diff while every diff so far fits `budget`; once one does not,
+/// the budget closes and no later diff is built.
+fn retained_diff(
+    budget: &mut Option<usize>,
+    original: Option<(&str, &str)>,
+    modified: Option<(&str, &str)>,
+) -> Result<Option<String>> {
+    let Some(remaining) = *budget else {
+        return Ok(None);
+    };
+    let mut diff = String::new();
+    committed_diff(&mut diff, original, modified).map_err(formatting)?;
+    *budget = remaining.checked_sub(diff.len());
+    Ok(budget.is_some().then_some(diff))
+}
+
+/// Rejects a path used by more than one operation, or one inside another operation's file:
+/// each operation is computed from the tree as it was before the patch.
+fn reject_conflicts(document: &PatchDocument) -> Result<()> {
+    let mut seen = BTreeSet::new();
+    for hunk in &document.hunks {
+        let destination = match hunk {
+            Hunk::Update {
+                move_path: Some(destination),
+                ..
+            } => Some(*destination),
+            _ => None,
+        };
+        for path in iter::once(hunk.path()).chain(destination) {
+            // ponytail: lexical identity only; other spellings of one file still meet the
+            // sandbox's stale-file and existing-file checks at commit.
+            let key: PathBuf = Path::new(path)
+                .components()
+                .filter(|part| !matches!(part, Component::CurDir))
+                .collect();
+            if !seen.insert(key) {
+                return Err(Error::Tool(format!(
+                    "Patch rejected: {path} appears in more than one operation; combine its changes into one. No changes were written."
+                )));
+            }
+        }
+    }
+    // Component order places a path's descendants right after it, so checking neighbours
+    // finds every file that another path would need as a directory.
+    let mut previous: Option<&PathBuf> = None;
+    for path in &seen {
+        if let Some(parent) = previous
+            && path.starts_with(parent)
+        {
+            return Err(Error::Tool(format!(
+                "Patch rejected: {} is inside {}, which the patch treats as a file. No changes were written.",
+                path.display(),
+                parent.display()
+            )));
+        }
+        previous = Some(path);
+    }
+    Ok(())
+}
+
+/// Applies the plan in order and reports exactly what was committed. A failure stops the
+/// patch: nothing is rolled back, since that could overwrite a concurrent edit.
+async fn commit_patch(
+    sandbox: &Sandbox,
+    permit: MutationPermit<'_>,
+    plan: Vec<PlannedChange>,
+) -> Result<String> {
+    let total = plan.len();
+    let mut committed = Vec::with_capacity(total);
+    let mut diff = Some(String::new());
+    let mut remaining = plan.into_iter();
+    while let Some(planned) = remaining.next() {
+        if let Err(failure) = sandbox.apply_file_change(planned.change, permit).await {
+            let unattempted: Vec<String> = remaining.map(|planned| planned.label).collect();
+            let report = PatchFailure {
+                total,
+                committed: &committed,
+                failed: &planned.label,
+                unattempted: &unattempted,
+                failure: &failure,
+                diff: diff.as_deref(),
+            };
+            return Err(Error::Tool(
+                report
+                    .to_report(sandbox.output_limit())
+                    .map_err(formatting)?,
+            ));
+        }
+        diff = diff.zip(planned.diff).map(|(mut diff, change)| {
+            diff.push_str(&change);
+            diff
+        });
+        committed.push(planned.label);
+    }
+    if let Some(diff) = diff {
+        return Ok(diff);
+    }
+    let mut summary = format!("applied {total} operation(s) (diff too large to display):");
+    for label in &committed {
+        write!(summary, "\n- {label}").map_err(formatting)?;
+    }
+    Ok(summary)
+}
+
+struct PatchFailure<'a> {
+    total: usize,
+    committed: &'a [String],
+    failed: &'a str,
+    unattempted: &'a [String],
+    failure: &'a FileChangeFailure,
+    diff: Option<&'a str>,
+}
+
+impl PatchFailure<'_> {
+    fn to_report(&self, output_limit: usize) -> std::result::Result<String, fmt::Error> {
+        let (total, failed) = (self.total, self.failed);
+        let position = self.committed.len() + 1;
+        let mut report = String::new();
+        match self.failure {
+            FileChangeFailure::Unapplied(error) => write!(
+                report,
+                "Patch failed at operation {position} of {total} ({failed}): {error}."
+            )?,
+            FileChangeFailure::SourceRemains { destination, error } => {
+                write!(
+                    report,
+                    "Patch failed at operation {position} of {total} ({failed}): {destination} was created with the new contents, but its source was not removed: {error}. Do not resend this move; remove the source once you have checked it."
+                )?;
+            }
+            FileChangeFailure::Uncertain(error) => {
+                write!(
+                    report,
+                    "Patch stopped at operation {position} of {total} ({failed}), which may have been applied: {error}. Read the file before resending it."
+                )?;
+            }
+        }
+        if self.committed.is_empty() && matches!(self.failure, FileChangeFailure::Unapplied(_)) {
+            report.push_str("\nNo changes were written.");
+        }
+        if !self.committed.is_empty() {
+            report.push_str("\nCommitted before the failure; do not resend these:");
+            for label in self.committed {
+                write!(report, "\n- {label}")?;
+            }
+        }
+        if !self.unattempted.is_empty() {
+            report.push_str("\nNot attempted:");
+            for label in self.unattempted {
+                write!(report, "\n- {label}")?;
+            }
+        }
+        if let Some(diff) = self.diff.filter(|diff| !diff.is_empty())
+            && report.len() + diff.len() < output_limit
+        {
+            write!(report, "\nCommitted changes:\n{diff}")?;
+        }
+        Ok(report)
+    }
+}
+
+fn formatting(error: fmt::Error) -> Error {
+    Error::Internal(format!("patch report formatting failed: {error}"))
 }

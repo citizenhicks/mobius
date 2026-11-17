@@ -49,11 +49,23 @@ description = "Complete file text, at most {max_bytes} bytes. For larger files, 
 [apply_patch]
 title = "Patch"
 detail = ""
-prompt = "Before editing an existing file, read its current contents and enough surrounding context. Build patches only from that exact text. Use the `apply_patch` envelope exactly: `*** Begin Patch`, one `*** Update File: path`, bare `@@` or `@@ context` changes, then `*** End Patch`. Do not use numbered unified-diff ranges or Markdown fences."
+prompt = """Before editing an existing file, read its current contents and enough surrounding context. Build patches only from that exact text. Put every file of one change in one patch, each file once:
+*** Begin Patch
+*** Add File: path            (then every line starts with +)
+*** Delete File: path
+*** Update File: path
+*** Move to: new/path         (optional, right after Update File)
+@@ optional context line, such as the enclosing definition
+ unchanged line
+-removed line
++added line
+*** End of File               (optional, when the change ends the file)
+*** End Patch
+Changes in one file go in file order. Add File creates parent folders but never replaces an existing file; use Update File. Do not use numbered unified-diff ranges or Markdown fences."""
 
 [apply_patch.tool]
 name = "apply_patch"
-description = "Apply a patch to one existing file under the active sandbox policy, using exact text from its current contents. Use write_file to create a file."
+description = "Add, update, move and delete files in one patch under the active sandbox policy, using exact text from their current contents. The whole patch is checked before anything is written."
 
 [apply_patch.tool.parameters]
 type = "object"
@@ -64,4 +76,4 @@ additionalProperties = false
 
 [apply_patch.tool.parameters.properties.patch]
 type = "string"
-description = "One `apply_patch` envelope, at most {max_bytes} bytes, containing exactly one `*** Update File: path` operation and bare `@@` or `@@ context` changes."
+description = "One `apply_patch` envelope, at most {max_bytes} bytes, with `*** Add File`, `*** Update File` (optionally `*** Move to`) and `*** Delete File` operations."

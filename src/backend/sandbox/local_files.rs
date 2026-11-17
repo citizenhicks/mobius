@@ -1,15 +1,19 @@
 //! Capability-safe file reads, ranges, and atomic writes.
 
 use std::ffi::OsStr;
+use std::io;
 use std::io::Read as _;
 use std::io::Seek as _;
 use std::io::Write as _;
 use std::path::Component;
 use std::path::Path;
+use std::path::PathBuf;
 
 use cap_std::fs::Dir;
 use cap_std::fs::OpenOptions;
+use cap_std::fs::Permissions;
 
+use super::super::FileChangeFailure;
 use super::super::MAX_FILE_BYTES;
 use crate::Error;
 use crate::Result;
@@ -23,6 +27,8 @@ pub(super) enum Rejected {
     NotDirectory,
     Changed,
     Protected,
+    Exists,
+    Stale,
 }
 
 impl Rejected {
@@ -38,6 +44,8 @@ impl Rejected {
             Self::NotDirectory => "a parent of the path is not a directory or is a symbolic link",
             Self::Changed => "path changed while it was being opened",
             Self::Protected => "path is protected",
+            Self::Exists => "path already exists",
+            Self::Stale => "file changed after the edit was prepared",
         };
         Error::Sandbox(format!("{reason}: {path}"))
     }
@@ -162,9 +170,143 @@ pub(super) fn atomic_write(
             return Err(Rejected::NotRegularFile.path(requested));
         }
         Ok(metadata) => Some(metadata.permissions()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
         Err(error) => return Err(error.into()),
     };
+    write_through_temporary(&parent, content, permissions, |temporary| {
+        parent.rename(temporary, &parent, target)?;
+        Ok(())
+    })
+    .map_err(Error::from)
+}
+
+/// A resolved file-tool path: its pinned root, the path below it and the path as requested.
+pub(super) struct Location {
+    pub(super) root: Dir,
+    pub(super) relative: PathBuf,
+    pub(super) requested: String,
+}
+
+/// Fails unless `location` could be created: its existing parents are real directories and
+/// the file is absent.
+pub(super) fn check_create(location: Location) -> Result<()> {
+    let (parent, name) = split_name(&location.relative, &location.requested)?;
+    if let Some(parent) = open_parent(
+        location.root,
+        parent,
+        &location.requested,
+        MissingParents::Allow,
+    )? {
+        ensure_absent(&parent, name, &location.requested)?;
+    }
+    Ok(())
+}
+
+/// Fails unless `location` is a regular file reached through real directories.
+pub(super) fn check_regular(location: Location) -> Result<()> {
+    let (parent, name) = open_named_parent(location.root, &location.relative, &location.requested)?;
+    regular_metadata(&parent, name, &location.requested).map(drop)
+}
+
+/// Creates a new file, and any missing parent directories, without replacing an existing one.
+pub(super) fn create_file(location: Location, content: &[u8]) -> ChangeResult {
+    create_file_with(location, content, None).map(drop)
+}
+
+/// Atomically replaces a file that still holds `expected`, keeping its permissions. The
+/// contents are compared once, just before the rename publishes the new file.
+pub(super) fn replace_file(location: Location, expected: &[u8], content: &[u8]) -> ChangeResult {
+    let requested = &location.requested;
+    let (parent, name) = open_named_parent(location.root, &location.relative, requested)?;
+    let permissions = regular_metadata(&parent, name, requested)?.permissions();
+    write_through_temporary(&parent, content, Some(permissions), |temporary| {
+        // ponytail: the file can still change between this check and the rename; closing
+        // that gap needs a platform-specific exchanging rename.
+        ensure_unchanged(&parent, name, expected, requested)?;
+        parent.rename(temporary, &parent, name)?;
+        Ok(())
+    })
+}
+
+/// Writes `content` as a new `destination` with the source's permissions, then removes a
+/// source that still holds `expected`. The two directories may differ, so this is not atomic.
+pub(super) fn move_file(
+    source: Location,
+    destination: Location,
+    expected: &[u8],
+    content: &[u8],
+) -> ChangeResult {
+    let requested = &source.requested;
+    let (parent, name) = open_named_parent(source.root, &source.relative, requested)?;
+    let metadata = ensure_unchanged(&parent, name, expected, requested)?;
+    let destination = create_file_with(destination, content, Some(metadata.permissions()))?;
+    let removed = ensure_unchanged(&parent, name, expected, requested).and_then(|_| {
+        parent.remove_file(name)?;
+        Ok(())
+    });
+    if let Err(error) = removed {
+        return Err(FileChangeFailure::SourceRemains { destination, error });
+    }
+    sync_directory(&parent).map_err(|error| unsynced(&error))
+}
+
+/// Removes a regular file that still holds `expected`.
+pub(super) fn delete_file(location: Location, expected: &[u8]) -> ChangeResult {
+    let requested = &location.requested;
+    let (parent, name) = open_named_parent(location.root, &location.relative, requested)?;
+    ensure_unchanged(&parent, name, expected, requested)?;
+    parent.remove_file(name).map_err(Error::from)?;
+    sync_directory(&parent).map_err(|error| unsynced(&error))
+}
+
+type ChangeResult = std::result::Result<(), FileChangeFailure>;
+
+/// A change that is visible but whose directory could not be made durable.
+fn unsynced(error: &Error) -> FileChangeFailure {
+    FileChangeFailure::Uncertain(Error::Sandbox(format!(
+        "the change was made, but its directory could not be synced: {error}"
+    )))
+}
+
+/// Creates the file and returns its requested path.
+fn create_file_with(
+    location: Location,
+    content: &[u8],
+    permissions: Option<Permissions>,
+) -> std::result::Result<String, FileChangeFailure> {
+    let Location {
+        root,
+        relative,
+        requested,
+    } = location;
+    let (parent, name) = split_name(&relative, &requested)?;
+    // ponytail: directories created here stay if the file then fails; they hold nothing.
+    let parent = open_parent(root, parent, &requested, MissingParents::Create)?
+        .ok_or_else(|| Rejected::NotDirectory.path(&requested))?;
+    write_through_temporary(&parent, content, permissions, |temporary| {
+        // A hard link publishes the complete file and fails if the name already exists.
+        parent
+            .hard_link(temporary, &parent, name)
+            .map_err(|error| match error.kind() {
+                io::ErrorKind::AlreadyExists => Rejected::Exists.path(&requested),
+                _ => error.into(),
+            })?;
+        if let Err(error) = parent.remove_file(temporary) {
+            tracing::debug!(%error, "created file could not remove its temporary link");
+        }
+        Ok(())
+    })?;
+    Ok(requested)
+}
+
+/// Writes `content` to a new temporary file in `parent`, then lets `publish` move it into
+/// place. The temporary file is removed when publishing fails.
+fn write_through_temporary(
+    parent: &Dir,
+    content: &[u8],
+    permissions: Option<Permissions>,
+    publish: impl FnOnce(&str) -> Result<()>,
+) -> ChangeResult {
     let temporary = format!(".mobius-write-{}.tmp", uuid::Uuid::new_v4());
     let result = (|| {
         let mut options = OpenOptions::new();
@@ -176,16 +318,68 @@ pub(super) fn atomic_write(
         file.write_all(content)?;
         file.sync_all()?;
         drop(file);
-        parent.rename(&temporary, &parent, target)?;
-        sync_directory(&parent)?;
-        Ok(())
+        publish(&temporary)
     })();
-    if result.is_err()
-        && let Err(error) = parent.remove_file(&temporary)
-    {
-        tracing::debug!(%error, "failed write could not remove its temporary file");
+    if let Err(error) = result {
+        if let Err(error) = parent.remove_file(&temporary)
+            && error.kind() != io::ErrorKind::NotFound
+        {
+            tracing::debug!(%error, "failed write could not remove its temporary file");
+        }
+        return Err(error.into());
     }
-    result
+    sync_directory(parent).map_err(|error| unsynced(&error))
+}
+
+fn ensure_absent(parent: &Dir, name: &OsStr, requested: &str) -> Result<()> {
+    match parent.symlink_metadata(name) {
+        Ok(_) => Err(Rejected::Exists.path(requested)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(Error::Sandbox(format!("{requested}: {error}"))),
+    }
+}
+
+fn regular_metadata(parent: &Dir, name: &OsStr, requested: &str) -> Result<cap_std::fs::Metadata> {
+    let metadata = parent
+        .symlink_metadata(name)
+        .map_err(|error| Error::Sandbox(format!("{requested}: {error}")))?;
+    if metadata.is_symlink() || !metadata.is_file() {
+        return Err(Rejected::NotRegularFile.path(requested));
+    }
+    Ok(metadata)
+}
+
+/// Fails unless the regular file `name` still holds exactly `expected`, comparing as it
+/// reads rather than copying the file.
+fn ensure_unchanged(
+    parent: &Dir,
+    name: &OsStr,
+    expected: &[u8],
+    requested: &str,
+) -> Result<cap_std::fs::Metadata> {
+    let before = regular_metadata(parent, name, requested)?;
+    if before.len() != expected.len() as u64 {
+        return Err(Rejected::Stale.path(requested));
+    }
+    let mut file = open_checked_file(parent, name, &before, requested)?;
+    let mut buffer = [0_u8; 16 * 1024];
+    let mut remaining = expected;
+    loop {
+        let read = match file.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error.into()),
+        };
+        remaining = buffer
+            .get(..read)
+            .and_then(|chunk| remaining.strip_prefix(chunk))
+            .ok_or_else(|| Rejected::Stale.path(requested))?;
+    }
+    if !remaining.is_empty() {
+        return Err(Rejected::Stale.path(requested));
+    }
+    Ok(before)
 }
 
 fn sync_directory(directory: &Dir) -> Result<()> {
@@ -198,25 +392,61 @@ fn open_named_parent<'path>(
     relative: &'path Path,
     requested: &str,
 ) -> Result<(Dir, &'path OsStr)> {
-    let name = relative
-        .file_name()
-        .ok_or_else(|| Rejected::NoFileName.path(requested))?;
-    let parent = open_parent(
-        root,
-        relative.parent().unwrap_or_else(|| Path::new("")),
-        requested,
-    )?;
+    let (parent, name) = split_name(relative, requested)?;
+    let parent = open_parent(root, parent, requested, MissingParents::Fail)?
+        .ok_or_else(|| Rejected::NotDirectory.path(requested))?;
     Ok((parent, name))
 }
 
-fn open_parent(mut parent: Dir, path: &Path, requested: &str) -> Result<Dir> {
+fn split_name<'path>(
+    relative: &'path Path,
+    requested: &str,
+) -> Result<(&'path Path, &'path OsStr)> {
+    let name = relative
+        .file_name()
+        .ok_or_else(|| Rejected::NoFileName.path(requested))?;
+    Ok((relative.parent().unwrap_or_else(|| Path::new("")), name))
+}
+
+/// What opening a parent chain does at a missing directory.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MissingParents {
+    /// Fails with the filesystem error.
+    Fail,
+    /// Returns no directory: everything below it would be created.
+    Allow,
+    /// Creates the directory and continues.
+    Create,
+}
+
+fn open_parent(
+    mut parent: Dir,
+    path: &Path,
+    requested: &str,
+    missing: MissingParents,
+) -> Result<Option<Dir>> {
     for component in path.components() {
         let Component::Normal(name) = component else {
             continue;
         };
-        let before = parent
-            .symlink_metadata(name)
-            .map_err(|error| Error::Sandbox(format!("{requested}: {error}")))?;
+        let before = match parent.symlink_metadata(name) {
+            Err(error)
+                if error.kind() == io::ErrorKind::NotFound && missing != MissingParents::Fail =>
+            {
+                if missing == MissingParents::Allow {
+                    return Ok(None);
+                }
+                match parent.create_dir(name) {
+                    Err(error) if error.kind() != io::ErrorKind::AlreadyExists => {
+                        return Err(Error::Sandbox(format!("{requested}: {error}")));
+                    }
+                    _ => sync_directory(&parent)?,
+                }
+                parent.symlink_metadata(name)
+            }
+            metadata => metadata,
+        }
+        .map_err(|error| Error::Sandbox(format!("{requested}: {error}")))?;
         if before.is_symlink() || !before.is_dir() {
             return Err(Rejected::NotDirectory.path(requested));
         }
@@ -228,7 +458,7 @@ fn open_parent(mut parent: Dir, path: &Path, requested: &str) -> Result<Dir> {
         }
         parent = next;
     }
-    Ok(parent)
+    Ok(Some(parent))
 }
 
 fn same_cap_file(left: &cap_std::fs::Metadata, right: &cap_std::fs::Metadata) -> bool {

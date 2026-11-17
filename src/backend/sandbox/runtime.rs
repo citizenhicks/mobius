@@ -8,6 +8,8 @@ use std::sync::Arc;
 use super::ApprovalPolicy;
 use super::BackgroundCommandPoll;
 use super::DesktopBrowserPage;
+use super::FileChange;
+use super::FileChangeFailure;
 use super::MANIFEST;
 use super::MAX_BACKGROUND_COMMANDS;
 use super::MAX_BINARY_FILE_BYTES;
@@ -171,6 +173,35 @@ impl Sandbox {
             return Box::pin(async { Err(Error::Sandbox("file exceeds write limit".into())) });
         }
         self.backend.write(path, content, permit.0.sandbox_mode)
+    }
+
+    /// Resolves and authorizes one file change under this call's mutation permit, without
+    /// writing.
+    pub fn check_file_change<'a>(
+        &'a self,
+        change: &'a FileChange,
+        permit: MutationPermit<'a>,
+    ) -> BoxFuture<'a, Result<()>> {
+        if change.written_bytes() > MAX_FILE_BYTES {
+            return Box::pin(async { Err(Error::Sandbox("file exceeds write limit".into())) });
+        }
+        self.backend
+            .check_file_change(change, permit.0.sandbox_mode)
+    }
+
+    /// Applies one checked file change under this call's mutation permit.
+    pub fn apply_file_change<'a>(
+        &'a self,
+        change: FileChange,
+        permit: MutationPermit<'a>,
+    ) -> BoxFuture<'a, std::result::Result<(), FileChangeFailure>> {
+        if change.written_bytes() > MAX_FILE_BYTES {
+            return Box::pin(async {
+                Err(Error::Sandbox("file exceeds write limit".into()).into())
+            });
+        }
+        self.backend
+            .apply_file_change(change, permit.0.sandbox_mode)
     }
 
     /// Evaluates one authorized request, preserving runtime state until explicit reset or loss.

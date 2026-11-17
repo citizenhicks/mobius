@@ -113,6 +113,31 @@ pub trait SandboxBackend: Send + Sync {
         sandbox_mode: SandboxMode,
     ) -> BoxFuture<'a, Result<()>>;
 
+    /// Resolves and authorizes one file change without writing, so a multi-file edit can be
+    /// rejected before its first write. A later [`apply_file_change`](Self::apply_file_change)
+    /// checks the file state again.
+    ///
+    /// Backends without checked file changes fail closed.
+    fn check_file_change<'a>(
+        &'a self,
+        _change: &'a FileChange,
+        _sandbox_mode: SandboxMode,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async { Err(file_changes_unsupported()) })
+    }
+
+    /// Applies one file change only while each file still holds the contents it expects.
+    ///
+    /// Dropping the future must not leave a half-written file. A failure says what the change
+    /// left behind. Backends without checked file changes fail closed.
+    fn apply_file_change(
+        &self,
+        _change: FileChange,
+        _sandbox_mode: SandboxMode,
+    ) -> BoxFuture<'_, std::result::Result<(), FileChangeFailure>> {
+        Box::pin(async { Err(file_changes_unsupported().into()) })
+    }
+
     /// Runs a shell command and forwards drained output under the requested isolation.
     fn execute<'a>(
         &'a self,
@@ -136,6 +161,88 @@ pub trait SandboxBackend: Send + Sync {
         _authorization: &'a CommandAuthorization,
     ) -> BoxFuture<'a, Result<Option<CommandOutput>>> {
         Box::pin(async { Ok(None) })
+    }
+}
+
+fn file_changes_unsupported() -> Error {
+    Error::Sandbox("backend does not support checked file changes".into())
+}
+
+/// One checked file mutation. Each variant names the state it expects, so a change prepared
+/// before an await never overwrites a concurrent edit.
+#[derive(Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum FileChange {
+    /// Creates a file that must not exist, with any missing parent directories.
+    Create {
+        /// The new file's path.
+        path: String,
+        /// The new file's contents.
+        content: String,
+    },
+    /// Replaces a regular file that still holds `expected`, optionally moving it to a
+    /// `destination` that must not exist. The file keeps its permissions.
+    Update {
+        /// The existing file's path.
+        path: String,
+        /// The contents the file must still hold.
+        expected: String,
+        /// The replacement contents.
+        content: String,
+        /// The new path, when the file moves.
+        destination: Option<String>,
+    },
+    /// Removes a regular file that still holds `expected`.
+    Delete {
+        /// The existing file's path.
+        path: String,
+        /// The contents the file must still hold.
+        expected: String,
+    },
+}
+
+/// Why a file change failed, and what it left behind.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum FileChangeFailure {
+    /// Nothing was changed.
+    Unapplied(Error),
+    /// A move created its destination, but its source remains.
+    SourceRemains {
+        /// The created destination.
+        destination: String,
+        /// Why the source was not removed.
+        error: Error,
+    },
+    /// The change may have landed: it became visible but could not be made durable, or its
+    /// worker stopped without reporting.
+    Uncertain(Error),
+}
+
+impl From<Error> for FileChangeFailure {
+    fn from(error: Error) -> Self {
+        Self::Unapplied(error)
+    }
+}
+
+impl From<FileChangeFailure> for Error {
+    fn from(failure: FileChangeFailure) -> Self {
+        match failure {
+            FileChangeFailure::Unapplied(error)
+            | FileChangeFailure::SourceRemains { error, .. }
+            | FileChangeFailure::Uncertain(error) => error,
+        }
+    }
+}
+
+impl FileChange {
+    /// Returns the bytes this change writes.
+    #[must_use]
+    pub const fn written_bytes(&self) -> usize {
+        match self {
+            Self::Create { content, .. } | Self::Update { content, .. } => content.len(),
+            Self::Delete { .. } => 0,
+        }
     }
 }
 
