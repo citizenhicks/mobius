@@ -18,7 +18,7 @@ use mobius::protocol::{
     AssistantContentDeltaEvent, AssistantMessageEvent, Event, EventMsg, FrontendBlock,
     FrontendBlockFormat, FrontendBlockRole, FrontendBlockState, FrontendBlockUpdate, FrontendTone,
     MessageAuthor, MessageDelivery, MessageEvent, MessageSource, ModelStepContentPhase,
-    RenderedBlock,
+    RenderedBlock, UnifiedDiffCounts,
 };
 
 use crate::wire::{
@@ -1311,16 +1311,9 @@ fn turn_changes(slots: &[&Slot]) -> Option<TurnChanges> {
             && let TranscriptItemContent::Block { block, .. } = &slot.item.content
         {
             diffs.push(Arc::clone(&slot.item.id));
-            for line in block
-                .text
-                .lines()
-                .skip_while(|line| !line.starts_with("@@ "))
-            {
-                if line.starts_with('+') {
-                    totals.additions = totals.additions.saturating_add(1);
-                } else if line.starts_with('-') {
-                    totals.deletions = totals.deletions.saturating_add(1);
-                }
+            if let Some(counts) = UnifiedDiffCounts::from_diff(&block.text) {
+                totals.additions = totals.additions.saturating_add(counts.additions);
+                totals.deletions = totals.deletions.saturating_add(counts.deletions);
             }
         }
     }

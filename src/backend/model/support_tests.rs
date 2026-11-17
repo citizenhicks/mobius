@@ -2,6 +2,8 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use serde_json::Value;
+
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
@@ -11,7 +13,7 @@ use crate::BoxFuture;
 use crate::Result;
 
 /// Reads one HTTP/1.1 request, including any `Content-Length` body, as text.
-pub(super) async fn read_http_request(stream: &mut TcpStream) -> String {
+pub(crate) async fn read_http_request(stream: &mut TcpStream) -> String {
     let mut request = Vec::new();
     let header_end = loop {
         if let Some(index) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
@@ -38,6 +40,13 @@ pub(super) async fn read_http_request(stream: &mut TcpStream) -> String {
         request.extend_from_slice(&chunk[..count]);
     }
     String::from_utf8(request).expect("request UTF-8")
+}
+
+/// Reads one HTTP/1.1 request and decodes its body as JSON.
+pub(crate) async fn read_http_json(stream: &mut TcpStream) -> Value {
+    let request = read_http_request(stream).await;
+    let (_, body) = request.split_once("\r\n\r\n").expect("HTTP body");
+    serde_json::from_str(body).expect("HTTP JSON body")
 }
 
 /// Accepts one request, answers `200 {}`, and returns the captured request text.

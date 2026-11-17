@@ -65,8 +65,9 @@
 //! ```
 //!
 //! A custom provider implements [`backend::model::Model`] and must return normalized output.
-//! [`backend::model::ModelEventSink`] is synchronous and fallible; propagate its error rather
-//! than silently losing a streamed event. This example also uses `serde_json`.
+//! [`backend::model::ModelEventSink`] returns a fallible future: await each event and propagate
+//! its error, as [its contract](backend::model::ModelEventSink) requires for backpressure. This
+//! example also uses `serde_json`.
 //!
 //! ```rust,no_run
 //! use serde_json::json;

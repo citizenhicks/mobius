@@ -64,30 +64,51 @@ pub(super) async fn upload(
     else {
         return Err(unexpected().into());
     };
-    let reading = Reading {
-        input: &mut input,
-        offset: 0,
-        size,
-        chunk_size,
-        cancellation,
-    };
-    // The unfold keeps a read in progress between polls, so a slow disk never holds up the
-    // chunks already on their way and a chunk leaves as soon as it is read.
-    let mut written = stream::try_unfold(reading, next_chunk)
-        // Boxed because the compiler cannot prove this borrowing step `Send` otherwise.
-        .boxed()
-        .map_ok(|(offset, data)| write_chunk(link, session_id, &upload_id, offset, data))
-        .try_buffered(WINDOW);
-    while written.try_next().await?.is_some() {}
-    drop(written);
-    if discard_if_requested(link, session_id, &upload_id, cancellation).await? {
-        return Ok(None);
+    // The gateway holds a pending slot and storage for an admitted upload until it is
+    // finished or deleted, and the shared link can outlive this transfer.
+    let sent: Result<bool> = async {
+        let reading = Reading {
+            input: &mut input,
+            offset: 0,
+            size,
+            chunk_size,
+            cancellation,
+        };
+        // The unfold keeps a read in progress between polls, so a slow disk never holds up the
+        // chunks already on their way and a chunk leaves as soon as it is read.
+        let mut written = stream::try_unfold(reading, next_chunk)
+            // Boxed because the compiler cannot prove this borrowing step `Send` otherwise.
+            .boxed()
+            .map_ok(|(offset, data)| write_chunk(link, session_id, &upload_id, offset, data))
+            .try_buffered(WINDOW);
+        while written.try_next().await?.is_some() {}
+        drop(written);
+        if discard_if_requested(link, session_id, &upload_id, cancellation).await? {
+            return Ok(false);
+        }
+        let after = input.metadata().await?;
+        if after.len() != size || after.modified().ok() != metadata.modified().ok() {
+            return Err(Error::Invalid(
+                "The file changed during upload; attach it again.".into(),
+            ));
+        }
+        Ok(true)
     }
-    let after = input.metadata().await.map_err(Error::from)?;
-    if after.len() != size || after.modified().ok() != metadata.modified().ok() {
-        return Err(
-            Error::Invalid("The file changed during upload; attach it again.".into()).into(),
-        );
+    .await;
+    match sent {
+        Ok(true) => {}
+        Ok(false) => return Ok(None),
+        Err(error) => {
+            let mut failure = UploadFailure::from(error);
+            if super::files::delete(link, session_id, &upload_id)
+                .await
+                .is_err()
+            {
+                // Removing the draft retries the delete.
+                failure.cleanup_file_id = Some(upload_id);
+            }
+            return Err(failure);
+        }
     }
     let response = link
         .request(|request_id| ClientMessage::FinishSessionFileUpload {

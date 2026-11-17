@@ -9,6 +9,7 @@ use ratatui::crossterm::event::Event as TerminalEvent;
 use ratatui::crossterm::event::{KeyCode, KeyEventKind};
 use ratatui::crossterm::style::Print;
 use ratatui::crossterm::{SynchronizedUpdate, execute};
+use tempfile::{NamedTempFile, TempPath};
 use tokio::io::AsyncWriteExt as _;
 use tokio::time::MissedTickBehavior;
 
@@ -18,7 +19,7 @@ use super::clipboard::{
 use super::events::{handle_gateway_event, handle_gateway_history};
 use super::input::UiAction;
 use super::view::render_preview;
-use super::{InputDraft, TranscriptTone, TuiState};
+use super::{Evict, InputDraft, TranscriptTone, TuiState};
 use crate::frontend::catalog::{GatewayAction, UiCatalog};
 use crate::frontend::dashboard::render_capability_overlay;
 use crate::frontend::gateway_actions::{ResponseSeverity, prepare, render_response};
@@ -224,41 +225,12 @@ pub(in crate::frontend) async fn run(
         )?;
     }
     drop(clipboard_preparation);
-    let cleanup_error = discard_partial_download(&mut state).await;
     drop(terminal);
     drop(guard);
     if clear_on_exit {
         execute!(io::stdout(), Print(CLEAR_SCREEN_AND_SCROLLBACK))?;
     }
-    if let Some(error) = cleanup_error {
-        report_exit_error(&error);
-    }
     Ok((exit, sender, events))
-}
-
-/// Removes a download the closing chat left half written, returning what could not be removed.
-async fn discard_partial_download(state: &mut TuiState) -> Option<String> {
-    let download = state.file_download.take()?;
-    drop(download.output);
-    tokio::fs::remove_file(&download.destination)
-        .await
-        .err()
-        .map(|error| partial_download_error(&download.destination, &error))
-}
-
-fn partial_download_error(destination: &Path, error: &io::Error) -> String {
-    format!(
-        "could not remove partial download {}: {error}",
-        destination.display()
-    )
-}
-
-#[expect(
-    clippy::print_stderr,
-    reason = "the terminal UI has closed, so stderr is the only place left to report"
-)]
-fn report_exit_error(error: &str) {
-    eprintln!("{error}");
 }
 
 async fn request_open_reference_inventory(
@@ -726,7 +698,7 @@ fn handle_server_message(
         } if &actual == session_id && state.history_request_id.as_deref() == Some(&*request_id) => {
             state.history_request_id = None;
             state.history_cursor = next;
-            handle_gateway_history(state, page);
+            handle_gateway_history(state, page, Evict::Newest);
         }
         ServerMessage::SessionTranscript {
             session_id: actual,
@@ -735,7 +707,7 @@ fn handle_server_message(
             ..
         } if &actual == session_id => {
             state.history_cursor = next;
-            handle_gateway_history(state, page);
+            handle_gateway_history(state, page, Evict::Oldest);
         }
         ServerMessage::SessionOpened { payload, .. } if session_opened => {
             *session = payload;
@@ -1143,8 +1115,8 @@ async fn start_file_download(
             return;
         }
     };
-    let (destination, output) = match create_download_file(&directory, &file.name).await {
-        Ok(download) => download,
+    let (output, staged) = match NamedTempFile::new_in(&directory) {
+        Ok(staged) => staged.into_parts(),
         Err(error) => {
             state.push(error.to_string(), TranscriptTone::Error);
             return;
@@ -1159,13 +1131,6 @@ async fn start_file_download(
         max_bytes: mobius_gateway::wire::MAX_READ_CHUNK_BYTES,
     };
     if let Err(error) = sender.send(request).await {
-        drop(output);
-        if let Err(cleanup) = tokio::fs::remove_file(&destination).await {
-            state.push(
-                partial_download_error(&destination, &cleanup),
-                TranscriptTone::Error,
-            );
-        }
         state.push(error.to_string(), TranscriptTone::Error);
         return;
     }
@@ -1173,17 +1138,20 @@ async fn start_file_download(
         request_id,
         session_id: session_id.share(),
         file,
-        destination,
-        output,
+        directory,
+        output: tokio::fs::File::from_std(output),
+        staged,
         preview: Vec::new(),
         preview_truncated: false,
     });
 }
 
-async fn create_download_file(
+/// Moves a finished download to the first free numbered name, never replacing a file.
+fn publish_download(
+    mut staged: TempPath,
     directory: &Path,
     requested_name: &str,
-) -> io::Result<(PathBuf, tokio::fs::File)> {
+) -> io::Result<PathBuf> {
     let requested = Path::new(requested_name)
         .file_name()
         .filter(|name| !name.is_empty())
@@ -1200,15 +1168,12 @@ async fn create_download_file(
             format!("{stem}-{suffix}").into()
         };
         let destination = directory.join(name);
-        match tokio::fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&destination)
-            .await
-        {
-            Ok(file) => return Ok((destination, file)),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(error),
+        match staged.persist_noclobber(&destination) {
+            Ok(()) => return Ok(destination),
+            Err(error) if error.error.kind() == io::ErrorKind::AlreadyExists => {
+                staged = error.path;
+            }
+            Err(error) => return Err(error.error),
         }
     }
     Err(io::Error::new(
@@ -1235,13 +1200,13 @@ async fn handle_file_download_message(
     }
     match message {
         ServerMessage::Rejected { message, .. } => {
-            fail_file_download(state, message).await;
+            fail_file_download(state, message);
         }
         ServerMessage::SessionFileChunk {
             data, next_offset, ..
         } => {
             if let Err(error) = write_file_chunk(state, data).await {
-                fail_file_download(state, &error.to_string()).await;
+                fail_file_download(state, &error.to_string());
                 return true;
             }
             if let Some(offset) = next_offset {
@@ -1258,7 +1223,7 @@ async fn handle_file_download_message(
                     max_bytes: mobius_gateway::wire::MAX_READ_CHUNK_BYTES,
                 };
                 if let Err(error) = sender.send(request).await {
-                    fail_file_download(state, &error.to_string()).await;
+                    fail_file_download(state, &error.to_string());
                 }
             } else {
                 finish_file_download(state).await;
@@ -1288,21 +1253,20 @@ async fn finish_file_download(state: &mut TuiState) {
         return;
     };
     if let Err(error) = download.output.flush().await {
-        drop(download.output);
-        if let Err(cleanup) = tokio::fs::remove_file(&download.destination).await {
-            state.push(
-                partial_download_error(&download.destination, &cleanup),
-                TranscriptTone::Error,
-            );
-        }
         state.push(error.to_string(), TranscriptTone::Error);
         return;
     }
     drop(download.output);
-    state.push(
-        format!("saved {}", download.destination.display()),
-        TranscriptTone::Success,
-    );
+    match publish_download(download.staged, &download.directory, &download.file.name) {
+        Ok(destination) => state.push(
+            format!("saved {}", destination.display()),
+            TranscriptTone::Success,
+        ),
+        Err(error) => {
+            state.push(error.to_string(), TranscriptTone::Error);
+            return;
+        }
+    }
     if let Ok(mut text) = String::from_utf8(download.preview) {
         if download.preview_truncated {
             text.push_str("\n\n[preview truncated]");
@@ -1311,16 +1275,8 @@ async fn finish_file_download(state: &mut TuiState) {
     }
 }
 
-async fn fail_file_download(state: &mut TuiState, message: &str) {
-    if let Some(download) = state.file_download.take() {
-        drop(download.output);
-        if let Err(cleanup) = tokio::fs::remove_file(&download.destination).await {
-            state.push(
-                partial_download_error(&download.destination, &cleanup),
-                TranscriptTone::Error,
-            );
-        }
-    }
+fn fail_file_download(state: &mut TuiState, message: &str) {
+    state.file_download = None;
     state.push(message, TranscriptTone::Error);
 }
 
@@ -1714,19 +1670,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn downloads_do_not_overwrite_existing_files() {
+    async fn downloads_publish_only_when_complete_without_overwriting() {
         let directory = tempfile::tempdir().expect("download directory");
-        let (first_path, first) = create_download_file(directory.path(), "report.txt")
-            .await
-            .expect("first download");
-        drop(first);
-        let (second_path, second) = create_download_file(directory.path(), "report.txt")
-            .await
-            .expect("second download");
-        assert_ne!(first_path, second_path);
-
-        let mut state = TuiState {
-            file_download: Some(super::super::PendingFileDownload {
+        let existing = directory.path().join("report.txt");
+        std::fs::write(&existing, b"keep").expect("existing file");
+        let pending = |state: &mut TuiState| {
+            let (output, staged) = NamedTempFile::new_in(directory.path())
+                .expect("staged download")
+                .into_parts();
+            state.file_download = Some(super::super::PendingFileDownload {
                 request_id: "request".into(),
                 session_id: mobius::SessionId::new("session").expect("session"),
                 file: SessionFileReference {
@@ -1735,23 +1687,40 @@ mod tests {
                     size: 2,
                     media_type: "text/plain".into(),
                 },
-                destination: second_path.clone(),
-                output: second,
+                directory: directory.path().to_path_buf(),
+                output: tokio::fs::File::from_std(output),
+                staged,
                 preview: Vec::new(),
                 preview_truncated: false,
-            }),
-            ..TuiState::default()
+            });
+        };
+        let entries = || {
+            std::fs::read_dir(directory.path())
+                .expect("entries")
+                .count()
         };
 
+        let mut abandoned = TuiState::default();
+        pending(&mut abandoned);
+        write_file_chunk(&mut abandoned, b"partial")
+            .await
+            .expect("valid chunk");
+        drop(abandoned);
+        assert_eq!(entries(), 1);
+
+        let mut state = TuiState::default();
+        pending(&mut state);
         write_file_chunk(&mut state, b"ok")
             .await
             .expect("valid chunk");
         finish_file_download(&mut state).await;
         assert!(state.file_download.is_none());
+        assert_eq!(std::fs::read(&existing).expect("existing file"), b"keep");
         assert_eq!(
-            tokio::fs::read(second_path).await.expect("saved file"),
+            std::fs::read(directory.path().join("report-1.txt")).expect("saved file"),
             b"ok"
         );
+        assert_eq!(entries(), 2);
     }
 
     #[test]

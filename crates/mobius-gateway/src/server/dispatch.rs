@@ -1524,21 +1524,7 @@ async fn list_session_files(
         ServerMessage::SessionFiles {
             request_id,
             session_id,
-            files: items
-                .into_iter()
-                .map(
-                    |(origin, file, modified_at_ms)| mobius::protocol::SessionFileRecord {
-                        origin: match origin {
-                            StoredFileOrigin::Upload => mobius::protocol::SessionFileOrigin::User,
-                            StoredFileOrigin::Artifact | StoredFileOrigin::Observation => {
-                                mobius::protocol::SessionFileOrigin::Agent
-                            }
-                        },
-                        file,
-                        modified_at_ms,
-                    },
-                )
-                .collect(),
+            files: items,
         }
     })
     .await

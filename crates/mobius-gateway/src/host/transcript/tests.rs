@@ -61,49 +61,11 @@ impl Client {
                 }
                 TranscriptOp::AppendBlock { id, delta } => {
                     let item = self.items.get_mut(id).expect("append to a known item");
-                    let TranscriptItemContent::Block {
-                        block, group_title, ..
-                    } = &mut item.content
-                    else {
-                        panic!("append to a non-block item");
-                    };
-                    block.text.push_str(&delta.text);
-                    block.links.extend(delta.links.iter().cloned());
-                    for file in &delta.files {
-                        match block.files.iter_mut().find(|current| current.id == file.id) {
-                            Some(current) => *current = file.clone(),
-                            None => block.files.push(file.clone()),
-                        }
-                    }
-                    block.content.0.extend(delta.content.iter().cloned());
-                    block.ui.extend(delta.ui.iter().cloned());
-                    if let Some(title) = &delta.title {
-                        block.title.clone_from(title);
-                    }
-                    if let Some(state) = delta.state {
-                        block.state = state;
-                    }
-                    if let Some(role) = delta.role {
-                        block.role = role;
-                    }
-                    if let Some(tone) = delta.tone {
-                        block.tone = tone;
-                    }
-                    if let Some(format) = delta.format {
-                        block.format = format;
-                    }
-                    if delta.symbol.is_some() {
-                        block.symbol.clone_from(&delta.symbol);
-                    }
-                    if delta.group.is_some() {
-                        block.group.clone_from(&delta.group);
-                    }
-                    if delta.group_title.is_some() {
-                        group_title.clone_from(&delta.group_title);
-                    }
-                    if let Some(state) = delta.item_state {
-                        item.state = state;
-                    }
+                    assert!(
+                        matches!(item.content, TranscriptItemContent::Block { .. }),
+                        "append to a non-block item"
+                    );
+                    delta.clone().apply(item);
                 }
                 TranscriptOp::Row { row } => {
                     self.rows.insert(Arc::clone(&row.id), (**row).clone());

@@ -1,14 +1,19 @@
 use std::fmt::Write as _;
+use std::net::SocketAddr;
 
 pub(super) use super::super::connection::{SocketEvent, read_exchange_with_timeout};
 use super::super::*;
 pub(super) use crate::backend::model::ModelTransportSettings;
 use crate::backend::model::PromptCacheIdentity;
+pub(super) use crate::backend::model::test_support::read_http_json;
 pub(super) use std::sync::atomic::Ordering;
 pub(super) use std::time::Duration;
 use tokio::io::AsyncWriteExt as _;
+use tokio::net::TcpListener;
+use tokio::net::TcpStream;
 pub(super) use tokio::sync::mpsc;
 pub(super) use tokio::time::timeout;
+use tokio_tungstenite::WebSocketStream;
 pub(super) use tokio_tungstenite::tungstenite::Message;
 
 pub(super) fn model_request() -> ModelRequest<'static> {
@@ -50,17 +55,37 @@ pub(super) fn completed_events(text: &str, response_id: &str) -> [Value; 2] {
     ]
 }
 
-pub(super) async fn read_http_json(stream: &mut tokio::net::TcpStream) -> Value {
-    let request = crate::backend::model::test_support::read_http_request(stream).await;
-    let (_, body) = request.split_once("\r\n\r\n").expect("HTTP body");
-    serde_json::from_str(body).expect("HTTP JSON body")
+/// Binds a loopback peer on an ephemeral port.
+pub(super) async fn loopback_listener() -> (TcpListener, SocketAddr) {
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("loopback listener");
+    let address = listener.local_addr().expect("loopback address");
+    (listener, address)
 }
 
-pub(super) async fn write_http_stream(
-    stream: &mut tokio::net::TcpStream,
-    text: &str,
-    response_id: &str,
-) {
+/// Accepts the next connection and completes its WebSocket handshake.
+pub(super) async fn accept_websocket(listener: &TcpListener) -> WebSocketStream<TcpStream> {
+    let (stream, _) = listener.accept().await.expect("WebSocket connection");
+    tokio_tungstenite::accept_async(stream)
+        .await
+        .expect("WebSocket handshake")
+}
+
+/// Builds an API-key provider whose HTTP and WebSocket endpoints are `address`.
+pub(super) fn socket_provider(address: SocketAddr) -> OpenAiSocket {
+    OpenAiSocket::from_authorization(
+        Arc::new(ApiKeyAuthorization::new("test-key".into())),
+        BaseUrl::new(format!("http://{address}")).expect("base URL"),
+        format!("ws://{address}/responses"),
+        "test-model".into(),
+        reqwest::Client::new(),
+        ModelTransportSettings::default(),
+    )
+    .expect("provider")
+}
+
+pub(super) async fn write_http_stream(stream: &mut TcpStream, text: &str, response_id: &str) {
     let body =
         completed_events(text, response_id)
             .into_iter()

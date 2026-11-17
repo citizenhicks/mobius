@@ -119,6 +119,7 @@ impl SessionFileStore {
         if let Some(record) = super::list_completed(&self.session_dir(session_id), &self.blob_dir())
             .await?
             .into_iter()
+            .map(|completed| completed.record)
             .find(|record| {
                 record.origin == SessionFileOrigin::Observation
                     && record.image_rendition_key.as_deref() == Some(key.as_str())

@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use super::view::bounded_terminal_text;
 use super::{
-    BlockKey, MAX_ENTRY_BYTES, PickerState, PreviewContent, PreviewState, TranscriptTone, TuiState,
-    attachment_label,
+    BlockKey, Evict, MAX_ENTRY_BYTES, PickerState, PreviewContent, PreviewState, TranscriptTone,
+    TuiState, attachment_label,
 };
 use crate::frontend::terminal::terminal_text;
 use mobius::protocol::{
@@ -468,16 +468,14 @@ fn apply_preview(state: &mut TuiState, preview: RenderedPreview, requested: bool
     }
 }
 
-/// Puts an older page, or a fresh open's whole transcript, above what is shown.
-pub(super) fn handle_gateway_history(state: &mut TuiState, page: TranscriptPage) {
+/// Puts an older page, or a fresh open's whole transcript, above what is shown, then
+/// evicts from the `evict` end.
+pub(super) fn handle_gateway_history(state: &mut TuiState, page: TranscriptPage, evict: Evict) {
     let reasoning_title = state.reasoning_title.take();
     let mut current = std::mem::take(&mut state.transcript);
-    let current_len = current.len();
     state.apply_page(page);
-    while state.transcript.len().saturating_add(current_len) > super::MAX_TRANSCRIPT_ENTRIES {
-        state.transcript.pop_front();
-    }
     state.transcript.append(&mut current);
+    state.trim_transcript(evict);
     state.reasoning_title = reasoning_title;
 }
 

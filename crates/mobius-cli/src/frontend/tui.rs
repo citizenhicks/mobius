@@ -21,6 +21,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use ratatui::text::Line;
+use tempfile::TempPath;
 
 use self::events::UsageStatus;
 #[cfg(test)]
@@ -35,7 +36,7 @@ use mobius::protocol::{
     ActiveMessageDelivery, ExecApprovalRequestEvent, FrontendBlock, FrontendBlockFormat,
     FrontendBlockRole, FrontendBlockState, FrontendBlockUpdate, FrontendPickerOption, FrontendTone,
     FrontendWidget, ModelInfo, Op, RenderedBlock, SessionFileReference,
-    SessionResumeRequestedEvent, ToolContent,
+    SessionResumeRequestedEvent,
 };
 use mobius_gateway::wire::BlockDelta;
 
@@ -104,6 +105,22 @@ struct RenderedTranscript {
 struct BlockKey {
     capability: Arc<str>,
     value: String,
+}
+
+/// Which end of the transcript gives way when it is over [`MAX_TRANSCRIPT_ENTRIES`].
+#[derive(Clone, Copy)]
+enum Evict {
+    /// Keeps the newest entries, as live output and a fresh open do.
+    Oldest,
+    /// Keeps the oldest entries, so older history the user asked for stays shown.
+    Newest,
+}
+
+/// A gateway block item still shown: the entry it draws into, and its block as the gateway
+/// holds it, which each append updates before the entry is drawn again.
+struct BlockItem {
+    key: BlockKey,
+    block: FrontendBlock,
 }
 
 #[derive(Clone)]
@@ -307,8 +324,10 @@ struct PendingFileDownload {
     request_id: Arc<str>,
     session_id: mobius::SessionId,
     file: SessionFileReference,
-    destination: PathBuf,
+    directory: PathBuf,
     output: tokio::fs::File,
+    /// The hidden file that receives the chunks; dropping it removes an unfinished download.
+    staged: TempPath,
     preview: Vec<u8>,
     preview_truncated: bool,
 }
@@ -409,8 +428,8 @@ struct TuiState {
     history_request_id: Option<Arc<str>>,
     deletion_request_id: Option<Arc<str>>,
     file_download: Option<PendingFileDownload>,
-    /// The entry key of each block item still shown, for the gateway's block appends.
-    block_items: HashMap<Arc<str>, BlockKey>,
+    /// Each block item still shown, for the gateway's block appends.
+    block_items: HashMap<Arc<str>, BlockItem>,
 }
 
 impl TuiState {
@@ -771,96 +790,62 @@ impl TuiState {
                 && block.role == FrontendBlockRole::Tool)
                 .then(Instant::now),
         });
-        self.trim_transcript();
+        self.trim_transcript(Evict::Oldest);
     }
 
-    /// Remembers which entry the gateway's block item `item` draws into.
+    /// Remembers which entry the gateway's block item `item` draws into, and its block.
     fn remember_block(&mut self, item: Arc<str>, capability: &str, block: &FrontendBlock) {
         if let Some(value) = &block.id {
             let key = BlockKey {
                 capability: capability.into(),
                 value: value.clone(), // rules-allow: the entry key and the block each own the block id
             };
-            self.block_items.insert(item, key);
+            let block = block.clone(); // rules-allow: the entry draws from the block while this copy takes appends
+            self.block_items.insert(item, BlockItem { key, block });
         }
     }
 
-    /// Applies a gateway block append to the entry its item draws into.
+    /// Applies a gateway block append to its item's block and draws the entry again from the
+    /// whole block, as reopening the chat draws it.
     fn apply_block_delta(&mut self, item: &str, delta: BlockDelta) {
-        let Some(key) = self.block_items.get(item) else {
+        let Some(BlockItem { key, block }) = self.block_items.get_mut(item) else {
             return;
         };
+        let regrouped = delta.group.is_some();
+        delta.apply_to_block(block);
         let Some(entry) = self
             .transcript
             .iter_mut()
             .rev()
-            .find(|entry| entry.id.as_ref() == Some(key))
+            .find(|entry| entry.id.as_ref() == Some(&*key))
         else {
             return;
         };
-        let BlockDelta {
-            text,
-            files,
-            content,
-            title,
-            state,
-            role,
-            tone,
-            format,
-            group,
-            ..
-        } = delta;
-        let added = bounded_terminal_text(
-            &super::block_text(&FrontendBlock {
-                text,
-                files,
-                content: ToolContent(content),
-                ..FrontendBlock::default()
-            }),
-            MAX_ENTRY_BYTES,
-        );
-        let mut body = entry
-            .detail
-            .take()
-            .unwrap_or_else(|| std::mem::take(&mut entry.text));
-        if body.is_empty() {
-            body.push_str(added.trim_prefix('\n'));
-        } else {
-            body.push_str(&added);
+        // The title is drawn apart from the body, as `apply_block` draws it.
+        let title = std::mem::take(&mut block.title);
+        let mut text = bounded_terminal_text(&super::block_text(block), MAX_ENTRY_BYTES);
+        block.title = title;
+        if !block.title.is_empty() {
+            entry.title = Some(bounded_title(&block.title));
         }
-        view::truncate_display_text(&mut body, MAX_ENTRY_BYTES);
-        if let Some(title) = title.filter(|title| !title.is_empty()) {
-            entry.title = Some(bounded_title(&title));
-        }
-        if let Some(role) = role {
-            entry.role = Some(role);
-        }
-        if let Some(format) = format {
-            entry.format = format;
-        }
-        if let Some(tone) = tone {
-            entry.tone = tone.into();
-        }
-        if let Some(value) = group {
+        if regrouped && let Some(value) = &block.group {
             entry.group = Some(BlockKey {
                 capability: Arc::clone(&key.capability),
-                value,
+                value: value.clone(), // rules-allow: the entry key and the block each own the group
             });
         }
-        if let Some(state) = state {
-            entry.pending = state == FrontendBlockState::Pending;
-        }
-        if entry.pending
+        entry.role = Some(block.role);
+        entry.format = block.format;
+        entry.tone = block.tone.into();
+        entry.pending = block.state == FrontendBlockState::Pending;
+        entry.detail = (entry.pending
             && matches!(
-                entry.role,
-                Some(FrontendBlockRole::Tool | FrontendBlockRole::WebSearch)
+                block.role,
+                FrontendBlockRole::Tool | FrontendBlockRole::WebSearch
             )
-            && !body.is_empty()
-        {
-            entry.detail = Some(body);
-        } else {
-            entry.text = body;
-        }
+            && !text.is_empty())
+        .then(|| std::mem::take(&mut text));
+        entry.text = text;
         entry.rendered = None;
         entry.stream = None;
     }
@@ -898,18 +883,24 @@ impl TuiState {
             stream: None,
             appeared: None,
         });
-        self.trim_transcript();
+        self.trim_transcript(Evict::Oldest);
     }
 
-    fn trim_transcript(&mut self) {
+    /// Evicts entries from the `evict` end down to [`MAX_TRANSCRIPT_ENTRIES`], forgetting
+    /// the block items no remaining entry draws.
+    fn trim_transcript(&mut self, evict: Evict) {
         while self.transcript.len() > MAX_TRANSCRIPT_ENTRIES {
-            if let Some(TranscriptEntry { id: Some(id), .. }) = self.transcript.pop_front()
+            let entry = match evict {
+                Evict::Oldest => self.transcript.pop_front(),
+                Evict::Newest => self.transcript.pop_back(),
+            };
+            if let Some(TranscriptEntry { id: Some(id), .. }) = entry
                 && !self
                     .transcript
                     .iter()
                     .any(|entry| entry.id.as_ref() == Some(&id))
             {
-                self.block_items.retain(|_, key| *key != id);
+                self.block_items.retain(|_, item| item.key != id);
             }
         }
     }

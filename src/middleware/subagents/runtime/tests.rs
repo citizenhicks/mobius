@@ -16,17 +16,26 @@ use crate::backend::checkpoint::JournalEvent;
 use crate::backend::checkpoint::TimestampedEvent;
 use crate::protocol::Event;
 
-struct FailOnceStore {
-    fail_next_save: AtomicBool,
-    saved_state: StdMutex<Option<Value>>,
-}
-
-struct BlockingRetryStore {
+struct TestStore {
     saves: AtomicUsize,
-    fail_at: Option<usize>,
+    fail_next_save: AtomicBool,
     block_at: Option<usize>,
     retry_started: Notify,
     release_retry: Notify,
+    saved_state: StdMutex<Option<Value>>,
+}
+
+impl TestStore {
+    fn new() -> Self {
+        Self {
+            saves: AtomicUsize::new(0),
+            fail_next_save: AtomicBool::new(false),
+            block_at: None,
+            retry_started: Notify::new(),
+            release_retry: Notify::new(),
+            saved_state: StdMutex::new(None),
+        }
+    }
 }
 
 fn test_presentation() -> AgentPresentation {
@@ -36,97 +45,7 @@ fn test_presentation() -> AgentPresentation {
     }
 }
 
-impl CheckpointStore for BlockingRetryStore {
-    fn message_accepted<'a>(
-        &'a self,
-        _session_id: &'a SessionId,
-        _submission_id: &'a str,
-    ) -> BoxFuture<'a, Result<bool>> {
-        Box::pin(async { Ok(false) })
-    }
-
-    fn load<'a>(&'a self, _session_id: &'a SessionId) -> BoxFuture<'a, Result<Option<Checkpoint>>> {
-        Box::pin(async { Ok(None) })
-    }
-
-    fn delete_sessions<'a>(&'a self, _session_ids: &'a [SessionId]) -> BoxFuture<'a, Result<bool>> {
-        Box::pin(async { Ok(false) })
-    }
-
-    fn save_with_events(
-        &self,
-        checkpoint: crate::backend::checkpoint::ValidatedCheckpoint,
-        _transcript_delta: Vec<Arc<Value>>,
-        _execution: Option<ExecutionRecord>,
-        events: Vec<TimestampedEvent>,
-    ) -> BoxFuture<'_, Result<Vec<JournalEvent>>> {
-        Box::pin(async move {
-            let mut records = Vec::with_capacity(events.len());
-            for event in events {
-                records.push(
-                    self.append_event(&checkpoint.session_id, event.recorded_at_ms, event.event)
-                        .await?,
-                );
-            }
-            Ok(records)
-        })
-    }
-
-    fn append_event<'a>(
-        &'a self,
-        _session_id: &'a SessionId,
-        recorded_at_ms: i64,
-        event: Event,
-    ) -> BoxFuture<'a, Result<JournalEvent>> {
-        Box::pin(async move {
-            Ok(JournalEvent {
-                sequence: 1,
-                recorded_at_ms,
-                event,
-                stream_metrics: Vec::new(),
-            })
-        })
-    }
-
-    fn event_page<'a>(
-        &'a self,
-        _session_id: &'a SessionId,
-        _request: EventPageRequest,
-    ) -> BoxFuture<'a, Result<EventPage>> {
-        Box::pin(async { Ok(EventPage::default()) })
-    }
-
-    fn load_state<'a>(
-        &'a self,
-        _scope: &'a str,
-        _key: &'a str,
-    ) -> BoxFuture<'a, Result<Option<Value>>> {
-        Box::pin(async { Ok(None) })
-    }
-
-    fn save_state<'a>(
-        &'a self,
-        _scope: &'a str,
-        _key: &'a str,
-        _value: &'a Value,
-    ) -> BoxFuture<'a, Result<()>> {
-        let save = self.saves.fetch_add(1, Ordering::SeqCst);
-        let fail = self.fail_at == Some(save);
-        let block = self.block_at == Some(save);
-        Box::pin(async move {
-            if fail {
-                return Err(Error::Checkpoint("forced state save failure".into()));
-            }
-            if block {
-                self.retry_started.notify_one();
-                self.release_retry.notified().await;
-            }
-            Ok(())
-        })
-    }
-}
-
-impl CheckpointStore for FailOnceStore {
+impl CheckpointStore for TestStore {
     fn message_accepted<'a>(
         &'a self,
         _session_id: &'a SessionId,
@@ -200,16 +119,21 @@ impl CheckpointStore for FailOnceStore {
         _key: &'a str,
         value: &'a Value,
     ) -> BoxFuture<'a, Result<()>> {
+        let save = self.saves.fetch_add(1, Ordering::SeqCst);
         let fail = self.fail_next_save.swap(false, Ordering::SeqCst);
         if !fail {
             *self.saved_state.lock().expect("saved state") = Some(value.clone());
         }
+        let block = self.block_at == Some(save);
         Box::pin(async move {
             if fail {
-                Err(Error::Checkpoint("forced state save failure".into()))
-            } else {
-                Ok(())
+                return Err(Error::Checkpoint("forced state save failure".into()));
             }
+            if block {
+                self.retry_started.notify_one();
+                self.release_retry.notified().await;
+            }
+            Ok(())
         })
     }
 }
@@ -217,9 +141,9 @@ impl CheckpointStore for FailOnceStore {
 #[tokio::test]
 async fn failed_persist_does_not_mutate_runtime_state() {
     let shared = test_shared();
-    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(FailOnceStore {
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(TestStore {
         fail_next_save: AtomicBool::new(true),
-        saved_state: StdMutex::new(None),
+        ..TestStore::new()
     });
     shared
         .session_start(&test_context(checkpoints, Arc::new(|_| Ok(()))))
@@ -268,10 +192,7 @@ async fn failed_persist_does_not_mutate_runtime_state() {
 #[tokio::test]
 async fn reserve_enforces_configured_concurrency_including_root() {
     let shared = Shared::new(3, 4);
-    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(FailOnceStore {
-        fail_next_save: AtomicBool::new(false),
-        saved_state: StdMutex::new(None),
-    });
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(TestStore::new());
     shared
         .session_start(&test_context(checkpoints, Arc::new(|_| Ok(()))))
         .await
@@ -311,11 +232,8 @@ async fn reserve_enforces_configured_concurrency_including_root() {
 #[tokio::test]
 async fn terminal_update_is_retained_until_its_checkpoint_marker_is_acknowledged() {
     let shared = test_shared();
-    let store = Arc::new(FailOnceStore {
-        fail_next_save: AtomicBool::new(false),
-        saved_state: StdMutex::new(None),
-    });
-    let checkpoints: Arc<dyn CheckpointStore> = Arc::<FailOnceStore>::clone(&store);
+    let store = Arc::new(TestStore::new());
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::<TestStore>::clone(&store);
     shared
         .session_start(&test_context(checkpoints, Arc::new(|_| Ok(()))))
         .await
@@ -391,10 +309,7 @@ async fn terminal_update_is_retained_until_its_checkpoint_marker_is_acknowledged
 #[tokio::test]
 async fn stale_root_teardown_cannot_evict_a_reconnected_root() {
     let shared = Arc::new(test_shared());
-    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(FailOnceStore {
-        fail_next_save: AtomicBool::new(false),
-        saved_state: StdMutex::new(None),
-    });
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(TestStore::new());
     shared
         .session_start(&test_context(
             Arc::clone(&checkpoints),
@@ -460,14 +375,11 @@ async fn stale_root_teardown_cannot_evict_a_reconnected_root() {
 #[tokio::test]
 async fn detached_root_mutation_cannot_persist_after_root_eviction() {
     let shared = Arc::new(test_shared());
-    let store = Arc::new(BlockingRetryStore {
-        saves: AtomicUsize::new(0),
-        fail_at: None,
+    let store = Arc::new(TestStore {
         block_at: Some(2),
-        retry_started: Notify::new(),
-        release_retry: Notify::new(),
+        ..TestStore::new()
     });
-    let checkpoints: Arc<dyn CheckpointStore> = Arc::<BlockingRetryStore>::clone(&store);
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::<TestStore>::clone(&store);
     shared
         .session_start(&test_context(
             Arc::clone(&checkpoints),
@@ -563,13 +475,10 @@ async fn detached_root_mutation_cannot_persist_after_root_eviction() {
 #[tokio::test]
 async fn terminal_persist_failure_is_retried_as_a_durable_error() {
     let shared = test_shared();
-    let store = Arc::new(FailOnceStore {
-        fail_next_save: AtomicBool::new(false),
-        saved_state: StdMutex::new(None),
-    });
+    let store = Arc::new(TestStore::new());
     let frontend_events = Arc::new(StdMutex::new(Vec::new()));
     let events = Arc::clone(&frontend_events);
-    let checkpoints: Arc<dyn CheckpointStore> = Arc::<FailOnceStore>::clone(&store);
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::<TestStore>::clone(&store);
     shared
         .session_start(&test_context(
             checkpoints,

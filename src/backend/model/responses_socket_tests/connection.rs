@@ -14,16 +14,10 @@ async fn cancelled_request_flushes_reason_and_reconnects() {
         ModelCancellationReason::FrontendDisconnected,
         ModelCancellationReason::RequestDropped,
     ] {
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .expect("WebSocket listener");
-        let address = listener.local_addr().expect("WebSocket address");
+        let (listener, address) = loopback_listener().await;
         let (started, received) = tokio::sync::oneshot::channel();
         let server = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.expect("first connection");
-            let mut socket = tokio_tungstenite::accept_async(stream)
-                .await
-                .expect("first handshake");
+            let mut socket = accept_websocket(&listener).await;
             let request = socket.next().await.unwrap().unwrap();
             let request: Value = serde_json::from_str(request.to_text().unwrap()).unwrap();
             assert_eq!(request["type"], "response.create");
@@ -35,10 +29,7 @@ async fn cancelled_request_flushes_reason_and_reconnects() {
             assert_eq!(frame.code, CloseCode::Normal);
             assert_eq!(frame.reason.as_str(), reason.as_str());
 
-            let (stream, _) = listener.accept().await.expect("fresh connection");
-            let mut socket = tokio_tungstenite::accept_async(stream)
-                .await
-                .expect("fresh handshake");
+            let mut socket = accept_websocket(&listener).await;
             let request = socket.next().await.unwrap().unwrap();
             let request: Value = serde_json::from_str(request.to_text().unwrap()).unwrap();
             assert!(request.get("previous_response_id").is_none());
@@ -46,15 +37,7 @@ async fn cancelled_request_flushes_reason_and_reconnects() {
                 socket.send(Message::text(event.to_string())).await.unwrap();
             }
         });
-        let provider = OpenAiSocket::from_authorization(
-            Arc::new(ApiKeyAuthorization::new("test-key".into())),
-            BaseUrl::new(format!("http://{address}")).unwrap(),
-            format!("ws://{address}/responses"),
-            "test-model".into(),
-            reqwest::Client::new(),
-            crate::backend::model::ModelTransportSettings::default(),
-        )
-        .unwrap();
+        let provider = socket_provider(address);
         let session_id = (reason != ModelCancellationReason::RequestDropped)
             .then_some(model_request().session_id)
             .flatten();
@@ -106,17 +89,11 @@ async fn active_connection_pump_forwards_bursts_without_blocking_ping() {
     use futures_util::SinkExt as _;
     use futures_util::StreamExt as _;
 
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-        .await
-        .expect("WebSocket listener");
-    let address = listener.local_addr().expect("WebSocket address");
+    let (listener, address) = loopback_listener().await;
     let message_count = 2048;
     let (pong_sender, pong_received) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
-        let (stream, _) = listener.accept().await.expect("WebSocket connection");
-        let mut socket = tokio_tungstenite::accept_async(stream)
-            .await
-            .expect("WebSocket handshake");
+        let mut socket = accept_websocket(&listener).await;
         socket
             .next()
             .await
@@ -186,20 +163,10 @@ async fn connection_limit_closes_other_idle_connections() {
     use futures_util::SinkExt as _;
     use futures_util::StreamExt as _;
 
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-        .await
-        .expect("WebSocket listener");
-    let address = listener.local_addr().expect("WebSocket address");
+    let (listener, address) = loopback_listener().await;
     let server = tokio::spawn(async move {
-        let (idle_stream, _) = listener.accept().await.expect("idle connection");
-        let mut idle_socket = tokio_tungstenite::accept_async(idle_stream)
-            .await
-            .expect("idle WebSocket handshake");
-
-        let (limited_stream, _) = listener.accept().await.expect("limited connection");
-        let mut limited_socket = tokio_tungstenite::accept_async(limited_stream)
-            .await
-            .expect("limited WebSocket handshake");
+        let mut idle_socket = accept_websocket(&listener).await;
+        let mut limited_socket = accept_websocket(&listener).await;
         limited_socket
             .next()
             .await
@@ -227,17 +194,8 @@ async fn connection_limit_closes_other_idle_connections() {
             Some(Ok(message)) => panic!("idle socket received {message:?}"),
         }
     });
-    let socket_url = format!("ws://{address}/responses");
-    let provider = OpenAiSocket::from_authorization(
-        Arc::new(ApiKeyAuthorization::new("test-key".into())),
-        BaseUrl::new(format!("http://{address}")).unwrap(),
-        &socket_url,
-        "test-model".into(),
-        reqwest::Client::new(),
-        crate::backend::model::ModelTransportSettings::default(),
-    )
-    .expect("provider");
-    let (idle_socket, _) = connect_async(&socket_url)
+    let provider = socket_provider(address);
+    let (idle_socket, _) = connect_async(format!("ws://{address}/responses"))
         .await
         .expect("idle client connection");
     let idle_session = provider

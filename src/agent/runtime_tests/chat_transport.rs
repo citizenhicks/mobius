@@ -4,39 +4,15 @@ use super::*;
 use crate::backend::model::RawModelTransportSettings;
 use crate::backend::model::kimi::Kimi;
 use crate::backend::model::provider::BaseUrl;
+use crate::backend::model::test_support::read_http_json;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 
 enum Reply {
     Timeout,
     Status(u16),
     Success,
-}
-
-async fn read_request(socket: &mut TcpStream) -> Value {
-    let mut bytes = Vec::new();
-    loop {
-        let mut buffer = [0; 4_096];
-        let count = socket.read(&mut buffer).await.expect("request bytes");
-        assert_ne!(count, 0, "request ended before its body");
-        bytes.extend_from_slice(&buffer[..count]);
-        let Some(end) = bytes.windows(4).position(|bytes| bytes == b"\r\n\r\n") else {
-            continue;
-        };
-        let length = std::str::from_utf8(&bytes[..end])
-            .expect("request headers")
-            .lines()
-            .find_map(|line| {
-                line.to_ascii_lowercase()
-                    .strip_prefix("content-length:")
-                    .map(|length| length.trim().parse::<usize>().expect("content length"))
-            })
-            .expect("request content length");
-        if bytes.len() >= end + 4 + length {
-            return serde_json::from_slice(&bytes[end + 4..]).expect("request body");
-        }
-    }
 }
 
 async fn run_chat(replies: &'static [Reply]) -> (Vec<Value>, Vec<EventMsg>) {
@@ -47,7 +23,7 @@ async fn run_chat(replies: &'static [Reply]) -> (Vec<Value>, Vec<EventMsg>) {
     let server = tokio::spawn(async move {
         for reply in replies {
             let (mut socket, _) = listener.accept().await.expect("connection");
-            let request = read_request(&mut socket).await;
+            let request = read_http_json(&mut socket).await;
             captured.lock().expect("captured requests").push(request);
             let (status, body) = match reply {
                 Reply::Timeout => {

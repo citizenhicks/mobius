@@ -1,4 +1,5 @@
 use super::super::*;
+use super::support::{accept_websocket, loopback_listener};
 use crate::backend::model::test_support::{RefreshingAuthorization, read_http_request};
 
 #[tokio::test]
@@ -17,10 +18,7 @@ async fn handshake_rejection_preserves_status_and_payment_message() {
             r#"{"error":{"message":"Cloud model service unavailable"}}"#,
         ),
     ] {
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .expect("WebSocket listener");
-        let address = listener.local_addr().expect("WebSocket address");
+        let (listener, address) = loopback_listener().await;
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.expect("WebSocket connection");
             read_http_request(&mut stream).await;
@@ -72,10 +70,7 @@ async fn handshake_rejection_preserves_status_and_payment_message() {
 async fn websocket_unauthorized_refreshes_and_retries_once() {
     use tokio::io::AsyncWriteExt as _;
 
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-        .await
-        .expect("WebSocket listener");
-    let address = listener.local_addr().expect("WebSocket address");
+    let (listener, address) = loopback_listener().await;
     let server = tokio::spawn(async move {
         let (mut rejected, _) = listener.accept().await.expect("rejected connection");
         let request = read_http_request(&mut rejected).await;
@@ -90,10 +85,7 @@ async fn websocket_unauthorized_refreshes_and_retries_once() {
             .await
             .expect("unauthorized response");
 
-        let (accepted, _) = listener.accept().await.expect("retried connection");
-        tokio_tungstenite::accept_async(accepted)
-            .await
-            .expect("retried WebSocket handshake")
+        accept_websocket(&listener).await
     });
 
     let auth = RefreshingAuthorization::new();

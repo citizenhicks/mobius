@@ -20,6 +20,12 @@ fn transcript_keeps_a_bounded_recent_window() {
 fn gateway_block_appends_extend_the_drawn_entry() {
     use mobius_gateway::wire::{BlockDelta, TranscriptOp};
     let mut state = state();
+    let file = |size| SessionFileReference {
+        id: "f".into(),
+        name: "f".into(),
+        size,
+        media_type: "text/plain".into(),
+    };
     let item = TranscriptItem {
         id: "block:tools:run".into(),
         turn_id: None,
@@ -38,6 +44,7 @@ fn gateway_block_appends_extend_the_drawn_entry() {
                 role: FrontendBlockRole::Tool,
                 title: "Bash · make".into(),
                 text: "make".into(),
+                files: vec![file(1)],
                 ..FrontendBlock::default()
             },
             group_title: None,
@@ -59,6 +66,7 @@ fn gateway_block_appends_extend_the_drawn_entry() {
             id: "block:tools:run".into(),
             delta: BlockDelta {
                 text: "\nbuilt".into(),
+                files: vec![file(2)],
                 state: Some(mobius::protocol::FrontendBlockState::Complete),
                 ..BlockDelta::default()
             },
@@ -68,7 +76,65 @@ fn gateway_block_appends_extend_the_drawn_entry() {
     let entry = state.transcript.back().expect("the block entry");
     assert_eq!(
         (entry.text.as_str(), entry.detail.as_deref(), entry.pending),
-        ("make\nbuilt", None, false)
+        ("make\nbuilt\n[file] f · text/plain · 2 bytes", None, false),
+        "the file is replaced by id, as reopening the chat shows it"
+    );
+}
+
+#[test]
+fn older_history_at_the_cap_stays_shown_and_evicted_blocks_are_forgotten() {
+    let block = |id: &str| {
+        Arc::new(TranscriptItem {
+            id: format!("block:tools:{id}").into(),
+            turn_id: None,
+            recorded_at_ms: 0,
+            state: TranscriptItemState::Complete,
+            terminal: false,
+            starts_turn: false,
+            resumed: false,
+            inherited: false,
+            target: None,
+            content: TranscriptItemContent::Block {
+                capability: "tools".into(),
+                block: FrontendBlock {
+                    id: Some(id.into()),
+                    role: FrontendBlockRole::Tool,
+                    text: id.into(),
+                    ..FrontendBlock::default()
+                },
+                group_title: None,
+            },
+        })
+    };
+    let mut state = state();
+    state.transcript.clear();
+    for index in 1..MAX_TRANSCRIPT_ENTRIES {
+        state.push_entry(format!("message {index}"), TranscriptTone::Neutral);
+    }
+    events::handle_gateway_event(
+        &mut state,
+        recorded(EventMsg::ContextCompacted, None),
+        vec![mobius_gateway::wire::TranscriptOp::Item {
+            item: block("newest"),
+        }],
+        true,
+    );
+    assert_eq!(state.transcript.len(), MAX_TRANSCRIPT_ENTRIES);
+
+    let mut page = message_page(&["older"]);
+    page.items.push(block("older"));
+    events::handle_gateway_history(&mut state, page, Evict::Newest);
+
+    assert_eq!(state.transcript.len(), MAX_TRANSCRIPT_ENTRIES);
+    assert_eq!(
+        state.transcript.front().map(|entry| entry.text.as_str()),
+        Some("› older")
+    );
+    let remembered: Vec<&str> = state.block_items.keys().map(|id| &**id).collect();
+    assert_eq!(
+        remembered,
+        ["block:tools:older"],
+        "only shown blocks take appends"
     );
 }
 
@@ -100,6 +166,7 @@ fn a_snapshot_answer_continues_under_the_same_item_id() {
             items: vec![Arc::new(item.clone())],
             rows: Vec::new(),
         },
+        Evict::Oldest,
     );
     events::handle_gateway_event(
         &mut state,

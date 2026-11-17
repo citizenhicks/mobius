@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
+use std::time::SystemTime;
 
 use base64::Engine as _;
 use cap_std::ambient_authority;
@@ -15,15 +16,16 @@ use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
 use uuid::Uuid;
 
 use super::{
-    ATTACHMENT_WORKSPACE_FILE, BLOB_DIR, BlobValidationStamp, MAX_FILE_BYTES, MAX_READ_CHUNK_BYTES,
-    MAX_VALIDATED_BLOBS, METADATA_FILE, SessionFileChunk, StoredAttachmentWorkspace,
-    StoredSessionFile,
+    ATTACHMENT_WORKSPACE_FILE, BLOB_DIR, BlobValidationStamp, CompletedFile, MAX_FILE_BYTES,
+    MAX_READ_CHUNK_BYTES, MAX_VALIDATED_BLOBS, METADATA_FILE, SessionFileChunk,
+    StoredAttachmentWorkspace, StoredSessionFile,
 };
 use crate::protocol::SessionFileReference;
 use crate::{Error, Result};
 
 // Enough to overlap disk latency without exhausting the blocking pool on one listing.
 const LIST_VALIDATION_CONCURRENCY: usize = 8;
+const MAX_RECORD_BYTES: usize = 4 * 1024;
 
 pub(super) async fn read_resolved_chunk(
     file: SessionFileReference,
@@ -103,7 +105,7 @@ pub(super) async fn cleanup_stale_files(root: &Path) -> Result<()> {
 pub(super) async fn list_completed(
     session_dir: &Path,
     blob_root: &Path,
-) -> Result<Vec<StoredSessionFile>> {
+) -> Result<Vec<CompletedFile>> {
     match tokio::fs::symlink_metadata(session_dir).await {
         Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {}
         Ok(_) => {
@@ -126,7 +128,8 @@ pub(super) async fn list_completed(
     }
     let mut records: Vec<_> = stream::iter(candidates)
         .map(|(id, directory)| async move {
-            let record = load_metadata(&directory.join(METADATA_FILE)).await?;
+            let (record, modified) =
+                load_json(&directory.join(METADATA_FILE), METADATA_RECORD).await?;
             validate_stored_file(&record)?;
             if id.to_str() != Some(record.file.id.as_str()) {
                 return Err(Error::Tool(
@@ -135,16 +138,14 @@ pub(super) async fn list_completed(
             }
             let path = blob_root.join(&record.content_hash);
             validate_content_blob_metadata(&path, record.file.size).await?;
-            Ok(record)
+            Ok(CompletedFile { record, modified })
         })
         .buffer_unordered(LIST_VALIDATION_CONCURRENCY)
         .try_collect()
         .await?;
     records.sort_by(|left, right| {
-        left.file
-            .name
-            .cmp(&right.file.name)
-            .then(left.file.id.cmp(&right.file.id))
+        let (left, right) = (&left.record.file, &right.record.file);
+        left.name.cmp(&right.name).then(left.id.cmp(&right.id))
     });
     Ok(records)
 }
@@ -161,8 +162,8 @@ pub(super) async fn gc_unreferenced_blobs(root: &Path) -> Result<()> {
         if !file_type.is_dir() || file_type.is_symlink() {
             continue;
         }
-        for record in list_completed(&session.path(), &blob_root).await? {
-            referenced.insert(record.content_hash, ());
+        for completed in list_completed(&session.path(), &blob_root).await? {
+            referenced.insert(completed.record.content_hash, ());
         }
     }
 
@@ -193,22 +194,29 @@ pub(super) async fn gc_unreferenced_blobs(root: &Path) -> Result<()> {
     Ok(())
 }
 
+const METADATA_RECORD: &str = "session file metadata";
+
 pub(super) async fn load_metadata(path: &Path) -> Result<StoredSessionFile> {
-    load_json(path, "session file metadata").await
+    Ok(load_json(path, METADATA_RECORD).await?.0)
 }
 
 pub(super) async fn load_attachment_workspace(path: &Path) -> Result<StoredAttachmentWorkspace> {
-    load_json(path, "attachment workspace metadata").await
+    Ok(load_json(path, "attachment workspace metadata").await?.0)
 }
 
-/// Reads one small JSON record; `what` names it when it is too large.
-async fn load_json<T: DeserializeOwned>(path: &Path, what: &str) -> Result<T> {
-    require_regular_file(path).await?;
-    let bytes = tokio::fs::read(path).await?;
-    if bytes.len() > 4 * 1024 {
+/// Reads one small JSON record and when it was last written; `what` names it when it is too large.
+async fn load_json<T: DeserializeOwned>(path: &Path, what: &str) -> Result<(T, SystemTime)> {
+    let modified = require_regular_file(path).await?.modified()?;
+    let mut bytes = Vec::new();
+    tokio::fs::File::open(path)
+        .await?
+        .take(MAX_RECORD_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .await?;
+    if bytes.len() > MAX_RECORD_BYTES {
         return Err(Error::Tool(format!("{what} exceeds size limit")));
     }
-    serde_json::from_slice(&bytes).map_err(Into::into)
+    Ok((serde_json::from_slice(&bytes)?, modified))
 }
 
 pub(super) async fn load_optional_attachment_workspace(

@@ -10,18 +10,9 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
     use futures_util::StreamExt as _;
 
     let session_id = crate::SessionId::new("fallback-session").expect("session");
-    let websocket_listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-        .await
-        .expect("WebSocket listener");
-    let websocket_address = websocket_listener.local_addr().expect("WebSocket address");
+    let (websocket_listener, websocket_address) = loopback_listener().await;
     let websocket_server = tokio::spawn(async move {
-        let (stream, _) = websocket_listener
-            .accept()
-            .await
-            .expect("initial WebSocket connection");
-        let mut socket = tokio_tungstenite::accept_async(stream)
-            .await
-            .expect("initial WebSocket handshake");
+        let mut socket = accept_websocket(&websocket_listener).await;
         let initial: Value = serde_json::from_slice(
             &socket
                 .next()

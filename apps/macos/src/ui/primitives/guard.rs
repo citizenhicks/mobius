@@ -122,9 +122,9 @@ fn sources(dir: &Path, files: &mut Vec<PathBuf>) {
     }
 }
 
-/// Lines under `src/ui` that match a rule outside its allowlist. With `production_only`, the
-/// snapshot harness, test files and each file's tests (after its first `#[cfg(test)]`) are
-/// skipped.
+/// Lines under `src/ui` that match a rule outside its allowlist. With `production_only`, test
+/// files and each file's tests (after its first `#[cfg(test)]`) are skipped. The snapshot
+/// harness lives under `tests/ui/` and is not scanned.
 fn violations(
     rules: &[(&str, &[(&str, &str)])],
     exempt: &[&str],
@@ -137,9 +137,7 @@ fn violations(
     for path in files {
         let relative = path.strip_prefix(root.parent().unwrap()).unwrap();
         let relative = relative.to_string_lossy().replace('\\', "/");
-        if exempt.contains(&relative.as_str())
-            || production_only
-                && (relative.starts_with("ui/snapshot/") || relative.ends_with("tests.rs"))
+        if exempt.contains(&relative.as_str()) || production_only && relative.ends_with("tests.rs")
         {
             continue;
         }

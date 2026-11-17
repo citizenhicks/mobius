@@ -12,6 +12,7 @@ mod region;
 mod router;
 mod runtime;
 #[cfg(feature = "snapshot")]
+#[path = "../../tests/ui/snapshot/mod.rs"]
 mod snapshot;
 mod storage;
 pub mod theme;

@@ -17,15 +17,9 @@ async fn continuation_skips_old_pixels_and_preparation_failure_preserves_connect
     }
     let session_id = model_request().session_id.expect("session");
     let backup_id = crate::SessionId::new("backup").expect("session");
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-        .await
-        .expect("listener");
-    let address = listener.local_addr().expect("address");
+    let (listener, address) = loopback_listener().await;
     let server = tokio::spawn(async move {
-        let (stream, _) = listener.accept().await.expect("connection");
-        let mut socket = tokio_tungstenite::accept_async(stream)
-            .await
-            .expect("handshake");
+        let mut socket = accept_websocket(&listener).await;
         for step in 0..4 {
             let body: Value = serde_json::from_slice(
                 &socket

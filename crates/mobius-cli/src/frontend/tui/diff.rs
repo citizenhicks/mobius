@@ -1,6 +1,8 @@
 //! CLI-local, one-file-at-a-time diff preview.
 
 use diffy::Patch;
+use mobius::protocol::UnifiedDiffCounts;
+use mobius::protocol::unified_diff_files;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -14,8 +16,8 @@ struct FileDiff {
     text: String,
     path: String,
     status: &'static str,
-    added: usize,
-    removed: usize,
+    /// `None` for a file that does not parse, which is shown raw.
+    counts: Option<UnifiedDiffCounts>,
 }
 
 impl FileDiff {
@@ -79,26 +81,13 @@ impl FileDiff {
         } else {
             "M"
         };
-        let (added, removed) = changed_lines(text);
         Self {
             text: text.to_owned(),
             path,
             status,
-            added,
-            removed,
+            counts: UnifiedDiffCounts::from_diff(text),
         }
     }
-}
-
-fn changed_lines(text: &str) -> (usize, usize) {
-    text.lines()
-        .skip_while(|line| !line.starts_with("@@ "))
-        .fold((0, 0), |(added, removed), line| {
-            (
-                added + usize::from(line.starts_with('+')),
-                removed + usize::from(line.starts_with('-')),
-            )
-        })
 }
 
 pub(super) struct DiffBrowser {
@@ -117,7 +106,7 @@ pub(super) struct DiffBrowser {
 impl DiffBrowser {
     pub(super) fn new(text: &str) -> Self {
         let text = terminal_text(text).replace('\t', "    ");
-        let files: Vec<_> = view::diff_sections(&text).map(FileDiff::new).collect();
+        let files: Vec<_> = unified_diff_files(&text).map(FileDiff::new).collect();
         Self {
             selected: 0,
             files_focused: true,
@@ -325,13 +314,26 @@ impl DiffBrowser {
             self.files_area = block.inner(panes[0]);
             let items = self.files.iter().map(|file| {
                 let (directory, name) = file.path.rsplit_once('/').unwrap_or(("", &file.path));
-                ListItem::new(Line::from(vec![
-                    Span::styled(format!("{} ", file.status), theme.style(Role::Accent)),
-                    Span::styled(format!("+{} ", file.added), theme.style(Role::Success)),
-                    Span::styled(format!("-{} ", file.removed), theme.style(Role::Error)),
-                    Span::styled(name, theme.style(Role::Text)),
-                    Span::styled(format!(" {directory}"), theme.style(Role::Muted)),
-                ]))
+                let mut spans = vec![Span::styled(
+                    format!("{} ", file.status),
+                    theme.style(Role::Accent),
+                )];
+                if let Some(counts) = file.counts {
+                    spans.push(Span::styled(
+                        format!("+{} ", counts.additions),
+                        theme.style(Role::Success),
+                    ));
+                    spans.push(Span::styled(
+                        format!("-{} ", counts.deletions),
+                        theme.style(Role::Error),
+                    ));
+                }
+                spans.push(Span::styled(name, theme.style(Role::Text)));
+                spans.push(Span::styled(
+                    format!(" {directory}"),
+                    theme.style(Role::Muted),
+                ));
+                ListItem::new(Line::from(spans))
             });
             frame.render_stateful_widget(
                 List::new(items)

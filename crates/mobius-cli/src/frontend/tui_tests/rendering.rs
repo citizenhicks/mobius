@@ -6,7 +6,7 @@ fn gateway_history_prepends_earlier_messages() {
     let mut state = state();
     state.push("newest", TranscriptTone::Assistant);
 
-    events::handle_gateway_history(&mut state, message_page(&["oldest"]));
+    events::handle_gateway_history(&mut state, message_page(&["oldest"]), Evict::Oldest);
 
     assert_eq!(
         state

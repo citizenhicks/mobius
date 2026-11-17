@@ -6,6 +6,7 @@ mod controls;
 mod conversation;
 mod detail;
 #[cfg(feature = "snapshot")]
+#[path = "../../../tests/ui/fixtures/chat.rs"]
 mod fixtures;
 mod fork;
 mod mention;

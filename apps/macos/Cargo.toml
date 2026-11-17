@@ -75,7 +75,7 @@ gpui = { workspace = true, features = ["test-support"] }
 mobius-gateway = { workspace = true, features = ["fixtures"] }
 
 [features]
-# Development-only screen capture; see src/ui/snapshot/.
+# Development-only screen capture; see tests/ui/snapshot/.
 snapshot = ["dep:gpui-base", "gpui/test-support", "gpui_platform/test-support", "mobius-gateway/fixtures", "mobius-client/snapshot"]
 
 [lints]

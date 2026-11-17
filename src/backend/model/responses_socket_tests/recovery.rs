@@ -8,15 +8,9 @@ async fn previous_response_not_found_rebuilds_full_context_on_the_same_connectio
     use futures_util::SinkExt as _;
     use futures_util::StreamExt as _;
 
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-        .await
-        .expect("WebSocket listener");
-    let address = listener.local_addr().expect("WebSocket address");
+    let (listener, address) = loopback_listener().await;
     let server = tokio::spawn(async move {
-        let (stream, _) = listener.accept().await.expect("WebSocket connection");
-        let mut socket = tokio_tungstenite::accept_async(stream)
-            .await
-            .expect("WebSocket handshake");
+        let mut socket = accept_websocket(&listener).await;
         let initial: Value = serde_json::from_slice(
             &socket
                 .next()
@@ -80,16 +74,7 @@ async fn previous_response_not_found_rebuilds_full_context_on_the_same_connectio
                 .expect("completed event");
         }
     });
-    let socket_url = format!("ws://{address}/responses");
-    let provider = OpenAiSocket::from_authorization(
-        Arc::new(ApiKeyAuthorization::new("test-key".into())),
-        BaseUrl::new(format!("http://{address}")).unwrap(),
-        &socket_url,
-        "test-model".into(),
-        reqwest::Client::new(),
-        crate::backend::model::ModelTransportSettings::default(),
-    )
-    .expect("provider");
+    let provider = socket_provider(address);
     let request = ModelRequest {
         prompt_cache: Some(PromptCacheIdentity {
             key: "hashed-cache-key",
@@ -134,15 +119,9 @@ async fn socket_citations_without_search_report_web_activity_like_http() {
     use futures_util::SinkExt as _;
     use futures_util::StreamExt as _;
 
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-        .await
-        .expect("WebSocket listener");
-    let address = listener.local_addr().expect("WebSocket address");
+    let (listener, address) = loopback_listener().await;
     let server = tokio::spawn(async move {
-        let (stream, _) = listener.accept().await.expect("WebSocket connection");
-        let mut socket = tokio_tungstenite::accept_async(stream)
-            .await
-            .expect("WebSocket handshake");
+        let mut socket = accept_websocket(&listener).await;
         socket
             .next()
             .await
@@ -165,16 +144,7 @@ async fn socket_citations_without_search_report_web_activity_like_http() {
             .expect("completed event");
         socket
     });
-    let socket_url = format!("ws://{address}/responses");
-    let provider = OpenAiSocket::from_authorization(
-        Arc::new(ApiKeyAuthorization::new("test-key".into())),
-        BaseUrl::new(format!("http://{address}")).unwrap(),
-        &socket_url,
-        "test-model".into(),
-        reqwest::Client::new(),
-        ModelTransportSettings::default(),
-    )
-    .expect("provider");
+    let provider = socket_provider(address);
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let captured = Arc::clone(&seen);
     let events: ModelEventSink = Arc::new(move |event| {

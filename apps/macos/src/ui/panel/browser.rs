@@ -7,12 +7,14 @@ use crate::host::browser::{Page, PageEvent, PageEvents, Popup, Shortcut};
 use crate::numeric::Saturating;
 use gpui_component::input::InputEvent;
 use mobius_gateway::wire::{ClientMessage, ComputerView};
+use reqwest::Url;
+use std::net::Ipv4Addr;
 use std::rc::Rc;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
 pub(in crate::ui) const GLYPH: &str = "hi.globe02";
 const NEW_TAB: &str = "about:blank";
-const SEARCH: &str = "https://duckduckgo.com/?q=";
+const SEARCH: &str = "https://duckduckgo.com/";
 
 /// A browser tab's page and what its toolbar shows.
 pub(in crate::ui) struct BrowserTab {
@@ -34,51 +36,47 @@ fn address_url(text: &str) -> Option<String> {
         return None;
     }
     if text.contains(char::is_whitespace) {
-        return Some(search_url(text));
+        return search_url(text);
     }
     let (scheme, rest) = text.split_once(':').unwrap_or_default();
     let scheme = scheme.to_ascii_lowercase();
     if rest.starts_with("//") || matches!(scheme.as_str(), "about" | "data" | "mailto" | "blob") {
         return Some(text.to_owned());
     }
-    let host = text.split(['/', '?', '#']).next().unwrap_or_default();
-    let name = host.rsplit_once(':').map_or(host, |(name, _)| name);
-    if matches!(name, "localhost" | "127.0.0.1" | "[::1]") {
-        return Some(format!("http://{text}"));
-    }
-    let hostname = name.contains('.')
-        && !name.starts_with('.')
-        && !name.ends_with('.')
-        && name
-            .chars()
-            .all(|c| c.is_alphanumeric() || matches!(c, '.' | '-'));
-    Some(if hostname {
-        format!("https://{text}")
-    } else {
-        search_url(text)
+    let authority = text.split(['/', '?', '#']).next().unwrap_or_default();
+    Some(match bare_host_scheme(authority) {
+        Some(scheme) => format!("{scheme}://{text}"),
+        None => search_url(text)?,
     })
 }
 
-fn search_url(query: &str) -> String {
-    let mut url = String::from(SEARCH);
-    for byte in query.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                url.push(char::from(byte));
-            }
-            b' ' => url.push('+'),
-            _ => {
-                url.push('%');
-                url.extend(
-                    [byte >> 4, byte & 0xF]
-                        .into_iter()
-                        .filter_map(|nibble| char::from_digit(u32::from(nibble), 16))
-                        .map(|digit| digit.to_ascii_uppercase()),
-                );
-            }
-        }
+/// The scheme a typed `host[:port]` opens with, or `None` when the text is a search.
+fn bare_host_scheme(authority: &str) -> Option<&'static str> {
+    let url = Url::parse(&format!("http://{authority}")).ok()?;
+    let host = url.host_str()?;
+    if !url.username().is_empty() || url.password().is_some() {
+        return None;
     }
-    url
+    // The parser reads a bare number such as `1234` as an IPv4 address; only a typed one counts.
+    if host.parse::<Ipv4Addr>().is_ok() && !authority.starts_with(host) {
+        return None;
+    }
+    if matches!(host, "localhost" | "127.0.0.1" | "[::1]") {
+        return Some("http");
+    }
+    let hostname = host.contains('.')
+        && !host.starts_with('.')
+        && !host.ends_with('.')
+        && host
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '.' | '-'));
+    hostname.then_some("https")
+}
+
+fn search_url(query: &str) -> Option<String> {
+    Url::parse_with_params(SEARCH, [("q", query)])
+        .ok()
+        .map(String::from)
 }
 
 /// The page's background while it loads: the pane's card color, as Chromium's ARGB.
@@ -547,6 +545,8 @@ mod tests {
         assert_eq!(open("https://example.com/a?b"), "https://example.com/a?b");
         assert_eq!(open("  example.com/docs "), "https://example.com/docs");
         assert_eq!(open("localhost:3000/app"), "http://localhost:3000/app");
+        assert_eq!(open("[::1]"), "http://[::1]");
+        assert_eq!(open("[::1]:8080/app"), "http://[::1]:8080/app");
         assert_eq!(open("about:blank"), "about:blank");
         assert_eq!(
             open("rust borrow checker"),
@@ -554,6 +554,7 @@ mod tests {
         );
         assert_eq!(open("c++"), "https://duckduckgo.com/?q=c%2B%2B");
         assert_eq!(open("mobius"), "https://duckduckgo.com/?q=mobius");
+        assert_eq!(open("1234"), "https://duckduckgo.com/?q=1234");
         assert_eq!(open("192.168.1.1"), "https://192.168.1.1");
         assert!(address_url("   ").is_none());
     }

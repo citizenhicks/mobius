@@ -24,11 +24,13 @@ pub use content::{
 };
 pub(crate) use content::{content_part_text, content_parts, content_parts_mut};
 
+mod diff;
 mod events;
 mod frontend;
 mod replay;
 mod ui;
 
+pub use self::diff::{UnifiedDiffCounts, unified_diff_files};
 pub use self::events::*;
 pub use self::frontend::*;
 pub use self::ui::*;

@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use diffy::Line as DiffLine;
 use diffy::Patch;
+use mobius::protocol::unified_diff_files;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -743,7 +744,7 @@ fn push_unified_diff(lines: &mut Vec<Line<'static>>, text: &str, width: usize) -
     if !text.starts_with("diff --git ") && !text.contains("\ndiff --git ") {
         return push_diff_patch(lines, text, width);
     }
-    for section in diff_sections(text) {
+    for section in unified_diff_files(text) {
         if !push_diff_patch(lines, section, width) {
             lines.extend(
                 section
@@ -753,19 +754,6 @@ fn push_unified_diff(lines: &mut Vec<Line<'static>>, text: &str, width: usize) -
         }
     }
     true
-}
-
-pub(super) fn diff_sections(text: &str) -> impl Iterator<Item = &str> {
-    let mut start = 0;
-    text.match_indices("\ndiff --git ")
-        .map(|(index, _)| index + 1)
-        .chain(std::iter::once(text.len()))
-        .filter_map(move |end| {
-            let section = text.get(start..end);
-            start = end;
-            section
-        })
-        .filter(|section| !section.is_empty())
 }
 
 pub(super) fn push_diff_patch(lines: &mut Vec<Line<'static>>, text: &str, width: usize) -> bool {

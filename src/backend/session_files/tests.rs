@@ -121,6 +121,22 @@ async fn tampered_content_blob_is_rejected() {
 }
 
 #[tokio::test]
+async fn oversized_metadata_is_rejected() {
+    let id = session("session");
+    let state = tempfile::tempdir().expect("state");
+    let store = SessionFileStore::new(state.path(), None);
+    let file = store
+        .publish_artifact(&id, "result.txt".into(), "text/plain".into(), b"safe")
+        .await
+        .expect("artifact");
+    let path = store.session_dir(&id).join(&file.id).join(METADATA_FILE);
+    std::fs::write(&path, vec![b' '; 4 * 1024 + 1]).expect("oversize");
+
+    let error = load_metadata(&path).await.expect_err("oversized metadata");
+    assert!(error.to_string().contains("exceeds size limit"), "{error}");
+}
+
+#[tokio::test]
 async fn attachment_cleanup_remains_safe_after_symlink_workspace_replacement_and_restart() {
     use std::os::unix::fs::symlink;
 

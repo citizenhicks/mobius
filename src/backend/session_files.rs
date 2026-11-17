@@ -14,7 +14,7 @@ use tokio::io::AsyncWriteExt as _;
 use tokio::sync::{Mutex, OnceCell, OwnedMutexGuard};
 use uuid::Uuid;
 
-use crate::protocol::{SessionFileLimits, SessionFileReference};
+use crate::protocol::{SessionFileLimits, SessionFileRecord, SessionFileReference};
 use crate::{Error, Result};
 
 mod images;
@@ -170,6 +170,12 @@ impl StoredSessionFile {
     }
 }
 
+/// A validated completed file and when its metadata was last written.
+struct CompletedFile {
+    record: StoredSessionFile,
+    modified: SystemTime,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StoredAttachmentWorkspace {
@@ -323,32 +329,40 @@ impl SessionFileStore {
         session_id: &SessionId,
         origins: &[SessionFileOrigin],
     ) -> Result<Vec<(SessionFileOrigin, SessionFileReference)>> {
-        self.list_files_for(session_id, origins, false).await
+        Ok(self
+            .list_files_for(session_id, origins, false)
+            .await?
+            .map(|completed| (completed.record.origin, completed.record.file))
+            .collect())
     }
 
-    /// Lists completed files of the requested origins with when each was last written,
-    /// in Unix milliseconds.
+    /// Lists completed files of the requested origins as protocol records, with when each
+    /// was last written.
     /// # Errors
     /// Returns an error if file metadata cannot be read or validated.
     pub async fn list_files_with_modified(
         &self,
         session_id: &SessionId,
         origins: &[SessionFileOrigin],
-    ) -> Result<Vec<(SessionFileOrigin, SessionFileReference, i64)>> {
-        let directory = self.session_dir(session_id);
-        let mut listed = Vec::new();
-        for (origin, file) in self.list_files(session_id, origins).await? {
-            let modified = tokio::fs::metadata(directory.join(&file.id).join(METADATA_FILE))
-                .await?
-                .modified()?;
-            let modified_at_ms = modified
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .map_or(0, |since| {
-                    i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
-                });
-            listed.push((origin, file, modified_at_ms));
-        }
-        Ok(listed)
+    ) -> Result<Vec<SessionFileRecord>> {
+        Ok(self
+            .list_files_for(session_id, origins, false)
+            .await?
+            .map(|CompletedFile { record, modified }| SessionFileRecord {
+                origin: match record.origin {
+                    SessionFileOrigin::Upload => crate::protocol::SessionFileOrigin::User,
+                    SessionFileOrigin::Artifact | SessionFileOrigin::Observation => {
+                        crate::protocol::SessionFileOrigin::Agent
+                    }
+                },
+                file: record.file,
+                modified_at_ms: modified
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .map_or(0, |since| {
+                        i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
+                    }),
+            })
+            .collect())
     }
 
     /// Lists only files that selective cleanup can remove while retaining chat history.
@@ -359,7 +373,11 @@ impl SessionFileStore {
         session_id: &SessionId,
         origins: &[SessionFileOrigin],
     ) -> Result<Vec<(SessionFileOrigin, SessionFileReference)>> {
-        self.list_files_for(session_id, origins, true).await
+        Ok(self
+            .list_files_for(session_id, origins, true)
+            .await?
+            .map(|completed| (completed.record.origin, completed.record.file))
+            .collect())
     }
 
     async fn list_files_for(
@@ -367,18 +385,16 @@ impl SessionFileStore {
         session_id: &SessionId,
         origins: &[SessionFileOrigin],
         cleanup_only: bool,
-    ) -> Result<Vec<(SessionFileOrigin, SessionFileReference)>> {
+    ) -> Result<impl Iterator<Item = CompletedFile>> {
         self.ensure_initialized().await?;
         Ok(
             list_completed(&self.session_dir(session_id), &self.blob_dir())
                 .await?
                 .into_iter()
-                .filter(|record| {
+                .filter(move |CompletedFile { record, .. }| {
                     origins.contains(&record.origin)
                         && (!cleanup_only || !record.protected_from_cleanup())
-                })
-                .map(|record| (record.origin, record.file))
-                .collect(),
+                }),
         )
     }
 
@@ -787,7 +803,7 @@ impl SessionFileStore {
         &self,
         session_id: &SessionId,
         size: u64,
-        completed: &[StoredSessionFile],
+        completed: &[CompletedFile],
     ) -> Result<SessionFileReservation> {
         let mut reservations = self.state.reservations.lock().map_err(|error| {
             Error::Tool(format!(
@@ -824,7 +840,7 @@ impl SessionFileStore {
     fn validate_reserved_capacity(
         &self,
         session_id: &SessionId,
-        completed: &[StoredSessionFile],
+        completed: &[CompletedFile],
     ) -> Result<()> {
         let reservations = self.state.reservations.lock().map_err(|error| {
             Error::Tool(format!(
@@ -844,14 +860,14 @@ impl SessionFileStore {
 fn reserved_totals(
     reservations: &BTreeMap<SessionId, ReservationTotals>,
     session_id: &SessionId,
-    completed: &[StoredSessionFile],
+    completed: &[CompletedFile],
 ) -> Result<ReservationTotals> {
     let pending = reservations.get(session_id);
     let pending_bytes = pending.map_or(0, |pending| pending.bytes);
     let bytes = completed
         .iter()
         .try_fold(pending_bytes, |total, item| {
-            total.checked_add(item.file.size)
+            total.checked_add(item.record.file.size)
         })
         .ok_or_else(|| Error::Tool("session file quota overflow".into()))?;
     Ok(ReservationTotals {

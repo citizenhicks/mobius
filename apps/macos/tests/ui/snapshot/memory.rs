@@ -127,7 +127,7 @@ const PAGES: &[(&str, &str, &str, &str, &str, i64)] = &[
         "snapshot-suite",
         "fixture-mobius",
         "How UI snapshot scenarios are rendered and reviewed.",
-        "Scenarios live in `src/ui/snapshot`. Review every changed frame; see [[release-process]].",
+        "Scenarios live in `tests/ui/snapshot`. Review every changed frame; see [[release-process]].",
         90,
     ),
     (

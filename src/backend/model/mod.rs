@@ -1226,4 +1226,4 @@ mod tests;
 
 #[cfg(test)]
 #[path = "support_tests.rs"]
-mod test_support;
+pub(crate) mod test_support;

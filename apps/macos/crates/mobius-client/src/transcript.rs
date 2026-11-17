@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use mobius::protocol::{FrontendBlock, MessageAuthor, MessageSource, MessageTarget};
 use mobius_gateway::wire::{
-    BlockDelta, TranscriptChild, TranscriptItem, TranscriptItemContent, TranscriptItemState,
-    TranscriptOp, TranscriptPage, TranscriptPosition, TranscriptRow,
+    TranscriptChild, TranscriptItem, TranscriptItemContent, TranscriptItemState, TranscriptOp,
+    TranscriptPage, TranscriptPosition, TranscriptRow,
 };
 
 /// One item and what the interface derived from it, built on first use.
@@ -115,71 +115,6 @@ impl TranscriptEntry {
             _ => {}
         }
     }
-
-    fn append_block(&mut self, delta: BlockDelta) {
-        let BlockDelta {
-            text,
-            links,
-            files,
-            content,
-            ui,
-            title,
-            state,
-            role,
-            tone,
-            format,
-            symbol,
-            group,
-            group_title,
-            item_state,
-        } = delta;
-        let item = self.edit();
-        if let Some(item_state) = item_state {
-            item.state = item_state;
-        }
-        let TranscriptItemContent::Block {
-            block,
-            group_title: shown,
-            ..
-        } = &mut item.content
-        else {
-            return;
-        };
-        block.text.push_str(&text);
-        block.links.extend(links);
-        for file in files {
-            match block.files.iter_mut().find(|current| current.id == file.id) {
-                Some(current) => *current = file,
-                None => block.files.push(file),
-            }
-        }
-        block.content.0.extend(content);
-        block.ui.extend(ui);
-        if let Some(title) = title {
-            block.title = title;
-        }
-        if let Some(state) = state {
-            block.state = state;
-        }
-        if let Some(role) = role {
-            block.role = role;
-        }
-        if let Some(tone) = tone {
-            block.tone = tone;
-        }
-        if let Some(format) = format {
-            block.format = format;
-        }
-        if symbol.is_some() {
-            block.symbol = symbol;
-        }
-        if group.is_some() {
-            block.group = group;
-        }
-        if group_title.is_some() {
-            *shown = group_title;
-        }
-    }
 }
 
 /// A number no earlier change in any store used: a replacement must invalidate caches even
@@ -275,7 +210,7 @@ impl TranscriptStore {
                 }
                 TranscriptOp::AppendBlock { id, delta } => {
                     if let Some(entry) = self.items.get_mut(&id) {
-                        entry.append_block(delta);
+                        delta.apply(entry.edit());
                         touched.push(id);
                     }
                 }

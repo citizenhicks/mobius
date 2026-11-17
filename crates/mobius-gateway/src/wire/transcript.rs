@@ -374,6 +374,77 @@ pub struct BlockDelta {
     pub item_state: Option<TranscriptItemState>,
 }
 
+impl BlockDelta {
+    /// Applies this delta to `item` by the rule above. An item that is not a block takes
+    /// only `item_state`.
+    pub fn apply(mut self, item: &mut TranscriptItem) {
+        if let Some(state) = self.item_state.take() {
+            item.state = state;
+        }
+        if let TranscriptItemContent::Block {
+            block, group_title, ..
+        } = &mut item.content
+        {
+            if let Some(title) = self.group_title.take() {
+                *group_title = Some(title);
+            }
+            self.apply_to_block(block);
+        }
+    }
+
+    /// Applies this delta's block fields to `block`, for a client that keeps the block
+    /// without its item; `group_title` and `item_state` are dropped.
+    pub fn apply_to_block(self, block: &mut FrontendBlock) {
+        let Self {
+            text,
+            links,
+            files,
+            content,
+            ui,
+            title,
+            state,
+            role,
+            tone,
+            format,
+            symbol,
+            group,
+            group_title: _,
+            item_state: _,
+        } = self;
+        block.text.push_str(&text);
+        block.links.extend(links);
+        for file in files {
+            match block.files.iter_mut().find(|current| current.id == file.id) {
+                Some(current) => *current = file,
+                None => block.files.push(file),
+            }
+        }
+        block.content.0.extend(content);
+        block.ui.extend(ui);
+        if let Some(title) = title {
+            block.title = title;
+        }
+        if let Some(state) = state {
+            block.state = state;
+        }
+        if let Some(role) = role {
+            block.role = role;
+        }
+        if let Some(tone) = tone {
+            block.tone = tone;
+        }
+        if let Some(format) = format {
+            block.format = format;
+        }
+        if symbol.is_some() {
+            block.symbol = symbol;
+        }
+        if group.is_some() {
+            block.group = group;
+        }
+    }
+}
+
 /// A self-contained transcript: a snapshot, a history page or a preview.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TranscriptPage {
