@@ -388,7 +388,7 @@ async fn connect(
                 let session_id = gateway
                     .bots
                     .iter()
-                    .find(|bot| &*bot.handle == "mobius")
+                    .find(|bot| bot.built_in)
                     .or_else(|| gateway.bots.first())
                     .map(|bot| bot.conversation_session_id.share())
                     .ok_or_else(|| Error::Invalid("create a Bot before starting a chat".into()))?;

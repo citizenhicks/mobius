@@ -8,9 +8,7 @@ use super::catalog::{
 };
 use super::composition::validate_bot_config;
 use super::memory::with_memory_contribution;
-use super::profile::{
-    gateway_ready, gateway_run_stats, gateway_session_summaries, provider_usage, recent_run_groups,
-};
+use super::profile::{gateway_ready, gateway_run_stats, gateway_session_summaries};
 use super::publication::{GatewayUpdate, broadcast, send_catalog, send_event, send_warning};
 use super::rejection::{
     Rejection, harness_unavailable, internal, invalid_bot, invalid_config, invalid_session_bot,
@@ -19,9 +17,7 @@ use super::rejection::{
 use super::replay::{FrameworkPresentation, SessionHistoryPage, durable_history_page};
 use super::session::HostHandle;
 use super::state::{GatewayState, SessionStartGuard, gateway_ready_after_unlock};
-use super::{
-    BROADCAST_CAPACITY, RECENT_RUN_LIMIT, catalog, deletion, live_chats, providers, telemetry,
-};
+use super::{BROADCAST_CAPACITY, catalog, deletion, live_chats, providers, telemetry};
 use crate::bots::BotStore;
 use crate::computer_runtime::desktop::DesktopControl;
 use crate::computer_runtime::remote_desktop::RemoteDesktop;
@@ -32,8 +28,8 @@ use crate::config::{
 use crate::harness::mobius::extensions::ExtensionStore;
 use crate::harness::mobius::provider_catalog::configured_model_catalog;
 use crate::wire::{
-    HarnessConfig, ProfileSnapshot, ReadyPayload, RunStats, ServerMessage, SessionRecord,
-    VersionedAgentConfig,
+    HarnessConfig, ProfileParts, ProfileSnapshot, ReadyPayload, RunStats, ServerMessage,
+    SessionRecord, VersionedAgentConfig,
 };
 use crate::{Error, Result};
 use futures_util::future::OptionFuture;
@@ -56,6 +52,7 @@ pub(crate) struct GatewayHost {
     pub(super) state: Arc<Mutex<GatewayState>>,
     pub(super) capacity_gate: Arc<Mutex<()>>,
     pub(super) storage_reads: Arc<telemetry::StorageMeasurements>,
+    pub(super) provider_usage: Arc<super::provider_usage::ProviderUsageCache>,
     pub(super) events: broadcast::Sender<GatewayUpdate>,
     pub(super) work_activity: Arc<WorkActivity>,
     pub(crate) telemetry: Arc<crate::telemetry::Telemetry>,
@@ -111,6 +108,7 @@ impl GatewayHost {
         let work_activity = Arc::clone(&self.work_activity);
         let telemetry = Arc::clone(&self.telemetry);
         let storage_reads = Arc::clone(&self.storage_reads);
+        let provider_usage = Arc::clone(&self.provider_usage);
         Arc::new(move || {
             Ok(Self {
                 state: state
@@ -123,6 +121,7 @@ impl GatewayHost {
                 work_activity: Arc::clone(&work_activity),
                 telemetry: Arc::clone(&telemetry),
                 storage_reads: Arc::clone(&storage_reads),
+                provider_usage: Arc::clone(&provider_usage),
             })
         })
     }
@@ -215,6 +214,7 @@ impl GatewayHost {
             })),
             capacity_gate: Arc::new(Mutex::new(())),
             storage_reads: Arc::default(),
+            provider_usage: Arc::default(),
             events,
             work_activity,
             telemetry,
@@ -812,6 +812,15 @@ impl GatewayHost {
     /// One durable history page for a chat this client could select, read without
     /// loading the chat: a resident chat answers itself, a stopped one is read from
     /// its event journal with framework-rendered blocks only.
+    pub(crate) async fn authorize_read(
+        &self,
+        session_id: &SessionId,
+    ) -> std::result::Result<(), Rejection> {
+        self.authorize_chat(session_id, Admission::Observe)
+            .await
+            .map(drop)
+    }
+
     pub(crate) async fn read_session_history(
         &self,
         session_id: &SessionId,
@@ -915,45 +924,41 @@ impl GatewayHost {
 
     pub(crate) async fn profile(
         &self,
-        include_provider_usage: bool,
+        parts: ProfileParts,
     ) -> std::result::Result<ProfileSnapshot, Rejection> {
         let access = self.begin_mutation().await?;
-        let (mut profile, checkpoints, usage_request) = {
+        let (mut profile, checkpoints, usage_read) = {
             let state = self.state.lock().await;
             let config = state.config()?;
             (
                 ProfileSnapshot {
                     user_name: crate::config::local_user_name(),
                     daily_usage: state.usage.daily_usage().map_err(internal)?,
-                    provider_usage: Vec::new(),
+                    provider_usage: Arc::default(),
                     run_stats: RunStats::default(),
-                    recent_run_groups: Vec::new(),
                 },
                 Arc::clone(&state.checkpoints),
-                include_provider_usage.then(|| provider_usage(&config, &state.store)),
+                parts
+                    .provider_usage
+                    .then(|| self.provider_usage.request(&config, &state.store)),
             )
         };
         drop(access);
         let local = async {
-            let sessions = gateway_session_summaries(&checkpoints)
-                .await
-                .map_err(internal)?;
-            profile.run_stats = gateway_run_stats(&sessions).map_err(internal)?;
-            let recent_runs = checkpoints
-                .recent_executions(RECENT_RUN_LIMIT)
-                .await
-                .map_err(internal)?;
-            if !recent_runs.is_empty() {
-                let metadata = load_session_metadata(&checkpoints)
+            if parts.run_stats {
+                let sessions = gateway_session_summaries(&checkpoints)
                     .await
                     .map_err(internal)?;
-                profile.recent_run_groups = recent_run_groups(recent_runs, &sessions, &metadata);
+                profile.run_stats = gateway_run_stats(&sessions).map_err(internal)?;
             }
             Ok(())
         };
-        // A local failure still wins at once and abandons the provider request; a provider
-        // failure surfaces only after the local reads succeed.
-        let usage = async { Ok(OptionFuture::from(usage_request).await) };
+        let usage = async {
+            Ok(
+                OptionFuture::from(usage_read.map(|request| self.provider_usage.get(request)))
+                    .await,
+            )
+        };
         let ((), usage) = tokio::try_join!(local, usage)?;
         if let Some(usage) = usage {
             profile.provider_usage = usage.map_err(internal)?;

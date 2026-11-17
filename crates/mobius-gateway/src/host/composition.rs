@@ -12,6 +12,7 @@ use crate::harness::mobius::provider_catalog::configured_model_choices;
 use crate::wire::{AgentComposition, HarnessConfig};
 use mobius::protocol::Submission;
 use std::path::Path;
+use std::sync::Arc;
 /// A Bot-defaults composition checked against the gateway's catalog and installed extensions.
 #[derive(Debug)]
 pub(crate) struct ValidatedComposition {
@@ -39,8 +40,11 @@ pub(super) fn validate_bot_config(
     config: HarnessConfig,
 ) -> std::result::Result<crate::harness::ValidatedConfig, Rejection> {
     match config {
-        HarnessConfig::Mobius(composition) => {
-            let settings = check_composition(state, &*state.config()?, &composition)?;
+        HarnessConfig::Mobius(mut composition) => {
+            let gateway = state.config()?;
+            with_explicit_effort(&gateway, Arc::make_mut(&mut composition));
+            let settings = check_composition(state, &gateway, &composition)?;
+            drop(gateway);
             Ok(crate::harness::ValidatedConfig::mobius(
                 composition,
                 settings,
@@ -54,10 +58,27 @@ pub(super) fn validate_bot_config(
 pub(super) fn validate_composition(
     state: &GatewayState,
     gateway: &GatewayConfig,
-    config: AgentComposition,
+    mut config: AgentComposition,
 ) -> std::result::Result<ValidatedComposition, Rejection> {
+    with_explicit_effort(gateway, &mut config);
     check_composition(state, gateway, &config)?;
     Ok(ValidatedComposition { config })
+}
+
+fn with_explicit_effort(gateway: &GatewayConfig, config: &mut AgentComposition) {
+    if config.provider.reasoning_effort.is_some() {
+        return;
+    }
+    let Some(configured) = gateway.configured_providers.get(&config.provider.instance) else {
+        return;
+    };
+    let Ok(definition) = mobius::backend::model::provider::provider(&configured.selection.provider)
+    else {
+        return;
+    };
+    config.provider.reasoning_effort =
+        crate::config::effective_reasoning_effort(definition, configured, &config.provider)
+            .map(str::to_owned);
 }
 
 /// The middleware settings of a composition the gateway's catalog and extensions support.

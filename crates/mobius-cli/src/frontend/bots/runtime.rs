@@ -3,14 +3,14 @@ use std::sync::Arc;
 use mobius::{Error, Result};
 use mobius_gateway::client::{GatewayEvents, GatewaySender};
 use mobius_gateway::wire::{
-    ClientMessage, HookSource, ReadyPayload, ServerFrame, ServerMessage, apply_session_changes,
+    ClientMessage, ReadyPayload, RoutineChange, ServerFrame, ServerMessage, apply_session_changes,
 };
 use ratatui::crossterm::event::Event;
 use tokio::time::MissedTickBehavior;
 
+use super::Action;
 use super::render::render;
 use super::state::{BotsState, Page};
-use super::{Action, FollowUp};
 use crate::frontend::setup;
 use crate::frontend::terminal::{INPUT_POLL, Screen, input_batch};
 use crate::gateway_error;
@@ -47,12 +47,9 @@ pub(in crate::frontend) async fn run(
                     if let Some(error) = frame.message.response_error(None) {
                         break 'screen Err(Error::Stopped(error.message.into()));
                     }
-                    let (follow_up, deferred) =
-                        handle_frame(frame.message, gateway, &mut state);
-                    if let Some(frame) = deferred {
+                    if let Some(frame) = handle_frame(frame.message, gateway, &mut state) {
                         events.defer(frame).map_err(gateway_error)?;
                     }
-                    request_follow_up(sender, &mut state, follow_up).await?;
                 } else {
                     events_open = false;
                     state.fail("Gateway disconnected. Press q to close.");
@@ -103,9 +100,8 @@ pub(in crate::frontend) async fn run(
                             request_id,
                             message,
                             label,
-                            follow_up,
                         } => match sender.send(*message).await {
-                            Ok(()) => state.begin(request_id, label, follow_up),
+                            Ok(()) => state.begin(request_id, label),
                             Err(error) => state.fail(error.to_string()),
                         },
                     }
@@ -119,18 +115,10 @@ pub(super) fn handle_frame(
     message: ServerMessage,
     gateway: &mut ReadyPayload,
     state: &mut BotsState,
-) -> (FollowUp, Option<ServerFrame>) {
-    let mut follow_up = FollowUp::None;
+) -> Option<ServerFrame> {
     let mut deferred = None;
     match message {
-        ServerMessage::HookEvent { event }
-            if matches!(
-                event.source,
-                HookSource::Routine { .. } | HookSource::Schedule { .. }
-            ) =>
-        {
-            state.lifecycle_refresh = true;
-        }
+        ServerMessage::RoutineChanged { change } => apply_routine_change(state, change),
         ServerMessage::Ready { payload } => gateway.update(payload),
         ServerMessage::GatewayConfigured {
             request_id,
@@ -165,7 +153,7 @@ pub(super) fn handle_frame(
                 .is_some_and(|id| pending_matches(state, id))
             {
                 gateway.bots = bots;
-                follow_up = state.complete().unwrap_or(FollowUp::None);
+                state.complete();
             } else if request_id.is_some() {
                 gateway.bots = bots.clone(); // rules-allow: the correlated payload must still reach its actual waiter
                 deferred = Some(ServerFrame::new(ServerMessage::Bots { request_id, bots }));
@@ -178,23 +166,23 @@ pub(super) fn handle_frame(
             routines,
         } if pending_matches(state, &request_id) => {
             state.routines = routines;
-            follow_up = state.complete().unwrap_or(FollowUp::None);
+            state.complete();
         }
         ServerMessage::RoutineHistory { request_id, runs }
             if pending_matches(state, &request_id) =>
         {
             state.runs = runs;
-            follow_up = state.complete().unwrap_or(FollowUp::None);
+            state.complete();
         }
         ServerMessage::RoutineRunPreview {
             request_id,
             preview,
         } if pending_matches(state, &request_id) => {
             state.preview = Some(preview);
-            follow_up = state.complete().unwrap_or(FollowUp::None);
+            state.complete();
         }
         ServerMessage::Accepted { request_id } if pending_matches(state, &request_id) => {
-            follow_up = state.complete().unwrap_or(FollowUp::None);
+            state.complete();
         }
         ServerMessage::Rejected {
             request_id,
@@ -203,16 +191,40 @@ pub(super) fn handle_frame(
         } if pending_matches(state, &request_id) => state.fail(&*message),
         message => deferred = Some(ServerFrame::new(message)),
     }
-    if state.pending.is_none() && state.lifecycle_refresh {
-        state.lifecycle_refresh = false;
-        follow_up = match &state.page {
-            Page::Runs { routine_id, .. } | Page::Run { routine_id, .. } => {
-                FollowUp::Runs(Arc::clone(routine_id))
+    deferred
+}
+
+fn apply_routine_change(state: &mut BotsState, change: RoutineChange) {
+    match change {
+        RoutineChange::Saved { routine } => upsert(&mut state.routines, routine, |r| &r.id),
+        RoutineChange::Ran { routine, run } => {
+            let shown = match &state.page {
+                Page::Runs { routine_id, .. } | Page::Run { routine_id, .. } => {
+                    *routine_id == run.routine_id
+                }
+                _ => false,
+            };
+            if shown {
+                upsert(&mut state.runs, run, |r| &r.id);
             }
-            _ => FollowUp::Routines,
-        };
+            upsert(&mut state.routines, routine, |r| &r.id);
+        }
+        RoutineChange::Deleted { routine_id } => {
+            state.routines.retain(|routine| routine.id != routine_id);
+            state.runs.retain(|run| run.routine_id != routine_id);
+        }
+        RoutineChange::RunDeleted { run_id } => state.runs.retain(|run| run.id != run_id),
     }
-    (follow_up, deferred)
+}
+
+fn upsert<T>(held: &mut Vec<T>, record: T, id: impl Fn(&T) -> &Arc<str>) {
+    match held
+        .iter_mut()
+        .find(|candidate| id(candidate) == id(&record))
+    {
+        Some(existing) => *existing = record,
+        None => held.push(record),
+    }
 }
 
 fn pending_matches(state: &BotsState, request_id: &str) -> bool {
@@ -231,35 +243,6 @@ async fn request_routines(sender: &GatewaySender, state: &mut BotsState) -> Resu
         })
         .await
         .map_err(gateway_error)?;
-    state.begin(request_id, "Load routines", FollowUp::None);
+    state.begin(request_id, "Load routines");
     Ok(())
-}
-
-async fn request_runs(
-    sender: &GatewaySender,
-    state: &mut BotsState,
-    routine_id: Arc<str>,
-) -> Result<()> {
-    let request_id = crate::fresh_id();
-    sender
-        .send(ClientMessage::ListRoutineHistory {
-            request_id: Arc::clone(&request_id),
-            id: Some(routine_id),
-        })
-        .await
-        .map_err(gateway_error)?;
-    state.begin(request_id, "Load run history", FollowUp::None);
-    Ok(())
-}
-
-async fn request_follow_up(
-    sender: &GatewaySender,
-    state: &mut BotsState,
-    follow_up: FollowUp,
-) -> Result<()> {
-    match follow_up {
-        FollowUp::None => Ok(()),
-        FollowUp::Routines => request_routines(sender, state).await,
-        FollowUp::Runs(routine_id) => request_runs(sender, state, routine_id).await,
-    }
 }

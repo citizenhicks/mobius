@@ -37,7 +37,8 @@ const MAX_ATTACHMENT_REFERENCES: usize = 16;
 pub(crate) const MAX_FILE_BYTES: u64 = 250 * 1024 * 1024;
 pub(crate) const MAX_SESSION_BYTES: u64 = 250 * 1024 * 1024;
 const MAX_UPLOAD_CHUNK_BYTES: usize = 256 * 1024;
-pub(crate) const MAX_READ_CHUNK_BYTES: usize = 256 * 1024;
+/// The largest read one request may ask of a stored or workspace file.
+pub const MAX_READ_CHUNK_BYTES: usize = 256 * 1024;
 const MAX_SESSION_FILES: usize = 512;
 const MAX_VALIDATED_BLOBS: usize = 1_024;
 const BLOB_DIR: &str = "blobs";

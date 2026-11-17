@@ -80,7 +80,11 @@ impl Workspace {
     ) {
         let workspaces = self.routine_workspaces();
         let inputs = Inputs::new(routine.as_deref(), window, cx);
-        let form = cx.new(|_| RoutineForm::new(routine.as_deref(), &workspaces, inputs));
+        let min_interval = self.client.state.gateway.as_ref().map_or(0, |gateway| {
+            gateway.agent_catalog.limits.min_routine_interval_seconds
+        });
+        let form =
+            cx.new(|_| RoutineForm::new(routine.as_deref(), &workspaces, inputs, min_interval));
         let editor = Entity::clone(&form);
         let pauses = self.client.state.bot(&bot_id).is_some_and(|bot| {
             bot.routine_interaction_policy == RoutineInteractionPolicy::MayPauseForApproval

@@ -59,7 +59,7 @@ impl Workspace {
                 .map(|day| day.usage.total_tokens.max(0))
                 .sum();
             lines.push(format!("Today: {} tokens", compact_count(tokens)));
-            for usage in &profile.provider_usage {
+            for usage in profile.provider_usage.iter() {
                 let (label, _) = self.provider_label(&usage.provider);
                 for limit in usage.limits.iter().flatten() {
                     lines.push(format!(
@@ -255,7 +255,10 @@ impl Workspace {
         self.send(
             ClientMessage::GetProfile {
                 request_id: crate::gateway::request_id(),
-                include_provider_usage: true,
+                parts: mobius_gateway::wire::ProfileParts {
+                    provider_usage: true,
+                    run_stats: false,
+                },
             },
             cx,
         );

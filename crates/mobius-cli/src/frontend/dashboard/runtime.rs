@@ -704,7 +704,10 @@ pub(super) async fn request_snapshot(sender: &GatewaySender) -> Result<()> {
     sender
         .send(ClientMessage::GetProfile {
             request_id: crate::fresh_id(),
-            include_provider_usage: false,
+            parts: mobius_gateway::wire::ProfileParts {
+                provider_usage: false,
+                run_stats: true,
+            },
         })
         .await
         .map_err(gateway_error)

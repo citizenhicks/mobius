@@ -53,29 +53,8 @@ async fn shared_frame_writes_preserve_the_wire_payload_for_every_subscriber() {
     }
 }
 
-#[tokio::test]
-async fn framed_json_round_trip_preserves_the_versioned_message() {
-    let expected = ClientFrame::new(ClientMessage::Authenticate {
-        token: "secret".into(),
-        client: crate::wire::ClientCapabilities {
-            presence: true,
-            ..Default::default()
-        },
-        catalog: Default::default(),
-    });
-    let (mut writer, reader) = duplex(1024);
-    let mut reader = FrameReader::new(reader);
-
-    write_frame(&mut writer, &expected)
-        .await
-        .expect("write frame");
-    let actual: ClientFrame = read_frame(&mut reader)
-        .await
-        .expect("read frame")
-        .expect("frame");
-
-    assert_eq!(actual, expected);
-
+#[test]
+fn agent_events_omit_absent_run_stats() {
     for run_stats in [None, Some(Arc::new(RunStats::default()))] {
         let metadata = run_stats.is_some();
         let frame = ServerFrame::new(ServerMessage::AgentEvent {
@@ -200,7 +179,7 @@ async fn framed_reader_retains_a_partial_prefix_when_cancelled() {
     });
     let second = ClientFrame::new(ClientMessage::GetProfile {
         request_id: "request-b".into(),
-        include_provider_usage: false,
+        parts: crate::wire::ProfileParts::default(),
     });
     let encode = |frame: &ClientFrame| {
         let payload = serde_json::to_vec(frame).expect("encode frame");

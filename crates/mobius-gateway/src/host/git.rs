@@ -18,7 +18,6 @@ use super::Rejection;
 // JSON can expand control bytes sixfold; one eighth leaves room for frame metadata.
 const MAX_GIT_DIFF_BYTES: usize = MAX_FRAME_BYTES / 8;
 const UNTRACKED_TOTALS_CONCURRENCY: usize = 8;
-const TRUNCATION_NOTE: &[u8] = b"[diff truncated]\n";
 const GIT_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CREDENTIAL_TARGET_BYTES: usize = 2 * 1024;
 const MAX_CREDENTIAL_USERNAME_BYTES: usize = 512;
@@ -371,19 +370,27 @@ async fn switch_branch_inner(
     }
 }
 
+pub(crate) struct DisplayDiff {
+    pub(crate) text: String,
+    pub(crate) truncated: bool,
+}
+
 pub(super) async fn diff(
     sandbox: &GatewaySandbox,
     workspace: &Path,
     scope: GitDiffScope,
-) -> std::result::Result<String, Rejection> {
+) -> std::result::Result<DisplayDiff, Rejection> {
     let mut diff = tokio::time::timeout(
         GIT_TIMEOUT,
         diff_inner(sandbox.git_operation(), workspace, scope, false),
     )
     .await
     .map_err(timeout)??;
-    truncate_diff(&mut diff, MAX_GIT_DIFF_BYTES);
-    Ok(String::from_utf8_lossy_owned(diff))
+    let truncated = truncate_diff(&mut diff, MAX_GIT_DIFF_BYTES);
+    Ok(DisplayDiff {
+        text: String::from_utf8_lossy_owned(diff),
+        truncated,
+    })
 }
 
 /// Exact line totals from Git's own counts, independent of the display patch budget.
@@ -573,18 +580,67 @@ fn append_diff(target: &mut Vec<u8>, patch: &[u8]) {
     target.extend_from_slice(patch);
 }
 
-/// Keep an oversized diff on a whole-line boundary within the gateway frame budget.
-fn truncate_diff(diff: &mut Vec<u8>, max_bytes: usize) {
+fn truncate_diff(diff: &mut Vec<u8>, max_bytes: usize) -> bool {
     if diff.len() <= max_bytes {
-        return;
+        return false;
     }
-    let content_bytes = max_bytes.saturating_sub(TRUNCATION_NOTE.len());
+    // Room for a rewritten header, which can be longer than the one it replaces.
+    let content_bytes = max_bytes.saturating_sub(64);
     let cut = diff
         .get(..content_bytes)
         .and_then(|content| content.iter().rposition(|byte| *byte == b'\n'))
         .map_or(0, |index| index + 1);
     diff.truncate(cut);
-    diff.extend_from_slice(TRUNCATION_NOTE);
+    let file_start = diff
+        .windows(12)
+        .rposition(|window| window == b"\ndiff --git ")
+        .map_or(0, |index| index + 1);
+    let file = diff.get(file_start..).unwrap_or_default();
+    let last_header = file.windows(4).rposition(|window| window == b"\n@@ ");
+    let Some(header) = last_header
+        .map(|index| file_start + index + 1)
+        .or_else(|| file.starts_with(b"@@ ").then_some(file_start))
+    else {
+        // The cut landed in a file header; keep only the preceding complete files.
+        diff.truncate(file_start);
+        return true;
+    };
+    let header_end = diff
+        .get(header..)
+        .and_then(|rest| rest.iter().position(|byte| *byte == b'\n'))
+        .map_or(diff.len(), |end| header + end + 1);
+    let (mut old, mut new) = (0_usize, 0_usize);
+    for line in diff
+        .get(header_end..)
+        .unwrap_or_default()
+        .split(|byte| *byte == b'\n')
+    {
+        match line.first() {
+            Some(b' ') => (old, new) = (old + 1, new + 1),
+            Some(b'-') => old += 1,
+            Some(b'+') => new += 1,
+            _ => {}
+        }
+    }
+    let line = String::from_utf8_lossy(diff.get(header..header_end).unwrap_or_default());
+    let rewritten = rewrite_hunk_header(&line, old, new);
+    if old + new == 0 {
+        diff.truncate(header);
+    } else if let Some(rewritten) = rewritten {
+        diff.splice(header..header_end, rewritten.into_bytes());
+    }
+    true
+}
+
+fn rewrite_hunk_header(header: &str, old: usize, new: usize) -> Option<String> {
+    let rest = header.strip_prefix("@@ -")?;
+    let (old_range, rest) = rest.split_once(" +")?;
+    let (new_range, context) = rest.split_once(" @@")?;
+    Some(format!(
+        "@@ -{},{old} +{},{new} @@{context}",
+        old_range.split(',').next()?,
+        new_range.split(',').next()?
+    ))
 }
 
 /// Sums `added<TAB>deleted<TAB>path` lines; binary files report `-` and add nothing.
@@ -685,6 +741,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_cut_diff_keeps_a_valid_last_hunk() {
+        let mut diff = b"--- a/x\n+++ b/x\n@@ -1,40 +1,40 @@ fn main\n".to_vec();
+        for line in 0..40 {
+            diff.extend_from_slice(format!("-old {line}\n+new {line}\n").as_bytes());
+        }
+        assert!(truncate_diff(&mut diff, 200));
+        let text = String::from_utf8(diff).unwrap();
+        let count = |sign| {
+            text.lines()
+                .skip(3)
+                .filter(|line| line.starts_with(sign))
+                .count()
+        };
+        let header = format!("@@ -1,{} +1,{} @@ fn main\n", count('-'), count('+'));
+        assert!(text.contains(&header), "{text}");
+        assert!(text.len() <= 200);
+
+        let complete = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n";
+        let partial = "diff --git a/y b/y\n--- a/y\n+++ b/y\n";
+        let mut diff = format!("{complete}{partial}{}", "metadata".repeat(30)).into_bytes();
+        assert!(truncate_diff(
+            &mut diff,
+            complete.len() + partial.len() + 64
+        ));
+        assert_eq!(String::from_utf8(diff).unwrap(), complete);
+    }
+
+    #[test]
     fn git_credential_protocol_accepts_https_and_rejects_injection() {
         assert_eq!(
             credential_target("git.example.com/team/repo").expect("target"),
@@ -778,7 +862,8 @@ mod tests {
         }
         let patch = diff(&sandbox, workspace.path(), GitDiffScope::Unstaged)
             .await
-            .expect("diff preview");
+            .expect("diff preview")
+            .text;
         assert!(patch.contains("+unstaged\n"), "{patch}");
         assert!(patch.contains("+new\n+file\n"), "{patch}");
     }

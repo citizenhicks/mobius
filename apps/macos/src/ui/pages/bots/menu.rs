@@ -88,7 +88,7 @@ impl Workspace {
             })
             .disabled(!ready),
         ];
-        if &*bot.handle != "mobius" {
+        if !bot.built_in {
             actions.push(
                 MenuAction::new("Delete Bot…", "hi.trash", move |this, window, cx| {
                     this.delete_bot(&delete, window, cx);

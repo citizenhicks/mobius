@@ -20,6 +20,7 @@ fn history_frame_bound_rejects_one_oversized_turn() {
                 content: crate::wire::TranscriptItemContent::Notice {
                     tone: mobius::protocol::FrontendTone::Warning,
                     text: "x".repeat(MAX_FRAME_BYTES).into(),
+                    failure: None,
                 },
             })],
             rows: Vec::new(),

@@ -34,27 +34,7 @@ impl Workspace {
                 message,
                 ..
             } => self.finish_request(request_id, Some(Arc::clone(message)), window, cx),
-            ServerMessage::BackgroundApprovals { .. }
-                if matches!(self.primary_page(), Some(PageTab::Bot(_))) =>
-            {
-                self.refresh_routines(cx);
-            }
-            ServerMessage::HookEvent { event }
-                if matches!(
-                    event.data,
-                    mobius_gateway::wire::HookData::RoutineCreated { .. }
-                        | mobius_gateway::wire::HookData::RoutineUpdated { .. }
-                        | mobius_gateway::wire::HookData::RoutinePaused { .. }
-                        | mobius_gateway::wire::HookData::RoutineResumed { .. }
-                        | mobius_gateway::wire::HookData::RoutineDeleted { .. }
-                        | mobius_gateway::wire::HookData::RunStarted { .. }
-                        | mobius_gateway::wire::HookData::RunFinished { .. }
-                        | mobius_gateway::wire::HookData::RunSkipped { .. }
-                        | mobius_gateway::wire::HookData::ScheduleDue { .. }
-                ) =>
-            {
-                self.refresh_routines(cx);
-            }
+            ServerMessage::RoutineChanged { .. } => cx.notify(),
             _ => {}
         }
     }
@@ -99,17 +79,13 @@ impl Workspace {
                     });
                     window.refresh();
                 }
-                if accepted {
-                    self.refresh_routines(cx);
-                }
             }
-            Pending::Routine | Pending::RunRoutine(_) => self.refresh_routines(cx),
             Pending::Install(source) => {
                 if rejection.is_some() {
                     self.install_dialog(&source, window, cx);
                 }
             }
-            Pending::Create(_) => {}
+            Pending::Routine | Pending::RunRoutine(_) | Pending::Create(_) => {}
         }
         cx.notify();
     }

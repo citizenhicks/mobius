@@ -116,7 +116,7 @@ impl Workspace {
         self.draft_bot
             .as_ref()
             .and_then(|id| bots.iter().find(|bot| bot.id == *id))
-            .or_else(|| bots.iter().find(|bot| &*bot.handle == "mobius"))
+            .or_else(|| bots.iter().find(|bot| bot.built_in))
             .or_else(|| bots.first())
     }
 

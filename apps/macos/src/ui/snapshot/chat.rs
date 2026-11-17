@@ -304,6 +304,7 @@ pub(super) const SCENARIOS: &[Scenario] = &[
         });
     }),
     ("chat-fixture-turn-changes", |this, window, cx| {
+        PROBES.with(|probes| probes.borrow_mut().remove("changes:open:0"));
         fixture(this, window, cx, |this, _, cx| {
             this.apply_fixture(Scene::Transcript, cx);
             let transcript = &this.client.state.transcript;

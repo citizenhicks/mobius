@@ -84,13 +84,16 @@ impl HostState {
             Some(TurnLifecycle::Started { .. }) | None => {}
         }
         let routine_completion = self.observe_routine_event(event);
-        if let Some((active, mut status, message)) = routine_completion {
+        if let Some((active, mut status, failure)) = routine_completion {
             if matches!(event.msg, EventMsg::TurnAborted(_))
                 && self.bots.storage.run_cancel_requested(active.run.id())?
             {
                 status = RoutineRunStatus::Cancelled;
             }
-            self.bots.finish_run(active.run, status, message)?;
+            let (message, class) = failure.map_or((None, None), |failure| {
+                (Some(failure.message), failure.class)
+            });
+            self.bots.finish_run(active.run, status, message, class)?;
         }
         if let Some(activity) = next_activity {
             self.set_activity(activity).await?;
@@ -177,13 +180,13 @@ impl HostState {
     pub(super) fn observe_routine_event(
         &mut self,
         event: &Event,
-    ) -> Option<(ActiveRoutine, RoutineRunStatus, Option<Arc<str>>)> {
+    ) -> Option<(ActiveRoutine, RoutineRunStatus, Option<super::TurnFailure>)> {
         let active = self.active_routine.as_mut()?;
         if let EventMsg::Error(error) = &event.msg {
             // Keep the first failure until a later completion event persists the routine result.
             active
                 .failure
-                .get_or_insert_with(|| Arc::clone(&error.message));
+                .get_or_insert_with(|| super::TurnFailure::of(error));
             return None;
         }
         let completion = match turn_lifecycle(&event.msg)? {
@@ -198,17 +201,23 @@ impl HostState {
                 abort_reason,
             } if active.turn_id.as_ref() == Some(turn_id) => {
                 Some(match (active.failure.take(), abort_reason) {
-                    (Some(message), _) => (RoutineRunStatus::Failed, Some(message)),
-                    (None, Some(reason)) => (RoutineRunStatus::Failed, Some(Arc::clone(reason))),
+                    (Some(failure), _) => (RoutineRunStatus::Failed, Some(failure)),
+                    (None, Some(reason)) => (
+                        RoutineRunStatus::Failed,
+                        Some(super::TurnFailure {
+                            message: Arc::clone(reason),
+                            class: None,
+                        }),
+                    ),
                     (None, None) => (RoutineRunStatus::Succeeded, None),
                 })
             }
             _ => None,
         };
-        let (status, message) = completion?;
+        let (status, failure) = completion?;
         self.active_routine
             .take()
-            .map(|active| (active, status, message))
+            .map(|active| (active, status, failure))
     }
 
     fn context_limit_tokens(&self) -> Option<i64> {
@@ -397,7 +406,7 @@ impl HostState {
                 ..SessionActivity::default()
             }),
             EventMsg::Error(error) if self.idle_turn.is_some() => {
-                self.turn_error = Some(Arc::clone(&error.message));
+                self.turn_error = Some(super::TurnFailure::of(error));
                 None
             }
             EventMsg::Error(error) if self.activity.state == SessionActivityState::Idle => {
@@ -405,11 +414,12 @@ impl HostState {
                 Some(SessionActivity {
                     last_outcome: Some(ExecutionOutcome::Failed),
                     message: Some(Arc::clone(&error.message)),
+                    failure: error.failure,
                     ..SessionActivity::default()
                 })
             }
             EventMsg::Error(error) => {
-                self.turn_error = Some(Arc::clone(&error.message));
+                self.turn_error = Some(super::TurnFailure::of(error));
                 None
             }
             EventMsg::TurnComplete(turn) if turn.idle => {
@@ -432,7 +442,10 @@ impl HostState {
                     } else {
                         ExecutionOutcome::Aborted
                     }),
-                    message: Some(error.unwrap_or_else(|| Arc::clone(&turn.reason))),
+                    failure: error.as_ref().and_then(|error| error.class),
+                    message: Some(
+                        error.map_or_else(|| Arc::clone(&turn.reason), |error| error.message),
+                    ),
                     ..SessionActivity::default()
                 })
             }
@@ -535,7 +548,10 @@ impl HostState {
 const MAX_ACTIVITY_MESSAGE_BYTES: usize = 512;
 const MESSAGE_PINS_KEY: &str = "message_pins.v1";
 
-fn completed_activity(error: Option<Arc<str>>, final_answer: Option<&str>) -> SessionActivity {
+fn completed_activity(
+    error: Option<super::TurnFailure>,
+    final_answer: Option<&str>,
+) -> SessionActivity {
     let failed = error.is_some();
     SessionActivity {
         last_outcome: Some(if failed {
@@ -543,7 +559,10 @@ fn completed_activity(error: Option<Arc<str>>, final_answer: Option<&str>) -> Se
         } else {
             ExecutionOutcome::Completed
         }),
-        message: error.or_else(|| final_answer.map(bounded_activity_message)),
+        failure: error.as_ref().and_then(|error| error.class),
+        message: error
+            .map(|error| error.message)
+            .or_else(|| final_answer.map(bounded_activity_message)),
         ..SessionActivity::default()
     }
 }

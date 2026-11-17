@@ -50,6 +50,7 @@ pub(in crate::ui) struct RoutineForm {
     pub(super) duration_unit: usize,
     /// Bindings retained when this existing routine has no timer the editor changes.
     pub(super) saved_triggers: Option<usize>,
+    pub(super) min_interval_seconds: u64,
 }
 
 pub(super) enum SaveState {
@@ -69,12 +70,8 @@ pub(super) struct Inputs {
     pub(super) zone: Entity<SelectState<SearchableVec<String>>>,
 }
 
-/// Invalid or overflowing numeric input follows the same disabled-save path as other form errors.
 fn interval_seconds(text: &str, unit: u64) -> Option<u64> {
-    text.parse::<u64>()
-        .ok()?
-        .checked_mul(unit)
-        .filter(|seconds| *seconds >= 60)
+    text.parse::<u64>().ok()?.checked_mul(unit)
 }
 
 fn duration_end(text: &str, unit: i64, now: i64) -> Option<i64> {
@@ -103,6 +100,7 @@ impl RoutineForm {
         routine: Option<&Routine>,
         workspaces: &[SharedString],
         inputs: Inputs,
+        min_interval_seconds: u64,
     ) -> Self {
         let timer = routine.and_then(|routine| scheduled_start(&routine.bindings));
         let schedule = timer.map(|(_, schedule, _)| schedule);
@@ -130,6 +128,7 @@ impl RoutineForm {
                 .unwrap_or_default(),
             mode,
             unit: interval_unit(interval(routine)),
+            min_interval_seconds,
             weekday: parsed.and_then(|cron| cron.weekday).unwrap_or(1),
             ends: if timer.and_then(|(_, _, ends_at)| ends_at).is_some() {
                 2
@@ -265,7 +264,8 @@ impl Inputs {
             }),
             Mode::Every => {
                 let (_, unit) = UNITS.get(form.unit)?;
-                let seconds = interval_seconds(&text(&self.every, cx), *unit)?;
+                let seconds = interval_seconds(&text(&self.every, cx), *unit)
+                    .filter(|seconds| *seconds >= form.min_interval_seconds)?;
                 Some(RoutineSchedule {
                     every_seconds: Some(seconds),
                     ..schedule(RoutineScheduleKind::Interval)

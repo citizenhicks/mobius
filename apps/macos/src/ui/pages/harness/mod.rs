@@ -1,6 +1,3 @@
-//! Harnesses, the runtimes a Bot runs on. This release runs only möbius Bots; other harness
-//! records remain visible without offering unavailable actions.
-
 mod rows;
 
 pub(in crate::ui) use rows::{Choice, option_menu};
@@ -26,14 +23,19 @@ pub(in crate::ui) const fn name(kind: HarnessKind) -> &'static str {
     }
 }
 
-/// This release runs Bots only on the möbius harness.
-pub(in crate::ui) const fn available(kind: HarnessKind) -> bool {
-    matches!(kind, HarnessKind::Mobius)
-}
+impl Workspace {
+    pub(in crate::ui) fn harness_available(&self, kind: HarnessKind) -> bool {
+        self.client
+            .state
+            .gateway
+            .as_ref()
+            .is_some_and(|gateway| gateway.harnesses.iter().any(|harness| harness.kind == kind))
+    }
 
-/// Why a Bot on another harness cannot run in this release.
-pub(in crate::ui) fn unavailable(kind: HarnessKind) -> Option<String> {
-    (!available(kind)).then(|| format!("{} isn’t available on this gateway", name(kind)))
+    pub(in crate::ui) fn harness_unavailable(&self, kind: HarnessKind) -> Option<String> {
+        (!self.harness_available(kind))
+            .then(|| format!("{} isn’t available on this gateway", name(kind)))
+    }
 }
 
 /// The möbius rail entry's groups, each disclosing its rows while one of its pages is open.
@@ -127,17 +129,5 @@ impl Workspace {
             MobiusGroup::Extensions => PageTab::Extensions,
             MobiusGroup::Defaults => PageTab::AgentDefaults(AgentSection::Prompt),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn this_release_does_not_enable_cli_harnesses() {
-        assert!(available(HarnessKind::Mobius));
-        assert!(!available(HarnessKind::Codex));
-        assert!(!available(HarnessKind::Claude));
     }
 }

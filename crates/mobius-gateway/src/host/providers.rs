@@ -370,6 +370,7 @@ impl GatewayHost {
         &self,
         scope: ProviderRefresh<'_>,
     ) -> std::result::Result<(), Rejection> {
+        self.provider_usage.invalidate();
         let _credentials = self.begin_credential_mutation().await;
         let state = self.state.lock().await;
         let voices = {
@@ -490,6 +491,7 @@ impl GatewayHost {
         if !changed {
             return gateway_ready_after_unlock(state).await;
         }
+        self.provider_usage.invalidate();
         if let Some(target_epoch) = target_epoch {
             state.provider_epoch.store(target_epoch, Ordering::Release);
         }
@@ -545,6 +547,7 @@ impl GatewayHost {
             crate::publication::Outcome::applied(commit_provider_removal(&state, &instance, next))
                 .map_err(internal)?;
         state.provider_epoch.store(target_epoch, Ordering::Release);
+        self.provider_usage.invalidate();
         let follow_up = self.publish_ready_after_unlock(state).await;
         finish_publication(publication.confirm(), follow_up)
     }

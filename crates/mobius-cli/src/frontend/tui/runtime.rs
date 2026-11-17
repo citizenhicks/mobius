@@ -50,7 +50,6 @@ const RECONNECT_BACKOFF: [Duration; 5] = [
 const RECONNECT_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 const FRAME_INTERVAL: Duration = Duration::from_millis(16);
 const CLEAR_SCREEN_AND_SCROLLBACK: &str = "\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H";
-const FILE_READ_CHUNK_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, PartialEq, Eq)]
 struct PendingSessionCreation {
@@ -1157,7 +1156,7 @@ async fn start_file_download(
         session_id: session_id.share(),
         file_id: file.id.clone(), // rules-allow: the wire message and the pending download each own the file id
         offset: 0,
-        max_bytes: FILE_READ_CHUNK_BYTES,
+        max_bytes: mobius_gateway::wire::MAX_READ_CHUNK_BYTES,
     };
     if let Err(error) = sender.send(request).await {
         drop(output);
@@ -1256,7 +1255,7 @@ async fn handle_file_download_message(
                     session_id: download.session_id.share(),
                     file_id: download.file.id.clone(), // rules-allow: the wire message and the pending download each own the file id
                     offset: *offset,
-                    max_bytes: FILE_READ_CHUNK_BYTES,
+                    max_bytes: mobius_gateway::wire::MAX_READ_CHUNK_BYTES,
                 };
                 if let Err(error) = sender.send(request).await {
                     fail_file_download(state, &error.to_string()).await;

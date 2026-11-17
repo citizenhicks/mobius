@@ -79,7 +79,7 @@ struct HostState {
     approval_active: bool,
     compacted_in_turn: bool,
     idle_turn: Option<Arc<str>>,
-    turn_error: Option<Arc<str>>,
+    turn_error: Option<TurnFailure>,
     last_assistant_text: Option<String>,
     pending_startup: Vec<SharedFrame>,
     active_routine: Option<ActiveRoutine>,
@@ -121,7 +121,21 @@ pub(super) struct ActiveRoutine {
     pub(super) run: ActiveRoutineRun,
     pub(super) submission_id: Arc<str>,
     pub(super) turn_id: Option<Arc<str>>,
-    pub(super) failure: Option<Arc<str>>,
+    pub(super) failure: Option<TurnFailure>,
+}
+
+pub(super) struct TurnFailure {
+    pub(super) message: Arc<str>,
+    pub(super) class: Option<mobius::FailureClass>,
+}
+
+impl TurnFailure {
+    pub(super) fn of(error: &mobius::protocol::ErrorEvent) -> Self {
+        Self {
+            message: Arc::clone(&error.message),
+            class: error.failure,
+        }
+    }
 }
 
 /// The run state gateway code reads from a session's durable checkpoint.
@@ -589,7 +603,7 @@ impl HostHandle {
     pub(crate) async fn git_diff(
         &self,
         scope: GitDiffScope,
-    ) -> std::result::Result<String, Rejection> {
+    ) -> std::result::Result<super::git::DisplayDiff, Rejection> {
         let (sandbox, workspace) = self.git_workspace().await?;
         workspace_git_diff(&sandbox, &workspace, scope).await
     }
@@ -709,6 +723,7 @@ impl HostHandle {
                 run,
                 RoutineRunStatus::Failed,
                 Some("the agent stopped before the Bot routine began".into()),
+                None,
             )
             .map_err(internal)?;
             return Err(stopped());
@@ -859,8 +874,13 @@ pub(super) fn fail_active_routine(
     let Some(active) = active.take() else {
         return Ok(());
     };
-    bots.finish_run(active.run, RoutineRunStatus::Failed, Some(message.into()))
-        .map(|_| ())
+    bots.finish_run(
+        active.run,
+        RoutineRunStatus::Failed,
+        Some(message.into()),
+        None,
+    )
+    .map(|_| ())
 }
 
 async fn shutdown_agent(mut agent: Box<dyn HarnessSession>) {

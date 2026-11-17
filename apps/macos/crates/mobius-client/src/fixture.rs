@@ -142,13 +142,14 @@ impl Script {
         not(feature = "snapshot"),
         expect(dead_code, reason = "only snapshot scenes build this")
     )]
-    pub fn error(&mut self, text: &str) {
+    pub fn error(&mut self, text: &str, failure: Option<mobius::FailureClass>) {
         let msg = EventMsg::Error(ErrorEvent {
             kind: ErrorKind::Provider,
             message: text.into(),
             retryable: true,
             status: None,
             retry_after: None,
+            failure,
         });
         self.apply(None, msg, Vec::new());
     }

@@ -73,7 +73,7 @@ async fn computer_view_follows_local_and_encrypted_connection_authority() {
         let mut bytes = Vec::new();
         view.write_catalog(
             &mut bytes,
-            ServerFrame::new(ServerMessage::Ready { payload }),
+            Arc::new(ServerFrame::new(ServerMessage::Ready { payload })),
         )
         .await
         .unwrap();
@@ -81,10 +81,12 @@ async fn computer_view_follows_local_and_encrypted_connection_authority() {
             .await
             .unwrap()
             .unwrap();
-        let ServerMessage::Ready { payload } = frame.message else {
+        let ServerMessage::Ready { mut payload } = frame.message else {
             panic!("ready");
         };
         assert_eq!(payload.computer_view, expected);
+        payload.computer_view = ready.computer_view;
+        assert_eq!(payload, ready);
     }
     server.host.shutdown().await;
 }

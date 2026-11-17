@@ -97,9 +97,11 @@ mod desktop_bytes {
 }
 
 /// Current gateway protocol version.
-pub const PROTOCOL_VERSION: u16 = 103;
+pub const PROTOCOL_VERSION: u16 = 104;
 /// Maximum raw RFB payload in one desktop data frame.
 pub const MAX_DESKTOP_CHUNK_BYTES: usize = 16 * 1024;
+/// The largest file read one request may ask for, stored or workspace.
+pub use mobius::backend::session_files::MAX_READ_CHUNK_BYTES;
 /// Maximum encoded JSON payload accepted in one frame.
 pub const MAX_FRAME_BYTES: usize = 50 * 1024 * 1024;
 /// Maximum encoded authentication frame, and the first encrypted WebSocket record.

@@ -184,10 +184,10 @@ pub(super) async fn write_gateway_result(
         Ok(payload) => {
             view.write_catalog(
                 writer,
-                ServerFrame::new(ServerMessage::GatewayConfigured {
+                Arc::new(ServerFrame::new(ServerMessage::GatewayConfigured {
                     request_id,
                     payload,
-                }),
+                })),
             )
             .await
         }

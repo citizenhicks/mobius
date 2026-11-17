@@ -69,7 +69,7 @@ async fn runtime_activity_tracks_reservations_and_pending_deliveries() {
         !gateway.runtime_activity().await.unwrap().idle,
         "reserved work has no session yet"
     );
-    bots.finish_run(run, RoutineRunStatus::Succeeded, None)
+    bots.finish_run(run, RoutineRunStatus::Succeeded, None, None)
         .unwrap();
     assert!(
         !gateway.runtime_activity().await.unwrap().idle,
@@ -105,7 +105,7 @@ async fn runtime_activity_tracks_reservations_and_pending_deliveries() {
         let BeginRun::Started(run) = bots.begin_run(&routine.id).unwrap() else {
             panic!("run reserved during the idle query");
         };
-        bots.finish_run(run, RoutineRunStatus::Succeeded, None)
+        bots.finish_run(run, RoutineRunStatus::Succeeded, None, None)
             .unwrap();
         reply.send(Ok(true)).unwrap();
     });

@@ -387,7 +387,7 @@ impl Workspace {
                 .control(muted(voices.collect::<Vec<_>>().join(", ")))
         });
         let base_url = StackedField::new("Base URL").control(text_field(&editor.base_url));
-        let discovery = match tool_discovery(editor, cx) {
+        let discovery = match editor.record.tool_discovery {
             ToolDiscoveryMode::Native => "Native dynamic tools",
             ToolDiscoveryMode::Rebuild => "Rebuilds context · cache miss",
         };
@@ -598,29 +598,6 @@ impl Workspace {
             cx.notify();
         }
     }
-}
-
-/// How the setup's selected model receives tools discovered mid-turn: a custom endpoint
-/// may override the catalog, then the model, then the provider default.
-fn tool_discovery(editor: &ProviderDraft, cx: &App) -> ToolDiscoveryMode {
-    let definition = &editor.definition;
-    let base_url = editor.base_url.read(cx).value();
-    let base_url = base_url.trim();
-    let custom = !base_url.is_empty() && base_url != definition.default_base_url.as_str();
-    if custom && let Some(mode) = definition.custom_endpoint_tool_discovery {
-        return mode;
-    }
-    let model = editor
-        .models
-        .first()
-        .map_or(editor.record.selection.model.as_str(), |model| {
-            model.id.as_ref()
-        });
-    definition
-        .models
-        .iter()
-        .find(|preset| preset.id == model)
-        .map_or(definition.tool_discovery, |preset| preset.tool_discovery)
 }
 
 /// `current` while it is still offered, else the first effort; `None` without efforts.

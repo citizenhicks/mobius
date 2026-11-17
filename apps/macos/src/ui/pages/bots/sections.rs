@@ -150,7 +150,7 @@ impl Workspace {
         let mut harness_row = Row::new("identity-harness", "Harness")
             .subtitle("Chosen when the Bot was created; it can’t change.")
             .value(crate::ui::pages::harness::name(harness));
-        if !crate::ui::pages::harness::available(harness) {
+        if !self.harness_available(harness) {
             harness_row = harness_row.status(self.palette.warning, "Not available on this gateway");
         }
         // Each picker's 'static listener needs a scope of its own.

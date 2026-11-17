@@ -1,13 +1,7 @@
-//! Patch text for gpui-component's strict diff parser. Git diffs and turn changes are
-//! rewritten as one unified diff whose hunk counts match the lines that arrived, so a diff
-//! cut at the transfer limit still parses.
-
 use crate::gateway::TranscriptEntry;
 use gpui_component::diff::DiffFile;
 use mobius::protocol::FrontendBlockFormat;
-use std::fmt::Write as _;
-
-const TRUNCATED: &str = "[diff truncated]";
+use std::borrow::Cow;
 
 pub struct DiffDocument {
     pub files: Vec<DiffFile>,
@@ -24,22 +18,17 @@ impl std::fmt::Debug for DiffDocument {
 }
 
 impl DiffDocument {
-    pub fn parse(source: &str) -> Self {
-        Self::parse_in(source, "")
-    }
-
     /// Parses `source`, naming files inside `root` relative to it.
-    pub fn parse_in(source: &str, root: &str) -> Self {
-        let mut patch = Patch {
-            root: root.trim_end_matches('/'),
-            ..Patch::default()
+    pub fn parse_in(source: &str, root: &str, truncated: bool) -> Self {
+        let root = root.trim_end_matches('/');
+        let patch = if root.is_empty() {
+            Cow::Borrowed(source)
+        } else {
+            Cow::Owned(relative_paths(source, root))
         };
-        if let Err(error) = patch.feed(source) {
-            tracing::warn!(%error, "the diff text could not be written");
-        }
         Self {
-            files: DiffFile::parse(&patch.out).unwrap_or_default(),
-            truncated: patch.truncated,
+            files: DiffFile::parse(&patch).unwrap_or_default(),
+            truncated,
         }
     }
 
@@ -50,7 +39,7 @@ impl DiffDocument {
                 entry
                     .block()
                     .filter(|block| block.format == FrontendBlockFormat::UnifiedDiff)
-                    .map(|block| Self::parse(&block.text))
+                    .map(|block| Self::parse_in(&block.text, "", false))
             })
             .and_then(Option::as_ref)
     }
@@ -64,136 +53,62 @@ impl DiffDocument {
     }
 }
 
+fn relative_paths(source: &str, root: &str) -> String {
+    let mut out = String::with_capacity(source.len());
+    let mut remaining = (0_usize, 0_usize);
+    for line in source.lines() {
+        let body = match line.as_bytes().first() {
+            Some(b' ') if remaining.0 > 0 && remaining.1 > 0 => {
+                remaining = (remaining.0 - 1, remaining.1 - 1);
+                true
+            }
+            Some(b'-') if remaining.0 > 0 => {
+                remaining.0 -= 1;
+                true
+            }
+            Some(b'+') if remaining.1 > 0 => {
+                remaining.1 -= 1;
+                true
+            }
+            _ => false,
+        };
+        if body {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        if let Some(header) = line.strip_prefix("@@ -") {
+            let count = |range: &str| {
+                range
+                    .split_once(',')
+                    .map_or(Some(1), |(_, count)| count.parse().ok())
+                    .unwrap_or(0)
+            };
+            let mut ranges = header.split_whitespace();
+            remaining = (
+                count(ranges.next().unwrap_or_default()),
+                count(ranges.next().unwrap_or_default()),
+            );
+        }
+        let path = ["--- ", "+++ ", "rename from ", "rename to "]
+            .into_iter()
+            .find_map(|prefix| Some((prefix, line.strip_prefix(prefix)?)));
+        match path {
+            Some((prefix, path)) => {
+                out.push_str(prefix);
+                out.push_str(relative(root, path));
+            }
+            None => out.push_str(line),
+        }
+        out.push('\n');
+    }
+    out
+}
+
 fn relative<'p>(root: &str, path: &'p str) -> &'p str {
-    (!root.is_empty())
-        .then(|| path.strip_prefix(root)?.strip_prefix('/'))
-        .flatten()
+    path.strip_prefix(root)
+        .and_then(|path| path.strip_prefix('/'))
         .unwrap_or(path)
-}
-
-#[derive(Default)]
-struct Hunk<'a> {
-    old: usize,
-    new: usize,
-    context: &'a str,
-    lines: Vec<&'a str>,
-    /// Lines the header still promises on each side; a cut hunk ends early.
-    promised: (usize, usize),
-}
-
-#[derive(Default)]
-struct Patch<'a> {
-    root: &'a str,
-    out: String,
-    hunk: Option<Hunk<'a>>,
-    truncated: bool,
-}
-
-impl<'a> Patch<'a> {
-    fn feed(&mut self, source: &'a str) -> std::fmt::Result {
-        for line in source.lines() {
-            let line = line.trim_suffix('\r');
-            if line == TRUNCATED {
-                self.truncated = true;
-            } else {
-                self.unified_line(line)?;
-            }
-        }
-        self.flush_hunk()
-    }
-
-    fn unified_line(&mut self, line: &'a str) -> std::fmt::Result {
-        if let Some(hunk) = &mut self.hunk {
-            let (old, new) = &mut hunk.promised;
-            let body = match line.as_bytes().first() {
-                Some(b'\\') => Some(line),
-                // Transports may strip the space from an empty context line.
-                Some(b' ') | None if *old > 0 && *new > 0 => {
-                    (*old, *new) = (*old - 1, *new - 1);
-                    Some(if line.is_empty() { " " } else { line })
-                }
-                Some(b'-') if *old > 0 => {
-                    *old -= 1;
-                    Some(line)
-                }
-                Some(b'+') if *new > 0 => {
-                    *new -= 1;
-                    Some(line)
-                }
-                _ => None,
-            };
-            if let Some(body) = body {
-                hunk.lines.push(body);
-                return Ok(());
-            }
-        }
-        self.flush_hunk()?;
-        if line.starts_with("@@") {
-            let range = |sign| -> (usize, usize) {
-                let mut range = line
-                    .split(' ')
-                    .find_map(|field| field.strip_prefix(sign))
-                    .unwrap_or_default()
-                    .split(',')
-                    .map(|value| value.parse().unwrap_or(0));
-                (range.next().unwrap_or(1), range.next().unwrap_or(1))
-            };
-            let ((old, old_count), (new, new_count)) = (range('-'), range('+'));
-            let context = line.get(2..).and_then(|rest| rest.split_once("@@"));
-            self.hunk = Some(Hunk {
-                old,
-                new,
-                context: context.map_or("", |(_, context)| context),
-                lines: Vec::new(),
-                promised: (old_count, new_count),
-            });
-            return Ok(());
-        }
-        for prefix in ["--- ", "+++ ", "rename from ", "rename to "] {
-            if let Some(path) = line.strip_prefix(prefix) {
-                writeln!(self.out, "{prefix}{}", relative(self.root, path))?;
-                return Ok(());
-            }
-        }
-        if !line.is_empty() {
-            writeln!(self.out, "{line}")?;
-        }
-        Ok(())
-    }
-
-    /// Writes the hunk with counts taken from its lines.
-    fn flush_hunk(&mut self) -> std::fmt::Result {
-        let Some(hunk) = self.hunk.take() else {
-            return Ok(());
-        };
-        let count = |sign| {
-            hunk.lines
-                .iter()
-                .filter(|line| line.starts_with([' ', sign]))
-                .count()
-        };
-        let (old, new) = (count('-'), count('+'));
-        if old + new == 0 {
-            return Ok(());
-        }
-        let fits = |start: usize, count| start.checked_add(count)?.checked_add(1);
-        if fits(hunk.old, old).is_none() || fits(hunk.new, new).is_none() {
-            self.truncated = true;
-            return Ok(());
-        }
-        let start = |line: usize, count| if count == 0 { line } else { line.max(1) };
-        writeln!(
-            self.out,
-            "@@ -{},{old} +{},{new} @@{}",
-            start(hunk.old, old),
-            start(hunk.new, new),
-            hunk.context
-        )?;
-        for line in &hunk.lines {
-            writeln!(self.out, "{line}")?;
-        }
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -201,21 +116,30 @@ mod tests {
     use super::DiffDocument;
 
     #[test]
-    fn a_truncated_hunk_keeps_the_lines_that_arrived() {
-        let document = DiffDocument::parse(
-            "diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1,9 +1,9 @@\n-old\n+new\n[diff truncated]\n",
+    fn files_inside_the_chat_folder_are_named_relative_to_it() {
+        let document = DiffDocument::parse_in(
+            "--- /srv/app/x\n+++ /srv/app/x\n@@ -1 +1 @@\n-old\n+new\n",
+            "/srv/app/",
+            false,
         );
-        assert!(document.truncated);
-        assert_eq!((document.added(), document.removed()), (1, 1));
+        let paths: Vec<String> = document
+            .files
+            .iter()
+            .map(|file| file.path().to_string())
+            .collect();
+        assert_eq!(paths, ["x"]);
     }
 
     #[test]
-    fn overflowing_line_numbers_cannot_crash_the_diff_view() {
-        let document = DiffDocument::parse(&format!(
-            "--- a/x\n+++ b/x\n@@ -{},2 +1,2 @@\n a\n b\n",
-            usize::MAX
-        ));
-        assert!(document.truncated);
-        assert_eq!((document.added(), document.removed()), (0, 0));
+    fn header_like_source_lines_keep_their_contents() {
+        let source = "--- /srv/app/x\n+++ /srv/app/x\n@@ -1 +1 @@\n--- /srv/app/old\n+++ /srv/app/new\n--- /srv/app/y\n+++ /srv/app/y\n@@ -1 +1 @@\n-before\n+after\n";
+        let expected = "--- x\n+++ x\n@@ -1 +1 @@\n--- /srv/app/old\n+++ /srv/app/new\n--- y\n+++ y\n@@ -1 +1 @@\n-before\n+after\n";
+        assert_eq!(super::relative_paths(source, "/srv/app"), expected);
+        assert_eq!(
+            DiffDocument::parse_in(source, "/srv/app", false)
+                .files
+                .len(),
+            2
+        );
     }
 }

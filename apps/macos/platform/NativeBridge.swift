@@ -19,9 +19,11 @@ public func nativeConfigureText() {
 
 /// Native events for Rust.
 extension JSONValue {
-    /// Shown as a toast.
-    static func error(_ message: String) -> JSONValue {
-        .object(["type": .string("error"), "message": .string(message)])
+    /// Shown as a toast; a gateway-classified provider `failure` is put in plain words.
+    static func error(_ message: String, failure: String? = nil) -> JSONValue {
+        var event: [String: JSONValue] = ["type": .string("error"), "message": .string(message)]
+        if let failure { event["failure"] = .string(failure) }
+        return .object(event)
     }
 
     /// Asks Rust to render again.

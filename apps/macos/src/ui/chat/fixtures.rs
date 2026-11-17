@@ -46,20 +46,23 @@ fn file(name: &str, size: u64, media_type: &str) -> SessionFileReference {
 }
 
 const DIFF: &str = "--- a/src/ui/chat/composer.rs\n+++ b/src/ui/chat/composer.rs\n\
-@@ -12,4 +12,6 @@\n-const ROW_INSET: f32 = 4.;\n+/// ComposerSurface's icon row inset.\n\
+@@ -12,2 +12,4 @@\n-const ROW_INSET: f32 = 4.;\n+/// ComposerSurface's icon row inset.\n\
 +const ROW_INSET: Pixels = px(6.);\n+\n fn overlapped() {}\n";
 
 /// A finished turn (collapsing into Worked for) and a live one with tools and a diff.
 fn transcript(running: bool) -> TranscriptStore {
     let mut script = Script::default();
     done_turn(&mut script);
-    script.error("The provider rate limit was reached; retrying in 20 seconds.");
+    script.error(
+        "The provider rate limit was reached; retrying in 20 seconds.",
+        None,
+    );
     live_turn(&mut script, running);
     script.store()
 }
 
 pub(in crate::ui) const CODING_DIFF: &str = "--- a/src/ui/navigation/recaps.rs\n+++ b/src/ui/navigation/recaps.rs\n\
-@@ -48,9 +48,12 @@ impl Recaps {\n     pub(super) fn button_state(&self, catalog: &CatalogState) -> Glyph {\n\
+@@ -48,8 +48,10 @@ impl Recaps {\n     pub(super) fn button_state(&self, catalog: &CatalogState) -> Glyph {\n\
 -        if catalog.unread.is_empty() {\n-            return Glyph::Idle;\n-        }\n\
 +        // The catalog settles after the turn ends: wait for it before showing news.\n\
 +        if !catalog.tracking || catalog.unread.is_empty() {\n+            return Glyph::Idle;\n+        }\n\
@@ -343,9 +346,9 @@ const ENVELOPE: &str = "*** Begin Patch\n*** Update File: src/ui/chat/pills.rs\n
 fn patch_diff(root: &str) -> String {
     let path = format!("{root}/src/ui/transcript/mod.rs");
     let mut diff = format!(
-        "--- {path}\n+++ {path}\n@@ -40,6 +40,7 @@\n     fn file_row(&self) {{\n\
+        "--- {path}\n+++ {path}\n@@ -40,4 +40,5 @@\n     fn file_row(&self) {{\n\
 -        div().flex().gap(space::S)\n+        div()\n+            .flex_wrap()\n\
-             .children(files)\n     }}\n@@ -120,3 +121,52 @@\n impl Workspace {{\n"
+             .children(files)\n     }}\n@@ -120,2 +121,50 @@\n impl Workspace {{\n"
     );
     diff.extend((0..48).map(|line| format!("+    // tile {line}: same height, same gap\n")));
     diff.push_str(" }\n");
@@ -582,9 +585,11 @@ fn token_usage() -> TokenUsageInfo {
         kind,
         tokens,
         items,
+        counted: kind != DeferredTools,
     };
     TokenUsageInfo {
         total_token_usage: usage,
+        context_used: usage.context_used(),
         last_token_usage: usage,
         model_context_window: Some(270_000),
         context: Some(ContextBreakdown {
@@ -599,7 +604,9 @@ fn token_usage() -> TokenUsageInfo {
                 part(ToolCalls, 200, 18),
                 part(DeferredTools, 4_100, 37),
             ],
+            used: 30_000,
             compaction_buffer: 33_750,
+            free: 206_250,
         }),
     }
 }
@@ -840,15 +847,9 @@ impl Workspace {
     pub(in crate::ui) fn fixture_provider_issue(&mut self, cx: &mut Context<Self>) {
         let mut script = Script::default();
         script.user("fixture-ask", "Hey", MessageDelivery::Turn, Vec::new());
-        script.block(
-            "tools",
-            FrontendBlock {
-                id: Some("provider-error".into()),
-                role: FrontendBlockRole::Notice,
-                text: "provider error: Responses HTTP 401 Unauthorized: API key rejected.".into(),
-                tone: FrontendTone::Error,
-                ..FrontendBlock::default()
-            },
+        script.error(
+            "provider error: Responses HTTP 401 Unauthorized: API key rejected.",
+            Some(mobius::FailureClass::Authentication),
         );
         self.client.state.transcript = script.store();
         self.gateway_revision += 1;

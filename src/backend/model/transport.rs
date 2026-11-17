@@ -714,6 +714,13 @@ mod tests {
         use crate::FailureClass::*;
         for (status, body, class) in [
             (401, serde_json::json!({}), Authentication),
+            (402, serde_json::json!({}), OutOfCredits),
+            (403, serde_json::json!({}), Forbidden),
+            (
+                400,
+                serde_json::json!({"error":{"message":"This request requires more credits"}}),
+                OutOfCredits,
+            ),
             (
                 429,
                 serde_json::json!({"error":{"code":"insufficient_quota"}}),

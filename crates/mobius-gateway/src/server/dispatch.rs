@@ -14,7 +14,7 @@ use mobius::backend::session_files::{SessionFileOrigin as StoredFileOrigin, Sess
 use mobius::protocol::{MessageAuthor, MessageTarget, Submission};
 use std::future::Future;
 
-use crate::wire::{GitDiffScope, WorkspaceFileScope};
+use crate::wire::{GitDiffScope, ProfileParts, WorkspaceFileScope};
 
 pub(super) struct SelectedChat {
     pub(super) host: HostHandle,
@@ -54,7 +54,8 @@ pub(super) struct ConnectionSessionState<'a> {
         &'a mut Option<crate::computer_runtime::remote_desktop::DesktopStream>,
     pub(super) pending_desktop_control: &'a mut Option<super::desktop::PendingControl>,
     pub(super) pending_profile: &'a mut Option<super::transport::PendingProfile>,
-    pub(super) queued_profile: &'a mut Option<(Arc<str>, bool)>,
+    pub(super) queued_profile: &'a mut Option<(Arc<str>, ProfileParts)>,
+    pub(super) readable: &'a mut Option<SessionId>,
 }
 
 pub(super) async fn selected_broadcast(
@@ -161,13 +162,10 @@ pub(super) async fn handle_message(
             };
             return configure_telemetry(writer, request_id, update, operator, gateway).await;
         }
-        ClientMessage::GetProfile {
-            request_id,
-            include_provider_usage,
-        } => {
+        ClientMessage::GetProfile { request_id, parts } => {
             return super::transport::request_profile(
                 request_id,
-                include_provider_usage,
+                parts,
                 gateway,
                 connection.pending_profile,
                 connection.queued_profile,
@@ -430,9 +428,7 @@ pub(super) async fn handle_message(
             request_id,
             session_id,
         } => {
-            let selected = connection.selected.as_ref();
-            let files = connection.session_files;
-            return list_session_files(writer, selected, files, request_id, session_id).await;
+            return list_session_files(writer, &mut connection, request_id, session_id).await;
         }
         ClientMessage::ReadSessionFile {
             request_id,
@@ -446,9 +442,7 @@ pub(super) async fn handle_message(
                 offset,
                 max_bytes,
             };
-            let selected = connection.selected.as_ref();
-            let files = connection.session_files;
-            return read_session_file(writer, selected, files, request_id, session_id, read).await;
+            return read_session_file(writer, &mut connection, request_id, session_id, read).await;
         }
         ClientMessage::CreateBot {
             request_id,
@@ -509,6 +503,14 @@ pub(super) async fn handle_message(
                 .configure_bot_defaults(expected_revision, config)
                 .await;
             return write_gateway_result(writer, connection.view, request_id, configured).await;
+        }
+        ClientMessage::SwitchBotModels {
+            request_id,
+            instance,
+            from,
+            to,
+        } => {
+            return switch_bot_models(writer, gateway, request_id, &instance, &from, &to).await;
         }
         ClientMessage::ConfigureHarness {
             request_id,
@@ -1470,15 +1472,46 @@ async fn finish_session_file_upload(
     }
 }
 
+async fn authorize_stored_read(
+    connection: &mut ConnectionSessionState<'_>,
+    session_id: &SessionId,
+) -> std::result::Result<(), Rejection> {
+    let selected = connection
+        .selected
+        .as_ref()
+        .is_some_and(|selected| **selected.host.session_id() == **session_id);
+    if selected || connection.readable.as_ref() == Some(session_id) {
+        return Ok(());
+    }
+    connection.gateway.authorize_read(session_id).await?;
+    *connection.readable = Some(session_id.share());
+    Ok(())
+}
+
+async fn switch_bot_models(
+    writer: &mut (impl AsyncWrite + Unpin),
+    gateway: &GatewayHost,
+    request_id: Arc<str>,
+    instance: &str,
+    from: &[String],
+    to: &str,
+) -> Result<()> {
+    let switched = gateway.switch_bot_models(instance, from, to).await;
+    respond(writer, request_id, switched, |request_id, switch| {
+        ServerMessage::BotModelsSwitched { request_id, switch }
+    })
+    .await
+}
+
 async fn list_session_files(
     writer: &mut (impl AsyncWrite + Unpin),
-    selected: Option<&SelectedChat>,
-    session_files: &SessionFileStore,
+    connection: &mut ConnectionSessionState<'_>,
     request_id: Arc<str>,
     session_id: SessionId,
 ) -> Result<()> {
-    let listed = match require_selected(selected, &session_id) {
-        Ok(_) => session_files
+    let listed = match authorize_stored_read(connection, &session_id).await {
+        Ok(()) => connection
+            .session_files
             .list_files_with_modified(
                 &session_id,
                 &[StoredFileOrigin::Upload, StoredFileOrigin::Artifact],
@@ -1519,8 +1552,7 @@ struct SessionFileRead {
 
 async fn read_session_file(
     writer: &mut (impl AsyncWrite + Unpin),
-    selected: Option<&SelectedChat>,
-    session_files: &SessionFileStore,
+    connection: &mut ConnectionSessionState<'_>,
     request_id: Arc<str>,
     session_id: SessionId,
     read: SessionFileRead,
@@ -1530,8 +1562,9 @@ async fn read_session_file(
         offset,
         max_bytes,
     } = read;
-    let chunk = match require_selected(selected, &session_id) {
-        Ok(_) => session_files
+    let chunk = match authorize_stored_read(connection, &session_id).await {
+        Ok(()) => connection
+            .session_files
             .read_chunk(&session_id, &file_id, offset, max_bytes)
             .await
             .map_err(session_file_rejection),
@@ -1631,7 +1664,8 @@ async fn git_diff(
                 request_id,
                 session_id,
                 scope,
-                diff,
+                diff: diff.text,
+                truncated: diff.truncated,
             },
             Err(rejection) => rejected(request_id, rejection),
         }

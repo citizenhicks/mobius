@@ -503,26 +503,33 @@ impl Workspace {
         crate::host::platform::wake();
     }
 
+    pub(in crate::ui) fn report_voice_failure(
+        &mut self,
+        message: &str,
+        failure: mobius::FailureClass,
+    ) {
+        let live = self.on_cloud_gateway();
+        let Some(issue) = crate::ui::transcript::ProviderIssue::from_failure(failure, live) else {
+            return self.report(message);
+        };
+        let explanation = self.explain(issue);
+        if !self
+            .shell
+            .notices
+            .iter()
+            .any(|(_, queued, _)| *queued == explanation.text)
+        {
+            let action = explanation.action.map(navigation::NoticeAction::Issue);
+            self.shell
+                .notices
+                .push((Tone::Error, explanation.text, action));
+            crate::host::platform::wake();
+        }
+    }
+
     /// Queues an error toast; `poll` shows it.
     pub(in crate::ui) fn report(&mut self, message: impl AsRef<str>) {
         let message = message.as_ref();
-        // Voice failures arrive as the provider's raw text; say them plainly instead.
-        if let Some(issue) = crate::ui::transcript::ProviderIssue::classify(message) {
-            let explanation = self.explain(issue);
-            if !self
-                .shell
-                .notices
-                .iter()
-                .any(|(_, queued, _)| *queued == explanation.text)
-            {
-                let action = explanation.action.map(navigation::NoticeAction::Issue);
-                self.shell
-                    .notices
-                    .push((Tone::Error, explanation.text, action));
-                crate::host::platform::wake();
-            }
-            return;
-        }
         self.announce(Tone::Error, crate::gateway::friendly(message));
     }
 }

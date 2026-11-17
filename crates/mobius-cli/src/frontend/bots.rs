@@ -22,20 +22,11 @@ enum Action {
         request_id: Arc<str>,
         message: Box<ClientMessage>,
         label: &'static str,
-        follow_up: FollowUp,
     },
-}
-
-#[derive(Clone)]
-enum FollowUp {
-    None,
-    Routines,
-    Runs(Arc<str>),
 }
 
 fn request_action(
     label: &'static str,
-    follow_up: FollowUp,
     make_message: impl FnOnce(Arc<str>) -> ClientMessage,
 ) -> Action {
     let request_id = crate::fresh_id();
@@ -44,7 +35,6 @@ fn request_action(
         request_id,
         message: Box::new(message),
         label,
-        follow_up,
     }
 }
 
@@ -234,7 +224,7 @@ mod tests {
         let mut gateway = gateway(vec![bot("bot-a")]);
         let mut state = BotsState::new(&gateway, None, None);
         let owned = crate::fresh_id();
-        state.begin(Arc::clone(&owned), "Load run history", FollowUp::None);
+        state.begin(Arc::clone(&owned), "Load run history");
         let run = RoutineRun {
             id: "run-a".into(),
             routine_id: "routine-a".into(),
@@ -244,8 +234,9 @@ mod tests {
             status: RoutineRunStatus::Succeeded,
             session_id: Some(mobius::SessionId::new("session-a").expect("session")),
             message: None,
+            failure: None,
         };
-        let (_, deferred) = handle_frame(
+        let deferred = handle_frame(
             ServerMessage::RoutineHistory {
                 request_id: "other".into(),
                 runs: vec![run.clone()],
@@ -255,7 +246,7 @@ mod tests {
         );
         assert!(deferred.is_some());
 
-        let (_, deferred) = handle_frame(
+        let deferred = handle_frame(
             ServerMessage::RoutineHistory {
                 request_id: owned,
                 runs: vec![run.clone()],

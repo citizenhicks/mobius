@@ -572,9 +572,11 @@ impl Workspace {
             Ok(PreviewData::Files { files, truncated }) => TabContent::Files(Box::new(
                 FilesDoc::new(Some(session.share()), files, truncated, cx),
             )),
-            Ok(PreviewData::Diff { scope, text }) => {
-                TabContent::Diff(DiffDoc::new(session.share(), scope, &text, cx))
-            }
+            Ok(PreviewData::Diff {
+                scope,
+                text,
+                truncated,
+            }) => TabContent::Diff(DiffDoc::new(session.share(), scope, &text, truncated, cx)),
             Ok(PreviewData::File { path, bytes }) => self.preview_bytes(session, &path, &bytes),
             Ok(PreviewData::ChatFiles(_)) => return,
             Err(error) => TabContent::Failed(error),

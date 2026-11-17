@@ -74,6 +74,17 @@ pub enum Error {
     Sqlite(#[from] rusqlite::Error),
 }
 
+impl Error {
+    /// Why a model provider call failed, when this error carries one.
+    #[must_use]
+    pub fn failure(&self) -> Option<mobius::FailureClass> {
+        match self {
+            Self::Mobius(error) => error.failure(),
+            _ => None,
+        }
+    }
+}
+
 /// Result type shared by gateway modules.
 pub type Result<T> = std::result::Result<T, Error>;
 

@@ -417,7 +417,7 @@ async fn deleting_a_bot_removes_owned_state() {
         )
         .await
         .expect("publish routine artifact");
-    bots.finish_run(run, RoutineRunStatus::Succeeded, None)
+    bots.finish_run(run, RoutineRunStatus::Succeeded, None, None)
         .expect("finish routine");
 
     let (remaining, deleted_sessions) = gateway

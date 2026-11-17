@@ -131,7 +131,7 @@ fn finish_due(store: &BotStore, now: i64) -> Vec<Arc<str>> {
     let ids = due.iter().map(|(id, _)| Arc::clone(id)).collect();
     for (_, run) in due {
         store
-            .finish_run(run, RoutineRunStatus::Succeeded, None)
+            .finish_run(run, RoutineRunStatus::Succeeded, None, None)
             .expect("finish due run");
     }
     ids
@@ -174,7 +174,7 @@ fn clock_records_only_due_facts_and_start_commands_deduplicate_after_completion(
         BeginRun::AlreadyRecorded
     ));
     store
-        .finish_run(run, RoutineRunStatus::Succeeded, None)
+        .finish_run(run, RoutineRunStatus::Succeeded, None, None)
         .expect("finish");
     assert!(matches!(
         store
@@ -238,7 +238,7 @@ fn bot_deletion_removes_owned_routines_history_and_scripts() {
         panic!("routine must start");
     };
     store
-        .finish_run(run, RoutineRunStatus::Succeeded, None)
+        .finish_run(run, RoutineRunStatus::Succeeded, None, None)
         .expect("finish run");
 
     let deletion = store
@@ -349,7 +349,7 @@ fn routines_and_history_persist_with_bot_ownership() {
     };
     let session_id = run.session_id().to_owned();
     store
-        .finish_run(run, RoutineRunStatus::Succeeded, None)
+        .finish_run(run, RoutineRunStatus::Succeeded, None, None)
         .expect("finish run");
     drop(store);
 
@@ -465,6 +465,7 @@ fn run_history_exceeds_one_megabyte_without_evicting_sessions() {
                     run,
                     RoutineRunStatus::Succeeded,
                     Some(message.as_str().into()),
+                    None,
                 )
                 .expect("finish run")
                 .id,

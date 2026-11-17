@@ -168,7 +168,11 @@ impl Workspace {
                 self.pair_cloud_gateway(&endpoint, code.0, cx);
             }
             NativeEvent::CloudForget { endpoint } => self.forget_cloud_gateway(&endpoint, cx),
-            NativeEvent::Error { message } => self.report(message),
+            NativeEvent::Error {
+                message,
+                failure: Some(failure),
+            } => self.report_voice_failure(&message, failure),
+            NativeEvent::Error { message, .. } => self.report(message),
         }
         cx.notify();
     }

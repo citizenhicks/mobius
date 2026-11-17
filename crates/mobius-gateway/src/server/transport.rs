@@ -11,6 +11,7 @@ use super::{
     write_rejection, write_server_error,
 };
 use crate::host::GatewayUpdate;
+use crate::wire::ProfileParts;
 use mobius::SessionId;
 
 use std::collections::VecDeque;
@@ -725,7 +726,7 @@ async fn serve_authenticated_connection(
         .map_err(|rejection| Error::Protocol(rejection.message.to_string()))?;
     view.write_catalog(
         &mut writer,
-        ServerFrame::new(ServerMessage::Ready { payload: ready }),
+        Arc::new(ServerFrame::new(ServerMessage::Ready { payload: ready })),
     )
     .await?;
     if client.desktop_transport && host.remote_desktop.available() {
@@ -744,6 +745,7 @@ async fn serve_authenticated_connection(
     let mut pending_requests = JoinSet::new();
     let mut pending_profile = None;
     let mut queued_profile_request = None;
+    let mut readable = None;
     let mut disabled_notifications = BTreeSet::new();
 
     loop {
@@ -821,6 +823,7 @@ async fn serve_authenticated_connection(
                 pending_desktop_control: &mut pending_desktop_control,
                 pending_profile: &mut pending_profile,
                 queued_profile: &mut queued_profile_request,
+                readable: &mut readable,
             },
             &mut writer,
         )
@@ -977,16 +980,16 @@ async fn authenticate_client(
 /// Starts a profile snapshot, or queues one behind the snapshot in flight.
 pub(super) async fn request_profile(
     request_id: Arc<str>,
-    include_provider_usage: bool,
+    parts: ProfileParts,
     host: &Arc<GatewayHost>,
     pending: &mut Option<PendingProfile>,
-    queued_request: &mut Option<(Arc<str>, bool)>,
+    queued_request: &mut Option<(Arc<str>, ProfileParts)>,
     writer: &mut (impl AsyncWrite + Unpin),
 ) -> Result<()> {
     if pending.is_some() {
-        queue_profile_request(writer, queued_request, request_id, include_provider_usage).await
+        queue_profile_request(writer, queued_request, request_id, parts).await
     } else {
-        *pending = Some(profile_request(host, request_id, include_provider_usage));
+        *pending = Some(profile_request(host, request_id, parts));
         Ok(())
     }
 }
@@ -1005,15 +1008,13 @@ async fn complete_profile_request(
     profile: (Arc<str>, std::result::Result<ProfileSnapshot, Rejection>),
     host: &Arc<GatewayHost>,
     pending: &mut Option<PendingProfile>,
-    queued_request: &mut Option<(Arc<str>, bool)>,
+    queued_request: &mut Option<(Arc<str>, ProfileParts)>,
     writer: &mut (impl AsyncWrite + Unpin),
 ) -> Result<()> {
     let (request_id, result) = profile;
     *pending = queued_request
         .take()
-        .map(|(request_id, include_provider_usage)| {
-            profile_request(host, request_id, include_provider_usage)
-        });
+        .map(|(request_id, parts)| profile_request(host, request_id, parts));
     match result {
         Ok(profile) => {
             write_frame(
@@ -1031,11 +1032,11 @@ async fn complete_profile_request(
 
 async fn queue_profile_request(
     writer: &mut (impl AsyncWrite + Unpin),
-    queued_request: &mut Option<(Arc<str>, bool)>,
+    queued_request: &mut Option<(Arc<str>, ProfileParts)>,
     request_id: Arc<str>,
-    include_provider_usage: bool,
+    parts: ProfileParts,
 ) -> Result<()> {
-    if let Some((displaced, _)) = queued_request.replace((request_id, include_provider_usage)) {
+    if let Some((displaced, _)) = queued_request.replace((request_id, parts)) {
         write_rejection(
             writer,
             displaced,
@@ -1052,14 +1053,14 @@ async fn queue_profile_request(
 fn profile_request(
     host: &Arc<GatewayHost>,
     request_id: Arc<str>,
-    include_provider_usage: bool,
+    parts: ProfileParts,
 ) -> PendingProfile {
     let gateway = Arc::clone(host);
     PendingProfile {
         request_id,
         future: Box::pin(async move {
             gateway.reconcile_pending_bot_deletion().await?;
-            gateway.profile(include_provider_usage).await
+            gateway.profile(parts).await
         }),
     }
 }
@@ -1072,7 +1073,7 @@ async fn handle_gateway_broadcast(
     writer: &mut (impl AsyncWrite + Unpin),
 ) -> Result<()> {
     match outgoing {
-        Ok(GatewayUpdate::Frame(frame)) => view.write_broadcast(writer, frame).await,
+        Ok(GatewayUpdate::Frame(frame)) => view.write_catalog(writer, frame).await,
         Ok(GatewayUpdate::Sessions(_)) if disabled.contains(&GatewayNotification::Sessions) => {
             Ok(())
         }
@@ -1093,7 +1094,7 @@ async fn handle_gateway_broadcast(
                 .map_err(|rejection| Error::Protocol(rejection.message.to_string()))?;
             view.write_catalog(
                 writer,
-                ServerFrame::new(ServerMessage::Ready { payload: ready }),
+                Arc::new(ServerFrame::new(ServerMessage::Ready { payload: ready })),
             )
             .await?;
             Ok(())
@@ -1189,9 +1190,8 @@ mod tests {
         ProfileSnapshot {
             user_name: None,
             daily_usage: Vec::new(),
-            provider_usage: Vec::new(),
+            provider_usage: Arc::default(),
             run_stats: RunStats::default(),
-            recent_run_groups: Vec::new(),
         }
     }
 
@@ -1208,11 +1208,20 @@ mod tests {
             }),
         });
         let mut queued = None;
+        let quotas = ProfileParts {
+            provider_usage: true,
+            run_stats: false,
+        };
 
-        queue_profile_request(&mut writer, &mut queued, "profile-2".into(), false)
-            .await
-            .expect("first queued profile");
-        queue_profile_request(&mut writer, &mut queued, "profile-3".into(), true)
+        queue_profile_request(
+            &mut writer,
+            &mut queued,
+            "profile-2".into(),
+            ProfileParts::default(),
+        )
+        .await
+        .expect("first queued profile");
+        queue_profile_request(&mut writer, &mut queued, "profile-3".into(), quotas)
             .await
             .expect("latest queued profile");
 
@@ -1229,7 +1238,7 @@ mod tests {
                 ..
             } if request_id.as_ref() == "profile-2" && code == "profile_superseded"
         ));
-        assert_eq!(queued.as_ref(), Some(&("profile-3".into(), true)));
+        assert_eq!(queued.as_ref(), Some(&("profile-3".into(), quotas)));
 
         tokio::select! {
             biased;

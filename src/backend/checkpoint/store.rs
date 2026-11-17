@@ -455,15 +455,6 @@ pub trait CheckpointStore: Send + Sync {
         })
     }
 
-    /// Loads the most recently started terminal user turns across all sessions.
-    fn recent_executions(&self, _limit: usize) -> BoxFuture<'_, Result<Vec<ExecutionRecord>>> {
-        Box::pin(async {
-            Err(Error::Checkpoint(
-                "this checkpoint backend has no execution journal".into(),
-            ))
-        })
-    }
-
     /// Creates a child session at an exact durable parent sequence.
     fn fork<'a>(
         &'a self,

@@ -101,6 +101,25 @@ impl GatewayState {
         self.token_usage = None;
     }
 
+    fn apply_routine_change(&mut self, change: &mut mobius_gateway::wire::RoutineChange) {
+        use mobius_gateway::wire::RoutineChange;
+        match change {
+            RoutineChange::Saved { routine } => upsert(&mut self.routines, routine, |r| &r.id),
+            RoutineChange::Ran { routine, run } => {
+                upsert(&mut self.routines, routine, |r| &r.id);
+                upsert(&mut self.routine_history, run, |r| &r.id);
+            }
+            RoutineChange::Deleted { routine_id } => {
+                self.routines.retain(|held| held.id != *routine_id);
+                self.routine_history
+                    .retain(|held| held.routine_id != *routine_id);
+            }
+            RoutineChange::RunDeleted { run_id } => {
+                self.routine_history.retain(|held| held.id != *run_id);
+            }
+        }
+    }
+
     /// Folds `message` into the state, moving its transcript ops and pages into the store.
     pub fn apply(&mut self, message: &mut ServerMessage) {
         self.arrived_preview = None;
@@ -244,6 +263,7 @@ impl GatewayState {
             }
             ServerMessage::Routines { routines, .. } => self.routines.clone_from(routines),
             ServerMessage::RoutineHistory { runs, .. } => self.routine_history.clone_from(runs),
+            ServerMessage::RoutineChanged { change } => self.apply_routine_change(change),
             ServerMessage::PairingCode {
                 code, expires_at, ..
             } => {
@@ -389,3 +409,13 @@ fn finish_turn(session: &mut SessionReadyPayload, turn_id: &str) {
 #[cfg(test)]
 #[path = "tests.rs"]
 pub(super) mod tests;
+
+fn upsert<T: Clone>(held: &mut Vec<T>, record: &mut T, id: impl Fn(&T) -> &Arc<str>) {
+    match held
+        .iter_mut()
+        .find(|candidate| id(candidate) == id(record))
+    {
+        Some(existing) => std::mem::swap(existing, record),
+        None => held.push(record.clone()), // rules-allow: the runtime dispatches the borrowed message after this
+    }
+}

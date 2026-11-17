@@ -248,6 +248,7 @@ fn running() -> RoutineRun {
         status: RoutineRunStatus::Running,
         session_id: Some(SessionId::generate()),
         message: None,
+        failure: None,
     }
 }
 
@@ -289,7 +290,7 @@ fn run_terminal_state_and_command_receipt_commit_with_hooks_or_roll_back_togethe
     storage.connection.lock().expect("connection").execute_batch("CREATE TRIGGER fail_terminal BEFORE INSERT ON hook_events WHEN NEW.id LIKE '%succeeded' BEGIN SELECT RAISE(ABORT, 'test atomic rollback'); END;").expect("failure seam");
     assert!(
         storage
-            .finish_run(&run.id, RoutineRunStatus::Succeeded, 101, None)
+            .finish_run(&run.id, RoutineRunStatus::Succeeded, 101, None, None)
             .is_err()
     );
     assert_eq!(
@@ -320,22 +321,29 @@ fn run_terminal_state_and_command_receipt_commit_with_hooks_or_roll_back_togethe
             RoutineRunStatus::Cancelled,
             102,
             Some("cancelled".into()),
+            Some(mobius::FailureClass::RateLimited),
         )
         .expect("terminal");
+    assert_eq!(
+        storage.history(None).expect("history")[0].failure,
+        Some(mobius::FailureClass::RateLimited),
+        "the stored run keeps its provider failure class"
+    );
     assert_eq!(
         storage
             .finish_run(
                 &run.id,
                 RoutineRunStatus::Cancelled,
                 103,
-                Some("cancelled".into())
+                Some("cancelled".into()),
+                Some(mobius::FailureClass::RateLimited),
             )
             .expect("idempotent terminal"),
         finished
     );
     assert!(
         storage
-            .finish_run(&run.id, RoutineRunStatus::Failed, 104, None)
+            .finish_run(&run.id, RoutineRunStatus::Failed, 104, None, None)
             .is_err()
     );
     let pending = storage.pending_actions(102, 10).expect("terminal report");

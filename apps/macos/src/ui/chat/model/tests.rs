@@ -9,7 +9,7 @@ fn catalog() -> ReadyPayload {
     let mut gateway: ReadyPayload = serde_json::from_value(json!({
         "gateway_version":"test", "machine_name":"test", "computer_view":"unavailable", "bots":[], "sessions":[],
         "background_approvals":[], "harnesses":[], "max_active_sessions":1, "revisions":{}, "omitted":[],
-        "agent_catalog": {
+        "agent_catalog": {"limits": {"min_model_steps": 1, "default_model_steps": 2042, "model_steps_step": 100, "max_system_prompt_bytes": 65536, "min_routine_interval_seconds": 60},
             "bot_defaults":null, "middleware_features":[], "extensions":[], "contributions":[],
             "models":[], "model_providers":{}, "image_models":[], "voice_models":[]
         },
@@ -18,7 +18,7 @@ fn catalog() -> ReadyPayload {
             "max_session_bytes":100, "max_upload_chunk_bytes":100
         },
         "provider_instances":[{
-            "label":"Work", "tint":"blue", "configured":true,
+            "label":"Work", "tint":"blue", "tool_discovery": "native", "configured":true,
             "models":[],
             "selection":{
                 "instance":"work", "provider":"openai", "model":"sol",

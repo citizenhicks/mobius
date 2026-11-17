@@ -123,6 +123,7 @@ fn state(mode: SetupMode, provider: &str, configured: bool) -> SetupState {
     original.provider.base_url = Some(statuses[0].default_base_url.clone());
     let instances = vec![ProviderInstance {
         operator_managed: false,
+        tool_discovery: mobius::protocol::ToolDiscoveryMode::Native,
         label: provider.into(),
         tint: Default::default(),
         configured,

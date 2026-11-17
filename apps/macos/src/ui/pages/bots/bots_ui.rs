@@ -117,7 +117,7 @@ mod tests {
                 duration: Entity::clone(&input),
                 end_at: input,
             };
-            let form = cx.new(|_| RoutineForm::new(None, &["/work".into()], inputs));
+            let form = cx.new(|_| RoutineForm::new(None, &["/work".into()], inputs, 60));
             form.update(cx, |form, _| form.save = SaveState::Pending);
             let mut bots = BotsUi::default();
             bots.pending

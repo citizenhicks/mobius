@@ -379,7 +379,7 @@ fn fixture_gateway() -> Option<ReadyPayload> {
             "config": {"revision": 1, "config": HarnessConfig::Mobius(Default::default())},
             "capabilities": {"attachments": false, "computer": false, "voice": {"state": "off"},
                 "memory": {"enabled": false, "global": false}},
-            "routine_interaction_policy": "unattended"
+            "routine_interaction_policy": "unattended", "built_in": handle == "mobius"
         })
     })
     .collect();
@@ -389,7 +389,7 @@ fn fixture_gateway() -> Option<ReadyPayload> {
             "gateway_version": "fixture", "machine_name": "This Mac",
             "computer_view": "unavailable", "bots": bots,
             "sessions": [], "background_approvals": [],
-            "agent_catalog": {
+            "agent_catalog": {"limits": {"min_model_steps": 1, "default_model_steps": 2042, "model_steps_step": 100, "max_system_prompt_bytes": 65536, "min_routine_interval_seconds": 60},
                 "bot_defaults": null, "default_capabilities": null, "models": [],
                 "model_providers": {}, "image_models": [], "voice_models": [],
                 "middleware_features": [], "extensions": [], "contributions": []

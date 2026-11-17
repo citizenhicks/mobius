@@ -178,8 +178,10 @@ pub struct ProviderError {
     class: FailureClass,
 }
 
-/// Why a provider call failed, so callers can pick a recovery without parsing messages.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Why a provider call failed, so callers and frontends pick a recovery without parsing
+/// messages. Classified once, where the provider's status and error code arrive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum FailureClass {
     /// A timeout, connection failure, 408 or 5xx: the provider itself may be down.
@@ -188,8 +190,10 @@ pub enum FailureClass {
     RateLimited,
     /// A response stream ended before its completion record.
     StreamInterrupted,
-    /// The credential was rejected.
+    /// The credential was rejected or has expired.
     Authentication,
+    /// The provider refused this account or request.
+    Forbidden,
     /// The account has no remaining quota or credit.
     OutOfCredits,
     /// The request exceeded the model's context window.
@@ -244,13 +248,17 @@ impl ProviderError {
     ) -> Self {
         let message = message.into();
         let class = match status {
-            401 | 403 => FailureClass::Authentication,
+            401 => FailureClass::Authentication,
+            402 => FailureClass::OutOfCredits,
+            403 => FailureClass::Forbidden,
             429 => FailureClass::RateLimited,
             408 | 500..=599 => FailureClass::Transient,
             // ponytail: providers without a context-length code are matched on their message.
             400..=499 if Self::mentions_context_length(&message) => {
                 FailureClass::ContextLengthExceeded
             }
+            // ponytail: providers without a credit code are matched on their message too.
+            400..=499 if Self::mentions_credit(&message) => FailureClass::OutOfCredits,
             400..=499 => FailureClass::InvalidRequest,
             _ => FailureClass::Other,
         };
@@ -266,6 +274,13 @@ impl ProviderError {
     fn mentions_context_length(message: &str) -> bool {
         let message = message.to_ascii_lowercase();
         ["prompt is too long", "context length", "context window"]
+            .iter()
+            .any(|needle| message.contains(needle))
+    }
+
+    fn mentions_credit(message: &str) -> bool {
+        let message = message.to_ascii_lowercase();
+        ["requires more credits", "insufficient credits"]
             .iter()
             .any(|needle| message.contains(needle))
     }
@@ -420,6 +435,18 @@ pub enum Error {
         #[from]
         rusqlite::Error,
     ),
+}
+
+impl Error {
+    /// Why a model provider call failed, when this error is one.
+    #[must_use]
+    pub fn failure(&self) -> Option<FailureClass> {
+        match self {
+            Self::Provider(error) => Some(error.class()),
+            Self::Auth(_) => Some(FailureClass::Authentication),
+            _ => None,
+        }
+    }
 }
 
 /// Result type shared by möbius modules.

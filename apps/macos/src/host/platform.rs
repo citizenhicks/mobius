@@ -237,6 +237,8 @@ pub enum NativeEvent {
     },
     Error {
         message: String,
+        #[serde(default)]
+        failure: Option<mobius::FailureClass>,
     },
 }
 

@@ -100,13 +100,13 @@ impl Workspace {
                 self.transcript_entry(entry, changes, session_id, scope, cx)
             }
             TranscriptRowKind::Notice => match first {
-                Some(entry) if entry.block().is_some() => match issue::provider_issue(entry) {
+                Some(entry) => match issue::provider_issue(entry) {
                     Some((issue, message)) => {
                         self.provider_issue_row(entry, issue, message, scope, cx)
                     }
-                    None => self.notice_row(entry),
+                    None if entry.block().is_some() => self.notice_row(entry),
+                    None => self.transcript_entry(entry, None, session_id, scope, cx),
                 },
-                Some(entry) => self.transcript_entry(entry, None, session_id, scope, cx),
                 None => div().into_any_element(),
             },
             TranscriptRowKind::Activity { counts } => {
@@ -176,9 +176,9 @@ impl Workspace {
                 ))
                 .child(self.event_line(entry, session_id, scope, cx))
                 .into_any_element(),
-            TranscriptItemContent::Notice { tone: level, text }
-                if *level == FrontendTone::Error =>
-            {
+            TranscriptItemContent::Notice {
+                tone: level, text, ..
+            } if *level == FrontendTone::Error => {
                 Notice::new(tone(*level), &**text).into_any_element()
             }
             TranscriptItemContent::Notice { text, .. } => div()

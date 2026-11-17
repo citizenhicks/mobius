@@ -180,7 +180,7 @@ impl Workspace {
                 .client
                 .state
                 .bot(&routine.bot_id)
-                .is_some_and(|bot| crate::ui::pages::harness::available(bot.harness))
+                .is_some_and(|bot| self.harness_available(bot.harness))
     }
 
     fn routine_actions(&self, routine: &Routine) -> Vec<MenuAction> {

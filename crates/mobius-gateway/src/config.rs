@@ -73,7 +73,7 @@ const CONFIG_FILE: &str = "gateway.toml";
 const CLOUDFLARE_TOKEN_FILE: &str = "cloudflare-token";
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 const MAX_CREDENTIAL_STATE_BYTES: usize = 256 * 1024;
-const MAX_SYSTEM_PROMPT_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_SYSTEM_PROMPT_BYTES: usize = 64 * 1024;
 /// Maximum UTF-8 byte length accepted for a provider credential.
 pub const MAX_PROVIDER_API_KEY_BYTES: usize = 16 * 1024;
 const MAX_PROVIDER_CATALOG_ENTRIES: usize = 64;

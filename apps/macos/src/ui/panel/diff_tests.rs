@@ -6,7 +6,15 @@ const PATCH: &str = "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/
 
 #[gpui::test]
 fn selecting_a_changed_file_expands_it(cx: &mut TestAppContext) {
-    let doc = cx.new(|cx| DiffDoc::new("chat".parse().unwrap(), GitDiffScope::Unstaged, PATCH, cx));
+    let doc = cx.new(|cx| {
+        DiffDoc::new(
+            "chat".parse().unwrap(),
+            GitDiffScope::Unstaged,
+            PATCH,
+            false,
+            cx,
+        )
+    });
     doc.update(cx, |doc, cx| {
         doc.state
             .update(cx, |state, cx| super::set_all_collapsed(state, true, cx));

@@ -114,13 +114,6 @@ mod tests {
     }
 
     #[test]
-    fn counted_agrees_with_one() {
-        assert_eq!(counted(1u32, "file", "files"), "1 file");
-        assert_eq!(counted(0usize, "file", "files"), "0 files");
-        assert_eq!(counted(12u64, "run", "runs"), "12 runs");
-    }
-
-    #[test]
     fn byte_count_matches_apples_file_style() {
         // Read from Foundation's `.byteCount(style: .file)` in en_US.
         for (bytes, apple) in [

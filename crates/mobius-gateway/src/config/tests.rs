@@ -25,6 +25,7 @@ fn test_bot() -> crate::wire::BotRecord {
             },
         },
         routine_interaction_policy: RoutineInteractionPolicy::Unattended,
+        built_in: false,
     }
 }
 

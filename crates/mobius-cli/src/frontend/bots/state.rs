@@ -7,7 +7,7 @@ use mobius_gateway::wire::{
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::form::{BotForm, Form, FormFlow, RoutineForm};
-use super::{Action, FollowUp, request_action};
+use super::{Action, request_action};
 use crate::frontend::setup::SetupMode;
 use crate::frontend::theme::Role;
 use crate::frontend::wrap_step;
@@ -71,7 +71,6 @@ pub(super) enum Confirmation {
     },
     Run {
         id: Arc<str>,
-        routine_id: Arc<str>,
         label: String,
     },
 }
@@ -79,7 +78,6 @@ pub(super) enum Confirmation {
 pub(super) struct Pending {
     pub(super) request_id: Arc<str>,
     pub(super) label: &'static str,
-    pub(super) follow_up: FollowUp,
 }
 
 pub(super) struct Notice {
@@ -88,7 +86,6 @@ pub(super) struct Notice {
 }
 
 pub(super) struct BotsState {
-    pub(super) lifecycle_refresh: bool,
     pub(super) page: Page,
     pub(super) selected: usize,
     pub(super) protected_bot_id: Option<Arc<str>>,
@@ -110,7 +107,6 @@ impl BotsState {
             .filter(|id| gateway.bots.iter().any(|bot| *bot.id == **id))
             .map_or(Page::Root, |id| Page::Bot(id.into()));
         Self {
-            lifecycle_refresh: false,
             page,
             selected: 0,
             protected_bot_id: protected_bot_id.map(Arc::from),
@@ -403,7 +399,7 @@ impl BotsState {
                     routine_id: std::mem::take(routine_id),
                 };
                 self.selected = 0;
-                request_action("Load run history", FollowUp::None, |request_id| {
+                request_action("Load run history", |request_id| {
                     ClientMessage::ListRoutineHistory {
                         request_id,
                         id: Some(Arc::clone(&routine.id)),
@@ -430,7 +426,7 @@ impl BotsState {
                     bot_id: std::mem::take(bot_id),
                     routine_id: std::mem::take(routine_id),
                 };
-                request_action("Load run", FollowUp::None, |request_id| {
+                request_action("Load run", |request_id| {
                     ClientMessage::GetRoutineRunPreview {
                         request_id,
                         id: Arc::clone(&run.id),
@@ -442,7 +438,6 @@ impl BotsState {
                 let label = routine_run_label(run);
                 self.confirmation = Some(Confirmation::Run {
                     id: Arc::clone(&run.id),
-                    routine_id: Arc::clone(routine_id),
                     label,
                 });
                 Action::None
@@ -463,7 +458,7 @@ impl BotsState {
                 };
                 match confirmation {
                     Confirmation::Bot { id, revision, .. } => {
-                        request_action("Delete Bot and owned data", FollowUp::None, |request_id| {
+                        request_action("Delete Bot and owned data", |request_id| {
                             ClientMessage::DeleteBot {
                                 request_id,
                                 id,
@@ -472,7 +467,7 @@ impl BotsState {
                         })
                     }
                     Confirmation::Routine { id, .. } => {
-                        request_action("Delete routine", FollowUp::Routines, |request_id| {
+                        request_action("Delete routine", |request_id| {
                             ClientMessage::RoutineCommand {
                                 request_id,
                                 command: RoutineCommand {
@@ -482,11 +477,11 @@ impl BotsState {
                             }
                         })
                     }
-                    Confirmation::Run { id, routine_id, .. } => request_action(
-                        "Delete routine run",
-                        FollowUp::Runs(routine_id),
-                        |request_id| ClientMessage::DeleteRoutineRun { request_id, id },
-                    ),
+                    Confirmation::Run { id, .. } => {
+                        request_action("Delete routine run", |request_id| {
+                            ClientMessage::DeleteRoutineRun { request_id, id }
+                        })
+                    }
                 }
             }
             _ => Action::None,
@@ -524,23 +519,20 @@ impl BotsState {
         }
     }
 
-    pub(super) fn begin(&mut self, request_id: Arc<str>, label: &'static str, follow_up: FollowUp) {
-        self.pending = Some(Pending {
-            request_id,
-            label,
-            follow_up,
-        });
+    pub(super) fn begin(&mut self, request_id: Arc<str>, label: &'static str) {
+        self.pending = Some(Pending { request_id, label });
         self.notice = None;
     }
 
-    pub(super) fn complete(&mut self) -> Option<FollowUp> {
-        let pending = self.pending.take()?;
+    pub(super) fn complete(&mut self) {
+        let Some(pending) = self.pending.take() else {
+            return;
+        };
         self.form = None;
         self.notice = Some(Notice {
             text: format!("{} complete.", pending.label),
             role: Role::Success,
         });
-        Some(pending.follow_up)
     }
 
     pub(super) fn fail(&mut self, message: impl Into<String>) {
@@ -592,14 +584,12 @@ fn edit_routine(routine: &Routine) -> Form {
 
 fn run_routine_action(routine: &Routine) -> Action {
     let routine_id = Arc::clone(&routine.id);
-    request_action("Run routine", FollowUp::Routines, |request_id| {
-        ClientMessage::RoutineCommand {
-            request_id,
-            command: RoutineCommand {
-                routine_id,
-                action: RoutineAction::Start,
-            },
-        }
+    request_action("Run routine", |request_id| ClientMessage::RoutineCommand {
+        request_id,
+        command: RoutineCommand {
+            routine_id,
+            action: RoutineAction::Start,
+        },
     })
 }
 
@@ -611,7 +601,6 @@ pub(super) fn update_routine_action(routine: &Routine, enabled: bool) -> Action 
         } else {
             "Pause routine"
         },
-        FollowUp::Routines,
         |request_id| ClientMessage::RoutineCommand {
             request_id,
             command: RoutineCommand {

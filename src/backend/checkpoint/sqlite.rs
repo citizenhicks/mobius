@@ -770,34 +770,6 @@ impl CheckpointStore for SqliteCheckpoint {
         })
     }
 
-    fn recent_executions(&self, limit: usize) -> BoxFuture<'_, Result<Vec<ExecutionRecord>>> {
-        Box::pin(async move {
-            if limit == 0 {
-                return Err(Error::Checkpoint(
-                    "recent execution limit must be positive".into(),
-                ));
-            }
-            let query_limit = i64::try_from(limit).map_err(|error| {
-                Error::Checkpoint(format!("recent execution limit is too large: {error}"))
-            })?;
-            self.run(move |connection, _cache| {
-                let mut statement = connection.prepare_cached(
-                    "SELECT record_json
-                     FROM execution_journal
-                     ORDER BY started_at_ms DESC, session_id DESC, sequence DESC
-                     LIMIT ?1",
-                )?;
-                statement
-                    .query_map([query_limit], |row| row.get::<_, String>(0))?
-                    .collect::<std::result::Result<Vec<_>, _>>()?
-                    .into_iter()
-                    .map(|json| decode_execution(&json))
-                    .collect()
-            })
-            .await
-        })
-    }
-
     fn fork<'a>(
         &'a self,
         parent_session_id: &'a SessionId,

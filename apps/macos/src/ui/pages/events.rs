@@ -210,7 +210,7 @@ impl Workspace {
                 let message = run
                     .message
                     .as_deref()
-                    .map(|text| self.provider_failure_text(text));
+                    .map(|text| self.failure_text(text, run.failure));
                 EventItem::routine(run, self.bot_name(&run.bot_id), message)
             });
         approvals

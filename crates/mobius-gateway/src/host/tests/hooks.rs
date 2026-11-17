@@ -88,10 +88,15 @@ pub(super) async fn install_model(
     )
     .await
     .unwrap();
-    let route = crate::harness::mobius::provider_catalog::configured_model_providers(
-        &config,
+    let credentialed = crate::harness::mobius::provider_catalog::CredentialedInstances::resolve(
+        &config.configured_providers,
         &state.store,
         &state.credentials,
+    )
+    .unwrap();
+    let route = crate::harness::mobius::provider_catalog::configured_model_providers(
+        &config,
+        &credentialed,
     )
     .unwrap()
     .into_keys()

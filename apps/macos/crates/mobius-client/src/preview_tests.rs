@@ -86,7 +86,7 @@ pub(super) async fn assert_workspace_previews(
         .await
         .is_ok()
     );
-    let PreviewData::Diff { scope, text } = load(
+    let PreviewData::Diff { scope, text, .. } = load(
         transfers,
         session,
         PreviewRequest::Diff(GitDiffScope::Unstaged),

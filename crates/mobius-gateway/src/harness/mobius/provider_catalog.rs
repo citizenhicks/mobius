@@ -1,6 +1,6 @@
 //! Gateway provider catalog, route policy, and credential availability.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use mobius::backend::model::provider::{
@@ -33,9 +33,31 @@ pub(crate) fn selected_base_url<'a>(
         .unwrap_or_else(|| definition.default_base_url())
 }
 
+pub(crate) struct CredentialedInstances<'config>(BTreeSet<&'config str>);
+
+impl<'config> CredentialedInstances<'config> {
+    pub(crate) fn resolve(
+        configured_providers: &'config BTreeMap<String, ConfiguredProvider>,
+        store: &ConfigStore,
+        credentials: &CredentialStore,
+    ) -> Result<Self> {
+        let mut available = BTreeSet::new();
+        for configured in configured_providers.values() {
+            if credential_is_configured(&configured.selection, store, credentials)? {
+                available.insert(configured.selection.instance.as_str());
+            }
+        }
+        Ok(Self(available))
+    }
+
+    pub(crate) fn contains(&self, selection: &ProviderConfig) -> bool {
+        self.0.contains(selection.instance.as_str())
+    }
+}
+
 pub(crate) fn provider_instances(
     configured_providers: &BTreeMap<String, ConfiguredProvider>,
-    store: &ConfigStore,
+    credentialed: &CredentialedInstances<'_>,
     credentials: &CredentialStore,
 ) -> Result<Vec<ProviderInstance>> {
     configured_providers
@@ -46,7 +68,7 @@ pub(crate) fn provider_instances(
             Ok(ProviderInstance {
                 label: configured.label.clone(), // rules-allow: provider records are sent to clients
                 tint: configured.tint,
-                configured: credential_is_configured(&configured.selection, store, credentials)?,
+                configured: credentialed.contains(&configured.selection),
                 credential_hint: credentials.hint(
                     &configured.selection.instance,
                     definition.id(),
@@ -56,6 +78,19 @@ pub(crate) fn provider_instances(
                 models: configured_models(definition, configured),
                 image_model_ids: configured.image_model_ids.clone(), // rules-allow: provider records are sent to clients
                 operator_managed: configured.operator_managed,
+                tool_discovery: selected_route(definition, Some(configured), &configured.selection)
+                    .preset
+                    .map_or_else(
+                        || {
+                            definition.tool_discovery(
+                                &configured.selection.model,
+                                configured.selection.base_url.as_deref(),
+                            )
+                        },
+                        |preset| {
+                            effective_tool_discovery(definition, &configured.selection, preset)
+                        },
+                    ),
             })
         })
         .collect()
@@ -72,12 +107,17 @@ impl VoiceRoutes {
         store: &ConfigStore,
         credentials: &CredentialStore,
     ) -> Result<Self> {
-        media_routes(configured_providers, Some((store, credentials)))?
-            .voices
-            .into_iter()
+        let credentialed =
+            CredentialedInstances::resolve(configured_providers, store, credentials)?;
+        Self::from_routes(&media_routes(configured_providers, Some(&credentialed))?.voices)
+    }
+
+    pub(crate) fn from_routes(voices: &[CatalogRoute]) -> Result<Self> {
+        voices
+            .iter()
             .map(|route| {
                 Ok((
-                    route.choice.route,
+                    Arc::clone(&route.choice.route),
                     provider(&route.provider.provider)?.voice_waits_for_session_started(),
                 ))
             })
@@ -133,17 +173,15 @@ pub(crate) fn configured_model_choices(
     store: &ConfigStore,
     credentials: &CredentialStore,
 ) -> Result<ConfiguredChoices> {
+    let credentialed =
+        CredentialedInstances::resolve(&gateway.configured_providers, store, credentials)?;
     Ok(ConfiguredChoices::from_routes(
         configured_model_routes(
             &gateway.configured_providers,
-            gateway
-                .bot_defaults
-                .as_ref()
-                .map(|defaults| defaults.config.provider.instance.as_str()),
-            store,
-            credentials,
+            default_instance(gateway),
+            &credentialed,
         )?,
-        media_routes(&gateway.configured_providers, Some((store, credentials)))?,
+        media_routes(&gateway.configured_providers, Some(&credentialed))?,
     ))
 }
 
@@ -165,20 +203,15 @@ pub(crate) fn configured_model_catalog(gateway: &GatewayConfig) -> Result<Config
 
 pub(crate) fn configured_model_providers(
     gateway: &GatewayConfig,
-    store: &ConfigStore,
-    credentials: &CredentialStore,
+    credentialed: &CredentialedInstances<'_>,
 ) -> Result<BTreeMap<Arc<str>, String>> {
     let mut providers = BTreeMap::new();
     let routes = configured_model_routes(
         &gateway.configured_providers,
-        gateway
-            .bot_defaults
-            .as_ref()
-            .map(|defaults| defaults.config.provider.instance.as_str()),
-        store,
-        credentials,
+        default_instance(gateway),
+        credentialed,
     )?;
-    let media = media_routes(&gateway.configured_providers, Some((store, credentials)))?;
+    let media = media_routes(&gateway.configured_providers, Some(credentialed))?;
     for routes in [routes, media.images, media.voices] {
         route_choices(routes, &mut providers);
     }
@@ -212,11 +245,17 @@ pub(crate) fn configured_route_exists(gateway: &GatewayConfig, route: &str) -> R
     Ok(false)
 }
 
+pub(crate) fn default_instance(gateway: &GatewayConfig) -> Option<&str> {
+    gateway
+        .bot_defaults
+        .as_ref()
+        .map(|defaults| defaults.config.provider.instance.as_str())
+}
+
 pub(crate) fn configured_model_routes(
     configured_providers: &BTreeMap<String, ConfiguredProvider>,
     default_instance: Option<&str>,
-    store: &ConfigStore,
-    credentials: &CredentialStore,
+    credentialed: &CredentialedInstances<'_>,
 ) -> Result<Vec<CatalogRoute>> {
     let mut routes = Vec::new();
     let mut configured = configured_providers.values().collect::<Vec<_>>();
@@ -230,7 +269,7 @@ pub(crate) fn configured_model_routes(
         {
             continue;
         }
-        if credential_is_configured(&configured.selection, store, credentials)? {
+        if credentialed.contains(&configured.selection) {
             routes.extend(catalog_routes(
                 definition,
                 configured,
@@ -465,14 +504,12 @@ pub(crate) struct MediaRoutes {
 /// Derives media choices directly from configured providers, optionally checking credentials.
 pub(crate) fn media_routes(
     configured_providers: &BTreeMap<String, ConfiguredProvider>,
-    credentials: Option<(&ConfigStore, &CredentialStore)>,
+    credentialed: Option<&CredentialedInstances<'_>>,
 ) -> Result<MediaRoutes> {
     let mut media = MediaRoutes::default();
     for configured in configured_providers.values() {
         let instance = configured.selection.instance.as_str();
-        if let Some((store, credentials)) = credentials
-            && !credential_is_configured(&configured.selection, store, credentials)?
-        {
+        if credentialed.is_some_and(|credentialed| !credentialed.contains(&configured.selection)) {
             continue;
         }
         let definition = provider(&configured.selection.provider)?;

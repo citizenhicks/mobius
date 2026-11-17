@@ -11,9 +11,8 @@ use super::{
     BTreeMap, BTreeSet, BotMemory, Deserialize, Event, FrontendContribution, FrontendPreviewUpdate,
     FrontendSettingOption, FrontendSettingValue, FrontendSymbol, FrontendWidget, HarnessConfig,
     HarnessDescriptor, HarnessKind, HistoryCursor, HostedWebSearch, MessageTarget,
-    MiddlewareFeature, ModelChoice, Op, PathBuf, RunStats, RunSummary, Serialize,
-    SessionConfiguredEvent, SessionFileLimits, StreamMetrics, TokenUsage, ToolDiscoveryMode,
-    TranscriptPage, UsageLimit,
+    MiddlewareFeature, ModelChoice, Op, PathBuf, RunStats, Serialize, SessionConfiguredEvent,
+    SessionFileLimits, StreamMetrics, TokenUsage, ToolDiscoveryMode, TranscriptPage, UsageLimit,
 };
 
 /// Optional gateway broadcasts a client may suppress on its connection.
@@ -93,6 +92,24 @@ pub struct AgentCatalog {
     pub extensions: Vec<ExtensionRecord>,
     /// The contributions.
     pub contributions: Vec<FrontendContribution>,
+    /// Bounds the gateway enforces on Bot and routine fields outside middleware settings.
+    pub limits: CompositionLimits,
+}
+
+/// What Bot and routine forms may submit, so they render controls without copies of the
+/// gateway's rules; the gateway still validates every submission.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompositionLimits {
+    /// The smallest maximum-model-steps value.
+    pub min_model_steps: u64,
+    /// What new Bots start with.
+    pub default_model_steps: u64,
+    /// A useful increment for the model-steps control.
+    pub model_steps_step: u64,
+    /// The largest system prompt.
+    pub max_system_prompt_bytes: u64,
+    /// The shortest routine interval.
+    pub min_routine_interval_seconds: u64,
 }
 
 impl ReadyPayload {
@@ -136,26 +153,6 @@ impl ReadyPayload {
             ReadySection::Bots => content_revision(&self.bots),
             ReadySection::Sessions => content_revision(&self.sessions),
             ReadySection::Harnesses => content_revision(&self.harnesses),
-        }
-    }
-
-    /// The same gateway identity with no catalog content.
-    pub(crate) fn blank(&self) -> Self {
-        Self {
-            gateway_version: String::new(),
-            machine_name: String::new(),
-            computer_view: self.computer_view,
-            bots: Vec::new(),
-            sessions: Vec::new(),
-            background_approvals: Vec::new(),
-            providers: Vec::new(),
-            provider_instances: Vec::new(),
-            agent_catalog: AgentCatalog::default(),
-            harnesses: Vec::new(),
-            max_active_sessions: self.max_active_sessions,
-            session_file_limits: self.session_file_limits,
-            revisions: BTreeMap::new(),
-            omitted: BTreeSet::new(),
         }
     }
 }
@@ -351,6 +348,9 @@ pub struct SessionActivity {
     pub last_outcome: Option<mobius::backend::checkpoint::ExecutionOutcome>,
     /// The message.
     pub message: Option<Arc<str>>,
+    /// Why a model provider call failed the last turn, when one did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<mobius::FailureClass>,
 }
 
 /// Current work state advertised in the session catalog.
@@ -700,6 +700,9 @@ pub struct ProviderInstance {
     /// Credential and usage limits are supplied by the gateway operator.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub operator_managed: bool,
+    /// How the selected model receives tools found mid-turn, after endpoint, model and
+    /// provider defaults are applied.
+    pub tool_discovery: ToolDiscoveryMode,
 }
 
 /// What one authenticated connection does for the gateway.
@@ -996,12 +999,19 @@ pub struct ProfileSnapshot {
     pub user_name: Option<String>,
     /// The daily usage.
     pub daily_usage: Vec<DailyUsage>,
-    /// The provider usage.
-    pub provider_usage: Vec<ProviderUsage>,
-    /// The run stats.
+    /// Remote subscription usage, shared by every client for a short freshness window.
+    pub provider_usage: Arc<[ProviderUsage]>,
+    /// Run totals across every session; empty unless requested.
     pub run_stats: RunStats,
-    /// The recent run groups.
-    pub recent_run_groups: Vec<SessionRunGroup>,
+}
+
+/// The parts of a profile a client asks for beyond its identity and token usage.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfileParts {
+    /// Remote subscription quotas, one provider round trip when not fresh.
+    pub provider_usage: bool,
+    /// Run totals, a scan of every stored session.
+    pub run_stats: bool,
 }
 
 /// One configured provider's remote subscription usage.
@@ -1013,17 +1023,6 @@ pub struct ProviderUsage {
     pub limits: Option<Vec<UsageLimit>>,
     /// The error.
     pub error: Option<String>,
-}
-
-/// Recent executions grouped under their nearest visible session.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SessionRunGroup {
-    /// The session identifier.
-    pub session_id: SessionId,
-    /// The title.
-    pub title: String,
-    /// The runs.
-    pub runs: Vec<RunSummary>,
 }
 
 /// Usage accrued during one Unix day.
@@ -1062,6 +1061,8 @@ pub struct BotRecord {
     pub capabilities: BotCapabilities,
     /// The routine interaction policy.
     pub routine_interaction_policy: RoutineInteractionPolicy,
+    /// The built-in @mobius Bot: never deleted, and where new chats go by default.
+    pub built_in: bool,
 }
 
 /// What chats composed from one configuration can do, resolved by the gateway.
@@ -1169,6 +1170,46 @@ pub struct RoutineRunPreview {
     pub next: Option<HistoryCursor>,
 }
 
+/// How many Bots a model switch looked at and changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BotModelSwitch {
+    /// The Bots looked at.
+    pub bots: usize,
+    /// The Bots saved with the new model.
+    pub bots_changed: usize,
+    /// Whether the Bot defaults changed.
+    pub defaults_changed: bool,
+}
+
+/// A routine or run as a committed change left it, broadcast to every client in place
+/// of a catalog refetch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum RoutineChange {
+    /// A routine was created or changed.
+    Saved {
+        /// The routine now.
+        routine: Routine,
+    },
+    /// A routine and its runs were removed.
+    Deleted {
+        /// The removed routine.
+        routine_id: Arc<str>,
+    },
+    /// A run started, finished or was skipped.
+    Ran {
+        /// The routine now.
+        routine: Routine,
+        /// The run now.
+        run: RoutineRun,
+    },
+    /// A finished run was removed.
+    RunDeleted {
+        /// The removed run.
+        run_id: Arc<str>,
+    },
+}
+
 /// One completed or active invocation of a Bot routine.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoutineRun {
@@ -1188,6 +1229,9 @@ pub struct RoutineRun {
     pub session_id: Option<SessionId>,
     /// The message.
     pub message: Option<Arc<str>>,
+    /// Why a model provider call failed the run, when one did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<mobius::FailureClass>,
 }
 
 /// Durable state of one routine invocation.

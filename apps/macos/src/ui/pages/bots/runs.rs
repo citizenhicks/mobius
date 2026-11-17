@@ -130,7 +130,7 @@ impl Workspace {
                             .typography(Type::Caption)
                             .text_color(p.muted)
                             .line_clamp(2)
-                            .child(single_line(&self.provider_failure_text(message)))
+                            .child(single_line(&self.failure_text(message, run.failure)))
                     })),
             )
             .when(awaiting, |row| {

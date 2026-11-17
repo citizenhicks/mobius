@@ -1,26 +1,23 @@
-use super::catalog::{SessionCatalogMetadata, gateway_catalog};
+use super::catalog::gateway_catalog;
 
 use super::SESSION_PAGE_SIZE;
 use super::rejection::{Rejection, internal};
 use super::state::GatewayReadySnapshot;
 use crate::harness::mobius::provider_catalog::{
-    configured_model_routes, provider_instances, provider_statuses, route_choices,
+    CredentialedInstances, configured_model_routes, provider_instances, provider_statuses,
+    route_choices,
 };
-use crate::wire::{ReadyPayload, RunStats, RunSummary, SessionRunGroup};
+use crate::wire::{ReadyPayload, RunStats};
 use crate::{Error, Result};
 use mobius::SessionId;
-use mobius::backend::checkpoint::{
-    CheckpointStore, ExecutionRecord, SessionPageRequest, SessionSummary,
-};
+use mobius::backend::checkpoint::{CheckpointStore, SessionPageRequest, SessionSummary};
+use std::collections::HashSet;
 use std::collections::{BTreeMap, BTreeSet};
-use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use mobius::backend::model::provider::{ProviderAuth, provider};
 use mobius::backend::session_files::session_file_limits;
 
-use crate::config::{ConfigStore, GatewayConfig};
-use crate::wire::{AgentCatalog, ProviderUsage, READY_SECTIONS};
+use crate::wire::{AgentCatalog, READY_SECTIONS};
 
 pub(super) async fn gateway_session_summaries(
     checkpoints: &Arc<dyn CheckpointStore>,
@@ -40,55 +37,6 @@ pub(super) async fn gateway_session_summaries(
             return Ok(sessions);
         };
         cursor = Some(next);
-    }
-}
-
-pub(super) fn provider_usage(
-    config: &GatewayConfig,
-    store: &ConfigStore,
-) -> impl std::future::Future<Output = Result<Vec<ProviderUsage>>> + Send + use<> {
-    let provider_ids = config
-        .configured_providers
-        .values()
-        .map(|configured| configured.selection.provider.clone()) // rules-allow: the usage future outlives the configuration borrow
-        .collect::<BTreeSet<_>>();
-    let auth_path = store.provider_auth_path();
-    let transport = config.model_transport;
-    async move {
-        let mut requests = Vec::new();
-        for provider_id in provider_ids {
-            let definition = provider(&provider_id)?;
-            let ProviderAuth::Browser(auth) = definition.auth() else {
-                continue;
-            };
-            if !auth
-                .configured(&auth_path)
-                .is_ok_and(|configured| configured)
-            {
-                continue;
-            }
-            let Some(fetch) = auth.usage_limits_with_transport(&auth_path, transport) else {
-                continue;
-            };
-            requests.push((provider_id, fetch));
-        }
-        Ok(futures_util::future::join_all(requests.into_iter().map(
-            |(provider, fetch)| async move {
-                match fetch.await {
-                    Ok(limits) => ProviderUsage {
-                        provider,
-                        limits: Some(limits),
-                        error: None,
-                    },
-                    Err(error) => ProviderUsage {
-                        provider,
-                        limits: None,
-                        error: Some(error.to_string()),
-                    },
-                }
-            },
-        ))
-        .await)
     }
 }
 
@@ -137,100 +85,38 @@ pub(super) fn gateway_run_stats(sessions: &[SessionSummary]) -> Result<RunStats>
     Ok(totals)
 }
 
-pub(super) fn recent_run_groups(
-    records: Vec<ExecutionRecord>,
-    sessions: &[SessionSummary],
-    metadata: &SessionCatalogMetadata,
-) -> Vec<SessionRunGroup> {
-    let sessions_by_id = sessions
-        .iter()
-        .map(|session| (&session.session_id, session))
-        .collect::<HashMap<_, _>>();
-    let mut groups: Vec<SessionRunGroup> = Vec::new();
-    for record in records {
-        let Some(root) = visible_session(&record.session_id, &sessions_by_id) else {
-            continue;
-        };
-        let run = RunSummary::from(record);
-        if let Some(group) = groups
-            .iter_mut()
-            .find(|group| group.session_id == root.session_id)
-        {
-            group.runs.push(run);
-        } else {
-            groups.push(SessionRunGroup {
-                session_id: root.session_id.share(),
-                title: session_run_group_title(root, metadata),
-                runs: vec![run],
-            });
-        }
-    }
-    groups
-}
-
-pub(super) fn visible_session<'a>(
-    session_id: &SessionId,
-    sessions: &'a HashMap<&SessionId, &'a SessionSummary>,
-) -> Option<&'a SessionSummary> {
-    let mut session = *sessions.get(session_id)?;
-    for _ in 0..sessions.len() {
-        if session.catalog_visible {
-            return Some(session);
-        }
-        session = *sessions.get(session.parent_session_id.as_ref()?)?;
-    }
-    None
-}
-
-pub(super) fn session_run_group_title(
-    session: &SessionSummary,
-    metadata: &SessionCatalogMetadata,
-) -> String {
-    metadata
-        .get(&*session.session_id)
-        .and_then(|item| item.title.as_deref())
-        .map(str::trim)
-        .filter(|title| !title.is_empty())
-        .or_else(|| {
-            session
-                .first_user_message
-                .as_deref()
-                .map(str::trim)
-                .filter(|title| !title.is_empty())
-        })
-        .unwrap_or("Untitled")
-        .to_owned()
-}
-
 pub(super) async fn gateway_ready(
     state: GatewayReadySnapshot,
 ) -> std::result::Result<ReadyPayload, Rejection> {
     let credentials = state.credential_catalog_gate.lock().await;
-    let (routes, provider_instances, media) = {
-        (
-            configured_model_routes(
-                &state.configured_providers,
-                state
-                    .bot_defaults
-                    .as_ref()
-                    .map(|defaults| defaults.config.provider.instance.as_str()),
-                &state.store,
-                &state.credentials,
-            )
-            .map_err(internal)?,
-            provider_instances(
-                &state.configured_providers,
-                &state.store,
-                &state.credentials,
-            )
-            .map_err(internal)?,
-            crate::harness::mobius::provider_catalog::media_routes(
-                &state.configured_providers,
-                Some((&state.store, &state.credentials)),
-            )
-            .map_err(internal)?,
-        )
-    };
+    let credentialed = CredentialedInstances::resolve(
+        &state.configured_providers,
+        &state.store,
+        &state.credentials,
+    )
+    .map_err(internal)?;
+    let routes = configured_model_routes(
+        &state.configured_providers,
+        state
+            .bot_defaults
+            .as_ref()
+            .map(|defaults| defaults.config.provider.instance.as_str()),
+        &credentialed,
+    )
+    .map_err(internal)?;
+    let provider_instances = provider_instances(
+        &state.configured_providers,
+        &credentialed,
+        &state.credentials,
+    )
+    .map_err(internal)?;
+    let media = crate::harness::mobius::provider_catalog::media_routes(
+        &state.configured_providers,
+        Some(&credentialed),
+    )
+    .map_err(internal)?;
+    let voices = crate::harness::mobius::provider_catalog::VoiceRoutes::from_routes(&media.voices)
+        .map_err(internal)?;
     let mut model_providers = BTreeMap::new();
     let models = route_choices(routes, &mut model_providers);
     let image_models = route_choices(media.images, &mut model_providers);
@@ -244,12 +130,6 @@ pub(super) async fn gateway_ready(
         },
         subagent_ceilings,
     );
-    let voices = crate::harness::mobius::provider_catalog::VoiceRoutes::new(
-        &state.configured_providers,
-        &state.store,
-        &state.credentials,
-    )
-    .map_err(internal)?;
     let default_capabilities = state
         .bot_defaults
         .as_ref()
@@ -296,6 +176,13 @@ pub(super) async fn gateway_ready(
             middleware_features,
             extensions,
             contributions,
+            limits: crate::wire::CompositionLimits {
+                min_model_steps: 1,
+                default_model_steps: crate::harness::mobius::DEFAULT_MAX_MODEL_STEPS as u64,
+                model_steps_step: 100,
+                max_system_prompt_bytes: crate::config::MAX_SYSTEM_PROMPT_BYTES as u64,
+                min_routine_interval_seconds: crate::bots::MIN_ROUTINE_INTERVAL_SECONDS,
+            },
         },
         harnesses,
         max_active_sessions: state.max_active_sessions,

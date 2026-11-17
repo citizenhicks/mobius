@@ -61,11 +61,13 @@ impl ConnectionVoice {
                         return;
                     };
                     let result = drive(&host, &route, call, &mut events, stopped).await;
+                    let error = result.err();
                     if updates
                         .send(ServerMessage::RealtimeVoiceEnded {
                             session_id: session,
                             voice_id: id,
-                            reason: result.err().map(|error| error.to_string()),
+                            failure: error.as_ref().and_then(Error::failure),
+                            reason: error.map(|error| error.to_string()),
                         })
                         .await
                         .is_err()
@@ -79,6 +81,7 @@ impl ConnectionVoice {
                             request_id: id,
                             session_id: session,
                             message: error.to_string().into(),
+                            failure: error.failure(),
                         })
                         .await
                         .is_err()
@@ -177,6 +180,7 @@ pub(super) async fn start_call(
                     request_id,
                     session_id,
                     message: rejection.message,
+                    failure: None,
                 }),
             )
             .await
@@ -201,6 +205,7 @@ pub(super) async fn end_call(
                 session_id,
                 voice_id,
                 reason: None,
+                failure: None,
             }),
         )
         .await?;

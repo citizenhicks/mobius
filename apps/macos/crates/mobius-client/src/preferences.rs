@@ -141,6 +141,11 @@ fn poisoned() -> anyhow::Error {
 }
 
 fn path() -> anyhow::Result<PathBuf> {
+    if cfg!(feature = "snapshot")
+        && let Some(directory) = std::env::var_os("MOBIUS_SNAPSHOT")
+    {
+        return Ok(PathBuf::from(directory).join("preferences.json"));
+    }
     let home =
         std::env::var_os("HOME").ok_or_else(|| anyhow::anyhow!("Home directory unavailable"))?;
     Ok(PathBuf::from(home).join("Library/Application Support/Mobius Desktop/preferences.json"))

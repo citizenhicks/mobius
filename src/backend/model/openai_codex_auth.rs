@@ -856,17 +856,18 @@ impl BrowserAuth {
         true
     }
 
-    /// Reads account usage with explicit authentication transport policy, when supported.
-    pub fn usage_limits_with_transport(
+    /// Reads account usage through a credential [`Self::load_with_transport`] returned, so
+    /// repeated reads reuse its HTTP client and token; `None` for another credential.
+    #[must_use]
+    pub fn usage_limits(
         &self,
-        path: &Path,
-        settings: super::super::ModelTransportSettings,
+        credential: &ProviderCredential,
     ) -> Option<BoxFuture<'static, Result<Vec<UsageLimit>>>> {
-        let path = path.to_path_buf();
-        Some(Box::pin(async move {
-            let auth = ChatGptAuth::load_with_transport(path, settings)?;
-            auth.usage_limits().await
-        }))
+        let ProviderCredential::Browser(auth) = credential else {
+            return None;
+        };
+        let auth = Arc::clone(auth).downcast::<ChatGptAuth>().ok()?;
+        Some(Box::pin(async move { auth.usage_limits().await }))
     }
 }
 

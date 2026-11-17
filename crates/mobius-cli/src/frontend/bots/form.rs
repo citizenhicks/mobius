@@ -10,7 +10,7 @@ use mobius_gateway::wire::{
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::{Action, FollowUp, request_action};
+use super::{Action, request_action};
 use crate::frontend::terminal::TextForm;
 use crate::frontend::wrap_step;
 
@@ -251,16 +251,14 @@ impl BotForm {
         let name = self.name.value.trim().to_owned();
         let description = self.description.value.trim().to_owned();
         match &self.mode {
-            BotFormMode::Create => {
-                FormFlow::Send(request_action("Create Bot", FollowUp::None, |request_id| {
-                    ClientMessage::CreateBot {
-                        request_id,
-                        harness: HarnessKind::Mobius,
-                        name,
-                        description,
-                    }
-                }))
-            }
+            BotFormMode::Create => FormFlow::Send(request_action("Create Bot", |request_id| {
+                ClientMessage::CreateBot {
+                    request_id,
+                    harness: HarnessKind::Mobius,
+                    name,
+                    description,
+                }
+            })),
             BotFormMode::Update { id, revision } => {
                 let Some(bot) = gateway.bots.iter().find(|bot| *bot.id == **id) else {
                     self.error = Some("The selected Bot is no longer available.".into());
@@ -284,7 +282,6 @@ impl BotForm {
                 };
                 FormFlow::Send(request_action(
                     "Update Bot identity and prompt",
-                    FollowUp::None,
                     |request_id| ClientMessage::UpdateBot {
                         request_id,
                         id: Arc::clone(id),
@@ -413,26 +410,22 @@ impl RoutineForm {
             bindings,
         };
         match &self.mode {
-            RoutineFormMode::Create(bot_id) => Ok(request_action(
-                "Create routine",
-                FollowUp::Routines,
-                |request_id| ClientMessage::CreateRoutine {
+            RoutineFormMode::Create(bot_id) => Ok(request_action("Create routine", |request_id| {
+                ClientMessage::CreateRoutine {
                     request_id,
                     bot_id: Arc::clone(bot_id),
                     definition,
-                },
-            )),
-            RoutineFormMode::Update(id) => Ok(request_action(
-                "Update routine",
-                FollowUp::Routines,
-                |request_id| ClientMessage::RoutineCommand {
+                }
+            })),
+            RoutineFormMode::Update(id) => Ok(request_action("Update routine", |request_id| {
+                ClientMessage::RoutineCommand {
                     request_id,
                     command: RoutineCommand {
                         routine_id: Arc::clone(id),
                         action: RoutineAction::Update { definition },
                     },
-                },
-            )),
+                }
+            })),
         }
     }
 

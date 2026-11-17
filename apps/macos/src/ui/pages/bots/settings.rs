@@ -1,6 +1,7 @@
 //! Agent settings for one Bot or for the agent defaults: one draft per scope, saved explicitly
 //! (AgentSettingsView.swift). The same body serves the settings pages and the chat side tab.
 
+use crate::numeric::ToFloat as _;
 use crate::ui::Workspace;
 use crate::ui::primitives::field;
 use gpui::{App, AppContext as _, Context, Entity, Subscription, Window};
@@ -8,7 +9,6 @@ use gpui_component::input::{InputEvent, InputState, TextareaState};
 use mobius::protocol::{FrontendSettingKind, FrontendSettingValue};
 use mobius_gateway::wire::{
     AgentComposition, BotShape, HarnessConfig, HarnessKind, ProviderTint, ReadyPayload,
-    SessionActivityState,
 };
 use std::collections::BTreeMap;
 #[cfg(feature = "snapshot")]
@@ -88,11 +88,12 @@ impl AgentDraft {
             input.set_value(text, window, cx);
         });
         let name = field(&name, "Bot name", window, cx);
+        let limits = gateway.agent_catalog.limits;
         let steps = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("Maximum model steps")
-                .step(100.)
-                .min(1.)
+                .step(limits.model_steps_step.to_f64())
+                .min(limits.min_model_steps.to_f64())
         });
         let mut numbers = BTreeMap::new();
         if let Some(config) = composition {
@@ -408,17 +409,6 @@ impl Workspace {
         self.bots.drafts.remove(scope);
         self.ensure_draft(scope, window, cx);
         cx.notify();
-    }
-
-    /// Whether a chat of this Bot is running; the gateway refuses changes meanwhile.
-    pub(super) fn scope_busy(&self, scope: &AgentScope) -> bool {
-        let AgentScope::Bot(id) = scope else {
-            return false;
-        };
-        self.client.state.sessions.iter().any(|session| {
-            &session.session_context.owner_id == id
-                && session.activity.state != SessionActivityState::Idle
-        })
     }
 }
 

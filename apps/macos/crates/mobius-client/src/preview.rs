@@ -1,15 +1,14 @@
 use mobius::SessionId;
 use mobius::protocol::SessionFileRecord;
 use mobius_gateway::wire::{
-    ClientMessage, GitDiffScope, ServerMessage, WorkspaceFileRecord, WorkspaceFileScope,
+    ClientMessage, GitDiffScope, MAX_READ_CHUNK_BYTES, ServerMessage, WorkspaceFileRecord,
+    WorkspaceFileScope,
 };
 use mobius_gateway::{Error, Result};
 
 use super::files::TransferLink;
 
 const MAX_PREVIEW_BYTES: usize = 16 * 1024 * 1024;
-/// The gateway's largest workspace read.
-const READ_CHUNK_BYTES: usize = 256 * 1024;
 
 #[derive(Clone, Debug)]
 pub enum PreviewRequest {
@@ -33,6 +32,7 @@ pub enum PreviewData {
     Diff {
         scope: GitDiffScope,
         text: String,
+        truncated: bool,
     },
     ChatFiles(Vec<SessionFileRecord>),
 }
@@ -86,7 +86,16 @@ pub(super) async fn load(
         ServerMessage::WorkspaceFiles {
             files, truncated, ..
         } => Ok(PreviewData::Files { files, truncated }),
-        ServerMessage::GitDiff { scope, diff, .. } => Ok(PreviewData::Diff { scope, text: diff }),
+        ServerMessage::GitDiff {
+            scope,
+            diff,
+            truncated,
+            ..
+        } => Ok(PreviewData::Diff {
+            scope,
+            text: diff,
+            truncated,
+        }),
         ServerMessage::SessionFiles { files, .. } => Ok(PreviewData::ChatFiles(files)),
         _ => Err(Error::Protocol(
             "Gateway returned a different preview.".into(),
@@ -95,21 +104,33 @@ pub(super) async fn load(
 }
 
 async fn read_file(link: &TransferLink, session_id: &SessionId, path: &str) -> Result<PreviewData> {
+    use futures_util::StreamExt as _;
+    // The size is unknown until the last chunk; one read past the limit tells an
+    // oversized file from one that ends exactly at it.
+    let read = |request_id, offset, max_bytes| ClientMessage::ReadWorkspaceFile {
+        request_id,
+        session_id: session_id.share(),
+        path: path.into(),
+        offset,
+        max_bytes,
+    };
+    // Most source files fit in one chunk. Do not speculate beyond their end.
+    let first = futures_util::stream::once(
+        link.request(|request_id| read(request_id, 0, MAX_READ_CHUNK_BYTES)),
+    );
+    let remaining = super::files::chunk_reads(
+        link,
+        MAX_READ_CHUNK_BYTES as u64,
+        MAX_PREVIEW_BYTES as u64 + 1,
+        read,
+    );
+    let reads = first.chain(remaining);
+    let mut reads = std::pin::pin!(reads);
     let mut bytes = Vec::new();
-    loop {
-        let offset = bytes.len() as u64;
-        let response = link
-            .request(|request_id| ClientMessage::ReadWorkspaceFile {
-                request_id,
-                session_id: session_id.share(),
-                path: path.into(),
-                offset,
-                max_bytes: READ_CHUNK_BYTES,
-            })
-            .await?;
+    while let Some(response) = reads.next().await {
         let ServerMessage::WorkspaceFileChunk {
             data, next_offset, ..
-        } = response
+        } = response?
         else {
             return Err(Error::Protocol(
                 "Gateway returned an unexpected file preview.".into(),
@@ -117,9 +138,7 @@ async fn read_file(link: &TransferLink, session_id: &SessionId, path: &str) -> R
         };
         bytes.extend(data);
         if bytes.len() > MAX_PREVIEW_BYTES {
-            return Err(Error::Protocol(
-                "This file exceeds the 16 MiB preview limit.".into(),
-            ));
+            break;
         }
         if next_offset.is_none() {
             return Ok(PreviewData::File {
@@ -128,4 +147,7 @@ async fn read_file(link: &TransferLink, session_id: &SessionId, path: &str) -> R
             });
         }
     }
+    Err(Error::Protocol(
+        "This file exceeds the 16 MiB preview limit.".into(),
+    ))
 }

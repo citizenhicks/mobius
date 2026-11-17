@@ -352,7 +352,7 @@ impl Runner {
             .filter(|_| self.state.last_usage.is_some())
             .map(|estimate| {
                 let buffer = window - self.config.middleware.context_limit(window);
-                estimate.breakdown(last.input_tokens, buffer)
+                estimate.breakdown(last.input_tokens, buffer, window)
             });
         turn_event(
             submission_id,
@@ -360,6 +360,7 @@ impl Runner {
                 info: Some(TokenUsageInfo {
                     context,
                     total_token_usage: self.state.total_usage,
+                    context_used: last.context_used(),
                     last_token_usage: last,
                     model_context_window: Some(self.config.context_window),
                 }),

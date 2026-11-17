@@ -166,6 +166,7 @@ fn an_authentication_failure_shows_once_with_the_login_hint() {
         retryable: false,
         status: None,
         retry_after: None,
+        failure: None,
     });
     let aborted = EventMsg::TurnAborted(TurnAbortedEvent {
         idle: false,

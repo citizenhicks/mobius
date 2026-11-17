@@ -112,6 +112,7 @@ fn event_fixtures(this: &mut Workspace) {
         status: RoutineRunStatus::Failed,
         session_id: Some(session),
         message: Some("The workspace folder is missing.".into()),
+        failure: None,
     });
 }
 
@@ -241,7 +242,7 @@ fn fixture_setups() -> [serde_json::Value; 4] {
                  models: Vec<serde_json::Value>,
                  effort: &str| {
         json!({
-            "label": label, "tint": tint, "configured": true, "models": models,
+            "label": label, "tint": tint, "tool_discovery": "native", "configured": true, "models": models,
             "selection": {"instance": id, "provider": provider, "model": model,
                 "base_url": null, "endpoint_auth": "provider_default",
                 "reasoning_effort": effort,
@@ -342,7 +343,7 @@ fn provider_fixture(this: &mut Workspace) {
             "gateway_version": "preview", "machine_name": "Local preview", "computer_view": "unavailable",
             "sessions": [], "background_approvals": [], "bots": [],
             "providers": providers, "provider_instances": instances,
-            "agent_catalog": {
+            "agent_catalog": {"limits": {"min_model_steps": 1, "default_model_steps": 2042, "model_steps_step": 100, "max_system_prompt_bytes": 65536, "min_routine_interval_seconds": 60},
                 "bot_defaults": null, "default_capabilities": null,
                 "models": models, "image_models": [], "voice_models": [],
                 "model_providers": model_providers,

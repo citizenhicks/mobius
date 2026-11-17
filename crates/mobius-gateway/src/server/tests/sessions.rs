@@ -128,6 +128,7 @@ async fn slow_git_diff_does_not_block_chat_history() {
             session_id: actual,
             scope,
             diff,
+            ..
         } = next_gateway_message(&mut events).await
         {
             assert_eq!(&*request_id, "diff");
@@ -290,19 +291,24 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
     open_chat(&sender, &mut events, &other_session_id).await;
     sender
         .send(ClientMessage::ListSessionFiles {
-            request_id: "reject-unselected-file-list".into(),
+            request_id: "unselected-file-list".into(),
             session_id: session_id.clone(),
         })
         .await
-        .expect("reject file list for unselected chat");
+        .expect("list files of an unselected chat");
     loop {
-        if let ServerMessage::Rejected {
-            request_id, code, ..
-        } = next_gateway_message(&mut events).await
-            && request_id.as_ref() == "reject-unselected-file-list"
-        {
-            assert_eq!(code, "session_not_selected");
-            break;
+        match next_gateway_message(&mut events).await {
+            ServerMessage::SessionFiles { request_id, .. }
+                if request_id.as_ref() == "unselected-file-list" =>
+            {
+                break;
+            }
+            ServerMessage::Rejected { request_id, .. }
+                if request_id.as_ref() == "unselected-file-list" =>
+            {
+                panic!("an unselected chat's files must be readable");
+            }
+            _ => {}
         }
     }
     open_chat(&sender, &mut events, &session_id).await;

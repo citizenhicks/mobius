@@ -65,7 +65,7 @@ fn identity_fixture(this: &mut Workspace, window: &mut Window, cx: &mut Context<
         json!({
             "gateway_version": "preview", "machine_name": "Local preview", "computer_view": "unavailable", "sessions": [],
             "background_approvals": [], "providers": [], "provider_instances": [],
-            "agent_catalog": {
+            "agent_catalog": {"limits": {"min_model_steps": 1, "default_model_steps": 2042, "model_steps_step": 100, "max_system_prompt_bytes": 65536, "min_routine_interval_seconds": 60},
                 "bot_defaults": null, "default_capabilities": null, "models": [],
                 "model_providers": {}, "image_models": [], "voice_models": [],
                 "middleware_features": [], "extensions": [], "contributions": []
@@ -77,7 +77,7 @@ fn identity_fixture(this: &mut Workspace, window: &mut Window, cx: &mut Context<
                 "description": "An offline Bot settings preview.", "tint": "blue", "shape": "circle",
                 "harness": "mobius",
                 "conversation_session_id": "preview-conversation", "capabilities": {"attachments": false, "computer": false, "voice": {"state": "off"}, "memory": {"enabled": false, "global": false}},
-                "routine_interaction_policy": "unattended",
+                "routine_interaction_policy": "unattended", "built_in": false,
                 "config": {"revision": 1, "config": {
                     "harness": "mobius",
                     "provider": {"instance": "preview", "provider": "preview", "model": "preview",
@@ -135,7 +135,7 @@ fn media_instance(
 ) -> serde_json::Value {
     use serde_json::json;
     json!({
-        "label": label, "tint": tint, "configured": true,
+        "label": label, "tint": tint, "tool_discovery": "native", "configured": true,
         "models": if provider == "lab" {
             json!([{"id": model, "label": model, "description": "", "context_window": 100,
                 "reasoning": [], "default_reasoning": null, "tool_discovery": "native"}])
@@ -239,7 +239,7 @@ pub(super) fn media_fixture(this: &mut Workspace) {
     let bot = json!({
         "id": "preview-bot", "handle": "demo", "name": "Demo Bot",
         "description": "An offline media preview.", "tint": "blue", "shape": "circle", "harness": "mobius",
-        "conversation_session_id": "preview-conversation", "routine_interaction_policy": "unattended",
+        "conversation_session_id": "preview-conversation", "routine_interaction_policy": "unattended", "built_in": false,
         "capabilities": {"attachments": false, "computer": false, "voice": {"state": "ready",
             "route": "work::gpt-live-1::marin", "waits_for_session_started": true}, "memory": {"enabled": false, "global": false}},
         "config": {"revision": 1, "config": {"harness": "mobius",
@@ -264,7 +264,7 @@ pub(super) fn media_fixture(this: &mut Workspace) {
                 media_instance("work", "Work", "purple", "openai", "gpt-6"),
                 media_instance("lab", "Lab", "orange", "lab", "lab-1")
             ],
-            "agent_catalog": {
+            "agent_catalog": {"limits": {"min_model_steps": 1, "default_model_steps": 2042, "model_steps_step": 100, "max_system_prompt_bytes": 65536, "min_routine_interval_seconds": 60},
                 "bot_defaults": null, "default_capabilities": null, "models": models,
                 "image_models": images, "voice_models": voices, "model_providers": model_providers,
                 "middleware_features": [feature, voice], "extensions": [], "contributions": []

@@ -53,5 +53,6 @@ pub(super) fn bot(id: &str) -> BotRecord {
             },
         },
         routine_interaction_policy: RoutineInteractionPolicy::Unattended,
+        built_in: false,
     }
 }

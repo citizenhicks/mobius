@@ -103,7 +103,12 @@ impl ContextEstimate {
     }
 
     /// The parts scaled to `input_tokens`, the provider's real total for this request.
-    pub(crate) fn breakdown(&self, input_tokens: i64, compaction_buffer: i64) -> ContextBreakdown {
+    pub(crate) fn breakdown(
+        &self,
+        input_tokens: i64,
+        compaction_buffer: i64,
+        window: i64,
+    ) -> ContextBreakdown {
         let input_tokens = input_tokens.max(0);
         let counted: u128 = KINDS
             .iter()
@@ -128,28 +133,27 @@ impl ContextEstimate {
                     i64::try_from(quotient).unwrap_or(i64::MAX)
                 },
                 items,
+                counted: *kind != ContextPartKind::DeferredTools,
             })
             .collect::<Vec<_>>();
-        parts.sort_by_key(|part| {
-            (
-                part.kind == ContextPartKind::DeferredTools,
-                std::cmp::Reverse(part.tokens),
-            )
-        });
+        parts.sort_by_key(|part| (!part.counted, std::cmp::Reverse(part.tokens)));
         let allocated: i64 = parts
             .iter()
-            .filter(|part| part.kind != ContextPartKind::DeferredTools)
+            .filter(|part| part.counted)
             .map(|part| part.tokens)
             .sum();
-        if let Some(largest) = parts
-            .iter_mut()
-            .find(|part| part.kind != ContextPartKind::DeferredTools)
-        {
+        if let Some(largest) = parts.iter_mut().find(|part| part.counted) {
             largest.tokens += input_tokens - allocated;
         }
+        let compaction_buffer = compaction_buffer.max(0);
         ContextBreakdown {
             parts,
-            compaction_buffer: compaction_buffer.max(0),
+            used: input_tokens,
+            compaction_buffer,
+            free: window
+                .saturating_sub(input_tokens)
+                .saturating_sub(compaction_buffer)
+                .max(0),
         }
     }
 }
@@ -259,7 +263,7 @@ mod tests {
                 TokenEstimate::default(),
             )
             .expect("schemas");
-        let parts = estimate.breakdown(100, 0).parts;
+        let parts = estimate.breakdown(100, 0, 1_000).parts;
         assert_eq!(
             parts.iter().map(|part| part.kind).collect::<Vec<_>>(),
             [ContextPartKind::Tools, ContextPartKind::DeferredTools]
@@ -315,7 +319,7 @@ mod tests {
             estimate.add(kind, usize::MAX);
         }
         for total in [0, 1, i64::MAX] {
-            let breakdown = estimate.breakdown(total, 30_000);
+            let breakdown = estimate.breakdown(total, 30_000, 200_000);
             assert_eq!(breakdown.compaction_buffer, 30_000);
             let parts = breakdown.parts;
             let deferred = parts.last().expect("deferred");

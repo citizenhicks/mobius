@@ -13,7 +13,7 @@ use super::state::GatewayState;
 
 use crate::bots::BotStore;
 use crate::wire::{BotAction, BotSubscription, HookData, HookEvent, HookSelector, HookSource};
-use crate::wire::{RoutineRunStatus, ServerMessage};
+use crate::wire::{RoutineChange, RoutineRunStatus, ServerMessage};
 use crate::{Error, Result};
 use chrono::Utc;
 use mobius::SessionId;
@@ -25,6 +25,40 @@ use mobius::backend::checkpoint::{
 use mobius::protocol::{ActiveMessageDelivery, MessageSource};
 use mobius::protocol::{EventMsg, FrontendEvent, MessageAuthor, MessageSubmission, Op, Submission};
 use std::sync::Arc;
+
+fn routine_change(bots: &BotStore, data: &HookData) -> Option<RoutineChange> {
+    let (routine_id, run_id) = match data {
+        HookData::RoutineDeleted { routine_id } => {
+            return Some(RoutineChange::Deleted {
+                routine_id: Arc::clone(routine_id),
+            });
+        }
+        HookData::RoutineCreated { routine_id }
+        | HookData::RoutineUpdated { routine_id }
+        | HookData::RoutinePaused { routine_id }
+        | HookData::RoutineResumed { routine_id } => (routine_id, None),
+        HookData::RunStarted {
+            routine_id, run_id, ..
+        }
+        | HookData::RunFinished {
+            routine_id, run_id, ..
+        }
+        | HookData::RunSkipped {
+            routine_id, run_id, ..
+        } => (routine_id, Some(run_id)),
+        _ => return None,
+    };
+    // A routine deleted before its earlier facts are published has its own deletion fact.
+    let routine = bots
+        .routine_record(routine_id, Utc::now().timestamp())
+        .inspect_err(|error| tracing::debug!(%error, "routine changed before publication"))
+        .ok()?;
+    Some(match run_id.map(|run_id| bots.run(run_id)) {
+        Some(Ok(run)) => RoutineChange::Ran { routine, run },
+        // A skipped invocation may leave no run row; the routine still moved.
+        Some(Err(_)) | None => RoutineChange::Saved { routine },
+    })
+}
 
 impl GatewayHost {
     pub(crate) async fn set_bot_subscription(
@@ -225,7 +259,7 @@ impl GatewayHost {
                 ),
             };
             bots.storage
-                .finish_run(&run.id, status, finished_at, message)?;
+                .finish_run(&run.id, status, finished_at, message, None)?;
         }
         Ok(())
     }
@@ -263,7 +297,11 @@ impl GatewayHost {
 
         for event in bots.storage.unpublished_events(100).map_err(internal)? {
             let id = Arc::clone(&event.id);
+            let change = routine_change(&bots, &event.data);
             super::send_event(&self.events, ServerMessage::HookEvent { event });
+            if let Some(change) = change {
+                super::send_event(&self.events, ServerMessage::RoutineChanged { change });
+            }
             bots.storage.event_published(&id).map_err(internal)?;
         }
         drop(mutation);

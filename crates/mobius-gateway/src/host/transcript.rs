@@ -197,7 +197,11 @@ impl TranscriptReducer {
             EventMsg::TurnAborted(turn) => {
                 self.finish_turn(&mut step, &turn.turn_id);
                 if !rendered {
-                    self.notice(&mut step, FrontendTone::Warning, &turn.reason, true);
+                    self.notice(
+                        &mut step,
+                        Notice::new(FrontendTone::Warning, &turn.reason),
+                        true,
+                    );
                 }
             }
             // External reports keep their capability-owned presentation.
@@ -208,14 +212,22 @@ impl TranscriptReducer {
             EventMsg::AssistantContentDelta(delta) => self.assistant_delta(&mut step, delta),
             EventMsg::AssistantMessage(message) => self.assistant(&mut step, message),
             EventMsg::Error(error) if !rendered => {
-                self.notice(&mut step, FrontendTone::Error, &error.message, false);
+                let notice = Notice {
+                    failure: error.failure,
+                    ..Notice::new(FrontendTone::Error, &error.message)
+                };
+                self.notice(&mut step, notice, false);
             }
             EventMsg::Warning(warning) if !rendered => {
-                self.notice(&mut step, FrontendTone::Warning, &warning.message, false);
+                self.notice(
+                    &mut step,
+                    Notice::new(FrontendTone::Warning, &warning.message),
+                    false,
+                );
             }
             EventMsg::SubmissionRejected(rejected) if !rendered => {
                 let text: Arc<str> = rejected.message.as_str().into();
-                self.notice(&mut step, FrontendTone::Error, &text, false);
+                self.notice(&mut step, Notice::new(FrontendTone::Error, &text), false);
             }
             _ => {}
         }
@@ -659,11 +671,12 @@ impl TranscriptReducer {
         }
     }
 
-    fn notice(&mut self, step: &mut Step, tone: FrontendTone, text: &Arc<str>, terminal: bool) {
+    fn notice(&mut self, step: &mut Step, notice: Notice<'_>, terminal: bool) {
         let id = self.id(format_args!("notice:{}:{}", step.sequence, step.base));
         let content = TranscriptItemContent::Notice {
-            tone,
-            text: Arc::clone(text),
+            tone: notice.tone,
+            text: Arc::clone(notice.text),
+            failure: notice.failure,
         };
         let item = self.set(step, id, 0, content);
         item.terminal |= terminal;
@@ -1577,3 +1590,20 @@ const fn phase_index(phase: ModelStepContentPhase) -> u32 {
 
 #[cfg(test)]
 mod tests;
+
+#[derive(Clone, Copy)]
+struct Notice<'text> {
+    tone: FrontendTone,
+    text: &'text Arc<str>,
+    failure: Option<mobius::FailureClass>,
+}
+
+impl<'text> Notice<'text> {
+    const fn new(tone: FrontendTone, text: &'text Arc<str>) -> Self {
+        Self {
+            tone,
+            text,
+            failure: None,
+        }
+    }
+}

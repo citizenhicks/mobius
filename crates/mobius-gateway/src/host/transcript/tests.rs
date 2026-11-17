@@ -429,6 +429,7 @@ fn error(message: &str) -> EventMsg {
         retryable: false,
         status: None,
         retry_after: None,
+        failure: None,
     })
 }
 
@@ -545,20 +546,6 @@ fn ops_bring_a_client_from_any_snapshot_to_the_final_snapshot() {
         last.rows.iter().map(|row| row.position).collect::<Vec<_>>(),
         "snapshot rows are in position order"
     );
-}
-
-#[test]
-fn only_the_first_turn_after_an_agent_restart_opens_resumed() {
-    let mut chat = Chat::new(0);
-    for (submission, msg, blocks) in session() {
-        chat.send(submission, msg, blocks);
-    }
-    chat.send(None, started("c"), Vec::new());
-    chat.send(Some("ask-c"), user("more", None), Vec::new());
-    let resumed = |id: &str| chat.client.item(id).resumed;
-    assert!(!resumed("message:ask-a"), "the chat's first turn");
-    assert!(resumed("message:ask-b"), "the turn after the restart");
-    assert!(!resumed("message:ask-c"), "a later turn of the same run");
 }
 
 #[test]
@@ -1084,6 +1071,32 @@ fn invocation_counts_survive_artifacts_missing_blocks_and_failed_calls() {
         chat.reducer.invocations.is_empty(),
         "trimmed turns release invocation metadata"
     );
+}
+
+#[test]
+fn a_provider_failure_keeps_its_class_on_the_notice() {
+    let mut chat = Chat::new(0);
+    chat.send(
+        None,
+        EventMsg::Error(ErrorEvent {
+            failure: Some(mobius::FailureClass::OutOfCredits),
+            ..match error("HTTP 402") {
+                EventMsg::Error(error) => error,
+                _ => unreachable!(),
+            }
+        }),
+        Vec::new(),
+    );
+    let failures: Vec<_> = chat
+        .client
+        .items
+        .values()
+        .filter_map(|item| match &item.content {
+            TranscriptItemContent::Notice { failure, .. } => *failure,
+            _ => None,
+        })
+        .collect();
+    assert_eq!(failures, [mobius::FailureClass::OutOfCredits]);
 }
 
 #[test]

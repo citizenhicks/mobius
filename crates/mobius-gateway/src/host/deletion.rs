@@ -153,7 +153,7 @@ impl GatewayHost {
                 format!("Bot configuration revision is now {}", bot.config.revision),
             ));
         }
-        if &*bot.handle == "mobius" {
+        if bot.built_in {
             return Err(bot_delete_rejection(
                 "bot_undeletable",
                 "the built-in @mobius Bot cannot be deleted",

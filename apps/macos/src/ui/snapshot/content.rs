@@ -101,6 +101,14 @@ fn changes_header_action(
 }
 
 pub(super) fn verify_content_action(name: &str, this: &Workspace, cx: &App) {
+    if name == "chat-fixture-turn-changes" {
+        assert!(
+            PROBES.with(|probes| probes.borrow().contains_key("changes:open:0")),
+            "turn changes must paint a changed file header"
+        );
+        eprintln!("snapshot {name}: changed file header is visible");
+        return;
+    }
     if name == "downloaded-file-identity" {
         let mention = this
             .active_content()
@@ -296,6 +304,7 @@ fn complete_parked_changes(
             Ok(crate::gateway::PreviewData::Diff {
                 scope: mobius_gateway::wire::GitDiffScope::Unstaged,
                 text: "wrong chat".into(),
+                truncated: false,
             }),
             cx,
         );
@@ -310,6 +319,7 @@ fn complete_parked_changes(
         Ok(crate::gateway::PreviewData::Diff {
             scope: mobius_gateway::wire::GitDiffScope::Unstaged,
             text: CHANGES_REVIEW.into(),
+            truncated: false,
         }),
         cx,
     );

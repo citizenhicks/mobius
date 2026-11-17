@@ -3,7 +3,7 @@
 
 use super::controls::{file_detail, file_glyph};
 use super::*;
-use crate::numeric::{Saturating, ToFloat};
+use crate::numeric::ToFloat;
 use mobius::SessionId;
 use mobius::protocol::{ContextBreakdown, ContextPartKind, TokenUsageInfo};
 use mobius_gateway::wire::{ClientMessage, SessionReadyPayload};
@@ -46,13 +46,7 @@ fn session_metrics(
 ) -> SessionMetrics {
     let complete = &session.run_stats.completed;
     let active = session.run_stats.active.as_ref();
-    let last = usage.map(|info| &info.last_token_usage);
-    let context = last.map(|usage| {
-        usage
-            .total_tokens
-            .max(usage.input_tokens.saturating_add(usage.output_tokens))
-            .max(0)
-    });
+    let context = usage.map(|info| info.context_used);
     let limit = session.context_limit_tokens.filter(|limit| *limit > 0);
     let fraction = context
         .zip(limit)
@@ -881,12 +875,9 @@ fn context_parts(
         used = format!("{used} · {}", percent(fraction.into()));
     }
     let window = metrics.limit.unwrap_or(0).max(1).to_f32();
-    let counted = breakdown.into_iter().flat_map(|context| {
-        context
-            .parts
-            .iter()
-            .filter(|part| part.kind != ContextPartKind::DeferredTools)
-    });
+    let counted = breakdown
+        .into_iter()
+        .flat_map(|context| context.parts.iter().filter(|part| part.counted));
     let segments: Vec<_> = match breakdown {
         Some(_) => counted
             .map(|part| (part.tokens, part_tone(part.kind, p)))
@@ -930,22 +921,16 @@ fn context_rows(context: &ContextBreakdown, window: f32, p: &Palette) -> Div {
                     .child(share),
             )
     };
-    let used: i64 = context
-        .parts
-        .iter()
-        .filter(|part| part.kind != ContextPartKind::DeferredTools)
-        .map(|part| part.tokens)
-        .sum();
-    let free = (window.saturating_i64() - used - context.compaction_buffer).max(0);
     div()
         .flex()
         .flex_col()
         .gap(space::XS)
         .typography(Type::Caption)
         .children(context.parts.iter().map(|part| {
-            let share = match part.kind {
-                ContextPartKind::DeferredTools => "—".into(),
-                _ => share(part.tokens),
+            let share = if part.counted {
+                share(part.tokens)
+            } else {
+                "—".into()
             };
             row(
                 part_tone(part.kind, p),
@@ -960,7 +945,7 @@ fn context_rows(context: &ContextBreakdown, window: f32, p: &Palette) -> Div {
             context.compaction_buffer,
             share(context.compaction_buffer),
         ))
-        .child(row(p.hover, "Free", free, share(free)))
+        .child(row(p.hover, "Free", context.free, share(context.free)))
 }
 
 fn part_label(kind: ContextPartKind) -> &'static str {

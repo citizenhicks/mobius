@@ -43,7 +43,7 @@ impl Workspace {
             if awaiting {
                 row = row.status(icon("hi.bellDot", &palette(cx)).size(glyph::MARK));
             }
-            if let Some(reason) = crate::ui::pages::harness::unavailable(bot.harness) {
+            if let Some(reason) = self.harness_unavailable(bot.harness) {
                 row = row.muted().subtitle(reason);
             }
             list = list

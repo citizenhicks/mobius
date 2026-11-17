@@ -27,7 +27,10 @@ pub(super) fn prepare(
         GatewayAction::Pair => ClientMessage::CreatePairingCode { request_id },
         GatewayAction::Profile => ClientMessage::GetProfile {
             request_id,
-            include_provider_usage: true,
+            parts: mobius_gateway::wire::ProfileParts {
+                provider_usage: true,
+                run_stats: true,
+            },
         },
         GatewayAction::Rename(title) => ClientMessage::RenameSession {
             request_id,
@@ -141,7 +144,7 @@ fn render_profile(profile: &ProfileSnapshot, provider_instances: &[ProviderInsta
             day.unix_day, provider, day.usage.total_tokens, day.usage.cached_input_tokens
         )
     }));
-    for usage in &profile.provider_usage {
+    for usage in profile.provider_usage.iter() {
         let provider =
             provider_instance_label(provider_instances, &usage.provider).unwrap_or(&usage.provider);
         if let Some(error) = &usage.error {

@@ -9,7 +9,7 @@ use futures_util::{StreamExt as _, stream};
 use mobius::SessionId;
 use mobius::protocol::SessionFileReference;
 use mobius_gateway::client::{Endpoint, GatewayEvents, GatewaySender};
-use mobius_gateway::wire::{ClientMessage, ServerMessage};
+use mobius_gateway::wire::{ClientMessage, MAX_READ_CHUNK_BYTES, ServerMessage};
 use mobius_gateway::{Error, Result};
 use tokio::sync::{RwLock, RwLockReadGuard, oneshot};
 use uuid::Uuid;
@@ -23,8 +23,6 @@ mod transfer_tests;
 
 /// Requests one transfer keeps in flight on the shared connection.
 pub(super) const WINDOW: usize = 4;
-/// The gateway's largest session file read.
-const READ_CHUNK_BYTES: usize = 256 * 1024;
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 /// A transfer connection unused for a whole interval closes.
 const IDLE_INTERVAL: Duration = Duration::from_secs(30);
@@ -366,15 +364,15 @@ impl Transfer {
     async fn run(&self, transfers: &Arc<Transfers>) -> Result<Option<Update>> {
         let link = transfers.link().await?;
         let session_id = match self {
-            Self::Export { session_id, .. }
-            | Self::Download { session_id, .. }
-            | Self::Thumbnail { session_id, .. }
-            | Self::Upload { session_id, .. }
-            | Self::Delete { session_id, .. }
-            | Self::Preview { session_id, .. } => session_id,
-            // Selecting would start a stopped chat; the gateway reads history without it,
-            // and an older gateway's rejection leaves the chat without a recap.
-            Self::Recent { .. } => return self.transfer(&link, transfers.endpoint(), None).await,
+            Self::Upload { session_id, .. } | Self::Preview { session_id, .. } => session_id,
+            // Selecting would start a stopped chat. History, stored files and their removal
+            Self::Delete { .. }
+            | Self::Export { .. }
+            | Self::Download { .. }
+            | Self::Thumbnail { .. }
+            | Self::Recent { .. } => {
+                return self.transfer(&link, transfers.endpoint(), None).await;
+            }
         };
         let selected = link.select(session_id).await?;
         let workspace = selected
@@ -599,6 +597,19 @@ pub(super) async fn delete(
     }
 }
 
+pub(super) fn chunk_reads<'link>(
+    link: &'link TransferLink,
+    offset: u64,
+    len: u64,
+    read: impl Fn(Arc<str>, u64, usize) -> ClientMessage + Copy + 'link,
+) -> impl futures_util::Stream<Item = Result<ServerMessage>> + 'link {
+    stream::iter((offset..len.max(1)).step_by(MAX_READ_CHUNK_BYTES))
+        .map(move |offset| {
+            link.request(move |request_id| read(request_id, offset, MAX_READ_CHUNK_BYTES))
+        })
+        .buffered(WINDOW)
+}
+
 /// Reads the file with a few chunk requests in flight, since each costs a round trip.
 async fn download(
     link: &TransferLink,
@@ -616,17 +627,15 @@ async fn download(
     })
     .await
     .map_err(std::io::Error::other)??;
-    let mut chunks = stream::iter((0..file.size.max(1)).step_by(READ_CHUNK_BYTES))
-        .map(|offset| {
-            link.request(move |request_id| ClientMessage::ReadSessionFile {
-                request_id,
-                session_id: session_id.share(),
-                file_id: file.id.as_str().into(),
-                offset,
-                max_bytes: READ_CHUNK_BYTES,
-            })
-        })
-        .buffered(WINDOW);
+    let mut chunks = chunk_reads(link, 0, file.size, |request_id, offset, max_bytes| {
+        ClientMessage::ReadSessionFile {
+            request_id,
+            session_id: session_id.share(),
+            file_id: file.id.as_str().into(),
+            offset,
+            max_bytes,
+        }
+    });
     let mut complete = false;
     while let Some(response) = chunks.next().await {
         let ServerMessage::SessionFileChunk {

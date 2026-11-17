@@ -529,6 +529,7 @@ fn new_record(definition: &ProviderStatus) -> ProviderInstance {
         models: Vec::new(),
         image_model_ids: Vec::new(),
         operator_managed: false,
+        tool_discovery: model.map_or(definition.tool_discovery, |model| model.tool_discovery),
     }
 }
 

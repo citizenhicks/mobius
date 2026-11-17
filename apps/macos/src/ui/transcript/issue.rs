@@ -1,7 +1,3 @@
-//! Model provider failures in plain words (ProviderIssue.swift). The gateway sends the
-//! provider's raw text, such as `provider error: Responses HTTP 402 Payment Required: …`;
-//! anything not recognised here keeps that text.
-
 use crate::gateway::TranscriptEntry;
 use crate::ui::Workspace;
 use crate::ui::navigation::Section as Rail;
@@ -15,7 +11,8 @@ use gpui::{
     SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
 };
 
-use mobius::protocol::FrontendTone;
+use mobius::FailureClass;
+use mobius_gateway::wire::TranscriptItemContent;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::ui) enum ProviderIssue {
@@ -25,7 +22,6 @@ pub(in crate::ui) enum ProviderIssue {
     RejectedKey,
     Declined,
     Busy,
-    TimedOut,
     Unavailable,
     ContextTooLong,
 }
@@ -44,61 +40,32 @@ pub(in crate::ui) struct Explanation {
 }
 
 impl ProviderIssue {
-    pub(in crate::ui) fn classify(message: &str) -> Option<Self> {
-        let text = message.to_lowercase();
-        let has = |words: &[&str]| words.iter().any(|word| text.contains(word));
-        let status = http_status(message);
-        Some(if text.contains("live seconds exhausted") {
-            Self::LiveMinutesUsed
-        } else if text.contains("live access unavailable") {
-            Self::LiveUnavailable
-        } else if has(&[
-            "context length",
-            "context window",
-            "maximum context",
-            "prompt is too long",
-        ]) {
-            Self::ContextTooLong
-        } else if status == Some(402)
-            || has(&[
-                "requires more credits",
-                "insufficient credits",
-                "insufficient_quota",
-            ])
-        {
-            Self::OutOfCredit
-        } else if status == Some(401) || text.contains("credential has expired") {
-            Self::RejectedKey
-        } else {
-            match status? {
-                403 => Self::Declined,
-                429 => Self::Busy,
-                408 | 504 => Self::TimedOut,
-                500 | 502 | 503 => Self::Unavailable,
-                _ => return None,
-            }
+    pub(in crate::ui) const fn from_failure(failure: FailureClass, live: bool) -> Option<Self> {
+        Some(match failure {
+            FailureClass::OutOfCredits if live => Self::LiveMinutesUsed,
+            FailureClass::Forbidden if live => Self::LiveUnavailable,
+            FailureClass::OutOfCredits => Self::OutOfCredit,
+            FailureClass::Authentication => Self::RejectedKey,
+            FailureClass::Forbidden | FailureClass::ContentPolicy => Self::Declined,
+            FailureClass::RateLimited => Self::Busy,
+            FailureClass::Transient => Self::Unavailable,
+            FailureClass::ContextLengthExceeded => Self::ContextTooLong,
+            _ => return None,
         })
     }
 }
 
 /// An error notice's issue and the gateway's text it came from.
 pub(super) fn provider_issue(entry: &TranscriptEntry) -> Option<(ProviderIssue, &str)> {
-    let block = entry.block()?;
-    if block.tone != FrontendTone::Error {
+    let TranscriptItemContent::Notice {
+        text,
+        failure: Some(failure),
+        ..
+    } = &entry.content
+    else {
         return None;
-    }
-    let message = if block.text.is_empty() {
-        block.title.as_str()
-    } else {
-        block.text.as_str()
     };
-    Some((ProviderIssue::classify(message)?, message))
-}
-
-/// The status the gateway writes as `HTTP 402` after the provider's label.
-fn http_status(message: &str) -> Option<u16> {
-    let (_, rest) = message.split_once("HTTP ")?;
-    rest.get(..3)?.parse().ok()
+    Some((ProviderIssue::from_failure(*failure, false)?, text))
 }
 
 /// The raw text for Details. Links into möbius Cloud's own provider account name its key and
@@ -233,10 +200,6 @@ impl Workspace {
                 "The model is busy right now. Try again in a moment.".to_owned(),
                 None,
             ),
-            ProviderIssue::TimedOut => (
-                "The model took too long to respond. Try again.".to_owned(),
-                None,
-            ),
             ProviderIssue::Unavailable => (
                 "This model is unavailable right now. Try again, or choose another model."
                     .to_owned(),
@@ -255,9 +218,12 @@ impl Workspace {
         }
     }
 
-    /// The gateway's text with a recognised provider failure put in plain words.
-    pub(in crate::ui) fn provider_failure_text(&self, message: &str) -> String {
-        match ProviderIssue::classify(message) {
+    pub(in crate::ui) fn failure_text(
+        &self,
+        message: &str,
+        failure: Option<FailureClass>,
+    ) -> String {
+        match failure.and_then(|failure| ProviderIssue::from_failure(failure, false)) {
             Some(issue) => self.explain(issue).text,
             None => message.to_owned(),
         }
@@ -360,48 +326,9 @@ mod tests {
     use std::prelude::v1::test;
 
     #[test]
-    fn provider_failures_are_recognised_from_the_gateway_text() {
-        let exhausted = "provider error: Responses HTTP 402 Payment Required: This request \
-            requires more credits, or fewer max_tokens. You requested up to 65536 tokens, but \
-            can only afford 49757. To increase, visit \
-            https://openrouter.ai/workspaces/default/keys/e370b92d and adjust the key's total limit";
-        let cases = [
-            (exhausted, Some(ProviderIssue::OutOfCredit)),
-            (
-                "provider error: Realtime HTTP 402 Payment Required: Live seconds exhausted",
-                Some(ProviderIssue::LiveMinutesUsed),
-            ),
-            (
-                "provider error: Realtime HTTP 403 Forbidden: Live access unavailable",
-                Some(ProviderIssue::LiveUnavailable),
-            ),
-            (
-                "provider error: Responses HTTP 401 Unauthorized: User not found.",
-                Some(ProviderIssue::RejectedKey),
-            ),
-            (
-                "provider error: model credential has expired or been revoked",
-                Some(ProviderIssue::RejectedKey),
-            ),
-            (
-                "provider error: Responses HTTP 429 Too Many Requests: Rate limit exceeded",
-                Some(ProviderIssue::Busy),
-            ),
-            (
-                "provider error: Responses HTTP 503 Service Unavailable: No endpoints found",
-                Some(ProviderIssue::Unavailable),
-            ),
-            (
-                "provider error: Responses HTTP 400 Bad Request: This model's maximum context \
-                 length is 128000 tokens",
-                Some(ProviderIssue::ContextTooLong),
-            ),
-            ("Codex request timed out.", None),
-            ("model response stream was interrupted", None),
-        ];
-        for (message, issue) in cases {
-            assert_eq!(ProviderIssue::classify(message), issue, "{message}");
-        }
+    fn cloud_links_leave_details_only_off_cloud() {
+        let exhausted = "provider error: Responses HTTP 402 Payment Required: To increase, \
+            visit https://openrouter.ai/workspaces/default/keys/e370b92d";
         assert!(!details(exhausted, true).contains("e370b92d"));
         assert!(details(exhausted, false).contains("e370b92d"));
     }

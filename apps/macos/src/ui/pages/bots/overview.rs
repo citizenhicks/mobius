@@ -108,7 +108,7 @@ impl Workspace {
             window,
             cx,
         );
-        let subtitle = match crate::ui::pages::harness::unavailable(bot.harness) {
+        let subtitle = match self.harness_unavailable(bot.harness) {
             Some(reason) => format!("@{} · {reason}", bot.handle),
             None => format!("@{}", bot.handle),
         };
@@ -134,8 +134,7 @@ impl Workspace {
             return Vec::new();
         };
         // This release offers run actions only for the möbius harness.
-        let ready =
-            self.client.link.is_ready() && crate::ui::pages::harness::available(bot.harness);
+        let ready = self.client.link.is_ready() && self.harness_available(bot.harness);
         let (chat, edit, routine) = (
             Arc::clone(&bot.id),
             Arc::clone(&bot.id),

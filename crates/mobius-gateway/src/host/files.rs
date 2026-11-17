@@ -9,7 +9,6 @@ use crate::wire::{WorkspaceFileRecord, WorkspaceFileScope};
 
 use super::Rejection;
 
-pub(super) const MAX_WORKSPACE_READ_BYTES: usize = 256 * 1024;
 const MAX_WORKSPACE_WRITE_BYTES: usize = 1024 * 1024;
 const MAX_WORKSPACE_FILES: usize = 20_000;
 const MAX_WORKSPACE_PATH_BYTES: usize = 1024 * 1024;
@@ -48,9 +47,10 @@ pub(super) async fn read(
     offset: u64,
     max_bytes: usize,
 ) -> std::result::Result<WorkspaceRead, Rejection> {
-    if max_bytes == 0 || max_bytes > MAX_WORKSPACE_READ_BYTES {
+    use crate::wire::MAX_READ_CHUNK_BYTES;
+    if max_bytes == 0 || max_bytes > MAX_READ_CHUNK_BYTES {
         return Err(invalid(format!(
-            "workspace read size must be 1–{MAX_WORKSPACE_READ_BYTES} bytes"
+            "workspace read size must be 1–{MAX_READ_CHUNK_BYTES} bytes"
         )));
     }
     let requested = Path::new(path);

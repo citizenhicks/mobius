@@ -136,6 +136,9 @@ pub enum TranscriptItemContent {
         tone: FrontendTone,
         /// The text.
         text: Arc<str>,
+        /// Why a model provider call failed, when one did.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        failure: Option<mobius::FailureClass>,
     },
     /// Where a fork of `parent` begins: inherited history above it, the chat's own below.
     ForkPoint {

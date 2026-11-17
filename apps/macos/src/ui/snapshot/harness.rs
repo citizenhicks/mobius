@@ -158,7 +158,7 @@ fn bot(
         "conversation_session_id": format!("fixture-conversation-{harness}"),
         "capabilities": {"attachments": false, "computer": false, "voice": {"state": "off"},
             "memory": {"enabled": true, "global": false}},
-        "routine_interaction_policy": "unattended",
+        "routine_interaction_policy": "unattended", "built_in": false,
         "config": {"revision": 1, "config": config}
     })
 }
@@ -230,7 +230,7 @@ pub(super) fn fixture(this: &mut Workspace) {
         json!({
             "gateway_version": "preview", "machine_name": "Local preview", "computer_view": "unavailable",
             "sessions": [], "background_approvals": [], "providers": [], "provider_instances": [],
-            "agent_catalog": {
+            "agent_catalog": {"limits": {"min_model_steps": 1, "default_model_steps": 2042, "model_steps_step": 100, "max_system_prompt_bytes": 65536, "min_routine_interval_seconds": 60},
                 "bot_defaults": defaults, "default_capabilities": null, "models": [],
                 "model_providers": {}, "image_models": [], "voice_models": [],
                 "middleware_features": [{"id": "memory", "label": "Memory",

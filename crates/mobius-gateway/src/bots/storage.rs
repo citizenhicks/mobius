@@ -12,7 +12,7 @@ use crate::{Error, Result};
 
 pub(super) const STATE_FILE: &str = "bots.sqlite3";
 
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const SCHEMA: &str = "
 BEGIN IMMEDIATE;
@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS routine_runs (
     ),
     session_id TEXT,
     message TEXT,
+    failure TEXT,
     CHECK ((status = 'running') = (finished_at IS NULL)),
     CHECK (status != 'running' OR session_id IS NOT NULL)
 );
@@ -86,7 +87,7 @@ CREATE TABLE IF NOT EXISTS bot_session_cursors (
     bot_id TEXT NOT NULL,
     sequence INTEGER NOT NULL CHECK (sequence >= 0)
 );
-PRAGMA user_version = 6;
+PRAGMA user_version = 7;
 COMMIT;
 ";
 
@@ -401,6 +402,7 @@ impl BotStorage {
         status: RoutineRunStatus,
         finished_at: i64,
         message: Option<Arc<str>>,
+        failure: Option<mobius::FailureClass>,
     ) -> Result<RoutineRun> {
         self.transaction(|transaction| {
             let mut run = query_run(transaction, id)?
@@ -417,10 +419,11 @@ impl BotStorage {
             run.status = status;
             run.finished_at = Some(finished_at);
             run.message = message;
+            run.failure = failure;
             validate_run(&run)?;
             transaction.execute(
-                "UPDATE routine_runs SET finished_at = ?1, status = ?2, message = ?3 WHERE id = ?4 AND status = 'running'",
-                params![finished_at, status_text(status), run.message, id],
+                "UPDATE routine_runs SET finished_at = ?1, status = ?2, message = ?3, failure = ?4 WHERE id = ?5 AND status = 'running'",
+                params![finished_at, status_text(status), run.message, failure.map(failure_text), id],
             )?;
             super::events::record_run(transaction, &run)?;
             Ok(run)
@@ -584,7 +587,7 @@ fn insert_run_row(transaction: &rusqlite::Transaction<'_>, run: &RoutineRun) -> 
 }
 
 const RUN_SELECT: &str = "SELECT id, routine_id, bot_id, started_at, finished_at, status,
-    session_id, message FROM routine_runs";
+    session_id, message, failure FROM routine_runs";
 
 fn query_run(source: &Connection, id: &str) -> Result<Option<RoutineRun>> {
     Ok(source
@@ -611,7 +614,25 @@ fn run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RoutineRun> {
         status,
         session_id: row.get(6)?,
         message: row.get(7)?,
+        failure: row
+            .get::<_, Option<String>>(8)?
+            .map(|text| serde_json::from_value(serde_json::Value::String(text)))
+            .transpose()
+            .map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    8,
+                    rusqlite::types::Type::Text,
+                    error.into(),
+                )
+            })?,
     })
+}
+
+fn failure_text(failure: mobius::FailureClass) -> String {
+    match serde_json::to_value(failure) {
+        Ok(serde_json::Value::String(text)) => text,
+        _ => String::new(),
+    }
 }
 
 fn validate_run(run: &RoutineRun) -> Result<()> {

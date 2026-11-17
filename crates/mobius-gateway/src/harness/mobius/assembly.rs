@@ -35,8 +35,8 @@ use crate::harness::mobius::middleware_manifest::{
     BuiltinMiddleware, MIDDLEWARE, MiddlewareRegistration, MobiusSettings,
 };
 use crate::harness::mobius::provider_catalog::{
-    CatalogRoute, catalog_routes, configured_model_providers, configured_model_routes,
-    credential_is_configured,
+    CatalogRoute, CredentialedInstances, catalog_routes, configured_model_providers,
+    configured_model_routes, credential_is_configured, default_instance,
 };
 use crate::sandbox::GatewaySandbox;
 use crate::wire::{
@@ -212,15 +212,31 @@ pub(crate) fn prepare_bot<'a>(
     // Resolve configuration while its owner can lend a lock guard; only runtime preparation awaits.
     let prepared = (|| {
         let config = &*composition;
-        let model_providers = configured_model_providers(gateway, store, credentials)?;
-        let endpoint = gateway
-            .configured_providers
-            .get(&config.provider.instance)
-            .map_or(&config.provider, |configured| &configured.selection);
-        let (models, context_window) = if credential_is_configured(endpoint, store, credentials)? {
-            build_models(gateway, &config.provider, store, credentials, session_files)?
+        let credentialed =
+            CredentialedInstances::resolve(&gateway.configured_providers, store, credentials)?;
+        let model_providers = configured_model_providers(gateway, &credentialed)?;
+        let available = match gateway.configured_providers.get(&config.provider.instance) {
+            Some(configured) => credentialed.contains(&configured.selection),
+            None => credential_is_configured(&config.provider, store, credentials)?,
+        };
+        let (models, context_window) = if available {
+            build_models(
+                gateway,
+                &config.provider,
+                &credentialed,
+                store,
+                credentials,
+                session_files,
+            )?
         } else {
-            unavailable_models(gateway, &config.provider, store, credentials, session_files)?
+            unavailable_models(
+                gateway,
+                &config.provider,
+                &credentialed,
+                store,
+                credentials,
+                session_files,
+            )?
         };
         let voice = config
             .middleware
@@ -528,6 +544,7 @@ static PROVIDER_HEALTH: std::sync::LazyLock<Arc<mobius::backend::model::Provider
 fn build_models(
     gateway: &GatewayConfig,
     selection: &ProviderConfig,
+    credentialed: &CredentialedInstances<'_>,
     store: &ConfigStore,
     credentials: &CredentialStore,
     session_files: Arc<SessionFileStore>,
@@ -546,12 +563,8 @@ fn build_models(
     catalog.extend(
         configured_model_routes(
             &gateway.configured_providers,
-            gateway
-                .bot_defaults
-                .as_ref()
-                .map(|defaults| defaults.config.provider.instance.as_str()),
-            store,
-            credentials,
+            default_instance(gateway),
+            credentialed,
         )?
         .into_iter()
         .filter(|route| route.provider.instance != selection.instance),
@@ -560,7 +573,7 @@ fn build_models(
     catalog.sort_by_key(|route| *route.choice.route != *selected.route);
     let media = crate::harness::mobius::provider_catalog::media_routes(
         &gateway.configured_providers,
-        Some((store, credentials)),
+        Some(credentialed),
     )?;
     catalog.extend(media.images.into_iter().chain(media.voices));
     let routes = instantiate_routes(catalog, store, credentials, &gateway.model_transport)?;
@@ -772,6 +785,7 @@ impl Model for UnavailableModel {
 fn unavailable_models(
     gateway: &GatewayConfig,
     selection: &ProviderConfig,
+    credentialed: &CredentialedInstances<'_>,
     store: &ConfigStore,
     credentials: &CredentialStore,
     session_files: Arc<SessionFileStore>,
@@ -818,7 +832,7 @@ fn unavailable_models(
     })?;
     let media = crate::harness::mobius::provider_catalog::media_routes(
         &gateway.configured_providers,
-        Some((store, credentials)),
+        Some(credentialed),
     )?;
     let catalog = media.images.into_iter().chain(media.voices).collect();
     for route in instantiate_routes(catalog, store, credentials, &gateway.model_transport)? {

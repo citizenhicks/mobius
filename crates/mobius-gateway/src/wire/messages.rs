@@ -2,15 +2,15 @@ use mobius::SessionId;
 use std::sync::Arc;
 
 use super::{
-    AgentComposition, BTreeSet, BackgroundApproval, BotRecord, BotShape, CatalogHint,
-    CliHarnessConfig, ClientCapabilities, ClientStatus, ConfiguredModel, Deserialize, DiffTotals,
-    DirectoryListing, FrontendContribution, GatewayNotification, GitDiffScope, HarnessConfig,
-    HarnessKind, HistoryCursor, MemoryRecord, MessageTarget, Op, PROTOCOL_VERSION, PathBuf,
-    ProfileSnapshot, ProviderConfig, ProviderTint, ReadyPayload, RecordedEvent, Routine,
-    RoutineDefinition, RoutineRun, RoutineRunPreview, RunStats, Serialize, SessionFileRecord,
-    SessionFileReference, SessionReadyPayload, SessionRecord, SessionSlot, SshIdentityRecord,
-    Submission, TranscriptOp, TranscriptPage, Value, WorkspaceFileRecord, WorkspaceFileScope,
-    base64_bytes, deserialize_frame, desktop_bytes,
+    AgentComposition, BTreeSet, BackgroundApproval, BotModelSwitch, BotRecord, BotShape,
+    CatalogHint, CliHarnessConfig, ClientCapabilities, ClientStatus, ConfiguredModel, Deserialize,
+    DiffTotals, DirectoryListing, FrontendContribution, GatewayNotification, GitDiffScope,
+    HarnessConfig, HarnessKind, HistoryCursor, MemoryRecord, MessageTarget, Op, PROTOCOL_VERSION,
+    PathBuf, ProfileParts, ProfileSnapshot, ProviderConfig, ProviderTint, ReadyPayload,
+    RecordedEvent, Routine, RoutineChange, RoutineDefinition, RoutineRun, RoutineRunPreview,
+    RunStats, Serialize, SessionFileRecord, SessionFileReference, SessionReadyPayload,
+    SessionRecord, SessionSlot, SshIdentityRecord, Submission, TranscriptOp, TranscriptPage, Value,
+    WorkspaceFileRecord, WorkspaceFileScope, base64_bytes, deserialize_frame, desktop_bytes,
 };
 use serde::de::Error as _;
 
@@ -507,6 +507,17 @@ pub enum ClientMessage {
         /// The config.
         config: AgentComposition,
     },
+    /// Moves every Bot and the Bot defaults off retired models of one provider setup.
+    SwitchBotModels {
+        /// The request identifier.
+        request_id: Arc<str>,
+        /// The provider setup.
+        instance: String,
+        /// The retired models.
+        from: Vec<String>,
+        /// The model they move to, at its default effort.
+        to: String,
+    },
     /// Saves a CLI harness's executable override and new-Bot defaults, then detects it again.
     /// Answered with `gateway_configured`.
     ConfigureHarness {
@@ -733,8 +744,8 @@ pub enum ClientMessage {
     GetProfile {
         /// The request identifier.
         request_id: Arc<str>,
-        /// The include provider usage.
-        include_provider_usage: bool,
+        /// What to read beyond identity and token usage.
+        parts: ProfileParts,
     },
     /// Create a validated routine definition.
     CreateRoutine {
@@ -996,6 +1007,9 @@ pub enum ServerMessage {
         session_id: SessionId,
         /// The message.
         message: Arc<str>,
+        /// Why a model provider call failed, when one did.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        failure: Option<mobius::FailureClass>,
     },
     /// Selects the realtime voice ended case.
     RealtimeVoiceEnded {
@@ -1005,6 +1019,9 @@ pub enum ServerMessage {
         voice_id: Arc<str>,
         /// The reason.
         reason: Option<String>,
+        /// Why a model provider call failed, when one did.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        failure: Option<mobius::FailureClass>,
     },
     /// Selects the gateway configured case.
     GatewayConfigured {
@@ -1251,6 +1268,8 @@ pub enum ServerMessage {
         scope: GitDiffScope,
         /// The diff.
         diff: String,
+        /// Whether the diff was cut to the frame budget.
+        truncated: bool,
     },
     /// Line totals of a Git diff.
     GitDiffTotals {
@@ -1303,6 +1322,18 @@ pub enum ServerMessage {
         request_id: Arc<str>,
         /// The routines.
         routines: Vec<Routine>,
+    },
+    /// The result of `switch_bot_models`.
+    BotModelsSwitched {
+        /// The request identifier.
+        request_id: Arc<str>,
+        /// What changed.
+        switch: BotModelSwitch,
+    },
+    /// One routine or run changed.
+    RoutineChanged {
+        /// What changed.
+        change: RoutineChange,
     },
     /// Selects the routine history case.
     RoutineHistory {

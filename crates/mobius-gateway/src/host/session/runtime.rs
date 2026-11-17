@@ -383,6 +383,7 @@ impl HostState {
                                 run,
                                 RoutineRunStatus::Failed,
                                 Some(Arc::clone(&rejection.message)),
+                                None,
                             );
                             result.map_err(internal).and(Err(rejection))
                         }
@@ -391,6 +392,7 @@ impl HostState {
                         run,
                         RoutineRunStatus::Failed,
                         Some(Arc::clone(&rejection.message)),
+                        None,
                     ) {
                         Ok(_) => Err(rejection),
                         Err(error) => Err(internal(error)),
@@ -568,6 +570,7 @@ impl HostState {
                     run,
                     RoutineRunStatus::Failed,
                     Some("the agent was busy when this invocation became due".into()),
+                    None,
                 )
                 .map_err(internal)?;
             return Err(rejection);
@@ -592,6 +595,7 @@ impl HostState {
                     run,
                     RoutineRunStatus::Failed,
                     Some(Arc::clone(&rejection.message)),
+                    None,
                 )
                 .map_err(internal)?;
             return Err(rejection);
@@ -792,6 +796,7 @@ pub(in crate::host) fn fail_queued_routine_commands(
             run,
             RoutineRunStatus::Failed,
             Some("the agent stopped before the Bot routine began".into()),
+            None,
         ) {
             Ok(_) => stopped(),
             Err(error) => {

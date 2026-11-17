@@ -35,12 +35,7 @@ impl Workspace {
         let moved = self
             .saved_revision(scope)
             .is_some_and(|revision| revision != draft.base.revision);
-        if self.scope_busy(scope) {
-            Status {
-                detail: Some("Bot settings can’t be changed while this Bot is running.".into()),
-                ..status("Running", p.warning)
-            }
-        } else if draft.saving.is_some() {
+        if draft.saving.is_some() {
             status("Saving…", p.accent)
         } else if let Some(message) = &draft.rejected {
             Status {
@@ -77,8 +72,7 @@ impl Workspace {
             && self.client.link.is_ready()
             && self
                 .scope_harness(scope)
-                .is_some_and(crate::ui::pages::harness::available)
-            && !self.scope_busy(scope);
+                .is_some_and(|harness| self.harness_available(harness));
         let label = div()
             .id("agent-status")
             .flex()

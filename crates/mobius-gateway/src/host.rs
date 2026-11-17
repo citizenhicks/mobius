@@ -10,7 +10,9 @@ pub(crate) mod git;
 mod harnesses;
 mod live_chats;
 mod memory;
+mod model_switch;
 mod profile;
+mod provider_usage;
 mod providers;
 mod replay;
 mod routines;
@@ -41,7 +43,6 @@ const REPLAY_LOAD_PAGE_SIZE: usize = 8;
 const MAX_REPLAY_BYTES: usize = crate::wire::MAX_FRAME_BYTES;
 const SESSION_PAGE_SIZE: usize = 100;
 const MAX_SESSION_DELETE_ROOTS: usize = 1_024;
-const RECENT_RUN_LIMIT: usize = 30;
 const IDLE_QUERY_BATCH: usize = 4;
 
 type SessionActivities = Arc<Mutex<catalog::SessionCatalog>>;

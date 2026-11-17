@@ -27,15 +27,16 @@ pub struct ErrorEvent {
     pub status: Option<u16>,
     /// The retry after.
     pub retry_after: Option<String>,
+    /// Why a model provider call failed, when it did; frontends explain it from this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<crate::FailureClass>,
 }
 
 impl ErrorEvent {
     pub(crate) fn from_error(error: &crate::Error) -> Self {
         let (kind, retryable, status, retry_after) = match error {
-            // ponytail: both map to the old kind so protocol 103 clients keep parsing; add wire kinds with the next protocol bump.
-            crate::Error::Invalid(_) | crate::Error::Internal(_) => {
-                (ErrorKind::Configuration, false, None, None)
-            }
+            crate::Error::Invalid(_) => (ErrorKind::Invalid, false, None, None),
+            crate::Error::Internal(_) => (ErrorKind::Internal, false, None, None),
             crate::Error::Duplicate(_) => (ErrorKind::DuplicateRegistration, false, None, None),
             crate::Error::Unknown(_) => (ErrorKind::UnknownRegistration, false, None, None),
             crate::Error::Provider(error) => (
@@ -68,6 +69,7 @@ impl ErrorEvent {
             retryable,
             status,
             retry_after,
+            failure: error.failure(),
         }
     }
 }
@@ -76,8 +78,10 @@ impl ErrorEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorKind {
-    /// Selects the configuration case.
-    Configuration,
+    /// A request, setting or input the caller can fix.
+    Invalid,
+    /// A fault inside the framework.
+    Internal,
     /// Selects the duplicate registration case.
     DuplicateRegistration,
     /// Selects the unknown registration case.
@@ -681,6 +685,15 @@ pub struct TokenUsage {
 }
 
 impl TokenUsage {
+    /// Tokens a context holds after the request that used this much: its input and output,
+    /// or the provider's total when that is larger.
+    #[must_use]
+    pub fn context_used(&self) -> i64 {
+        self.total_tokens
+            .max(self.input_tokens.saturating_add(self.output_tokens))
+            .max(0)
+    }
+
     /// Adds another response's usage, returning `None` on integer overflow.
     pub fn checked_add(&mut self, other: &Self) -> Option<()> {
         *self = self.checked_sum(other)?;
@@ -722,6 +735,8 @@ pub struct TokenUsageInfo {
     pub last_token_usage: TokenUsage,
     /// The model context window.
     pub model_context_window: Option<i64>,
+    /// Tokens the context holds now: the last request's input and its output.
+    pub context_used: i64,
     /// Where the last foreground request's input tokens went; absent until it is known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<ContextBreakdown>,
@@ -733,8 +748,12 @@ pub struct TokenUsageInfo {
 pub struct ContextBreakdown {
     /// Counted parts, largest first, then deferred tools, which are listed but not counted.
     pub parts: Vec<ContextPart>,
+    /// The counted parts' tokens, the input the provider reported.
+    pub used: i64,
     /// Tokens kept free so compaction can run before the window fills.
     pub compaction_buffer: i64,
+    /// The window's tokens neither used nor kept for compaction.
+    pub free: i64,
 }
 
 /// One part of a model request's input.
@@ -746,6 +765,8 @@ pub struct ContextPart {
     pub tokens: i64,
     /// How many tools, prompt sections or items it holds.
     pub items: u32,
+    /// Whether its tokens are in the context; deferred tools are listed, not sent.
+    pub counted: bool,
 }
 
 /// What a part of a model request's input holds.

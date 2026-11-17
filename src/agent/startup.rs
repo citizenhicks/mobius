@@ -291,6 +291,7 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
                     info: Some(TokenUsageInfo {
                         context: None,
                         total_token_usage: state.total_usage,
+                        context_used: last_token_usage.context_used(),
                         last_token_usage,
                         model_context_window: Some(config.context_window),
                     }),

@@ -864,6 +864,7 @@ mod context_tests {
         };
         TokenUsageInfo {
             total_token_usage: TokenUsage::default(),
+            context_used: last.context_used(),
             last_token_usage: last,
             model_context_window: Some(1_000),
             context: Some(ContextBreakdown {
@@ -871,8 +872,11 @@ mod context_tests {
                     kind: ContextPartKind::Messages,
                     tokens: input_tokens,
                     items: 1,
+                    counted: true,
                 }],
+                used: input_tokens,
                 compaction_buffer: 100,
+                free: 900 - input_tokens,
             }),
         }
     }

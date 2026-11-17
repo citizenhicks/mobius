@@ -411,6 +411,12 @@ impl GatewayHost {
         drop(state);
         self.finish_routine_deletion(file_deletion, &session_ids, cleanup)
             .await;
+        super::send_event(
+            &self.events,
+            crate::wire::ServerMessage::RoutineChanged {
+                change: crate::wire::RoutineChange::RunDeleted { run_id: run.id },
+            },
+        );
         Ok(())
     }
 
@@ -430,6 +436,7 @@ impl GatewayHost {
                     run,
                     crate::wire::RoutineRunStatus::Failed,
                     Some(Arc::clone(&rejection.message)),
+                    None,
                 )
                 .map_err(internal)?;
                 return Err(rejection);
@@ -453,7 +460,7 @@ impl GatewayHost {
                 } else {
                     crate::wire::RoutineRunStatus::Failed
                 };
-                bots.finish_run(run, status, Some(Arc::clone(&rejection.message)))
+                bots.finish_run(run, status, Some(Arc::clone(&rejection.message)), None)
                     .map_err(internal)?;
                 return Err(rejection);
             }

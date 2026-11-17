@@ -916,7 +916,7 @@ impl Workspace {
                 .into_any_element();
         };
         let document = (block.format == FrontendBlockFormat::UnifiedDiff)
-            .then(|| DiffDocument::parse(&block.text));
+            .then(|| DiffDocument::parse_in(&block.text, "", false));
         let key = format!("{approval}:{}", call.call_id);
         self.block_line(
             transcript::BlockLine {

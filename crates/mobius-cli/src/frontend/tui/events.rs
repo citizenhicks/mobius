@@ -516,7 +516,7 @@ impl TuiState {
                     block,
                 });
             }
-            TranscriptItemContent::Notice { tone, text } => match tone {
+            TranscriptItemContent::Notice { tone, text, .. } => match tone {
                 FrontendTone::Error => self.push(format!("error: {text}"), TranscriptTone::Error),
                 FrontendTone::Warning => {
                     self.push(format!("warning: {text}"), TranscriptTone::Warning);
@@ -541,10 +541,7 @@ fn narrative_tone(phase: ModelStepContentPhase) -> TranscriptTone {
 
 pub(super) fn usage_status(info: &TokenUsageInfo, context_limit: Option<i64>) -> UsageStatus {
     let input = info.last_token_usage.input_tokens.max(0);
-    let used = info
-        .last_token_usage
-        .total_tokens
-        .max(input.saturating_add(info.last_token_usage.output_tokens.max(0)));
+    let used = info.context_used;
     let window = info.model_context_window.unwrap_or_default().max(0);
     let mut status = UsageStatus {
         context_fill: None,

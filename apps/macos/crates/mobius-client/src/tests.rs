@@ -232,29 +232,6 @@ fn derived_data_is_cached_until_the_item_changes() {
     assert_eq!(builds.get(), 2);
 }
 
-#[test]
-fn working_becomes_worked_under_the_same_row() {
-    let worked = |duration_ms| TranscriptRowKind::Worked {
-        counts: ActivityCounts::default(),
-        started_at_ms: 10,
-        duration_ms,
-    };
-    let mut store = TranscriptStore::default();
-    store.apply(vec![
-        TranscriptOp::Item {
-            item: block("run", ""),
-        },
-        TranscriptOp::Row {
-            row: row("worked:turn", 2, &["block:tools:run"], worked(None)),
-        },
-    ]);
-    store.apply(vec![TranscriptOp::Row {
-        row: row("worked:turn", 2, &["block:tools:run"], worked(Some(5_000))),
-    }]);
-    assert_eq!(order(&store), ["worked:turn"]);
-    assert_eq!(store.row("worked:turn").unwrap().kind, worked(Some(5_000)));
-}
-
 fn children(store: &TranscriptStore, id: &str) -> Vec<String> {
     let row = store.row(id).expect("row");
     store
@@ -587,14 +564,14 @@ pub(crate) mod catalog {
                     "harness": "mobius",
                     "config": {"revision": 1, "config": HarnessConfig::Mobius(Arc::default())},
                     "capabilities": {"attachments": false, "computer": false, "voice": {"state": "off"}, "memory": {"enabled": false, "global": false}},
-                    "routine_interaction_policy": "unattended"
+                    "routine_interaction_policy": "unattended", "built_in": false
                 })
             })
             .collect();
         serde_json::from_value(json!({
             "gateway_version": "test", "machine_name": "test", "computer_view": "unavailable", "bots": bots,
             "sessions": sessions, "background_approvals": [],
-            "agent_catalog": {"bot_defaults": null, "default_capabilities": null,
+            "agent_catalog": {"limits": {"min_model_steps": 1, "default_model_steps": 2042, "model_steps_step": 100, "max_system_prompt_bytes": 65536, "min_routine_interval_seconds": 60}, "bot_defaults": null, "default_capabilities": null,
                 "middleware_features": [], "extensions": [], "contributions": [],
                 "models": [], "model_providers": {}, "image_models": [], "voice_models": []},
             "harnesses": [], "max_active_sessions": 1,

@@ -105,14 +105,14 @@ final class NativeVoice {
                 return
             }
             stop(notifyGateway: false)
-            emit(.error(try body.requiredString("message")))
+            emit(.error(try body.requiredString("message"), failure: body["failure"]?.stringValue))
         case "realtime_voice_ended":
             guard call?.voiceID == body["voiceId"]?.stringValue, call?.sessionID == sessionID else {
                 return
             }
             stop(notifyGateway: false)
             if let reason = body["reason"]?.stringValue, !reason.isEmpty {
-                emit(.error(reason))
+                emit(.error(reason, failure: body["failure"]?.stringValue))
             }
         default: break
         }

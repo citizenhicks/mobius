@@ -402,9 +402,12 @@ fn default_voice_capability_matches_the_router_when_an_earlier_provider_has_no_k
         .config
         .clone();
     composition.middleware.set_enabled("voice", true);
+    let credentialed =
+        CredentialedInstances::resolve(&config.configured_providers, &store, &credentials).unwrap();
     let (router, _) = unavailable_models(
         &config,
         &composition.provider,
+        &credentialed,
         &store,
         &credentials,
         SessionFileStore::new(store.state_dir(), None).into(),

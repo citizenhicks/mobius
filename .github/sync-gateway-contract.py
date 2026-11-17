@@ -33,8 +33,15 @@ def main():
     gateway_version = re.search(r'^version = "([^"]+)"', gateway, re.M)[1]
     core_manifest = (core / "Cargo.toml").read_text()
     core_version = re.search(r'^version = "([^"]+)"', core_manifest, re.M)[1]
+    frame_bytes = re.search(r"pub const MAX_FRAME_BYTES: usize = ([^;]+);", wire)[1]
+    session_files = (core / "src/backend/session_files.rs").read_text()
+    read_chunk = re.search(r"pub const MAX_READ_CHUNK_BYTES: usize = ([^;]+);", session_files)[1]
     for swift in args.swift:
         replace(swift, r"(let gatewayProtocolVersion = )\d+()", protocol, args.check)
+        if "maximumGatewayFrameBytes" in swift.read_text():
+            replace(swift, r"(let maximumGatewayFrameBytes = )[^\n]+()", frame_bytes, args.check)
+        if "gatewayReadChunkBytes" in swift.read_text():
+            replace(swift, r"(let gatewayReadChunkBytes = )[^\n]+()", read_chunk, args.check)
     for fixture in args.python_fixture:
         replace(fixture, r"(?m)^(PROTOCOL_VERSION = )\d+()$", protocol, args.check)
     desktop = core / "apps/macos/Cargo.toml"

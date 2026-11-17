@@ -49,14 +49,16 @@ impl DiffDoc {
         session_id: SessionId,
         scope: GitDiffScope,
         text: &str,
+        truncated: bool,
         cx: &mut Context<T>,
     ) -> Self {
-        Self::with_document(session_id, Some(scope), text, DiffDocument::parse(text), cx)
+        let document = DiffDocument::parse_in(text, "", truncated);
+        Self::with_document(session_id, Some(scope), text, document, cx)
     }
 
     /// A turn's changes, with paths inside the chat's folder `root` relative to it.
     fn turn(session_id: SessionId, text: &str, root: &str, cx: &mut Context<Workspace>) -> Self {
-        let document = DiffDocument::parse_in(text, root);
+        let document = DiffDocument::parse_in(text, root, false);
         Self::with_document(session_id, None, text, document, cx)
     }
 
@@ -408,7 +410,7 @@ impl RenderOnce for InlineDiff {
         let p = palette(cx);
         let Self { key, text, root } = self;
         let inline = window.use_keyed_state(key, cx, |_, cx| {
-            let document = DiffDocument::parse_in(&text, &root);
+            let document = DiffDocument::parse_in(&text, &root, false);
             InlineState {
                 truncated: document.truncated,
                 lines: text.lines().count(),
@@ -535,7 +537,7 @@ impl Workspace {
         let Some(session) = self.client.state.selected_session_id.as_ref() else {
             return;
         };
-        let doc = DiffDoc::new(session.share(), GitDiffScope::Committed, text, cx);
+        let doc = DiffDoc::new(session.share(), GitDiffScope::Committed, text, false, cx);
         doc.state
             .update(cx, |state, cx| set_all_collapsed(state, !expanded, cx));
         self.open_content(

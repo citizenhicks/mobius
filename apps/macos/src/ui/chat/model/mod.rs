@@ -139,7 +139,7 @@ impl Workspace {
 
     /// Why the composer cannot send: its Bot's harness is not set up on this gateway.
     pub(in crate::ui) fn composer_unavailable(&self) -> Option<String> {
-        crate::ui::pages::harness::unavailable(self.composer_bot()?.harness)
+        self.harness_unavailable(self.composer_bot()?.harness)
     }
 
     pub(super) fn target_bot(&self, target: &ModelTarget) -> Option<&BotRecord> {

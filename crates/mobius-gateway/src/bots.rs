@@ -35,6 +35,8 @@ use crate::wire::{
 };
 use crate::{Error, Result};
 
+pub(crate) const MIN_ROUTINE_INTERVAL_SECONDS: u64 = 60;
+
 const STATE_VERSION: u32 = 10;
 const STATE_FILE: &str = storage::STATE_FILE;
 const STATE_LOCK_FILE: &str = "bots-state.lock";
@@ -392,6 +394,10 @@ pub(crate) struct RuntimeBot {
 }
 
 impl StoredBot {
+    fn deletable(&self) -> bool {
+        &*self.handle != MOBIUS_HANDLE
+    }
+
     fn record(
         &self,
         voices: &crate::harness::mobius::provider_catalog::VoiceRoutes,
@@ -412,6 +418,7 @@ impl StoredBot {
                 voices,
             ),
             routine_interaction_policy: self.config.approval.routine_interaction_policy(),
+            built_in: !self.deletable(),
         })
     }
 }
@@ -1347,6 +1354,7 @@ impl BotStore {
         run: ActiveRoutineRun,
         status: RoutineRunStatus,
         message: Option<Arc<str>>,
+        failure: Option<mobius::FailureClass>,
     ) -> Result<RoutineRun> {
         if status == RoutineRunStatus::Running {
             return Err(Error::Internal(
@@ -1354,9 +1362,13 @@ impl BotStore {
             ));
         }
         let state_lock = self.lock_state()?;
-        let finished =
-            self.storage
-                .finish_run(&run.run_id, status, Utc::now().timestamp(), message);
+        let finished = self.storage.finish_run(
+            &run.run_id,
+            status,
+            Utc::now().timestamp(),
+            message,
+            failure,
+        );
         drop(state_lock);
         drop(run);
         finished
@@ -1803,10 +1815,10 @@ fn validate_schedule(
                 && schedule.every_seconds.is_some()
                 && schedule.time_zone.is_none() =>
         {
-            if schedule.every_seconds.unwrap_or_default() < 60 {
-                return Err(Error::Invalid(
-                    "interval must be at least 60 seconds".into(),
-                ));
+            if schedule.every_seconds.unwrap_or_default() < MIN_ROUTINE_INTERVAL_SECONDS {
+                return Err(Error::Invalid(format!(
+                    "interval must be at least {MIN_ROUTINE_INTERVAL_SECONDS} seconds"
+                )));
             }
         }
         RoutineScheduleKind::Cron
@@ -2001,6 +2013,7 @@ fn new_run(
         status,
         session_id: (status == RoutineRunStatus::Running).then(SessionId::generate),
         message,
+        failure: None,
     }
 }
 
@@ -2076,7 +2089,7 @@ fn check_revision(bot: &StoredBot, expected: u64) -> Result<()> {
 }
 
 fn check_deletable(bot: &StoredBot, expected_revision: u64) -> Result<()> {
-    if &*bot.handle == MOBIUS_HANDLE {
+    if !bot.deletable() {
         return Err(Error::Invalid(
             "the built-in @mobius Bot cannot be deleted".into(),
         ));
