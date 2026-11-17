@@ -266,12 +266,26 @@ Identify and resolve conflicting guidance instead of silently following old rule
   duplicate or substantially similar functions (roughly 60% similarity is a review
   trigger) behind one shared API owned by the relevant capability. Generalize the
   shared behavior without erasing different validation, errors, or domain meaning.
+  Reuse existing transports, clients, connections, filesystem primitives, and
+  functions; do not introduce parallel implementations of behavior already owned
+  elsewhere. Fix the shared owner and its callers instead.
 - Apply the installed `rust-skills` skill: all 265 rules across its 26 categories.
   Read its `SKILL.md` and applicable rule files; explain any inapplicable rule or
   conflict rather than claiming blanket compliance from compilation or Clippy.
-- For Rust and Swift, prioritize CPU, GPU, memory, disk I/O, and network efficiency.
-  Review hot paths, allocations/copies, rendering, persistence, concurrency, and
-  round trips. Measure relevant workloads; do not invent performance gains.
+- Treat CPU, GPU, memory, disk I/O, and network use as acceptance criteria. Review
+  hot paths, allocations/copies, rendering, persistence, concurrency, and round trips.
+  Avoid redundant computation, retained data, reads/writes, polling, serialization,
+  and requests; bound added work and reuse existing resources.
+- Measure equivalent representative workloads before and after resource-sensitive
+  changes in the same environment. Record CPU time and latency; GPU time/activity
+  where used; peak and retained memory; disk read/write bytes and operations; and
+  network request counts, round trips, and bytes. Include source revisions, workload,
+  method, and units. Explain inapplicable metrics; never count missing evidence as a pass.
+- Replacements and optimizations must demonstrate an improvement in the relevant
+  resource costs. Report and justify regressions in other resources explicitly;
+  added capabilities must state and bound their overhead. Preserve correctness,
+  security, accessibility, cancellation, and data integrity. Passing tests or Clippy
+  does not prove resource efficiency; do not invent gains or claim unmeasured ones.
 - Do not defer a necessary broad refactor because its immediate saving is small or
   its implementation cost is high. Even a byte or CPU cycle can justify repairing
   the architecture now; preserve correctness, security, and accessibility, and

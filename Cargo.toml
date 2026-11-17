@@ -13,6 +13,7 @@ keywords = ["agent", "ai", "llm", "openai", "tools"]
 categories = ["asynchronous", "development-tools"]
 include = [
     "/src/**",
+    "!/src/middleware/tools/tests/apply_patch_scenarios/**",
     "/tests/**",
     "/Cargo.toml",
     "/README.md",
