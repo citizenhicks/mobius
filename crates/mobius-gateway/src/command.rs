@@ -4,6 +4,7 @@ mod args;
 mod connection;
 mod init;
 mod lifecycle;
+mod policy;
 mod provider;
 mod telemetry;
 
@@ -161,9 +162,13 @@ pub async fn run_cli(
             ingress,
             clear_ingress,
             clear_storage_limit,
+            policy_stdin,
         }) => {
             let (store, mut config) = ConfigStore::open(state_dir()?)?;
             ensure_gateway_stopped(&store, &config)?;
+            if policy_stdin {
+                config = policy::apply(&config, std::io::stdin().lock())?;
+            }
             if let Some(seconds) = idle_exit_seconds {
                 config.runtime.idle_exit_seconds = seconds;
             }

@@ -96,6 +96,8 @@ pub(super) enum GatewaySubcommand {
         clear_ingress: bool,
         #[arg(long, conflicts_with = "storage_limit_bytes")]
         clear_storage_limit: bool,
+        #[arg(long)]
+        policy_stdin: bool,
     },
     /// Stop a background gateway.
     Exit,
