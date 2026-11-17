@@ -14,7 +14,9 @@ fn sqlite_failures_keep_engine_details_out_of_frontend_errors() {
 
 #[test]
 fn open_hard_rejects_previous_schema_generations() {
-    for version in [6, 7, 8, 9, 10, 11, 12, 13] {
+    use std::fs;
+
+    for version in [6, 7, 8, 9, 10, 11, 12, 13, 14] {
         let workspace = tempfile::tempdir().expect("create workspace");
         let path = workspace.path().join("checkpoints.sqlite3");
         drop(SqliteCheckpoint::new(&path).expect("create current database"));
@@ -23,16 +25,22 @@ fn open_hard_rejects_previous_schema_generations() {
             .pragma_update(None, "user_version", version)
             .expect("set older schema version");
         drop(connection);
+        let before = fs::read(&path).expect("read prior database");
 
         let error =
-            SqliteCheckpoint::new(path).expect_err("older session-context schema must fail");
+            SqliteCheckpoint::new(&path).expect_err("older session-context schema must fail");
 
         assert_eq!(
             error.to_string(),
             format!(
-                "checkpoint error: unsupported SQLite schema version {version}; expected 14 \
-                 (start with a fresh database)"
+                "checkpoint error: unsupported SQLite schema version {version}; expected 15 \
+                 (use a matching runtime or a qualified offline conversion)"
             )
+        );
+        assert_eq!(
+            fs::read(&path).expect("read rejected database"),
+            before,
+            "rejecting an older journal format must preserve the database"
         );
     }
 }

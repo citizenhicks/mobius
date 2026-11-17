@@ -55,7 +55,7 @@ use context_store::{
     sqlite_integer,
 };
 
-const SCHEMA_VERSION: i64 = 14;
+const SCHEMA_VERSION: i64 = 15;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 impl rusqlite::ToSql for SessionId {
@@ -141,7 +141,7 @@ CREATE INDEX IF NOT EXISTS execution_journal_recent_idx
     ON execution_journal(started_at_ms DESC, session_id DESC, sequence DESC);
 CREATE INDEX IF NOT EXISTS event_journal_step_idx
     ON event_journal(session_id, model_step_id, event_kind);
-PRAGMA user_version = 14;
+PRAGMA user_version = 15;
 COMMIT;
 ";
 
@@ -206,7 +206,7 @@ impl SqliteCheckpoint {
         if version != 0 && version != SCHEMA_VERSION {
             return Err(Error::Checkpoint(format!(
                 "unsupported SQLite schema version {version}; expected {SCHEMA_VERSION} \
-                 (start with a fresh database)"
+                 (use a matching runtime or a qualified offline conversion)"
             )));
         }
         configure_connection(&connection)?;
