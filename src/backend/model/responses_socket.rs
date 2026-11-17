@@ -309,7 +309,7 @@ impl OpenAiSocket {
                 &mut history,
             )?;
             let used_previous_response = previous_response_id.is_some();
-            let body = super::media::encode_request(
+            let body = super::admission::encode_request(
                 self,
                 ModelRequest { input, ..request },
                 media,

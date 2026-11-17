@@ -2,8 +2,6 @@
 
 use std::borrow::Cow;
 use std::collections::BTreeSet;
-use std::io;
-use std::io::Write;
 use std::sync::Arc;
 
 use serde::Deserialize;
@@ -22,6 +20,7 @@ use crate::protocol::{
 };
 
 pub mod a2agent;
+mod admission;
 pub mod anthropic;
 mod authorization;
 mod cancellation;
@@ -154,14 +153,15 @@ impl ToolCall {
                 "tool call arguments must be an object".into(),
             ));
         }
-        let mut writer = SizeWriter::new(MAX_TOOL_ARGUMENT_BYTES);
-        serde_json::to_writer(&mut writer, &self.arguments).map_err(|error| {
-            if writer.exceeded {
-                Error::Provider("tool call arguments exceeded size limit".into())
-            } else {
-                Error::Provider(format!("tool call arguments are invalid: {error}").into())
-            }
-        })
+        match crate::bounded_json::len_within(&self.arguments, MAX_TOOL_ARGUMENT_BYTES) {
+            Ok(Some(_)) => Ok(()),
+            Ok(None) => Err(Error::Provider(
+                "tool call arguments exceeded size limit".into(),
+            )),
+            Err(error) => Err(Error::Provider(
+                format!("tool call arguments are invalid: {error}").into(),
+            )),
+        }
     }
 
     pub(crate) fn replace(&mut self, name: Arc<str>, arguments: Value) -> Result<()> {
@@ -183,16 +183,20 @@ impl ToolCall {
                 self.call_id
             )));
         }
-        let mut writer = SizeWriter::new(MAX_TOOL_ARGUMENT_BYTES);
-        if let Err(error) = serde_json::to_writer(&mut writer, &arguments) {
-            return Err(Error::Tool(if writer.exceeded {
-                format!("tool call `{}` arguments exceeded size limit", self.call_id)
-            } else {
-                format!(
+        match crate::bounded_json::len_within(&arguments, MAX_TOOL_ARGUMENT_BYTES) {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                return Err(Error::Tool(format!(
+                    "tool call `{}` arguments exceeded size limit",
+                    self.call_id
+                )));
+            }
+            Err(error) => {
+                return Err(Error::Tool(format!(
                     "tool call `{}` arguments are invalid: {error}",
                     self.call_id
-                )
-            }));
+                )));
+            }
         }
         self.name = name;
         self.arguments = arguments;
@@ -233,16 +237,13 @@ impl StreamingToolCalls {
             ));
         }
         let remaining = MAX_MODEL_OUTPUT_BYTES.saturating_sub(self.bytes);
-        let mut writer = SizeWriter::new(remaining);
-        serde_json::to_writer(&mut writer, call).map_err(|error| {
-            if writer.exceeded {
-                Error::Provider("streamed tool calls exceeded size limit".into())
-            } else {
+        let bytes = crate::bounded_json::len_within(call, remaining)
+            .map_err(|error| {
                 Error::Provider(format!("tool call could not be serialized: {error}").into())
-            }
-        })?;
+            })?
+            .ok_or_else(|| Error::Provider("streamed tool calls exceeded size limit".into()))?;
         self.call_ids.insert(Arc::clone(&call.call_id));
-        self.bytes += writer.bytes;
+        self.bytes += bytes;
         Ok(())
     }
 }
@@ -740,7 +741,7 @@ pub trait Model: Send + Sync {
                 .prepare(request.session_id, request.input, self, true)
                 .await?
             else {
-                media::check_request_bytes(
+                admission::check_request_bytes(
                     self.request_size(request)?,
                     self.transport_settings().max_request_bytes,
                 )?;
@@ -781,7 +782,7 @@ pub trait Model: Send + Sync {
             tools: &'a [Arc<ToolDefinition>],
             deferred_tools: &'a [Arc<ToolDefinition>],
         }
-        media::serialized_size(&Envelope {
+        crate::serialized_len(&Envelope {
             instructions: request.instructions,
             input: request.input,
             tools: request.tools,
@@ -963,14 +964,9 @@ fn required_output_string<'a>(item: &'a Value, field: &str, limit: usize) -> Res
 }
 
 fn ensure_output_size(output: &[Value]) -> Result<()> {
-    let mut writer = SizeWriter::new(MAX_MODEL_OUTPUT_BYTES);
-    match serde_json::to_writer(&mut writer, output) {
-        Ok(()) => Ok(()),
-        Err(_) if writer.exceeded => {
-            Err(Error::Provider("model output exceeded size limit".into()))
-        }
-        Err(error) => Err(error.into()),
-    }
+    crate::bounded_json::len_within(output, MAX_MODEL_OUTPUT_BYTES)?
+        .map(drop)
+        .ok_or_else(|| Error::Provider("model output exceeded size limit".into()))
 }
 
 fn validate_provider_output(output: &[Value]) -> Result<()> {
@@ -991,37 +987,6 @@ fn validate_provider_output(output: &[Value]) -> Result<()> {
         ));
     }
     ensure_output_size(output)
-}
-
-struct SizeWriter {
-    bytes: usize,
-    limit: usize,
-    exceeded: bool,
-}
-
-impl SizeWriter {
-    fn new(limit: usize) -> Self {
-        Self {
-            bytes: 0,
-            limit,
-            exceeded: false,
-        }
-    }
-}
-
-impl Write for SizeWriter {
-    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        if self.bytes.saturating_add(buffer.len()) > self.limit {
-            self.exceeded = true;
-            return Err(io::Error::other("size limit exceeded"));
-        }
-        self.bytes += buffer.len();
-        Ok(buffer.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
 }
 
 /// Creates a Responses API user-message item.

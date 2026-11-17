@@ -92,46 +92,6 @@ impl MediaPreparation<'_> {
     }
 }
 
-/// Serializes the admitted transport body, retaining the exact bytes that passed admission.
-/// Providers own encoding; continuation transports pass only their selected logical suffix.
-pub(super) async fn encode_request<M: super::Model + ?Sized>(
-    model: &M,
-    request: super::ModelRequest<'_>,
-    media: Option<MediaPreparation<'_>>,
-    replay: bool,
-    mut encode: impl FnMut(ModelInput<'_>) -> Result<Vec<u8>>,
-) -> Result<Vec<u8>> {
-    let mut prepared = match media {
-        Some(media) => {
-            media
-                .prepare(request.session_id, request.input, model, replay)
-                .await?
-        }
-        None => None,
-    };
-    let max_bytes = model.transport_settings().max_request_bytes;
-    let (Some(input), Some(media)) = (prepared.as_mut(), media) else {
-        let body = encode(request.input)?;
-        check_request_bytes(body.len(), max_bytes)?;
-        return Ok(body);
-    };
-    let mut body = Vec::new();
-    bound_request(
-        input,
-        request.input,
-        media.limits,
-        max_bytes,
-        replay,
-        |input| {
-            // A demoted replay cannot reuse the old bytes; release them before re-encoding.
-            drop(std::mem::take(&mut body));
-            body = encode(input.into())?;
-            Ok(body.len())
-        },
-    )?;
-    Ok(body)
-}
-
 /// Removes historical images only from the prepared copy, measuring the complete wire body.
 pub(super) fn bound_request(
     prepared: &mut [Arc<Value>],
@@ -185,7 +145,7 @@ pub(super) fn bound_request(
         }
     }
     if images > limits.max_images || request_bytes > max_request_bytes {
-        return Err(Error::Provider("the newest observation batch and retained text exceed the model request budget; use fewer or smaller images, or reduce the text before retrying".into()));
+        return Err(super::admission::over_budget());
     }
     Ok(())
 }
@@ -216,15 +176,6 @@ fn observation_boundary(item: &Value) -> bool {
             item.get("type").and_then(Value::as_str),
             Some("function_call" | "reasoning")
         )
-}
-
-pub(super) use crate::serialized_len as serialized_size;
-
-pub(super) fn check_request_bytes(bytes: usize, max_bytes: usize) -> Result<()> {
-    if bytes > max_bytes {
-        return Err(Error::Provider("the newest observation batch and retained text exceed the model request budget; use fewer or smaller images, or reduce the text before retrying".into()));
-    }
-    Ok(())
 }
 
 pub(super) async fn hydrate<M: super::Model + ?Sized>(
@@ -383,7 +334,7 @@ mod tests {
         }
         let mut prepared = prepared.into_iter().map(Arc::new).collect::<Vec<_>>();
         let measure = |input: &[Arc<Value>]| {
-            serialized_size(&serde_json::json!({"input":input,"tools":"schema".repeat(40)}))
+            crate::serialized_len(&serde_json::json!({"input":input,"tools":"schema".repeat(40)}))
         };
         let initial = measure(&prepared).expect("size");
         let unchanged = prepared.clone();

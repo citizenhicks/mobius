@@ -126,7 +126,7 @@ async fn send_response<D: Dialect>(
     events: ModelEventSink,
     media: Option<MediaPreparation<'_>>,
 ) -> Result<ModelOutput> {
-    let body = super::media::encode_request(model, request, media, true, |input| {
+    let body = super::admission::encode_request(model, request, media, true, |input| {
         Ok(serde_json::to_vec(&request_body(
             model,
             ModelRequest { input, ..request },

@@ -328,7 +328,7 @@ impl OpenAi {
     ) -> Result<ModelOutput> {
         let session_id = request.session_id.map_or("", crate::SessionId::as_str);
         let deferred_tools = request.deferred_tools;
-        let body = super::media::encode_request(self, request, media, true, |input| {
+        let body = super::admission::encode_request(self, request, media, true, |input| {
             Ok(serde_json::to_vec(
                 &self.response_body(ModelRequest { input, ..request })?,
             )?)

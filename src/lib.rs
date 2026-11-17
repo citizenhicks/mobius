@@ -154,6 +154,8 @@ use std::pin::Pin;
 
 pub mod agent;
 pub mod backend;
+pub mod bounded_json;
+pub(crate) use bounded_json::serialized_len;
 pub mod config;
 pub mod identifier;
 pub mod middleware;
@@ -445,27 +447,4 @@ pub(crate) fn preview_json(value: &serde_json::Value) -> String {
 
 pub(crate) fn truncate_utf8(value: &str, max_bytes: usize) -> &str {
     value.split_at(value.floor_char_boundary(max_bytes)).0
-}
-
-pub(crate) fn serialized_len<T: serde::Serialize + ?Sized>(value: &T) -> Result<usize> {
-    let mut bytes = ByteCounter::default();
-    serde_json::to_writer(&mut bytes, value)?;
-    Ok(bytes.0)
-}
-
-#[derive(Default)]
-struct ByteCounter(usize);
-
-impl std::io::Write for ByteCounter {
-    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
-        self.0 = self
-            .0
-            .checked_add(buffer.len())
-            .ok_or_else(|| std::io::Error::other("serialized size overflow"))?;
-        Ok(buffer.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
 }

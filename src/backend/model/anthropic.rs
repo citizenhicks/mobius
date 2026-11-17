@@ -136,7 +136,7 @@ impl Anthropic {
         events: ModelEventSink,
         media: Option<super::MediaPreparation<'_>>,
     ) -> Result<ModelOutput> {
-        let body = super::media::encode_request(self, request, media, true, |input| {
+        let body = super::admission::encode_request(self, request, media, true, |input| {
             Ok(serde_json::to_vec(&self.request_body(
                 request.instructions,
                 input,

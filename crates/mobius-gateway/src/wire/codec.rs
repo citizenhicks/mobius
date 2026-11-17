@@ -175,15 +175,16 @@ fn encode_frame(value: &impl Serialize) -> Result<Vec<u8>> {
         .ok_or_else(|| Error::Protocol(format!("encoded frame must be 1–{MAX_FRAME_BYTES} bytes")))
 }
 
-/// Encodes a length-prefixed frame, or `None` when its payload is empty or over the frame limit.
 pub(crate) fn encode_bounded_frame(value: &impl Serialize) -> Result<Option<Vec<u8>>> {
-    let mut encoded = vec![0; 4];
-    serde_json::to_writer(&mut encoded, value)?;
-    let payload_len = encoded.len() - 4;
-    if payload_len == 0 || payload_len > MAX_FRAME_BYTES {
+    let Some(written) = mobius::bounded_json::write_within(vec![0; 4], value, MAX_FRAME_BYTES)?
+    else {
+        return Ok(None);
+    };
+    let mut encoded = written.writer;
+    if written.len == 0 {
         return Ok(None);
     }
-    let length = u32::try_from(payload_len).map_err(|error| {
+    let length = u32::try_from(written.len).map_err(|error| {
         Error::Protocol(format!("encoded frame length is unsupported: {error}"))
     })?;
     if let Some(prefix) = encoded.first_chunk_mut::<4>() {
