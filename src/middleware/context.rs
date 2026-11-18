@@ -900,34 +900,27 @@ impl ModelContext<'_> {
         .unwrap_or(i64::MAX)
     }
 
+    fn compact_context(&mut self) -> CompactContext<'_> {
+        CompactContext {
+            session_id: self.session_id,
+            turn_id: self.turn_id,
+            model: &self.runtime.model,
+            input: self.durable_input.input(),
+            events: self.events,
+            stop_reason: None,
+        }
+    }
+
     pub(crate) async fn pre_compact(&mut self) -> Result<()> {
         let hooks = self.hooks;
-        let stop_reason = hooks
-            .pre_compact(CompactContext {
-                session_id: self.session_id,
-                turn_id: self.turn_id,
-                model: &self.runtime.model,
-                input: self.durable_input.input(),
-                events: self.events,
-                stop_reason: None,
-            })
-            .await?;
+        let stop_reason = hooks.pre_compact(self.compact_context()).await?;
         set_first(self.turn_stop, stop_reason);
         Ok(())
     }
 
     pub(crate) async fn post_compact(&mut self) -> Result<()> {
         let hooks = self.hooks;
-        let stop_reason = hooks
-            .post_compact(CompactContext {
-                session_id: self.session_id,
-                turn_id: self.turn_id,
-                model: &self.runtime.model,
-                input: self.durable_input.input(),
-                events: self.events,
-                stop_reason: None,
-            })
-            .await?;
+        let stop_reason = hooks.post_compact(self.compact_context()).await?;
         set_first(self.turn_stop, stop_reason);
         if self.turn_stop.is_some() {
             return Ok(());
