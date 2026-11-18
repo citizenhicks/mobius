@@ -111,16 +111,7 @@ pub(super) async fn install_model(
 fn user_submission(id: &str, text: &str) -> Submission {
     Submission {
         id: id.into(),
-        op: Op::Message {
-            message: MessageSubmission {
-                author: MessageAuthor::User,
-                text: text.into(),
-                attachments: Vec::new(),
-                reply: None,
-                requested_delivery: None,
-                target_turn_id: None,
-            },
-        },
+        op: test_user_message(text, None),
     }
 }
 

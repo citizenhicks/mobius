@@ -12,19 +12,6 @@ fn peer_message<'a>(target: ChatTarget<'a>, text: &str) -> PeerCommand<'a> {
     }
 }
 
-fn message(text: &str, delivery: Option<ActiveMessageDelivery>) -> Op {
-    Op::Message {
-        message: MessageSubmission {
-            author: MessageAuthor::User,
-            text: text.into(),
-            attachments: Vec::new(),
-            reply: None,
-            requested_delivery: delivery,
-            target_turn_id: None,
-        },
-    }
-}
-
 #[tokio::test]
 async fn session_commands_and_chat_messages_preserve_sender_and_hook_ancestry() {
     let (root, gateway, bot) = super::bots::gateway_with_bot().await;
@@ -37,7 +24,7 @@ async fn session_commands_and_chat_messages_preserve_sender_and_hook_ancestry() 
     gateway
         .execute_session_command(
             target.session_id(),
-            message("Direct test", None),
+            test_user_message("Direct test", None),
             &bot.id,
             None,
             &"direct".into(),
@@ -86,7 +73,7 @@ async fn session_commands_and_chat_messages_preserve_sender_and_hook_ancestry() 
                 ),
                 action: crate::wire::BotAction::Session {
                     session_id: target.session_id().share(),
-                    op: Box::new(message("Saved test", None)),
+                    op: Box::new(test_user_message("Saved test", None)),
                 },
             },
         })

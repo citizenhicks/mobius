@@ -232,6 +232,19 @@ pub(crate) async fn test_gateway() -> TestGateway {
     }
 }
 
+fn test_user_message(text: &str, delivery: Option<mobius::protocol::ActiveMessageDelivery>) -> Op {
+    Op::Message {
+        message: MessageSubmission {
+            author: MessageAuthor::User,
+            text: text.into(),
+            attachments: Vec::new(),
+            reply: None,
+            requested_delivery: delivery,
+            target_turn_id: None,
+        },
+    }
+}
+
 pub(crate) fn turn_started(turn_id: &str) -> mobius::protocol::EventMsg {
     mobius::protocol::EventMsg::TurnStarted(mobius::protocol::TurnStartedEvent {
         idle: false,
