@@ -101,17 +101,18 @@ pub(crate) fn validate_agent_composition_with_ceilings(
     Ok(settings)
 }
 
-pub(super) fn validate_provider_config(config: &ProviderConfig) -> Result<()> {
-    validate_provider_transport(config)?;
+pub(super) fn validate_provider_config(
+    config: &ProviderConfig,
+) -> Result<&'static ProviderDefinition> {
+    let definition = validate_provider_transport(config)?;
     if config.model.trim().is_empty() || config.model.len() > 1024 {
         return Err(Error::Invalid("model must be 1–1024 bytes".into()));
     }
-    provider(&config.provider)?
-        .model_config_is_valid(&config.model, config.reasoning_effort.as_deref())?;
-    Ok(())
+    definition.model_config_is_valid(&config.model, config.reasoning_effort.as_deref())?;
+    Ok(definition)
 }
 
-fn validate_provider_transport(config: &ProviderConfig) -> Result<()> {
+fn validate_provider_transport(config: &ProviderConfig) -> Result<&'static ProviderDefinition> {
     validate_instance_id(&config.instance)?;
     if config.provider.trim().is_empty() || config.provider.len() > 256 {
         return Err(Error::Invalid("provider ID must be 1–256 bytes".into()));
@@ -121,7 +122,7 @@ fn validate_provider_transport(config: &ProviderConfig) -> Result<()> {
         definition.validate_tool_discovery(mode)?;
     }
     validate_provider_endpoint_auth(definition, config)?;
-    Ok(())
+    Ok(definition)
 }
 
 fn validate_provider_endpoint_auth(
@@ -137,19 +138,18 @@ fn validate_provider_endpoint_auth(
 }
 
 pub(super) fn validate_configured_provider(configured: &ConfiguredProvider) -> Result<()> {
-    if configured.selection.model.is_empty() {
-        validate_provider_transport(&configured.selection)?;
-        provider(&configured.selection.provider)?;
+    let definition = if configured.selection.model.is_empty() {
+        let definition = validate_provider_transport(&configured.selection)?;
         if !configured.models.is_empty() || configured.selection.reasoning_effort.is_some() {
             return Err(Error::Invalid(
                 "a chat catalog requires a selected chat model".into(),
             ));
         }
+        definition
     } else {
-        validate_provider_config(&configured.selection)?;
-    }
+        validate_provider_config(&configured.selection)?
+    };
     validate_provider_label(&configured.label)?;
-    let definition = provider(&configured.selection.provider)?;
     if definition.locked_models() && !configured.models.is_empty() {
         return Err(Error::Invalid(format!(
             "provider `{}` uses its advertised model and reasoning catalogs",
