@@ -8,7 +8,6 @@ use mobius_gateway::config::{
 };
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use super::terminal::{input_batch, input_interval, open_screen};
 use super::terminal_text;
@@ -232,17 +231,7 @@ fn render(frame: &mut ratatui::Frame<'_>, state: &State) {
         "  tab/↑↓ select · enter continue · esc cancel",
         theme.style(Role::Muted),
     ));
-    frame.render_widget(
-        Paragraph::new(lines)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Cloudflare Tunnel "),
-            )
-            .style(theme.style(Role::Canvas))
-            .wrap(Wrap { trim: false }),
-        frame.area(),
-    );
+    super::terminal::render_dialog(frame, " Cloudflare Tunnel ", lines);
 }
 
 #[cfg(test)]

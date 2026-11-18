@@ -186,6 +186,16 @@ pub(super) fn masked_credential(value: &str, limit: usize) -> String {
     masked
 }
 
+pub(super) fn render_dialog(frame: &mut ratatui::Frame<'_>, title: &str, lines: Vec<Line<'_>>) {
+    use super::theme::{Role, current};
+    use ratatui::widgets::{Block, Paragraph, Wrap};
+    let content = Paragraph::new(lines)
+        .block(Block::bordered().title(title))
+        .style(current().style(Role::Canvas))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(content, frame.area());
+}
+
 pub(super) fn page_canvas(frame: &mut ratatui::Frame<'_>, max_width: u16) -> ratatui::layout::Rect {
     use super::theme::{Role, current};
     let area = frame.area();

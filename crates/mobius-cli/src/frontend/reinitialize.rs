@@ -5,7 +5,6 @@ use std::path::Path;
 use mobius::Result;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use super::terminal::{input_batch, input_interval, open_screen};
 use super::terminal_text;
@@ -70,17 +69,7 @@ fn render(frame: &mut ratatui::Frame<'_>, state_dir: &Path) {
             theme.style(Role::Muted),
         ),
     ];
-    frame.render_widget(
-        Paragraph::new(lines)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Reinitialize möbius Gateway? "),
-            )
-            .style(theme.style(Role::Canvas))
-            .wrap(Wrap { trim: false }),
-        frame.area(),
-    );
+    super::terminal::render_dialog(frame, " Reinitialize möbius Gateway? ", lines);
 }
 
 #[cfg(test)]
@@ -89,7 +78,10 @@ mod tests {
 
     #[test]
     fn only_an_explicit_yes_confirms_reinitialization() {
-        let key = KeyEvent::new(KeyCode::Char('y'), ratatui::crossterm::event::KeyModifiers::NONE);
+        let key = KeyEvent::new(
+            KeyCode::Char('y'),
+            ratatui::crossterm::event::KeyModifiers::NONE,
+        );
 
         assert_eq!(decision(key), Some(true));
     }
