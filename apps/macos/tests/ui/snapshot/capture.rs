@@ -38,7 +38,9 @@ pub(super) fn catalog(
             "default_capabilities": null, "models": [], "model_providers": {}, "image_models": [],
             "voice_models": [], "middleware_features": [], "extensions": [], "contributions": []});
     fill(&mut value, &mut agents);
-    value["agent_catalog"] = agents;
+    if let Some(fields) = value.as_object_mut() {
+        fields.insert("agent_catalog".into(), agents);
+    }
     serde_json::from_value(value)
         .inspect_err(|error| eprintln!("snapshot {name}: {error}"))
         .ok()
