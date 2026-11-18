@@ -341,9 +341,7 @@ pub(super) enum JournalDelivery {
 impl HostHandle {
     #[cfg(test)]
     pub(crate) async fn bot_id(&self) -> std::result::Result<Arc<str>, Rejection> {
-        let (reply, receiver) = oneshot::channel();
-        self.send(HostCommand::BotId { reply }).await?;
-        receiver.await.map_err(super::stopped_by)
+        self.request(|reply| HostCommand::BotId { reply }).await
     }
 
     pub(super) async fn reassign_bot(
@@ -352,7 +350,7 @@ impl HostHandle {
     ) -> std::result::Result<(), Rejection> {
         let _voice = self.claim_realtime_voice()?;
         self.request(|reply| HostCommand::ReassignBot { bot_id, reply })
-            .await
+            .await?
     }
 
     #[expect(
@@ -485,12 +483,12 @@ impl HostHandle {
 
     pub(crate) async fn realtime_model(&self) -> std::result::Result<RealtimeModel, Rejection> {
         self.request(|reply| HostCommand::RealtimeModel { reply })
-            .await
+            .await?
     }
 
     pub(crate) async fn accepts_file_attachments(&self) -> std::result::Result<bool, Rejection> {
         self.request(|reply| HostCommand::AcceptsFileAttachments { reply })
-            .await
+            .await?
     }
 
     pub(super) fn is_alive(&self) -> bool {
@@ -516,12 +514,12 @@ impl HostHandle {
             last_sequence,
             reply,
         })
-        .await
+        .await?
     }
 
     /// The chat's current state, without replay.
     pub(crate) async fn ready(&self) -> std::result::Result<SessionReadyPayload, Rejection> {
-        self.request(|reply| HostCommand::Ready { reply }).await
+        self.request(|reply| HostCommand::Ready { reply }).await?
     }
 
     pub(crate) async fn history_page(
@@ -529,7 +527,7 @@ impl HostHandle {
         before: Option<crate::wire::HistoryCursor>,
     ) -> std::result::Result<SessionHistoryPage, Rejection> {
         self.request(|reply| HostCommand::HistoryPage { before, reply })
-            .await
+            .await?
     }
 
     pub(crate) async fn submit(
@@ -544,7 +542,7 @@ impl HostHandle {
         submission: ValidatedSubmission,
     ) -> std::result::Result<(), Rejection> {
         self.request(|reply| HostCommand::Submit { submission, reply })
-            .await
+            .await?
     }
 
     /// Delivers a source message only while this chat belongs to `bot_id`, and
@@ -568,7 +566,7 @@ impl HostHandle {
             bot_id,
             reply,
         })
-        .await
+        .await?
     }
 
     pub(crate) async fn attach_folder(
@@ -576,7 +574,7 @@ impl HostHandle {
         folder: PathBuf,
     ) -> std::result::Result<(), Rejection> {
         self.request(|reply| HostCommand::AttachFolder { folder, reply })
-            .await
+            .await?
     }
 
     pub(crate) async fn set_memory(
@@ -584,7 +582,7 @@ impl HostHandle {
         memory: Option<bool>,
     ) -> std::result::Result<(), Rejection> {
         self.request(|reply| HostCommand::SetMemory { memory, reply })
-            .await
+            .await?
     }
 
     pub(crate) async fn set_message_pinned(
@@ -597,7 +595,7 @@ impl HostHandle {
             pinned,
             reply,
         })
-        .await
+        .await?
     }
 
     pub(crate) async fn git_diff(
@@ -624,7 +622,8 @@ impl HostHandle {
     }
 
     async fn workspace(&self) -> std::result::Result<ChatWorkspace, Rejection> {
-        self.request(|reply| HostCommand::Workspace { reply }).await
+        self.request(|reply| HostCommand::Workspace { reply })
+            .await?
     }
 
     // Listing and reading wait on git and the filesystem, so they run here rather than
@@ -652,7 +651,7 @@ impl HostHandle {
         path: String,
     ) -> std::result::Result<(), Rejection> {
         self.request(|reply| HostCommand::DeleteWorkspaceFile { path, reply })
-            .await
+            .await?
     }
 
     pub(crate) async fn write_workspace_file(
@@ -665,7 +664,7 @@ impl HostHandle {
             content,
             reply,
         })
-        .await
+        .await?
     }
 
     pub(crate) async fn switch_git_branch(
@@ -673,12 +672,12 @@ impl HostHandle {
         branch: String,
     ) -> std::result::Result<(), Rejection> {
         self.request(|reply| HostCommand::SwitchGitBranch { branch, reply })
-            .await
+            .await?
     }
 
     pub(super) async fn runtime_is_idle(&self) -> std::result::Result<bool, Rejection> {
         self.request(|reply| HostCommand::RuntimeIsIdle { reply })
-            .await
+            .await?
     }
 
     /// Asks an idle chat to adopt its Bot's saved settings now; a busy chat adopts them on its
@@ -697,10 +696,8 @@ impl HostHandle {
     pub(super) async fn provider_cutover_status(
         &self,
     ) -> std::result::Result<ProviderCutoverStatus, Rejection> {
-        let (reply, receiver) = oneshot::channel();
-        self.send(HostCommand::ProviderCutoverStatus { reply })
-            .await?;
-        receiver.await.map_err(super::stopped_by)
+        self.request(|reply| HostCommand::ProviderCutoverStatus { reply })
+            .await
     }
 
     pub(crate) async fn run_routine(
@@ -787,11 +784,11 @@ impl HostHandle {
     /// Sends the command built around a fresh reply channel and awaits the chat's answer.
     async fn request<T>(
         &self,
-        command: impl FnOnce(oneshot::Sender<std::result::Result<T, Rejection>>) -> HostCommand,
+        command: impl FnOnce(oneshot::Sender<T>) -> HostCommand,
     ) -> std::result::Result<T, Rejection> {
         let (reply, receiver) = oneshot::channel();
         self.send(command(reply)).await?;
-        receive(receiver).await
+        receiver.await.map_err(super::stopped_by)
     }
 
     async fn send(&self, command: HostCommand) -> std::result::Result<(), Rejection> {
