@@ -1112,7 +1112,12 @@ impl TranscriptReducer {
                 } else if let Some(run) = runs.last_mut().filter(|_| in_run) {
                     run.items.push(TranscriptChild::Item(id));
                 } else {
-                    let run = activity_row(slot, self.counts(std::iter::once(*slot), None));
+                    let run = single(
+                        slot,
+                        TranscriptRowKind::Activity {
+                            counts: self.counts(std::iter::once(*slot), None),
+                        },
+                    );
                     items.push(TranscriptChild::Row(Arc::clone(&run.id)));
                     runs.push(run);
                     in_run = true;
@@ -1177,7 +1182,12 @@ impl TranscriptReducer {
                     row.items.push(TranscriptChild::Item(Arc::clone(&item.id)));
                     *row_counts = self.counts(self.child_slots(&row.items), None);
                 } else {
-                    rows.push(activity_row(slot, self.counts(std::iter::once(slot), None)));
+                    rows.push(single(
+                        slot,
+                        TranscriptRowKind::Activity {
+                            counts: self.counts(std::iter::once(slot), None),
+                        },
+                    ));
                 }
             } else {
                 rows.push(single(
@@ -1231,7 +1241,10 @@ fn extends(current: &TranscriptRow, row: &TranscriptRow) -> bool {
 
 fn single(slot: &Slot, kind: TranscriptRowKind) -> TranscriptRow {
     TranscriptRow {
-        id: Arc::clone(&slot.item.id),
+        id: match kind {
+            TranscriptRowKind::Activity { .. } => format!("activity:{}", slot.item.id).into(),
+            _ => Arc::clone(&slot.item.id),
+        },
         position: slot.position,
         items: vec![TranscriptChild::Item(Arc::clone(&slot.item.id))],
         kind,
@@ -1243,16 +1256,6 @@ fn share(child: &TranscriptChild) -> TranscriptChild {
     match child {
         TranscriptChild::Item(id) => TranscriptChild::Item(Arc::clone(id)),
         TranscriptChild::Row(id) => TranscriptChild::Row(Arc::clone(id)),
-    }
-}
-
-/// A run of activity starting at `slot`, holding only it so far.
-fn activity_row(slot: &Slot, counts: ActivityCounts) -> TranscriptRow {
-    TranscriptRow {
-        id: format!("activity:{}", slot.item.id).into(),
-        position: slot.position,
-        items: vec![TranscriptChild::Item(Arc::clone(&slot.item.id))],
-        kind: TranscriptRowKind::Activity { counts },
     }
 }
 
