@@ -268,13 +268,7 @@ impl GatewayHost {
     }
 
     pub(crate) async fn session_activity_report(&self) -> Result<SessionActivityReport> {
-        let (checkpoints, activities) = {
-            let state = self.state.lock().await;
-            (
-                Arc::clone(&state.checkpoints),
-                Arc::clone(&state.activities),
-            )
-        };
+        let (checkpoints, activities) = self.state.lock().await.catalog_handles();
         let mut catalog = activities.lock().await;
         if catalog.snapshot.is_none() {
             super::catalog::refresh_catalog(&checkpoints, &mut catalog).await?;

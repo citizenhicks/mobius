@@ -83,6 +83,10 @@ impl Drop for SessionStartGuard {
 }
 
 impl GatewayState {
+    pub(super) fn catalog_handles(&self) -> (Arc<dyn CheckpointStore>, SessionActivities) {
+        (Arc::clone(&self.checkpoints), Arc::clone(&self.activities))
+    }
+
     pub(super) fn config(
         &self,
     ) -> std::result::Result<std::sync::MutexGuard<'_, GatewayConfig>, Rejection> {

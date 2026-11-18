@@ -351,13 +351,7 @@ impl GatewayHost {
     pub(crate) async fn sessions(&self) -> std::result::Result<Vec<SessionRecord>, Rejection> {
         let _access = self.begin_mutation().await?;
         // Catalog reads await storage after releasing GatewayState, retaining only these shared owners.
-        let (checkpoints, activities) = {
-            let state = self.state.lock().await;
-            (
-                Arc::clone(&state.checkpoints),
-                Arc::clone(&state.activities),
-            )
-        };
+        let (checkpoints, activities) = self.state.lock().await.catalog_handles();
         session_catalog(&checkpoints, &activities)
             .await
             .map_err(internal)
@@ -538,10 +532,7 @@ impl GatewayHost {
         let (checkpoints, activities) = {
             let state = self.state.lock().await;
             state.bots.require_bot(bot_id).map_err(invalid_bot)?;
-            (
-                Arc::clone(&state.checkpoints),
-                Arc::clone(&state.activities),
-            )
+            state.catalog_handles()
         };
         hidden_bot_session_catalog(&checkpoints, &activities, bot_id)
             .await
@@ -963,13 +954,7 @@ impl GatewayHost {
 
     pub(super) async fn broadcast_sessions(&self) -> std::result::Result<(), Rejection> {
         self.invalidate_storage_usage();
-        let (checkpoints, activities) = {
-            let state = self.state.lock().await;
-            (
-                Arc::clone(&state.checkpoints),
-                Arc::clone(&state.activities),
-            )
-        };
+        let (checkpoints, activities) = self.state.lock().await.catalog_handles();
         let (sessions, approvals) = gateway_catalog(&checkpoints, &activities)
             .await
             .map_err(internal)?;
