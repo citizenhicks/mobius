@@ -236,7 +236,7 @@ impl ExtensionStore {
                 Err(error) => return Err(error.into()),
             }
         }
-        thaw_tree(&directory)?;
+        set_tree_read_only(&directory, false)?;
         fs::remove_dir_all(directory)?;
         Ok(())
     }
@@ -294,9 +294,9 @@ impl ExtensionStore {
         } else {
             verify_snapshot(&snapshot, &digest)?;
         }
-        if let Err(error) = freeze_tree(parent) {
+        if let Err(error) = set_tree_read_only(parent, true) {
             if created {
-                if let Err(cleanup) = thaw_tree(parent) {
+                if let Err(cleanup) = set_tree_read_only(parent, false) {
                     tracing::warn!(path = %parent.display(), %cleanup, "failed to unfreeze the unfinished extension snapshot");
                 }
                 if let Err(cleanup) = fs::remove_dir_all(parent) {
@@ -812,43 +812,36 @@ fn preserve_executable(source: &fs::Metadata, destination: &Path) -> Result<()> 
     Ok(())
 }
 
-fn freeze_tree(path: &Path) -> Result<()> {
-    if path.is_dir() {
-        for entry in fs::read_dir(path)? {
-            freeze_tree(&entry?.path())?;
-        }
-    }
-    set_read_only(path, true)
-}
-
-fn thaw_tree(path: &Path) -> Result<()> {
+fn set_tree_read_only(path: &Path, read_only: bool) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
     let metadata = fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink() || (!metadata.is_dir() && !metadata.is_file()) {
+    if !metadata.is_dir() && !metadata.is_file() {
         return Err(Error::Internal(
             "extension snapshot contains an unsupported entry".into(),
         ));
     }
-    set_read_only(path, false)?;
-    if metadata.is_dir() {
-        for entry in fs::read_dir(path)? {
-            thaw_tree(&entry?.path())?;
+    let executable = metadata.is_dir() || is_executable(&metadata);
+    let permissions = match (read_only, executable) {
+        (true, true) => fs::Permissions::from_mode(0o500),
+        (true, false) => fs::Permissions::from_mode(0o400),
+        (false, true) => mobius::owner_only::dir(),
+        (false, false) => mobius::owner_only::file(),
+    };
+    let visit_children = || -> Result<()> {
+        if metadata.is_dir() {
+            for entry in fs::read_dir(path)? {
+                set_tree_read_only(&entry?.path(), read_only)?;
+            }
         }
+        Ok(())
+    };
+    // Unlock directories before changing children, and freeze directories last.
+    if read_only {
+        visit_children()?;
     }
-    Ok(())
-}
-
-fn set_read_only(path: &Path, read_only: bool) -> Result<()> {
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        let metadata = fs::symlink_metadata(path)?;
-        let executable = metadata.is_dir() || is_executable(&metadata);
-        let permissions = match (read_only, executable) {
-            (true, true) => fs::Permissions::from_mode(0o500),
-            (true, false) => fs::Permissions::from_mode(0o400),
-            (false, true) => mobius::owner_only::dir(),
-            (false, false) => mobius::owner_only::file(),
-        };
-        fs::set_permissions(path, permissions)?;
+    fs::set_permissions(path, permissions)?;
+    if !read_only {
+        visit_children()?;
     }
     Ok(())
 }

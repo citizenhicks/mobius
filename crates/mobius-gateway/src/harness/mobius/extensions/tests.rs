@@ -114,3 +114,17 @@ fn tree_digest_has_unambiguous_path_and_content_framing() {
         tree_digest(&second).expect("second digest")
     );
 }
+
+#[test]
+fn snapshot_permissions_reject_symlinks_in_both_directions() {
+    let root = tempfile::tempdir().unwrap();
+    let target = root.path().join("target");
+    fs::write(&target, "keep").unwrap();
+    let link = root.path().join("link");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let before = fs::metadata(&target).unwrap().permissions();
+    for read_only in [true, false] {
+        assert!(set_tree_read_only(&link, read_only).is_err());
+        assert_eq!(fs::metadata(&target).unwrap().permissions(), before);
+    }
+}
