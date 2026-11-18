@@ -200,17 +200,30 @@ fn user_message_with_attachments(
     }
 }
 
-async fn final_message(agent: &mut mobius::agent::Agent) -> String {
-    let mut message = String::new();
-    while let Some(event) = agent.next_event().await {
-        match event.msg {
-            EventMsg::AssistantMessage(event) => message = assistant_final_text(event),
-            EventMsg::TurnComplete(_) => return message,
-            EventMsg::Error(error) => panic!("{}", error.message),
-            _ => {}
+async fn turn_result(agent: &mut mobius::agent::Agent) -> std::result::Result<String, Arc<str>> {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let mut message = String::new();
+        let mut error = None;
+        while let Some(event) = agent.next_event().await {
+            match event.msg {
+                EventMsg::AssistantMessage(event) => message = assistant_final_text(event),
+                EventMsg::Error(event) => error = Some(event.message),
+                EventMsg::TurnAborted(_) => return Err(error.expect("failed turn error")),
+                EventMsg::TurnComplete(_) => {
+                    assert!(error.is_none(), "turn completed after error: {error:?}");
+                    return Ok(message);
+                }
+                _ => {}
+            }
         }
-    }
-    panic!("agent disconnected")
+        panic!("agent disconnected")
+    })
+    .await
+    .expect("timed out waiting for turn to end")
+}
+
+async fn final_message(agent: &mut mobius::agent::Agent) -> String {
+    turn_result(agent).await.expect("expected a completed turn")
 }
 
 fn assistant_final_text(event: AssistantMessageEvent) -> String {
@@ -222,17 +235,10 @@ fn assistant_final_text(event: AssistantMessageEvent) -> String {
         .collect()
 }
 
-async fn failed_turn(agent: &mut mobius::agent::Agent) -> std::sync::Arc<str> {
-    let mut message = None;
-    while let Some(event) = agent.next_event().await {
-        match event.msg {
-            EventMsg::Error(error) => message = Some(error.message),
-            EventMsg::TurnAborted(_) => return message.expect("failed turn error"),
-            EventMsg::TurnComplete(_) => panic!("turn unexpectedly completed"),
-            _ => {}
-        }
-    }
-    panic!("agent disconnected")
+async fn failed_turn(agent: &mut mobius::agent::Agent) -> Arc<str> {
+    turn_result(agent)
+        .await
+        .expect_err("turn unexpectedly completed")
 }
 
 async fn upload_attachment(
