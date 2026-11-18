@@ -58,6 +58,13 @@ impl std::fmt::Debug for Sandbox {
     }
 }
 
+fn check_write_size(bytes: usize) -> Result<()> {
+    if bytes > MAX_FILE_BYTES {
+        return Err(Error::Sandbox("file exceeds write limit".into()));
+    }
+    Ok(())
+}
+
 impl Sandbox {
     /// Creates a sandbox with its initial approval policy.
     #[must_use]
@@ -169,8 +176,8 @@ impl Sandbox {
         content: &'a str,
         permit: MutationPermit<'a>,
     ) -> BoxFuture<'a, Result<()>> {
-        if content.len() > MAX_FILE_BYTES {
-            return Box::pin(async { Err(Error::Sandbox("file exceeds write limit".into())) });
+        if let Err(error) = check_write_size(content.len()) {
+            return Box::pin(std::future::ready(Err(error)));
         }
         self.backend.write(path, content, permit.0.sandbox_mode)
     }
@@ -182,8 +189,8 @@ impl Sandbox {
         change: &'a FileChange,
         permit: MutationPermit<'a>,
     ) -> BoxFuture<'a, Result<()>> {
-        if change.written_bytes() > MAX_FILE_BYTES {
-            return Box::pin(async { Err(Error::Sandbox("file exceeds write limit".into())) });
+        if let Err(error) = check_write_size(change.written_bytes()) {
+            return Box::pin(std::future::ready(Err(error)));
         }
         self.backend
             .check_file_change(change, permit.0.sandbox_mode)
@@ -195,10 +202,8 @@ impl Sandbox {
         change: FileChange,
         permit: MutationPermit<'a>,
     ) -> BoxFuture<'a, std::result::Result<(), FileChangeFailure>> {
-        if change.written_bytes() > MAX_FILE_BYTES {
-            return Box::pin(async {
-                Err(Error::Sandbox("file exceeds write limit".into()).into())
-            });
+        if let Err(error) = check_write_size(change.written_bytes()) {
+            return Box::pin(std::future::ready(Err(error.into())));
         }
         self.backend
             .apply_file_change(change, permit.0.sandbox_mode)
