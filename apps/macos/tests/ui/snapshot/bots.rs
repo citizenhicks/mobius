@@ -58,7 +58,6 @@ fn overview(this: &mut Workspace, window: &mut Window, cx: &mut Context<Workspac
 
 /// An in-memory typed catalog for the identity form; never connected or saved.
 fn identity_fixture(this: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
-    use serde_json::json;
     this.client.gateway.take();
     this.client.state.gateway = catalog("typed offline Bot catalog", |ready| {
         ready["bots"] = serde_json::json!([{
@@ -138,15 +137,21 @@ fn media_instance(
 }
 
 /// The optional voice capability, its `model` setting offering every voice route.
+fn media_options(routes: &[serde_json::Value], label: &str) -> Vec<serde_json::Value> {
+    routes
+        .iter()
+        .map(|route| {
+            serde_json::json!({
+                "value": route["route"], "label": route[label], "description": "",
+                "symbol": null, "tone": "neutral", "disables": []
+            })
+        })
+        .collect()
+}
+
 fn voice_feature(voices: &[serde_json::Value]) -> serde_json::Value {
     use serde_json::json;
-    let options: Vec<_> = voices
-        .iter()
-        .map(|voice| {
-            json!({"value": voice["route"], "label": voice["variant_label"], "description": "",
-                "symbol": null, "tone": "neutral", "disables": []})
-        })
-        .collect();
+    let options = media_options(voices, "variant_label");
     json!({
         "id": "voice", "label": "Voice",
         "description": "Talk with the Bot in a live voice call", "required": false,
@@ -207,13 +212,7 @@ pub(super) fn media_fixture(this: &mut Workspace) {
         .filter_map(|choice| choice["route"].as_str())
         .map(|route| (route.to_owned(), json!(route.split("::").next())))
         .collect();
-    let image_options: Vec<Value> = images
-        .iter()
-        .map(|image| {
-            json!({"value": image["route"], "label": image["model"], "description": "",
-                "symbol": null, "tone": "neutral", "disables": []})
-        })
-        .collect();
+    let image_options = media_options(&images, "model");
     let feature = json!({
         "id": "image_generation", "label": "Image generation",
         "description": "Generate images.", "required": false,
