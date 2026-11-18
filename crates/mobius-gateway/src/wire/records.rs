@@ -793,30 +793,42 @@ impl MiddlewareConfig {
         features: &'a [mobius::protocol::MiddlewareFeature],
         id: &str,
     ) -> Option<&'a str> {
-        features
+        self.find_selected_option(features, |_, option| {
+            option
+                .disables
+                .iter()
+                .any(|disabled| disabled == id)
+                .then_some(&*option.label)
+        })
+    }
+
+    /// Finds a selected option on an active feature, in catalog order.
+    pub fn find_selected_option<'f, T>(
+        &self,
+        features: &'f [MiddlewareFeature],
+        mut find: impl FnMut(
+            &'f mobius::protocol::FrontendSetting,
+            &'f FrontendSettingOption,
+        ) -> Option<T>,
+    ) -> Option<T> {
+        for feature in features
             .iter()
             .filter(|feature| feature.required || self.enabled(&feature.id))
-            .find_map(|feature| {
-                feature.settings.iter().find_map(|setting| {
-                    let mobius::protocol::FrontendSettingKind::Select { options, .. } =
-                        &setting.kind
-                    else {
-                        return None;
-                    };
-                    let Some(FrontendSettingValue::String(value)) =
+        {
+            for setting in &feature.settings {
+                if let mobius::protocol::FrontendSettingKind::Select { options, .. } = &setting.kind
+                    && let Some(FrontendSettingValue::String(value)) =
                         self.setting(&feature.id, &setting.id)
-                    else {
-                        return None;
-                    };
-                    options
+                    && let Some(found) = options
                         .iter()
-                        .find(|option| {
-                            *option.value == **value
-                                && option.disables.iter().any(|disabled| disabled == id)
-                        })
-                        .map(|option| &*option.label)
-                })
-            })
+                        .filter(|option| *option.value == **value)
+                        .find_map(|option| find(setting, option))
+                {
+                    return Some(found);
+                }
+            }
+        }
+        None
     }
 
     /// Applies exclusions advertised by the currently selected policies.

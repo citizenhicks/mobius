@@ -1,40 +1,21 @@
 //! Shell state kept across launches: the sidebar, drafts and each gateway's last chat.
 
 use super::{Context, PageTab, Subscription, Tone, Window, Workspace, preferences};
-use mobius::protocol::{
-    FrontendSettingKind, FrontendSettingValue, FrontendTone, MiddlewareFeature,
-};
+use mobius::protocol::{FrontendTone, MiddlewareFeature};
 use mobius_gateway::wire::AgentComposition;
 use preferences::Preferences;
 use std::sync::Arc;
 
 /// The first chosen option of `defaults` whose tone asks for care, as one sentence.
 fn risky_default(features: &[MiddlewareFeature], defaults: &AgentComposition) -> Option<String> {
-    features
-        .iter()
-        .filter(|feature| feature.required || defaults.middleware.enabled(&feature.id))
-        .find_map(|feature| {
-            feature.settings.iter().find_map(|setting| {
-                let FrontendSettingKind::Select { options, .. } = &setting.kind else {
-                    return None;
-                };
-                let Some(FrontendSettingValue::String(value)) =
-                    defaults.middleware.setting(&feature.id, &setting.id)
-                else {
-                    return None;
-                };
-                options
-                    .iter()
-                    .find(|option| {
-                        *option.value == **value
-                            && matches!(option.tone, FrontendTone::Warning | FrontendTone::Error)
-                    })
-                    .map(|option| {
-                        format!(
-                            "{} is {}: {}.",
-                            setting.label, option.label, option.description
-                        )
-                    })
+    defaults
+        .middleware
+        .find_selected_option(features, |setting, option| {
+            matches!(option.tone, FrontendTone::Warning | FrontendTone::Error).then(|| {
+                format!(
+                    "{} is {}: {}.",
+                    setting.label, option.label, option.description
+                )
             })
         })
 }
