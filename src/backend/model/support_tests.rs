@@ -42,6 +42,24 @@ pub(super) async fn loopback_listener() -> (tokio::net::TcpListener, std::net::S
     (listener, address)
 }
 
+pub(super) fn model_request() -> super::ModelRequest<'static> {
+    super::ModelRequest {
+        session_id: None,
+        cancellation: None,
+        prompt_cache: Some(super::PromptCacheIdentity {
+            key: "hashed-cache-key",
+            context_epoch: 3,
+        }),
+        instructions: "Test instructions",
+        input: (&[]).into(),
+        catalog_revision: "catalog-1",
+        tools: &[],
+        deferred_tools: &[],
+        allow_hosted_tools: false,
+        allow_continuation: false,
+    }
+}
+
 pub(crate) fn record_events() -> (ModelEventSink, Arc<StdMutex<Vec<ModelEvent>>>) {
     let events = Arc::new(StdMutex::new(Vec::new()));
     let recorded = Arc::clone(&events);

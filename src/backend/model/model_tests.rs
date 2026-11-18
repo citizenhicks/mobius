@@ -466,12 +466,8 @@ async fn fallback_cancellation_does_not_inherit_source_credential_expiry() {
         cancellation: Some(&parent),
         prompt_cache: None,
         instructions: "",
-        input: (&[]).into(),
         catalog_revision: "test",
-        tools: &[],
-        deferred_tools: &[],
-        allow_hosted_tools: false,
-        allow_continuation: false,
+        ..test_support::model_request()
     };
     assert!(
         router

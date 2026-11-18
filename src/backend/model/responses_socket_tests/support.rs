@@ -20,19 +20,12 @@ pub(super) fn model_request() -> ModelRequest<'static> {
     static SESSION: std::sync::LazyLock<crate::SessionId> =
         std::sync::LazyLock::new(|| crate::SessionId::new("test-session").expect("session"));
     ModelRequest {
-        cancellation: None,
         session_id: Some(&SESSION),
         prompt_cache: Some(PromptCacheIdentity {
             key: "hashed-cache-key",
             context_epoch: 1,
         }),
-        instructions: "Test instructions",
-        input: (&[]).into(),
-        catalog_revision: "catalog-1",
-        tools: &[],
-        deferred_tools: &[],
-        allow_hosted_tools: false,
-        allow_continuation: false,
+        ..crate::backend::model::test_support::model_request()
     }
 }
 

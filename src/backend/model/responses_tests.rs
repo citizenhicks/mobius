@@ -2,7 +2,7 @@ use super::*;
 use crate::backend::model::ModelInput;
 use crate::backend::model::PromptCacheIdentity;
 use crate::backend::model::test_support::{
-    RefreshingAuthorization, capture_http_request, read_http_request,
+    RefreshingAuthorization, capture_http_request, model_request, read_http_request,
 };
 
 fn wire_input(
@@ -223,24 +223,6 @@ fn max_request_bytes(
     .expect("transport settings")
 }
 
-fn model_request() -> ModelRequest<'static> {
-    ModelRequest {
-        session_id: None,
-        cancellation: None,
-        prompt_cache: Some(PromptCacheIdentity {
-            key: "hashed-cache-key",
-            context_epoch: 3,
-        }),
-        instructions: "Test instructions",
-        input: (&[]).into(),
-        catalog_revision: "catalog-1",
-        tools: &[],
-        deferred_tools: &[],
-        allow_hosted_tools: false,
-        allow_continuation: false,
-    }
-}
-
 fn tool_definition(name: &str) -> Arc<ToolDefinition> {
     Arc::new(ToolDefinition {
         name: name.into(),
@@ -348,19 +330,14 @@ fn compatible_responses_are_implicit_while_first_party_breakpoints_are_explicit(
         }]
     })];
     let request = ModelRequest {
-        session_id: None,
-        cancellation: None,
         prompt_cache: Some(PromptCacheIdentity {
             key: "opaque-cache-key",
             context_epoch: 4,
         }),
         instructions: "Instructions",
         input: (&input).into(),
-        catalog_revision: "catalog-1",
-        tools: &[],
-        deferred_tools: &[],
-        allow_hosted_tools: false,
         allow_continuation: true,
+        ..model_request()
     };
 
     let compatible = OpenAi::new("test-key", url("https://example.com/v1"), "test-model")
