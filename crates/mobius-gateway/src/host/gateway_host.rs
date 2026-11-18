@@ -270,17 +270,19 @@ impl GatewayHost {
         Ok(access)
     }
 
+    async fn mutation_handles(&self) -> (Arc<RwLock<()>>, Arc<BotStore>) {
+        let state = self.state.lock().await;
+        (
+            Arc::clone(&state.session_mutations),
+            Arc::clone(&state.bots),
+        )
+    }
+
     // Observers still obey idle shutdown and deletion admission while execution is held.
     pub(crate) async fn begin_access(
         &self,
     ) -> std::result::Result<tokio::sync::OwnedRwLockReadGuard<()>, Rejection> {
-        let (gate, bots) = {
-            let state = self.state.lock().await;
-            (
-                Arc::clone(&state.session_mutations),
-                Arc::clone(&state.bots),
-            )
-        };
+        let (gate, bots) = self.mutation_handles().await;
         // Admission serializes with exclusive session mutations.
         let mutation = gate.read_owned().await;
         reject_pending_bot_deletion(&bots)?;
@@ -296,13 +298,7 @@ impl GatewayHost {
     pub(super) async fn begin_exclusive_mutation(
         &self,
     ) -> std::result::Result<tokio::sync::OwnedRwLockWriteGuard<()>, Rejection> {
-        let (gate, bots) = {
-            let state = self.state.lock().await;
-            (
-                Arc::clone(&state.session_mutations),
-                Arc::clone(&state.bots),
-            )
-        };
+        let (gate, bots) = self.mutation_handles().await;
         let mutation = gate.write_owned().await;
         reject_pending_bot_deletion(&bots)?;
         Ok(mutation)
