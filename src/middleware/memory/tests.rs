@@ -471,14 +471,7 @@ fn patch_ops_must_set_both_fields_or_delete_alone() {
 
 fn message(text: &str) -> ClientOp {
     ClientOp::Message {
-        message: MessageSubmission {
-            author: crate::protocol::MessageAuthor::User,
-            text: text.into(),
-            attachments: Vec::new(),
-            reply: None,
-            requested_delivery: None,
-            target_turn_id: None,
-        },
+        message: MessageSubmission::user(text, Vec::new()),
     }
 }
 
