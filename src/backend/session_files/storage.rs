@@ -201,16 +201,15 @@ pub(super) async fn load_attachment_workspace(path: &Path) -> Result<StoredAttac
 
 /// Reads one small JSON record and when it was last written; `what` names it when it is too large.
 async fn load_json<T: DeserializeOwned>(path: &Path, what: &str) -> Result<(T, SystemTime)> {
-    let modified = require_regular_file(path).await?.modified()?;
-    let mut bytes = Vec::new();
-    tokio::fs::File::open(path)
-        .await?
-        .take(MAX_RECORD_BYTES as u64 + 1)
-        .read_to_end(&mut bytes)
-        .await?;
-    if bytes.len() > MAX_RECORD_BYTES {
-        return Err(Error::Tool(format!("{what} exceeds size limit")));
-    }
+    let path = path.to_owned();
+    let (bytes, modified) = tokio::task::spawn_blocking(move || -> Result<_> {
+        let modified = require_regular_file(std::fs::symlink_metadata(&path)?)?.modified()?;
+        let bytes = crate::read_within(std::fs::File::open(path)?, MAX_RECORD_BYTES as u64)?;
+        Ok((bytes, modified))
+    })
+    .await
+    .map_err(std::io::Error::other)??;
+    let bytes = bytes.ok_or_else(|| Error::Tool(format!("{what} exceeds size limit")))?;
     Ok((serde_json::from_slice(&bytes)?, modified))
 }
 
@@ -430,7 +429,7 @@ pub(super) fn remember_validated_blob(
 }
 
 async fn validate_content_blob_metadata(path: &Path, size: u64) -> Result<std::fs::Metadata> {
-    let metadata = require_regular_file(path).await?;
+    let metadata = require_regular_file(tokio::fs::symlink_metadata(path).await?)?;
     if metadata.len() != size {
         return Err(Error::Tool(
             "session file size does not match metadata".into(),
@@ -535,8 +534,7 @@ pub(super) async fn require_directory(path: &Path) -> Result<()> {
     }
 }
 
-async fn require_regular_file(path: &Path) -> Result<std::fs::Metadata> {
-    let metadata = tokio::fs::symlink_metadata(path).await?;
+fn require_regular_file(metadata: std::fs::Metadata) -> Result<std::fs::Metadata> {
     if metadata.is_file() {
         Ok(metadata)
     } else {

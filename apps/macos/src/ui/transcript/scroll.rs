@@ -99,7 +99,7 @@ impl Workspace {
     }
 
     #[cfg(feature = "snapshot")]
-    fn scope_list(&self, scope: &str) -> Option<&ListState> {
+    pub(in crate::ui) fn scope_list(&self, scope: &str) -> Option<&ListState> {
         self.transcript_scrolls.get(scope)?.list.as_ref()
     }
 

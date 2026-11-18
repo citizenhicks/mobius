@@ -14,8 +14,8 @@ use crate::ui::router::{AgentSection, PageTab};
 use crate::ui::theme::Accent;
 
 use gpui::{
-    ClipboardItem, Context, Modifiers, MouseButton, ParentElement as _, PlatformInput, ScrollDelta,
-    ScrollEvent, ScrollSource, Styled as _, TouchPhase, Window, div, point, px, size,
+    App, ClipboardItem, Context, Modifiers, MouseButton, ParentElement as _, PlatformInput,
+    ScrollDelta, ScrollEvent, ScrollSource, Styled as _, TouchPhase, Window, div, point, px, size,
 };
 
 use gpui_component::WindowExt as _;
@@ -291,14 +291,19 @@ fn conversation_pointer(this: &mut Workspace, window: &mut Window, cx: &mut Cont
             })
             .expect("scroll behind header");
             wait(cx.background_executor(), 100).await;
-            let key = "selection:assistant:answer:FinalAnswer";
+            let key = "selection:assistant:answer:final_answer";
+            let prose = |window: &mut Window, cx: &mut App| {
+                PROBES.with(|probes| probes.borrow_mut().remove(key));
+                window.refresh();
+                window.draw(cx).clear(cx);
+                PROBES.with(|probes| probes.borrow()[key])
+            };
             let target = cx
                 .update(|window, cx| {
-                    window.draw(cx).clear(cx);
-                    let bounds = PROBES.with(|probes| probes.borrow()[key]);
+                    let bounds = prose(window, cx);
                     bounds.bottom() - glyph::INLINE
                         + (window.viewport_size().height + height::TITLEBAR) / 2.
-                        - (height::TITLEBAR + height::BOT_CHAT_HEADER - space::L)
+                        - (height::TITLEBAR + height::BOT_CHAT_HEADER - space::XS)
                 })
                 .expect("copy target position");
             this.update(cx, |this, cx| {
@@ -307,10 +312,16 @@ fn conversation_pointer(this: &mut Workspace, window: &mut Window, cx: &mut Cont
             })
             .expect("copy action beneath header");
             wait(cx.background_executor(), 100).await;
-            let (position, before) = cx
+            let offset = |this: &Workspace, _: &App| {
+                this.scope_list(&scope)
+                    .expect("conversation transcript")
+                    .scroll_px_offset_for_scrollbar()
+                    .y
+            };
+            let before = this.read_with(cx, offset).expect("conversation window");
+            let position = cx
                 .update(|window, cx| {
-                    window.draw(cx).clear(cx);
-                    let bounds = PROBES.with(|probes| probes.borrow()[key]);
+                    let bounds = prose(window, cx);
                     let position = point(
                         bounds.left() + glyph::INLINE,
                         bounds.bottom() - glyph::INLINE,
@@ -339,19 +350,16 @@ fn conversation_pointer(this: &mut Workspace, window: &mut Window, cx: &mut Cont
                         }),
                         cx,
                     );
-                    (position, bounds.top())
+                    position
                 })
                 .expect("pointer events through blank header");
             wait(cx.background_executor(), 100).await;
-            cx.update(|window, cx| {
-                window.draw(cx).clear(cx);
-                let after = PROBES.with(|probes| probes.borrow()[key].top());
-                assert!(
-                    after < before,
-                    "blank header must pass the scroll at {position:?} through"
-                );
-            })
-            .expect("pointer scroll frame");
+            // Scrolling can move the copy button out of the virtualized list.
+            let after = this.read_with(cx, offset).expect("conversation window");
+            assert!(
+                after < before,
+                "blank header must pass the scroll at {position:?} through"
+            );
             eprintln!("bot-conversation-pointer: copy click and wheel passed through blank header");
         })
         .detach();

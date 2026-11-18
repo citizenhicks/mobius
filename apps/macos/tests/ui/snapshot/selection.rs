@@ -15,7 +15,7 @@ use gpui::{
 
 pub(super) const SCENARIOS: &[Scenario] = &[("chat-selection", select_transcript)];
 
-const PROSE: &str = "selection:assistant:done:FinalAnswer";
+const PROSE: &str = "selection:assistant:done:final_answer";
 const EXPECTED: &str = "The pills row is tightened.";
 
 #[expect(
