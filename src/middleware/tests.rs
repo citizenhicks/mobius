@@ -310,29 +310,24 @@ fn pre_tool_rewrite_rejects_invalid_calls_without_mutation() {
     }
 }
 
-fn queued(owner: &str, id: &str, text: &str) -> DurableQueuedMessage {
-    let event = MessageEvent {
+fn user_event(text: &str) -> MessageEvent {
+    MessageEvent {
         author: MessageAuthor::User,
         delivery: crate::protocol::MessageDelivery::Turn,
         text: text.into(),
         attachments: Vec::new(),
         reply: None,
         message_target: None,
-    };
-    DurableQueuedMessage::new(owner, id, QueuedMessageBoundary::Turn, event)
+    }
+}
+
+fn queued(owner: &str, id: &str, text: &str) -> DurableQueuedMessage {
+    DurableQueuedMessage::new(owner, id, QueuedMessageBoundary::Turn, user_event(text))
         .expect("valid queued message")
 }
 
 fn enqueue(queue: &mut MessageQueue<'_>, id: &str, text: &str) -> Result<bool> {
-    let event = MessageEvent {
-        author: MessageAuthor::User,
-        delivery: crate::protocol::MessageDelivery::Turn,
-        text: text.into(),
-        attachments: Vec::new(),
-        reply: None,
-        message_target: None,
-    };
-    queue.enqueue(id, QueuedMessageBoundary::Turn, event)
+    queue.enqueue(id, QueuedMessageBoundary::Turn, user_event(text))
 }
 
 #[test]
