@@ -469,11 +469,7 @@ fn request_action(
 
 fn render(frame: &mut ratatui::Frame<'_>, state: &ExtensionsState, gateway: &ReadyPayload) {
     let theme = current();
-    frame.render_widget(
-        Block::default().style(theme.style(Role::Canvas)),
-        frame.area(),
-    );
-    let area = crate::frontend::terminal::content_area(frame.area(), 100);
+    let area = crate::frontend::terminal::page_canvas(frame, 100);
     let prompt_height = match &state.mode {
         Mode::Install(_) => 3,
         Mode::Confirm(_) => 2,

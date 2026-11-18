@@ -8,7 +8,7 @@ use mobius_gateway::wire::ClientCapabilities;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 
 use super::terminal::{MAX_ENDPOINT_BYTES, Screen, TextForm, input_batch, input_interval};
 use super::terminal_text;
@@ -315,11 +315,7 @@ fn draw(terminal: &mut Screen, state: &State) -> Result<()> {
 
 fn render(frame: &mut ratatui::Frame<'_>, state: &State) {
     let theme = current();
-    frame.render_widget(
-        Block::default().style(theme.style(Role::Canvas)),
-        frame.area(),
-    );
-    let area = crate::frontend::terminal::content_area(frame.area(), 82);
+    let area = crate::frontend::terminal::page_canvas(frame, 82);
     let page = match state.page {
         Page::Accounts => 1,
         Page::Add => 2,

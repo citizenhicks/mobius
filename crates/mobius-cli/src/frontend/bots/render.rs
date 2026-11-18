@@ -16,11 +16,7 @@ use crate::frontend::theme::{Role, brand_header, current, selectable_list};
 
 pub(super) fn render(frame: &mut ratatui::Frame<'_>, state: &BotsState, gateway: &ReadyPayload) {
     let theme = current();
-    frame.render_widget(
-        Block::default().style(theme.style(Role::Canvas)),
-        frame.area(),
-    );
-    let area = crate::frontend::terminal::content_area(frame.area(), 92);
+    let area = crate::frontend::terminal::page_canvas(frame, 92);
     let [header, body, notice, footer] = Layout::vertical([
         Constraint::Length(2),
         Constraint::Min(8),

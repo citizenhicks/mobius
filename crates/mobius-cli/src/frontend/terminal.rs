@@ -181,7 +181,14 @@ pub(super) fn masked_credential(value: &str, limit: usize) -> String {
     masked
 }
 
-pub(super) fn content_area(area: ratatui::layout::Rect, max_width: u16) -> ratatui::layout::Rect {
+pub(super) fn page_canvas(frame: &mut ratatui::Frame<'_>, max_width: u16) -> ratatui::layout::Rect {
+    use super::theme::{Role, current};
+    let area = frame.area();
+    frame.render_widget(
+        ratatui::widgets::Block::default().style(current().style(Role::Canvas)),
+        area,
+    );
+
     let width = area.width.saturating_sub(4).min(max_width);
     ratatui::layout::Rect::new(
         area.x + area.width.saturating_sub(width) / 2,

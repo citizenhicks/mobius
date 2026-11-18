@@ -5,7 +5,7 @@ use mobius_gateway::wire::{MiddlewareConfig, ProviderAuthKind};
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 use std::borrow::Cow;
 
 use super::state::{AuthField, MiddlewareRow, Page, Progress, SaveTarget, SetupState};
@@ -30,11 +30,7 @@ pub(super) fn draw(terminal: &mut Screen, state: &SetupState) -> Result<()> {
 
 pub(super) fn render(frame: &mut ratatui::Frame<'_>, state: &SetupState) {
     let theme = current();
-    frame.render_widget(
-        Block::default().style(theme.style(Role::Canvas)),
-        frame.area(),
-    );
-    let area = crate::frontend::terminal::content_area(frame.area(), 82);
+    let area = crate::frontend::terminal::page_canvas(frame, 82);
     let mut lines = header(state);
     lines.push(Line::from(""));
     if let Some(progress) = &state.progress {
