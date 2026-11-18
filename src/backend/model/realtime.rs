@@ -847,12 +847,16 @@ struct VoiceTurns {
     codex_completed_turns: BTreeSet<String>,
 }
 
+fn remember_voice_id(seen: &mut BTreeSet<String>, id: &str, label: &str) -> Result<bool> {
+    validate_text(id, 256, label)?;
+    Ok(seen.insert(id.into()))
+}
+
 impl VoiceTurns {
     fn observe(&mut self, api: VoiceApi, event: &Value) -> Result<Vec<RealtimeVoiceEvent>> {
         let mut events = Vec::new();
-        if let Some(id) = event.get("event_id").and_then(Value::as_str) {
-            validate_text(id, 256, "voice event identity")?;
-            if !self.seen_events.insert(id.into()) {
+        if let Some(id) = event["event_id"].as_str() {
+            if !remember_voice_id(&mut self.seen_events, id, "voice event identity")? {
                 return Ok(events);
             }
             if self.seen_events.len() > MAX_TURNS * 64 {
@@ -1048,11 +1052,10 @@ impl VoiceTurns {
             _ => return Ok(()),
         };
         let text = transcript_field(turn, "transcript")?;
-        if let Some(id) = turn.get("id").and_then(Value::as_str) {
-            validate_text(id, 256, "voice turn identity")?;
-            if !self.codex_completed_turns.insert(id.into()) {
-                return Ok(());
-            }
+        if let Some(id) = turn["id"].as_str()
+            && !remember_voice_id(&mut self.codex_completed_turns, id, "voice turn identity")?
+        {
+            return Ok(());
         }
         let id = if role == ConversationRole::User {
             self.codex_input
