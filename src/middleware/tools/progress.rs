@@ -139,14 +139,14 @@ impl ToolProgress {
         let mut progress = Self::default();
         for item in input.iter().filter(|item| is_progress(item)) {
             for record in Self::parse_ledger(item)?.records {
-                progress.merge(record);
+                progress.merge(record, |_, _| {});
             }
         }
         progress.trim()?;
         Ok(progress)
     }
 
-    fn merge(&mut self, record: Record) {
+    fn merge(&mut self, mut record: Record, combine: impl FnOnce(&mut Record, Record)) {
         if let Some(identity) = record.identity()
             && let Some(index) = self
                 .ledger
@@ -154,7 +154,7 @@ impl ToolProgress {
                 .iter()
                 .position(|previous| previous.identity() == Some(identity))
         {
-            self.ledger.records.remove(index);
+            combine(&mut record, self.ledger.records.remove(index));
         }
         self.ledger.records.push(record);
         if self.ledger.records.len() > MAX_RECORDS {
@@ -215,23 +215,12 @@ impl ToolProgress {
 
     fn record(&mut self, execution: HostedToolExecution) -> Result<()> {
         let mut record = Record::from_execution(execution)?;
-        if let Some(identity) = record.identity()
-            && let Some(index) = self
-                .ledger
-                .records
-                .iter()
-                .position(|previous| previous.identity() == Some(identity))
-        {
-            let previous = self.ledger.records.remove(index);
+        record.touched = true;
+        self.merge(record, |record, previous| {
             record.calls = previous.calls.saturating_add(1);
             record.sources_omitted |= previous.sources_omitted;
             record.add_sources(previous.sources);
-        }
-        record.touched = true;
-        self.ledger.records.push(record);
-        if self.ledger.records.len() > MAX_RECORDS {
-            self.ledger.records.remove(0);
-        }
+        });
         self.trim()
     }
 
