@@ -38,7 +38,7 @@ fn another_clients_preview_cannot_open_or_replace_the_requested_preview() {
 }
 
 #[test]
-fn snapshot_preview_prepends_an_older_page_without_losing_the_latest_page() {
+fn snapshot_preview_only_prepends_pages_for_the_current_preview() {
     let mut state = state();
     state.preview_request_id = Some("preview-request".into());
     gateway_event(
@@ -51,6 +51,23 @@ fn snapshot_preview_prepends_an_older_page_without_losing_the_latest_page() {
             Some(preview_continuation("older")),
         ),
         true,
+    );
+    gateway_event(
+        &mut state,
+        preview_record(
+            "/root/other",
+            "older",
+            FrontendPreviewUpdate::Prepend,
+            &["wrong preview"],
+            None,
+        ),
+        true,
+    );
+
+    let unchanged = snapshot(&state);
+    assert_eq!(
+        (&*unchanged.id, preview_messages(unchanged)),
+        ("/root/agent", vec!["› latest"])
     );
     gateway_event(
         &mut state,
@@ -73,39 +90,5 @@ fn snapshot_preview_prepends_an_older_page_without_losing_the_latest_page() {
             snapshot.next.as_ref(),
         ),
         ("/root/agent", 2, vec!["› older", "› latest"], None,)
-    );
-}
-
-#[test]
-fn snapshot_preview_does_not_merge_a_page_for_another_preview_id() {
-    let mut state = state();
-    state.preview_request_id = Some("preview-request".into());
-    gateway_event(
-        &mut state,
-        preview_record(
-            "/root/agent",
-            "latest",
-            FrontendPreviewUpdate::Replace,
-            &["latest"],
-            None,
-        ),
-        true,
-    );
-    gateway_event(
-        &mut state,
-        preview_record(
-            "/root/other",
-            "older",
-            FrontendPreviewUpdate::Prepend,
-            &["wrong preview"],
-            None,
-        ),
-        true,
-    );
-
-    let snapshot = snapshot(&state);
-    assert_eq!(
-        (&*snapshot.id, preview_messages(snapshot)),
-        ("/root/agent", vec!["› latest"])
     );
 }
