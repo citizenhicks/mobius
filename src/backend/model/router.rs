@@ -260,9 +260,7 @@ impl ModelRouter {
         credential: ModelCredentialLifetime,
     ) -> Result<()> {
         let route = self
-            .routes
-            .iter_mut()
-            .find(|route| *route.choice.route == *id)
+            .route_mut(id)
             .ok_or_else(|| Error::Unknown(format!("model provider `{id}`")))?;
         route.credential = credential;
         Ok(())
@@ -330,9 +328,7 @@ impl ModelRouter {
             return Err(Error::Invalid("model context group cannot be empty".into()));
         }
         let route = self
-            .routes
-            .iter_mut()
-            .find(|entry| *entry.choice.route == *route)
+            .route_mut(route)
             .ok_or_else(|| Error::Unknown(format!("model route `{route}`")))?;
         route.context_group = Some(group);
         Ok(())
@@ -354,9 +350,7 @@ impl ModelRouter {
             ));
         }
         let current = self
-            .routes
-            .iter_mut()
-            .find(|current| current.choice.route == choice.route)
+            .route_mut(&choice.route)
             .ok_or_else(|| Error::Unknown(format!("model route `{}`", choice.route)))?;
         choice.supports_image_input = current.provider.supports_image_input();
         choice.supports_image_generation = current.provider.supports_image_generation();
@@ -579,6 +573,12 @@ impl ModelRouter {
 
     fn provider(&self, id: &str) -> Result<&dyn Model> {
         Ok(self.route(id)?.provider.as_ref())
+    }
+
+    fn route_mut(&mut self, id: &str) -> Option<&mut ModelRoute> {
+        self.routes
+            .iter_mut()
+            .find(|route| *route.choice.route == *id)
     }
 
     fn route(&self, id: &str) -> Result<&ModelRoute> {
