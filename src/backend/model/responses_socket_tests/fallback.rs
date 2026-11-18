@@ -45,10 +45,7 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
             .expect("fallback handshake response");
     });
 
-    let http_listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-        .await
-        .expect("HTTP listener");
-    let http_address = http_listener.local_addr().expect("HTTP address");
+    let (http_listener, http_address) = loopback_listener().await;
     let (request_sender, mut requests) = mpsc::channel(3);
     let http_server = tokio::spawn(async move {
         for attempt in 0..3 {

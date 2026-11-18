@@ -55,14 +55,7 @@ pub(super) fn completed_events(text: &str, response_id: &str) -> [Value; 2] {
     ]
 }
 
-/// Binds a loopback peer on an ephemeral port.
-pub(super) async fn loopback_listener() -> (TcpListener, SocketAddr) {
-    let listener = TcpListener::bind(("127.0.0.1", 0))
-        .await
-        .expect("loopback listener");
-    let address = listener.local_addr().expect("loopback address");
-    (listener, address)
-}
+pub(super) use crate::backend::model::test_support::loopback_listener;
 
 /// Accepts the next connection and completes its WebSocket handshake.
 pub(super) async fn accept_websocket(listener: &TcpListener) -> WebSocketStream<TcpStream> {

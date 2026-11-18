@@ -572,10 +572,7 @@ async fn responses_preserves_reasoning_summary_part_boundaries() {
 async fn http_unauthorized_refreshes_and_retries_once() {
     use tokio::io::AsyncWriteExt as _;
 
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-        .await
-        .expect("HTTP listener");
-    let address = listener.local_addr().expect("HTTP address");
+    let (listener, address) = crate::backend::model::test_support::loopback_listener().await;
     let server = tokio::spawn(async move {
         let mut requests = Vec::new();
         let completed = "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"response-test\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\"}]}],\"usage\":{\"input_tokens\":0,\"output_tokens\":0,\"total_tokens\":0}}}\n\n";
@@ -644,10 +641,7 @@ async fn http_unauthorized_refreshes_and_retries_once() {
 
 #[tokio::test]
 async fn http_transport_failure_does_not_replay_accepted_post() {
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-        .await
-        .expect("HTTP listener");
-    let address = listener.local_addr().expect("HTTP address");
+    let (listener, address) = crate::backend::model::test_support::loopback_listener().await;
     let server = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.expect("HTTP connection");
         let request = read_http_request(&mut stream).await;

@@ -33,6 +33,15 @@ macro_rules! static_tool_definition {
 }
 pub(crate) use static_tool_definition;
 
+/// Binds a loopback peer on an ephemeral port.
+pub(super) async fn loopback_listener() -> (tokio::net::TcpListener, std::net::SocketAddr) {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("loopback listener");
+    let address = listener.local_addr().expect("loopback address");
+    (listener, address)
+}
+
 pub(crate) fn record_events() -> (ModelEventSink, Arc<StdMutex<Vec<ModelEvent>>>) {
     let events = Arc::new(StdMutex::new(Vec::new()));
     let recorded = Arc::clone(&events);
@@ -85,10 +94,7 @@ pub(crate) async fn read_http_json(stream: &mut TcpStream) -> Value {
 /// Accepts one request, answers `200 {}`, and returns the captured request text.
 pub(super) async fn capture_http_request() -> (std::net::SocketAddr, tokio::task::JoinHandle<String>)
 {
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-        .await
-        .expect("HTTP listener");
-    let address = listener.local_addr().expect("HTTP address");
+    let (listener, address) = loopback_listener().await;
     let server = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.expect("HTTP connection");
         let request = read_http_request(&mut stream).await;

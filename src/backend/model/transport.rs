@@ -568,7 +568,6 @@ pub(super) async fn read_sse(
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt};
-    use tokio::net::TcpListener;
 
     #[tokio::test]
     async fn model_transports_classify_send_failures_before_and_after_authorization() {
@@ -576,8 +575,7 @@ mod tests {
         use crate::backend::model::responses::OpenAi;
         use crate::backend::model::{Model, ModelRequest};
 
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
-        let address = listener.local_addr().expect("address");
+        let (listener, address) = crate::backend::model::test_support::loopback_listener().await;
         drop(listener);
         let base_url = || BaseUrl::new(format!("http://{address}/private-endpoint")).expect("URL");
         let models: [Box<dyn Model>; 3] = [
@@ -649,8 +647,7 @@ mod tests {
 
     #[tokio::test]
     async fn tls_protocol_errors_remain_terminal() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
-        let address = listener.local_addr().expect("address");
+        let (listener, address) = crate::backend::model::test_support::loopback_listener().await;
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.expect("connection");
             let mut bytes = [0; 1_024];
@@ -881,14 +878,8 @@ mod settings_tests {
     #[tokio::test]
     async fn authenticated_streaming_clients_do_not_follow_redirects() {
         use tokio::io::AsyncWriteExt as _;
-        let destination = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("destination");
-        let target = destination.local_addr().expect("destination address");
-        let source = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("source");
-        let address = source.local_addr().expect("source address");
+        let (destination, target) = crate::backend::model::test_support::loopback_listener().await;
+        let (source, address) = crate::backend::model::test_support::loopback_listener().await;
         let server = tokio::spawn(async move {
             let (mut stream, _) = source.accept().await.expect("source connection");
             crate::backend::model::test_support::read_http_request(&mut stream).await;
