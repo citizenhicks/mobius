@@ -531,18 +531,21 @@ pub(super) fn render_usage(
             });
             let stats = &profile.run_stats.completed;
             vec![
-                Line::from(format!(" Today      {} tokens", number(today))),
+                Line::from(format!(
+                    " Today      {} tokens",
+                    mobius::protocol::grouped_count(today)
+                )),
                 Line::from(format!(
                     " Runs       {} · {} failed · {} aborted",
-                    number(stats.run_count),
-                    number(stats.failed_run_count),
-                    number(stats.aborted_run_count)
+                    mobius::protocol::grouped_count(stats.run_count),
+                    mobius::protocol::grouped_count(stats.failed_run_count),
+                    mobius::protocol::grouped_count(stats.aborted_run_count)
                 )),
                 Line::from(format!(
                     " Calls      {} model · {} tool · {} failed",
-                    number(stats.model_calls),
-                    number(stats.tool_calls),
-                    number(stats.failed_tool_calls)
+                    mobius::protocol::grouped_count(stats.model_calls),
+                    mobius::protocol::grouped_count(stats.tool_calls),
+                    mobius::protocol::grouped_count(stats.failed_tool_calls)
                 )),
                 Line::from(format!(
                     " Run time   {}",
@@ -550,7 +553,10 @@ pub(super) fn render_usage(
                         stats.elapsed_ms
                     ))
                 )),
-                Line::from(format!(" 364 days   {} tokens", number(total))),
+                Line::from(format!(
+                    " 364 days   {} tokens",
+                    mobius::protocol::grouped_count(total)
+                )),
             ]
         },
     );
@@ -579,18 +585,6 @@ const fn activity_label(state: SessionActivityState) -> &'static str {
         SessionActivityState::Running => "running",
         SessionActivityState::AwaitingApproval => "approval",
     }
-}
-
-pub(super) fn number(value: impl ToString + Copy) -> String {
-    let digits = value.to_string();
-    let mut formatted = String::with_capacity(digits.len() + digits.len() / 3);
-    for (index, character) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index).is_multiple_of(3) {
-            formatted.push(',');
-        }
-        formatted.push(character);
-    }
-    formatted
 }
 
 #[cfg(test)]

@@ -11,6 +11,24 @@ use super::Op;
 use super::SessionFileReference;
 use super::WebSearchAction;
 
+/// Formats a signed or unsigned count with comma-separated groups of three digits.
+///
+/// ```
+/// assert_eq!(mobius::protocol::grouped_count(-100_000), "-100,000");
+/// ```
+#[must_use]
+pub fn grouped_count(value: impl Into<i128>) -> String {
+    let value = value.into();
+    let mut digits = value.to_string();
+    let sign = usize::from(value.is_negative());
+    let mut end = digits.len();
+    while end - sign > 3 {
+        end -= 3;
+        digits.insert(end, ',');
+    }
+    digits
+}
+
 /// A frontend command declared by a capability.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrontendCommand {

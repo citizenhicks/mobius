@@ -113,14 +113,7 @@ pub(super) fn totals(added: usize, removed: usize, cx: &App) -> Div {
 
 /// "1 line", "12,345 lines".
 pub(super) fn line_count(lines: usize) -> String {
-    let digits = lines.to_string();
-    let mut out = String::new();
-    for (index, digit) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(digit);
-    }
+    let mut out = mobius::protocol::grouped_count(lines as i128);
     out.push_str(if lines == 1 { " line" } else { " lines" });
     out
 }
