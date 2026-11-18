@@ -39,6 +39,16 @@ pub use self::events::*;
 pub use self::frontend::*;
 pub use self::ui::*;
 
+/// Whole Unix milliseconds for reported timestamps, clamped to the range from zero to
+/// the largest signed 64-bit value.
+#[must_use]
+pub fn saturating_unix_millis(time: std::time::SystemTime) -> i64 {
+    time.duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX)
+        })
+}
+
 /// Maximum total UTF-8 bytes accepted in one user-input submission.
 pub const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
 /// Maximum serialized bytes of one message, including its quote and attachments.

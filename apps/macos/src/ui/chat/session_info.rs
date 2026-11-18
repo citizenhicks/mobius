@@ -32,11 +32,7 @@ impl SessionMetrics {
 }
 
 pub(in crate::ui) fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX)
-        })
+    mobius::protocol::saturating_unix_millis(std::time::SystemTime::now())
 }
 
 fn session_metrics(

@@ -356,11 +356,7 @@ impl SessionFileStore {
                     }
                 },
                 file: record.file,
-                modified_at_ms: modified
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .map_or(0, |since| {
-                        i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
-                    }),
+                modified_at_ms: crate::protocol::saturating_unix_millis(modified),
             })
             .collect())
     }
