@@ -582,6 +582,16 @@ fn validate_browser_endpoint_registration(
     ))
 }
 
+fn refresh_voice_routes(state: &super::GatewayState, config: &GatewayConfig) -> crate::Result<()> {
+    state
+        .bots
+        .set_voice_routes(crate::harness::mobius::provider_catalog::VoiceRoutes::new(
+            &config.configured_providers,
+            &state.store,
+            &state.credentials,
+        )?)
+}
+
 fn commit_provider_registration(
     state: &super::GatewayState,
     mut current: std::sync::MutexGuard<'_, GatewayConfig>,
@@ -589,13 +599,7 @@ fn commit_provider_registration(
 ) -> crate::Result<()> {
     let publication = crate::publication::Outcome::applied(state.store.save(&next))?;
     *current = next.into_inner();
-    state
-        .bots
-        .set_voice_routes(crate::harness::mobius::provider_catalog::VoiceRoutes::new(
-            &current.configured_providers,
-            &state.store,
-            &state.credentials,
-        )?)?;
+    refresh_voice_routes(state, &current)?;
     publication.confirm()
 }
 
@@ -634,13 +638,7 @@ fn commit_provider_removal(
             }
         }
     };
-    state
-        .bots
-        .set_voice_routes(crate::harness::mobius::provider_catalog::VoiceRoutes::new(
-            &current.configured_providers,
-            &state.store,
-            &state.credentials,
-        )?)?;
+    refresh_voice_routes(state, &current)?;
     drop(current);
     result
 }
