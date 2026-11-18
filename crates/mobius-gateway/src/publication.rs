@@ -48,7 +48,6 @@ pub(crate) fn read_secret(path: &Path, max_bytes: u64, what: &str) -> Result<Vec
 }
 
 fn read_private_file(path: &Path, max_bytes: u64, what: &str, owner_only: bool) -> Result<Vec<u8>> {
-    use std::io::Read as _;
     use std::os::unix::fs::OpenOptionsExt as _;
 
     let file = fs::OpenOptions::new()
@@ -71,13 +70,7 @@ fn read_private_file(path: &Path, max_bytes: u64, what: &str, owner_only: bool) 
     if metadata.len() > max_bytes {
         return Err(too_large());
     }
-    let mut contents = Vec::new();
-    file.take(max_bytes.saturating_add(1))
-        .read_to_end(&mut contents)?;
-    if u64::try_from(contents.len()).unwrap_or(u64::MAX) > max_bytes {
-        return Err(too_large());
-    }
-    Ok(contents)
+    mobius::read_within(file, max_bytes)?.ok_or_else(too_large)
 }
 
 pub(crate) fn publish(path: &Path, contents: &[u8], create_new: bool) -> Result<()> {

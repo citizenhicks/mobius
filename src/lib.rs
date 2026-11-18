@@ -472,11 +472,12 @@ pub(crate) fn validate_identifier(name: &str, value: &str, limit: usize) -> Resu
     Ok(())
 }
 
-/// Returns None if the reader contains more than the allowed number of bytes.
-pub(crate) fn read_within(
-    mut reader: impl std::io::Read,
-    limit: u64,
-) -> std::io::Result<Option<Vec<u8>>> {
+/// Reads up to the byte limit and returns `None` when the input exceeds it.
+///
+/// # Errors
+///
+/// Returns the underlying I/O failure if reading the input fails.
+pub fn read_within(mut reader: impl std::io::Read, limit: u64) -> std::io::Result<Option<Vec<u8>>> {
     use std::io::Read as _;
     let mut bytes = Vec::new();
     reader
