@@ -16,49 +16,36 @@ pub(super) use macos::{protected_full_access_command, sandboxed_command};
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub(super) use unsupported::{protected_full_access_command, sandboxed_command};
 
+impl Invocation<'_> {
+    fn executable(&self) -> &std::path::Path {
+        match self {
+            Self::Shell { executable, .. } | Self::Argv { executable, .. } => executable,
+        }
+    }
+
+    fn append_arguments(&self, command: &mut Command, isolated_home: bool) {
+        match self {
+            Self::Shell { script, .. } => {
+                command.args([if isolated_home { "-c" } else { "-lc" }, script]);
+            }
+            Self::Argv { arguments, .. } => {
+                command.args(arguments.iter().copied());
+            }
+        }
+    }
+}
+
 pub(super) fn append_invocation(
     command: &mut Command,
     invocation: &Invocation<'_>,
     isolated_home: bool,
 ) {
-    match invocation {
-        Invocation::Shell { script, executable } => {
-            command.arg(executable);
-            if isolated_home {
-                command.args(["-c", script]);
-            } else {
-                command.args(["-lc", script]);
-            }
-        }
-        Invocation::Argv {
-            executable,
-            arguments,
-            ..
-        } => {
-            command.arg(executable).args(arguments.iter().copied());
-        }
-    }
+    command.arg(invocation.executable());
+    invocation.append_arguments(command, isolated_home);
 }
 
 pub(super) fn host_command(invocation: &Invocation<'_>, isolated_home: bool) -> Command {
-    match invocation {
-        Invocation::Shell { script, executable } => {
-            let mut command = Command::new(executable);
-            if isolated_home {
-                command.args(["-c", script]);
-            } else {
-                command.args(["-lc", script]);
-            }
-            command
-        }
-        Invocation::Argv {
-            executable,
-            arguments,
-            ..
-        } => {
-            let mut command = Command::new(executable);
-            command.args(arguments.iter().copied());
-            command
-        }
-    }
+    let mut command = Command::new(invocation.executable());
+    invocation.append_arguments(&mut command, isolated_home);
+    command
 }
