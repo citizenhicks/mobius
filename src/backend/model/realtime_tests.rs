@@ -132,6 +132,15 @@ async fn read_request(socket: &mut TcpStream) -> (String, String) {
     )
 }
 
+async fn accept_hangup(listener: &TcpListener, expected: &str) {
+    let (mut http, _) = listener.accept().await.unwrap();
+    let (headers, body) = read_request(&mut http).await;
+    assert!(headers.starts_with(expected));
+    assert!(headers.contains("authorization: bearer secret\r\n"));
+    assert!(body.is_empty());
+    respond(&mut http, "200 OK", "", "").await;
+}
+
 async fn respond(socket: &mut TcpStream, status: &str, extra: &str, body: &str) {
     socket
         .write_all(
@@ -267,14 +276,14 @@ async fn live_and_codex_wire_contracts_delegate_once_reply_and_close() {
                 socket.next().await.unwrap().unwrap(),
                 Message::Close(_)
             ));
-            let (mut http, _) = listener.accept().await.unwrap();
-            let (headers, _) = read_request(&mut http).await;
-            assert!(headers.starts_with(match api {
-                VoiceApi::Codex => "post /v1/realtime/calls/rtc_test/hangup ",
-                VoiceApi::OpenAi => "post /api/native/v1/live/sessions/live_test/hangup ",
-            }));
-            assert!(headers.contains("authorization: bearer secret\r\n"));
-            respond(&mut http, "200 OK", "", "").await;
+            accept_hangup(
+                &listener,
+                match api {
+                    VoiceApi::Codex => "post /v1/realtime/calls/rtc_test/hangup ",
+                    VoiceApi::OpenAi => "post /api/native/v1/live/sessions/live_test/hangup ",
+                },
+            )
+            .await;
         });
         let mut selected = request(api);
         selected.voice = if api == VoiceApi::Codex {
@@ -443,10 +452,11 @@ async fn cancelled_calls_and_closed_consumers_wait_for_final_usage_before_discon
                 socket.next().await.unwrap().unwrap(),
                 Message::Close(_)
             ));
-            let (mut http, _) = listener.accept().await.unwrap();
-            let (headers, _) = read_request(&mut http).await;
-            assert!(headers.starts_with("post /api/native/v1/live/sessions/live_test/hangup "));
-            respond(&mut http, "200 OK", "", "").await;
+            accept_hangup(
+                &listener,
+                "post /api/native/v1/live/sessions/live_test/hangup ",
+            )
+            .await;
         });
         let mut call = Some(transport.start(request(transport.api)).await.unwrap());
         assert!(matches!(
@@ -500,10 +510,11 @@ async fn dropping_call_during_sideband_setup_hangs_up_allocated_call() {
         drop(socket);
         let (socket, _) = listener.accept().await.unwrap();
         connecting.send(()).unwrap();
-        let (mut hangup, _) = listener.accept().await.unwrap();
-        let (headers, _) = read_request(&mut hangup).await;
-        assert!(headers.starts_with("post /api/native/v1/live/sessions/live_cancel/hangup "));
-        respond(&mut hangup, "200 OK", "", "").await;
+        accept_hangup(
+            &listener,
+            "post /api/native/v1/live/sessions/live_cancel/hangup ",
+        )
+        .await;
         drop(socket);
     });
     let call = transport.start(request(transport.api)).await.unwrap();
@@ -563,11 +574,7 @@ async fn sideband_event_backpressure_preserves_order_and_terminal_errors() {
         }
         sent.send(()).unwrap();
         drop(socket);
-        let (mut http, _) = listener.accept().await.unwrap();
-        let (headers, body) = read_request(&mut http).await;
-        assert!(headers.starts_with("post /v1/realtime/calls/rtc_test/hangup "));
-        assert!(body.is_empty());
-        respond(&mut http, "200 OK", "", "").await;
+        accept_hangup(&listener, "post /v1/realtime/calls/rtc_test/hangup ").await;
     });
 
     let mut call = transport.start(request(transport.api)).await.unwrap();
