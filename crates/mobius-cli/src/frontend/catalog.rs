@@ -460,23 +460,22 @@ impl UiCatalog {
 }
 
 impl UiCommand {
+    fn label(&self, prefix: &str) -> String {
+        let space = if self.arguments.is_empty() { "" } else { " " };
+        format!(
+            "{prefix}{COMMAND_PREFIX}{}{space}{}",
+            self.name, self.arguments
+        )
+    }
+
     fn usage(&self) -> CommandAction {
-        CommandAction::Print(if self.arguments.is_empty() {
-            format!("usage: {COMMAND_PREFIX}{}", self.name)
-        } else {
-            format!("usage: {COMMAND_PREFIX}{} {}", self.name, self.arguments)
-        })
+        CommandAction::Print(self.label("usage: "))
     }
 
     fn menu_item(&self) -> MenuItem {
-        let label = if self.arguments.is_empty() {
-            format!("{COMMAND_PREFIX}{}", self.name)
-        } else {
-            format!("{COMMAND_PREFIX}{} {}", self.name, self.arguments)
-        };
         MenuItem {
             value: format!("{COMMAND_PREFIX}{}", self.name),
-            label,
+            label: self.label(""),
             description: Arc::clone(&self.description),
         }
     }
