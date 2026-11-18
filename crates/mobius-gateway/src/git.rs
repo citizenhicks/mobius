@@ -46,6 +46,21 @@ pub(crate) fn command(environment: Environment) -> std::process::Command {
 }
 
 #[cfg(test)]
+pub(crate) fn run_git(workspace: &std::path::Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .env("LC_ALL", "C")
+        .current_dir(workspace)
+        .output()
+        .expect("run Git");
+    assert!(
+        output.status.success(),
+        "Git failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

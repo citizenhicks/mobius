@@ -367,16 +367,4 @@ fn user_message(text: impl Into<String>, attachments: Vec<SessionFileReference>)
     }
 }
 
-fn run_git(workspace: &Path, args: &[&str]) {
-    let output = std::process::Command::new("git")
-        .args(args)
-        .env("LC_ALL", "C")
-        .current_dir(workspace)
-        .output()
-        .expect("run Git");
-    assert!(
-        output.status.success(),
-        "Git failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
+use crate::git::run_git;

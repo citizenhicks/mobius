@@ -10,26 +10,14 @@ async fn slow_git_diff_does_not_block_chat_history() {
     let root = tempfile::tempdir().expect("root");
     let workspace = root.path().join("workspace");
     fs::create_dir(&workspace).expect("workspace");
-    let git = |args: &[&str]| {
-        let output = std::process::Command::new("git")
-            .args(args)
-            .current_dir(&workspace)
-            .output()
-            .expect("git");
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    };
-    git(&["init"]);
+    run_git(&workspace, &["init"]);
     fs::write(workspace.join("tracked.txt"), "before\n").expect("tracked file");
     fs::write(
         workspace.join(".gitattributes"),
         "tracked.txt filter=gate\n",
     )
     .expect("attributes");
-    git(&["add", "."]);
+    run_git(&workspace, &["add", "."]);
     let gate = workspace.join(".git/gate");
     assert!(
         std::process::Command::new("mkfifo")
@@ -38,11 +26,14 @@ async fn slow_git_diff_does_not_block_chat_history() {
             .expect("fifo")
             .success()
     );
-    git(&[
-        "config",
-        "filter.gate.clean",
-        "cat .git/gate >/dev/null; cat",
-    ]);
+    run_git(
+        &workspace,
+        &[
+            "config",
+            "filter.gate.clean",
+            "cat .git/gate >/dev/null; cat",
+        ],
+    );
     fs::write(workspace.join("tracked.txt"), "after\n").expect("changed file");
 
     let (server, grant) = configured_test_server(root.path().join("state")).await;

@@ -800,19 +800,7 @@ mod tests {
         );
     }
 
-    fn run_git(workspace: &Path, args: &[&str]) {
-        let output = std::process::Command::new("git")
-            .args(args)
-            .env("LC_ALL", "C")
-            .current_dir(workspace)
-            .output()
-            .expect("run Git");
-        assert!(
-            output.status.success(),
-            "Git failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    use crate::git::run_git;
 
     fn test_sandbox(workspace: &Path) -> (tempfile::TempDir, GatewaySandbox) {
         let state = tempfile::tempdir().expect("state");
