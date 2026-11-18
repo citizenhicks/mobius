@@ -1,10 +1,7 @@
 use std::sync::Arc;
 
 use mobius::SessionId;
-use mobius::protocol::{
-    FrontendBlock, FrontendPreviewKind, FrontendPreviewUpdate, MessageAuthor, MessageDelivery,
-    MessageEvent,
-};
+use mobius::protocol::{FrontendBlock, FrontendPreviewKind, FrontendPreviewUpdate};
 use mobius_gateway::wire::{
     ActivityCounts, BlockDelta, RenderedPreview, ServerMessage, TranscriptChild, TranscriptItem,
     TranscriptItemContent, TranscriptItemState, TranscriptOp, TranscriptPage, TranscriptPosition,
@@ -14,27 +11,7 @@ use mobius_gateway::wire::{
 use crate::{GatewayState, RowChild, TranscriptStore};
 
 fn message(id: &str, text: &str) -> Arc<TranscriptItem> {
-    Arc::new(TranscriptItem {
-        id: id.into(),
-        turn_id: Some("turn".into()),
-        recorded_at_ms: 0,
-        state: TranscriptItemState::Complete,
-        terminal: false,
-        starts_turn: false,
-        resumed: false,
-        inherited: false,
-        target: None,
-        content: TranscriptItemContent::Message {
-            message: MessageEvent {
-                author: MessageAuthor::User,
-                delivery: MessageDelivery::Turn,
-                text: text.into(),
-                attachments: Vec::new(),
-                reply: None,
-                message_target: None,
-            },
-        },
-    })
+    Arc::new(crate::fixture::user_message(id, text))
 }
 
 fn block(id: &str, text: &str) -> Arc<TranscriptItem> {
@@ -49,7 +26,7 @@ fn block(id: &str, text: &str) -> Arc<TranscriptItem> {
             },
             group_title: None,
         },
-        ..(*message(&format!("block:tools:{id}"), "")).clone()
+        ..crate::fixture::user_message(format!("block:tools:{id}"), "")
     })
 }
 

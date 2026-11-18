@@ -208,6 +208,35 @@ pub fn tool(
 }
 
 #[cfg(test)]
+pub(crate) fn user_message(
+    id: impl Into<std::sync::Arc<str>>,
+    text: &str,
+) -> mobius_gateway::wire::TranscriptItem {
+    use mobius_gateway::wire::{TranscriptItem, TranscriptItemContent, TranscriptItemState};
+    TranscriptItem {
+        id: id.into(),
+        turn_id: Some("turn".into()),
+        recorded_at_ms: 0,
+        state: TranscriptItemState::Complete,
+        terminal: false,
+        starts_turn: false,
+        resumed: false,
+        inherited: false,
+        target: None,
+        content: TranscriptItemContent::Message {
+            message: MessageEvent {
+                author: MessageAuthor::User,
+                delivery: MessageDelivery::Turn,
+                text: text.into(),
+                attachments: Vec::new(),
+                reply: None,
+                message_target: None,
+            },
+        },
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn opened(session: &str, latest: u64) -> mobius_gateway::wire::ServerMessage {
     let frame: mobius_gateway::wire::ServerFrame = serde_json::from_value(serde_json::json!({
         "version": mobius_gateway::wire::PROTOCOL_VERSION,

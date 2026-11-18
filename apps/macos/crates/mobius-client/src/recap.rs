@@ -139,31 +139,15 @@ pub(super) fn recent(items: &[Arc<TranscriptItem>], since: Option<i64>) -> Recen
 #[cfg(test)]
 mod tests {
     use super::recent;
-    use mobius::protocol::{MessageAuthor, MessageDelivery, MessageEvent};
-    use mobius_gateway::wire::{TranscriptItem, TranscriptItemContent, TranscriptItemState};
+    use mobius_gateway::wire::TranscriptItem;
     use std::sync::Arc;
 
     fn ask(at: i64, text: &str) -> Arc<TranscriptItem> {
         Arc::new(TranscriptItem {
-            id: format!("message:{at}").into(),
             turn_id: Some(format!("turn-{at}").into()),
             recorded_at_ms: at,
-            state: TranscriptItemState::Complete,
-            terminal: false,
             starts_turn: true,
-            resumed: false,
-            inherited: false,
-            target: None,
-            content: TranscriptItemContent::Message {
-                message: MessageEvent {
-                    author: MessageAuthor::User,
-                    delivery: MessageDelivery::Turn,
-                    text: text.into(),
-                    attachments: Vec::new(),
-                    reply: None,
-                    message_target: None,
-                },
-            },
+            ..crate::fixture::user_message(format!("message:{at}"), text)
         })
     }
 
