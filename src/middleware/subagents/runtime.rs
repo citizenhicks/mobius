@@ -822,12 +822,16 @@ fn status_widget(tree: &Tree) -> FrontendWidget {
     }
 }
 
+fn open_agent(path: &str) -> Op {
+    Op::command(super::MANIFEST.id, super::OPEN_COMMAND, path)
+}
+
 fn agent_items(tree: &Tree) -> Vec<FrontendActionListItem> {
     tree.presentation_order()
         .map(|(path, entry)| FrontendActionListItem {
             outcome: None,
             id: path.as_str().into(),
-            text: path.rsplit('/').next().unwrap_or(path).into(),
+            text: super::agent_label(path).into(),
             state: entry.status.list_state(),
             actions: vec![FrontendAction {
                 id: super::OPEN_COMMAND.into(),
@@ -838,11 +842,7 @@ fn agent_items(tree: &Tree) -> Vec<FrontendActionListItem> {
                     AgentStatus::Interrupted => FrontendTone::Warning,
                     _ => FrontendTone::Neutral,
                 },
-                op: Op::command(
-                    super::MANIFEST.id,
-                    super::OPEN_COMMAND,
-                    path.clone(), // rules-allow: the action owns its path from the borrowed tree
-                ),
+                op: open_agent(path),
                 input_from_label: false,
                 editor: None,
             }],
@@ -853,15 +853,11 @@ fn agent_items(tree: &Tree) -> Vec<FrontendActionListItem> {
 fn picker_options(tree: &Tree) -> Vec<FrontendPickerOption> {
     tree.presentation_order()
         .map(|(path, entry)| FrontendPickerOption {
-            label: path.rsplit('/').next().unwrap_or(path).into(),
+            label: super::agent_label(path).into(),
             description: entry.status.label().into(),
             detail: entry.model.to_string(),
             symbol: Some(entry.status.symbol()),
-            op: Op::command(
-                super::MANIFEST.id,
-                super::OPEN_COMMAND,
-                path.clone(), // rules-allow: the option owns its path from the borrowed tree
-            ),
+            op: open_agent(path),
         })
         .collect()
 }

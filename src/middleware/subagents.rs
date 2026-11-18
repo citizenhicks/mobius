@@ -113,6 +113,11 @@ static DEFAULT_WAIT_MS: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
 
 /// The one declared command, which opens a subagent preview.
 const OPEN_COMMAND: &str = "subagents";
+
+fn agent_label(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
 /// Trusted operator ceilings for the per-Bot subagent settings.
 /// These govern resource policy, while Rust's integer representation remains a safety bound.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -621,7 +626,7 @@ impl Subagents {
                 duration_ms: None,
                 started_at_ms: None,
                 id: path.into(),
-                title: path.rsplit('/').next().unwrap_or(path).into(),
+                title: agent_label(path).into(),
                 subtitle: page.subtitle.into(),
                 page_id: page.page_id.into(),
                 update: if before_sequence.is_some() {
