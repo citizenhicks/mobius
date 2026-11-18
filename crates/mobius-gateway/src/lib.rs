@@ -27,6 +27,12 @@ pub use harness::mobius::extensions::MAX_EXTENSION_SOURCE_BYTES;
 #[cfg(feature = "fixtures")]
 pub use host::TranscriptReducer;
 
+/// A nonempty field limited in bytes and free of control characters.
+/// The caller decides whether whitespace is significant or must be canonical.
+fn single_line_field(value: &str, max_bytes: usize) -> bool {
+    !value.is_empty() && value.len() <= max_bytes && !value.chars().any(char::is_control)
+}
+
 /// Errors returned by the gateway library.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

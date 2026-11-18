@@ -768,7 +768,7 @@ fn validate_event(event: &HookEvent) -> Result<String> {
     Ok(json)
 }
 fn validate_id(id: &str) -> Result<()> {
-    if id.trim().is_empty() || id.len() > 256 || id.chars().any(char::is_control) {
+    if id.trim().is_empty() || !crate::single_line_field(id, 256) {
         return Err(Error::Invalid(
             "hook identity must contain 1 to 256 safe bytes".into(),
         ));

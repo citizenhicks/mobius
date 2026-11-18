@@ -418,11 +418,7 @@ impl AuthStore {
 }
 
 fn validate_client_label(label: &str) -> Result<()> {
-    if label.is_empty()
-        || label != label.trim()
-        || label.len() > MAX_CLIENT_LABEL_BYTES
-        || label.chars().any(char::is_control)
-    {
+    if label != label.trim() || !crate::single_line_field(label, MAX_CLIENT_LABEL_BYTES) {
         return Err(Error::Invalid(format!(
             "client label must be canonical, control-free, and 1–{MAX_CLIENT_LABEL_BYTES} bytes"
         )));

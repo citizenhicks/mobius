@@ -171,10 +171,7 @@ async fn write_credential_input(
 
 fn credential_target(value: &str) -> std::result::Result<String, Rejection> {
     let value = value.trim();
-    if value.is_empty()
-        || value.len() > MAX_CREDENTIAL_TARGET_BYTES
-        || value.chars().any(char::is_control)
-    {
+    if !crate::single_line_field(value, MAX_CREDENTIAL_TARGET_BYTES) {
         return Err(invalid_credential("enter a valid HTTPS Git host or URL"));
     }
     let prefixed;
@@ -206,7 +203,7 @@ fn credential_field<'a>(
     max_bytes: usize,
     label: &str,
 ) -> std::result::Result<&'a str, Rejection> {
-    if value.is_empty() || value.len() > max_bytes || value.chars().any(char::is_control) {
+    if !crate::single_line_field(value, max_bytes) {
         return Err(invalid_credential(format!("enter a valid Git {label}")));
     }
     Ok(value)

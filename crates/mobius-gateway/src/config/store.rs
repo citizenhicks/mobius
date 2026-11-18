@@ -717,11 +717,7 @@ fn validate_usage(usage: &TokenUsage) -> Result<()> {
 }
 
 fn validate_usage_provider(provider: &str) -> Result<()> {
-    if provider.trim().is_empty()
-        || provider != provider.trim()
-        || provider.len() > 256
-        || provider.chars().any(char::is_control)
-    {
+    if provider != provider.trim() || !crate::single_line_field(provider, 256) {
         return Err(Error::Internal(
             "usage provider ID must be canonical and 1–256 bytes".into(),
         ));
