@@ -7,73 +7,62 @@ impl Workspace {
             return;
         }
         let target = self.attachment_target();
-        let epoch = self.client.epoch;
         let bot = self.draft_bot().map(|bot| Arc::clone(&bot.id));
         let workspace = self.draft_workspace.clone(); // rules-allow: the 'static prompt compares the draft's folder from when it opened
-        let paths = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: true,
-            prompt: Some("Attach to message".into()),
-        });
-        cx.spawn_in(window, async move |this, cx| match paths.await {
-            Ok(Ok(Some(paths))) => {
-                let attached = this.update(cx, |this, cx| {
-                    if this.client.epoch != epoch || paths.is_empty() {
-                        return;
-                    }
-                    if let Some(target) = target {
-                        this.attach_files(target, paths, cx);
-                    } else if this.can_attach_files()
-                        && this.draft_selected()
-                        && this.draft_bot().map(|bot| &bot.id) == bot.as_ref()
-                        && this.draft_workspace == workspace
-                    {
-                        this.create_draft(runtime::DraftIntent::Attachments(paths), cx);
-                    } else {
-                        this.report(
-                            "The chat changed while choosing attachments. Choose the files again.",
-                        );
-                        cx.notify();
-                    }
-                });
-                if let Err(error) = attached {
-                    tracing::debug!(%error, "the workspace closed before the attachments were chosen");
-                }
+        self.choose_paths("Attach to message", window, cx, move |this, paths, cx| {
+            if let Some(target) = target {
+                this.attach_files(target, paths, cx);
+            } else if this.can_attach_files()
+                && this.draft_selected()
+                && this.draft_bot().map(|bot| &bot.id) == bot.as_ref()
+                && this.draft_workspace == workspace
+            {
+                this.create_draft(runtime::DraftIntent::Attachments(paths), cx);
+            } else {
+                this.report("The chat changed while choosing attachments. Choose the files again.");
+                cx.notify();
             }
-            Ok(Err(error)) => report_prompt_error(&this, cx, &error),
-            _ => {}
-        })
-        .detach();
+        });
     }
 
     pub(in crate::ui) fn choose_file(&self, window: &Window, cx: &Context<Self>) {
         let owner = TabOwner::of(&self.page_tabs);
+        self.choose_paths("Open in Möbius", window, cx, move |this, paths, cx| {
+            for path in paths {
+                let id = path.to_string_lossy().into_owned();
+                let title = path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned();
+                this.open_file_preview_for(owner.clone(), id, title, path, cx); // rules-allow: each chosen file belongs to the same original chat
+            }
+        });
+    }
+
+    fn choose_paths(
+        &self,
+        prompt: &'static str,
+        window: &Window,
+        cx: &Context<Self>,
+        chosen: impl FnOnce(&mut Self, Vec<std::path::PathBuf>, &mut Context<Self>) + 'static,
+    ) {
         let epoch = self.client.epoch;
         let paths = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
             multiple: true,
-            prompt: Some("Open in Möbius".into()),
+            prompt: Some(prompt.into()),
         });
         cx.spawn_in(window, async move |this, cx| match paths.await {
-            Ok(Ok(Some(paths))) => {
-                let opened = this.update(cx, |this, cx| {
-                    if this.client.epoch != epoch {
-                        return;
-                    }
-                    for path in paths {
-                        let id = path.to_string_lossy().into_owned();
-                        let title = path
-                            .file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .into_owned();
-                        this.open_file_preview_for(owner.clone(), id, title, path, cx); // rules-allow: each chosen file belongs to the same original chat
+            Ok(Ok(Some(paths))) if !paths.is_empty() => {
+                let result = this.update(cx, |this, cx| {
+                    if this.client.epoch == epoch {
+                        chosen(this, paths, cx);
                     }
                 });
-                if let Err(error) = opened {
-                    tracing::debug!(%error, "the workspace closed before the chosen files opened");
+                if let Err(error) = result {
+                    tracing::debug!(%error, "the workspace closed before file selection completed");
                 }
             }
             Ok(Err(error)) => report_prompt_error(&this, cx, &error),
