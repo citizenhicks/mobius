@@ -117,13 +117,7 @@ impl RoutineForm {
             matches!(binding.on, HookSelector::Schedule { .. })
                 && binding.action == RoutineAction::Start
         });
-        let default_schedule = RoutineSchedule {
-            kind: RoutineScheduleKind::Interval,
-            at: None,
-            every_seconds: Some(3600),
-            expression: None,
-            time_zone: None,
-        };
+        let default_schedule = RoutineSchedule::interval(3600);
         let (schedule, ends_at) = timer
             .and_then(|binding| {
                 if let HookSelector::Schedule { schedule, ends_at } = &binding.on {
@@ -432,34 +426,16 @@ impl RoutineForm {
     fn schedule(&self) -> std::result::Result<RoutineSchedule, String> {
         let value = self.schedule_value.value.trim();
         match self.schedule_kind {
-            RoutineScheduleKind::Once => Ok(RoutineSchedule {
-                kind: self.schedule_kind,
-                at: Some(parse_i64(value, "run time")?),
-                every_seconds: None,
-                expression: None,
-                time_zone: None,
-            }),
+            RoutineScheduleKind::Once => Ok(RoutineSchedule::once(parse_i64(value, "run time")?)),
             RoutineScheduleKind::Interval => {
                 let seconds = value.parse::<u64>().map_err(|error| {
                     format!("Interval must be a whole number of seconds: {error}.")
                 })?;
-                Ok(RoutineSchedule {
-                    kind: self.schedule_kind,
-                    at: None,
-                    every_seconds: Some(seconds),
-                    expression: None,
-                    time_zone: None,
-                })
+                Ok(RoutineSchedule::interval(seconds))
             }
             RoutineScheduleKind::Cron => {
                 let time_zone = self.time_zone.value.trim();
-                Ok(RoutineSchedule {
-                    kind: self.schedule_kind,
-                    at: None,
-                    every_seconds: None,
-                    expression: Some(value.into()),
-                    time_zone: Some(time_zone.into()),
-                })
+                Ok(RoutineSchedule::cron(value, time_zone))
             }
         }
     }

@@ -70,7 +70,7 @@ mod tests {
     use super::*;
     use crate::frontend::fixtures::{bot, ready as gateway};
     use mobius_gateway::wire::{
-        Routine, RoutineRun, RoutineRunStatus, RoutineSchedule, RoutineScheduleKind, ServerMessage,
+        Routine, RoutineRun, RoutineRunStatus, RoutineSchedule, ServerMessage,
     };
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -83,13 +83,7 @@ mod tests {
             bindings: vec![mobius_gateway::wire::RoutineBinding {
                 id: "timer-a".into(),
                 on: mobius_gateway::wire::HookSelector::Schedule {
-                    schedule: RoutineSchedule {
-                        kind: RoutineScheduleKind::Interval,
-                        at: None,
-                        every_seconds: Some(600),
-                        expression: None,
-                        time_zone: None,
-                    },
+                    schedule: RoutineSchedule::interval(600),
                     ends_at: None,
                 },
                 action: mobius_gateway::wire::RoutineAction::Start,

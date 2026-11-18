@@ -1,8 +1,5 @@
 use super::*;
-use crate::wire::{
-    BotAction, BotSubscription, HookBinding, HookKind, HookSource, RoutineSchedule,
-    RoutineScheduleKind,
-};
+use crate::wire::{BotAction, BotSubscription, HookBinding, HookKind, HookSource, RoutineSchedule};
 use mobius::SessionId;
 
 #[tokio::test]
@@ -17,13 +14,7 @@ async fn runtime_activity_tracks_reservations_and_pending_deliveries() {
             &crate::wire::RoutineDefinition::scheduled_for_test(
                 &workspace,
                 "Future work",
-                RoutineSchedule {
-                    kind: RoutineScheduleKind::Once,
-                    at: Some(Utc::now().timestamp() + 3600),
-                    every_seconds: None,
-                    expression: None,
-                    time_zone: None,
-                },
+                RoutineSchedule::once(Utc::now().timestamp() + 3600),
                 None,
             ),
             crate::config::CanonicalWorkspace::for_test(&workspace),

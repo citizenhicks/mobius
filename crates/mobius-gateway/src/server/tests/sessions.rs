@@ -648,13 +648,7 @@ async fn shutdown_stops_a_blocked_routine_and_fails_its_durable_run() {
             &crate::wire::RoutineDefinition::scheduled_for_test(
                 &workspace,
                 "wait for shutdown",
-                crate::wire::RoutineSchedule {
-                    kind: crate::wire::RoutineScheduleKind::Once,
-                    at: Some(now - 1),
-                    every_seconds: None,
-                    expression: None,
-                    time_zone: None,
-                },
+                crate::wire::RoutineSchedule::once(now - 1),
                 None,
             ),
             crate::config::CanonicalWorkspace::for_test(&workspace),

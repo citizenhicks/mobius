@@ -223,13 +223,7 @@ async fn bot_delete_preflight_preserves_sessions_when_instructions_are_invalid()
             &crate::wire::RoutineDefinition::scheduled_for_test(
                 &workspace,
                 "retain on failed preflight",
-                crate::wire::RoutineSchedule {
-                    kind: crate::wire::RoutineScheduleKind::Once,
-                    at: Some(Utc::now().timestamp() + 60),
-                    every_seconds: None,
-                    expression: None,
-                    time_zone: None,
-                },
+                crate::wire::RoutineSchedule::once(Utc::now().timestamp() + 60),
                 None,
             ),
             crate::config::CanonicalWorkspace::for_test(&workspace),
@@ -379,13 +373,7 @@ async fn deleting_a_bot_removes_owned_state() {
             &crate::wire::RoutineDefinition::scheduled_for_test(
                 &workspace,
                 "delete routine state",
-                crate::wire::RoutineSchedule {
-                    kind: crate::wire::RoutineScheduleKind::Once,
-                    at: Some(Utc::now().timestamp() + 60),
-                    every_seconds: None,
-                    expression: None,
-                    time_zone: None,
-                },
+                crate::wire::RoutineSchedule::once(Utc::now().timestamp() + 60),
                 None,
             ),
             crate::config::CanonicalWorkspace::for_test(&workspace),

@@ -1185,6 +1185,46 @@ pub struct RoutineSchedule {
     pub time_zone: Option<String>,
 }
 
+impl RoutineSchedule {
+    fn new(kind: RoutineScheduleKind) -> Self {
+        Self {
+            kind,
+            at: None,
+            every_seconds: None,
+            expression: None,
+            time_zone: None,
+        }
+    }
+
+    /// Schedules a single run at the supplied Unix timestamp.
+    #[must_use]
+    pub fn once(at: i64) -> Self {
+        Self {
+            at: Some(at),
+            ..Self::new(RoutineScheduleKind::Once)
+        }
+    }
+
+    /// Schedules recurring runs separated by the supplied number of seconds.
+    #[must_use]
+    pub fn interval(every_seconds: u64) -> Self {
+        Self {
+            every_seconds: Some(every_seconds),
+            ..Self::new(RoutineScheduleKind::Interval)
+        }
+    }
+
+    /// Schedules recurring runs using the supplied cron expression and time zone.
+    #[must_use]
+    pub fn cron(expression: impl Into<String>, time_zone: impl Into<String>) -> Self {
+        Self {
+            expression: Some(expression.into()),
+            time_zone: Some(time_zone.into()),
+            ..Self::new(RoutineScheduleKind::Cron)
+        }
+    }
+}
+
 /// The supported scheduling rule families.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

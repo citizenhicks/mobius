@@ -233,32 +233,17 @@ impl Inputs {
     }
     pub(super) fn schedule(&self, form: &RoutineForm, cx: &App) -> Option<RoutineSchedule> {
         let zone = self.zone.read(cx).selected_value();
-        let schedule = |kind| RoutineSchedule {
-            kind,
-            at: None,
-            every_seconds: None,
-            expression: None,
-            time_zone: None,
-        };
-        let cron = |expression: String| RoutineSchedule {
-            expression: Some(expression),
-            time_zone: Some(zone.map_or_else(local_zone, String::clone)), // rules-allow: the schedule sent to the gateway owns its time zone; the picker keeps its own
-            ..schedule(RoutineScheduleKind::Cron)
+        let cron = |expression: String| {
+            RoutineSchedule::cron(expression, zone.map_or_else(local_zone, String::clone)) // rules-allow: the wire schedule owns its time zone while the picker retains its selection
         };
         match form.mode {
             Mode::Bindings => None,
-            Mode::Once => parse_local(&text(&self.at, cx)).map(|at| RoutineSchedule {
-                at: Some(at),
-                ..schedule(RoutineScheduleKind::Once)
-            }),
+            Mode::Once => parse_local(&text(&self.at, cx)).map(RoutineSchedule::once),
             Mode::Every => {
                 let (_, unit) = UNITS.get(form.unit)?;
                 let seconds = interval_seconds(&text(&self.every, cx), *unit)
                     .filter(|seconds| *seconds >= form.min_interval_seconds)?;
-                Some(RoutineSchedule {
-                    every_seconds: Some(seconds),
-                    ..schedule(RoutineScheduleKind::Interval)
-                })
+                Some(RoutineSchedule::interval(seconds))
             }
             Mode::Daily | Mode::Weekly => {
                 let (hour, minute) = parse_clock(&text(&self.time, cx))?;
@@ -354,18 +339,7 @@ mod binding_tests {
     use super::{replace_schedule, scheduled_start};
     use mobius_gateway::wire::{
         HookKind, HookSelector, HookSource, RoutineAction, RoutineBinding, RoutineSchedule,
-        RoutineScheduleKind,
     };
-
-    fn timer(seconds: u64) -> RoutineSchedule {
-        RoutineSchedule {
-            kind: RoutineScheduleKind::Interval,
-            at: None,
-            every_seconds: Some(seconds),
-            expression: None,
-            time_zone: None,
-        }
-    }
 
     fn event() -> RoutineBinding {
         RoutineBinding {
@@ -390,7 +364,7 @@ mod binding_tests {
             RoutineBinding {
                 id: "monitor".into(),
                 on: HookSelector::Schedule {
-                    schedule: timer(60),
+                    schedule: RoutineSchedule::interval(60),
                     ends_at: Some(123),
                 },
                 action: RoutineAction::Start,
@@ -398,7 +372,7 @@ mod binding_tests {
             RoutineBinding {
                 id: "stop-later".into(),
                 on: HookSelector::Schedule {
-                    schedule: timer(120),
+                    schedule: RoutineSchedule::interval(120),
                     ends_at: None,
                 },
                 action: RoutineAction::Stop {
@@ -406,7 +380,7 @@ mod binding_tests {
                 },
             },
         ];
-        let edited = replace_schedule(original.clone(), Some(timer(300)), None);
+        let edited = replace_schedule(original.clone(), Some(RoutineSchedule::interval(300)), None);
         assert_eq!(edited[0], original[0]);
         assert_eq!(edited[2], original[2]);
         assert_eq!(&*edited[1].id, "monitor");
