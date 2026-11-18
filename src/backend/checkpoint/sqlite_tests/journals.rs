@@ -3,9 +3,7 @@ use super::*;
 #[tokio::test]
 async fn execution_insert_failure_rolls_back_checkpoint_and_transcript() {
     let session_id = session("session");
-    let workspace = tempfile::tempdir().expect("create workspace");
-    let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
-        .expect("open checkpoint database");
+    let (_directory, store) = SqliteCheckpoint::temporary();
     let original = checkpoint("session");
     store
         .save(original.clone(), Vec::new(), None)
@@ -63,8 +61,7 @@ async fn execution_insert_failure_rolls_back_checkpoint_and_transcript() {
 
 #[tokio::test]
 async fn transcript_cursor_includes_the_largest_sequence_and_excludes_the_boundary() {
-    let workspace = tempfile::tempdir().unwrap();
-    let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3")).unwrap();
+    let (_directory, store) = SqliteCheckpoint::temporary();
     let id = session("session");
     store
         .save(checkpoint("session"), Vec::new(), None)

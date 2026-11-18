@@ -116,9 +116,8 @@ async fn agent(
 #[tokio::test]
 async fn answers_reach_model_history_without_duplicate_frontend_messages() {
     for active in [false, true] {
-        let temp = tempfile::tempdir().expect("temp");
-        let store: Arc<dyn CheckpointStore> =
-            Arc::new(SqliteCheckpoint::new(temp.path().join("db")).expect("store"));
+        let (temp, store) = SqliteCheckpoint::temporary();
+        let store: Arc<dyn CheckpointStore> = Arc::new(store);
         store
             .save_state(
                 "session",
@@ -220,9 +219,8 @@ async fn answers_reach_model_history_without_duplicate_frontend_messages() {
 
 #[tokio::test]
 async fn concurrent_answers_close_a_question_once() {
-    let temp = tempfile::tempdir().expect("temp");
-    let store: Arc<dyn CheckpointStore> =
-        Arc::new(SqliteCheckpoint::new(temp.path().join("db")).expect("store"));
+    let (temp, store) = SqliteCheckpoint::temporary();
+    let store: Arc<dyn CheckpointStore> = Arc::new(store);
     store
         .save_state("session", STATE_KEY, &serde_json::json!([question("q", 1)]))
         .await
@@ -298,9 +296,8 @@ async fn concurrent_answers_close_a_question_once() {
 
 #[tokio::test]
 async fn ask_skip_restore_and_bounds_are_durable() {
-    let temp = tempfile::tempdir().expect("temp");
-    let store: Arc<dyn CheckpointStore> =
-        Arc::new(SqliteCheckpoint::new(temp.path().join("db")).expect("store"));
+    let (temp, store) = SqliteCheckpoint::temporary();
+    let store: Arc<dyn CheckpointStore> = Arc::new(store);
     let events = Arc::new(Mutex::new(Vec::new()));
     let captured = Arc::clone(&events);
     let session = Arc::new(QuestionSession {

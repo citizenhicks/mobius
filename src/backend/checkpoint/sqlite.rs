@@ -181,6 +181,14 @@ fn warm_connection(
 }
 
 impl SqliteCheckpoint {
+    #[cfg(test)]
+    pub(crate) fn temporary() -> (tempfile::TempDir, Self) {
+        let directory = tempfile::tempdir().expect("checkpoint directory");
+        let store =
+            Self::new(directory.path().join("checkpoints.sqlite3")).expect("checkpoint store");
+        (directory, store)
+    }
+
     /// Opens or creates a durable checkpoint database.
     /// # Errors
     ///

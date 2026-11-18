@@ -5,9 +5,7 @@ async fn turn_history_keeps_idle_promotion_together_across_storage_pages() {
     use crate::backend::checkpoint::{TURN_PAGE_BATCH_SIZE, event_turn_page};
     use crate::protocol::{TurnCompleteEvent, TurnStartedEvent, WarningEvent};
 
-    let directory = tempfile::tempdir().expect("directory");
-    let store = SqliteCheckpoint::new(directory.path().join("promoted-turn.sqlite3"))
-        .expect("checkpoint store");
+    let (_directory, store) = SqliteCheckpoint::temporary();
     let session_id = session("session");
     let start = |id: &str, idle| {
         EventMsg::TurnStarted(TurnStartedEvent {
@@ -170,8 +168,7 @@ async fn transient_notices_are_delivered_but_not_kept() {
     use crate::protocol::{FrontendBlock, FrontendEvent, TRANSIENT_BLOCK_ID_PREFIX};
 
     let session_id = session("session");
-    let workspace = tempfile::tempdir().unwrap();
-    let store = SqliteCheckpoint::new(workspace.path().join("notice.sqlite3")).unwrap();
+    let (_directory, store) = SqliteCheckpoint::temporary();
     let event = Event {
         submission_id: None,
         msg: EventMsg::Frontend(FrontendEvent::Render {

@@ -11,9 +11,7 @@ async fn assistant_message_compacts_progressive_deltas_and_preserves_citations()
     use crate::protocol::ModelStepStartedEvent;
 
     let session_id = session("session");
-    let workspace = tempfile::tempdir().expect("create workspace");
-    let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
-        .expect("open checkpoint database");
+    let (_directory, store) = SqliteCheckpoint::temporary();
     store
         .save(checkpoint("session"), Vec::new(), None)
         .await

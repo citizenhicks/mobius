@@ -2,9 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn session_context_round_trips_through_save_catalog_and_fork() {
-    let workspace = tempfile::tempdir().expect("create workspace");
-    let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
-        .expect("open checkpoint database");
+    let (_directory, store) = SqliteCheckpoint::temporary();
     let context = crate::protocol::SessionContext {
         owner_id: "test-bot".into(),
         workspace_id: Some("workspace-1".into()),
@@ -60,9 +58,7 @@ async fn session_context_round_trips_through_save_catalog_and_fork() {
 async fn delete_sessions_remove_complete_trees_atomically() {
     let parent_id = session("parent");
     let other_id = session("other");
-    let workspace = tempfile::tempdir().expect("create workspace");
-    let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
-        .expect("open checkpoint database");
+    let (_directory, store) = SqliteCheckpoint::temporary();
     let mut parent = checkpoint("parent");
     parent.sequence = 1;
     store
@@ -163,9 +159,7 @@ async fn delete_sessions_remove_complete_trees_atomically() {
 
 #[tokio::test]
 async fn session_catalog_filters_owner_membership_before_pagination() {
-    let workspace = tempfile::tempdir().expect("create workspace");
-    let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
-        .expect("open checkpoint database");
+    let (_directory, store) = SqliteCheckpoint::temporary();
     for (session_id, owner_id) in [
         ("a", "owner"),
         ("b", "foreign"),
