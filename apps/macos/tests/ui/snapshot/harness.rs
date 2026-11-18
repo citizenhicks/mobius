@@ -225,12 +225,12 @@ pub(super) fn fixture(this: &mut Workspace) {
     {
         config.remove("harness");
     }
-    this.client.state.gateway = catalog("typed offline harness catalog", |ready| {
-        ready["agent_catalog"]["bot_defaults"] = serde_json::json!(defaults);
-        ready["agent_catalog"]["middleware_features"] = serde_json::json!([{"id": "memory", "label": "Memory",
+    this.client.state.gateway = catalog("typed offline harness catalog", |ready, agents| {
+        agents["bot_defaults"] = serde_json::json!(defaults);
+        agents["middleware_features"] = serde_json::json!([{"id": "memory", "label": "Memory",
                     "description": "Remember short facts across this Bot's chats.",
                     "required": false, "settings": []}]);
-        ready["agent_catalog"]["contributions"] = serde_json::json!([{"capability": "memory", "count": null,
+        agents["contributions"] = serde_json::json!([{"capability": "memory", "count": null,
                     "commands": [], "references": [], "widgets": [{"id": "navigation",
                         "slot": "navigation", "text": "Memory", "tone": "neutral",
                         "symbol": "brain", "icon_only": false, "progress": null,

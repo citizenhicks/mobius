@@ -25,19 +25,20 @@ pub(in crate::ui) fn reduce_motion() -> bool {
 /// Types a fixture catalog, reporting one that no longer matches the wire format.
 pub(super) fn catalog(
     name: &str,
-    fill: impl FnOnce(&mut serde_json::Value),
+    fill: impl FnOnce(&mut serde_json::Value, &mut serde_json::Value),
 ) -> Option<mobius_gateway::wire::ReadyPayload> {
     let mut value = serde_json::json!({
         "gateway_version": "preview", "machine_name": "Local preview", "computer_view": "unavailable",
         "sessions": [], "background_approvals": [], "bots": [], "providers": [], "provider_instances": [],
-        "agent_catalog": {"limits": {"min_model_steps": 1, "default_model_steps": 2042, "model_steps_step": 100,
-            "max_system_prompt_bytes": 65536, "min_routine_interval_seconds": 60}, "bot_defaults": null,
-            "default_capabilities": null, "models": [], "model_providers": {}, "image_models": [],
-            "voice_models": [], "middleware_features": [], "extensions": [], "contributions": []},
         "harnesses": [], "max_active_sessions": 1, "revisions": {}, "omitted": [],
         "session_file_limits": mobius::backend::session_files::session_file_limits()
     });
-    fill(&mut value);
+    let mut agents = serde_json::json!({"limits": {"min_model_steps": 1, "default_model_steps": 2042, "model_steps_step": 100,
+            "max_system_prompt_bytes": 65536, "min_routine_interval_seconds": 60}, "bot_defaults": null,
+            "default_capabilities": null, "models": [], "model_providers": {}, "image_models": [],
+            "voice_models": [], "middleware_features": [], "extensions": [], "contributions": []});
+    fill(&mut value, &mut agents);
+    value["agent_catalog"] = agents;
     serde_json::from_value(value)
         .inspect_err(|error| eprintln!("snapshot {name}: {error}"))
         .ok()

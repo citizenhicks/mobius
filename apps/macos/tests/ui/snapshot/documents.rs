@@ -383,7 +383,7 @@ fn fixture_gateway() -> Option<ReadyPayload> {
         })
     })
     .collect();
-    catalog("fixture ready payload", |ready| {
+    catalog("fixture ready payload", |ready, _| {
         ready["gateway_version"] = serde_json::json!("fixture");
         ready["machine_name"] = serde_json::json!("This Mac");
         ready["bots"] = serde_json::json!(bots);

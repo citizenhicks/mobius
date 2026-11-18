@@ -59,7 +59,7 @@ fn overview(this: &mut Workspace, window: &mut Window, cx: &mut Context<Workspac
 /// An in-memory typed catalog for the identity form; never connected or saved.
 fn identity_fixture(this: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     this.client.gateway.take();
-    this.client.state.gateway = catalog("typed offline Bot catalog", |ready| {
+    this.client.state.gateway = catalog("typed offline Bot catalog", |ready, _| {
         ready["bots"] = serde_json::json!([{
             "id": "preview-bot", "handle": "demo", "name": "Demo Bot",
             "description": "An offline Bot settings preview.", "tint": "blue", "shape": "circle",
@@ -238,7 +238,7 @@ pub(super) fn media_fixture(this: &mut Workspace) {
             "extensions": [], "system_prompt": "", "max_model_steps": 64
         }}
     });
-    this.client.state.gateway = catalog("typed offline media catalog", |ready| {
+    this.client.state.gateway = catalog("typed offline media catalog", |ready, agents| {
         ready["providers"] = serde_json::json!([
             media_provider("openai", "OpenAI", "chat_gpt", false),
             media_provider("lab", "Custom", "route", true)
@@ -247,11 +247,11 @@ pub(super) fn media_fixture(this: &mut Workspace) {
             media_instance("work", "Work", "purple", "openai", "gpt-6"),
             media_instance("lab", "Lab", "orange", "lab", "lab-1")
         ]);
-        ready["agent_catalog"]["models"] = serde_json::json!(models);
-        ready["agent_catalog"]["image_models"] = serde_json::json!(images);
-        ready["agent_catalog"]["voice_models"] = serde_json::json!(voices);
-        ready["agent_catalog"]["model_providers"] = serde_json::json!(model_providers);
-        ready["agent_catalog"]["middleware_features"] = serde_json::json!([feature, voice]);
+        agents["models"] = serde_json::json!(models);
+        agents["image_models"] = serde_json::json!(images);
+        agents["voice_models"] = serde_json::json!(voices);
+        agents["model_providers"] = serde_json::json!(model_providers);
+        agents["middleware_features"] = serde_json::json!([feature, voice]);
         ready["bots"] = serde_json::json!([bot]);
     });
 }

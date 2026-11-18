@@ -337,11 +337,11 @@ fn provider_fixture(this: &mut Workspace) {
         route("openrouter", LUNA, Some(effort));
     }
     this.client.gateway.take();
-    this.client.state.gateway = catalog("typed offline provider catalog", |ready| {
+    this.client.state.gateway = catalog("typed offline provider catalog", |ready, agents| {
         ready["providers"] = serde_json::json!(providers);
         ready["provider_instances"] = serde_json::json!(instances);
-        ready["agent_catalog"]["models"] = serde_json::json!(models);
-        ready["agent_catalog"]["model_providers"] = serde_json::json!(model_providers);
+        agents["models"] = serde_json::json!(models);
+        agents["model_providers"] = serde_json::json!(model_providers);
     });
 }
 
