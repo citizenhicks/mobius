@@ -144,16 +144,14 @@ impl RecorderIngress {
     pub(super) async fn record(&self, event: Event) -> Result<()> {
         let (event, event_bytes) = timestamp(event)?;
         let byte_permit = self.reserve_bytes(event_bytes).await?;
-        let (result, recorded) = oneshot::channel();
-        self.commands
-            .send(RecorderCommand::Append(Box::new(AppendCommand {
+        self.send_and_wait(|result| {
+            RecorderCommand::Append(Box::new(AppendCommand {
                 event,
                 byte_permit,
                 result: Some(result),
-            })))
-            .await
-            .map_err(stopped)?;
-        recorded.await.map_err(stopped)?
+            }))
+        })
+        .await
     }
 
     pub(super) fn try_record(&self, event: Event) -> Result<()> {
@@ -207,9 +205,8 @@ impl RecorderIngress {
             })
             .map(|event| Arc::new(RunStats::from_checkpoint(&checkpoint, event.recorded_at_ms)));
         let byte_permit = self.reserve_bytes(event_bytes).await?;
-        let (result, saved) = oneshot::channel();
-        self.commands
-            .send(RecorderCommand::Save(Box::new(SaveCommand {
+        self.send_and_wait(|result| {
+            RecorderCommand::Save(Box::new(SaveCommand {
                 checkpoint,
                 stats,
                 transcript_delta: transcript_delta.to_vec(),
@@ -217,18 +214,21 @@ impl RecorderIngress {
                 events,
                 byte_permit,
                 result,
-            })))
-            .await
-            .map_err(stopped)?;
-        saved.await.map_err(stopped)?
+            }))
+        })
+        .await
     }
 
     pub(super) async fn flush(&self) -> Result<()> {
-        let (flushed, result) = oneshot::channel();
-        self.commands
-            .send(RecorderCommand::Flush(flushed))
-            .await
-            .map_err(stopped)?;
+        self.send_and_wait(RecorderCommand::Flush).await
+    }
+
+    async fn send_and_wait(
+        &self,
+        command: impl FnOnce(oneshot::Sender<Result<()>>) -> RecorderCommand,
+    ) -> Result<()> {
+        let (reply, result) = oneshot::channel();
+        self.commands.send(command(reply)).await.map_err(stopped)?;
         result.await.map_err(stopped)?
     }
 
