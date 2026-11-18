@@ -40,7 +40,10 @@ pub(crate) async fn approve_credential(
     let username = credential_field(username, MAX_CREDENTIAL_USERNAME_BYTES, "username")?;
     let token = credential_field(token, MAX_CREDENTIAL_TOKEN_BYTES, "token")?;
     let input = credential_input(&target, Some(username), Some(token));
-    if !run_credential("approve", &input).await? {
+    if run_credential("approve", &input, Stdio::null())
+        .await?
+        .is_none()
+    {
         return Err(credential_error(
             "the host Git credential helper rejected the credential",
         ));
@@ -56,70 +59,66 @@ async fn credential_fill(
     target: &str,
     username: Option<&str>,
 ) -> std::result::Result<Option<String>, Rejection> {
-    let mut command = credential_command("fill");
-    command.stdout(Stdio::piped());
-    let mut child = command.spawn().map_err(|error| {
-        credential_error(format!("the host Git command is unavailable: {error}"))
-    })?;
+    let Some(mut output) = run_credential(
+        "fill",
+        &credential_input(target, username, None),
+        Stdio::piped(),
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    let username = parse_credential_username(target, &output);
+    output.fill(0);
+    username.map(Some)
+}
+
+async fn run_credential(
+    operation: &str,
+    input: &[u8],
+    stdout: Stdio,
+) -> std::result::Result<Option<Vec<u8>>, Rejection> {
+    let mut child = credential_command(operation)
+        .stdout(stdout)
+        .spawn()
+        .map_err(|error| {
+            credential_error(format!("the host Git command is unavailable: {error}"))
+        })?;
     let result = tokio::time::timeout(GIT_TIMEOUT, async {
-        write_credential_input(&mut child, &credential_input(target, username, None)).await?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| credential_error("failed to read the host Git credential response"))?;
-        let mut output = Vec::with_capacity(MAX_CREDENTIAL_OUTPUT_BYTES + 1);
-        stdout
-            .take((MAX_CREDENTIAL_OUTPUT_BYTES + 1) as u64)
-            .read_to_end(&mut output)
-            .await
-            .map_err(|error| {
-                credential_error(format!(
-                    "failed to read the host Git credential response: {error}"
-                ))
-            })?;
-        if output.len() > MAX_CREDENTIAL_OUTPUT_BYTES {
-            output.fill(0);
-            kill_child(&mut child).await;
-            return Err(credential_error(
-                "the host Git credential helper returned invalid data",
-            ));
+        write_credential_input(&mut child, input).await?;
+        let mut output = Vec::new();
+        if let Some(stdout) = child.stdout.take() {
+            output.reserve_exact(MAX_CREDENTIAL_OUTPUT_BYTES + 1);
+            stdout
+                .take((MAX_CREDENTIAL_OUTPUT_BYTES + 1) as u64)
+                .read_to_end(&mut output)
+                .await
+                .map_err(|error| {
+                    credential_error(format!(
+                        "failed to read the host Git credential response: {error}"
+                    ))
+                })?;
+            if output.len() > MAX_CREDENTIAL_OUTPUT_BYTES {
+                output.fill(0);
+                kill_child(&mut child).await;
+                return Err(credential_error(
+                    "the host Git credential helper returned invalid data",
+                ));
+            }
         }
         let status = child.wait().await.map_err(|error| {
             credential_error(format!("the host Git credential command failed: {error}"))
         })?;
-        if !status.success() {
+        if status.success() {
+            Ok(Some(output))
+        } else {
             output.fill(0);
-            return Ok(None);
+            Ok(None)
         }
-        let username = parse_credential_username(target, &output);
-        output.fill(0);
-        username.map(Some)
     })
     .await;
     match result {
         Ok(result) => result,
-        Err(elapsed) => {
-            kill_child(&mut child).await;
-            Err(timeout(elapsed))
-        }
-    }
-}
-
-async fn run_credential(operation: &str, input: &[u8]) -> std::result::Result<bool, Rejection> {
-    let mut command = credential_command(operation);
-    command.stdout(Stdio::null());
-    let mut child = command.spawn().map_err(|error| {
-        credential_error(format!("the host Git command is unavailable: {error}"))
-    })?;
-    let result = tokio::time::timeout(GIT_TIMEOUT, async {
-        write_credential_input(&mut child, input).await?;
-        child.wait().await.map_err(|error| {
-            credential_error(format!("the host Git credential command failed: {error}"))
-        })
-    })
-    .await;
-    match result {
-        Ok(status) => Ok(status?.success()),
         Err(elapsed) => {
             kill_child(&mut child).await;
             Err(timeout(elapsed))
