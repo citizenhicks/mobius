@@ -643,29 +643,25 @@ impl TuiState {
     }
 
     pub(super) fn confirm_delete_file(&mut self, file: SessionFileReference) {
-        self.open_gateway_picker(
+        self.confirm_delete(
             &format!("Delete {}?", terminal_text(&file.name)),
-            [super::PickerOption {
-                label: "Delete permanently".into(),
-                description: "cannot be undone".into(),
-                detail: String::new(),
-                shows_detail: false,
-                action: super::PickerAction::Gateway(GatewayAction::DeleteStoredFile(file.id)),
-                secondary: None,
-            }],
-            0,
+            GatewayAction::DeleteStoredFile(file.id),
         );
     }
 
     pub(super) fn confirm_delete_current_session(&mut self) {
+        self.confirm_delete("Delete this chat?", GatewayAction::DeleteCurrent);
+    }
+
+    fn confirm_delete(&mut self, title: &str, action: GatewayAction) {
         self.open_gateway_picker(
-            "Delete this chat?",
+            title,
             [super::PickerOption {
                 label: "Delete permanently".into(),
                 description: "cannot be undone".into(),
                 detail: String::new(),
                 shows_detail: false,
-                action: super::PickerAction::Gateway(GatewayAction::DeleteCurrent),
+                action: super::PickerAction::Gateway(action),
                 secondary: None,
             }],
             0,
