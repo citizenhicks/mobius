@@ -32,6 +32,7 @@ use super::super::authorization::ResolvedAuthorization;
 use super::super::authorization::UnauthorizedRetry;
 use super::super::provider::ProviderCredential;
 use super::super::provider::UsageLimit;
+use super::super::transport::read_bounded;
 use super::PROVIDER_ID;
 use crate::BoxFuture;
 use crate::Error;
@@ -332,19 +333,14 @@ impl DeviceLogin {
     }
 }
 
-async fn bounded_json<T>(mut response: reqwest::Response, operation: &str) -> Result<T>
+async fn bounded_json<T>(response: reqwest::Response, operation: &str) -> Result<T>
 where
     T: for<'de> Deserialize<'de>,
 {
-    let mut body = Vec::new();
-    while let Some(chunk) = response.chunk().await? {
-        if body.len().saturating_add(chunk.len()) > TOKEN_LIMIT {
-            return Err(Error::Auth(format!(
-                "ChatGPT {operation} response was too large"
-            )));
-        }
-        body.extend_from_slice(&chunk);
-    }
+    let body = read_bounded(response, TOKEN_LIMIT, || {
+        Error::Auth(format!("ChatGPT {operation} response was too large"))
+    })
+    .await?;
     serde_json::from_slice(&body).map_err(|error| {
         Error::Auth(format!(
             "ChatGPT {operation} response was invalid: {}",
@@ -523,21 +519,16 @@ async fn token_request(
     form: &[(&str, &str)],
     operation: &str,
 ) -> Result<OAuthCredential> {
-    let mut response = client
+    let response = client
         .post(MANIFEST.token_url.as_str())
         .form(form)
         .send()
         .await?;
     let status = response.status();
-    let mut body = Vec::new();
-    while let Some(chunk) = response.chunk().await? {
-        if body.len().saturating_add(chunk.len()) > TOKEN_LIMIT {
-            return Err(Error::Auth(format!(
-                "ChatGPT token {operation} response was too large"
-            )));
-        }
-        body.extend_from_slice(&chunk);
-    }
+    let body = read_bounded(response, TOKEN_LIMIT, || {
+        Error::Auth(format!("ChatGPT token {operation} response was too large"))
+    })
+    .await?;
     if !status.is_success() {
         return Err(token_failure(status, operation, &body));
     }

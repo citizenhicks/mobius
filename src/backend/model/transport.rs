@@ -286,16 +286,25 @@ pub(super) fn frame_data(frame: &str) -> Option<Cow<'_, str>> {
 }
 
 pub(super) async fn read_limited(
-    mut response: Response,
+    response: Response,
     limit: usize,
     provider: &str,
+) -> Result<Vec<u8>> {
+    read_bounded(response, limit, || {
+        Error::Provider(format!("{provider} response body exceeded size limit").into())
+    })
+    .await
+}
+
+pub(super) async fn read_bounded(
+    mut response: Response,
+    limit: usize,
+    too_large: impl FnOnce() -> Error,
 ) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await? {
         if bytes.len().saturating_add(chunk.len()) > limit {
-            return Err(Error::Provider(
-                format!("{provider} response body exceeded size limit").into(),
-            ));
+            return Err(too_large());
         }
         bytes.extend_from_slice(&chunk);
     }
