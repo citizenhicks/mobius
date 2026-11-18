@@ -1334,8 +1334,6 @@ mod tests {
 
     #[test]
     fn untrusted_plugin_keeps_bundled_skills_without_loading_hooks() {
-        use crate::backend::sandbox::local::LocalSandbox;
-
         let temporary = tempfile::tempdir().expect("temporary extensions");
         let workspace = temporary.path().join("workspace");
         std::fs::create_dir(&workspace).expect("workspace");
@@ -1359,13 +1357,8 @@ mod tests {
         )
         .expect("hook manifest");
         let plugin = std::fs::canonicalize(plugin).expect("canonical plugin root");
-        let backend = Arc::new(LocalSandbox::new(&workspace).expect("sandbox"));
-
-        let extensions = Extensions::discover(Vec::<PathBuf>::new())
-            .expect("extensions")
-            .load_plugins([(plugin.clone(), None)], &workspace)
-            .and_then(|extensions| extensions.start_hooks(backend))
-            .expect("activate plugin skills");
+        let extensions =
+            activate_plugin(&workspace, plugin.clone(), None).expect("activate plugin skills");
 
         assert!(extensions.skills.contains_key("ponytail:review"));
         assert!(extensions.hooks.is_empty());
@@ -1430,9 +1423,20 @@ mod tests {
         ));
     }
 
-    fn extension_with_hooks(temporary: &tempfile::TempDir, hooks: &str) -> Extensions {
-        use crate::backend::sandbox::local::LocalSandbox;
+    fn activate_plugin(
+        workspace: &Path,
+        plugin: PathBuf,
+        trusted: Option<CommandAuthorization>,
+    ) -> Result<Extensions> {
+        let backend = Arc::new(crate::backend::sandbox::local::LocalSandbox::new(
+            workspace,
+        )?);
+        Extensions::discover(Vec::<PathBuf>::new())?
+            .load_plugins([(plugin, trusted)], workspace)?
+            .start_hooks(backend)
+    }
 
+    fn extension_with_hooks(temporary: &tempfile::TempDir, hooks: &str) -> Extensions {
         let workspace = temporary.path().join("workspace");
         let plugin = temporary.path().join("plugin");
         std::fs::create_dir(&workspace).expect("workspace");
@@ -1448,28 +1452,15 @@ mod tests {
             format!(r#"{{"hooks":{hooks}}}"#),
         )
         .expect("hook manifest");
-        let backend = Arc::new(LocalSandbox::new(&workspace).expect("sandbox"));
-
-        Extensions::discover(Vec::<PathBuf>::new())
-            .expect("extensions")
-            .load_plugins([(plugin, Some(trusted_hooks()))], &workspace)
-            .and_then(|extensions| extensions.start_hooks(backend))
-            .expect("activate plugin")
+        activate_plugin(&workspace, plugin, Some(trusted_hooks())).expect("activate plugin")
     }
 
     #[test]
     fn plugin_snapshot_cannot_share_the_writable_workspace() {
-        use crate::backend::sandbox::local::LocalSandbox;
-
         let workspace = tempfile::tempdir().expect("workspace");
         let plugin = workspace.path().join("plugin");
         std::fs::create_dir(&plugin).expect("plugin");
-        let backend = Arc::new(LocalSandbox::new(workspace.path()).expect("sandbox"));
-
-        let error = Extensions::discover(Vec::<PathBuf>::new())
-            .expect("extensions")
-            .load_plugins([(plugin, Some(trusted_hooks()))], workspace.path())
-            .and_then(|extensions| extensions.start_hooks(backend))
+        let error = activate_plugin(workspace.path(), plugin, Some(trusted_hooks()))
             .expect_err("overlapping plugin must fail");
 
         assert!(error.to_string().contains("must not overlap"));
@@ -1479,8 +1470,6 @@ mod tests {
     fn plugin_data_root_rejects_symlink_without_writing_outside() {
         use std::os::unix::fs::symlink;
 
-        use crate::backend::sandbox::local::LocalSandbox;
-
         let temporary = tempfile::tempdir().expect("temporary extensions");
         let workspace = temporary.path().join("workspace");
         let outside = temporary.path().join("outside");
@@ -1489,12 +1478,7 @@ mod tests {
         std::fs::create_dir(&outside).expect("outside directory");
         std::fs::create_dir(&plugin).expect("plugin");
         symlink(&outside, workspace.join(".mobius")).expect("symlink data root");
-        let backend = Arc::new(LocalSandbox::new(&workspace).expect("sandbox"));
-
-        let result = Extensions::discover(Vec::<PathBuf>::new())
-            .expect("extensions")
-            .load_plugins([(plugin, Some(trusted_hooks()))], &workspace)
-            .and_then(|extensions| extensions.start_hooks(backend));
+        let result = activate_plugin(&workspace, plugin, Some(trusted_hooks()));
 
         assert!(result.is_err());
         assert!(!outside.join("extensions").exists());
