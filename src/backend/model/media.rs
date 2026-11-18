@@ -54,30 +54,25 @@ impl MediaPreparation<'_> {
         model: &M,
         replay: bool,
     ) -> Result<Option<Vec<Arc<Value>>>> {
-        if !input.iter().any(|item| {
-            content_parts(item)
-                .into_iter()
-                .flatten()
-                .any(|part| part.get("type").and_then(Value::as_str) == Some("input_image"))
-        }) {
+        let (historical_end, omittable_end) = if replay {
+            let Some(newest_batch) = newest_observation_start(input) else {
+                return Ok(None);
+            };
+            // A newer model output makes the last image batch historical too.
+            let historical_end = input
+                .suffix(newest_batch)
+                .iter()
+                .rposition(observation_boundary)
+                .map_or(newest_batch, |offset| newest_batch + offset + 1);
+            (historical_end, newest_batch)
+        } else if input.iter().any(has_image) {
+            (0, 0)
+        } else {
             return Ok(None);
-        }
+        };
         let session_id = session_id.ok_or_else(|| {
             Error::Provider("image observations require a session identity".into())
         })?;
-        // Two boundaries, deliberately. Everything before the last model output may tolerate a
-        // deleted file, even an answered newest batch: refusing it would strand the session.
-        // Only images before the newest batch may yield their pixels to the request budget;
-        // that start never passes the historical end.
-        let (historical_end, omittable_end) = if replay {
-            let historical_end = input
-                .iter()
-                .rposition(observation_boundary)
-                .map_or(0, |index| index + 1);
-            (historical_end, newest_observation_start(input))
-        } else {
-            (0, 0)
-        };
         hydrate(
             self.files,
             session_id,
@@ -102,7 +97,7 @@ pub(super) fn bound_request(
     mut size: impl FnMut(&[Arc<Value>]) -> Result<usize>,
 ) -> Result<()> {
     let fresh = if replay {
-        newest_observation_start(original)
+        newest_observation_start(original).unwrap_or(original.len())
     } else {
         0
     };
@@ -154,20 +149,32 @@ fn historical_image_omitted(file: &Value) -> Value {
     serde_json::json!({"type":"input_text", "text":format!("[Historical image omitted to fit the request. Reopen the original session file: {file}]")})
 }
 
-fn newest_observation_start(input: ModelInput<'_>) -> usize {
-    let Some(last_image) = input.iter().rposition(|item| {
-        content_parts(item)
-            .into_iter()
-            .flatten()
-            .any(|part| part.get("type").and_then(Value::as_str) == Some("input_image"))
-    }) else {
-        return input.len();
+fn has_image(item: &Value) -> bool {
+    content_parts(item)
+        .into_iter()
+        .flatten()
+        .any(|part| part.get("type").and_then(Value::as_str) == Some("input_image"))
+}
+
+/// Locates the batch whose newest image must keep its pixels when the request is bounded.
+fn newest_observation_start(input: ModelInput<'_>) -> Option<usize> {
+    let mut items = input.iter();
+    // A fresh image often ends the transcript. Otherwise scan forward for the common text-only case.
+    let last_image = if has_image(items.next_back()?) {
+        items.len()
+    } else {
+        let first = items.position(has_image)?;
+        items
+            .rposition(has_image)
+            .map_or(first, |last| first + 1 + last)
     };
-    input
-        .prefix(last_image)
-        .iter()
-        .rposition(observation_boundary)
-        .map_or(0, |index| index + 1)
+    Some(
+        input
+            .prefix(last_image)
+            .iter()
+            .rposition(observation_boundary)
+            .map_or(0, |index| index + 1),
+    )
 }
 
 fn observation_boundary(item: &Value) -> bool {
