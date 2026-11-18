@@ -3,13 +3,7 @@ use super::*;
 fn command_context(sandbox: &Arc<Sandbox>, owner: &str, authorized: bool) -> ToolContext {
     ToolContext::new(
         Arc::clone(sandbox),
-        SandboxPermissions::restore(
-            &owner.parse().expect("session ID"),
-            crate::backend::sandbox::SandboxMode::WorkspaceWrite,
-            crate::backend::sandbox::NetworkAccess::Denied,
-            authorized.then(|| "command".into()),
-        )
-        .for_call("command"),
+        test_permissions(owner, if authorized { &["command"] } else { &[] }).for_call("command"),
         "turn",
     )
 }

@@ -198,7 +198,7 @@ async fn exclusive_calls_separate_parallel_segments() {
             scheduled_call("p3", "parallel", &["e"]),
             scheduled_call("p4", "parallel", &["e"]),
         ],
-        test_permissions(&[]),
+        test_permissions("session", &[]),
     );
 
     assert_eq!(
@@ -247,7 +247,7 @@ async fn parallel_results_remain_in_model_call_order() {
             scheduled_call("p1", "parallel", &[]),
             scheduled_call("p2", "parallel", &[]),
         ],
-        test_permissions(&[]),
+        test_permissions("session", &[]),
     );
 
     drop(started_call(&mut events).await);

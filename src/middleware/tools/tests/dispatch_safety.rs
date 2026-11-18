@@ -79,7 +79,7 @@ async fn each_call_receives_its_own_permissions() {
             &catalog,
             calls,
             test_sandbox(),
-            &test_permissions(&["allowed"])
+            &test_permissions("session", &["allowed"])
         )
         .await,
         vec![

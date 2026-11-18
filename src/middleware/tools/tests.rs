@@ -40,9 +40,9 @@ async fn run_calls(
     .await
 }
 
-fn test_permissions(mutation_call_ids: &[&str]) -> SandboxPermissions {
+fn test_permissions(owner: &str, mutation_call_ids: &[&str]) -> SandboxPermissions {
     SandboxPermissions::restore(
-        &"session".parse().expect("session ID"),
+        &owner.parse().expect("session ID"),
         crate::backend::sandbox::SandboxMode::WorkspaceWrite,
         crate::backend::sandbox::NetworkAccess::Denied,
         mutation_call_ids.iter().map(|call_id| (*call_id).into()),

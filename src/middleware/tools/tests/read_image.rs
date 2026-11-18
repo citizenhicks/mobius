@@ -36,7 +36,7 @@ async fn extensionless_images_are_durable_and_reinspectable_after_source_deletio
         &catalog,
         calls,
         Arc::clone(&sandbox),
-        &test_permissions(&[]),
+        &test_permissions("session", &[]),
     )
     .await
     .remove(0);
@@ -78,18 +78,13 @@ async fn extensionless_images_are_durable_and_reinspectable_after_source_deletio
         &catalog,
         [call.clone()],
         Arc::clone(&sandbox),
-        &test_permissions(&[]),
+        &test_permissions("session", &[]),
     )
     .await
     .remove(0);
     assert!(!result.is_error, "{}", result.output.text());
     assert_eq!(result.output.files().count(), 1);
-    let other_session = SandboxPermissions::restore(
-        &"another-session".parse().expect("session ID"),
-        crate::backend::sandbox::SandboxMode::WorkspaceWrite,
-        crate::backend::sandbox::NetworkAccess::Denied,
-        Vec::new(),
-    );
+    let other_session = test_permissions("another-session", &[]);
     let result = run_calls(&catalog, [call], sandbox, &other_session)
         .await
         .remove(0);
@@ -164,7 +159,7 @@ async fn read_file_preserves_text_limits_and_rejects_ambiguous_sources() {
         })
         .collect::<Vec<_>>();
     let calls = finalize_and_bind(&mut catalog, &calls);
-    let results = run_calls(&catalog, calls, sandbox, &test_permissions(&[])).await;
+    let results = run_calls(&catalog, calls, sandbox, &test_permissions("session", &[])).await;
     assert_eq!(results.len(), cases.len());
     for (result, (arguments, is_error, expected)) in results.into_iter().zip(cases) {
         assert_eq!(result.is_error, is_error, "{arguments}");
