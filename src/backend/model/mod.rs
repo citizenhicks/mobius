@@ -802,6 +802,10 @@ pub trait Model: Send + Sync {
     }
 }
 
+fn wire_index(value: &Value) -> Option<usize> {
+    value.get("index")?.as_u64()?.try_into().ok()
+}
+
 fn nonempty_string<'a>(value: &'a Value, field: &str) -> Option<&'a str> {
     value
         .get(field)

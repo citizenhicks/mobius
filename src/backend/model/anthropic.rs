@@ -1267,10 +1267,7 @@ fn wire_tools<'a>(
 }
 
 fn event_index(event: &Value) -> Result<usize> {
-    event
-        .get("index")
-        .and_then(Value::as_u64)
-        .and_then(|index| usize::try_from(index).ok())
+    super::wire_index(event)
         .ok_or_else(|| Error::Provider("Anthropic event omitted block index".into()))
 }
 

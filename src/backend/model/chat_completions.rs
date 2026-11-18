@@ -566,11 +566,7 @@ impl ChatStreamState {
             .flatten()
             .enumerate()
         {
-            let index = call
-                .get("index")
-                .and_then(Value::as_u64)
-                .and_then(|index| usize::try_from(index).ok())
-                .unwrap_or(position);
+            let index = super::wire_index(call).unwrap_or(position);
             if self.tools.len() >= MAX_TOOL_CALLS && !self.tools.contains_key(&index) {
                 return Err(Error::Provider(
                     format!("{provider} returned more than {MAX_TOOL_CALLS} tool calls").into(),
