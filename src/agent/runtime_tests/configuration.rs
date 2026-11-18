@@ -117,7 +117,7 @@ async fn completed_pre_model_usage_is_settled_when_a_later_hook_rejects_preparat
     let checkpoint_store: Arc<dyn CheckpointStore> = Arc::<SqliteCheckpoint>::clone(&checkpoints);
     let observed_usage = Arc::new(Mutex::new(Vec::new()));
     let usage_observer = Arc::clone(&observed_usage);
-    let config = AgentConfig::new(
+    let config = runtime_config(
         Arc::new(ModelRouter::new("main", Arc::new(TestModel))),
         Arc::new(Sandbox::new(
             Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
@@ -128,10 +128,8 @@ async fn completed_pre_model_usage_is_settled_when_a_later_hook_rejects_preparat
             Arc::new(DurableBeforeModel),
             Arc::new(FailingBeforeModel),
         ]),
-        "test prompt",
+        "settled-hooks",
     )
-    .session_context(test_session_context())
-    .session_id("settled-hooks".parse().expect("session ID"))
     .usage_observer(move |route, usage| {
         usage_observer
             .lock()

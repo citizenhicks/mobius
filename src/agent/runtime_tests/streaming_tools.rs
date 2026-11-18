@@ -350,7 +350,7 @@ fn streaming_config_with_tools(
     tools: Vec<Arc<dyn Tool>>,
     hooks: Arc<dyn Middleware>,
 ) -> AgentConfig {
-    AgentConfig::new(
+    runtime_config(
         Arc::new(ModelRouter::new("streaming-test", model)),
         Arc::new(Sandbox::new(
             Arc::new(LocalSandbox::new(workspace).expect("local sandbox")),
@@ -358,10 +358,8 @@ fn streaming_config_with_tools(
         )),
         checkpoints,
         test_middleware(vec![Arc::new(Tools::new(tools)), hooks]),
-        "test prompt",
+        session_id,
     )
-    .session_context(test_session_context())
-    .session_id(session_id.parse().expect("session ID"))
 }
 
 async fn collect_until_turn_end(agent: &mut Agent) -> Vec<EventMsg> {

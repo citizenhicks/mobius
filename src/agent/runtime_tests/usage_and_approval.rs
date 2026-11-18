@@ -76,7 +76,7 @@ async fn rejected_prompt_aborts_without_persisting_or_wedging_the_next_turn() {
     let workspace = tempfile::tempdir().expect("workspace");
     let checkpoints = test_checkpoints(workspace.path());
     let model = Arc::new(HandoffModel::default());
-    let config = AgentConfig::new(
+    let config = runtime_config(
         Arc::new(ModelRouter::new("main", Arc::<HandoffModel>::clone(&model))),
         Arc::new(Sandbox::new(
             Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
@@ -84,10 +84,8 @@ async fn rejected_prompt_aborts_without_persisting_or_wedging_the_next_turn() {
         )),
         Arc::<SqliteCheckpoint>::clone(&checkpoints),
         test_middleware(vec![Arc::new(RejectFirstPrompt(AtomicBool::new(false)))]),
-        "test prompt",
-    )
-    .session_context(test_session_context())
-    .session_id("rejected-prompt".parse().expect("session ID"));
+        "rejected-prompt",
+    );
     let mut agent = create_agent(config).await.expect("create agent");
     let rejected_submission = agent
         .sender()
@@ -201,20 +199,16 @@ async fn compaction_notice_is_live_and_closes_on_success_failure_and_interrupt()
             seed_compaction_history(&checkpoints, outcome).await;
             let router_model = Arc::clone(&model) as Arc<dyn Model>;
             let store = Arc::clone(&checkpoints) as Arc<dyn CheckpointStore>;
-            let mut agent = create_agent(
-                AgentConfig::new(
-                    Arc::new(ModelRouter::new("main", router_model)),
-                    Arc::new(Sandbox::new(
-                        Arc::new(LocalSandbox::new(workspace.path()).unwrap()),
-                        ApprovalPolicy::Ask,
-                    )),
-                    store,
-                    test_middleware(vec![Arc::new(Compaction::new(1_000).unwrap())]),
-                    "test prompt",
-                )
-                .session_context(test_session_context())
-                .session_id(outcome.parse().expect("session ID")),
-            )
+            let mut agent = create_agent(runtime_config(
+                Arc::new(ModelRouter::new("main", router_model)),
+                Arc::new(Sandbox::new(
+                    Arc::new(LocalSandbox::new(workspace.path()).unwrap()),
+                    ApprovalPolicy::Ask,
+                )),
+                store,
+                test_middleware(vec![Arc::new(Compaction::new(1_000).unwrap())]),
+                outcome,
+            ))
             .await
             .unwrap();
             agent.sender().submit(user_op("compact this")).unwrap();
@@ -340,7 +334,7 @@ async fn compaction_marker_survives_transcript_replay() {
     let workspace = tempfile::tempdir().expect("workspace");
     let checkpoints = test_checkpoints(workspace.path());
     let checkpoint_store: Arc<dyn CheckpointStore> = Arc::<SqliteCheckpoint>::clone(&checkpoints);
-    let config = AgentConfig::new(
+    let config = runtime_config(
         Arc::new(ModelRouter::new("main", Arc::new(HandoffModel::default()))),
         Arc::new(Sandbox::new(
             Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
@@ -350,10 +344,8 @@ async fn compaction_marker_survives_transcript_replay() {
         test_middleware(vec![Arc::new(
             Compaction::new(1).expect("compaction middleware"),
         )]),
-        "test prompt",
-    )
-    .session_context(test_session_context())
-    .session_id("durable-compaction".parse().expect("session ID"));
+        "durable-compaction",
+    );
     let mut agent = create_agent(config).await.expect("create agent");
     agent
         .sender()
@@ -466,7 +458,7 @@ async fn failing_usage_observer_aborts_before_checkpoint_usage_is_committed() {
         tool_counts: Mutex::new(Vec::new()),
         inputs: Mutex::new(Vec::new()),
     });
-    let config = AgentConfig::new(
+    let config = runtime_config(
         Arc::new(ModelRouter::new("main", model)),
         Arc::new(Sandbox::new(
             Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
@@ -474,10 +466,8 @@ async fn failing_usage_observer_aborts_before_checkpoint_usage_is_committed() {
         )),
         checkpoint_store,
         test_middleware(Vec::new()),
-        "test prompt",
+        "usage-observer-failure",
     )
-    .session_context(test_session_context())
-    .session_id("usage-observer-failure".parse().expect("session ID"))
     .usage_observer(|_, _| {
         Box::pin(async {
             tokio::task::yield_now().await;
@@ -530,20 +520,16 @@ async fn idle_compaction_runs_once_without_a_model_reply() {
             .expect("compaction middleware")
             .idle_compaction(Some(std::time::Duration::from_millis(50)), min_tokens)
             .expect("idle compaction");
-        let mut agent = create_agent(
-            AgentConfig::new(
-                Arc::new(ModelRouter::new("main", Arc::<HandoffModel>::clone(&model))),
-                Arc::new(Sandbox::new(
-                    Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
-                    ApprovalPolicy::Ask,
-                )),
-                Arc::<SqliteCheckpoint>::clone(&checkpoints),
-                test_middleware(vec![Arc::new(compaction)]),
-                "test prompt",
-            )
-            .session_context(test_session_context())
-            .session_id("idle".parse().expect("session ID")),
-        )
+        let mut agent = create_agent(runtime_config(
+            Arc::new(ModelRouter::new("main", Arc::<HandoffModel>::clone(&model))),
+            Arc::new(Sandbox::new(
+                Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
+                ApprovalPolicy::Ask,
+            )),
+            Arc::<SqliteCheckpoint>::clone(&checkpoints),
+            test_middleware(vec![Arc::new(compaction)]),
+            "idle",
+        ))
         .await
         .expect("create agent");
         agent.sender().submit(user_op("hello")).expect("submit");
@@ -654,23 +640,19 @@ async fn a_message_steered_into_the_idle_turn_is_answered_after_compaction() {
                 .expect("compaction middleware")
                 .idle_compaction(Some(std::time::Duration::from_millis(50)), 1)
                 .expect("idle compaction");
-            let mut agent = create_agent(
-                AgentConfig::new(
-                    Arc::new(ModelRouter::new(
-                        "main",
-                        Arc::<PausedIdleCompaction>::clone(&model),
-                    )),
-                    Arc::new(Sandbox::new(
-                        Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
-                        ApprovalPolicy::Ask,
-                    )),
-                    Arc::<SqliteCheckpoint>::clone(&checkpoints),
-                    test_middleware(vec![Arc::new(compaction), Arc::new(RejectSteer(reject))]),
-                    "test prompt",
-                )
-                .session_context(test_session_context())
-                .session_id("idle-steer".parse().expect("session ID")),
-            )
+            let mut agent = create_agent(runtime_config(
+                Arc::new(ModelRouter::new(
+                    "main",
+                    Arc::<PausedIdleCompaction>::clone(&model),
+                )),
+                Arc::new(Sandbox::new(
+                    Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
+                    ApprovalPolicy::Ask,
+                )),
+                Arc::<SqliteCheckpoint>::clone(&checkpoints),
+                test_middleware(vec![Arc::new(compaction), Arc::new(RejectSteer(reject))]),
+                "idle-steer",
+            ))
             .await
             .expect("create agent");
             agent.sender().submit(user_op("hello")).expect("submit");
@@ -806,23 +788,19 @@ async fn failed_idle_compaction_disarms_without_losing_the_chat() {
             .expect("compaction middleware")
             .idle_compaction(Some(std::time::Duration::from_millis(50)), 1)
             .expect("idle compaction");
-        let mut agent = create_agent(
-            AgentConfig::new(
-                Arc::new(ModelRouter::new(
-                    "main",
-                    Arc::<ScriptedModel>::clone(&model),
-                )),
-                Arc::new(Sandbox::new(
-                    Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
-                    ApprovalPolicy::Ask,
-                )),
-                Arc::<SqliteCheckpoint>::clone(&checkpoints),
-                test_middleware(vec![Arc::new(compaction)]),
-                "test prompt",
-            )
-            .session_context(test_session_context())
-            .session_id("idle-failure".parse().expect("session ID")),
-        )
+        let mut agent = create_agent(runtime_config(
+            Arc::new(ModelRouter::new(
+                "main",
+                Arc::<ScriptedModel>::clone(&model),
+            )),
+            Arc::new(Sandbox::new(
+                Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
+                ApprovalPolicy::Ask,
+            )),
+            Arc::<SqliteCheckpoint>::clone(&checkpoints),
+            test_middleware(vec![Arc::new(compaction)]),
+            "idle-failure",
+        ))
         .await
         .expect("create agent");
         agent

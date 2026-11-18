@@ -149,20 +149,16 @@ async fn rejected_input_refill_cannot_starve_model_completion() {
         release,
         started: Arc::clone(&started),
     });
-    let mut agent = create_agent(
-        AgentConfig::new(
-            Arc::new(ModelRouter::new("refill-model", model)),
-            Arc::new(Sandbox::new(
-                Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
-                ApprovalPolicy::Allow,
-            )),
-            test_checkpoints(workspace.path()),
-            test_middleware(vec![Arc::<RefillMiddleware>::clone(&refill)]),
-            "test prompt",
-        )
-        .session_context(test_session_context())
-        .session_id("refill-model".parse().expect("session ID")),
-    )
+    let mut agent = create_agent(runtime_config(
+        Arc::new(ModelRouter::new("refill-model", model)),
+        Arc::new(Sandbox::new(
+            Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
+            ApprovalPolicy::Allow,
+        )),
+        test_checkpoints(workspace.path()),
+        test_middleware(vec![Arc::<RefillMiddleware>::clone(&refill)]),
+        "refill-model",
+    ))
     .await
     .expect("create agent");
     *refill.sender.lock().expect("refill sender lock") = Some(agent.sender());
@@ -212,20 +208,16 @@ async fn steer_is_durable_before_a_blocked_model_completes() {
     let started = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
     let model = blocking_model(&started, &release);
-    let mut agent = create_agent(
-        AgentConfig::new(
-            Arc::new(ModelRouter::new("blocking", model)),
-            Arc::new(Sandbox::new(
-                Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
-                ApprovalPolicy::Ask,
-            )),
-            Arc::<SqliteCheckpoint>::clone(&checkpoints),
-            test_middleware(Vec::new()),
-            "test prompt",
-        )
-        .session_context(test_session_context())
-        .session_id("blocked-model".parse().expect("session ID")),
-    )
+    let mut agent = create_agent(runtime_config(
+        Arc::new(ModelRouter::new("blocking", model)),
+        Arc::new(Sandbox::new(
+            Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
+            ApprovalPolicy::Ask,
+        )),
+        Arc::<SqliteCheckpoint>::clone(&checkpoints),
+        test_middleware(Vec::new()),
+        "blocked-model",
+    ))
     .await
     .expect("create agent");
     agent.sender().submit(user_op("start")).expect("start turn");
@@ -286,20 +278,16 @@ async fn interrupt_discards_partial_pre_model_context() {
         started: Arc::clone(&started),
         release: Arc::clone(&release),
     };
-    let mut agent = create_agent(
-        AgentConfig::new(
-            Arc::new(ModelRouter::new("test", Arc::new(TestModel))),
-            Arc::new(Sandbox::new(
-                Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
-                ApprovalPolicy::Ask,
-            )),
-            Arc::<SqliteCheckpoint>::clone(&checkpoints),
-            test_middleware(vec![Arc::new(middleware)]),
-            "test prompt",
-        )
-        .session_context(test_session_context())
-        .session_id("interrupt-pre-model".parse().expect("session ID")),
-    )
+    let mut agent = create_agent(runtime_config(
+        Arc::new(ModelRouter::new("test", Arc::new(TestModel))),
+        Arc::new(Sandbox::new(
+            Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
+            ApprovalPolicy::Ask,
+        )),
+        Arc::<SqliteCheckpoint>::clone(&checkpoints),
+        test_middleware(vec![Arc::new(middleware)]),
+        "interrupt-pre-model",
+    ))
     .await
     .expect("create agent");
     agent.sender().submit(user_op("start")).expect("start turn");

@@ -29,7 +29,7 @@ async fn failed_message_submit_leaves_the_accepted_message_for_restart() {
     let failed = Arc::new(AtomicBool::new(false));
     let model = Arc::new(HandoffModel::default());
     let make_config = |checkpoints: Arc<dyn CheckpointStore>| {
-        AgentConfig::new(
+        runtime_config(
             Arc::new(ModelRouter::new("test", Arc::<HandoffModel>::clone(&model))),
             Arc::new(Sandbox::new(
                 Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
@@ -37,10 +37,8 @@ async fn failed_message_submit_leaves_the_accepted_message_for_restart() {
             )),
             checkpoints,
             test_middleware(vec![Arc::new(FailFirstMessageSubmit(Arc::clone(&failed)))]),
-            "test prompt",
+            "message-submit-restart",
         )
-        .session_context(test_session_context())
-        .session_id("message-submit-restart".parse().expect("session ID"))
     };
     let checkpoint_store: Arc<dyn CheckpointStore> = Arc::<SqliteCheckpoint>::clone(&checkpoints);
     let mut first = create_agent(make_config(checkpoint_store))
@@ -129,22 +127,18 @@ async fn route_change_omits_private_reasoning_but_keeps_visible_history_and_tool
     models
         .register("destination", Arc::clone(&destination) as Arc<dyn Model>)
         .unwrap();
-    let mut agent = create_agent(
-        AgentConfig::new(
-            Arc::new(models),
-            Arc::new(Sandbox::new(
-                Arc::new(LocalSandbox::new(workspace.path()).unwrap()),
-                ApprovalPolicy::Allow,
-            )),
-            Arc::clone(&checkpoints) as Arc<dyn CheckpointStore>,
-            test_middleware(vec![Arc::new(Tools::new(vec![Arc::new(
-                ApprovalRequiredTestTool,
-            )]))]),
-            "test prompt",
-        )
-        .session_context(test_session_context())
-        .session_id("reasoning-route-change".parse().expect("session ID")),
-    )
+    let mut agent = create_agent(runtime_config(
+        Arc::new(models),
+        Arc::new(Sandbox::new(
+            Arc::new(LocalSandbox::new(workspace.path()).unwrap()),
+            ApprovalPolicy::Allow,
+        )),
+        Arc::clone(&checkpoints) as Arc<dyn CheckpointStore>,
+        test_middleware(vec![Arc::new(Tools::new(vec![Arc::new(
+            ApprovalRequiredTestTool,
+        )]))]),
+        "reasoning-route-change",
+    ))
     .await
     .unwrap();
     for message in ["run the tool", "continue on the same route"] {

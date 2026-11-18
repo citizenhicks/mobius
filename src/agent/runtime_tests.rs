@@ -486,6 +486,18 @@ fn config_with_route(
     )
 }
 
+fn runtime_config(
+    models: Arc<ModelRouter>,
+    sandbox: Arc<Sandbox>,
+    checkpoints: Arc<dyn CheckpointStore>,
+    middleware: MiddlewareStack,
+    session: &str,
+) -> AgentConfig {
+    AgentConfig::new(models, sandbox, checkpoints, middleware, "test prompt")
+        .session_context(test_session_context())
+        .session_id(session.parse().expect("session ID"))
+}
+
 fn config_with_model(
     workspace: &Path,
     checkpoints: Arc<dyn CheckpointStore>,
@@ -493,7 +505,7 @@ fn config_with_model(
     route: &str,
     model: Arc<dyn Model>,
 ) -> AgentConfig {
-    AgentConfig::new(
+    runtime_config(
         Arc::new(ModelRouter::new(route, model)),
         Arc::new(Sandbox::new(
             Arc::new(LocalSandbox::new(workspace).expect("local sandbox")),
@@ -501,10 +513,8 @@ fn config_with_model(
         )),
         checkpoints,
         test_middleware(Vec::new()),
-        "test prompt",
+        session_id,
     )
-    .session_context(test_session_context())
-    .session_id(session_id.parse().expect("session ID"))
 }
 
 #[path = "runtime_tests/admission.rs"]
