@@ -81,16 +81,7 @@ impl Workspace {
     }
 
     fn provider_label<'a>(&'a self, instance: &'a str) -> (&'a str, Hsla) {
-        self.client
-            .state
-            .gateway
-            .as_ref()
-            .and_then(|gateway| {
-                gateway
-                    .provider_instances
-                    .iter()
-                    .find(|record| record.selection.instance == instance)
-            })
+        self.provider_record(instance)
             .map_or((instance, self.palette.accent), |record| {
                 (record.label.as_str(), Accent::from(record.tint).color())
             })

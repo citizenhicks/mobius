@@ -115,16 +115,10 @@ impl Workspace {
     }
 
     fn chat_provider_label(&self) -> String {
-        let label = self.chat_provider().and_then(|instance| {
-            self.client
-                .state
-                .gateway
-                .as_ref()?
-                .provider_instances
-                .iter()
-                .find(|provider| provider.selection.instance == instance)
-                .map(|provider| provider.label.as_str())
-        });
+        let label = self
+            .chat_provider()
+            .and_then(|instance| self.provider_record(instance))
+            .map(|provider| provider.label.as_str());
         label.unwrap_or("The model provider").to_owned()
     }
 

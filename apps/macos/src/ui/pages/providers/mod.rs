@@ -157,7 +157,7 @@ impl Workspace {
         }
     }
 
-    fn provider_record(&self, id: &str) -> Option<&ProviderInstance> {
+    pub(in crate::ui) fn provider_record(&self, id: &str) -> Option<&ProviderInstance> {
         self.client.state.gateway.as_ref().and_then(|gateway| {
             gateway
                 .provider_instances
