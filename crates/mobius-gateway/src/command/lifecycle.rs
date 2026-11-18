@@ -603,21 +603,12 @@ pub(super) fn open_process_record(path: &Path) -> Result<Option<(ProcessRecord, 
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
-    if file.metadata()?.len() > MAX_PROCESS_RECORD_BYTES as u64 {
-        return Err(Error::Internal(
-            "gateway process record is too large".into(),
-        ));
+    let limit = MAX_PROCESS_RECORD_BYTES as u64;
+    let too_large = || Error::Internal("gateway process record is too large".into());
+    if file.metadata()?.len() > limit {
+        return Err(too_large());
     }
-    file.seek(SeekFrom::Start(0))?;
-    let mut contents = Vec::new();
-    (&mut file)
-        .take(MAX_PROCESS_RECORD_BYTES as u64 + 1)
-        .read_to_end(&mut contents)?;
-    if contents.len() > MAX_PROCESS_RECORD_BYTES {
-        return Err(Error::Internal(
-            "gateway process record is too large".into(),
-        ));
-    }
+    let contents = mobius::read_within(&mut file, limit)?.ok_or_else(too_large)?;
     let record: ProcessRecord = serde_json::from_slice(&contents)?;
     record.validate()?;
     Ok(Some((record, file)))

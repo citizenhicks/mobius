@@ -1,5 +1,4 @@
 use std::fs;
-use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -228,13 +227,8 @@ fn read_public_key(path: &Path) -> std::io::Result<Vec<u8>> {
     if !file.metadata()?.is_file() {
         return Err(std::io::Error::other("not a regular public key"));
     }
-    let mut value = Vec::new();
-    file.take((MAX_PUBLIC_KEY_BYTES + 1) as u64)
-        .read_to_end(&mut value)?;
-    if value.len() > MAX_PUBLIC_KEY_BYTES {
-        return Err(std::io::Error::other("public key is too large"));
-    }
-    Ok(value)
+    mobius::read_within(file, MAX_PUBLIC_KEY_BYTES as u64)?
+        .ok_or_else(|| std::io::Error::other("public key is too large"))
 }
 
 fn path_exists(path: &Path) -> bool {

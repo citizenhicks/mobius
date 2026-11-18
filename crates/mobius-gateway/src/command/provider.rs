@@ -103,17 +103,13 @@ pub(super) async fn register_provider_command(
     ))?)
 }
 
-pub(super) fn read_provider_credential(mut input: impl Read) -> Result<String> {
-    let mut bytes = Vec::new();
-    input
-        .by_ref()
-        .take((MAX_PROVIDER_API_KEY_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > MAX_PROVIDER_API_KEY_BYTES {
-        return Err(Error::Invalid(format!(
-            "API key must be 1–{MAX_PROVIDER_API_KEY_BYTES} bytes"
-        )));
-    }
+pub(super) fn read_provider_credential(input: impl Read) -> Result<String> {
+    let bytes =
+        mobius::read_within(input, MAX_PROVIDER_API_KEY_BYTES as u64)?.ok_or_else(|| {
+            Error::Invalid(format!(
+                "API key must be 1–{MAX_PROVIDER_API_KEY_BYTES} bytes"
+            ))
+        })?;
     String::from_utf8(bytes)
         .map_err(|error| Error::Invalid(format!("provider credential is not valid UTF-8: {error}")))
 }
