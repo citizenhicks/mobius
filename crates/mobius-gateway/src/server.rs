@@ -66,6 +66,23 @@ use self::transport::{
 };
 use self::view::ClientView;
 
+struct PendingRequest<T> {
+    request_id: Arc<str>,
+    future: std::pin::Pin<Box<dyn Future<Output = std::result::Result<T, Rejection>> + Send>>,
+}
+
+impl<T> PendingRequest<T> {
+    async fn next(slot: &mut Option<Self>) -> (Arc<str>, std::result::Result<T, Rejection>) {
+        let Some(request) = slot.as_mut() else {
+            std::future::pending::<!>().await
+        };
+        let result = request.future.as_mut().await;
+        let request_id = std::mem::take(&mut request.request_id);
+        slot.take();
+        (request_id, result)
+    }
+}
+
 const ROUTINE_TICK: Duration = Duration::from_secs(15);
 const MAX_DIRECTORY_ENTRIES: usize = 512;
 use crate::wire::WEBSOCKET_BRIDGE_BYTES;

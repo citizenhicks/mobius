@@ -1,14 +1,11 @@
 use super::{
-    Arc, AsyncWrite, AuthenticatedClient, ConnectionSessionState, Error, Future, GatewayHost,
-    JoinSet, Rejection, Result, ServerFrame, ServerMessage, Uuid, broadcast, write_frame,
-    write_result, write_server_error,
+    Arc, AsyncWrite, AuthenticatedClient, ConnectionSessionState, Error, GatewayHost, JoinSet,
+    Rejection, Result, ServerFrame, ServerMessage, Uuid, broadcast, write_frame, write_result,
+    write_server_error,
 };
 use crate::computer_runtime::remote_desktop::DesktopStream;
 
-pub(super) struct PendingControl {
-    request_id: Arc<str>,
-    future: std::pin::Pin<Box<dyn Future<Output = std::result::Result<(), Rejection>> + Send>>,
-}
+pub(super) type PendingControl = super::PendingRequest<()>;
 
 pub(super) enum DesktopUpdate {
     Data(Result<Option<Vec<u8>>>),
@@ -24,7 +21,7 @@ pub(super) async fn next_update(
     tokio::select! {
         data = next_data(stream) => DesktopUpdate::Data(data),
         changed = changed.recv() => DesktopUpdate::Changed(changed),
-        (id, result) = next_control(control) => DesktopUpdate::Control(id, result),
+        (id, result) = PendingControl::next(control) => DesktopUpdate::Control(id, result),
     }
 }
 
@@ -52,18 +49,6 @@ pub(super) async fn write_update(
             write_control_result(gateway, client.connection_id, id, result, writer).await
         }
     }
-}
-
-pub(super) async fn next_control(
-    pending: &mut Option<PendingControl>,
-) -> (Arc<str>, std::result::Result<(), Rejection>) {
-    let Some(control) = pending.as_mut() else {
-        std::future::pending::<!>().await
-    };
-    let result = control.future.as_mut().await;
-    let request_id = std::mem::take(&mut control.request_id);
-    pending.take();
-    (request_id, result)
 }
 
 pub(super) async fn next_data(stream: &mut Option<DesktopStream>) -> Result<Option<Vec<u8>>> {

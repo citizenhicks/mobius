@@ -2,10 +2,10 @@ use super::{
     AccessLease, Arc, AsyncRead, AsyncWrite, AuthStore, AuthenticatedClient, BTreeMap, BTreeSet,
     BotStore, Callback, CatalogHint, CertificateDer, ClientCapabilities, ClientFrame,
     ClientIdentity, ClientStatus, ClientView, ConnectionSessionState, Error, ErrorResponse,
-    FrameReader, Future, GatewayHost, GatewayNotification, HOST, Instant, JoinSet, Mutex, ORIGIN,
-    Path, PendingSessionFileWrite, PrivateKeyDer, ProfileSnapshot, Rejection, Request, Response,
-    Result, SEC_WEBSOCKET_PROTOCOL, SelectedChat, ServerConfig, ServerFrame, ServerMessage,
-    SharedFrame, StatusCode, TcpStream, TlsAcceptor, TlsConfig, Utc, Uuid, WEBSOCKET_BRIDGE_BYTES,
+    FrameReader, GatewayHost, GatewayNotification, HOST, Instant, JoinSet, Mutex, ORIGIN, Path,
+    PendingSessionFileWrite, PrivateKeyDer, ProfileSnapshot, Rejection, Request, Response, Result,
+    SEC_WEBSOCKET_PROTOCOL, SelectedChat, ServerConfig, ServerFrame, ServerMessage, SharedFrame,
+    StatusCode, TcpStream, TlsAcceptor, TlsConfig, Utc, Uuid, WEBSOCKET_BRIDGE_BYTES,
     WebSocketConfig, accept_hdr_async_with_config, broadcast, handle_message, read_frame,
     read_frame_with_limit, selected_broadcast, validate_version, websocket_error, write_frame,
     write_rejection, write_server_error,
@@ -59,10 +59,7 @@ pub(super) struct ConnectionContext {
     pub(super) access_lease: Option<AccessLease>,
 }
 
-pub(super) struct PendingProfile {
-    request_id: Arc<str>,
-    future: Pin<Box<dyn Future<Output = std::result::Result<ProfileSnapshot, Rejection>> + Send>>,
-}
+pub(super) type PendingProfile = super::PendingRequest<ProfileSnapshot>;
 
 impl ConnectionAdmission {
     pub(super) fn new(pre_auth: usize, authenticated: usize) -> Self {
@@ -770,7 +767,7 @@ async fn serve_authenticated_connection(
                 super::voice::write_update(&mut voice, outgoing, &mut writer).await?;
                 None
             }
-            profile = next_profile(&mut pending_profile) => {
+            profile = PendingProfile::next(&mut pending_profile) => {
                 complete_profile_request(
                     profile,
                     host,
@@ -989,16 +986,6 @@ pub(super) async fn request_profile(
         *pending = Some(profile_request(host, request_id, parts));
         Ok(())
     }
-}
-
-async fn next_profile(
-    pending: &mut Option<PendingProfile>,
-) -> (Arc<str>, std::result::Result<ProfileSnapshot, Rejection>) {
-    let Some(pending) = pending.as_mut() else {
-        std::future::pending::<!>().await
-    };
-    let result = pending.future.as_mut().await;
-    (std::mem::take(&mut pending.request_id), result)
 }
 
 async fn complete_profile_request(
@@ -1236,13 +1223,13 @@ mod tests {
 
         tokio::select! {
             biased;
-            _ = next_profile(&mut pending) => panic!("profile completed before release"),
+            _ = PendingProfile::next(&mut pending) => panic!("profile completed before release"),
             () = std::future::ready(()) => {}
         }
         assert_eq!(&*pending.as_ref().unwrap().request_id, "profile-1");
 
         release.send(()).expect("release active profile");
-        let (request_id, result) = next_profile(&mut pending).await;
+        let (request_id, result) = PendingProfile::next(&mut pending).await;
         assert_eq!(&*request_id, "profile-1");
         assert!(result.is_ok());
     }
