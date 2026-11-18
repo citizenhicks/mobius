@@ -78,6 +78,27 @@ pub(super) fn more_menu(
 }
 
 impl Workspace {
+    /// An owned menu snapshot of the catalog's Bot IDs and faces, with the caller's label.
+    pub(in crate::ui) fn bot_menu_entries<L>(
+        &self,
+        label: impl Fn(&BotRecord) -> L,
+    ) -> Vec<(Arc<str>, L, gpui::Hsla, mobius_gateway::wire::BotShape)> {
+        self.client
+            .state
+            .gateway
+            .iter()
+            .flat_map(|gateway| &gateway.bots)
+            .map(|bot| {
+                (
+                    Arc::clone(&bot.id),
+                    label(bot),
+                    crate::ui::theme::Accent::from(bot.tint).color(),
+                    bot.shape,
+                )
+            })
+            .collect()
+    }
+
     /// Rename… and, except for @mobius, Delete Bot….
     pub(super) fn bot_manage_actions(&self, bot: &BotRecord) -> Vec<MenuAction> {
         let ready = self.client.link.is_ready();

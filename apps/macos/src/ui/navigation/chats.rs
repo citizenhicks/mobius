@@ -72,21 +72,8 @@ impl Workspace {
         let view = cx.entity().downgrade();
         let current = self.navigation_catalog.organization;
         let filter = self.navigation_catalog.bot_filter.clone(); // rules-allow: the 'static menu builder needs its own copy of the filter
-        let mut bots: Vec<_> = self
-            .client
-            .state
-            .gateway
-            .iter()
-            .flat_map(|gateway| &gateway.bots)
-            .map(|bot| {
-                (
-                    Arc::clone(&bot.id),
-                    SharedString::from(format!("{} (@{})", bot.name, bot.handle)),
-                    Accent::from(bot.tint).color(),
-                    bot.shape,
-                )
-            })
-            .collect();
+        let mut bots = self
+            .bot_menu_entries(|bot| SharedString::from(format!("{} (@{})", bot.name, bot.handle)));
         bots.sort_by_key(|(_, label, _, _)| label.to_lowercase());
         toolbar_button(
             "chat-organize",

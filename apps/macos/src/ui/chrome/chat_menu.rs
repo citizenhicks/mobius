@@ -51,21 +51,7 @@ struct MenuFacts {
 impl Workspace {
     fn menu_facts(&self, session_id: &SessionId, scope: MenuScope) -> MenuFacts {
         let record = self.client.state.session_record(session_id);
-        let bots = self
-            .client
-            .state
-            .gateway
-            .iter()
-            .flat_map(|gateway| &gateway.bots)
-            .map(|bot| {
-                (
-                    Arc::clone(&bot.id),
-                    Arc::clone(&bot.name),
-                    Accent::from(bot.tint).color(),
-                    bot.shape,
-                )
-            })
-            .collect();
+        let bots = self.bot_menu_entries(|bot| Arc::clone(&bot.name));
         let branches = (scope == MenuScope::Header)
             .then(|| self.client.state.session.as_ref()?.git.as_ref())
             .flatten()
