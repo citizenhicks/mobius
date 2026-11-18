@@ -12,7 +12,7 @@ use gpui::{
     linear_color_stop, linear_gradient, rgb, transparent_black, white,
 };
 use gpui_component::button::{Button, ButtonCustomVariant, ButtonVariant, ButtonVariants};
-use gpui_component::input::{Input, InputState, Textarea, TextareaState};
+use gpui_component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_component::popover::Popover;
 use gpui_component::progress::ProgressCircle;
@@ -987,4 +987,17 @@ pub fn choice_row(
                 .child(mark)
                 .child(div().flex_1().min_w_0().child(label)),
         )
+}
+
+/// A text field whose owning view redraws on each input event.
+pub fn live_field<T: 'static>(
+    value: &str,
+    placeholder: &str,
+    window: &mut Window,
+    cx: &mut Context<T>,
+) -> Entity<InputState> {
+    let input = field(value, placeholder, window, cx);
+    cx.subscribe(&input, |_, _, _: &InputEvent, cx| cx.notify())
+        .detach();
+    input
 }

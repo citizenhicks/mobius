@@ -2,7 +2,7 @@
 
 use super::super::bots::{Pending, dialog_heading};
 use super::*;
-use gpui_component::input::InputEvent;
+use crate::ui::primitives::live_field;
 
 impl Workspace {
     pub(in crate::ui) fn install_extension_dialog(
@@ -20,14 +20,12 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let input = field(
+        let input = live_field(
             source,
             "https://github.com/owner/repository.git",
             window,
             cx,
         );
-        cx.subscribe(&input, |_, _, _: &InputEvent, cx| cx.notify())
-            .detach();
         let view = cx.entity().downgrade();
         let epoch = self.client.epoch;
         let focus = Entity::clone(&input);

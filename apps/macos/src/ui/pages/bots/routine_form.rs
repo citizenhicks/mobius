@@ -5,7 +5,7 @@ use super::schedule::{
     scheduled_start,
 };
 use crate::ui::Workspace;
-use crate::ui::primitives::field;
+use crate::ui::primitives::live_field;
 use gpui::{App, AppContext as _, Context, Entity, FocusHandle, Result, SharedString, Window};
 use gpui_component::input::{InputEvent, InputState, TextareaState};
 use gpui_component::searchable_list::SearchableVec;
@@ -159,17 +159,6 @@ fn interval_unit(seconds: u64) -> usize {
 }
 
 /// A single-line input whose edits redraw the dialog.
-fn live_field(
-    value: &str,
-    placeholder: &str,
-    window: &mut Window,
-    cx: &mut Context<Workspace>,
-) -> Entity<InputState> {
-    let input = field(value, placeholder, window, cx);
-    cx.subscribe(&input, |_, _, _: &InputEvent, cx| cx.notify())
-        .detach();
-    input
-}
 
 impl Inputs {
     /// The routine's own text, or 9:00 and this Mac's time zone.

@@ -3,8 +3,8 @@
 use super::Pending;
 use crate::ui::Workspace;
 use crate::ui::primitives::{
-    BotMood, Shape as _, Type, Typography as _, dialog_actions, dialog_body, face, field, glyph,
-    heading, height, icon, labelled, lively_face, space, text_field, textarea, width,
+    BotMood, Shape as _, Type, Typography as _, dialog_actions, dialog_body, face, glyph, heading,
+    height, icon, labelled, live_field, lively_face, space, text_field, textarea, width,
 };
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -89,14 +89,12 @@ fn preview(face: impl IntoElement, title: String, detail: String, muted: Hsla) -
 
 impl Workspace {
     pub(in crate::ui) fn create_bot_dialog(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let name = field("", "Name", window, cx);
+        let name = live_field("", "Name", window, cx);
         let description = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .placeholder("Operational description")
                 .auto_grow(3, 6)
         });
-        cx.subscribe(&name, |_, _, _: &InputEvent, cx| cx.notify())
-            .detach();
         cx.subscribe(&description, |_, _, _: &InputEvent, cx| cx.notify())
             .detach();
         let view = cx.entity().downgrade();
