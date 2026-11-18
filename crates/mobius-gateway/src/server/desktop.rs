@@ -155,12 +155,7 @@ pub(super) async fn open_computer(
                 request_id,
                 session_id,
             },
-            Err(error) => ServerMessage::Rejected {
-                request_id,
-                code: error.code.into(),
-                message: error.message,
-                fatal: error.fatal,
-            },
+            Err(error) => error.for_request(request_id),
         }
     });
     Ok(())

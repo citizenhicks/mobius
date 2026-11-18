@@ -184,16 +184,7 @@ pub(super) async fn write_rejection(
     request_id: impl Into<Arc<str>>,
     rejection: Rejection,
 ) -> Result<()> {
-    write_frame(
-        writer,
-        &ServerFrame::new(ServerMessage::Rejected {
-            request_id: request_id.into(),
-            code: rejection.code.into(),
-            message: rejection.message,
-            fatal: rejection.fatal,
-        }),
-    )
-    .await
+    write_frame(writer, &ServerFrame::new(rejection.for_request(request_id))).await
 }
 
 pub(super) async fn write_server_error(

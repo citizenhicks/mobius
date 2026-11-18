@@ -1587,12 +1587,6 @@ async fn git_diff(
     }
     // Owned by the connection: disconnecting aborts its outstanding Git reads.
     connection.requests.spawn(async move {
-        let rejected = |request_id: Arc<str>, rejection: Rejection| ServerMessage::Rejected {
-            request_id,
-            code: rejection.code.into(),
-            message: rejection.message,
-            fatal: rejection.fatal,
-        };
         if totals {
             return match host.git_diff_totals(scope).await {
                 Ok(totals) => ServerMessage::GitDiffTotals {
@@ -1601,7 +1595,7 @@ async fn git_diff(
                     scope,
                     totals,
                 },
-                Err(rejection) => rejected(request_id, rejection),
+                Err(rejection) => rejection.for_request(request_id),
             };
         }
         match host.git_diff(scope).await {
@@ -1612,7 +1606,7 @@ async fn git_diff(
                 diff: diff.text,
                 truncated: diff.truncated,
             },
-            Err(rejection) => rejected(request_id, rejection),
+            Err(rejection) => rejection.for_request(request_id),
         }
     });
     Ok(())

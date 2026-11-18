@@ -19,6 +19,15 @@ impl Rejection {
         }
     }
 
+    pub(crate) fn for_request(self, request_id: impl Into<Arc<str>>) -> crate::wire::ServerMessage {
+        crate::wire::ServerMessage::Rejected {
+            request_id: request_id.into(),
+            code: self.code.into(),
+            message: self.message,
+            fatal: self.fatal,
+        }
+    }
+
     pub(crate) fn fatal(mut self) -> Self {
         self.fatal = true;
         self
