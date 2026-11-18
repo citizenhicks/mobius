@@ -172,15 +172,10 @@ fn quick_endpoint(candidate: &str) -> Option<Endpoint> {
     format!("wss://{hostname}").parse().ok()
 }
 
-fn quick_tunnel_command(program: impl Into<OsString>, listen: SocketAddr) -> Command {
+fn tunnel_command(program: impl Into<OsString>) -> Command {
     let mut command = Command::new(program.into());
     command
-        .arg("tunnel")
-        .arg("--no-autoupdate")
-        .arg("--config")
-        .arg(empty_config_path())
-        .arg("--url")
-        .arg(format!("http://{listen}"))
+        .args(["tunnel", "--no-autoupdate"])
         .env_remove("TUNNEL_TOKEN")
         .env_remove("TUNNEL_TOKEN_FILE")
         .stdin(Stdio::null())
@@ -189,19 +184,19 @@ fn quick_tunnel_command(program: impl Into<OsString>, listen: SocketAddr) -> Com
     command
 }
 
-fn named_tunnel_command(program: impl Into<OsString>, token_path: &Path) -> Command {
-    let mut command = Command::new(program.into());
+fn quick_tunnel_command(program: impl Into<OsString>, listen: SocketAddr) -> Command {
+    let mut command = tunnel_command(program);
     command
-        .arg("tunnel")
-        .arg("--no-autoupdate")
-        .arg("run")
-        .arg("--token-file")
-        .arg(token_path)
-        .env_remove("TUNNEL_TOKEN")
-        .env_remove("TUNNEL_TOKEN_FILE")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped());
+        .arg("--config")
+        .arg(empty_config_path())
+        .arg("--url")
+        .arg(format!("http://{listen}"));
+    command
+}
+
+fn named_tunnel_command(program: impl Into<OsString>, token_path: &Path) -> Command {
+    let mut command = tunnel_command(program);
+    command.arg("run").arg("--token-file").arg(token_path);
     command
 }
 
