@@ -724,11 +724,8 @@ async fn serve_authenticated_connection(
         .ready()
         .await
         .map_err(|rejection| Error::Protocol(rejection.message.to_string()))?;
-    view.write_catalog(
-        &mut writer,
-        Arc::new(ServerFrame::new(ServerMessage::Ready { payload: ready })),
-    )
-    .await?;
+    view.write_catalog(&mut writer, None, Arc::new(ready))
+        .await?;
     if client.desktop_transport && host.remote_desktop.available() {
         super::desktop::write_control_state(host, client.connection_id, None, &mut writer).await?;
     }
@@ -1073,7 +1070,8 @@ async fn handle_gateway_broadcast(
     writer: &mut (impl AsyncWrite + Unpin),
 ) -> Result<()> {
     match outgoing {
-        Ok(GatewayUpdate::Frame(frame)) => view.write_catalog(writer, frame).await,
+        Ok(GatewayUpdate::Frame(frame)) => write_frame(writer, &*frame).await,
+        Ok(GatewayUpdate::Ready(payload)) => view.write_catalog(writer, None, payload).await,
         Ok(GatewayUpdate::Sessions(_)) if disabled.contains(&GatewayNotification::Sessions) => {
             Ok(())
         }
@@ -1092,11 +1090,7 @@ async fn handle_gateway_broadcast(
                 .ready()
                 .await
                 .map_err(|rejection| Error::Protocol(rejection.message.to_string()))?;
-            view.write_catalog(
-                writer,
-                Arc::new(ServerFrame::new(ServerMessage::Ready { payload: ready })),
-            )
-            .await?;
+            view.write_catalog(writer, None, Arc::new(ready)).await?;
             Ok(())
         }
         Err(broadcast::error::RecvError::Closed) => {

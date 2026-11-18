@@ -4,12 +4,7 @@ use crate::backend::model::user_message;
 #[tokio::test]
 async fn hosted_results_resume_pending_calls_from_native_replay() {
     for reason in ["tool_use", "pause_turn"] {
-        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let captured = Arc::clone(&seen);
-        let sink: ModelEventSink = Arc::new(move |event| {
-            captured.lock().expect("events").push(event);
-            Box::pin(async { Ok(()) })
-        });
+        let (sink, seen) = crate::backend::model::test_support::record_events();
         let mut first = StreamState::default();
         for event in [
             serde_json::json!({"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"search","name":"web_search","input":{}}}),
@@ -124,12 +119,7 @@ async fn hosted_results_resume_pending_calls_from_native_replay() {
 
 #[tokio::test]
 async fn hosted_results_use_final_streamed_inputs_and_stable_visible_evidence() {
-    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let captured = Arc::clone(&seen);
-    let sink: ModelEventSink = Arc::new(move |event| {
-        captured.lock().expect("events").push(event);
-        Box::pin(async { Ok(()) })
-    });
+    let (sink, seen) = crate::backend::model::test_support::record_events();
     let mut stream = StreamState::default();
     for event in [
         serde_json::json!({"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"search","name":"web_search","input":{}}}),
@@ -459,12 +449,7 @@ fn responses_history_translates_to_anthropic_tool_messages() {
 
 #[tokio::test]
 async fn stream_normalizes_deltas_tools_usage_and_errors() {
-    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let sink_seen = Arc::clone(&seen);
-    let events: ModelEventSink = Arc::new(move |event| {
-        sink_seen.lock().expect("events lock").push(event);
-        Box::pin(async { Ok(()) })
-    });
+    let (events, seen) = crate::backend::model::test_support::record_events();
     let mut stream = StreamState::default();
     for event in [
         serde_json::json!({

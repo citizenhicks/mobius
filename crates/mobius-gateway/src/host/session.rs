@@ -180,7 +180,7 @@ impl SessionRuntimeState {
                 .pending_approval
                 .filter(|pending| !pending.decision_received)
                 .as_ref()
-                .map(mobius::backend::checkpoint::PendingApproval::request_event),
+                .map(|approval| approval.request_event()),
             has_pending_messages: !checkpoint.pending_messages.is_empty(),
             stats,
         }

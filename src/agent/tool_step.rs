@@ -235,8 +235,7 @@ impl Runner {
             crate::agent::turn::turn_events(submission_id, hook_events).collect::<Vec<_>>();
         // Validate the whole batch before usage observers can see a partial result.
         let has_tool_usage = validate_batch_usage(&results)?;
-        // Failed persistence restores calls removed by the tentative result application.
-        let pending_tools = self.state.pending_tools.clone(); // rules-allow: restored if persisting the results fails
+        let mut removed = Vec::new();
         let active_accounting = self
             .state
             .active_execution
@@ -248,6 +247,17 @@ impl Runner {
         let transcript_len = self.transcript_delta.len();
         let outcome = async {
             self.append_tool_results(&mut results).await?;
+            if !results.is_empty() && !self.state.pending_tools.is_empty() {
+                let completed: BTreeSet<_> = results.iter().map(|result| &result.call_id).collect();
+                let pending = &mut self.state.make_mut().pending_tools;
+                for (index, call) in std::mem::take(pending).into_iter().enumerate() {
+                    if completed.contains(&call.call_id) {
+                        removed.push((index, call));
+                    } else {
+                        pending.push(call);
+                    }
+                }
+            }
             events.extend(tool_result_events(submission_id, turn_id, results));
             if has_tool_usage {
                 events.push(self.usage_event(submission_id));
@@ -259,7 +269,10 @@ impl Runner {
         match outcome {
             Ok(()) => Ok(()),
             Err(error) => {
-                self.state.make_mut().pending_tools = pending_tools;
+                let pending = &mut self.state.make_mut().pending_tools;
+                for (index, call) in removed {
+                    pending.insert(index, call);
+                }
                 if let Some((tool_calls, failed_tool_calls, usage)) = active_accounting
                     && let Some(active) = self.state.make_mut().active_execution.as_mut()
                 {
@@ -315,14 +328,6 @@ impl Runner {
         for reported in results.iter().filter_map(|result| result.usage.as_ref()) {
             self.record_usage(&reported.route, &reported.usage).await?;
         }
-        let completed = results
-            .iter()
-            .map(|result| result.call_id.as_ref())
-            .collect::<BTreeSet<_>>();
-        self.state
-            .make_mut()
-            .pending_tools
-            .retain(|call| !completed.contains(call.call_id.as_ref()));
         for result in results {
             self.push_context(tool_output(
                 &result.call_id,
@@ -424,13 +429,48 @@ pub(super) fn order_results(
     calls: &[impl Borrow<ToolCall>],
     mut results: Vec<ToolResult>,
 ) -> Vec<ToolResult> {
+    if results.len() <= 1 {
+        results.retain(|result| {
+            calls
+                .iter()
+                .any(|call| call.borrow().call_id == result.call_id)
+        });
+        return results;
+    }
+    // A linear scan wins for small batches; indexing pays off for larger mixed completions.
+    if results.len() >= 32 {
+        let mut by_id: std::collections::HashMap<_, _> = results
+            .iter()
+            .enumerate()
+            .map(|(index, result)| (result.call_id.as_ref(), index))
+            .collect();
+        if by_id.len() == results.len() {
+            if calls.len() == results.len()
+                && calls
+                    .iter()
+                    .zip(&results)
+                    .all(|(call, result)| call.borrow().call_id == result.call_id)
+            {
+                return results;
+            }
+            let order: Vec<_> = calls
+                .iter()
+                .filter_map(|call| by_id.remove(call.borrow().call_id.as_ref()))
+                .collect();
+            let mut slots: Vec<_> = results.into_iter().map(Some).collect();
+            return order
+                .into_iter()
+                .filter_map(|index| slots.get_mut(index)?.take())
+                .collect();
+        }
+    }
+    // Duplicate replies follow the same last-match rule as small batches.
     calls
         .iter()
-        .map(Borrow::borrow)
         .filter_map(|call| {
             let index = results
                 .iter()
-                .rposition(|result| result.call_id == call.call_id)?;
+                .rposition(|result| result.call_id == call.borrow().call_id)?;
             Some(results.swap_remove(index))
         })
         .collect()
@@ -441,21 +481,39 @@ mod tests {
     use super::*;
     use crate::middleware::tools::ReportedToolUsage;
 
+    fn call(index: usize) -> ToolCall {
+        ToolCall {
+            call_id: index.to_string().into(),
+            name: "paid_tool".into(),
+            arguments: serde_json::Value::Null,
+        }
+    }
+
+    fn result(call: &ToolCall) -> ToolResult {
+        ToolResult::error(
+            call,
+            "",
+            crate::backend::sandbox::default_tool_output_limit(),
+        )
+    }
+
+    #[test]
+    fn large_partial_completion_keeps_call_order() {
+        let calls: Vec<_> = (0..96).map(call).collect();
+        let completed = calls.iter().step_by(2);
+        let results = completed.clone().rev().map(result).collect();
+        let ordered = order_results(&calls, results);
+        assert!(
+            ordered
+                .iter()
+                .map(|result| &result.call_id)
+                .eq(completed.map(|call| &call.call_id))
+        );
+    }
+
     #[test]
     fn paid_tool_batches_reject_overflow_before_recording_usage() {
-        let mut results = (0..2)
-            .map(|index| {
-                ToolResult::error(
-                    &ToolCall {
-                        call_id: index.to_string().into(),
-                        name: "paid_tool".into(),
-                        arguments: serde_json::Value::Null,
-                    },
-                    "",
-                    crate::backend::sandbox::default_tool_output_limit(),
-                )
-            })
-            .collect::<Vec<_>>();
+        let mut results: Vec<_> = (0..2).map(|index| result(&call(index))).collect();
         assert!(
             !validate_batch_usage(&results).unwrap(),
             "unpaid calls need no usage event"

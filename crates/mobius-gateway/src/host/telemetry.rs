@@ -31,7 +31,7 @@ pub(super) struct StorageMeasurements {
 struct CompletedStorageMeasurement {
     completed_at: std::time::Instant,
     revision: u64,
-    usage: crate::storage_usage::StorageUsage,
+    usage: Arc<crate::storage_usage::StorageUsage>,
 }
 
 pub(super) fn cancellation_reason(reason: &str, failed: bool) -> &str {
@@ -207,7 +207,7 @@ impl GatewayHost {
 
     pub(crate) async fn storage_usage_request(
         &self,
-    ) -> std::result::Result<crate::storage_usage::StorageUsage, Rejection> {
+    ) -> std::result::Result<Arc<crate::storage_usage::StorageUsage>, Rejection> {
         // The async guard serializes only the bounded walk, so simultaneous clients
         // share its completed result instead of starting competing disk scans.
         let mut completed = tokio::time::timeout(
@@ -225,14 +225,13 @@ impl GatewayHost {
             && previous.revision == revision
             && previous.completed_at.elapsed() < std::time::Duration::from_secs(5)
         {
-            // Both the retained snapshot and each wire response require owned data.
-            return Ok(previous.usage.clone()); // rules-allow: the retained snapshot and the response both own the usage
+            return Ok(Arc::clone(&previous.usage));
         }
-        let usage = self.storage_usage().await.map_err(internal)?;
+        let usage = Arc::new(self.storage_usage().await.map_err(internal)?);
         *completed = Some(CompletedStorageMeasurement {
             completed_at: std::time::Instant::now(),
             revision,
-            usage: usage.clone(), // rules-allow: the retained snapshot and the response both own the usage
+            usage: Arc::clone(&usage),
         });
         drop(completed);
         Ok(usage)

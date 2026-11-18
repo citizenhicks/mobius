@@ -73,9 +73,8 @@ impl LiveCheckpoint {
 impl Runner {
     pub(super) async fn run(&mut self, mut inbox: SubmissionInbox) -> Result<()> {
         self.stop_resumed_turn_at_session_start().await?;
-        let pending = self.state.pending_approval.clone(); // rules-allow: the checkpoint keeps the approval until it resolves
-        if let Some(mut pending) = pending {
-            if let Err(error) = self.resume_pending(&mut inbox, &mut pending).await {
+        if let Some(pending) = self.state.pending_approval.as_ref().map(Arc::clone) {
+            if let Err(error) = self.resume_pending(&mut inbox, &pending).await {
                 self.fail_turn(&pending.submission_id, error).await?;
             }
         } else if let Some(active) = self.state.active_execution.as_ref() {

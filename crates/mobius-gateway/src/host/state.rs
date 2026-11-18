@@ -62,10 +62,10 @@ pub(super) struct GatewayReadySnapshot {
 
 pub(super) async fn gateway_ready_after_unlock(
     state: tokio::sync::MutexGuard<'_, GatewayState>,
-) -> std::result::Result<ReadyPayload, Rejection> {
+) -> std::result::Result<Arc<ReadyPayload>, Rejection> {
     let snapshot = state.ready_snapshot()?;
     drop(state);
-    gateway_ready(snapshot).await
+    gateway_ready(snapshot).await.map(Arc::new)
 }
 
 pub(super) struct SessionStartGuard {

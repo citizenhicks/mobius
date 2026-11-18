@@ -11,6 +11,7 @@ use tokio::sync::broadcast;
 #[derive(Clone)]
 pub(crate) enum GatewayUpdate {
     Frame(Arc<ServerFrame>),
+    Ready(Arc<crate::wire::ReadyPayload>),
     /// The whole session catalog.
     Sessions(SessionCatalogUpdate),
     /// The Bot catalog changed; each connection reads the current one when it writes.
@@ -29,6 +30,9 @@ impl GatewayUpdate {
     /// The message a client without a held catalog would receive.
     pub(crate) fn message(self) -> ServerMessage {
         match self {
+            Self::Ready(payload) => ServerMessage::Ready {
+                payload: Arc::unwrap_or_clone(payload),
+            },
             Self::Frame(frame) => Arc::unwrap_or_clone(frame).message,
             Self::Sessions(catalog) => ServerMessage::Sessions {
                 request_id: None,

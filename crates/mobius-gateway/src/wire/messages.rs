@@ -873,7 +873,7 @@ pub enum ServerMessage {
         /// Correlates this response with its request.
         request_id: Arc<str>,
         /// Measured storage ownership and totals.
-        usage: crate::storage_usage::StorageUsage,
+        usage: Arc<crate::storage_usage::StorageUsage>,
     },
     /// Collector configuration and delivery state.
     Telemetry {

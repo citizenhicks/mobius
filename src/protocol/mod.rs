@@ -63,7 +63,7 @@ pub struct SessionFileReference {
 }
 
 /// Session-file policy advertised to frontends by the owning runtime.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionFileLimits {
     /// The max attachment references.

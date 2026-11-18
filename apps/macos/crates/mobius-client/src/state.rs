@@ -270,7 +270,7 @@ impl GatewayState {
                 self.pairing_code = Some((code.clone(), *expires_at)); // rules-allow: the runtime dispatches the borrowed message after this, so the state stores a copy
             }
             ServerMessage::Ready { payload } | ServerMessage::GatewayConfigured { payload, .. } => {
-                let mut catalog = payload.clone(); // rules-allow: the runtime dispatches the borrowed message after this, so the state stores a copy
+                let mut catalog = std::mem::take(payload);
                 // The gateway leaves out the sections this window already holds.
                 if let Some(mut held) = self.gateway.take() {
                     held.sessions = std::mem::take(&mut self.sessions);
@@ -281,11 +281,11 @@ impl GatewayState {
                 self.error = None;
             }
             ServerMessage::Sessions { sessions, .. } => {
-                self.sessions.clone_from(sessions);
+                self.sessions = std::mem::take(sessions);
             }
             ServerMessage::Bots { bots, .. } => {
                 if let Some(gateway) = &mut self.gateway {
-                    gateway.bots.clone_from(bots);
+                    gateway.bots = std::mem::take(bots);
                 }
             }
             ServerMessage::Contributions { contributions, .. } => {

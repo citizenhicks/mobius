@@ -11,7 +11,7 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, HighlightSpacing, List, ListState, Paragraph, Wrap};
 
-use super::runtime::{ordered_clients, ordered_sessions};
+use super::runtime::ordered_sessions;
 use super::state::{ActionInput, CapabilityOverlay, DashboardFocus, DashboardState};
 use crate::frontend::terminal::terminal_text;
 use crate::frontend::theme::{Role, current, selectable_list};
@@ -383,12 +383,12 @@ pub(super) fn render_devices(
     state: &mut DashboardState,
 ) {
     let theme = current();
-    let clients = ordered_clients(&state.clients);
-    let lines = if clients.is_empty() {
+    let lines = if state.clients.is_empty() {
         empty("No paired devices")
     } else {
-        clients
-            .into_iter()
+        state
+            .clients
+            .iter()
             .map(|client| {
                 let (symbol, status, role) = match client.connections {
                     0 => ("○", "offline".into(), Role::Muted),
@@ -422,12 +422,10 @@ pub(super) fn render_devices(
 
 pub(super) fn render_chats(frame: &mut ratatui::Frame<'_>, area: Rect, state: &mut DashboardState) {
     let theme = current();
-    let sessions = ordered_sessions(&state.gateway.sessions);
-    let lines = if sessions.is_empty() {
+    let lines = if state.gateway.sessions.is_empty() {
         empty("No chats")
     } else {
-        sessions
-            .into_iter()
+        ordered_sessions(&state.gateway.sessions)
             .map(|session| {
                 let title = session
                     .title

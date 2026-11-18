@@ -365,9 +365,10 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         match message {
-            ServerMessage::Ready { payload }
-                if payload.computer_view == ComputerView::EmbeddedBrowser
-                    && crate::host::browser::available() =>
+            ServerMessage::Ready { .. }
+                if self.client.state.gateway.as_ref().is_some_and(|gateway| {
+                    gateway.computer_view == ComputerView::EmbeddedBrowser
+                }) && crate::host::browser::available() =>
             {
                 self.send(
                     ClientMessage::SetBrowserRuntime {

@@ -152,12 +152,7 @@ fn responses_history_becomes_kimi_messages_and_tools() {
 
 #[tokio::test]
 async fn stream_normalizes_deltas_tools_usage_and_errors() {
-    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let sink_seen = Arc::clone(&seen);
-    let events: ModelEventSink = Arc::new(move |event| {
-        sink_seen.lock().expect("events lock").push(event);
-        Box::pin(async { Ok(()) })
-    });
+    let (events, seen) = crate::backend::model::test_support::record_events();
     let mut stream = KimiStream::default();
     stream
         .apply_data(

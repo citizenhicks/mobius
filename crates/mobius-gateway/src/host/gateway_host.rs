@@ -9,7 +9,7 @@ use super::catalog::{
 use super::composition::validate_bot_config;
 use super::memory::with_memory_contribution;
 use super::profile::{gateway_ready, gateway_run_stats, gateway_session_summaries};
-use super::publication::{GatewayUpdate, broadcast, send_catalog, send_event, send_warning};
+use super::publication::{GatewayUpdate, broadcast, send_catalog, send_warning};
 use super::rejection::{
     Rejection, harness_unavailable, internal, invalid_bot, invalid_config, invalid_session_bot,
     invalid_session_workspace, invalid_workspace, memory_error, session_limit, unknown_session,
@@ -28,8 +28,8 @@ use crate::config::{
 use crate::harness::mobius::extensions::ExtensionStore;
 use crate::harness::mobius::provider_catalog::configured_model_catalog;
 use crate::wire::{
-    HarnessConfig, ProfileParts, ProfileSnapshot, ReadyPayload, RunStats, ServerMessage,
-    SessionRecord, VersionedAgentConfig,
+    HarnessConfig, ProfileParts, ProfileSnapshot, ReadyPayload, RunStats, SessionRecord,
+    VersionedAgentConfig,
 };
 use crate::{Error, Result};
 use futures_util::future::OptionFuture;
@@ -82,14 +82,9 @@ impl GatewayHost {
     pub(super) async fn publish_ready_after_unlock(
         &self,
         state: tokio::sync::MutexGuard<'_, GatewayState>,
-    ) -> std::result::Result<ReadyPayload, Rejection> {
+    ) -> std::result::Result<Arc<ReadyPayload>, Rejection> {
         let payload = gateway_ready_after_unlock(state).await?;
-        send_event(
-            &self.events,
-            ServerMessage::Ready {
-                payload: payload.clone(), // rules-allow: the broadcast and requester each own the ready payload
-            },
-        );
+        broadcast(&self.events, GatewayUpdate::Ready(Arc::clone(&payload)));
         Ok(payload)
     }
 

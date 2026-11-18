@@ -6,9 +6,7 @@ use std::ops::Deref;
 
 use serde::Serialize;
 
-use super::{
-    Arc, AsyncWrite, BTreeMap, BTreeSet, Error, Result, ServerFrame, ServerMessage, write_frame,
-};
+use super::{Arc, AsyncWrite, BTreeMap, BTreeSet, Result, ServerFrame, ServerMessage, write_frame};
 use crate::host::SessionCatalogUpdate;
 use crate::wire::{
     AgentCatalog, BackgroundApproval, BotRecord, CatalogHint, ComputerView, HarnessDescriptor,
@@ -29,7 +27,7 @@ pub(super) struct ClientView {
 
 enum HeldSessions {
     Catalog(Arc<[SessionRecord]>),
-    Ready(Arc<ServerFrame>),
+    Ready(Arc<ReadyPayload>),
 }
 
 impl Deref for HeldSessions {
@@ -38,17 +36,8 @@ impl Deref for HeldSessions {
     fn deref(&self) -> &[SessionRecord] {
         match self {
             Self::Catalog(sessions) => sessions,
-            Self::Ready(frame) => ready_payload(frame).map_or(&[], |payload| &payload.sessions),
+            Self::Ready(payload) => &payload.sessions,
         }
-    }
-}
-
-fn ready_payload(frame: &ServerFrame) -> Option<&ReadyPayload> {
-    match &frame.message {
-        ServerMessage::Ready { payload } | ServerMessage::GatewayConfigured { payload, .. } => {
-            Some(payload)
-        }
-        _ => None,
     }
 }
 
@@ -79,11 +68,9 @@ impl ClientView {
     pub(super) async fn write_catalog(
         &mut self,
         writer: &mut (impl AsyncWrite + Unpin),
-        frame: Arc<ServerFrame>,
+        request_id: Option<&str>,
+        payload: Arc<ReadyPayload>,
     ) -> Result<()> {
-        let Some(payload) = ready_payload(&frame) else {
-            return write_frame(writer, &*frame).await;
-        };
         let viewable = match payload.computer_view {
             ComputerView::RemoteDesktop => {
                 self.desktop_transport && self.client.remote_desktop_viewer
@@ -103,15 +90,11 @@ impl ClientView {
                 omitted.insert(section);
             }
         }
-        let request_id = match &frame.message {
-            ServerMessage::GatewayConfigured { request_id, .. } => Some(&**request_id),
-            _ => None,
-        };
         let empty_catalog = AgentCatalog::default();
         let encoded = CatalogFrame::new(
-            frame.version,
+            crate::wire::PROTOCOL_VERSION,
             request_id,
-            CatalogPayload::new(payload, &omitted, viewable, &empty_catalog),
+            CatalogPayload::new(&payload, &omitted, viewable, &empty_catalog),
         );
         write_frame(writer, &encoded).await?;
         for (section, revision) in &payload.revisions {
@@ -121,16 +104,9 @@ impl ClientView {
         }
         if !self.skip.contains(&ReadySection::Sessions) {
             // Sent or omitted, the client now holds exactly this catalog.
-            self.sessions = Some(match Arc::try_unwrap(frame) {
-                Ok(frame) => {
-                    let (ServerMessage::Ready { payload }
-                    | ServerMessage::GatewayConfigured { payload, .. }) = frame.message
-                    else {
-                        return Err(Error::Internal("catalog frame lost its payload".into()));
-                    };
-                    HeldSessions::Catalog(payload.sessions.into())
-                }
-                Err(frame) => HeldSessions::Ready(frame),
+            self.sessions = Some(match Arc::try_unwrap(payload) {
+                Ok(payload) => HeldSessions::Catalog(payload.sessions.into()),
+                Err(payload) => HeldSessions::Ready(payload),
             });
         }
         Ok(())
@@ -206,14 +182,17 @@ impl ClientView {
             .iter()
             .zip(unchanged)
             .map(|(session, found)| match found {
-                Some(_) => SessionSlot::Unchanged(session.session_id.share()),
-                None => SessionSlot::Changed(Box::new(session.clone())), // rules-allow: the frame owns each changed record; the shared catalog stays intact
+                Some(_) => SessionSlot::Unchanged(&session.session_id),
+                None => SessionSlot::Changed(session),
             })
             .collect();
-        let frame = ServerFrame::new(ServerMessage::SessionsChanged {
-            sessions: slots,
-            revision: catalog.revision.to_string(),
-        });
+        let frame = CatalogFrame {
+            version: crate::wire::PROTOCOL_VERSION,
+            message: CatalogMessage::SessionsChanged {
+                sessions: slots,
+                revision: &catalog.revision,
+            },
+        };
         write_frame(writer, &frame).await?;
         if let Some(revision) = digest(&catalog.revision) {
             self.held.insert(ReadySection::Sessions, revision);
@@ -255,6 +234,10 @@ struct CatalogFrame<'frame> {
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum CatalogMessage<'frame> {
+    SessionsChanged {
+        sessions: Vec<SessionSlot<&'frame mobius::SessionId, &'frame SessionRecord>>,
+        revision: &'frame str,
+    },
     Ready {
         payload: CatalogPayload<'frame>,
     },

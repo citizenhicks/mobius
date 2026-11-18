@@ -59,12 +59,7 @@ async fn completed_tool_call_is_emitted_before_websocket_completion() {
         )))
         .expect("completion event");
     drop(sender);
-    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let sink_seen = Arc::clone(&seen);
-    let events: ModelEventSink = Arc::new(move |event| {
-        sink_seen.lock().expect("events lock").push(event);
-        Box::pin(async { Ok(()) })
-    });
+    let (events, seen) = crate::backend::model::test_support::record_events();
 
     let exchange = read_exchange(&mut messages, &events)
         .await

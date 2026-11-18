@@ -23,7 +23,7 @@ async fn a_harness_without_an_adapter_is_unavailable_but_its_bots_still_load() {
         .await
         .unwrap_err();
     assert_eq!(rejection.code, "harness_unavailable");
-    let descriptors = gateway.refresh_harnesses().await.unwrap().harnesses;
+    let descriptors = &gateway.refresh_harnesses().await.unwrap().harnesses;
     assert_eq!(descriptors.len(), 1);
     assert_eq!(descriptors[0].kind, HarnessKind::Mobius);
 

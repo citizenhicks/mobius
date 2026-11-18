@@ -27,10 +27,11 @@ pub enum GatewayNotification {
 }
 
 /// The computer view this connection can open.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ComputerView {
     /// No interactive computer view is available.
+    #[default]
     Unavailable,
     /// The local app renders the gateway's assigned browser page.
     EmbeddedBrowser,
@@ -39,7 +40,7 @@ pub enum ComputerView {
 }
 
 /// Gateway-wide frontend-safe state sent after authentication.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadyPayload {
     /// Release version of the connected gateway process.
     pub gateway_version: String,
@@ -213,11 +214,11 @@ impl CatalogHint {
 /// One position of the session catalog in a [`ServerMessage::SessionsChanged`](crate::wire::ServerMessage::SessionsChanged).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum SessionSlot {
+pub enum SessionSlot<Id = SessionId, Record = Box<SessionRecord>> {
     /// A session unchanged since the catalog this connection last received, by ID.
-    Unchanged(SessionId),
+    Unchanged(Id),
     /// A new or changed session.
-    Changed(Box<SessionRecord>),
+    Changed(Record),
 }
 
 /// Rebuilds the catalog `sessions` held from a [`ServerMessage::SessionsChanged`](crate::wire::ServerMessage::SessionsChanged).

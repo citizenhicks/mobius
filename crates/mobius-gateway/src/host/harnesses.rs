@@ -1,5 +1,7 @@
 //! Harness options and on-demand detection.
 
+use std::sync::Arc;
+
 use super::gateway_host::GatewayHost;
 use super::rejection::Rejection;
 
@@ -14,7 +16,7 @@ impl GatewayHost {
         kind: HarnessKind,
         _cli_path: Option<std::path::PathBuf>,
         _defaults: CliHarnessConfig,
-    ) -> std::result::Result<ReadyPayload, Rejection> {
+    ) -> std::result::Result<Arc<ReadyPayload>, Rejection> {
         let _mutation = self.begin_mutation().await?;
         Err(match kind {
             HarnessKind::Mobius => Rejection::new(
@@ -26,7 +28,9 @@ impl GatewayHost {
     }
 
     /// Sends every client the harnesses again.
-    pub(crate) async fn refresh_harnesses(&self) -> std::result::Result<ReadyPayload, Rejection> {
+    pub(crate) async fn refresh_harnesses(
+        &self,
+    ) -> std::result::Result<Arc<ReadyPayload>, Rejection> {
         self.publish_ready_after_unlock(self.state.lock().await)
             .await
     }

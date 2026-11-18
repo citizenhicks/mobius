@@ -15,7 +15,7 @@ impl GatewayHost {
         source: String,
         reference: Option<String>,
         subdirectory: Option<String>,
-    ) -> std::result::Result<ReadyPayload, Rejection> {
+    ) -> std::result::Result<Arc<ReadyPayload>, Rejection> {
         let (mutation, store) = {
             let state = self.state.lock().await;
             (Arc::clone(&state.extension_mutations), state.store.clone()) // rules-allow: lock_owned and staging run after the state lock is released
@@ -52,7 +52,7 @@ impl GatewayHost {
     pub(crate) async fn update_extension(
         &self,
         id: Arc<str>,
-    ) -> std::result::Result<ReadyPayload, Rejection> {
+    ) -> std::result::Result<Arc<ReadyPayload>, Rejection> {
         let (mutation, store) = {
             let state = self.state.lock().await;
             (Arc::clone(&state.extension_mutations), state.store.clone()) // rules-allow: lock_owned and staging run after the state lock is released
@@ -115,7 +115,7 @@ impl GatewayHost {
     pub(crate) async fn uninstall_extension(
         &self,
         id: Arc<str>,
-    ) -> std::result::Result<ReadyPayload, Rejection> {
+    ) -> std::result::Result<Arc<ReadyPayload>, Rejection> {
         let mutation = {
             let state = self.state.lock().await;
             Arc::clone(&state.extension_mutations)
@@ -153,7 +153,7 @@ impl GatewayHost {
         id: Arc<str>,
         expected_digest: Arc<str>,
         trusted: bool,
-    ) -> std::result::Result<ReadyPayload, Rejection> {
+    ) -> std::result::Result<Arc<ReadyPayload>, Rejection> {
         let mutation = {
             let state = self.state.lock().await;
             Arc::clone(&state.extension_mutations)
@@ -201,7 +201,7 @@ impl GatewayHost {
         &self,
         id: &str,
         edit: impl FnOnce(&mut GatewayConfig, &GatewayState) -> std::result::Result<(), Rejection>,
-    ) -> std::result::Result<ReadyPayload, Rejection> {
+    ) -> std::result::Result<Arc<ReadyPayload>, Rejection> {
         let _sessions_guard = self.begin_exclusive_mutation().await?;
         let state = self.state.lock().await;
         let mut next = state.config()?.clone(); // rules-allow: validate and save a candidate before replacing live configuration

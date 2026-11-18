@@ -37,7 +37,7 @@ async fn initialize_cloudflare(state_dir: PathBuf) -> mobius_gateway::Result<()>
         if !mobius_cli::frontend::confirm_gateway_reinitialize(&state_dir).await? {
             return Ok(());
         }
-        mobius_gateway::command::reset_gateway_state(state_dir.clone())?; // rules-allow: the gateway API takes an owned PathBuf and state_dir is still needed to connect
+        mobius_gateway::command::reset_gateway_state(&state_dir)?;
     }
     match setup {
         mobius_cli::frontend::CloudflareInit::Quick => {

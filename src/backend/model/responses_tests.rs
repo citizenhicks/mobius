@@ -22,12 +22,7 @@ use crate::protocol::ModelStepContentPhase;
 
 #[tokio::test]
 async fn actual_hosted_completions_are_distinct_from_local_calls_and_citation_activity() {
-    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let captured = Arc::clone(&seen);
-    let sink: ModelEventSink = Arc::new(move |event| {
-        captured.lock().expect("events").push(event);
-        Box::pin(async { Ok(()) })
-    });
+    let (sink, seen) = crate::backend::model::test_support::record_events();
     let mut searches = BTreeSet::new();
     for (id, action, name) in [
         (
@@ -499,12 +494,7 @@ fn responses_decode_normalizes_tool_calls_usage_and_errors() {
 
 #[tokio::test]
 async fn responses_emits_complete_tool_calls_in_output_order() {
-    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let sink_seen = Arc::clone(&seen);
-    let events: ModelEventSink = Arc::new(move |event| {
-        sink_seen.lock().expect("events lock").push(event);
-        Box::pin(async { Ok(()) })
-    });
+    let (events, seen) = crate::backend::model::test_support::record_events();
     let mut output = BTreeMap::new();
     let mut next_output_index = 0;
 
@@ -546,12 +536,7 @@ async fn responses_emits_complete_tool_calls_in_output_order() {
 
 #[tokio::test]
 async fn responses_preserves_reasoning_summary_part_boundaries() {
-    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let sink_seen = Arc::clone(&seen);
-    let events: ModelEventSink = Arc::new(move |event| {
-        sink_seen.lock().expect("events lock").push(event);
-        Box::pin(async { Ok(()) })
-    });
+    let (events, seen) = crate::backend::model::test_support::record_events();
     let mut previous_part = None;
 
     for (summary_index, delta) in [

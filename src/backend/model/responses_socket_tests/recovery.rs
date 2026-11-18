@@ -6,20 +6,11 @@ use crate::backend::model::PromptCacheIdentity;
 #[tokio::test]
 async fn previous_response_not_found_rebuilds_full_context_on_the_same_connection() {
     use futures_util::SinkExt as _;
-    use futures_util::StreamExt as _;
 
     let (listener, address) = loopback_listener().await;
     let server = tokio::spawn(async move {
         let mut socket = accept_websocket(&listener).await;
-        let initial: Value = serde_json::from_slice(
-            &socket
-                .next()
-                .await
-                .expect("initial request")
-                .expect("valid initial request")
-                .into_data(),
-        )
-        .expect("initial request body");
+        let initial: Value = read_request(&mut socket).await;
         assert!(initial.get("previous_response_id").is_none());
         for event in completed_events("Old response.", "response-old") {
             socket
@@ -28,15 +19,7 @@ async fn previous_response_not_found_rebuilds_full_context_on_the_same_connectio
                 .expect("initial completed event");
         }
 
-        let first: Value = serde_json::from_slice(
-            &socket
-                .next()
-                .await
-                .expect("continued request")
-                .expect("valid continued request")
-                .into_data(),
-        )
-        .expect("continued request body");
+        let first: Value = read_request(&mut socket).await;
         assert_eq!(first["previous_response_id"], "response-old");
         assert_eq!(
             first["input"].as_array().expect("incremental input").len(),
@@ -56,15 +39,7 @@ async fn previous_response_not_found_rebuilds_full_context_on_the_same_connectio
             .await
             .expect("missing previous response");
 
-        let rebuilt: Value = serde_json::from_slice(
-            &socket
-                .next()
-                .await
-                .expect("rebuilt request")
-                .expect("valid rebuilt request")
-                .into_data(),
-        )
-        .expect("rebuilt request body");
+        let rebuilt: Value = read_request(&mut socket).await;
         assert!(rebuilt.get("previous_response_id").is_none());
         assert_eq!(rebuilt["input"].as_array().expect("full input").len(), 3);
         for event in completed_events("Recovered.", "response-new") {
@@ -145,12 +120,7 @@ async fn socket_citations_without_search_report_web_activity_like_http() {
         socket
     });
     let provider = socket_provider(address);
-    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let captured = Arc::clone(&seen);
-    let events: ModelEventSink = Arc::new(move |event| {
-        captured.lock().expect("events").push(event);
-        Box::pin(async { Ok(()) })
-    });
+    let (events, seen) = crate::backend::model::test_support::record_events();
     let input = [crate::backend::model::user_message("cite")];
     provider
         .respond(

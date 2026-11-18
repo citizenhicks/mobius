@@ -155,18 +155,17 @@ pub fn initialize_named_cloudflare(state_dir: PathBuf, tunnel: NamedTunnel) -> R
 ///
 /// Returns an error unless the target is an empty real directory or contains a regular
 /// `gateway.toml` marker. Lifecycle or filesystem failures are also returned.
-pub fn reset_gateway_state(state_dir: PathBuf) -> Result<()> {
-    {
-        let had_config = validate_reset_target(&state_dir, false)?;
-        let state_dir = fs::canonicalize(state_dir)?;
-        let _startup = StartupGuard::create(&state_dir)?;
-        if validate_reset_target(&state_dir, true)? != had_config {
-            return Err(invalid_reset_target(&state_dir));
-        }
-        stop_gateway(&state_dir, None)?;
-        fs::remove_dir_all(state_dir)?;
-        Ok(())
+pub fn reset_gateway_state(state_dir: impl AsRef<Path>) -> Result<()> {
+    let state_dir = state_dir.as_ref();
+    let had_config = validate_reset_target(state_dir, false)?;
+    let state_dir = fs::canonicalize(state_dir)?;
+    let _startup = StartupGuard::create(&state_dir)?;
+    if validate_reset_target(&state_dir, true)? != had_config {
+        return Err(invalid_reset_target(&state_dir));
     }
+    stop_gateway(&state_dir, None)?;
+    fs::remove_dir_all(state_dir)?;
+    Ok(())
 }
 
 pub(super) fn validate_reset_target(path: &Path, ignore_startup_lock: bool) -> Result<bool> {

@@ -19,7 +19,7 @@ fn reset_gateway_state_preserves_an_unrelated_nonempty_directory() {
     let unrelated = state.join("keep.txt");
     std::fs::write(&unrelated, "keep").expect("unrelated file");
 
-    let error = reset_gateway_state(state).expect_err("unrelated state must be refused");
+    let error = reset_gateway_state(&state).expect_err("unrelated state must be refused");
 
     assert!(error.to_string().contains("refusing to reset") && unrelated.exists());
 }
@@ -33,7 +33,7 @@ fn reset_gateway_state_refuses_a_symlinked_directory() {
     std::fs::write(real.join(STATE_MARKER_FILE), "version = 999\n").expect("gateway marker");
     std::os::unix::fs::symlink(&real, &link).expect("gateway symlink");
 
-    reset_gateway_state(link).expect_err("symlinked state must be refused");
+    reset_gateway_state(&link).expect_err("symlinked state must be refused");
 
     assert!(real.exists());
 }

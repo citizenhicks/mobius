@@ -9,9 +9,7 @@ use crate::harness::mobius::provider_catalog::{
 };
 use crate::wire::{ReadyPayload, RunStats};
 use crate::{Error, Result};
-use mobius::SessionId;
 use mobius::backend::checkpoint::{CheckpointStore, SessionPageRequest, SessionSummary};
-use std::collections::HashSet;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -37,38 +35,6 @@ pub(super) async fn gateway_session_summaries(
             return Ok(sessions);
         };
         cursor = Some(next);
-    }
-}
-
-pub(super) fn session_tree_ids(
-    root_session_id: &SessionId,
-    sessions: &[SessionSummary],
-) -> Option<Vec<SessionId>> {
-    sessions
-        .iter()
-        .any(|session| &session.session_id == root_session_id)
-        .then_some(())?;
-    let mut seen = HashSet::from([root_session_id]);
-    let mut ordered = vec![root_session_id.share()];
-    loop {
-        let mut changed = false;
-        for session in sessions {
-            if seen.contains(&session.session_id)
-                || !session
-                    .parent_session_id
-                    .as_ref()
-                    .is_some_and(|parent| seen.contains(parent))
-            {
-                continue;
-            }
-            seen.insert(&session.session_id);
-            ordered.push(session.session_id.share());
-            changed = true;
-        }
-        if !changed {
-            ordered.reverse();
-            return Some(ordered);
-        }
     }
 }
 

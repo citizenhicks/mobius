@@ -237,7 +237,7 @@ impl TuiState {
             self.question_answer = Some(action.op.clone()); // rules-allow: the widget keeps its action while the composer fills a copy
             return Some(UiAction::None);
         }
-        Some(UiAction::submit(action.clone().into_operation())) // rules-allow: the widget keeps its action until the gateway closes it
+        Some(UiAction::submit(action.operation()))
     }
 
     fn decide_approval(&mut self, decision: ReviewDecision) -> UiAction {

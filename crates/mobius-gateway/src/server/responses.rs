@@ -167,19 +167,10 @@ pub(super) async fn write_gateway_result(
     writer: &mut (impl AsyncWrite + Unpin),
     view: &mut ClientView,
     request_id: Arc<str>,
-    result: std::result::Result<crate::wire::ReadyPayload, Rejection>,
+    result: std::result::Result<Arc<crate::wire::ReadyPayload>, Rejection>,
 ) -> Result<()> {
     match result {
-        Ok(payload) => {
-            view.write_catalog(
-                writer,
-                Arc::new(ServerFrame::new(ServerMessage::GatewayConfigured {
-                    request_id,
-                    payload,
-                })),
-            )
-            .await
-        }
+        Ok(payload) => view.write_catalog(writer, Some(&request_id), payload).await,
         Err(rejection) => write_rejection(writer, request_id, rejection).await,
     }
 }

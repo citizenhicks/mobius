@@ -198,16 +198,7 @@ async fn compaction_notice_is_live_and_closes_on_success_failure_and_interrupt()
                 fail: outcome == "failure",
             });
             let checkpoints = test_checkpoints(workspace.path());
-            let mut checkpoint = Checkpoint::empty(outcome.parse().expect("session ID"));
-            checkpoint.model_route = Some("main".into());
-            checkpoint.session_context = test_session_context().into();
-            checkpoint.context = Arc::new(vec![Arc::new(crate::backend::model::user_message(
-                &"prior history ".repeat(1_000),
-            ))]);
-            checkpoints
-                .save(checkpoint.clone(), checkpoint.context.to_vec(), None)
-                .await
-                .unwrap();
+            seed_compaction_history(&checkpoints, outcome).await;
             let router_model = Arc::clone(&model) as Arc<dyn Model>;
             let store = Arc::clone(&checkpoints) as Arc<dyn CheckpointStore>;
             let mut agent = create_agent(
@@ -533,16 +524,7 @@ async fn idle_compaction_runs_once_without_a_model_reply() {
     for (min_tokens, compacts) in [(1_000, true), (10_000_000, false)] {
         let workspace = tempfile::tempdir().expect("workspace");
         let checkpoints = test_checkpoints(workspace.path());
-        let mut checkpoint = Checkpoint::empty("idle".parse().expect("session ID"));
-        checkpoint.model_route = Some("main".into());
-        checkpoint.session_context = test_session_context().into();
-        checkpoint.context = Arc::new(vec![Arc::new(crate::backend::model::user_message(
-            &"prior history ".repeat(1_000),
-        ))]);
-        checkpoints
-            .save(checkpoint.clone(), checkpoint.context.to_vec(), None)
-            .await
-            .expect("seed checkpoint");
+        seed_compaction_history(&checkpoints, "idle").await;
         let model = Arc::new(HandoffModel::default());
         let compaction = Compaction::new(10_000_000)
             .expect("compaction middleware")
@@ -666,16 +648,7 @@ async fn a_message_steered_into_the_idle_turn_is_answered_after_compaction() {
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             let workspace = tempfile::tempdir().expect("workspace");
             let checkpoints = test_checkpoints(workspace.path());
-            let mut checkpoint = Checkpoint::empty("idle-steer".parse().expect("session ID"));
-            checkpoint.model_route = Some("main".into());
-            checkpoint.session_context = test_session_context().into();
-            checkpoint.context = Arc::new(vec![Arc::new(crate::backend::model::user_message(
-                &"prior history ".repeat(1_000),
-            ))]);
-            checkpoints
-                .save(checkpoint.clone(), checkpoint.context.to_vec(), None)
-                .await
-                .expect("seed checkpoint");
+            seed_compaction_history(&checkpoints, "idle-steer").await;
             let model = Arc::new(PausedIdleCompaction::default());
             let compaction = Compaction::new(10_000_000)
                 .expect("compaction middleware")
@@ -888,4 +861,18 @@ async fn failed_idle_compaction_disarms_without_losing_the_chat() {
     })
     .await
     .expect("failed idle turn completed");
+}
+
+async fn seed_compaction_history(store: &SqliteCheckpoint, session: &str) {
+    let mut checkpoint = Checkpoint::empty(session.parse().expect("session ID"));
+    checkpoint.model_route = Some("main".into());
+    checkpoint.session_context = test_session_context().into();
+    checkpoint.context = Arc::new(vec![Arc::new(crate::backend::model::user_message(
+        &"prior history ".repeat(1_000),
+    ))]);
+    let context = checkpoint.context.to_vec();
+    store
+        .save(checkpoint, context, None)
+        .await
+        .expect("seed checkpoint");
 }

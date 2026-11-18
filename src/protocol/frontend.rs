@@ -485,11 +485,19 @@ pub struct FrontendAction {
 impl FrontendAction {
     /// Resolves label-backed input, moving the label into the submitted operation.
     pub fn into_operation(self) -> Op {
-        let mut op = self.op;
-        if self.input_from_label
-            && let Op::CapabilityCommand { input, .. } = &mut op
-        {
-            *input = Some(self.label);
+        Self::resolve_operation(self.op, self.input_from_label.then_some(self.label))
+    }
+
+    /// Builds a submission while the widget retains its action and editor.
+    #[must_use]
+    pub fn operation(&self) -> Op {
+        let op = self.op.clone(); // rules-allow: the retained action and the submitted operation have independent owners
+        Self::resolve_operation(op, self.input_from_label.then_some(self.label.as_str()))
+    }
+
+    fn resolve_operation(mut op: Op, label: Option<impl Into<String>>) -> Op {
+        if let (Op::CapabilityCommand { input, .. }, Some(label)) = (&mut op, label) {
+            *input = Some(label.into());
         }
         op
     }

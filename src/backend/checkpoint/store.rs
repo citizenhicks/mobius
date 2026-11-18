@@ -92,7 +92,7 @@ pub struct Checkpoint {
     /// The pending tools.
     pub pending_tools: Vec<ToolCall>,
     /// The pending approval.
-    pub pending_approval: Option<PendingApproval>,
+    pub pending_approval: Option<Arc<PendingApproval>>,
 }
 
 impl Checkpoint {

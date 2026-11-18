@@ -4,7 +4,7 @@ use super::support::{completed_events, model_request};
 use crate::backend::model::{ImageInputLimits, MediaPreparation};
 use crate::backend::session_files::{SessionFileStore, grant_context};
 use crate::protocol::ImageDetail;
-use futures_util::{SinkExt as _, StreamExt as _};
+use futures_util::SinkExt as _;
 
 #[tokio::test]
 async fn continuation_skips_old_pixels_and_preparation_failure_preserves_connection() {
@@ -21,15 +21,7 @@ async fn continuation_skips_old_pixels_and_preparation_failure_preserves_connect
     let server = tokio::spawn(async move {
         let mut socket = accept_websocket(&listener).await;
         for step in 0..4 {
-            let body: Value = serde_json::from_slice(
-                &socket
-                    .next()
-                    .await
-                    .expect("request")
-                    .expect("frame")
-                    .into_data(),
-            )
-            .expect("JSON");
+            let body: Value = read_request(&mut socket).await;
             match step {
                 0 => assert!(
                     body["input"][0]["content"][0]["image_url"]

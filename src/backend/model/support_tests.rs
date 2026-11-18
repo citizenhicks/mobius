@@ -2,7 +2,11 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use super::ModelEventSink;
+use crate::protocol::ModelEvent;
 use serde_json::Value;
+use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpStream;
@@ -11,6 +15,18 @@ use tokio::sync::Mutex;
 use super::authorization::{OpenAiAuthorization, ResolvedAuthorization};
 use crate::BoxFuture;
 use crate::Result;
+
+pub(crate) fn record_events() -> (ModelEventSink, Arc<StdMutex<Vec<ModelEvent>>>) {
+    let events = Arc::new(StdMutex::new(Vec::new()));
+    let recorded = Arc::clone(&events);
+    (
+        Arc::new(move |event| {
+            recorded.lock().expect("events").push(event);
+            Box::pin(async { Ok(()) })
+        }),
+        events,
+    )
+}
 
 /// Reads one HTTP/1.1 request, including any `Content-Length` body, as text.
 pub(crate) async fn read_http_request(stream: &mut TcpStream) -> String {

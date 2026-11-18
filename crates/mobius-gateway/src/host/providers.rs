@@ -66,7 +66,7 @@ impl GatewayHost {
         &self,
         expected_revision: u64,
         config: AgentComposition,
-    ) -> std::result::Result<ReadyPayload, Rejection> {
+    ) -> std::result::Result<Arc<ReadyPayload>, Rejection> {
         let _mutation = self.begin_mutation().await?;
         let state = self.state.lock().await;
         let publication = {
@@ -411,7 +411,7 @@ impl GatewayHost {
         registration: ProviderRegistration,
         preserve_selection: bool,
         if_configured: bool,
-    ) -> std::result::Result<ReadyPayload, Rejection> {
+    ) -> std::result::Result<Arc<ReadyPayload>, Rejection> {
         if !operator && registration.operator_managed {
             return Err(Rejection::new(
                 "operator_required",
@@ -527,7 +527,7 @@ impl GatewayHost {
     pub(crate) async fn remove_provider(
         &self,
         instance: String,
-    ) -> std::result::Result<ReadyPayload, Rejection> {
+    ) -> std::result::Result<Arc<ReadyPayload>, Rejection> {
         let _mutation = self.begin_exclusive_mutation().await?;
         let state = self.state.lock().await;
         let next = {

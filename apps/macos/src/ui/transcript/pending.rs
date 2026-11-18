@@ -99,6 +99,7 @@ impl Workspace {
                     &item.action,
                     Some(mobius::protocol::Op::CapabilityCommand { input: Some(_), .. })
                 );
+                let text = SharedString::from(&item.text);
                 let row = if queued {
                     let meta = match item.symbol.as_ref() {
                         Some(FrontendSymbol::Steer) => {
@@ -122,7 +123,7 @@ impl Workspace {
                                 .border_dashed()
                                 .border_color(p.accent.opacity(0.42))
                                 .whitespace_normal()
-                                .child(item.text.clone()), // rules-allow: the bubble owns its text while the widget keeps it
+                                .child(SharedString::clone(&text)),
                         )
                         .child(meta)
                 } else {
@@ -139,7 +140,7 @@ impl Workspace {
                             )
                             .size(glyph::INLINE),
                         )
-                        .child(item.text.clone()) // rules-allow: the element owns its text while the widget keeps it
+                        .child(SharedString::clone(&text))
                 };
                 let key = SharedString::from(format!("tail:{}:{}", widget.capability, item.id));
                 let view = div()
@@ -155,7 +156,7 @@ impl Workspace {
                 // A held message copies like a sent one (QueuedMessageView's context menu).
                 let message = actions::Message {
                     key,
-                    text: item.text.clone().into(), // rules-allow: the 'static message menu owns its text
+                    text,
                     target: None,
                     edit: Some(Arc::clone(item)),
                     author: Some(MessageAuthor::User),

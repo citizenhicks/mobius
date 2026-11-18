@@ -1,7 +1,7 @@
 use super::MAX_SESSION_DELETE_ROOTS;
 use super::catalog::{load_session_metadata, save_session_metadata};
 use super::gateway_host::{GatewayHost, reject_persistent_session};
-use super::profile::{gateway_session_summaries, session_tree_ids};
+use super::profile::gateway_session_summaries;
 use super::publication::send_warning;
 use super::rejection::{
     Rejection, bot_delete_rejection, internal, invalid_bot, session_file_rejection, unknown_session,
@@ -284,7 +284,7 @@ impl GatewayHost {
             })
             .cloned() // rules-allow: the selection stays borrowed by the ancestor lookup
             .collect::<Vec<_>>();
-        let (roots, deleted) = session_trees(roots, &summaries);
+        let deleted = session_tree_ids(&roots, &summaries);
         let mut file_deletion =
             prepare_session_tree_deletion(&state, &deleted, SessionFileSelection::All).await?;
         let cleanup =
@@ -321,7 +321,8 @@ fn bot_session_trees(
         })
         .map(|session| session.session_id.share())
         .collect::<Vec<_>>();
-    session_trees(roots, summaries)
+    let ids = session_tree_ids(&roots, summaries);
+    (roots, ids)
 }
 
 pub(super) async fn prepare_bot_session_tree_deletion(
@@ -351,26 +352,50 @@ pub(super) async fn prepare_bot_session_tree_deletion(
     Ok((session_roots, session_ids, file_deletion))
 }
 
-pub(super) fn session_trees(
-    roots: Vec<SessionId>,
+/// Descendants precede their root. Keep the original catalog sweep order for deletion hooks.
+pub(super) fn session_tree_ids(
+    roots: &[SessionId],
     summaries: &[SessionSummary],
-) -> (Vec<SessionId>, Vec<SessionId>) {
-    let trees = roots
+) -> Vec<SessionId> {
+    if roots.is_empty() || summaries.is_empty() {
+        return Vec::new();
+    }
+    let mut remaining: HashSet<_> = summaries
         .iter()
-        .filter_map(|root| session_tree_ids(root, summaries))
-        .flatten()
-        .collect::<Vec<_>>();
-    let mut seen = HashSet::new();
-    let first = trees
-        .iter()
-        .map(|session_id| seen.insert(session_id.as_str()))
-        .collect::<Vec<_>>();
-    let session_ids = trees
-        .into_iter()
-        .zip(first)
-        .filter_map(|(session_id, first)| first.then_some(session_id))
+        .map(|session| &session.session_id)
         .collect();
-    (roots, session_ids)
+    let mut children = HashMap::<_, Vec<_>>::new();
+    for (row, session) in summaries.iter().enumerate() {
+        if let Some(parent) = &session.parent_session_id {
+            children
+                .entry(parent)
+                .or_default()
+                .push((row, &session.session_id));
+        }
+    }
+    let mut ordered = Vec::new();
+    let mut pending = Vec::new();
+    let mut descendants = Vec::new();
+    for root in roots {
+        if !remaining.remove(root) {
+            continue;
+        }
+        pending.push((root, 0, 0));
+        while let Some((parent, pass, parent_row)) = pending.pop() {
+            for &(row, child) in children.get(parent).into_iter().flatten() {
+                if remaining.remove(child) {
+                    // A child earlier in the catalog was discovered on the following sweep.
+                    let pass = pass + usize::from(row < parent_row);
+                    descendants.push((pass, row, child));
+                    pending.push((child, pass, row));
+                }
+            }
+        }
+        descendants.sort_unstable_by_key(|&(pass, row, _)| std::cmp::Reverse((pass, row)));
+        ordered.extend(descendants.drain(..).map(|(_, _, id)| id.share()));
+        ordered.push(root.share());
+    }
+    ordered
 }
 
 pub(super) async fn prepare_session_tree_deletion(
@@ -442,31 +467,22 @@ pub(super) async fn remove_session_trees(
     recover_session_hook_closures(state)
         .await
         .map_err(internal)?;
-    let roots = if missing_roots_are_deleted {
-        let mut existing = Vec::new();
-        for root in roots {
-            if state
-                .checkpoints
-                .load(root)
-                .await
-                .map_err(internal)?
-                .is_some()
-            {
-                existing.push(root.clone()); // rules-allow: the caller keeps its root list
-            }
-        }
-        std::borrow::Cow::Owned(existing)
-    } else {
-        std::borrow::Cow::Borrowed(roots)
-    };
+    let mut root_status: HashMap<_, _> = roots
+        .iter()
+        .filter(|_| missing_roots_are_deleted)
+        .map(|id| (id, None))
+        .collect();
     let mut closures = Vec::new();
     for session_id in session_ids {
-        if let Some(summary) = state
+        let summary = state
             .checkpoints
             .session_summary(session_id)
             .await
-            .map_err(internal)?
-        {
+            .map_err(internal)?;
+        if let Some(exists) = root_status.get_mut(session_id) {
+            *exists = Some(summary.is_some());
+        }
+        if let Some(summary) = summary {
             closures.push(HookEvent {
                 id: format!("deleted-{session_id}-{}", Uuid::new_v4()).into(),
                 bot_id: summary.session_context.owner_id,
@@ -482,6 +498,26 @@ pub(super) async fn remove_session_trees(
             });
         }
     }
+    let mut existing = Vec::new();
+    let roots = if missing_roots_are_deleted {
+        for root in roots {
+            let exists = match root_status.get(root).copied().flatten() {
+                Some(exists) => exists,
+                None => state
+                    .checkpoints
+                    .session_summary(root)
+                    .await
+                    .map_err(internal)?
+                    .is_some(),
+            };
+            if exists {
+                existing.push(root.share());
+            }
+        }
+        &existing
+    } else {
+        roots
+    };
     state
         .checkpoints
         .save_state(
@@ -493,7 +529,7 @@ pub(super) async fn remove_session_trees(
         .map_err(internal)?;
     if !state
         .checkpoints
-        .delete_sessions(&roots)
+        .delete_sessions(roots)
         .await
         .map_err(internal)?
     {

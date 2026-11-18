@@ -633,7 +633,7 @@ fn storage_fixture(this: &mut Workspace) {
         files,
         complete: true,
     };
-    this.client.storage.usage = Some(StorageUsage {
+    this.client.storage.usage = Some(Arc::new(StorageUsage {
         version: 1,
         measured_at: 0,
         categories: Vec::new(),
@@ -659,5 +659,5 @@ fn storage_fixture(this: &mut Workspace) {
         gateway_total: size(92_000_000, 40),
         limit_bytes: None,
         used_bytes: 68_000_000,
-    });
+    }));
 }

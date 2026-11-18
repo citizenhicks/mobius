@@ -36,7 +36,7 @@ pub struct ExportStep {
 
 #[derive(Debug, Default)]
 pub struct Storage {
-    pub usage: Option<StorageUsage>,
+    pub usage: Option<Arc<StorageUsage>>,
     /// The measurement in flight.
     pub request: Option<Arc<str>>,
     pending: BTreeSet<Arc<str>>,
@@ -80,7 +80,7 @@ impl Storage {
                 if let Some(before) = self.before.take() {
                     events.push(StorageEvent::Freed(before.saturating_sub(usage.used_bytes)));
                 }
-                self.usage = Some(usage.clone()); // rules-allow: every package's hook reads the same shared message
+                self.usage = Some(Arc::clone(usage));
             }
             ServerMessage::Accepted { request_id } if self.pending.remove(request_id) => {
                 events.push(StorageEvent::FilesRemoved);

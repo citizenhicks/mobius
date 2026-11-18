@@ -43,18 +43,22 @@ impl<Id> Default for Selection<Id> {
 
 impl<Id: PartialEq> Selection<Id> {
     /// Selects the row `pick` chooses from the current row and the list length.
-    pub(super) fn update(
+    pub(super) fn update<'row, I>(
         &mut self,
-        ids: &[&Id],
+        len: usize,
+        ids: impl Fn() -> I,
         own: fn(&Id) -> Id,
         pick: impl FnOnce(Option<usize>, usize) -> Option<usize>,
-    ) {
+    ) where
+        Id: 'row,
+        I: Iterator<Item = &'row Id>,
+    {
         let current = self
             .id
             .as_ref()
-            .and_then(|id| ids.iter().position(|candidate| *candidate == id));
-        let selected = pick(current, ids.len());
-        let id = selected.and_then(|index| ids.get(index)).copied();
+            .and_then(|id| ids().position(|candidate| candidate == id));
+        let selected = pick(current, len);
+        let id = selected.and_then(|index| ids().nth(index));
         if self.id.as_ref() != id {
             self.id = id.map(own);
         }

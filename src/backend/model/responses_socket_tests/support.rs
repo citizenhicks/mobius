@@ -72,6 +72,16 @@ pub(super) async fn accept_websocket(listener: &TcpListener) -> WebSocketStream<
         .expect("WebSocket handshake")
 }
 
+pub(super) async fn read_request(socket: &mut WebSocketStream<TcpStream>) -> Value {
+    use futures_util::StreamExt as _;
+    let frame = socket
+        .next()
+        .await
+        .expect("request frame")
+        .expect("valid WebSocket frame");
+    serde_json::from_slice(&frame.into_data()).expect("JSON request")
+}
+
 /// Builds an API-key provider whose HTTP and WebSocket endpoints are `address`.
 pub(super) fn socket_provider(address: SocketAddr) -> OpenAiSocket {
     OpenAiSocket::from_authorization(

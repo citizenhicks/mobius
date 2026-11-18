@@ -1412,13 +1412,17 @@ impl Runner {
                 continue;
             }
             // Binding records indexes in order; move calls after result hooks finish borrowing them.
-            let (indexes, bindings): (Vec<_>, Vec<_>) = executable_calls.into_iter().unzip();
-            let calls = output
+            let mut executable = executable_calls.into_iter().peekable();
+            let (calls, bindings): (Vec<_>, Vec<_>) = output
                 .tool_calls
                 .into_iter()
                 .enumerate()
-                .filter_map(|(index, call)| indexes.binary_search(&index).is_ok().then_some(call))
-                .collect();
+                .filter_map(|(index, call)| {
+                    executable
+                        .next_if(|(selected, _)| *selected == index)
+                        .map(|(_, binding)| (call, binding))
+                })
+                .unzip();
             if self
                 .authorize_and_execute(inbox, submission_id, turn_id, calls, bindings)
                 .await?

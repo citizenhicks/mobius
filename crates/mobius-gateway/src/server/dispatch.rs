@@ -1851,7 +1851,7 @@ async fn answer_gateway(
     writer: &mut (impl AsyncWrite + Unpin),
     view: &mut ClientView,
     request_id: Arc<str>,
-    operation: impl Future<Output = std::result::Result<crate::wire::ReadyPayload, Rejection>>,
+    operation: impl Future<Output = std::result::Result<Arc<crate::wire::ReadyPayload>, Rejection>>,
 ) -> Result<()> {
     write_gateway_result(writer, view, request_id, operation.await).await
 }

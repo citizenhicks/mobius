@@ -1,6 +1,6 @@
 use super::composition::validate_bot_workspace;
 use super::gateway_host::GatewayHost;
-use super::profile::{gateway_session_summaries, session_tree_ids};
+use super::profile::gateway_session_summaries;
 use super::publication::send_warning;
 use super::rejection::{
     Rejection, internal, invalid_bot, invalid_routine, invalid_workspace, unknown_session,
@@ -18,7 +18,7 @@ use mobius::protocol::{Op, Submission};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use super::deletion::{prepare_session_tree_deletion, remove_session_trees, session_trees};
+use super::deletion::{prepare_session_tree_deletion, remove_session_trees, session_tree_ids};
 
 pub(super) async fn accept_routine_while_state_locked(
     _state: &mut tokio::sync::MutexGuard<'_, GatewayState>,
@@ -243,7 +243,7 @@ impl GatewayHost {
             return Ok(());
         }
         require_routine_owner(&state.bots, routine_id, owner_id)?;
-        let roots = state
+        let roots: Vec<_> = state
             .bots
             .history(Some(routine_id))
             .map_err(invalid_routine)?
@@ -253,7 +253,7 @@ impl GatewayHost {
         let summaries = gateway_session_summaries(&state.checkpoints)
             .await
             .map_err(internal)?;
-        let session_ids = session_trees(roots, &summaries).1;
+        let session_ids = session_tree_ids(&roots, &summaries);
         let mut file_deletion = prepare_session_tree_deletion(
             &state,
             &session_ids,
@@ -267,7 +267,7 @@ impl GatewayHost {
             .bots
             .prepare_routine_deletion(routine_id)
             .map_err(invalid_routine)?;
-        let roots = deletion
+        let session_roots: Vec<_> = deletion
             .session_ids()
             .iter()
             .filter(|root| {
@@ -277,7 +277,7 @@ impl GatewayHost {
             })
             .cloned() // rules-allow: the routine deletion is consumed before its session trees are removed
             .collect();
-        let (session_roots, session_ids) = session_trees(roots, &summaries);
+        let session_ids = session_tree_ids(&session_roots, &summaries);
         state
             .bots
             .delete_routine(deletion, cause, cause.map(|_| command_id))
@@ -385,7 +385,7 @@ impl GatewayHost {
             let summaries = gateway_session_summaries(&state.checkpoints)
                 .await
                 .map_err(internal)?;
-            session_tree_ids(session_id, &summaries).unwrap_or_default()
+            session_tree_ids(std::slice::from_ref(session_id), &summaries)
         } else {
             Vec::new()
         };

@@ -381,23 +381,14 @@ impl Workspace {
                     continue;
                 };
                 let selected = match middleware.setting(&feature.id, &setting.id) {
-                    Some(FrontendSettingValue::String(value)) => Some(value.clone()), // rules-allow: the 'static menu builder owns its copy of the selected value
+                    Some(FrontendSettingValue::String(value)) => Some(value.as_str()),
                     _ => None,
                 };
-                let option = options
-                    .iter()
-                    .find(|o| Some(&*o.value) == selected.as_deref());
+                let option = options.iter().find(|o| Some(&*o.value) == selected);
                 let label = option.map_or_else(
                     || SharedString::from(&setting.label),
                     |o| SharedString::from(&o.label),
                 );
-                let (bot_id, feature_id, setting_id): (Arc<str>, Rc<str>, Rc<str>) = (
-                    Arc::clone(&bot.id),
-                    feature.id.as_str().into(),
-                    setting.id.as_str().into(),
-                );
-                let options = options.clone(); // rules-allow: the 'static menu builder owns its copy of the options
-                let view = cx.entity().downgrade();
                 let id = SharedString::from(format!("setting:{}:{}", feature.id, setting.id));
                 let button = super::session_info::card_menu_trigger(id, label, &self.palette);
                 let reason = if self.client.link.is_ready() {
@@ -416,6 +407,14 @@ impl Workspace {
                     menus.push((setting_label, unavailable(id, button, reason, cx)));
                     continue;
                 }
+                let (bot_id, feature_id, setting_id): (Arc<str>, Rc<str>, Rc<str>) = (
+                    Arc::clone(&bot.id),
+                    feature.id.as_str().into(),
+                    setting.id.as_str().into(),
+                );
+                let options = options.clone(); // rules-allow: the 'static menu builder owns its copy of the options
+                let view = cx.entity().downgrade();
+                let selected = selected.map(str::to_owned);
                 menus.push((
                     setting_label,
                     button

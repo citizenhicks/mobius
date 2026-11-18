@@ -65,13 +65,13 @@ impl Runner {
             self.persist_with_events(std::mem::take(&mut events), None)
                 .await?;
         }
-        let mut pending = PendingApproval {
+        let pending = PendingApproval {
             submission_id: Arc::clone(submission_id),
             turn_id: Arc::clone(turn_id),
             request_id: request.id,
             approval_call_ids: request.call_ids,
             authorized_call_ids: permissions.mutation_call_ids(),
-            calls,
+            calls: calls.into(),
             reason: request.reason,
             sandbox_mode: permissions.sandbox_mode(),
             network_access: permissions.network_access(),
@@ -81,18 +81,18 @@ impl Runner {
             self.apply_approval(inbox, &pending, decision, permissions, submission_id)
                 .await
         } else {
-            // Persist recovery data while the approval wait mutates runner state using this snapshot.
-            self.state.make_mut().pending_approval = Some(pending.clone()); // rules-allow: the checkpoint keeps the approval for recovery while it is resolved
+            let pending = Arc::new(pending);
+            self.state.make_mut().pending_approval = Some(Arc::clone(&pending));
             events.push(approval_event(&pending));
             self.persist_with_events(events, None).await?;
-            self.resolve_pending(inbox, &mut pending, false).await
+            self.resolve_pending(inbox, &pending, false).await
         }
     }
 
     pub(super) async fn resume_pending(
         &mut self,
         inbox: &mut SubmissionInbox,
-        pending: &mut PendingApproval,
+        pending: &PendingApproval,
     ) -> Result<()> {
         let Some(results) = self.resolve_pending(inbox, pending, true).await? else {
             return Ok(());
@@ -106,7 +106,7 @@ impl Runner {
     async fn resolve_pending(
         &mut self,
         inbox: &mut SubmissionInbox,
-        pending: &mut PendingApproval,
+        pending: &PendingApproval,
         reassert_request: bool,
     ) -> Result<Option<ToolCompletion>> {
         if reassert_request {
@@ -117,7 +117,6 @@ impl Runner {
             return Ok(None);
         };
         let decision = approval.decision;
-        let previous_state = super::LiveCheckpoint(Arc::clone(&self.state.0));
         let current = self
             .state
             .make_mut()
@@ -125,7 +124,8 @@ impl Runner {
             .as_mut()
             .filter(|current| current.request_id == pending.request_id)
             .ok_or_else(|| Error::Checkpoint("approval request is no longer pending".into()))?;
-        current.decision_received = true;
+        let previous = Arc::clone(current);
+        Arc::make_mut(current).decision_received = true;
         let event = Event {
             submission_id: Some(Arc::clone(&approval.submission_id)),
             msg: EventMsg::ExecApprovalDecided(ExecApprovalDecidedEvent {
@@ -135,14 +135,14 @@ impl Runner {
             }),
         };
         if let Err(error) = self.persist_with_events(vec![event], None).await {
-            self.state = previous_state;
+            self.state.make_mut().pending_approval = Some(previous);
             return Err(error);
         }
         let permissions = SandboxPermissions::restore(
             &self.runtime.session_id,
             pending.sandbox_mode,
             pending.network_access,
-            std::mem::take(&mut pending.authorized_call_ids),
+            pending.authorized_call_ids.iter().map(Arc::clone),
         );
         self.apply_approval(
             inbox,

@@ -8,8 +8,8 @@ use mobius::protocol::{
 use mobius::{Error, Result};
 use mobius_gateway::client::{GatewayClient, GatewayEvents, GatewaySender};
 use mobius_gateway::wire::{
-    ClientCapabilities, ClientMessage, ClientStatus, ServerMessage, SessionActivityState,
-    SessionRecord, apply_session_changes,
+    ClientCapabilities, ClientMessage, ServerMessage, SessionActivityState, SessionRecord,
+    apply_session_changes,
 };
 use ratatui::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
@@ -354,7 +354,7 @@ pub(in crate::frontend) fn activate_overlay(overlay: &mut CapabilityOverlay) -> 
             Some(FrontendWidgetContent::ActionList { items, .. }) => items
                 .get(overlay.option_list.selected().unwrap_or_default())
                 .and_then(|item| item.actions.get(overlay.action_index))
-                .map(|action| action.clone().into_operation()), // rules-allow: the overlay keeps its action list while the submission owns one
+                .map(mobius::protocol::FrontendAction::operation),
             _ => widget.action.clone(), // rules-allow: the overlay keeps its widget action while the submission owns one
         };
     }
@@ -616,24 +616,24 @@ fn update_selection(
     pick: impl FnOnce(Option<usize>, usize) -> Option<usize>,
 ) {
     match focus {
-        DashboardFocus::Devices => {
-            let ids: Vec<&String> = ordered_clients(&state.clients)
-                .into_iter()
-                .map(|client| &client.client_id)
-                .collect();
-            state.devices.update(&ids, |id| id.as_str().into(), pick);
-        }
-        DashboardFocus::Chats => {
-            let ids: Vec<&mobius::SessionId> = ordered_sessions(&state.gateway.sessions)
-                .into_iter()
-                .map(|session| &session.session_id)
-                .collect();
-            state.chats.update(&ids, mobius::SessionId::share, pick);
-        }
-        DashboardFocus::Bots => {
-            let ids: Vec<&Arc<str>> = state.gateway.bots.iter().map(|bot| &bot.id).collect();
-            state.bots.update(&ids, Arc::clone, pick);
-        }
+        DashboardFocus::Devices => state.devices.update(
+            state.clients.len(),
+            || state.clients.iter().map(|client| &client.client_id),
+            |id| id.as_str().into(),
+            pick,
+        ),
+        DashboardFocus::Chats => state.chats.update(
+            state.gateway.sessions.len(),
+            || ordered_sessions(&state.gateway.sessions).map(|session| &session.session_id),
+            mobius::SessionId::share,
+            pick,
+        ),
+        DashboardFocus::Bots => state.bots.update(
+            state.gateway.bots.len(),
+            || state.gateway.bots.iter().map(|bot| &bot.id),
+            Arc::clone,
+            pick,
+        ),
     }
 }
 
@@ -664,8 +664,9 @@ pub(super) fn moved_index(current: Option<usize>, length: usize, delta: isize) -
 }
 
 pub(super) fn begin_unpair(state: &mut DashboardState) {
-    let Some(client) = ordered_clients(&state.clients)
-        .into_iter()
+    let Some(client) = state
+        .clients
+        .iter()
         .find(|client| Some(&client.client_id) == state.devices.id.as_ref())
     else {
         return;
@@ -794,6 +795,11 @@ pub(super) fn handle_frame(state: &mut DashboardState, message: ServerMessage) -
 }
 
 pub(super) fn sync_device_selection(state: &mut DashboardState) {
+    state.clients.sort_by(|left, right| {
+        (left.connections == 0)
+            .cmp(&(right.connections == 0))
+            .then_with(|| left.label.cmp(&right.label))
+    });
     sync_selection(state, DashboardFocus::Devices);
 }
 
@@ -805,18 +811,10 @@ pub(super) fn sync_bot_selection(state: &mut DashboardState) {
     sync_selection(state, DashboardFocus::Bots);
 }
 
-pub(super) fn ordered_clients(clients: &[ClientStatus]) -> Vec<&ClientStatus> {
-    let mut clients = clients.iter().collect::<Vec<_>>();
-    clients.sort_by(|left, right| {
-        (left.connections == 0)
-            .cmp(&(right.connections == 0))
-            .then_with(|| left.label.cmp(&right.label))
-    });
-    clients
-}
-
-pub(super) fn ordered_sessions(sessions: &[SessionRecord]) -> Vec<&SessionRecord> {
-    let mut sessions = sessions.iter().collect::<Vec<_>>();
-    sessions.sort_by_key(|session| session.activity.state == SessionActivityState::Idle);
-    sessions
+pub(super) fn ordered_sessions(sessions: &[SessionRecord]) -> impl Iterator<Item = &SessionRecord> {
+    [false, true].into_iter().flat_map(|idle| {
+        sessions
+            .iter()
+            .filter(move |session| (session.activity.state == SessionActivityState::Idle) == idle)
+    })
 }

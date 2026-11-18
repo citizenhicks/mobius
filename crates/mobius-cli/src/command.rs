@@ -575,7 +575,7 @@ async fn bootstrap_local_gateway(
 }
 
 fn cleanup_failed_bootstrap(endpoint: &Endpoint, state_dir: &Path) -> mobius_gateway::Result<()> {
-    let state = mobius_gateway::command::reset_gateway_state(state_dir.to_path_buf());
+    let state = mobius_gateway::command::reset_gateway_state(state_dir);
     let client = (|| {
         let mut accounts = GatewayAccounts::load()?;
         if accounts.token(endpoint).is_some() {

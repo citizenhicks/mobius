@@ -219,7 +219,7 @@ pub struct PendingApproval {
     /// The authorized call identifiers.
     pub authorized_call_ids: Vec<Arc<str>>,
     /// The calls.
-    pub calls: Vec<ToolCall>,
+    pub calls: Arc<[ToolCall]>,
     /// The reason.
     pub reason: String,
     /// The sandbox mode.
