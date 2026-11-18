@@ -173,13 +173,11 @@ impl Workspace {
                 _address: subscription,
             },
         );
-        let id: Arc<str> = id.into();
         let visible = owner == TabOwner::of(&self.page_tabs);
-        self.content.navigation.insert(owner, Arc::clone(&id));
-        self.content.tabs.insert(
-            Arc::clone(&id),
+        let id = self.content.insert_tab(
+            owner,
             ContentTab {
-                id: Arc::clone(&id),
+                id: id.into(),
                 title: "New tab".into(),
                 content: TabContent::Browser,
             },

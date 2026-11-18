@@ -75,6 +75,14 @@ fn rejection(event: &EventMsg) -> Option<&str> {
 }
 
 impl ContentState {
+    /// Registers both the owning navigation stack and the document under the same tab ID.
+    fn insert_tab(&mut self, owner: TabOwner, tab: ContentTab) -> Arc<str> {
+        let id = Arc::clone(&tab.id);
+        self.navigation.insert(owner, Arc::clone(&id));
+        self.tabs.insert(Arc::clone(&id), tab);
+        id
+    }
+
     /// Remembers a capability command submitted to the gateway, bounded to the newest.
     pub(in crate::ui) fn track_command(&mut self, submission: Arc<str>) {
         if self.commands.len() == 64 {
@@ -185,10 +193,8 @@ impl Workspace {
         tab: ContentTab,
         cx: &mut Context<Self>,
     ) {
-        let id = Arc::clone(&tab.id);
         let visible = owner == TabOwner::of(&self.page_tabs);
-        self.content.navigation.insert(owner, Arc::clone(&id));
-        self.content.tabs.insert(Arc::clone(&id), tab);
+        let id = self.content.insert_tab(owner, tab);
         self.unify_file_tab(&id, cx);
         if visible {
             self.activate_tab(PageTab::Content(id));
