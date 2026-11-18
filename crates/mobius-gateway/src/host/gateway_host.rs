@@ -243,14 +243,7 @@ impl GatewayHost {
             }
         }
 
-        let residents = {
-            let mut state = self.state.lock().await;
-            state
-                .sessions
-                .drain()
-                .map(|(_, host)| host)
-                .collect::<Vec<_>>()
-        };
+        let residents = std::mem::take(&mut self.state.lock().await.sessions).into_values();
         for host in residents {
             host.shutdown().await;
         }
