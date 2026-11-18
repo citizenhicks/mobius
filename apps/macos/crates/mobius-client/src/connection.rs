@@ -1186,13 +1186,30 @@ mod tests {
         (transport, output, frames, server)
     }
 
+    fn expire_wait(
+        mut transport: super::Transport,
+    ) -> (
+        tokio::sync::mpsc::Sender<Command>,
+        tokio::task::JoinHandle<super::Sent>,
+    ) {
+        transport
+            .waiting
+            .as_mut()
+            .unwrap()
+            .deadline
+            .as_mut()
+            .reset(tokio::time::Instant::now());
+        let (commands, receiver) = tokio::sync::mpsc::channel(1);
+        (
+            commands,
+            tokio::spawn(super::run_transport(receiver, transport)),
+        )
+    }
+
     #[tokio::test]
     async fn authenticated_socket_that_never_becomes_ready_reconnects() {
-        let (mut transport, mut output, _frames, server) = connected_transport().await;
-        transport.waiting.as_mut().unwrap().deadline =
-            Box::pin(tokio::time::sleep(Duration::from_millis(20)));
-        let (commands, receiver) = tokio::sync::mpsc::channel(1);
-        let task = tokio::spawn(super::run_transport(receiver, transport));
+        let (transport, mut output, _frames, server) = connected_transport().await;
+        let (commands, task) = expire_wait(transport);
         assert!(matches!(
             tokio::time::timeout(Duration::from_secs(1), output.recv()).await.unwrap(),
             Some(Update::Reconnecting { attempt: 1, message, .. }) if message.contains("did not become ready")
@@ -1264,10 +1281,7 @@ mod tests {
                     .unwrap();
                 assert!(matches!(output.recv().await, Some(Update::Message(_))));
             }
-            transport.waiting.as_mut().unwrap().deadline =
-                Box::pin(tokio::time::sleep(Duration::from_millis(20)));
-            let (commands, receiver) = tokio::sync::mpsc::channel(1);
-            let task = tokio::spawn(super::run_transport(receiver, transport));
+            let (commands, task) = expire_wait(transport);
             assert!(
                 matches!(tokio::time::timeout(Duration::from_secs(1), output.recv()).await.unwrap(), Some(Update::SendFailed {
                 request_id: Some(request_id), delivery_uncertain: true, ..
