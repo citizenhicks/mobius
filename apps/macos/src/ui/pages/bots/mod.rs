@@ -24,3 +24,20 @@ pub(in crate::ui) use create::dialog_heading;
 pub(in crate::ui) use settings::AgentScope;
 
 pub(in crate::ui) use bots_ui::{BotsUi, Pending};
+
+/// A saved Bot with recognizable non-default settings for editing tests.
+#[cfg(test)]
+pub(in crate::ui) fn test_composition(
+    model: &str,
+    effort: &str,
+) -> mobius_gateway::wire::AgentComposition {
+    serde_json::from_value(serde_json::json!({
+        "provider": {
+            "instance": "work", "provider": "openai", "model": model,
+            "endpoint_auth": "provider_default", "reasoning_effort": effort, "web_search": "off"
+        },
+        "middleware": {"enabled": [], "settings": {}},
+        "extensions": [], "system_prompt": "Stay focused.", "max_model_steps": 64
+    }))
+    .unwrap()
+}

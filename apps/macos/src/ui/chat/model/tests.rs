@@ -1,7 +1,7 @@
 use super::configured_model;
 use super::route::with_route;
 use mobius::protocol::{ModelChoice, ToolDiscoveryMode};
-use mobius_gateway::wire::{AgentComposition, ReadyPayload};
+use mobius_gateway::wire::ReadyPayload;
 use serde_json::json;
 
 /// Two models of one provider instance, each at low and high reasoning.
@@ -53,21 +53,10 @@ fn catalog() -> ReadyPayload {
     gateway
 }
 
-fn composition(gateway: &ReadyPayload) -> AgentComposition {
-    serde_json::from_value(json!({
-        "provider": gateway.provider_instances[0].selection,
-        "middleware": {"enabled": [], "settings": {}},
-        "extensions": [],
-        "system_prompt": "Stay focused.",
-        "max_model_steps": 64
-    }))
-    .unwrap()
-}
-
 #[test]
 fn a_draft_model_change_moves_only_the_model_and_reasoning() {
     let gateway = catalog();
-    let saved = composition(&gateway);
+    let saved = crate::ui::pages::bots::test_composition("sol", "high");
     assert_eq!(
         configured_model(&gateway, &saved.provider).map(|model| model.route.as_ref()),
         Some("work/sol/high")

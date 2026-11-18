@@ -158,25 +158,11 @@ fn save_message(scope: &AgentScope, saved: Saved, request_id: Arc<str>) -> Optio
 #[cfg(test)]
 mod tests {
     use super::{AgentScope, Saved, save_message};
-    use mobius_gateway::wire::{
-        AgentComposition, BotShape, ClientMessage, HarnessConfig, ProviderTint,
-    };
-    use serde_json::json;
+    use mobius_gateway::wire::{BotShape, ClientMessage, HarnessConfig, ProviderTint};
     use std::sync::Arc;
 
     fn saved(model: &str, effort: &str) -> Saved {
-        let config: AgentComposition = serde_json::from_value(json!({
-            "provider": {
-                "instance":"work", "provider":"openai", "model":model,
-                "endpoint_auth":"provider_default", "reasoning_effort":effort,
-                "web_search":"off"
-            },
-            "middleware": {"enabled": [], "settings": {}},
-            "extensions": [],
-            "system_prompt": "Stay focused.",
-            "max_model_steps": 64
-        }))
-        .unwrap();
+        let config = crate::ui::pages::bots::test_composition(model, effort);
         Saved {
             revision: 7,
             config: HarnessConfig::Mobius(Arc::new(config)),
