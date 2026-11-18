@@ -47,16 +47,20 @@ mod replay;
 mod statistics;
 
 impl GatewayHost {
+    async fn register_probe(&self, handle: HostHandle) {
+        self.state
+            .lock()
+            .await
+            .sessions
+            .insert(handle.session_id().share(), handle);
+    }
+
     /// A resident session that reports busy while `busy` holds, like one with an armed idle timer.
     pub(crate) async fn busy_session_for_test(&self, busy: Arc<AtomicBool>) -> JoinHandle<()> {
         let (handle, mut receiver) = probe_handle("busy-probe", 2, false);
         let terminated = Arc::clone(&handle.inner.terminated);
         let termination = Arc::clone(&handle.inner.termination);
-        self.state
-            .lock()
-            .await
-            .sessions
-            .insert(SessionId::new("busy-probe").unwrap(), handle);
+        self.register_probe(handle).await;
         tokio::spawn(async move {
             loop {
                 match receiver.recv().await {
@@ -86,11 +90,7 @@ impl GatewayHost {
         let alive = Arc::clone(&handle.inner.alive);
         let terminated = Arc::clone(&handle.inner.terminated);
         let termination = Arc::clone(&handle.inner.termination);
-        self.state
-            .lock()
-            .await
-            .sessions
-            .insert(SessionId::new("activity-probe").unwrap(), handle);
+        self.register_probe(handle).await;
         let (entered, waiting) = oneshot::channel();
         let (release, mut released) = oneshot::channel();
         let task = tokio::spawn(async move {
