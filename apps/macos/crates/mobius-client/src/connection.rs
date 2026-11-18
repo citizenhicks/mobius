@@ -432,23 +432,7 @@ enum Event {
 }
 
 async fn run(commands: mpsc::Receiver<Command>, updates: mpsc::Sender<Update>) -> Sent {
-    let transport = Transport {
-        updates,
-        connection: None,
-        dial: None,
-        waiting: None,
-        transfers: None,
-        desktop_target: None,
-        desktop_stop: None,
-        target: None,
-        attempt: 0,
-        retry: None,
-        tasks: tokio::task::JoinSet::new(),
-        slots: Arc::new(tokio::sync::Semaphore::new(4)),
-        next: ConnectOptions::default(),
-        open: None,
-    };
-    run_transport(commands, transport).await
+    run_transport(commands, Transport::new(updates, None)).await
 }
 
 async fn run_transport(mut commands: mpsc::Receiver<Command>, mut transport: Transport) -> Sent {
@@ -522,6 +506,25 @@ fn random_unit() -> f64 {
 }
 
 impl Transport {
+    fn new(updates: mpsc::Sender<Update>, target: Option<Connection>) -> Self {
+        Self {
+            updates,
+            connection: None,
+            dial: None,
+            waiting: None,
+            transfers: None,
+            desktop_target: None,
+            desktop_stop: None,
+            target,
+            attempt: 0,
+            retry: None,
+            tasks: tokio::task::JoinSet::new(),
+            slots: Arc::new(tokio::sync::Semaphore::new(4)),
+            next: ConnectOptions::default(),
+            open: None,
+        }
+    }
+
     /// Borrows only the update channel, so the transport's futures need not be `Sync`.
     fn emit(&self, update: Update) -> impl Future<Output = Sent> + use<'_> {
         let updates = &self.updates;
@@ -1402,22 +1405,8 @@ mod tests {
             .await
             .unwrap();
         let (updates, mut output) = tokio::sync::mpsc::channel(2);
-        let mut transport = super::Transport {
-            updates,
-            connection: Some(client.into_parts()),
-            dial: None,
-            waiting: None,
-            transfers: None,
-            desktop_target: None,
-            desktop_stop: None,
-            target: Some(super::Connection::Local),
-            attempt: 0,
-            retry: None,
-            tasks: tokio::task::JoinSet::new(),
-            slots: std::sync::Arc::new(tokio::sync::Semaphore::new(4)),
-            next: Default::default(),
-            open: None,
-        };
+        let mut transport = transport(updates);
+        transport.connection = Some(client.into_parts());
         // GatewaySender deterministically rejects a second authentication message.
         transport
             .send(super::ClientMessage::Authenticate {
@@ -1443,22 +1432,7 @@ mod tests {
     }
 
     fn transport(updates: tokio::sync::mpsc::Sender<Update>) -> super::Transport {
-        super::Transport {
-            updates,
-            connection: None,
-            dial: None,
-            waiting: None,
-            transfers: None,
-            desktop_target: None,
-            desktop_stop: None,
-            target: Some(super::Connection::Local),
-            attempt: 0,
-            retry: None,
-            tasks: tokio::task::JoinSet::new(),
-            slots: std::sync::Arc::new(tokio::sync::Semaphore::new(4)),
-            next: Default::default(),
-            open: None,
-        }
+        super::Transport::new(updates, Some(super::Connection::Local))
     }
 
     fn event(session: &str, sequence: u64) -> super::ServerMessage {
