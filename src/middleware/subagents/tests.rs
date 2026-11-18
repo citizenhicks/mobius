@@ -12,8 +12,7 @@ async fn fork_uses_durable_parent_metadata_even_when_the_parent_stopped() {
         )
         .expect("checkpoint store"),
     );
-    let mut parent = Checkpoint::empty("parent".parse().expect("session ID"));
-    std::sync::Arc::make_mut(&mut parent.session_context).owner_id = "test-bot".into();
+    let mut parent = Checkpoint::for_test_owner("parent", "test-bot");
     parent.metadata.insert(
         "gateway.chat".into(),
         serde_json::json!({"workspace": "/srv/project"}),

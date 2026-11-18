@@ -481,11 +481,10 @@ mod tests {
             text: "Earlier".into(),
         });
         let (_directory, checkpoints) = SqliteCheckpoint::temporary();
-        let mut session =
-            crate::backend::checkpoint::Checkpoint::empty("session-1".parse().expect("session ID"));
-        std::sync::Arc::make_mut(&mut session.session_context).owner_id = "test-bot".into();
+        let session =
+            crate::backend::checkpoint::Checkpoint::for_test_owner("session-1", "test-bot");
         checkpoints
-            .save(session.clone(), Vec::new(), None)
+            .save(session, Vec::new(), None)
             .await
             .expect("save session");
         checkpoints
@@ -641,10 +640,9 @@ mod tests {
     async fn reply_matches_a_durable_message_in_its_own_session() {
         let (_directory, store) = SqliteCheckpoint::temporary();
         for session_id in ["current", "other"] {
-            let mut checkpoint = Checkpoint::empty(session_id.parse().expect("session ID"));
-            std::sync::Arc::make_mut(&mut checkpoint.session_context).owner_id = "test-bot".into();
+            let checkpoint = Checkpoint::for_test_owner(session_id, "test-bot");
             store
-                .save(checkpoint.clone(), Vec::new(), None)
+                .save(checkpoint, Vec::new(), None)
                 .await
                 .expect("save session");
         }

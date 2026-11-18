@@ -8,8 +8,7 @@ use crate::middleware::{ActiveCommandContext, MessageQueue, Middleware, Submissi
 
 async fn voice_parent(path: &std::path::Path) -> (Arc<dyn CheckpointStore>, crate::SessionId) {
     let checkpoints: Arc<dyn CheckpointStore> = Arc::new(SqliteCheckpoint::new(path).unwrap());
-    let mut parent = Checkpoint::empty("parent".parse().expect("session ID"));
-    std::sync::Arc::make_mut(&mut parent.session_context).owner_id = "bot".into();
+    let parent = Checkpoint::for_test_owner("parent", "bot");
     let id = parent.session_id.share();
     checkpoints.save(parent, Vec::new(), None).await.unwrap();
     (checkpoints, id)
@@ -138,8 +137,7 @@ async fn voice_transcript_is_linked_read_only_and_resumes_without_reusing_messag
     let path = directory.path().join("checkpoints.sqlite3");
     let checkpoints: Arc<dyn CheckpointStore> =
         Arc::new(SqliteCheckpoint::new(&path).expect("store"));
-    let mut parent = Checkpoint::empty("parent".parse().expect("session ID"));
-    std::sync::Arc::make_mut(&mut parent.session_context).owner_id = "bot".into();
+    let mut parent = Checkpoint::for_test_owner("parent", "bot");
     parent.context = std::sync::Arc::new(
         vec![serde_json::json!({"role":"user","content":"private parent task"})]
             .into_iter()

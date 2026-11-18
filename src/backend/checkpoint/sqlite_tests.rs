@@ -17,9 +17,7 @@ fn session(value: &str) -> SessionId {
 }
 
 fn checkpoint(session_id: &str) -> Checkpoint {
-    let mut checkpoint = Checkpoint::empty(session(session_id));
-    Arc::make_mut(&mut checkpoint.session_context).owner_id = "test-bot".into();
-    checkpoint
+    Checkpoint::for_test_owner(session_id, "test-bot")
 }
 
 #[tokio::test]

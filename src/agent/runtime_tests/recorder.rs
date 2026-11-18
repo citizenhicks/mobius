@@ -28,12 +28,6 @@ impl Model for BlockingRetainingModel {
     }
 }
 
-fn test_checkpoint(session_id: &str) -> Checkpoint {
-    let mut checkpoint = Checkpoint::empty(session_id.parse().expect("session ID"));
-    std::sync::Arc::make_mut(&mut checkpoint.session_context).owner_id = "test-bot".into();
-    checkpoint
-}
-
 #[tokio::test]
 async fn recorder_delivers_committed_events_and_statistics_without_publishing_failed_saves() {
     let directory = tempfile::tempdir().expect("checkpoint directory");
@@ -42,7 +36,11 @@ async fn recorder_delivers_committed_events_and_statistics_without_publishing_fa
             .expect("checkpoint store"),
     );
     checkpoints
-        .save(test_checkpoint("session"), Vec::new(), None)
+        .save(
+            Checkpoint::for_test_owner("session", "test-bot"),
+            Vec::new(),
+            None,
+        )
         .await
         .expect("initial checkpoint");
     let store: Arc<dyn CheckpointStore> = Arc::<SqliteCheckpoint>::clone(&checkpoints);
@@ -81,7 +79,7 @@ async fn recorder_delivers_committed_events_and_statistics_without_publishing_fa
         stats.borrow().is_none(),
         "ordinary appended events do not publish statistics"
     );
-    let mut checkpoint = test_checkpoint("session");
+    let mut checkpoint = Checkpoint::for_test_owner("session", "test-bot");
     for count in 1..=2 {
         checkpoint.sequence = count;
         checkpoint.execution_stats.run_count = count;

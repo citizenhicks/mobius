@@ -629,8 +629,7 @@ mod tests {
     #[tokio::test]
     async fn invalid_checkpoint_is_rejected_before_it_reaches_the_store() {
         let (commands, mut receiver) = mpsc::channel(1);
-        let mut checkpoint = Checkpoint::empty("session".parse().expect("session ID"));
-        Arc::make_mut(&mut checkpoint.session_context).owner_id = "test-bot".into();
+        let mut checkpoint = Checkpoint::for_test_owner("session", "test-bot");
         checkpoint.pending_tools.push(ToolCall {
             call_id: "call".into(),
             name: "tool".into(),

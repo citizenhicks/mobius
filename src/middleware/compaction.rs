@@ -740,8 +740,7 @@ mod tests {
             let directory = tempfile::tempdir().expect("directory");
             let path = directory.path().join("checkpoints.sqlite3");
             let checkpoints = Arc::new(SqliteCheckpoint::new(&path).expect("store"));
-            let mut checkpoint = Checkpoint::empty("session".parse().expect("session ID"));
-            std::sync::Arc::make_mut(&mut checkpoint.session_context).owner_id = "test-bot".into();
+            let mut checkpoint = Checkpoint::for_test_owner("session", "test-bot");
             checkpoint.context_epoch = 1;
             checkpoints
                 .save(checkpoint.clone(), Vec::new(), None)

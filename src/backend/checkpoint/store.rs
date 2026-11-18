@@ -96,6 +96,13 @@ pub struct Checkpoint {
 }
 
 impl Checkpoint {
+    #[cfg(test)]
+    pub(crate) fn for_test_owner(session: &str, owner: &str) -> Self {
+        let mut checkpoint = Self::empty(session.parse().expect("session ID"));
+        Arc::make_mut(&mut checkpoint.session_context).owner_id = owner.into();
+        checkpoint
+    }
+
     /// Creates an empty session checkpoint.
     #[must_use]
     pub fn empty(session_id: SessionId) -> Self {

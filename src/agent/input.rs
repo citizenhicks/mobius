@@ -546,10 +546,9 @@ mod tests {
             SqliteCheckpoint::new(directory.path().join("checkpoints.sqlite3"))
                 .expect("checkpoint store"),
         );
-        let mut checkpoint = Checkpoint::empty("session-1".parse().expect("session ID"));
-        std::sync::Arc::make_mut(&mut checkpoint.session_context).owner_id = "test-bot".into();
+        let checkpoint = Checkpoint::for_test_owner("session-1", "test-bot");
         checkpoints
-            .save(checkpoint.clone(), Vec::new(), None)
+            .save(checkpoint, Vec::new(), None)
             .await
             .expect("initial checkpoint");
         let (recorder, events) = crate::agent::recorder::RecorderIngress::spawn(
