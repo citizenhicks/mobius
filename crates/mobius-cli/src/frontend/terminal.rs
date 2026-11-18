@@ -19,6 +19,11 @@ use ratatui::text::{Line, Span};
 
 pub(super) const INPUT_POLL: Duration = Duration::from_millis(16);
 
+pub(super) fn exit_key(key: ratatui::crossterm::event::KeyEvent) -> bool {
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c' | 'd'))
+}
+
 pub(super) fn input_interval() -> tokio::time::Interval {
     let mut input = tokio::time::interval(INPUT_POLL);
     input.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);

@@ -4,7 +4,7 @@ use mobius_gateway::wire::{
     BotRecord, ClientMessage, ReadyPayload, Routine, RoutineAction, RoutineCommand, RoutineRun,
     RoutineRunPreview, RoutineRunStatus,
 };
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 
 use super::form::{BotForm, Form, FormFlow, RoutineForm};
 use super::{Action, request_action};
@@ -179,9 +179,7 @@ impl BotsState {
         if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
             return Action::None;
         }
-        if key.modifiers.contains(KeyModifiers::CONTROL)
-            && matches!(key.code, KeyCode::Char('c' | 'd'))
-        {
+        if crate::frontend::terminal::exit_key(key) {
             return Action::Exit;
         }
         if self.pending.is_some() {

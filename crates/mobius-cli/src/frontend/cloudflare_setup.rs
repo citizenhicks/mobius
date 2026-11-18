@@ -143,8 +143,7 @@ fn handle_key(state: &mut State, key: KeyEvent) -> Action {
     if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
         return Action::Continue;
     }
-    if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c' | 'd'))
-    {
+    if crate::frontend::terminal::exit_key(key) {
         return Action::Cancel;
     }
     match key.code {

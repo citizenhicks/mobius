@@ -546,9 +546,7 @@ impl SetupState {
         if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
             return Flow::Continue;
         }
-        if key.modifiers.contains(KeyModifiers::CONTROL)
-            && matches!(key.code, KeyCode::Char('c' | 'd'))
-        {
+        if crate::frontend::terminal::exit_key(key) {
             return Flow::Cancel;
         }
         if let Some(instance) = self.remove_confirmation.take() {

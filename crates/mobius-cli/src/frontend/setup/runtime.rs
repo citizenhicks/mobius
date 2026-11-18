@@ -8,7 +8,7 @@ use mobius_gateway::wire::{
     AgentComposition, BotRecord, ClientMessage, HarnessConfig, ProviderConfig, ReadyPayload,
     ServerFrame, ServerMessage,
 };
-use ratatui::crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{Event, KeyCode, KeyEventKind};
 
 use super::SetupMode;
 use super::state::{Authentication, Flow, SetupState};
@@ -488,8 +488,7 @@ async fn next_frame(
                             if cancel == Cancel::Enabled
                                 && matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
                                 && (key.code == KeyCode::Esc
-                                    || key.modifiers.contains(KeyModifiers::CONTROL)
-                                        && matches!(key.code, KeyCode::Char('c' | 'd'))) =>
+                                    || crate::frontend::terminal::exit_key(key)) =>
                         {
                             return Ok(None);
                         }

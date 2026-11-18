@@ -105,9 +105,7 @@ impl ExtensionsState {
         if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
             return ScreenAction::None;
         }
-        if key.modifiers.contains(KeyModifiers::CONTROL)
-            && matches!(key.code, KeyCode::Char('c' | 'd'))
-        {
+        if crate::frontend::terminal::exit_key(key) {
             return ScreenAction::Exit;
         }
         if self.pending.is_some() {

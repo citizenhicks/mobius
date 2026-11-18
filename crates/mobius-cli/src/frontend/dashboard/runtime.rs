@@ -126,8 +126,7 @@ pub(super) async fn handle_key(
     state: &mut DashboardState,
     key: KeyEvent,
 ) -> Result<bool> {
-    if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c' | 'd'))
-    {
+    if crate::frontend::terminal::exit_key(key) {
         return Ok(true);
     }
     if state.overlay.is_some() {

@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use mobius::Result;
-use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
@@ -37,8 +37,7 @@ fn decision(key: KeyEvent) -> Option<bool> {
     if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
         return None;
     }
-    if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c' | 'd'))
-    {
+    if crate::frontend::terminal::exit_key(key) {
         return Some(false);
     }
     match key.code {
@@ -90,7 +89,7 @@ mod tests {
 
     #[test]
     fn only_an_explicit_yes_confirms_reinitialization() {
-        let key = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE);
+        let key = KeyEvent::new(KeyCode::Char('y'), ratatui::crossterm::event::KeyModifiers::NONE);
 
         assert_eq!(decision(key), Some(true));
     }
