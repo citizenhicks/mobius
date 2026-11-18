@@ -59,9 +59,13 @@ pub(super) async fn open_selected(
     writer: &mut (impl AsyncWrite + Unpin),
     selected: &mut Option<SelectedChat>,
     request_id: Arc<str>,
-    host: HostHandle,
+    host: std::result::Result<HostHandle, Rejection>,
     last_sequence: Option<u64>,
 ) -> Result<()> {
+    let host = match host {
+        Ok(host) => host,
+        Err(rejection) => return write_rejection(writer, request_id, rejection).await,
+    };
     let broadcasts = host.subscribe();
     let snapshot = match host.snapshot(last_sequence).await {
         Ok(snapshot) => snapshot,

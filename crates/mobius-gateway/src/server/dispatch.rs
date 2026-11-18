@@ -1018,10 +1018,8 @@ async fn create_session(
     bot_id: Arc<str>,
     gateway: &GatewayHost,
 ) -> Result<()> {
-    match gateway.create_session(&workspace, &bot_id).await {
-        Ok(host) => open_selected(writer, selected, request_id, host, None).await,
-        Err(rejection) => write_rejection(writer, request_id, rejection).await,
-    }
+    let host = gateway.create_session(&workspace, &bot_id).await;
+    open_selected(writer, selected, request_id, host, None).await
 }
 
 async fn create_workspace_directory(
@@ -1045,10 +1043,8 @@ async fn open_session(
     last_sequence: Option<u64>,
     gateway: &GatewayHost,
 ) -> Result<()> {
-    match gateway.open_session(&session_id).await {
-        Ok(host) => open_selected(writer, selected, request_id, host, last_sequence).await,
-        Err(rejection) => write_rejection(writer, request_id, rejection).await,
-    }
+    let host = gateway.open_session(&session_id).await;
+    open_selected(writer, selected, request_id, host, last_sequence).await
 }
 
 /// Selects a chat for requests only: no replay, no live events.
