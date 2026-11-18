@@ -84,6 +84,18 @@ use crate::protocol::internal_message_kind;
 use serde_json::Value;
 use tokio::sync::Notify;
 
+fn fault_injection_store() -> (
+    tempfile::TempDir,
+    Arc<SqliteCheckpoint>,
+    rusqlite::Connection,
+) {
+    let workspace = tempfile::tempdir().expect("checkpoint directory");
+    let path = workspace.path().join("checkpoints.sqlite3");
+    let store = SqliteCheckpoint::new(&path).expect("checkpoint store");
+    let connection = rusqlite::Connection::open(path).expect("fault injection connection");
+    (workspace, Arc::new(store), connection)
+}
+
 fn test_checkpoints(workspace: &Path) -> Arc<SqliteCheckpoint> {
     Arc::new(
         SqliteCheckpoint::new(workspace.join("checkpoints.sqlite3")).expect("checkpoint store"),

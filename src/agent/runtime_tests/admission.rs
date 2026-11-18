@@ -4,9 +4,7 @@ use super::*;
 
 #[tokio::test]
 async fn failed_turn_start_preserves_the_complete_durable_queue() {
-    let workspace = tempfile::tempdir().expect("workspace");
-    let database = workspace.path().join("checkpoints.sqlite3");
-    let checkpoints = Arc::new(SqliteCheckpoint::new(&database).expect("checkpoint store"));
+    let (workspace, checkpoints, connection) = fault_injection_store();
     let mut checkpoint = Checkpoint::empty("failed-start-queue".parse().expect("session ID"));
     checkpoint.session_context = test_session_context().into();
     checkpoint.model_route = Some("test".into());
@@ -19,8 +17,7 @@ async fn failed_turn_start_preserves_the_complete_durable_queue() {
         .save(checkpoint.clone(), Vec::new(), None)
         .await
         .expect("seed queued input");
-    rusqlite::Connection::open(&database)
-        .expect("open database")
+    connection
         .execute_batch(
             "CREATE TRIGGER reject_turn_start BEFORE UPDATE ON sessions
              WHEN json_type(NEW.latest_checkpoint_json, '$.active_execution') = 'object'

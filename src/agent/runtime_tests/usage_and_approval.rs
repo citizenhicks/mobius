@@ -5,9 +5,7 @@ use super::*;
 #[tokio::test]
 async fn failed_checkpoint_save_does_not_journal_an_approval_decision() {
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        let workspace = tempfile::tempdir().expect("workspace");
-        let path = workspace.path().join("checkpoints.sqlite3");
-        let checkpoints = Arc::new(SqliteCheckpoint::new(&path).expect("checkpoint store"));
+        let (workspace, checkpoints, connection) = fault_injection_store();
         let model = Arc::new(ScriptedModel {
             outputs: Mutex::new(VecDeque::from([scripted_tool_call()])),
             tool_counts: Mutex::new(Vec::new()),
@@ -37,7 +35,6 @@ async fn failed_checkpoint_save_does_not_journal_an_approval_decision() {
                 break request.id;
             }
         };
-        let connection = rusqlite::Connection::open(path).unwrap();
         connection
             .execute_batch(
                 "CREATE TRIGGER fail_decision_save BEFORE UPDATE OF latest_checkpoint_json ON sessions
