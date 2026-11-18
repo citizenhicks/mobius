@@ -124,9 +124,7 @@ impl OpenAiSocket {
         client: reqwest::Client,
         settings: super::ModelTransportSettings,
     ) -> Result<Self> {
-        if api_key.trim().is_empty() {
-            return Err(Error::Invalid("provider API key cannot be empty".into()));
-        }
+        super::authorization::validate_api_key(Some(&api_key))?;
         let socket_url = responses_socket_url(&base_url)?;
         let mut provider = Self::from_authorization(
             Arc::new(ApiKeyAuthorization::new(api_key)),

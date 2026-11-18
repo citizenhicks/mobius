@@ -493,9 +493,7 @@ impl ApiKeyModel {
         client: Client,
         transport: ModelTransportSettings,
     ) -> Result<Self> {
-        if api_key.as_deref().is_some_and(|key| key.trim().is_empty()) {
-            return Err(Error::Invalid("provider API key cannot be empty".into()));
-        }
+        super::authorization::validate_api_key(api_key.as_deref())?;
         Ok(Self {
             client,
             api_key,

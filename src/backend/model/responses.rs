@@ -144,9 +144,7 @@ impl OpenAi {
         client: Client,
         settings: super::ModelTransportSettings,
     ) -> Result<Self> {
-        if api_key.as_deref().is_some_and(|key| key.trim().is_empty()) {
-            return Err(Error::Invalid("provider API key cannot be empty".into()));
-        }
+        super::authorization::validate_api_key(api_key.as_deref())?;
         let auth = api_key
             .map(|key| Arc::new(ApiKeyAuthorization::new(key)) as Arc<dyn OpenAiAuthorization>);
         Self::from_authorization(auth, base_url, model, client, settings)

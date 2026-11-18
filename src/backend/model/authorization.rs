@@ -26,6 +26,15 @@ pub(super) trait OpenAiAuthorization: Send + Sync {
     fn recover_unauthorized<'a>(&'a self, rejected_token: &'a str) -> BoxFuture<'a, Result<bool>>;
 }
 
+pub(super) fn validate_api_key(key: Option<&str>) -> Result<()> {
+    if key.is_some_and(|key| key.trim().is_empty()) {
+        return Err(crate::Error::Invalid(
+            "provider API key cannot be empty".into(),
+        ));
+    }
+    Ok(())
+}
+
 pub(super) struct ApiKeyAuthorization(Arc<str>);
 
 impl ApiKeyAuthorization {
