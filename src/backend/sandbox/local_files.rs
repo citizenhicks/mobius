@@ -89,16 +89,12 @@ pub(super) fn read_file_range(
 ) -> Result<(Vec<u8>, Option<u64>)> {
     let mut file = open_regular_file(root, relative, requested)?;
     let size = file.metadata()?.len();
-    if offset > size {
-        return Err(Error::Sandbox("file offset exceeds its size".into()));
-    }
+    let (length, next) = crate::backend::chunk_bounds(size, offset, max_bytes)
+        .ok_or_else(|| Error::Sandbox("file offset exceeds its size".into()))?;
     file.seek(std::io::SeekFrom::Start(offset))?;
-    let length = usize::try_from(size.saturating_sub(offset).min(max_bytes as u64))
-        .map_err(|error| Error::Sandbox(format!("file range is unsupported: {error}")))?;
     let mut data = vec![0; length];
     file.read_exact(&mut data)?;
-    let end = offset.saturating_add(length as u64);
-    Ok((data, (end < size).then_some(end)))
+    Ok((data, next))
 }
 
 fn open_regular_file(root: Dir, relative: &Path, requested: &str) -> Result<cap_std::fs::File> {

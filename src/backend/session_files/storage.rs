@@ -38,21 +38,16 @@ pub(super) async fn read_resolved_chunk(
             "session file read size must be 1–{MAX_READ_CHUNK_BYTES} bytes"
         )));
     }
-    if offset > file.size {
-        return Err(Error::Tool("session file offset exceeds file size".into()));
-    }
+    let (length, next_offset) = crate::backend::chunk_bounds(file.size, offset, max_bytes)
+        .ok_or_else(|| Error::Tool("session file offset exceeds file size".into()))?;
     let mut handle = tokio::fs::File::open(path).await?;
     handle.seek(std::io::SeekFrom::Start(offset)).await?;
-    let remaining = file.size.saturating_sub(offset);
-    let length = usize::try_from(remaining.min(max_bytes as u64))
-        .map_err(|error| Error::Tool(format!("session file range is unsupported: {error}")))?;
     let mut data = vec![0; length];
     handle.read_exact(&mut data).await?;
-    let end = offset.saturating_add(length as u64);
     Ok(SessionFileChunk {
         offset,
         data,
-        next_offset: (end < file.size).then_some(end),
+        next_offset,
     })
 }
 
