@@ -35,67 +35,53 @@ pub(super) struct LoadedPackage {
 }
 
 pub(super) fn load(root: PathBuf) -> Result<LoadedPackage> {
-    match agent_plugin_schema(&root)? {
-        Some(schema) if schema == AGENT_PLUGIN_SCHEMA => load_agent_plugin(root),
-        Some(schema) => Err(Error::Invalid(format!(
-            "unsupported Agent Plugin schema `{schema}`"
-        ))),
-        None if root.join(OPENAI_PLUGIN_MANIFEST).exists() => load_openai_plugin(root),
-        None => load_skill(root),
-    }
-}
-
-fn load_openai_plugin(root: PathBuf) -> Result<LoadedPackage> {
-    let manifest = load_openai_plugin_manifest(&root)?;
-    reject_mcp_components(&root, &manifest.name)?;
     let mut skills = BTreeMap::new();
-    discover_openai_plugin_skills(&root, &manifest, &mut skills)?;
-    let hooks = hooks::HookDefinitions::load(&root, manifest.hooks.as_ref())?;
-    let inspected_hooks = hooks.inspect();
+    let (name, version, description, hooks) = match agent_plugin_schema(&root)? {
+        Some(schema) if schema == AGENT_PLUGIN_SCHEMA => {
+            let manifest = load_agent_plugin_manifest(&root)?;
+            reject_mcp_components(&root, &manifest.name)?;
+            discover_agent_plugin_skills(&root, &manifest.name, &mut skills)?;
+            (manifest.name, manifest.version, manifest.description, None)
+        }
+        Some(schema) => {
+            return Err(Error::Invalid(format!(
+                "unsupported Agent Plugin schema `{schema}`"
+            )));
+        }
+        None if root.join(OPENAI_PLUGIN_MANIFEST).exists() => {
+            let manifest = load_openai_plugin_manifest(&root)?;
+            reject_mcp_components(&root, &manifest.name)?;
+            discover_openai_plugin_skills(&root, &manifest, &mut skills)?;
+            let hooks = hooks::HookDefinitions::load(&root, manifest.hooks.as_ref())?;
+            (
+                manifest.name,
+                manifest.version,
+                manifest.description,
+                Some(hooks),
+            )
+        }
+        None => return load_skill(root),
+    };
+    let inspected_hooks = hooks
+        .as_ref()
+        .map_or_else(Vec::new, hooks::HookDefinitions::inspect);
     if skills.is_empty() && inspected_hooks.is_empty() {
         return Err(Error::Invalid(format!(
-            "plugin `{}` has no supported contributions",
-            manifest.name
+            "plugin `{name}` has no supported contributions"
         )));
     }
     Ok(LoadedPackage {
         root,
         metadata: ExtensionPackage {
             kind: ExtensionPackageKind::Plugin,
-            name: manifest.name,
-            version: manifest.version,
-            description: manifest.description.unwrap_or_default(),
+            name,
+            version,
+            description: description.unwrap_or_default(),
             skills: skills.keys().cloned().collect(), // rules-allow: the package metadata and the skill map each own the names
             hooks: inspected_hooks,
         },
         skills,
-        hooks: Some(hooks),
-    })
-}
-
-fn load_agent_plugin(root: PathBuf) -> Result<LoadedPackage> {
-    let manifest = load_agent_plugin_manifest(&root)?;
-    reject_mcp_components(&root, &manifest.name)?;
-    let mut skills = BTreeMap::new();
-    discover_agent_plugin_skills(&root, &manifest.name, &mut skills)?;
-    if skills.is_empty() {
-        return Err(Error::Invalid(format!(
-            "plugin `{}` has no supported contributions",
-            manifest.name
-        )));
-    }
-    Ok(LoadedPackage {
-        root,
-        metadata: ExtensionPackage {
-            kind: ExtensionPackageKind::Plugin,
-            name: manifest.name,
-            version: manifest.version,
-            description: manifest.description.unwrap_or_default(),
-            skills: skills.keys().cloned().collect(), // rules-allow: the package metadata and the skill map each own the names
-            hooks: Vec::new(),
-        },
-        skills,
-        hooks: None,
+        hooks,
     })
 }
 
