@@ -18,11 +18,9 @@ impl Model for BlockingRetainingModel {
         events: ModelEventSink,
     ) -> BoxFuture<'a, Result<ModelOutput>> {
         *self.sink.lock().expect("retained sink lock") = Some(events);
-        let started = Arc::clone(&self.started);
-        let release = Arc::clone(&self.release);
         Box::pin(async move {
-            started.notify_one();
-            release.notified().await;
+            self.started.notify_one();
+            self.release.notified().await;
             Ok(scripted_message("done"))
         })
     }

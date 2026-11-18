@@ -95,13 +95,10 @@ impl Model for ReleasingModel {
         _request: ModelRequest,
         _events: ModelEventSink,
     ) -> BoxFuture<'a, Result<ModelOutput>> {
-        let finished = Arc::clone(&self.finished);
-        let release = Arc::clone(&self.release);
-        let started = Arc::clone(&self.started);
         Box::pin(async move {
-            started.notify_one();
-            release.notified().await;
-            finished.store(true, Ordering::SeqCst);
+            self.started.notify_one();
+            self.release.notified().await;
+            self.finished.store(true, Ordering::SeqCst);
             Ok(scripted_message("done"))
         })
     }
