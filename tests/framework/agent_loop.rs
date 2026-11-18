@@ -1,5 +1,15 @@
 use super::*;
 
+async fn coding_agent(
+    workspace: &std::path::Path,
+    model: Arc<ScriptedModel>,
+) -> mobius::agent::Agent {
+    let tools = Tools::coding(SessionFileStore::new(workspace, None));
+    create_agent(test_config(workspace, model, vec![Arc::new(tools)]))
+        .await
+        .expect("create agent")
+}
+
 #[tokio::test]
 async fn loop_executes_tool_and_returns_result_to_model() {
     let workspace = TempDir::new().expect("create workspace");
@@ -12,18 +22,7 @@ async fn loop_executes_tool_and_returns_result_to_model() {
         ),
         text_response("read hello"),
     ]));
-    let mut agent = create_agent(test_config(
-        workspace.path(),
-        Arc::clone(&model),
-        vec![Arc::new(Tools::coding(
-            mobius::backend::session_files::SessionFileStore::new(
-                tempfile::tempdir().expect("files").path(),
-                None,
-            ),
-        ))],
-    ))
-    .await
-    .expect("create agent");
+    let mut agent = coding_agent(workspace.path(), Arc::clone(&model)).await;
 
     agent
         .sender()
@@ -59,18 +58,7 @@ async fn approval_denial_prevents_command_execution() {
         ),
         text_response("denied"),
     ]));
-    let mut agent = create_agent(test_config(
-        workspace.path(),
-        model,
-        vec![Arc::new(Tools::coding(
-            mobius::backend::session_files::SessionFileStore::new(
-                tempfile::tempdir().expect("files").path(),
-                None,
-            ),
-        ))],
-    ))
-    .await
-    .expect("create agent");
+    let mut agent = coding_agent(workspace.path(), model).await;
     let sender = agent.sender();
     sender
         .submit(user_message("run a command"))
