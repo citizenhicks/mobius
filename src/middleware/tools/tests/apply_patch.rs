@@ -29,9 +29,13 @@ fn permissions(mode: SandboxMode) -> ToolPermissions {
 }
 
 async fn apply(sandbox: Arc<Sandbox>, patch: &str) -> Result<String> {
+    apply_with_mode(sandbox, patch, SandboxMode::WorkspaceWrite).await
+}
+
+async fn apply_with_mode(sandbox: Arc<Sandbox>, patch: &str, mode: SandboxMode) -> Result<String> {
     ApplyPatch
         .call(
-            ToolContext::new(sandbox, permissions(SandboxMode::WorkspaceWrite), "turn"),
+            ToolContext::new(sandbox, permissions(mode), "turn"),
             serde_json::json!({ "patch": patch }),
         )
         .await
@@ -169,11 +173,7 @@ async fn apply_patch_uses_the_active_sandbox_policy() {
     assert!(workspace_error.to_string().contains(patch_path));
     assert_eq!(std::fs::read_to_string(&path).expect("unchanged"), "old\n");
 
-    ApplyPatch
-        .call(
-            ToolContext::new(sandbox, permissions(SandboxMode::DangerFullAccess), "turn"),
-            serde_json::json!({ "patch": patch }),
-        )
+    apply_with_mode(sandbox, &patch, SandboxMode::DangerFullAccess)
         .await
         .expect("full access patch");
     assert_eq!(std::fs::read_to_string(path).expect("patched"), "new\n");
