@@ -29,7 +29,7 @@ pub(super) fn model_request() -> ModelRequest<'static> {
     }
 }
 
-pub(super) fn completed_events(text: &str, response_id: &str) -> [Value; 2] {
+fn completed_events(text: &str, response_id: &str) -> [Value; 2] {
     [
         serde_json::json!({
             "type": "response.output_item.done",
@@ -46,6 +46,20 @@ pub(super) fn completed_events(text: &str, response_id: &str) -> [Value; 2] {
             "response": {"id": response_id, "output": []}
         }),
     ]
+}
+
+pub(super) async fn write_completed(
+    socket: &mut WebSocketStream<TcpStream>,
+    text: &str,
+    response_id: &str,
+) {
+    use futures_util::SinkExt as _;
+    for event in completed_events(text, response_id) {
+        socket
+            .send(Message::text(event.to_string()))
+            .await
+            .expect("send completed response");
+    }
 }
 
 pub(super) use crate::backend::model::test_support::loopback_listener;

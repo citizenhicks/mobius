@@ -24,15 +24,11 @@ impl Middleware for CountUserPromptSubmits {
 async fn idle_peer_messages_start_turns_and_replay_without_becoming_user_prompts() {
     let workspace = tempfile::tempdir().expect("workspace");
     let checkpoints = test_checkpoints(workspace.path());
-    let model = Arc::new(ScriptedModel {
-        outputs: Mutex::new(VecDeque::from([
-            scripted_message("First peer handled."),
-            scripted_message("Second peer handled."),
-            scripted_message("Resumed peer handled."),
-        ])),
-        tool_counts: Mutex::new(Vec::new()),
-        inputs: Mutex::new(Vec::new()),
-    });
+    let model = Arc::new(ScriptedModel::new([
+        scripted_message("First peer handled."),
+        scripted_message("Second peer handled."),
+        scripted_message("Resumed peer handled."),
+    ]));
     let prompt_submits = Arc::new(AtomicUsize::new(0));
     let mut config = config_with_model(
         workspace.path(),
@@ -124,7 +120,7 @@ async fn idle_peer_messages_start_turns_and_replay_without_becoming_user_prompts
             .is_some_and(|keys| keys.contains("permissions"))
     );
     {
-        let inputs = model.inputs.lock().expect("model input lock").clone();
+        let inputs = model.inputs.lock().expect("model input lock");
         let notice = inputs[0]
             .iter()
             .position(|item| internal_message_kind(item) == Some("message_permissions"))
@@ -166,6 +162,7 @@ async fn idle_peer_messages_start_turns_and_replay_without_becoming_user_prompts
                 .expect("typed peer context"),
             expected
         );
+        drop(inputs);
     }
 
     let transcript = checkpoints
@@ -219,7 +216,7 @@ async fn idle_peer_messages_start_turns_and_replay_without_becoming_user_prompts
         resumed.next_event().await.expect("resumed event").msg,
         EventMsg::TurnComplete(_)
     ) {}
-    let inputs = model.inputs.lock().expect("model input lock").clone();
+    let inputs = std::mem::take(&mut *model.inputs.lock().expect("model input lock"));
     assert_eq!(inputs.len(), 3);
     assert!(
         inputs[2].starts_with(&inputs[1]),

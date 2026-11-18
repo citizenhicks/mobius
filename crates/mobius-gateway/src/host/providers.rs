@@ -86,7 +86,7 @@ impl GatewayHost {
 
     pub(crate) async fn clear_credential(
         &self,
-        instance: String,
+        instance: &str,
     ) -> std::result::Result<(), Rejection> {
         let credential_mutation = self.begin_credential_mutation().await;
         let (base_url, publication) = {
@@ -94,17 +94,16 @@ impl GatewayHost {
             let base_url = state
                 .config()?
                 .configured_providers
-                .get(&instance)
+                .get(instance)
                 .map(|configured| {
                     provider(&configured.selection.provider).map(|definition| {
-                        Some(selected_base_url(definition, &configured.selection).share())
+                        selected_base_url(definition, &configured.selection).share()
                     })
                 })
                 .transpose()
-                .map_err(invalid_config)?
-                .flatten();
+                .map_err(invalid_config)?;
             let publication = crate::publication::Outcome::applied(
-                state.credentials.remove(&instance).map(|_| ()),
+                state.credentials.remove(instance).map(|_| ()),
             )
             .map_err(invalid_config)?;
             drop(state);
@@ -114,7 +113,7 @@ impl GatewayHost {
         finish_publication(
             publication.confirm(),
             self.refresh_provider_sessions(ProviderRefresh::Instance {
-                instance: &instance,
+                instance,
                 base_url: base_url.as_ref(),
             })
             .await,
@@ -123,8 +122,8 @@ impl GatewayHost {
 
     pub(crate) async fn set_credential(
         &self,
-        instance: String,
-        provider_id: String,
+        instance: &str,
+        provider_id: &str,
         api_key: String,
         base_url: Option<BaseUrl>,
         expires_at: Option<u64>,
@@ -132,7 +131,7 @@ impl GatewayHost {
         let credential_mutation = self.begin_credential_mutation().await;
         let (base_url, configured, publication) = {
             let state = self.state.lock().await;
-            let definition = provider(&provider_id).map_err(invalid_config)?;
+            let definition = provider(provider_id).map_err(invalid_config)?;
             let base_url = Some(
                 base_url
                     .as_ref()
@@ -141,11 +140,11 @@ impl GatewayHost {
             let configured = state
                 .config()?
                 .configured_providers
-                .get(&instance)
+                .get(instance)
                 .filter(|configured| {
                     let configured_base_url =
                         Some(selected_base_url(definition, &configured.selection));
-                    configured.selection.provider == provider_id.as_str()
+                    configured.selection.provider == provider_id
                         && configured.selection.endpoint_auth
                             == ProviderEndpointAuth::Credentialless
                         && configured_base_url == base_url
@@ -159,8 +158,8 @@ impl GatewayHost {
                     operator_managed: false,
                 });
             let publication = crate::publication::Outcome::applied(state.credentials.set(
-                &instance,
-                &provider_id,
+                instance,
+                provider_id,
                 &api_key,
                 base_url,
                 expires_at,
@@ -182,11 +181,8 @@ impl GatewayHost {
         }
         finish_publication(
             publication.confirm(),
-            self.refresh_provider_sessions(ProviderRefresh::Instance {
-                instance: &instance,
-                base_url,
-            })
-            .await,
+            self.refresh_provider_sessions(ProviderRefresh::Instance { instance, base_url })
+                .await,
         )
     }
 

@@ -91,7 +91,7 @@ async fn run_chat(replies: &'static [Reply]) -> (Vec<Value>, Vec<EventMsg>) {
     if let Err(error) = server.await {
         assert!(error.is_cancelled(), "HTTP server failed: {error}");
     }
-    let requests = requests.lock().expect("captured requests").clone();
+    let requests = std::mem::take(&mut *requests.lock().expect("captured requests"));
     (requests, events)
 }
 

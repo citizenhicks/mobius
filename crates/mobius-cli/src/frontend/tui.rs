@@ -24,9 +24,7 @@ use ratatui::text::Line;
 use tempfile::TempPath;
 
 use self::events::UsageStatus;
-#[cfg(test)]
-use self::input::UiAction;
-use super::catalog::{GatewayAction, KeyedWidgets, MenuItem, UiCatalog};
+use super::catalog::{KeyedWidgets, MenuItem, UiAction, UiCatalog};
 use super::dashboard::CapabilityOverlay;
 use super::terminal::{
     MAX_ENTRY_BYTES, bounded_terminal_text, terminal_text, truncate_bytes, truncate_display_text,
@@ -122,27 +120,13 @@ struct BlockItem {
     block: FrontendBlock,
 }
 
-#[derive(Clone)]
-enum PickerAction {
-    Submit(Box<Op>),
-    Resume(mobius::SessionId),
-    Gateway(GatewayAction),
-    Download(SessionFileReference),
-    CreateSession {
-        workspace: PathBuf,
-        bot_id: Arc<str>,
-        clear: bool,
-    },
-    ConfirmDeleteFile(SessionFileReference),
-}
-
 struct PickerOption {
     label: String,
     description: String,
     detail: String,
     shows_detail: bool,
-    action: PickerAction,
-    secondary: Option<PickerAction>,
+    action: UiAction,
+    secondary: Option<UiAction>,
 }
 
 impl From<FrontendPickerOption> for PickerOption {
@@ -152,7 +136,7 @@ impl From<FrontendPickerOption> for PickerOption {
             description: option.description,
             detail: option.detail,
             shows_detail: false,
-            action: PickerAction::Submit(Box::new(option.op)),
+            action: UiAction::submit(option.op),
             secondary: None,
         }
     }

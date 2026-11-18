@@ -161,8 +161,8 @@ async fn saved_bot_routes_survive_missing_credentials_without_advertising_unavai
 
     gateway
         .set_credential(
-            primary.instance.clone(),
-            primary.provider.clone(),
+            &primary.instance,
+            &primary.provider,
             "restored-test-credential".into(),
             primary.base_url.clone(),
             None,
@@ -175,7 +175,7 @@ async fn saved_bot_routes_survive_missing_credentials_without_advertising_unavai
     ));
     let ready = gateway.ready().await.expect("ready with credentials");
     gateway
-        .clear_credential(primary.instance)
+        .clear_credential(&primary.instance)
         .await
         .expect("clear credential");
     assert!(matches!(

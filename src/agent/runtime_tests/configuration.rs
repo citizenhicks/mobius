@@ -49,11 +49,7 @@ async fn auxiliary_usage_preserves_the_last_foreground_context() {
         checkpoints,
         "auxiliary-context",
         "test",
-        Arc::new(ScriptedModel {
-            outputs: Mutex::new(VecDeque::from([output.clone(), output.clone(), output])),
-            tool_counts: Mutex::new(Vec::new()),
-            inputs: Mutex::new(Vec::new()),
-        }),
+        Arc::new(ScriptedModel::new([output.clone(), output.clone(), output])),
     );
     config.middleware = Arc::new(test_middleware(vec![Arc::new(AuxiliaryUsage(
         AtomicUsize::new(0),
@@ -119,10 +115,7 @@ async fn completed_pre_model_usage_is_settled_when_a_later_hook_rejects_preparat
     let usage_observer = Arc::clone(&observed_usage);
     let config = runtime_config(
         Arc::new(ModelRouter::new("main", Arc::new(TestModel))),
-        Arc::new(Sandbox::new(
-            Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
-            ApprovalPolicy::Ask,
-        )),
+        test_sandbox(workspace.path(), ApprovalPolicy::Ask),
         checkpoint_store,
         test_middleware(vec![
             Arc::new(DurableBeforeModel),

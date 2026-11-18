@@ -59,7 +59,7 @@ async fn attachment_hydration_survives_plaintext_checkpoint_reset() {
         .expect("submit attachment turn");
     assert_eq!(final_message(&mut agent).await, "done");
 
-    let requests = model.requests.lock().expect("requests").clone();
+    let requests = model.take_requests();
     assert_eq!(requests.len(), 3);
     assert_eq!(request_image_count(&requests[1].input), 1);
     assert_eq!(request_image_count(&requests[2].input), 1);
@@ -121,7 +121,7 @@ async fn malformed_current_image_fails_but_does_not_poison_later_turns() {
         .expect("submit current image");
     assert_eq!(final_message(&mut agent).await, "image recovered");
 
-    let requests = model.requests.lock().expect("requests").clone();
+    let requests = model.take_requests();
     assert_eq!(request_image_count(&requests[0].input), 0);
     assert_eq!(request_image_count(&requests[1].input), 1);
     let recovery = serde_json::to_string(&requests[1].input).expect("serialize recovery input");

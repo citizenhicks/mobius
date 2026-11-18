@@ -167,12 +167,7 @@ async fn native_stream_round_trip_preserves_thinking_signatures_tools_and_usage(
         .unwrap(),
     );
     let input = [user_message("Read a.rs.")];
-    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let capture = Arc::clone(&seen);
-    let events: ModelEventSink = Arc::new(move |event| {
-        capture.lock().unwrap().push(event);
-        Box::pin(async { Ok(()) })
-    });
+    let (events, seen) = crate::backend::model::test_support::record_events();
     let output = model
         .respond(request(&input, &[]), events)
         .await

@@ -84,6 +84,13 @@ use crate::protocol::internal_message_kind;
 use serde_json::Value;
 use tokio::sync::Notify;
 
+fn test_sandbox(workspace: &Path, policy: ApprovalPolicy) -> Arc<Sandbox> {
+    Arc::new(Sandbox::new(
+        Arc::new(LocalSandbox::new(workspace).expect("local sandbox")),
+        policy,
+    ))
+}
+
 fn fault_injection_store() -> (
     tempfile::TempDir,
     Arc<SqliteCheckpoint>,
@@ -152,10 +159,20 @@ struct HandoffModel {
 
 struct RejectFirstPrompt(AtomicBool);
 
+#[derive(Default)]
 struct ScriptedModel {
     outputs: Mutex<VecDeque<ModelOutput>>,
     tool_counts: Mutex<Vec<usize>>,
     inputs: Mutex<Vec<Vec<Value>>>,
+}
+
+impl ScriptedModel {
+    fn new(outputs: impl Into<VecDeque<ModelOutput>>) -> Self {
+        Self {
+            outputs: Mutex::new(outputs.into()),
+            ..Self::default()
+        }
+    }
 }
 
 struct DurableBeforeModel;
@@ -534,10 +551,7 @@ fn config_with_model(
 ) -> AgentConfig {
     runtime_config(
         Arc::new(ModelRouter::new(route, model)),
-        Arc::new(Sandbox::new(
-            Arc::new(LocalSandbox::new(workspace).expect("local sandbox")),
-            ApprovalPolicy::Ask,
-        )),
+        test_sandbox(workspace, ApprovalPolicy::Ask),
         checkpoints,
         test_middleware(Vec::new()),
         session_id,

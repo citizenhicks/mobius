@@ -224,14 +224,44 @@ pub enum SessionSlot<Id = SessionId, Record = Box<SessionRecord>> {
 /// Rebuilds the catalog `sessions` held from a [`ServerMessage::SessionsChanged`](crate::wire::ServerMessage::SessionsChanged).
 pub fn apply_session_changes(sessions: &mut Vec<SessionRecord>, changes: Vec<SessionSlot>) {
     let mut held: Vec<_> = std::mem::take(sessions).into_iter().map(Some).collect();
+    let mut first = 0;
+    let mut scan_budget = held.len().saturating_mul(8);
+    let mut reordered = None;
     *sessions = changes
         .into_iter()
-        .filter_map(|slot| match slot {
-            SessionSlot::Changed(session) => Some(*session),
-            SessionSlot::Unchanged(id) => held
-                .iter_mut()
-                .find(|held| held.as_ref().is_some_and(|held| held.session_id == id))
-                .and_then(Option::take),
+        .filter_map(|slot| {
+            let id = match slot {
+                SessionSlot::Unchanged(id) => id,
+                SessionSlot::Changed(record) => return Some(*record),
+            };
+            let remaining = held.get_mut(first..)?;
+            let matches =
+                |row: &Option<SessionRecord>| row.as_ref().is_some_and(|r| r.session_id == id);
+            if reordered.is_none() {
+                if remaining.first().is_some_and(matches) {
+                    first += 1;
+                    return remaining.first_mut()?.take();
+                }
+                // Bound repeated scans while letting small or sparse deltas skip the index.
+                if scan_budget >= remaining.len() {
+                    scan_budget -= remaining.len();
+                    return remaining
+                        .iter_mut()
+                        .find(|row| matches(row))
+                        .and_then(Option::take);
+                }
+            }
+            let positions = reordered.get_or_insert_with(|| {
+                let mut positions =
+                    std::collections::HashMap::<_, Vec<_>>::with_capacity(remaining.len());
+                for (i, row) in remaining.iter().enumerate().rev() {
+                    if let Some(row) = row {
+                        positions.entry(row.session_id.share()).or_default().push(i);
+                    }
+                }
+                positions
+            });
+            remaining.get_mut(positions.get_mut(&id)?.pop()?)?.take()
         })
         .collect();
 }

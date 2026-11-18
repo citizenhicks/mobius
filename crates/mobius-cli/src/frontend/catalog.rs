@@ -117,7 +117,7 @@ pub(crate) enum UiAction {
         clear: bool,
     },
     CreateSession {
-        workspace: PathBuf,
+        workspace: Arc<std::path::Path>,
         bot_id: Arc<str>,
         clear: bool,
     },

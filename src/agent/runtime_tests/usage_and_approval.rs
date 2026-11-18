@@ -6,18 +6,11 @@ use super::*;
 async fn failed_checkpoint_save_does_not_journal_an_approval_decision() {
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         let (workspace, checkpoints, connection) = fault_injection_store();
-        let model = Arc::new(ScriptedModel {
-            outputs: Mutex::new(VecDeque::from([scripted_tool_call()])),
-            tool_counts: Mutex::new(Vec::new()),
-            inputs: Mutex::new(Vec::new()),
-        });
+        let model = Arc::new(ScriptedModel::new([scripted_tool_call()]));
         let mut agent = create_agent(
             AgentConfig::new(
                 Arc::new(ModelRouter::new("main", model)),
-                Arc::new(Sandbox::new(
-                    Arc::new(LocalSandbox::new(workspace.path()).unwrap()),
-                    ApprovalPolicy::Ask,
-                )),
+                test_sandbox(workspace.path(), ApprovalPolicy::Ask),
                 checkpoints,
                 test_middleware(vec![Arc::new(Tools::new(vec![Arc::new(
                     ApprovalRequiredTestTool,
@@ -75,10 +68,7 @@ async fn rejected_prompt_aborts_without_persisting_or_wedging_the_next_turn() {
     let model = Arc::new(HandoffModel::default());
     let config = runtime_config(
         Arc::new(ModelRouter::new("main", Arc::<HandoffModel>::clone(&model))),
-        Arc::new(Sandbox::new(
-            Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
-            ApprovalPolicy::Ask,
-        )),
+        test_sandbox(workspace.path(), ApprovalPolicy::Ask),
         Arc::<SqliteCheckpoint>::clone(&checkpoints),
         test_middleware(vec![Arc::new(RejectFirstPrompt(AtomicBool::new(false)))]),
         "rejected-prompt",
@@ -198,10 +188,7 @@ async fn compaction_notice_is_live_and_closes_on_success_failure_and_interrupt()
             let store = Arc::clone(&checkpoints) as Arc<dyn CheckpointStore>;
             let mut agent = create_agent(runtime_config(
                 Arc::new(ModelRouter::new("main", router_model)),
-                Arc::new(Sandbox::new(
-                    Arc::new(LocalSandbox::new(workspace.path()).unwrap()),
-                    ApprovalPolicy::Ask,
-                )),
+                test_sandbox(workspace.path(), ApprovalPolicy::Ask),
                 store,
                 test_middleware(vec![Arc::new(Compaction::new(1_000).unwrap())]),
                 outcome,
@@ -333,10 +320,7 @@ async fn compaction_marker_survives_transcript_replay() {
     let checkpoint_store: Arc<dyn CheckpointStore> = Arc::<SqliteCheckpoint>::clone(&checkpoints);
     let config = runtime_config(
         Arc::new(ModelRouter::new("main", Arc::new(HandoffModel::default()))),
-        Arc::new(Sandbox::new(
-            Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
-            ApprovalPolicy::Ask,
-        )),
+        test_sandbox(workspace.path(), ApprovalPolicy::Ask),
         checkpoint_store,
         test_middleware(vec![Arc::new(
             Compaction::new(1).expect("compaction middleware"),
@@ -450,17 +434,10 @@ async fn failing_usage_observer_aborts_before_checkpoint_usage_is_committed() {
     let workspace = tempfile::tempdir().expect("workspace");
     let checkpoints = test_checkpoints(workspace.path());
     let checkpoint_store: Arc<dyn CheckpointStore> = Arc::<SqliteCheckpoint>::clone(&checkpoints);
-    let model = Arc::new(ScriptedModel {
-        outputs: Mutex::new(VecDeque::from([scripted_message("done")])),
-        tool_counts: Mutex::new(Vec::new()),
-        inputs: Mutex::new(Vec::new()),
-    });
+    let model = Arc::new(ScriptedModel::new([scripted_message("done")]));
     let config = runtime_config(
         Arc::new(ModelRouter::new("main", model)),
-        Arc::new(Sandbox::new(
-            Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
-            ApprovalPolicy::Ask,
-        )),
+        test_sandbox(workspace.path(), ApprovalPolicy::Ask),
         checkpoint_store,
         test_middleware(Vec::new()),
         "usage-observer-failure",
@@ -506,6 +483,13 @@ async fn failing_usage_observer_aborts_before_checkpoint_usage_is_committed() {
     assert_eq!(execution.usage, TokenUsage::default());
 }
 
+fn idle_compaction(min_tokens: i64) -> Compaction {
+    Compaction::new(10_000_000)
+        .expect("compaction middleware")
+        .idle_compaction(Some(std::time::Duration::from_millis(50)), min_tokens)
+        .expect("idle compaction")
+}
+
 #[tokio::test]
 async fn idle_compaction_runs_once_without_a_model_reply() {
     for (min_tokens, compacts) in [(1_000, true), (10_000_000, false)] {
@@ -513,16 +497,10 @@ async fn idle_compaction_runs_once_without_a_model_reply() {
         let checkpoints = test_checkpoints(workspace.path());
         seed_compaction_history(&checkpoints, "idle").await;
         let model = Arc::new(HandoffModel::default());
-        let compaction = Compaction::new(10_000_000)
-            .expect("compaction middleware")
-            .idle_compaction(Some(std::time::Duration::from_millis(50)), min_tokens)
-            .expect("idle compaction");
+        let compaction = idle_compaction(min_tokens);
         let mut agent = create_agent(runtime_config(
             Arc::new(ModelRouter::new("main", Arc::<HandoffModel>::clone(&model))),
-            Arc::new(Sandbox::new(
-                Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
-                ApprovalPolicy::Ask,
-            )),
+            test_sandbox(workspace.path(), ApprovalPolicy::Ask),
             Arc::<SqliteCheckpoint>::clone(&checkpoints),
             test_middleware(vec![Arc::new(compaction)]),
             "idle",
@@ -633,19 +611,13 @@ async fn a_message_steered_into_the_idle_turn_is_answered_after_compaction() {
             let checkpoints = test_checkpoints(workspace.path());
             seed_compaction_history(&checkpoints, "idle-steer").await;
             let model = Arc::new(PausedIdleCompaction::default());
-            let compaction = Compaction::new(10_000_000)
-                .expect("compaction middleware")
-                .idle_compaction(Some(std::time::Duration::from_millis(50)), 1)
-                .expect("idle compaction");
+            let compaction = idle_compaction(1);
             let mut agent = create_agent(runtime_config(
                 Arc::new(ModelRouter::new(
                     "main",
                     Arc::<PausedIdleCompaction>::clone(&model),
                 )),
-                Arc::new(Sandbox::new(
-                    Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
-                    ApprovalPolicy::Ask,
-                )),
+                test_sandbox(workspace.path(), ApprovalPolicy::Ask),
                 Arc::<SqliteCheckpoint>::clone(&checkpoints),
                 test_middleware(vec![Arc::new(compaction), Arc::new(RejectSteer(reject))]),
                 "idle-steer",
@@ -776,24 +748,14 @@ async fn failed_idle_compaction_disarms_without_losing_the_chat() {
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         let workspace = tempfile::tempdir().expect("workspace");
         let checkpoints = test_checkpoints(workspace.path());
-        let model = Arc::new(ScriptedModel {
-            outputs: Mutex::new(VecDeque::from([scripted_message("done")])),
-            tool_counts: Mutex::default(),
-            inputs: Mutex::default(),
-        });
-        let compaction = Compaction::new(10_000_000)
-            .expect("compaction middleware")
-            .idle_compaction(Some(std::time::Duration::from_millis(50)), 1)
-            .expect("idle compaction");
+        let model = Arc::new(ScriptedModel::new([scripted_message("done")]));
+        let compaction = idle_compaction(1);
         let mut agent = create_agent(runtime_config(
             Arc::new(ModelRouter::new(
                 "main",
                 Arc::<ScriptedModel>::clone(&model),
             )),
-            Arc::new(Sandbox::new(
-                Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
-                ApprovalPolicy::Ask,
-            )),
+            test_sandbox(workspace.path(), ApprovalPolicy::Ask),
             Arc::<SqliteCheckpoint>::clone(&checkpoints),
             test_middleware(vec![Arc::new(compaction)]),
             "idle-failure",

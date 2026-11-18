@@ -347,10 +347,7 @@ fn streaming_config_with_tools(
 ) -> AgentConfig {
     runtime_config(
         Arc::new(ModelRouter::new("streaming-test", model)),
-        Arc::new(Sandbox::new(
-            Arc::new(LocalSandbox::new(workspace).expect("local sandbox")),
-            ApprovalPolicy::Allow,
-        )),
+        test_sandbox(workspace, ApprovalPolicy::Allow),
         checkpoints,
         test_middleware(vec![Arc::new(Tools::new(tools)), hooks]),
         session_id,

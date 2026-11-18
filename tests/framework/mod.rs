@@ -60,7 +60,6 @@ struct ScriptedModel {
     image_input: bool,
 }
 
-#[derive(Clone)]
 struct RecordedRequest {
     allow_hosted_tools: bool,
     input: Vec<Value>,
@@ -81,6 +80,10 @@ impl ScriptedModel {
             requests: Mutex::new(Vec::new()),
             image_input: false,
         }
+    }
+
+    fn take_requests(&self) -> Vec<RecordedRequest> {
+        std::mem::take(&mut *self.requests.lock().expect("recorded requests"))
     }
 
     fn with_image_input(mut self) -> Self {

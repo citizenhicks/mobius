@@ -120,7 +120,7 @@ impl GatewayState {
         }
     }
 
-    /// Folds `message` into the state, moving its transcript ops and pages into the store.
+    /// Folds `message` into the state, taking ownership of catalog lists, transcript operations, and history pages.
     pub fn apply(&mut self, message: &mut ServerMessage) {
         self.arrived_preview = None;
         self.touched.clear();
@@ -229,7 +229,7 @@ impl GatewayState {
                 clients,
                 ..
             } => {
-                self.clients = Some((current_client_id.clone(), clients.clone())); // rules-allow: the runtime dispatches the borrowed message after this, so the state stores a copy
+                self.clients = Some((std::mem::take(current_client_id), std::mem::take(clients)));
             }
             ServerMessage::Profile { profile, .. } => {
                 self.profile = Some(profile.clone()); // rules-allow: the runtime dispatches the borrowed message after this, so the state stores a copy
@@ -239,10 +239,10 @@ impl GatewayState {
                 username,
                 ..
             } => {
-                self.git_credential = Some((*available, username.clone())); // rules-allow: the runtime dispatches the borrowed message after this, so the state stores a copy
+                self.git_credential = Some((*available, username.take()));
             }
             ServerMessage::SshIdentities { identities, .. } => {
-                self.ssh_identities = Some(identities.clone()); // rules-allow: the runtime dispatches the borrowed message after this, so the state stores a copy
+                self.ssh_identities = Some(std::mem::take(identities));
             }
             ServerMessage::SshIdentityGenerated {
                 identity,
@@ -256,18 +256,20 @@ impl GatewayState {
                 {
                     identities.push(identity.clone()); // rules-allow: the runtime dispatches the borrowed message after this, so the state stores a copy
                 }
-                self.ssh_public_key = Some(public_key.clone()); // rules-allow: the runtime dispatches the borrowed message after this, so the state stores a copy
+                self.ssh_public_key = Some(std::mem::take(public_key));
             }
             ServerMessage::Memories { memories, .. } => {
                 self.memories = Some(std::mem::take(memories));
             }
-            ServerMessage::Routines { routines, .. } => self.routines.clone_from(routines),
-            ServerMessage::RoutineHistory { runs, .. } => self.routine_history.clone_from(runs),
+            ServerMessage::Routines { routines, .. } => self.routines = std::mem::take(routines),
+            ServerMessage::RoutineHistory { runs, .. } => {
+                self.routine_history = std::mem::take(runs);
+            }
             ServerMessage::RoutineChanged { change } => self.apply_routine_change(change),
             ServerMessage::PairingCode {
                 code, expires_at, ..
             } => {
-                self.pairing_code = Some((code.clone(), *expires_at)); // rules-allow: the runtime dispatches the borrowed message after this, so the state stores a copy
+                self.pairing_code = Some((std::mem::take(code), *expires_at));
             }
             ServerMessage::Ready { payload } | ServerMessage::GatewayConfigured { payload, .. } => {
                 let mut catalog = std::mem::take(payload);

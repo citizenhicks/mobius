@@ -116,6 +116,24 @@ fn tree_digest_has_unambiguous_path_and_content_framing() {
 }
 
 #[test]
+fn export_skips_only_root_git_and_preserves_the_snapshot_digest() {
+    let temporary = tempfile::tempdir().expect("package");
+    let source = temporary.path().join("source");
+    let exported = temporary.path().join("export");
+    fs::create_dir_all(source.join("nested")).unwrap();
+    fs::write(source.join("z"), "last").unwrap();
+    fs::write(source.join(".git"), "checkout").unwrap();
+    fs::write(source.join("nested/.git"), "nested").unwrap();
+    export_package(&source, &exported).unwrap();
+    let digest = tree_digest(&exported).unwrap();
+    assert_eq!(
+        digest,
+        "167e5ceb17402568150f1f6fa5e5d3300a164a801701fc32c953a37a8315d38d"
+    );
+    assert_ne!(tree_digest(&source).unwrap(), digest);
+}
+
+#[test]
 fn snapshot_permissions_reject_symlinks_in_both_directions() {
     let root = tempfile::tempdir().unwrap();
     let target = root.path().join("target");

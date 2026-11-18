@@ -479,7 +479,7 @@ impl TuiState {
                 };
                 let option = picker.options.swap_remove(index);
                 self.picker = None;
-                picker_action(option.action)
+                option.action
             }
             KeyCode::Delete => {
                 let Some(action) = picker
@@ -490,7 +490,7 @@ impl TuiState {
                     return UiAction::None;
                 };
                 self.picker = None;
-                picker_action(action)
+                action
             }
             KeyCode::Backspace => {
                 picker.edit_query(|query| {
@@ -513,42 +513,40 @@ impl TuiState {
         current_bot_id: &str,
         clear: bool,
     ) {
-        self.preview = None;
-        self.capability_overlay = None;
-        self.picker = Some(super::PickerState::new(
-            "Select Bot".into(),
-            bots.iter()
-                .map(|bot| super::PickerOption {
-                    label: format!("@{}", terminal_text(&bot.handle)),
-                    description: terminal_text(&bot.name),
-                    detail: terminal_text(crate::frontend::bots::bot_model(bot)),
-                    shows_detail: true,
-                    action: workspace.map_or_else(
-                        || super::PickerAction::Resume(bot.conversation_session_id.share()),
-                        |workspace| super::PickerAction::CreateSession {
-                            workspace: workspace.to_path_buf(), // rules-allow: each picker option owns the workspace path its action creates
-                            bot_id: Arc::clone(&bot.id),
-                            clear,
-                        },
-                    ),
-                    secondary: None,
-                })
-                .collect(),
-            bots.iter()
-                .position(|bot| *bot.id == *current_bot_id)
-                .unwrap_or_default(),
-        ));
+        let workspace = workspace.map(Arc::<Path>::from);
+        self.bot_picker("Select Bot", bots, current_bot_id, |bot| {
+            workspace.as_ref().map_or_else(
+                || UiAction::Resume(bot.conversation_session_id.share()),
+                |workspace| UiAction::CreateSession {
+                    workspace: Arc::clone(workspace),
+                    bot_id: Arc::clone(&bot.id),
+                    clear,
+                },
+            )
+        });
     }
 
     pub(super) fn open_reassign_bot_picker(&mut self, bots: &[BotRecord], current_bot_id: &str) {
+        self.bot_picker("Reassign Bot", bots, current_bot_id, |bot| {
+            UiAction::Gateway(GatewayAction::Reassign(Arc::clone(&bot.id)))
+        });
+    }
+
+    fn bot_picker(
+        &mut self,
+        title: &str,
+        bots: &[BotRecord],
+        current_bot_id: &str,
+        action: impl Fn(&BotRecord) -> UiAction,
+    ) {
         self.open_gateway_picker(
-            "Reassign Bot",
+            title,
             bots.iter().map(|bot| super::PickerOption {
                 label: format!("@{}", terminal_text(&bot.handle)),
                 description: terminal_text(&bot.name),
                 detail: terminal_text(crate::frontend::bots::bot_model(bot)),
                 shows_detail: true,
-                action: super::PickerAction::Gateway(GatewayAction::Reassign(Arc::clone(&bot.id))),
+                action: action(bot),
                 secondary: None,
             }),
             bots.iter()
@@ -578,7 +576,7 @@ impl TuiState {
                     description: "approval required".into(),
                     detail: terminal_text(&approval.request_id),
                     shows_detail: true,
-                    action: super::PickerAction::Resume(approval.session_id.share()),
+                    action: UiAction::Resume(approval.session_id.share()),
                     secondary: None,
                 }
             }),
@@ -605,7 +603,7 @@ impl TuiState {
                 },
                 detail: String::new(),
                 shows_detail: false,
-                action: super::PickerAction::Gateway(GatewayAction::SwitchBranch(branch.clone())), // rules-allow: the picker option owns its action while the session keeps its Git status
+                action: UiAction::Gateway(GatewayAction::SwitchBranch(branch.clone())), // rules-allow: the picker option owns its action while the session keeps its Git status
                 secondary: None,
             }),
             git.branches
@@ -633,8 +631,8 @@ impl TuiState {
                     description: format!("{origin} · {} bytes", file.size),
                     detail: terminal_text(&file.media_type),
                     shows_detail: true,
-                    action: super::PickerAction::Download(file.clone()), // rules-allow: the download and delete actions each own the file
-                    secondary: Some(super::PickerAction::ConfirmDeleteFile(file)),
+                    action: UiAction::Download(file.clone()), // rules-allow: the download and delete actions each own the file
+                    secondary: Some(UiAction::ConfirmDeleteFile(file)),
                 }
             }),
             0,
@@ -660,7 +658,7 @@ impl TuiState {
                 description: "cannot be undone".into(),
                 detail: String::new(),
                 shows_detail: false,
-                action: super::PickerAction::Gateway(action),
+                action: UiAction::Gateway(action),
                 secondary: None,
             }],
             0,
@@ -1149,25 +1147,6 @@ impl TuiState {
                 .map(|(token, paste)| paste.len().saturating_sub(token.len_utf8()))
                 .sum::<usize>(),
         )
-    }
-}
-
-fn picker_action(action: super::PickerAction) -> UiAction {
-    match action {
-        super::PickerAction::Submit(op) => UiAction::Submit(op),
-        super::PickerAction::Resume(session_id) => UiAction::Resume(session_id),
-        super::PickerAction::Gateway(action) => UiAction::Gateway(action),
-        super::PickerAction::Download(file) => UiAction::Download(file),
-        super::PickerAction::CreateSession {
-            workspace,
-            bot_id,
-            clear,
-        } => UiAction::CreateSession {
-            workspace,
-            bot_id,
-            clear,
-        },
-        super::PickerAction::ConfirmDeleteFile(file) => UiAction::ConfirmDeleteFile(file),
     }
 }
 

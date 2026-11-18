@@ -6,7 +6,7 @@ use tokio_tungstenite::connect_async;
 #[tokio::test]
 async fn cancelled_request_flushes_reason_and_reconnects() {
     use crate::backend::model::{ModelCancellation, ModelCancellationReason};
-    use futures_util::{SinkExt as _, StreamExt as _};
+    use futures_util::StreamExt as _;
     use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 
     for reason in [
@@ -18,8 +18,7 @@ async fn cancelled_request_flushes_reason_and_reconnects() {
         let (started, received) = tokio::sync::oneshot::channel();
         let server = tokio::spawn(async move {
             let mut socket = accept_websocket(&listener).await;
-            let request = socket.next().await.unwrap().unwrap();
-            let request: Value = serde_json::from_str(request.to_text().unwrap()).unwrap();
+            let request = read_request(&mut socket).await;
             assert_eq!(request["type"], "response.create");
             started.send(()).unwrap();
             let frame = socket.next().await.unwrap().unwrap();
@@ -30,12 +29,9 @@ async fn cancelled_request_flushes_reason_and_reconnects() {
             assert_eq!(frame.reason.as_str(), reason.as_str());
 
             let mut socket = accept_websocket(&listener).await;
-            let request = socket.next().await.unwrap().unwrap();
-            let request: Value = serde_json::from_str(request.to_text().unwrap()).unwrap();
+            let request = read_request(&mut socket).await;
             assert!(request.get("previous_response_id").is_none());
-            for event in super::support::completed_events("recovered", "response-2") {
-                socket.send(Message::text(event.to_string())).await.unwrap();
-            }
+            write_completed(&mut socket, "recovered", "response-2").await;
         });
         let provider = socket_provider(address);
         let session_id = (reason != ModelCancellationReason::RequestDropped)

@@ -1,6 +1,6 @@
 use super::super::*;
 use super::support::*;
-use super::support::{completed_events, model_request};
+use super::support::{model_request, write_completed};
 use crate::backend::model::{ImageInputLimits, MediaPreparation};
 use crate::backend::session_files::{SessionFileStore, grant_context};
 use crate::protocol::ImageDetail;
@@ -42,12 +42,7 @@ async fn continuation_skips_old_pixels_and_preparation_failure_preserves_connect
             if step == 2 {
                 socket.send(Message::text(serde_json::json!({"type":"error","error":{"code":"previous_response_not_found","message":"missing previous response"}}).to_string())).await.expect("missing");
             } else {
-                for event in completed_events("observed", &format!("response-{step}")) {
-                    socket
-                        .send(Message::text(event.to_string()))
-                        .await
-                        .expect("completed");
-                }
+                write_completed(&mut socket, "observed", &format!("response-{step}")).await;
             }
         }
     });

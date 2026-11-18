@@ -1,6 +1,6 @@
 use super::super::*;
 use super::support::*;
-use super::support::{completed_events, model_request};
+use super::support::{model_request, write_completed};
 use crate::backend::model::PromptCacheIdentity;
 
 #[tokio::test]
@@ -12,12 +12,7 @@ async fn previous_response_not_found_rebuilds_full_context_on_the_same_connectio
         let mut socket = accept_websocket(&listener).await;
         let initial: Value = read_request(&mut socket).await;
         assert!(initial.get("previous_response_id").is_none());
-        for event in completed_events("Old response.", "response-old") {
-            socket
-                .send(Message::text(event.to_string()))
-                .await
-                .expect("initial completed event");
-        }
+        write_completed(&mut socket, "Old response.", "response-old").await;
 
         let first: Value = read_request(&mut socket).await;
         assert_eq!(first["previous_response_id"], "response-old");
@@ -42,12 +37,7 @@ async fn previous_response_not_found_rebuilds_full_context_on_the_same_connectio
         let rebuilt: Value = read_request(&mut socket).await;
         assert!(rebuilt.get("previous_response_id").is_none());
         assert_eq!(rebuilt["input"].as_array().expect("full input").len(), 3);
-        for event in completed_events("Recovered.", "response-new") {
-            socket
-                .send(Message::text(event.to_string()))
-                .await
-                .expect("completed event");
-        }
+        write_completed(&mut socket, "Recovered.", "response-new").await;
     });
     let provider = socket_provider(address);
     let request = ModelRequest {

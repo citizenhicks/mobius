@@ -3,7 +3,6 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::Read as _;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
@@ -630,115 +629,90 @@ fn export_package(source: &Path, destination: &Path) -> Result<()> {
     fs::create_dir(destination)?;
     let mut files = 0;
     let mut bytes = 0;
-    copy_directory(source, destination, Path::new(""), &mut files, &mut bytes)
-}
-
-fn copy_directory(
-    source: &Path,
-    destination: &Path,
-    relative: &Path,
-    files: &mut usize,
-    bytes: &mut u64,
-) -> Result<()> {
-    let mut entries = fs::read_dir(source)?.collect::<std::io::Result<Vec<_>>>()?;
-    entries.sort_by_key(fs::DirEntry::file_name);
-    for entry in entries {
-        if relative.as_os_str().is_empty() && entry.file_name() == ".git" {
-            continue;
-        }
-        let source_path = entry.path();
-        let child = relative.join(entry.file_name());
-        let text = child
-            .to_str()
-            .ok_or_else(|| Error::Invalid("extension paths must be UTF-8".into()))?;
-        if text.len() > MAX_PATH_BYTES {
-            return Err(Error::Invalid("extension path is too long".into()));
-        }
-        let metadata = fs::symlink_metadata(&source_path)?;
-        let destination_path = destination.join(entry.file_name());
-        if metadata.is_dir() {
-            fs::create_dir(&destination_path)?;
-            copy_directory(&source_path, &destination_path, &child, files, bytes)?;
-        } else if metadata.is_file() {
-            *files += 1;
-            *bytes = bytes.saturating_add(metadata.len());
-            if *files > MAX_PACKAGE_FILES || *bytes > MAX_PACKAGE_BYTES {
-                return Err(Error::Invalid("extension package is too large".into()));
-            }
-            fs::copy(&source_path, &destination_path)?;
-            preserve_executable(&metadata, &destination_path)?;
-        } else {
-            return Err(Error::Invalid(format!(
-                "extension package contains unsupported entry `{text}`"
-            )));
-        }
-    }
-    Ok(())
+    PackageTree::Export(destination).walk(source, Path::new(""), &mut files, &mut bytes)
 }
 
 fn tree_digest(root: &Path) -> Result<String> {
     let mut hash = Sha256::new();
     let mut files = 0;
     let mut bytes = 0;
-    hash_directory(root, root, &mut hash, &mut files, &mut bytes)?;
+    PackageTree::Digest(&mut hash).walk(root, Path::new(""), &mut files, &mut bytes)?;
     Ok(format!("{:x}", hash.finalize()))
 }
 
-fn hash_directory(
-    root: &Path,
-    directory: &Path,
-    hash: &mut Sha256,
-    files: &mut usize,
-    bytes: &mut u64,
-) -> Result<()> {
-    let mut entries = fs::read_dir(directory)?.collect::<std::io::Result<Vec<_>>>()?;
-    entries.sort_by_key(fs::DirEntry::file_name);
-    for entry in entries {
-        let path = entry.path();
-        let relative = path.strip_prefix(root).map_err(|error| {
-            Error::Internal(format!("extension path escaped its snapshot: {error}"))
-        })?;
-        let relative = relative
-            .to_str()
-            .ok_or_else(|| Error::Invalid("extension paths must be UTF-8".into()))?;
-        if relative.len() > MAX_PATH_BYTES {
-            return Err(Error::Invalid("extension path is too long".into()));
-        }
-        let metadata = fs::symlink_metadata(&path)?;
-        if metadata.is_dir() {
-            hash.update(b"d");
-            hash.update((relative.len() as u64).to_le_bytes());
-            hash.update(relative.as_bytes());
-            hash_directory(root, &path, hash, files, bytes)?;
-        } else if metadata.is_file() {
-            *files += 1;
-            *bytes = bytes.saturating_add(metadata.len());
-            if *files > MAX_PACKAGE_FILES || *bytes > MAX_PACKAGE_BYTES {
-                return Err(Error::Invalid("extension package is too large".into()));
+enum PackageTree<'a> {
+    Export(&'a Path),
+    Digest(&'a mut Sha256),
+}
+
+impl PackageTree<'_> {
+    fn walk(
+        &mut self,
+        directory: &Path,
+        relative: &Path,
+        files: &mut usize,
+        bytes: &mut u64,
+    ) -> Result<()> {
+        let mut entries = fs::read_dir(directory)?.collect::<std::io::Result<Vec<_>>>()?;
+        entries.sort_by_key(fs::DirEntry::file_name);
+        for entry in entries {
+            let name = entry.file_name();
+            if matches!(self, Self::Export(_)) && relative.as_os_str().is_empty() && name == ".git"
+            {
+                continue;
             }
-            hash.update(b"f");
-            hash.update((relative.len() as u64).to_le_bytes());
-            hash.update(relative.as_bytes());
-            hash.update([u8::from(is_executable(&metadata))]);
-            hash.update(metadata.len().to_le_bytes());
-            let mut file = fs::File::open(&path)?;
-            let mut buffer = [0_u8; 16 * 1024];
-            loop {
-                let read = file.read(&mut buffer)?;
-                if read == 0 {
-                    break;
+            let child = relative.join(name);
+            let text = child
+                .to_str()
+                .ok_or_else(|| Error::Invalid("extension paths must be UTF-8".into()))?;
+            if text.len() > MAX_PATH_BYTES {
+                return Err(Error::Invalid("extension path is too long".into()));
+            }
+            let path = entry.path();
+            let metadata = fs::symlink_metadata(&path)?;
+            if metadata.is_file() {
+                *files += 1;
+                *bytes = bytes.saturating_add(metadata.len());
+                if *files > MAX_PACKAGE_FILES || *bytes > MAX_PACKAGE_BYTES {
+                    return Err(Error::Invalid("extension package is too large".into()));
                 }
-                hash.update(buffer.get(..read).ok_or_else(|| {
-                    Error::Internal("extension file read overflowed its buffer".into())
-                })?);
+            } else if !metadata.is_dir() {
+                return Err(match self {
+                    Self::Export(_) => Error::Invalid(format!(
+                        "extension package contains unsupported entry `{text}`"
+                    )),
+                    Self::Digest(_) => Error::Internal(format!(
+                        "extension snapshot contains unsupported entry `{text}`"
+                    )),
+                });
             }
-        } else {
-            return Err(Error::Internal(format!(
-                "extension snapshot contains unsupported entry `{relative}`"
-            )));
+            match self {
+                Self::Export(root) => {
+                    let destination = root.join(&child);
+                    if metadata.is_dir() {
+                        fs::create_dir(destination)?;
+                    } else {
+                        fs::copy(&path, &destination)?;
+                        preserve_executable(&metadata, &destination)?;
+                    }
+                }
+                Self::Digest(hash) => {
+                    hash.update(if metadata.is_dir() { b"d" } else { b"f" });
+                    hash.update((text.len() as u64).to_le_bytes());
+                    hash.update(text.as_bytes());
+                    if metadata.is_file() {
+                        hash.update([u8::from(is_executable(&metadata))]);
+                        hash.update(metadata.len().to_le_bytes());
+                        std::io::copy(&mut fs::File::open(&path)?, *hash)?;
+                    }
+                }
+            }
+            if metadata.is_dir() {
+                self.walk(&path, &child, files, bytes)?;
+            }
         }
+        Ok(())
     }
-    Ok(())
 }
 
 fn verify_installed_metadata(

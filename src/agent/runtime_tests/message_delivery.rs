@@ -148,10 +148,7 @@ async fn rejected_input_refill_cannot_starve_model_completion() {
     });
     let mut agent = create_agent(runtime_config(
         Arc::new(ModelRouter::new("refill-model", model)),
-        Arc::new(Sandbox::new(
-            Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
-            ApprovalPolicy::Allow,
-        )),
+        test_sandbox(workspace.path(), ApprovalPolicy::Allow),
         test_checkpoints(workspace.path()),
         test_middleware(vec![Arc::<RefillMiddleware>::clone(&refill)]),
         "refill-model",
@@ -207,10 +204,7 @@ async fn steer_is_durable_before_a_blocked_model_completes() {
     let model = blocking_model(&started, &release);
     let mut agent = create_agent(runtime_config(
         Arc::new(ModelRouter::new("blocking", model)),
-        Arc::new(Sandbox::new(
-            Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
-            ApprovalPolicy::Ask,
-        )),
+        test_sandbox(workspace.path(), ApprovalPolicy::Ask),
         Arc::<SqliteCheckpoint>::clone(&checkpoints),
         test_middleware(Vec::new()),
         "blocked-model",
@@ -277,10 +271,7 @@ async fn interrupt_discards_partial_pre_model_context() {
     };
     let mut agent = create_agent(runtime_config(
         Arc::new(ModelRouter::new("test", Arc::new(TestModel))),
-        Arc::new(Sandbox::new(
-            Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
-            ApprovalPolicy::Ask,
-        )),
+        test_sandbox(workspace.path(), ApprovalPolicy::Ask),
         Arc::<SqliteCheckpoint>::clone(&checkpoints),
         test_middleware(vec![Arc::new(middleware)]),
         "interrupt-pre-model",

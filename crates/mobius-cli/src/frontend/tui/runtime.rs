@@ -396,7 +396,7 @@ async fn handle_terminal_input(
                 clear,
             } => {
                 *pending_session_creation =
-                    create_session(sender, workspace, bot_id, clear, state).await;
+                    create_session(sender, workspace.to_path_buf(), bot_id, clear, state).await;
             }
             UiAction::Submit(op) => {
                 send_and_report(sender, &session.session.session_id, *op, state, draft).await;

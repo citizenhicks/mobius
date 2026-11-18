@@ -31,10 +31,7 @@ async fn failed_message_submit_leaves_the_accepted_message_for_restart() {
     let make_config = |checkpoints: Arc<dyn CheckpointStore>| {
         runtime_config(
             Arc::new(ModelRouter::new("test", Arc::<HandoffModel>::clone(&model))),
-            Arc::new(Sandbox::new(
-                Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
-                ApprovalPolicy::Ask,
-            )),
+            test_sandbox(workspace.path(), ApprovalPolicy::Ask),
             checkpoints,
             test_middleware(vec![Arc::new(FailFirstMessageSubmit(Arc::clone(&failed)))]),
             "message-submit-restart",
@@ -108,31 +105,22 @@ async fn route_change_omits_private_reasoning_but_keeps_visible_history_and_tool
         {"type": "text", "text": "Original answer."}
     ]);
     original_reply[0][crate::backend::model::REPLAY_REASONING_FIELD] = "Signed plan".into();
-    let source = Arc::new(ScriptedModel {
-        outputs: Mutex::new(VecDeque::from([
-            ModelOutput::from_output(first_output, false, scripted_usage())
-                .expect("reasoning and real tool call"),
-            ModelOutput::from_output(original_reply, true, usage).expect("signed source reply"),
-            scripted_message("Same route answer."),
-        ])),
-        tool_counts: Mutex::new(Vec::new()),
-        inputs: Mutex::new(Vec::new()),
-    });
-    let destination = Arc::new(ScriptedModel {
-        outputs: Mutex::new(VecDeque::from([scripted_message("Changed route answer.")])),
-        tool_counts: Mutex::new(Vec::new()),
-        inputs: Mutex::new(Vec::new()),
-    });
+    let source = Arc::new(ScriptedModel::new([
+        ModelOutput::from_output(first_output, false, scripted_usage())
+            .expect("reasoning and real tool call"),
+        ModelOutput::from_output(original_reply, true, usage).expect("signed source reply"),
+        scripted_message("Same route answer."),
+    ]));
+    let destination = Arc::new(ScriptedModel::new([scripted_message(
+        "Changed route answer.",
+    )]));
     let mut models = ModelRouter::new("source", Arc::clone(&source) as Arc<dyn Model>);
     models
         .register("destination", Arc::clone(&destination) as Arc<dyn Model>)
         .unwrap();
     let mut agent = create_agent(runtime_config(
         Arc::new(models),
-        Arc::new(Sandbox::new(
-            Arc::new(LocalSandbox::new(workspace.path()).unwrap()),
-            ApprovalPolicy::Allow,
-        )),
+        test_sandbox(workspace.path(), ApprovalPolicy::Allow),
         Arc::clone(&checkpoints) as Arc<dyn CheckpointStore>,
         test_middleware(vec![Arc::new(Tools::new(vec![Arc::new(
             ApprovalRequiredTestTool,

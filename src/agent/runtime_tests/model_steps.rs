@@ -260,11 +260,7 @@ async fn run_repeated_tool(polls: bool, calls: usize) -> (Arc<ScriptedModel>, us
         })
         .collect();
     outputs.push_back(scripted_message("done"));
-    let model = Arc::new(ScriptedModel {
-        outputs: Mutex::new(outputs),
-        tool_counts: Mutex::new(Vec::new()),
-        inputs: Mutex::new(Vec::new()),
-    });
+    let model = Arc::new(ScriptedModel::new(outputs));
     let mut agent = start_repeated_turn(
         workspace.path(),
         "repeated-tool",
@@ -312,14 +308,10 @@ async fn repeated_tool_results_warn_the_model_then_stop_the_turn() {
 async fn run_repeated_batch(parallel: bool) -> (usize, Vec<(String, String)>, usize) {
     let workspace = tempfile::tempdir().expect("workspace");
     let calls = (0..5).map(repeated_call).collect();
-    let model = Arc::new(ScriptedModel {
-        outputs: Mutex::new(VecDeque::from([
-            ModelOutput::from_output(calls, false, scripted_usage()).expect("tool output"),
-            scripted_message("done"),
-        ])),
-        tool_counts: Mutex::new(Vec::new()),
-        inputs: Mutex::new(Vec::new()),
-    });
+    let model = Arc::new(ScriptedModel::new([
+        ModelOutput::from_output(calls, false, scripted_usage()).expect("tool output"),
+        scripted_message("done"),
+    ]));
     let tool = RepeatedTool {
         parallel,
         ..RepeatedTool::default()

@@ -232,7 +232,7 @@ async fn automatic_plaintext_checkpoint_survives_recreation_and_keeps_the_prefix
     let mut agent = create_agent(config()).await.expect("resume");
     agent.sender().submit(user_message("next")).expect("next");
     assert_eq!(final_message(&mut agent).await, "resumed");
-    let requests = model.requests.lock().expect("requests").clone();
+    let requests = model.take_requests();
     assert_eq!(requests.len(), 4);
     assert_eq!(requests[1].tools.len(), 1);
     assert_eq!(requests[1].tools[0].name, "write_handoff");
@@ -309,18 +309,14 @@ async fn checkpoint_model_override_keeps_the_conversation_on_its_selected_route(
         .submit(user_message("continue"))
         .expect("next");
     assert_eq!(final_message(&mut agent).await, "done");
-    let requests = conversation
-        .requests
-        .lock()
-        .expect("conversation requests")
-        .clone();
+    let requests = conversation.take_requests();
     assert_eq!(requests.len(), 2);
     assert!(
         serde_json::to_string(&requests[1].input)
             .expect("input")
             .contains("draft prepared")
     );
-    let summaries = writer.requests.lock().expect("checkpoint requests").clone();
+    let summaries = writer.take_requests();
     assert_eq!(summaries.len(), 1);
     assert_eq!(summaries[0].tools.len(), 1);
     assert_eq!(summaries[0].tools[0].name, "write_handoff");
@@ -412,7 +408,7 @@ async fn oversized_history_summarizes_a_complete_prefix_and_preserves_parallel_r
         .submit(user_message("continue"))
         .expect("input");
     assert_eq!(final_message(&mut agent).await, "continued");
-    let requests = model.requests.lock().expect("requests").clone();
+    let requests = model.take_requests();
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[0].tools.len(), 1);
     assert!(!requests[0].input.iter().any(|item| item["call_id"] == "a"));

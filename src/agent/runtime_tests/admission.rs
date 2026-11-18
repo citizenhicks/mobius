@@ -24,11 +24,7 @@ async fn failed_turn_start_preserves_the_complete_durable_queue() {
              BEGIN SELECT RAISE(ABORT, 'injected turn start save failure'); END;",
         )
         .expect("inject turn-start failure");
-    let model = Arc::new(ScriptedModel {
-        outputs: Mutex::new(VecDeque::from([scripted_message("must not run")])),
-        tool_counts: Mutex::new(Vec::new()),
-        inputs: Mutex::new(Vec::new()),
-    });
+    let model = Arc::new(ScriptedModel::new([scripted_message("must not run")]));
     let mut agent = create_agent(config_with_model(
         workspace.path(),
         Arc::<SqliteCheckpoint>::clone(&checkpoints),

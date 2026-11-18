@@ -1,13 +1,11 @@
 use super::super::*;
 use super::support::*;
-use super::support::{completed_events, read_http_json, write_http_stream};
+use super::support::{read_http_json, write_completed, write_http_stream};
 use crate::backend::model::PromptCacheIdentity;
 use tokio::io::AsyncWriteExt as _;
 
 #[tokio::test]
 async fn upgrade_required_switches_only_that_session_to_sticky_http() {
-    use futures_util::SinkExt as _;
-
     let session_id = crate::SessionId::new("fallback-session").expect("session");
     let (websocket_listener, websocket_address) = loopback_listener().await;
     let websocket_server = tokio::spawn(async move {
@@ -15,12 +13,7 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
         let initial: Value = read_request(&mut socket).await;
         assert!(initial.get("previous_response_id").is_none());
         assert_eq!(initial["service_tier"], "default");
-        for event in completed_events("Warm response.", "response-warm") {
-            socket
-                .send(Message::text(event.to_string()))
-                .await
-                .expect("initial completed event");
-        }
+        write_completed(&mut socket, "Warm response.", "response-warm").await;
         let continued: Value = read_request(&mut socket).await;
         assert_eq!(continued["previous_response_id"], "response-warm");
         assert_eq!(

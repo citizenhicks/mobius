@@ -568,6 +568,26 @@ pub(crate) mod catalog {
     }
 
     #[test]
+    fn reordered_delta_consumes_each_matching_record_once() {
+        let mut held: Vec<_> = (0..40)
+            .map(|sequence| {
+                let mut row = session(if sequence % 2 == 0 { "a" } else { "b" });
+                row.sequence = sequence;
+                row
+            })
+            .collect();
+        let slots = std::iter::repeat_n("missing", 10)
+            .chain(["b", "b", "a", "b"])
+            .map(|id| SessionSlot::Unchanged(SessionId::new(id).unwrap()))
+            .collect();
+        apply_session_changes(&mut held, slots);
+        assert_eq!(
+            held.iter().map(|row| row.sequence).collect::<Vec<_>>(),
+            [1, 3, 0, 5]
+        );
+    }
+
+    #[test]
     fn deltas_and_omitted_sections_rebuild_the_held_catalog() {
         let mut state = GatewayState::default();
         state.apply(&mut ServerMessage::Ready {

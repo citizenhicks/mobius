@@ -1712,7 +1712,7 @@ async fn clear_provider_credential(
     instance: String,
     gateway: &GatewayHost,
 ) -> Result<()> {
-    let cleared = gateway.clear_credential(instance.clone()).await; // rules-allow: the host takes the instance and the response echoes it
+    let cleared = gateway.clear_credential(&instance).await;
     respond(writer, request_id, cleared, |request_id, ()| {
         ServerMessage::ProviderCredentialCleared {
             request_id,
@@ -1737,13 +1737,7 @@ async fn set_provider_credential(
     gateway: &GatewayHost,
 ) -> Result<()> {
     let saved = gateway
-        .set_credential(
-            instance.clone(), // rules-allow: the host takes the instance and the response echoes it
-            provider.clone(), // rules-allow: the host takes the provider and the response echoes it
-            api_key,
-            base_url,
-            expires_at,
-        )
+        .set_credential(&instance, &provider, api_key, base_url, expires_at)
         .await;
     respond(writer, request_id, saved, |request_id, ()| {
         ServerMessage::ProviderCredentialSaved {
