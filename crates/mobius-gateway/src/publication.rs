@@ -35,6 +35,19 @@ pub(crate) fn applied_error(error: Error) -> Error {
 /// Reads the regular file at `path`, without following a final symlink, failing when it
 /// exceeds `max_bytes`. `what` names the file in errors.
 pub(crate) fn read_private(path: &Path, max_bytes: u64, what: &str) -> Result<Vec<u8>> {
+    read_private_file(path, max_bytes, what, false)
+}
+
+pub(crate) fn read_secret(path: &Path, max_bytes: u64, what: &str) -> Result<Vec<u8>> {
+    read_private_file(path, max_bytes, what, true).map_err(|error| match error {
+        Error::Io(io) if io.raw_os_error() == Some(nix::libc::ELOOP) => {
+            Error::Invalid(format!("{what} must be a regular file"))
+        }
+        error => error,
+    })
+}
+
+fn read_private_file(path: &Path, max_bytes: u64, what: &str, owner_only: bool) -> Result<Vec<u8>> {
     use std::io::Read as _;
     use std::os::unix::fs::OpenOptionsExt as _;
 
@@ -45,6 +58,14 @@ pub(crate) fn read_private(path: &Path, max_bytes: u64, what: &str) -> Result<Ve
     let metadata = file.metadata()?;
     if !metadata.is_file() {
         return Err(Error::Invalid(format!("{what} must be a regular file")));
+    }
+    if owner_only {
+        use std::os::unix::fs::PermissionsExt as _;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err(Error::Invalid(format!(
+                "{what} must be accessible only by its owner (use mode 0600)"
+            )));
+        }
     }
     let too_large = || Error::Invalid(format!("{what} is too large"));
     if metadata.len() > max_bytes {

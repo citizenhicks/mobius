@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 use std::env;
-use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
 use crate::auth::MAX_CLIENT_CREDENTIAL_BYTES as MAX_TOKEN_BYTES;
@@ -138,28 +137,21 @@ impl GatewayAccounts {
     }
 
     fn load_from(path: PathBuf) -> Result<Self> {
-        let metadata = match std::fs::metadata(&path) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+        let contents = match crate::publication::read_secret(
+            &path,
+            MAX_STORE_BYTES as u64,
+            "gateway token file",
+        ) {
+            Ok(contents) => contents,
+            Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(Self {
                     path,
                     record: TokenStoreRecord::default(),
                 });
             }
-            Err(error) => return Err(error.into()),
+            Err(error) => return Err(error),
         };
-        if !metadata.is_file() {
-            return Err(Error::Invalid("gateway token path is not a file".into()));
-        }
-        if metadata.permissions().mode() & 0o077 != 0 {
-            return Err(Error::Invalid(
-                "gateway token file must be readable only by its owner".into(),
-            ));
-        }
-        if metadata.len() > MAX_STORE_BYTES as u64 {
-            return Err(Error::Invalid("gateway token file is too large".into()));
-        }
-        let record = serde_json::from_slice(&std::fs::read(&path)?).map_err(|error| {
+        let record = serde_json::from_slice(&contents).map_err(|error| {
             Error::Invalid(format!(
                 "gateway token file has an unsupported format ({error}); delete {} and pair again",
                 path.display()

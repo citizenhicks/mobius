@@ -7,8 +7,6 @@ use super::{
     validate_cloudflare_token,
 };
 use mobius::backend::model::ModelCredentialLifetime;
-use std::io::Read as _;
-use std::os::unix::fs::OpenOptionsExt as _;
 use std::os::unix::fs::PermissionsExt as _;
 
 /// File owner for gateway configuration.
@@ -525,35 +523,14 @@ pub fn state_dir() -> Result<PathBuf> {
 ///
 /// Returns an error if the resource cannot be read, decoded, or validated.
 pub fn load_secret_file(path: &Path) -> Result<String> {
-    let file = fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
-        .open(path)
-        .map_err(|error| -> Error {
-            if error.raw_os_error() == Some(nix::libc::ELOOP) {
-                Error::Invalid("secret must be stored in a regular file".into())
-            } else {
-                error.into()
-            }
-        })?;
-    let metadata = file.metadata()?;
-    if !metadata.file_type().is_file() {
-        return Err(Error::Invalid(
-            "secret must be stored in a regular file".into(),
-        ));
-    }
-    if metadata.permissions().mode() & 0o077 != 0 {
-        return Err(Error::Invalid(
-            "secret file must not be accessible by group or others (use mode 0600)".into(),
-        ));
-    }
-    if metadata.len() > MAX_CLOUDFLARE_TOKEN_BYTES as u64 {
-        return Err(Error::Invalid("secret file token is too large".into()));
-    }
-    let mut contents = String::new();
-    file.take(MAX_CLOUDFLARE_TOKEN_BYTES as u64 + 1)
-        .read_to_string(&mut contents)?;
-    let token = validate_cloudflare_token(&contents).map_err(|error| {
+    let contents = crate::publication::read_secret(
+        path,
+        MAX_CLOUDFLARE_TOKEN_BYTES as u64,
+        "secret file token",
+    )?;
+    let contents = std::str::from_utf8(&contents)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    let token = validate_cloudflare_token(contents).map_err(|error| {
         Error::Invalid(format!("secret file contains an invalid token: {error}"))
     })?;
     Ok(token.to_owned())
