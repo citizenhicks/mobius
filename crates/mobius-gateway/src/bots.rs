@@ -542,13 +542,13 @@ impl BotStore {
         description: &str,
         config: crate::harness::ValidatedConfig,
     ) -> Result<BotRecord> {
-        let name = validate_name(name)?;
-        let description = validate_description(description)?;
+        let name = bot_text(name, "name", MAX_BOT_NAME_BYTES)?;
+        let description = bot_text(description, "description", MAX_BOT_DESCRIPTION_BYTES)?;
         let (config, approval) = config.into_parts();
         let voices = self.voice_routes()?;
         self.update(|state| {
             let id = Uuid::new_v4().to_string();
-            let handle = next_handle(state, &name, &id);
+            let handle = next_handle(state, name, &id);
             let tint = next_appearance(&state.bots, &BOT_TINTS, |bot| bot.tint).unwrap_or_default();
             let shape = next_appearance(&state.bots, &BotShape::ALL, |bot| bot.shape)
                 .unwrap_or(BotShape::Circle);
@@ -588,11 +588,11 @@ impl BotStore {
             tint,
             shape,
         } = identity;
-        let name = validate_name(name)?;
-        let description = validate_description(description)?;
+        let name = bot_text(name, "name", MAX_BOT_NAME_BYTES)?;
+        let description = bot_text(description, "description", MAX_BOT_DESCRIPTION_BYTES)?;
         let voices = self.voice_routes()?;
         self.update(|state| {
-            let handle = next_handle(state, &name, id);
+            let handle = next_handle(state, name, id);
             let bot = find_bot_mut(state, id)?;
             check_revision(bot, config.revision.saturating_sub(1))?;
             if *bot.name != *name && &*bot.handle != MOBIUS_HANDLE {
@@ -1651,24 +1651,14 @@ fn validate_handle(handle: &str) -> Result<String> {
     Ok(handle.into())
 }
 
-fn validate_name(name: &str) -> Result<String> {
-    let name = name.trim();
-    if name.is_empty() || name.len() > MAX_BOT_NAME_BYTES {
+fn bot_text<'a>(value: &'a str, field: &str, max_bytes: usize) -> Result<&'a str> {
+    let value = value.trim();
+    if value.is_empty() || value.len() > max_bytes {
         return Err(Error::Invalid(format!(
-            "Bot name must be 1–{MAX_BOT_NAME_BYTES} bytes"
+            "Bot {field} must be 1–{max_bytes} bytes"
         )));
     }
-    Ok(name.into())
-}
-
-fn validate_description(description: &str) -> Result<String> {
-    let description = description.trim();
-    if description.is_empty() || description.len() > MAX_BOT_DESCRIPTION_BYTES {
-        return Err(Error::Invalid(format!(
-            "Bot description must be 1–{MAX_BOT_DESCRIPTION_BYTES} bytes"
-        )));
-    }
-    Ok(description.into())
+    Ok(value)
 }
 
 fn validate_stored_workspace(workspace: &Path) -> Result<()> {
@@ -1865,8 +1855,9 @@ fn validate_records(state: &BotState, routines_dir: &Path) -> Result<()> {
             return Err(Error::Internal("invalid persisted Bot ID".into()));
         }
         if *validate_handle(&bot.handle)? != *bot.handle
-            || *validate_name(&bot.name)? != *bot.name
-            || *validate_description(&bot.description)? != *bot.description
+            || *bot_text(&bot.name, "name", MAX_BOT_NAME_BYTES)? != *bot.name
+            || *bot_text(&bot.description, "description", MAX_BOT_DESCRIPTION_BYTES)?
+                != *bot.description
         {
             return Err(Error::Internal(
                 "persisted Bot identity is not normalized".into(),
