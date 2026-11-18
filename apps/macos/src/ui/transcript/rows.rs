@@ -12,13 +12,13 @@ use crate::ui::primitives::{
 use crate::ui::router::PageTab;
 #[cfg(feature = "snapshot")]
 use crate::ui::snapshot;
-use crate::ui::theme::Accent;
+use crate::ui::theme::{Accent, Palette};
 use crate::ui::{Workspace, chat};
 use gpui::Hsla;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, Context, InteractiveElement as _, IntoElement as _, ParentElement as _, Pixels,
-    SharedString, Size, StatefulInteractiveElement as _, Styled, div, px, size,
+    AnyElement, Context, Div, InteractiveElement as _, IntoElement as _, ParentElement as _,
+    Pixels, SharedString, Size, StatefulInteractiveElement as _, Styled, div, px, size,
 };
 
 use gpui_component::menu::ContextMenuExt as _;
@@ -624,25 +624,7 @@ impl Workspace {
                     .bg(p.raised)
                     .child(organic::pulse(p.accent, false))
                     .when(pending, |card| {
-                        card.child(
-                            div()
-                                .absolute()
-                                .bottom(space::S)
-                                .left_0()
-                                .right_0()
-                                .flex()
-                                .justify_center()
-                                .child(
-                                    div()
-                                        .px(space::S)
-                                        .py(space::XS)
-                                        .pill_corners()
-                                        .bg(p.card)
-                                        .typography(Type::Label)
-                                        .text_color(p.muted)
-                                        .child("Creating image…"),
-                                ),
-                        )
+                        card.child(image_badge("Creating image…", &p))
                     })
                     .into_any_element()
             }
@@ -692,25 +674,7 @@ impl Workspace {
             .tile_corners()
             .bg(p.raised)
             .child(organic::pulse(p.accent, true))
-            .child(
-                div()
-                    .absolute()
-                    .bottom(space::S)
-                    .left_0()
-                    .right_0()
-                    .flex()
-                    .justify_center()
-                    .child(
-                        div()
-                            .px(space::S)
-                            .py(space::XS)
-                            .pill_corners()
-                            .bg(p.card)
-                            .typography(Type::Label)
-                            .text_color(p.muted)
-                            .child("Image purged"),
-                    ),
-            )
+            .child(image_badge("Image purged", &p))
             .into_any_element()
     }
 
@@ -789,4 +753,24 @@ impl Workspace {
 /// The id a transcript row's height follows under, for handing it on when rows change.
 pub(in crate::ui) fn row_motion_id(scope: &str, row: &str) -> String {
     format!("row:{scope}:{row}")
+}
+
+fn image_badge(label: &'static str, p: &Palette) -> Div {
+    div()
+        .absolute()
+        .bottom(space::S)
+        .left_0()
+        .right_0()
+        .flex()
+        .justify_center()
+        .child(
+            div()
+                .px(space::S)
+                .py(space::XS)
+                .pill_corners()
+                .bg(p.card)
+                .typography(Type::Label)
+                .text_color(p.muted)
+                .child(label),
+        )
 }
