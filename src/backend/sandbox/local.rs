@@ -312,8 +312,7 @@ impl LocalSandbox {
     /// # Errors
     /// Returns an error for a missing executable or one in writable or protected storage.
     pub fn shell_executable(mut self, executable: impl AsRef<Path>) -> Result<Self> {
-        let executable = validated_executable(executable.as_ref())?;
-        self.validate_trusted_executable(&executable)?;
+        let executable = self.trusted_executable(executable.as_ref())?;
         Arc::make_mut(&mut self.policy).shell_executable = executable;
         Ok(self)
     }
@@ -322,8 +321,7 @@ impl LocalSandbox {
     /// # Errors
     /// Returns an error for a missing executable or one in writable or protected storage.
     pub fn bubblewrap_executable(mut self, executable: impl AsRef<Path>) -> Result<Self> {
-        let executable = validated_executable(executable.as_ref())?;
-        self.validate_trusted_executable(&executable)?;
+        let executable = self.trusted_executable(executable.as_ref())?;
         Arc::make_mut(&mut self.policy).bubblewrap_executable = Some(executable);
         Ok(self)
     }
@@ -696,11 +694,7 @@ impl LocalSandbox {
                 let selected = resolved
                     .get_or_try_init(|| self.resolve_argv_executable(executable, environment))
                     .await?;
-                validated_executable(selected)
-                    .and_then(|path| {
-                        self.validate_trusted_executable(&path)?;
-                        Ok(path)
-                    })
+                self.trusted_executable(selected)
                     .unwrap_or_else(|_| PathBuf::from("/usr/bin/git"))
             } else {
                 self.resolve_argv_executable(executable, environment)
@@ -779,12 +773,15 @@ printf '%s/usr/bin/git\n' "$developer"
         if output.exit_code != 0 {
             return Ok(executable);
         }
-        let resolved = validated_executable(Path::new(output.stdout.trim_end())).and_then(|path| {
-            self.validate_trusted_executable(&path)?;
-            Ok(path)
-        });
+        let resolved = self.trusted_executable(Path::new(output.stdout.trim_end()));
         // Keep the launcher's diagnostics and alternate tool selection when lookup is unavailable.
         Ok(resolved.unwrap_or(executable))
+    }
+
+    fn trusted_executable(&self, path: &Path) -> Result<PathBuf> {
+        let executable = validated_executable(path)?;
+        self.validate_trusted_executable(&executable)?;
+        Ok(executable)
     }
 
     fn validate_trusted_executable(&self, executable: &Path) -> Result<()> {
@@ -827,7 +824,7 @@ printf '%s/usr/bin/git\n' "$developer"
     ) -> Result<tokio::process::Command> {
         self.validate_workspace_roots()?;
         if let Invocation::Shell { executable, .. } = invocation {
-            self.validate_trusted_executable(&validated_executable(executable)?)?;
+            self.trusted_executable(executable)?;
         }
         let mut command = match isolation.sandbox_mode {
             SandboxMode::WorkspaceWrite => platform::sandboxed_command(
