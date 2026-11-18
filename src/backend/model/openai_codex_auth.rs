@@ -638,15 +638,18 @@ fn json_error_summary(error: &serde_json::Error) -> String {
     )
 }
 
-fn read_credential(path: &Path) -> Result<OAuthCredential> {
-    let contents = fs::read(path)?;
-    let mut auth: AuthFile = serde_json::from_slice(&contents).map_err(|error| {
+fn parse_auth_file(path: &Path, contents: &[u8]) -> Result<AuthFile> {
+    serde_json::from_slice(contents).map_err(|error| {
         Error::Auth(format!(
             "{} is not a valid auth file: {}",
             path.display(),
             json_error_summary(&error)
         ))
-    })?;
+    })
+}
+
+fn read_credential(path: &Path) -> Result<OAuthCredential> {
+    let mut auth = parse_auth_file(path, &fs::read(path)?)?;
     let credential = auth
         .remove(PROVIDER_ID)
         .ok_or_else(|| Error::Auth("ChatGPT login is required".into()))?;
@@ -699,13 +702,7 @@ fn write_credential_with_sync(
 ) -> Result<(OAuthCredential, Result<()>)> {
     secure_parent(path)?;
     let mut auth = match fs::read(path) {
-        Ok(contents) => serde_json::from_slice(&contents).map_err(|error| {
-            Error::Auth(format!(
-                "{} is not a valid auth file: {}",
-                path.display(),
-                json_error_summary(&error)
-            ))
-        })?,
+        Ok(contents) => parse_auth_file(path, &contents)?,
         Err(error) if error.kind() == io::ErrorKind::NotFound => AuthFile::new(),
         Err(error) => return Err(error.into()),
     };
