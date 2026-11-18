@@ -132,13 +132,15 @@ async fn failed_persist_does_not_mutate_runtime_state() {
     });
     start_root(&shared, checkpoints).await;
 
-    let failed = reserve_child(&shared).await.is_err();
+    let failed = reserve_child(&shared, "/root/child", "child")
+        .await
+        .is_err();
     let after_failure = shared
         .list(&"root".parse().expect("session ID"), None)
         .await
         .expect("list agents")
         .len();
-    let retried = reserve_child(&shared).await.is_ok();
+    let retried = reserve_child(&shared, "/root/child", "child").await.is_ok();
     let after_retry = shared
         .list(&"root".parse().expect("session ID"), None)
         .await
@@ -157,28 +159,16 @@ async fn reserve_enforces_configured_concurrency_including_root() {
     let checkpoints: Arc<dyn CheckpointStore> = Arc::new(TestStore::default());
     start_root(&shared, checkpoints).await;
     for index in 0..2 {
-        shared
-            .reserve(
-                &"root".parse().expect("session ID"),
-                &format!("/root/child_{index}"),
-                "/root",
-                format!("child-{index}").parse().expect("session ID"),
-                1,
-                test_presentation(),
-            )
-            .await
-            .expect("reserve within concurrency limit");
+        reserve_child(
+            &shared,
+            &format!("/root/child_{index}"),
+            &format!("child-{index}"),
+        )
+        .await
+        .expect("reserve within concurrency limit");
     }
 
-    let error = shared
-        .reserve(
-            &"root".parse().expect("session ID"),
-            "/root/overflow",
-            "/root",
-            "overflow".parse().expect("session ID"),
-            1,
-            test_presentation(),
-        )
+    let error = reserve_child(&shared, "/root/overflow", "overflow")
         .await
         .expect_err("reject agent beyond concurrency limit");
 
@@ -194,7 +184,9 @@ async fn terminal_update_is_retained_until_its_checkpoint_marker_is_acknowledged
     let store = Arc::new(TestStore::default());
     let checkpoints: Arc<dyn CheckpointStore> = Arc::<TestStore>::clone(&store);
     start_root(&shared, checkpoints).await;
-    reserve_child(&shared).await.expect("reserve child");
+    reserve_child(&shared, "/root/child", "child")
+        .await
+        .expect("reserve child");
     shared
         .finished(
             &"root".parse().expect("session ID"),
@@ -252,7 +244,9 @@ async fn stale_root_teardown_cannot_evict_a_reconnected_root() {
     let shared = Arc::new(test_shared());
     let checkpoints: Arc<dyn CheckpointStore> = Arc::new(TestStore::default());
     start_root(&shared, Arc::clone(&checkpoints)).await;
-    reserve_child(&shared).await.expect("reserve child");
+    reserve_child(&shared, "/root/child", "child")
+        .await
+        .expect("reserve child");
 
     let old_root = shared
         .root(&"root".parse().expect("session ID"))
@@ -300,7 +294,9 @@ async fn detached_root_mutation_cannot_persist_after_root_eviction() {
     });
     let checkpoints: Arc<dyn CheckpointStore> = Arc::<TestStore>::clone(&store);
     start_root(&shared, Arc::clone(&checkpoints)).await;
-    reserve_child(&shared).await.expect("reserve child");
+    reserve_child(&shared, "/root/child", "child")
+        .await
+        .expect("reserve child");
 
     let old_root = shared
         .root(&"root".parse().expect("session ID"))
@@ -386,7 +382,9 @@ async fn terminal_persist_failure_is_retried_as_a_durable_error() {
         ))
         .await
         .expect("initialize runtime");
-    reserve_child(&shared).await.expect("reserve child");
+    reserve_child(&shared, "/root/child", "child")
+        .await
+        .expect("reserve child");
     store.fail_next_save.store(true, Ordering::SeqCst);
 
     shared
@@ -443,13 +441,13 @@ async fn terminal_persist_failure_is_retried_as_a_durable_error() {
     );
 }
 
-async fn reserve_child(shared: &Shared) -> Result<()> {
+async fn reserve_child(shared: &Shared, path: &str, id: &str) -> Result<()> {
     shared
         .reserve(
             &"root".parse().expect("session ID"),
-            "/root/child",
+            path,
             "/root",
-            "child".parse().expect("session ID"),
+            id.parse().expect("session ID"),
             1,
             test_presentation(),
         )
