@@ -199,3 +199,16 @@ async fn dropping_a_pending_grant_never_starts_a_late_controller() {
     assert!(remote.check_execution().is_ok());
     drop(remote);
 }
+
+#[tokio::test]
+async fn desktop_command_stream_rejects_overflow_before_eof() {
+    let (reader, mut writer) = tokio::io::duplex(8192);
+    writer.write_all(&[0; 4097]).await.unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), short_command_stream(Some(reader)))
+            .await
+            .unwrap()
+            .is_err()
+    );
+    drop(writer);
+}

@@ -27,12 +27,13 @@ pub(super) async fn start(
     if let Some((program, arguments)) =
         config::application(&settings.desktop.wallpaper, ApplicationRole::Wallpaper)?
     {
-        super::run_short(
+        super::short_command(
             Command::new(program)
                 .args(arguments)
                 .arg(wallpaper)
                 .env("DISPLAY", display)
                 .env("XAUTHORITY", authority),
+            super::ShortCommandOutput::Discard,
         )
         .await?;
     }

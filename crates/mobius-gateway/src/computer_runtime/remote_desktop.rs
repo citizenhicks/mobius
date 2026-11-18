@@ -399,11 +399,12 @@ impl RemoteDesktop {
                 let xauth = config::resolve_executable(Path::new(
                     self.config.desktop.tools.xauth.as_ref(),
                 ))?;
-                let authentication = short_output(
+                let authentication = short_command(
                     Command::new(xauth)
                         .arg("-f")
                         .arg(&runtime.authority)
                         .args(["list", &display]),
+                    ShortCommandOutput::Capture,
                 )
                 .await?;
                 let desktop = tokio::task::spawn_blocking(move || {
@@ -868,15 +869,16 @@ impl Runtime {
         for parameter in parameters {
             command.arg("-set").arg(format!("{parameter}={value}"));
         }
-        let output = short_output(&mut command).await?;
+        let output = short_command(&mut command, ShortCommandOutput::Capture).await?;
         if !output.stderr.is_empty() {
             return Err(Error::Internal("desktop input configuration failed".into()));
         }
         for parameter in parameters {
-            let output = short_output(
+            let output = short_command(
                 Command::new(&executable)
                     .args(["-display", display, "-get", parameter])
                     .env("XAUTHORITY", &self.authority),
+                ShortCommandOutput::Capture,
             )
             .await?;
             if !output.stderr.is_empty() || input_enabled(&output.stdout) != Some(enabled) {
@@ -1078,13 +1080,14 @@ async fn start_display(
         })
         .ok_or_else(|| Error::Internal("no virtual display is available".into()))?;
     let display = format!(":{display}");
-    run_short(
+    short_command(
         Command::new(config::resolve_executable(Path::new(
             config.desktop.tools.xauth.as_ref(),
         ))?)
         .arg("-f")
         .arg(authority)
         .args(["add", &display, ".", &Uuid::new_v4().simple().to_string()]),
+        ShortCommandOutput::Discard,
     )
     .await?;
     private_file(authority)?;
@@ -1185,35 +1188,69 @@ async fn clean_socket(socket: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
-async fn run_short(command: &mut Command) -> Result<()> {
-    command
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true);
-    let status = tokio::time::timeout(Duration::from_secs(5), command.status())
-        .await
-        .map_err(|elapsed| Error::Internal(format!("desktop setup timed out: {elapsed}")))??;
-    if !status.success() {
-        return Err(Error::Internal("desktop setup command failed".into()));
-    }
-    Ok(())
+#[derive(Clone, Copy)]
+enum ShortCommandOutput {
+    Capture,
+    #[cfg(target_os = "linux")]
+    Discard,
 }
 
-async fn short_output(command: &mut Command) -> Result<std::process::Output> {
-    command
-        .stdin(std::process::Stdio::null())
-        .kill_on_drop(true);
-    let output = tokio::time::timeout(Duration::from_secs(5), command.output())
-        .await
-        .map_err(|elapsed| {
-            Error::Internal(format!("desktop configuration timed out: {elapsed}"))
-        })??;
-    if !output.status.success() || output.stdout.len() > 4096 || output.stderr.len() > 4096 {
-        return Err(Error::Internal("desktop configuration failed".into()));
+async fn short_command(
+    command: &mut Command,
+    output: ShortCommandOutput,
+) -> Result<std::process::Output> {
+    use std::process::Stdio;
+    let stream = || match output {
+        ShortCommandOutput::Capture => Stdio::piped(),
+        #[cfg(target_os = "linux")]
+        ShortCommandOutput::Discard => Stdio::null(),
+    };
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(stream())
+        .stderr(stream())
+        .kill_on_drop(true)
+        .spawn()?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let (status, stdout, stderr) = tokio::try_join!(
+            async { Ok::<_, Error>(child.wait().await?) },
+            short_command_stream(stdout),
+            short_command_stream(stderr),
+        )?;
+        if !status.success() {
+            return Err(Error::Internal(
+                "desktop configuration command failed".into(),
+            ));
+        }
+        Ok(std::process::Output {
+            status,
+            stdout,
+            stderr,
+        })
+    })
+    .await
+    .map_err(|elapsed| Error::Internal(format!("desktop configuration timed out: {elapsed}")))?
+}
+
+async fn short_command_stream(
+    stream: Option<impl tokio::io::AsyncRead + Unpin>,
+) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    if let Some(stream) = stream {
+        const MAX_BYTES: usize = 4096;
+        stream
+            .take((MAX_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)
+            .await?;
+        if bytes.len() > MAX_BYTES {
+            return Err(Error::Internal(
+                "desktop configuration output is too large".into(),
+            ));
+        }
     }
-    Ok(output)
+    Ok(bytes)
 }
 
 fn unavailable() -> Error {
