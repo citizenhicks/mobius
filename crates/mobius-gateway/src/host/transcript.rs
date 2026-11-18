@@ -79,6 +79,18 @@ struct Step {
 }
 
 impl Step {
+    const fn new(sequence: u64, base: u32, at: i64) -> Self {
+        Self {
+            sequence,
+            base,
+            at,
+            ops: Vec::new(),
+            items: Vec::new(),
+            turns: Vec::new(),
+            loose: false,
+        }
+    }
+
     /// Marks the item `id` changed in a way only a whole `Item` op carries.
     fn touch(&mut self, id: &Arc<str>, turn: Option<&Arc<str>>) {
         self.touch_item(id, None);
@@ -180,15 +192,7 @@ impl TranscriptReducer {
             .unwrap_or(u32::MAX)
             .saturating_add(BLOCK_INDEX_BASE);
         self.last_event = Some((sequence, base.saturating_add(reserved)));
-        let mut step = Step {
-            sequence,
-            base,
-            at: recorded_at_ms,
-            ops: Vec::new(),
-            items: Vec::new(),
-            turns: Vec::new(),
-            loose: false,
-        };
+        let mut step = Step::new(sequence, base, recorded_at_ms);
         let submission = event.submission_id.as_deref();
         let rendered = !blocks.is_empty();
         match &event.msg {
@@ -261,7 +265,7 @@ impl TranscriptReducer {
     /// Adds the divider between inherited history and this chat's own.
     pub fn fork_point(&mut self, parent: SessionId) {
         let current = self.current_turn.take();
-        let mut step = Self::quiet_step(0, 0);
+        let mut step = Step::new(0, 0, 0);
         let id = self.id(format_args!("fork-point"));
         self.set(
             &mut step,
@@ -296,7 +300,7 @@ impl TranscriptReducer {
             })
             .collect::<Vec<_>>();
         for (turn, ended) in open {
-            let mut step = Self::quiet_step(0, ended);
+            let mut step = Step::new(0, 0, ended);
             self.finish_turn(&mut step, &turn);
             self.publish(step);
         }
@@ -414,18 +418,6 @@ impl TranscriptReducer {
     /// Everything reduced, for a page that is read once.
     pub fn page(self) -> TranscriptPage {
         self.snapshot()
-    }
-
-    const fn quiet_step(sequence: u64, at: i64) -> Step {
-        Step {
-            sequence,
-            base: 0,
-            at,
-            ops: Vec::new(),
-            items: Vec::new(),
-            turns: Vec::new(),
-            loose: false,
-        }
     }
 
     /// An id of this reducer's chat: inherited ids say how many forks up they come from.
