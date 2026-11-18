@@ -104,10 +104,7 @@ impl OpenAiSocket {
         model: impl Into<String>,
         settings: super::ModelTransportSettings,
     ) -> Result<Self> {
-        let model = model.into();
-        if model.trim().is_empty() {
-            return Err(Error::Invalid("OPENAI_MODEL is empty".into()));
-        }
+        let model = super::responses::openai_model(model)?;
         Self::from_api_key(
             api_key.into(),
             base_url,

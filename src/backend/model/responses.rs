@@ -96,6 +96,14 @@ impl std::fmt::Debug for OpenAi {
     }
 }
 
+pub(super) fn openai_model(model: impl Into<String>) -> Result<String> {
+    let model = model.into();
+    if model.trim().is_empty() {
+        return Err(Error::Invalid("OPENAI_MODEL is empty".into()));
+    }
+    Ok(model)
+}
+
 impl OpenAi {
     /// Creates an OpenAI or Responses-compatible provider.
     /// # Errors
@@ -123,10 +131,7 @@ impl OpenAi {
         model: impl Into<String>,
         settings: super::ModelTransportSettings,
     ) -> Result<Self> {
-        let model = model.into();
-        if model.trim().is_empty() {
-            return Err(Error::Invalid("OPENAI_MODEL is empty".into()));
-        }
+        let model = openai_model(model)?;
         Self::from_api_key(
             Some(api_key.into()),
             base_url,
