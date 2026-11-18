@@ -739,15 +739,19 @@ pub(super) fn validate_dimensions(width: u32, height: u32) -> Result<()> {
     Ok(())
 }
 
+pub(super) fn validate_image_media_type(media_type: &str) -> Result<()> {
+    match media_type {
+        "image/png" | "image/jpeg" | "image/webp" | "image/gif" => Ok(()),
+        _ => Err(Error::Tool(format!(
+            "Unsupported image format ({media_type}). Send a still JPEG, PNG, WebP, or GIF."
+        ))),
+    }
+}
+
 fn decode_image(bytes: &[u8]) -> Result<(&'static str, image::DynamicImage, Orientation)> {
     let format = image::guess_format(bytes).map_err(image_error)?;
-    let media_type = match format {
-        ImageFormat::Png => "image/png",
-        ImageFormat::Jpeg => "image/jpeg",
-        ImageFormat::WebP => "image/webp",
-        ImageFormat::Gif => "image/gif",
-        _ => return Err(Error::Tool("image must be PNG, JPEG, WebP, or GIF".into())),
-    };
+    let media_type = format.to_mime_type();
+    validate_image_media_type(media_type)?;
     let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
     reader.limits(decode_limits());
     let mut decoder = reader.into_decoder().map_err(image_error)?;

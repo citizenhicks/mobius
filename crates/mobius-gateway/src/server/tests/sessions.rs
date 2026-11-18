@@ -125,6 +125,41 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
     let (session_id, _) =
         create_bot_chat_with_config(&sender, &mut events, &workspace, config).await;
 
+    sender
+        .send(ClientMessage::BeginSessionFileUpload {
+            request_id: "heif-upload".into(),
+            session_id: session_id.share(),
+            name: "photo.heic".into(),
+            size: 1024,
+            media_type: "image/heic".into(),
+        })
+        .await
+        .expect("request HEIC upload");
+    loop {
+        match next_gateway_message(&mut events).await {
+            ServerMessage::Rejected {
+                request_id,
+                code,
+                message,
+                fatal,
+            } if request_id.as_ref() == "heif-upload" => {
+                assert_eq!(code, "session_file_rejected");
+                assert!(
+                    message.contains("image/heic") && message.contains("JPEG"),
+                    "give the client a conversion it can use: {message}"
+                );
+                assert!(!fatal, "the connection must remain usable");
+                break;
+            }
+            ServerMessage::SessionFileUploadReady { request_id, .. }
+                if request_id.as_ref() == "heif-upload" =>
+            {
+                panic!("unsupported image upload was accepted")
+            }
+            _ => {}
+        }
+    }
+
     let missing = SessionFileReference {
         id: Uuid::new_v4().to_string(),
         name: "missing.txt".into(),
@@ -331,7 +366,7 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
             session_id: session_id.clone(),
             name: "image.png".into(),
             size: image.len() as u64,
-            media_type: "image/png".into(),
+            media_type: "Image/PNG".into(),
         })
         .await
         .expect("begin upload");

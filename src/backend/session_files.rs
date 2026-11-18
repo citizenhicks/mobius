@@ -599,12 +599,20 @@ impl SessionFileStore {
         session_id: &SessionId,
         name: String,
         size: u64,
-        media_type: String,
+        mut media_type: String,
         origin: SessionFileOrigin,
         protected_from_cleanup: bool,
     ) -> Result<PendingSessionFileWrite> {
         validate_name(&name)?;
         validate_media_type(&media_type)?;
+        if origin == SessionFileOrigin::Upload
+            && media_type
+                .split_once('/')
+                .is_some_and(|(kind, _)| kind.eq_ignore_ascii_case("image"))
+        {
+            media_type.make_ascii_lowercase();
+            images::validate_image_media_type(&media_type)?;
+        }
         if !(1..=MAX_FILE_BYTES).contains(&size) {
             return Err(Error::Tool(format!(
                 "session file size must be 1–{MAX_FILE_BYTES} bytes"
