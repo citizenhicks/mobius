@@ -1630,7 +1630,7 @@ fn next_appearance<T: Copy + Eq>(
         .iter()
         .copied()
         .find(|choice| bots.iter().all(|bot| used(bot) != *choice))
-        .or_else(|| choices.iter().copied().cycle().nth(bots.len()))
+        .or_else(|| choices.get(bots.len().checked_rem(choices.len())?).copied())
 }
 
 fn validate_handle(handle: &str) -> Result<String> {
