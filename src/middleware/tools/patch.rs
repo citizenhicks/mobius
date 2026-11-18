@@ -762,14 +762,7 @@ fn proposed_chunks(diff: &mut String, chunks: &[Chunk<'_>]) -> fmt::Result {
                 diff,
                 "@@ -{old},{old_len} +{new},{new_len} @@{separator}{anchor}"
             )?;
-            for line in hunk.lines() {
-                let (sign, text) = match line {
-                    Line::Context(text) => (' ', *text),
-                    Line::Delete(text) => ('-', *text),
-                    Line::Insert(text) => ('+', *text),
-                };
-                writeln!(diff, "{sign}{}", text.trim_end_matches('\n'))?;
-            }
+            write_hunk_lines(diff, hunk.lines())?;
             old += old_len + 1;
             new += new_len + 1;
         }
@@ -818,16 +811,21 @@ pub(super) fn committed_diff(
             shift(&hunk.old_range()),
             shift(&hunk.new_range())
         )?;
-        for line in hunk.lines() {
-            let (sign, text) = match line {
-                Line::Context(text) => (' ', *text),
-                Line::Delete(text) => ('-', *text),
-                Line::Insert(text) => ('+', *text),
-            };
-            match text.strip_suffix('\n') {
-                Some(text) => writeln!(diff, "{sign}{text}")?,
-                None => writeln!(diff, "{sign}{text}\n\\ No newline at end of file")?,
-            }
+        write_hunk_lines(diff, hunk.lines())?;
+    }
+    Ok(())
+}
+
+fn write_hunk_lines(diff: &mut String, lines: &[Line<'_, str>]) -> fmt::Result {
+    for line in lines {
+        let (sign, text) = match line {
+            Line::Context(text) => (' ', *text),
+            Line::Delete(text) => ('-', *text),
+            Line::Insert(text) => ('+', *text),
+        };
+        match text.strip_suffix('\n') {
+            Some(text) => writeln!(diff, "{sign}{text}")?,
+            None => writeln!(diff, "{sign}{text}\n\\ No newline at end of file")?,
         }
     }
     Ok(())
