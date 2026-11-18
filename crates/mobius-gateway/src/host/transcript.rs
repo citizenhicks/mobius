@@ -584,11 +584,7 @@ impl TranscriptReducer {
 
     fn assistant(&mut self, step: &mut Step, message: &AssistantMessageEvent) {
         self.current_turn = Some(Arc::clone(&message.turn_id));
-        let target_phase = message
-            .content
-            .iter()
-            .rfind(|part| part.phase != ModelStepContentPhase::Reasoning && !part.text.is_empty())
-            .map(|part| part.phase);
+        let target_phase = message.last_visible_content().map(|part| part.phase);
         // Chat-completions providers stream text as the final answer before they know a
         // tool call follows; the completed message then names it commentary. Such a
         // still-streaming row of a phase the message has no text for takes the completed text.

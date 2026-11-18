@@ -272,12 +272,17 @@ pub struct AssistantMessageEvent {
 }
 
 impl AssistantMessageEvent {
-    pub(crate) fn reply_text(&self) -> Option<Cow<'_, str>> {
+    /// The last visible nonempty content part available for a reply.
+    #[must_use]
+    pub fn last_visible_content(&self) -> Option<&ModelStepContent> {
         self.content
             .iter()
-            .rev()
-            .find(|item| item.phase != ModelStepContentPhase::Reasoning && !item.text.is_empty())
-            .map(|item| Cow::Borrowed(item.text.as_str()))
+            .rfind(|part| part.phase != ModelStepContentPhase::Reasoning && !part.text.is_empty())
+    }
+
+    pub(crate) fn reply_text(&self) -> Option<Cow<'_, str>> {
+        self.last_visible_content()
+            .map(|part| Cow::Borrowed(part.text.as_str()))
     }
 }
 
