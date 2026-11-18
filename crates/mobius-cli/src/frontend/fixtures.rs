@@ -4,8 +4,9 @@ use std::sync::Arc;
 
 use mobius::backend::session_files::session_file_limits;
 use mobius_gateway::wire::{
-    BotCapabilities, BotMemory, BotRecord, BotShape, ComputerView, HarnessConfig, HarnessKind,
-    ProviderTint, ReadyPayload, RoutineInteractionPolicy, VersionedAgentConfig, VoiceCapability,
+    BotCapabilities, BotMemory, BotRecord, BotShape, ComputerView, ExtensionHookRecord,
+    ExtensionKind, ExtensionRecord, HarnessConfig, HarnessKind, ProviderTint, ReadyPayload,
+    RoutineInteractionPolicy, VersionedAgentConfig, VoiceCapability,
 };
 
 /// A gateway catalog holding `bots` and nothing else.
@@ -54,5 +55,29 @@ pub(super) fn bot(id: &str) -> BotRecord {
         },
         routine_interaction_policy: RoutineInteractionPolicy::Unattended,
         built_in: false,
+    }
+}
+
+pub(super) fn extension(capability: &str) -> ExtensionRecord {
+    ExtensionRecord {
+        id: "plugin-a".into(),
+        capability: capability.to_owned().into(),
+        kind: ExtensionKind::Plugin,
+        name: "Ponytail".into(),
+        description: "Minimal solutions".into(),
+        version: Some("4.9.0".into()),
+        source: "https://github.com/example/ponytail".into(),
+        reference: Some("main".into()),
+        subdirectory: None,
+        resolved_revision: "abc123".into(),
+        digest: "sha256:trusted-snapshot".into(),
+        skills: Arc::from(["ponytail".into()]),
+        hooks: Arc::from([ExtensionHookRecord {
+            event: "pre_tool".into(),
+            matcher: Some("shell".into()),
+            command: "review-hook --safe".into(),
+            timeout_seconds: 10,
+        }]),
+        hooks_trusted: false,
     }
 }

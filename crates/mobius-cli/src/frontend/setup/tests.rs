@@ -6,8 +6,8 @@ use mobius::protocol::{
     ModelChoice, ToolDiscoveryMode,
 };
 use mobius_gateway::wire::{
-    AgentComposition, ExtensionHookRecord, ExtensionKind, ExtensionRecord, ProviderAuthKind,
-    ProviderEndpointAuth, ProviderInstance, ProviderModel, ProviderStatus, ReasoningChoice,
+    AgentComposition, ProviderAuthKind, ProviderEndpointAuth, ProviderInstance, ProviderModel,
+    ProviderStatus, ReasoningChoice,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -245,25 +245,6 @@ fn feature_row(state: &SetupState, id: &str) -> usize {
         .expect("feature row")
 }
 
-fn extension(capability: &str) -> ExtensionRecord {
-    ExtensionRecord {
-        id: "plugin-a".into(),
-        capability: capability.to_owned().into(),
-        kind: ExtensionKind::Plugin,
-        name: "Plugin A".into(),
-        description: "An installed plugin".into(),
-        version: Some("1.0.0".into()),
-        source: "https://github.com/example/plugin-a".into(),
-        reference: None,
-        subdirectory: None,
-        resolved_revision: "abc123".into(),
-        digest: "sha256:plugin-a".into(),
-        skills: Arc::from(["plugin-a".into()]),
-        hooks: Vec::new().into(),
-        hooks_trusted: false,
-    }
-}
-
 #[test]
 fn configurable_provider_requires_an_exact_authenticated_endpoint() {
     let mut custom = state(SetupMode::Login, "responses", true);
@@ -314,14 +295,9 @@ fn agent_is_one_page_and_preserves_unedited_provider_settings() {
 #[test]
 fn agent_activates_untrusted_plugin_skills_without_authorizing_hooks() {
     let mut state = state(SetupMode::Bot, "openai_socket", true);
-    let mut untrusted = extension("plain");
-    untrusted.hooks = Arc::from([ExtensionHookRecord {
-        event: "PreToolUse".into(),
-        matcher: None,
-        command: "review-hook".into(),
-        timeout_seconds: 10,
-    }]);
-    state.available_extensions.push(untrusted);
+    state
+        .available_extensions
+        .push(crate::frontend::fixtures::extension("plain"));
     state.row = feature_row(&state, "plain");
     state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     state.row = (0..state.middleware_row_count())

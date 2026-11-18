@@ -733,7 +733,7 @@ fn render_prompt(frame: &mut ratatui::Frame<'_>, area: Rect, state: &ExtensionsS
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mobius_gateway::wire::ExtensionKind;
+    use crate::frontend::fixtures::extension;
 
     fn gateway(extensions: Vec<ExtensionRecord>) -> ReadyPayload {
         let mut gateway = crate::frontend::fixtures::ready(Vec::new());
@@ -741,43 +741,19 @@ mod tests {
         gateway
     }
 
-    fn extension() -> ExtensionRecord {
-        ExtensionRecord {
-            id: "ponytail".into(),
-            capability: "capability-a".into(),
-            kind: ExtensionKind::Plugin,
-            name: "Ponytail".into(),
-            description: "Minimal solutions".into(),
-            version: Some("4.9.0".into()),
-            source: "https://github.com/example/ponytail".into(),
-            reference: Some("main".into()),
-            subdirectory: None,
-            resolved_revision: "abc123".into(),
-            digest: "sha256:trusted-snapshot".into(),
-            skills: Arc::from(["ponytail".into()]),
-            hooks: Arc::from([ExtensionHookRecord {
-                event: "pre_tool".into(),
-                matcher: Some("shell".into()),
-                command: "review-hook --safe".into(),
-                timeout_seconds: 10,
-            }]),
-            hooks_trusted: false,
-        }
-    }
-
     #[test]
     fn lifecycle_requests_bind_identity_and_hook_trust_to_the_digest() {
-        let record = extension();
-        let mut state = ExtensionsState::new(&gateway(vec![record.clone()]));
+        let mut gateway = gateway(vec![extension("capability-a")]);
+        let mut state = ExtensionsState::new(&gateway);
         let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
-        let update = state.handle_key(key(KeyCode::Char('u')), &gateway(vec![record.clone()]));
-        state.handle_key(key(KeyCode::Char('x')), &gateway(vec![record.clone()]));
-        let uninstall = state.handle_key(key(KeyCode::Char('y')), &gateway(vec![record.clone()]));
-        state.handle_key(key(KeyCode::Char('t')), &gateway(vec![record.clone()]));
-        let trust = state.handle_key(key(KeyCode::Char('y')), &gateway(vec![record.clone()]));
-        let mut trusted = record.clone();
-        trusted.hooks_trusted = true;
-        let untrust = state.handle_key(key(KeyCode::Char('t')), &gateway(vec![trusted]));
+        let update = state.handle_key(key(KeyCode::Char('u')), &gateway);
+        state.handle_key(key(KeyCode::Char('x')), &gateway);
+        let uninstall = state.handle_key(key(KeyCode::Char('y')), &gateway);
+        state.handle_key(key(KeyCode::Char('t')), &gateway);
+        let trust = state.handle_key(key(KeyCode::Char('y')), &gateway);
+        gateway.agent_catalog.extensions[0].hooks_trusted = true;
+        let untrust = state.handle_key(key(KeyCode::Char('t')), &gateway);
+        let record = &gateway.agent_catalog.extensions[0];
         let actions = [update, uninstall, trust, untrust];
 
         let messages = actions.map(|action| {
@@ -808,7 +784,7 @@ mod tests {
 
     #[test]
     fn trust_review_shows_every_executable_command() {
-        let mut record = extension();
+        let mut record = extension("capability-a");
         let mut hooks = record.hooks.to_vec();
         hooks.push(ExtensionHookRecord {
             event: "Stop".into(),
