@@ -275,20 +275,11 @@ async fn assert_conversation_attachments(
 
 #[tokio::test]
 async fn transfer_answers_arrive_behind_any_number_of_unrelated_frames() {
-    use mobius_gateway::wire::{ClientFrame, FrameReader, ServerFrame, read_frame, write_frame};
+    use mobius_gateway::wire::{ClientFrame, ServerFrame, read_frame, write_frame};
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let endpoint = format!("tcp://{}", listener.local_addr().unwrap())
-        .parse()
-        .unwrap();
+    let (listener, endpoint) = crate::fixture::listener().await;
     let gateway = tokio::spawn(async move {
-        let (socket, _) = listener.accept().await.unwrap();
-        let (reader, mut writer) = socket.into_split();
-        let mut reader = FrameReader::new(reader);
-        read_frame::<serde_json::Value>(&mut reader).await.unwrap();
-        write_frame(&mut writer, &ServerFrame::new(ServerMessage::Authenticated))
-            .await
-            .unwrap();
+        let (mut reader, mut writer) = crate::fixture::authenticate(listener).await;
         loop {
             let frame = read_frame::<ClientFrame>(&mut reader)
                 .await
@@ -341,12 +332,9 @@ async fn assert_unconfirmed_upload_removed(
     root: &std::path::Path,
 ) {
     use mobius_gateway::wire::{FrameReader, ServerFrame, read_frame, write_frame};
-    use tokio::net::{TcpListener, TcpStream};
+    use tokio::net::TcpStream;
 
-    let proxy = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let interrupted = format!("tcp://{}", proxy.local_addr().unwrap())
-        .parse()
-        .unwrap();
+    let (proxy, interrupted) = crate::fixture::listener().await;
     let relay = tokio::spawn(async move {
         let (mut client, _) = proxy.accept().await.unwrap();
         let mut server = TcpStream::connect(address).await.unwrap();

@@ -1151,25 +1151,11 @@ mod tests {
         tokio::sync::mpsc::UnboundedSender<super::ServerMessage>,
         tokio::task::JoinHandle<()>,
     ) {
-        use mobius_gateway::wire::{
-            ClientFrame, FrameReader, ServerFrame, read_frame, write_frame,
-        };
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let endpoint = format!("tcp://{}", listener.local_addr().unwrap())
-            .parse()
-            .unwrap();
+        use mobius_gateway::wire::{ClientFrame, ServerFrame, read_frame, write_frame};
+        let (listener, endpoint) = crate::fixture::listener().await;
         let (frames, mut messages) = tokio::sync::mpsc::unbounded_channel();
         let server = tokio::spawn(async move {
-            let (socket, _) = listener.accept().await.unwrap();
-            let (reader, mut writer) = socket.into_split();
-            let mut reader = FrameReader::new(reader);
-            read_frame::<ClientFrame>(&mut reader).await.unwrap();
-            write_frame(
-                &mut writer,
-                &ServerFrame::new(super::ServerMessage::Authenticated),
-            )
-            .await
-            .unwrap();
+            let (mut reader, mut writer) = crate::fixture::authenticate(listener).await;
             loop {
                 tokio::select! {
                     frame = read_frame::<ClientFrame>(&mut reader) => if frame.unwrap().is_none() { return; },
@@ -1381,25 +1367,9 @@ mod tests {
 
     #[tokio::test]
     async fn failed_send_schedules_reconnect_instead_of_leaving_the_ui_ready() {
-        use mobius_gateway::wire::{
-            ClientFrame, FrameReader, ServerFrame, read_frame, write_frame,
-        };
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let endpoint = format!("tcp://{}", listener.local_addr().unwrap())
-            .parse()
-            .unwrap();
+        let (listener, endpoint) = crate::fixture::listener().await;
         let server = tokio::spawn(async move {
-            let (socket, _) = listener.accept().await.unwrap();
-            let (reader, mut writer) = socket.into_split();
-            read_frame::<ClientFrame>(&mut FrameReader::new(reader))
-                .await
-                .unwrap();
-            write_frame(
-                &mut writer,
-                &ServerFrame::new(super::ServerMessage::Authenticated),
-            )
-            .await
-            .unwrap();
+            drop(crate::fixture::authenticate(listener).await);
         });
         let client = super::GatewayClient::connect(&endpoint, "test", super::APP_CLIENT)
             .await

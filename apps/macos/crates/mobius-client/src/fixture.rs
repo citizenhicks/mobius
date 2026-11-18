@@ -13,6 +13,40 @@ use mobius_gateway::wire::TranscriptPage;
 
 use super::TranscriptStore;
 
+/// A loopback socket and the endpoint a real client uses to reach it.
+#[cfg(test)]
+pub(crate) async fn listener() -> (tokio::net::TcpListener, mobius_gateway::client::Endpoint) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("tcp://{}", listener.local_addr().unwrap())
+        .parse()
+        .unwrap();
+    (listener, endpoint)
+}
+
+/// Accepts the initial client frame and authenticates the test socket.
+#[cfg(test)]
+pub(crate) async fn authenticate(
+    listener: tokio::net::TcpListener,
+) -> (
+    mobius_gateway::wire::FrameReader<tokio::net::tcp::OwnedReadHalf>,
+    tokio::net::tcp::OwnedWriteHalf,
+) {
+    use mobius_gateway::wire::{
+        ClientFrame, FrameReader, ServerFrame, ServerMessage, read_frame, write_frame,
+    };
+    let (socket, _) = listener.accept().await.unwrap();
+    let (reader, mut writer) = socket.into_split();
+    let mut reader = FrameReader::new(reader);
+    read_frame::<ClientFrame>(&mut reader)
+        .await
+        .unwrap()
+        .unwrap();
+    write_frame(&mut writer, &ServerFrame::new(ServerMessage::Authenticated))
+        .await
+        .unwrap();
+    (reader, writer)
+}
+
 /// Events in order, reduced as the gateway reduces them.
 #[derive(Debug)]
 pub struct Script {
