@@ -256,8 +256,7 @@ impl BackgroundCommands {
     pub(super) async fn poll(&self, owner: &SessionId, id: &str) -> Result<BackgroundCommandPoll> {
         let entry = {
             let mut entries = self.entries.lock().map_err(state_error)?;
-            let entry = entries.get_mut(id).ok_or_else(|| unknown(id))?;
-            ensure_owner(entry, owner, id)?;
+            let entry = owned_entry(&entries, owner, id)?;
             if !entry.task.is_finished()
                 && entry.state.fetch_or(HELD, Ordering::Relaxed) & FINISHED == 0
             {
@@ -271,8 +270,7 @@ impl BackgroundCommands {
     pub(super) async fn stop(&self, owner: &SessionId, id: &str) -> Result<BackgroundCommandPoll> {
         let entry = {
             let mut entries = self.entries.lock().map_err(state_error)?;
-            let entry = entries.get(id).ok_or_else(|| unknown(id))?;
-            ensure_owner(entry, owner, id)?;
+            owned_entry(&entries, owner, id)?;
             entries.remove(id).ok_or_else(|| unknown(id))?
         };
         entry.task.abort();
@@ -440,11 +438,15 @@ fn take_output(output: &Arc<Mutex<BufferedOutput>>) -> Result<TakenOutput> {
     Ok(output.lock().map_err(state_error)?.take())
 }
 
-fn ensure_owner(entry: &Entry, owner: &SessionId, id: &str) -> Result<()> {
-    if &entry.owner != owner {
-        return Err(unknown(id));
-    }
-    Ok(())
+fn owned_entry<'a>(
+    entries: &'a BTreeMap<Arc<str>, Entry>,
+    owner: &SessionId,
+    id: &str,
+) -> Result<&'a Entry> {
+    entries
+        .get(id)
+        .filter(|entry| &entry.owner == owner)
+        .ok_or_else(|| unknown(id))
 }
 
 fn unknown(id: &str) -> Error {
