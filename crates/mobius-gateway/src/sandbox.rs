@@ -252,6 +252,17 @@ impl GatewaySandbox {
         }
     }
 
+    async fn during_execution<T, F>(&self, command: impl FnOnce() -> F) -> Result<T>
+    where
+        F: Future<Output = Result<T>>,
+    {
+        let _execution = self.execution_lease().await?;
+        tokio::select! {
+            () = self.execution_cancelled() => Err(execution_held()),
+            result = command() => result,
+        }
+    }
+
     async fn execution_cancelled(&self) {
         match &self.remote_desktop {
             Some(desktop) => desktop.execution_cancelled().await,
@@ -564,13 +575,15 @@ impl SandboxBackend for GatewaySandbox {
         mode: CommandMode,
         output: CommandOutputSink,
     ) -> BoxFuture<'a, Result<CommandOutput>> {
-        Box::pin(async move {
-            let _execution = self.execution_lease().await?;
-            tokio::select! {
-                () = self.execution_cancelled() => Err(execution_held()),
-                result = self.command_delegate(sandbox_mode).execute(script, sandbox_mode, network_access, mode, output) => result,
-            }
-        })
+        Box::pin(self.during_execution(move || {
+            self.command_delegate(sandbox_mode).execute(
+                script,
+                sandbox_mode,
+                network_access,
+                mode,
+                output,
+            )
+        }))
     }
 
     fn execute_authorized<'a>(
@@ -582,20 +595,16 @@ impl SandboxBackend for GatewaySandbox {
         output: CommandOutputSink,
         authorization: &'a CommandAuthorization,
     ) -> BoxFuture<'a, Result<Option<CommandOutput>>> {
-        Box::pin(async move {
-            let _execution = self.execution_lease().await?;
-            tokio::select! {
-                () = self.execution_cancelled() => Err(execution_held()),
-                result = self.command_delegate(sandbox_mode).execute_authorized(
-                    script,
-                    sandbox_mode,
-                    network_access,
-                    mode,
-                    output,
-                    authorization,
-                ) => result,
-            }
-        })
+        Box::pin(self.during_execution(move || {
+            self.command_delegate(sandbox_mode).execute_authorized(
+                script,
+                sandbox_mode,
+                network_access,
+                mode,
+                output,
+                authorization,
+            )
+        }))
     }
 }
 
