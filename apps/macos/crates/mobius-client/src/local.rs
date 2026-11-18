@@ -2,7 +2,6 @@
 //! private folder and thumbnails.
 
 use mobius_gateway::wire::WorkspaceFileRecord;
-use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
 /// The app's private folder for pasted images, previews and thumbnails, removed on quit.
@@ -151,9 +150,7 @@ pub fn read_capped(path: &Path, limit: u64) -> std::io::Result<Option<Vec<u8>>> 
     if file.metadata()?.len() > limit {
         return Ok(None);
     }
-    let mut bytes = Vec::new();
-    file.take(limit.saturating_add(1)).read_to_end(&mut bytes)?;
-    Ok(Some(bytes))
+    mobius::read_within(file, limit)
 }
 
 /// Writes `bytes` to `destination` and hands the path back.
@@ -263,6 +260,12 @@ mod tests {
 mod routing_tests {
     use super::{FileRoute, resolve_file as route_file};
     use std::path::{Path, PathBuf};
+
+    #[cfg(unix)]
+    #[test]
+    fn size_hint_cannot_bypass_a_local_preview_limit() {
+        assert_eq!(super::read_capped(Path::new("/dev/zero"), 8).unwrap(), None);
+    }
 
     fn route(path: &str, workspace: Option<&str>, local: bool) -> FileRoute {
         let exists = |path: &Path| path.starts_with("/Users/me/.mobius");
