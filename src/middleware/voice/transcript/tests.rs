@@ -6,25 +6,24 @@ use crate::backend::checkpoint::sqlite::SqliteCheckpoint;
 use crate::middleware::voice::Voice;
 use crate::middleware::{ActiveCommandContext, MessageQueue, Middleware, SubmissionResult};
 
+async fn voice_parent(path: &std::path::Path) -> (Arc<dyn CheckpointStore>, crate::SessionId) {
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(SqliteCheckpoint::new(path).unwrap());
+    let mut parent = Checkpoint::empty("parent".parse().expect("session ID"));
+    std::sync::Arc::make_mut(&mut parent.session_context).owner_id = "bot".into();
+    let id = parent.session_id.share();
+    checkpoints.save(parent, Vec::new(), None).await.unwrap();
+    (checkpoints, id)
+}
+
 #[tokio::test]
 async fn handoff_cursor_advances_only_on_acknowledgement_and_survives_reopen() {
     let directory = tempfile::tempdir().unwrap();
-    let checkpoints: Arc<dyn CheckpointStore> =
-        Arc::new(SqliteCheckpoint::new(directory.path().join("checkpoints.sqlite3")).unwrap());
-    let mut parent = Checkpoint::empty("parent".parse().expect("session ID"));
-    std::sync::Arc::make_mut(&mut parent.session_context).owner_id = "bot".into();
-    checkpoints
-        .save(parent.clone(), Vec::new(), None)
+    let (checkpoints, parent_id) =
+        voice_parent(&directory.path().join("checkpoints.sqlite3")).await;
+    let sink: FrontendEventSink = Arc::new(|_| Ok(()));
+    let mut voice = VoiceTranscript::open(Arc::clone(&checkpoints), &parent_id, Arc::clone(&sink))
         .await
         .unwrap();
-    let sink: FrontendEventSink = Arc::new(|_| Ok(()));
-    let mut voice = VoiceTranscript::open(
-        Arc::clone(&checkpoints),
-        &parent.session_id,
-        Arc::clone(&sink),
-    )
-    .await
-    .unwrap();
     voice
         .record(
             "plan",
@@ -59,7 +58,7 @@ async fn handoff_cursor_advances_only_on_acknowledgement_and_survives_reopen() {
     voice.acknowledge(second).await.unwrap();
     voice.acknowledge(retry).await.unwrap();
     drop(voice);
-    let voice = VoiceTranscript::open(checkpoints, &parent.session_id, sink)
+    let voice = VoiceTranscript::open(checkpoints, &parent_id, sink)
         .await
         .unwrap();
     assert!(voice.handoff_context().await.unwrap().text.is_empty());
@@ -76,14 +75,8 @@ async fn handoff_cursor_advances_only_on_acknowledgement_and_survives_reopen() {
 async fn finish_retries_failed_persistence_without_losing_or_duplicating_speech() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("checkpoints.sqlite3");
-    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(SqliteCheckpoint::new(&path).unwrap());
-    let mut parent = Checkpoint::empty("parent".parse().expect("session ID"));
-    std::sync::Arc::make_mut(&mut parent.session_context).owner_id = "bot".into();
-    checkpoints
-        .save(parent.clone(), Vec::new(), None)
-        .await
-        .unwrap();
-    let mut voice = VoiceTranscript::open(checkpoints, &parent.session_id, Arc::new(|_| Ok(())))
+    let (checkpoints, parent_id) = voice_parent(&path).await;
+    let mut voice = VoiceTranscript::open(checkpoints, &parent_id, Arc::new(|_| Ok(())))
         .await
         .unwrap();
     voice
