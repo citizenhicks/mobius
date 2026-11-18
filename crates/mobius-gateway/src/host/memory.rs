@@ -52,18 +52,8 @@ impl GatewayHost {
         description: &str,
         text: &str,
     ) -> std::result::Result<Vec<MemoryRecord>, Rejection> {
-        {
-            let _mutation = self.begin_mutation().await?;
-            let memory = self.memory_store().await;
-            let context = MemoryContext {
-                memory: &memory,
-                projects: &[],
-            };
-            memory::edit(&context, id, description, text)
-                .await
-                .map_err(rejection)?;
-        }
-        self.list_memories().await
+        self.mutate_memory(async |context| memory::edit(context, id, description, text).await)
+            .await
     }
 
     /// Forgets one editable memory, then lists every memory.
@@ -71,14 +61,23 @@ impl GatewayHost {
         &self,
         id: &str,
     ) -> std::result::Result<Vec<MemoryRecord>, Rejection> {
+        self.mutate_memory(async |context| memory::forget(context, id).await)
+            .await
+    }
+
+    async fn mutate_memory(
+        &self,
+        operation: impl AsyncFnOnce(&MemoryContext<'_>) -> crate::Result<()>,
+    ) -> std::result::Result<Vec<MemoryRecord>, Rejection> {
         {
             let _mutation = self.begin_mutation().await?;
             let memory = self.memory_store().await;
-            let context = MemoryContext {
+            operation(&MemoryContext {
                 memory: &memory,
                 projects: &[],
-            };
-            memory::forget(&context, id).await.map_err(rejection)?;
+            })
+            .await
+            .map_err(rejection)?;
         }
         self.list_memories().await
     }
