@@ -56,6 +56,36 @@ impl TextEdit {
     }
 }
 
+/// A dialog child renders after the enclosing Workspace borrow ends and redraws on its changes.
+pub(crate) struct WorkspaceDialogPart<E> {
+    workspace: WeakEntity<Workspace>,
+    render: fn(&Workspace, &Context<Workspace>) -> E,
+}
+
+impl<E: IntoElement + 'static> WorkspaceDialogPart<E> {
+    pub(crate) fn new(
+        render: fn(&Workspace, &Context<Workspace>) -> E,
+        cx: &mut Context<Workspace>,
+    ) -> Entity<Self> {
+        let owner = cx.entity();
+        cx.new(|cx| {
+            cx.observe(&owner, |_, _, cx| cx.notify()).detach();
+            Self {
+                workspace: owner.downgrade(),
+                render,
+            }
+        })
+    }
+}
+
+impl<E: IntoElement + 'static> Render for WorkspaceDialogPart<E> {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.workspace
+            .update(cx, |this, cx| (self.render)(this, cx).into_any_element())
+            .unwrap_or_else(|_| div().into_any_element())
+    }
+}
+
 #[derive(Clone)]
 enum EditInput {
     Line(Entity<InputState>),

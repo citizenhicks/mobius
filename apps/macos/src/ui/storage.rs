@@ -2,6 +2,7 @@
 use super::navigation::{project_id, session_title, workspace_name};
 use super::*;
 use crate::gateway::storage::StorageEvent;
+use crate::ui::primitives::WorkspaceDialogPart;
 use gpui_component::button::ButtonVariants;
 use gpui_component::{ActiveTheme, Disableable, Selectable};
 use mobius::SessionId;
@@ -261,28 +262,9 @@ impl Workspace {
         self.client.storage.export_complete = false;
         self.client.storage.export_failed = false;
         self.refresh_storage(cx);
-        let owner = cx.entity();
-        let body = cx.new(|cx| {
-            cx.observe(&owner, |_, _, cx| cx.notify()).detach();
-            StorageDialog {
-                workspace: owner.downgrade(),
-                part: StorageDialogPart::Body,
-            }
-        });
-        let header = cx.new(|cx| {
-            cx.observe(&owner, |_, _, cx| cx.notify()).detach();
-            StorageDialog {
-                workspace: owner.downgrade(),
-                part: StorageDialogPart::Header,
-            }
-        });
-        let footer = cx.new(|cx| {
-            cx.observe(&owner, |_, _, cx| cx.notify()).detach();
-            StorageDialog {
-                workspace: owner.downgrade(),
-                part: StorageDialogPart::Actions,
-            }
-        });
+        let body = WorkspaceDialogPart::new(Self::storage_sheet, cx);
+        let header = WorkspaceDialogPart::new(Self::storage_header, cx);
+        let footer = WorkspaceDialogPart::new(Self::storage_footer, cx);
         window.open_dialog(cx, move |dialog, _, _| {
             dialog
                 .title(Entity::clone(&header))
@@ -708,31 +690,6 @@ impl Workspace {
                 this.send(message, cx);
             },
         );
-    }
-}
-
-// The dialog layer is built during Workspace::render. Render its live controls in
-// child entities, after that borrow ends, so gateway updates can refresh the sheet.
-enum StorageDialogPart {
-    Header,
-    Body,
-    Actions,
-}
-
-struct StorageDialog {
-    workspace: WeakEntity<Workspace>,
-    part: StorageDialogPart,
-}
-
-impl Render for StorageDialog {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.workspace
-            .update(cx, |this, cx| match self.part {
-                StorageDialogPart::Header => this.storage_header(cx),
-                StorageDialogPart::Body => this.storage_sheet(cx),
-                StorageDialogPart::Actions => this.storage_footer(cx),
-            })
-            .unwrap_or_else(|_| div())
     }
 }
 

@@ -130,13 +130,7 @@ impl Workspace {
             recaps.queue.push_back(id);
         }
         self.write_recaps();
-        let owner = cx.entity();
-        let list = cx.new(|cx| {
-            cx.observe(&owner, |_, _, cx| cx.notify()).detach();
-            RecapDialog {
-                workspace: owner.downgrade(),
-            }
-        });
+        let list = crate::ui::primitives::WorkspaceDialogPart::new(Self::recap_list, cx);
         window.open_dialog(cx, move |dialog, _, _| {
             dialog
                 .title(heading("While you were away"))
@@ -391,16 +385,4 @@ fn recap_line(glyph_name: &str, tint: Hsla, text: &str, ink: Hsla, p: &Palette) 
                 .child(icon(glyph_name, p).size(glyph::MARK).text_color(tint)),
         )
         .child(div().flex_1().min_w_0().child(text.to_owned()))
-}
-
-struct RecapDialog {
-    workspace: WeakEntity<Workspace>,
-}
-
-impl Render for RecapDialog {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.workspace
-            .update(cx, |this, cx| this.recap_list(cx))
-            .unwrap_or_else(|_| div().into_any_element())
-    }
 }

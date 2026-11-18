@@ -23,7 +23,9 @@ mod tokens;
 pub(crate) use bot_face::glide_parity;
 pub(crate) use bot_face::{BotFace, BotFaceView, BotMood, lively_face};
 pub(crate) use controls::*;
-pub(crate) use dialog::{EditKind, TextEdit, dialog_actions, dialog_body, labelled};
+pub(crate) use dialog::{
+    EditKind, TextEdit, WorkspaceDialogPart, dialog_actions, dialog_body, labelled,
+};
 pub(crate) use feedback::*;
 pub(crate) use format::*;
 pub(crate) use glyphs::*;
