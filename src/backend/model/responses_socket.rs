@@ -328,10 +328,7 @@ impl OpenAiSocket {
             match exchange(&mut connection, body, &events, request.cancellation).await? {
                 Exchange::Completed(completed) => {
                     let response = completed.response;
-                    let response_id = response
-                        .get("id")
-                        .and_then(Value::as_str)
-                        .filter(|id| !id.is_empty())
+                    let response_id = super::nonempty_string(&response, "id")
                         .ok_or_else(|| Error::Provider("response omitted id".into()))?
                         .to_owned();
                     let output = decode_response(response)?;
