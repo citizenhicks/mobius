@@ -458,8 +458,7 @@ pub(super) fn print_listener(
 
 pub(super) fn exit_gateway(state_dir: PathBuf) -> Result<()> {
     let (store, _) = ConfigStore::open(state_dir)?;
-    let _startup = StartupGuard::create(store.state_dir())?;
-    stop_gateway(store.state_dir(), None)
+    StartupGuard::stop(store.state_dir()).map(drop)
 }
 
 pub(super) fn stop_gateway(state_dir: &Path, expected_pid: Option<u32>) -> Result<()> {
@@ -571,6 +570,12 @@ impl Drop for ProcessRecordGuard {
 }
 
 impl StartupGuard {
+    pub(super) fn stop(state_dir: &Path) -> Result<Self> {
+        let guard = Self::create(state_dir)?;
+        stop_gateway(state_dir, None)?;
+        Ok(guard)
+    }
+
     pub(super) fn create(state_dir: &Path) -> Result<Self> {
         let path = fs::canonicalize(state_dir)?.join(STARTUP_FILE);
         let file = mobius::owner_only::open(&path)?;

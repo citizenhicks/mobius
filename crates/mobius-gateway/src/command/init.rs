@@ -55,8 +55,7 @@ pub(super) fn initialize_bootstrap(
 pub(super) fn reset_bot_defaults(state_dir: PathBuf) -> Result<()> {
     {
         let (store, _) = ConfigStore::open(state_dir)?;
-        let _startup = StartupGuard::create(store.state_dir())?;
-        stop_gateway(store.state_dir(), None)?;
+        let _startup = StartupGuard::stop(store.state_dir())?;
         let (store, mut config) = ConfigStore::open(store.state_dir().to_path_buf())?;
         let mut composition = crate::wire::AgentComposition::defaults_with_ceilings(
             config.execution.subagent_ceilings,
