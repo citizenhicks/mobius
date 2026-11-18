@@ -217,15 +217,7 @@ pub(crate) fn websocket_error(error: WebSocketError) -> Error {
                 retry_after: retry_after(response.headers()),
             };
         }
-        WebSocketError::ConnectionClosed | WebSocketError::AlreadyClosed => "closed",
-        WebSocketError::Tls(_) => "TLS",
-        WebSocketError::Capacity(_) => "capacity",
-        WebSocketError::Protocol(_) => "protocol",
-        WebSocketError::WriteBufferFull(_) => "write buffer",
-        WebSocketError::Utf8(_) => "UTF-8",
-        WebSocketError::AttackAttempt => "attack rejected",
-        WebSocketError::Url(_) => "URL",
-        WebSocketError::HttpFormat(_) => "HTTP format",
+        error => mobius::backend::websocket_error_kind(&error),
     };
     Error::Protocol(format!("WebSocket {kind} failure"))
 }
