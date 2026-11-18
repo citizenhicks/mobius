@@ -85,13 +85,13 @@ impl TuiState {
                     .unwrap_or_else(|| self.submit_input_with_delivery(catalog, delivery))
             }
             KeyCode::Up => {
-                if !self.move_menu_up(catalog) && self.approval().is_none() {
+                if !self.move_menu(catalog, -1) && self.approval().is_none() {
                     self.composer_history_up();
                 }
                 UiAction::None
             }
             KeyCode::Down => {
-                if !self.move_menu_down(catalog) && self.approval().is_none() {
+                if !self.move_menu(catalog, 1) && self.approval().is_none() {
                     self.composer_history_down();
                 }
                 UiAction::None
@@ -320,13 +320,13 @@ impl TuiState {
                 UiAction::None
             }
             KeyCode::Char('p') => {
-                if !self.move_menu_up(catalog) && self.approval().is_none() {
+                if !self.move_menu(catalog, -1) && self.approval().is_none() {
                     self.composer_history_up();
                 }
                 UiAction::None
             }
             KeyCode::Char('n') => {
-                if !self.move_menu_down(catalog) && self.approval().is_none() {
+                if !self.move_menu(catalog, 1) && self.approval().is_none() {
                     self.composer_history_down();
                 }
                 UiAction::None
@@ -877,22 +877,6 @@ impl TuiState {
         catalog.command_suggestions(&self.composer.text, self.composer.cursor)
     }
 
-    fn move_slash_up(&mut self, catalog: &UiCatalog) -> bool {
-        let Some(items) = self.slash_suggestions(catalog) else {
-            return false;
-        };
-        self.slash_selection = wrap_step(self.slash_selection, -1, items.len());
-        true
-    }
-
-    fn move_slash_down(&mut self, catalog: &UiCatalog) -> bool {
-        let Some(items) = self.slash_suggestions(catalog) else {
-            return false;
-        };
-        self.slash_selection = wrap_step(self.slash_selection, 1, items.len());
-        true
-    }
-
     pub(super) fn reference_suggestions(
         &mut self,
         catalog: &UiCatalog,
@@ -947,28 +931,16 @@ impl TuiState {
         true
     }
 
-    fn move_menu_up(&mut self, catalog: &UiCatalog) -> bool {
-        if let Some(count) = self
-            .reference_suggestions(catalog)
-            .map(|(_, matches)| matches.len())
-        {
-            self.reference_selection = wrap_step(self.reference_selection, -1, count);
-            true
+    fn move_menu(&mut self, catalog: &UiCatalog, step: isize) -> bool {
+        if let Some((_, items)) = self.reference_suggestions(catalog) {
+            let count = items.len();
+            self.reference_selection = wrap_step(self.reference_selection, step, count);
+        } else if let Some(items) = self.slash_suggestions(catalog) {
+            self.slash_selection = wrap_step(self.slash_selection, step, items.len());
         } else {
-            self.move_slash_up(catalog)
+            return false;
         }
-    }
-
-    fn move_menu_down(&mut self, catalog: &UiCatalog) -> bool {
-        if let Some(count) = self
-            .reference_suggestions(catalog)
-            .map(|(_, matches)| matches.len())
-        {
-            self.reference_selection = wrap_step(self.reference_selection, 1, count);
-            true
-        } else {
-            self.move_slash_down(catalog)
-        }
+        true
     }
 
     fn slash_input_changed(&mut self) {
