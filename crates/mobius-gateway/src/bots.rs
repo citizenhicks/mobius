@@ -549,8 +549,9 @@ impl BotStore {
         self.update(|state| {
             let id = Uuid::new_v4().to_string();
             let handle = next_handle(state, &name, &id);
-            let tint = next_tint(state);
-            let shape = next_shape(state);
+            let tint = next_appearance(&state.bots, &BOT_TINTS, |bot| bot.tint).unwrap_or_default();
+            let shape = next_appearance(&state.bots, &BotShape::ALL, |bot| bot.shape)
+                .unwrap_or(BotShape::Circle);
             let bot = StoredBot {
                 id: id.into(),
                 handle: handle.into(),
@@ -1620,22 +1621,16 @@ fn next_handle(state: &BotState, name: &str, id: &str) -> String {
     }
 }
 
-fn next_tint(state: &BotState) -> ProviderTint {
-    BOT_TINTS
+fn next_appearance<T: Copy + Eq>(
+    bots: &[StoredBot],
+    choices: &[T],
+    used: impl Fn(&StoredBot) -> T,
+) -> Option<T> {
+    choices
         .iter()
         .copied()
-        .find(|tint| state.bots.iter().all(|bot| bot.tint != *tint))
-        .or_else(|| BOT_TINTS.iter().copied().cycle().nth(state.bots.len()))
-        .unwrap_or_default()
-}
-
-/// The first shape no Bot wears yet, then round again, as tints are handed out.
-fn next_shape(state: &BotState) -> BotShape {
-    BotShape::ALL
-        .into_iter()
-        .find(|shape| state.bots.iter().all(|bot| bot.shape != *shape))
-        .or_else(|| BotShape::ALL.into_iter().cycle().nth(state.bots.len()))
-        .unwrap_or(BotShape::Circle)
+        .find(|choice| bots.iter().all(|bot| used(bot) != *choice))
+        .or_else(|| choices.iter().copied().cycle().nth(bots.len()))
 }
 
 fn validate_handle(handle: &str) -> Result<String> {
