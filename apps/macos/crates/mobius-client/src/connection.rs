@@ -265,12 +265,14 @@ impl Gateway {
         id: Arc<str>,
         session_id: SessionId,
         path: PathBuf,
+        convert_image: super::upload::ConvertImage,
     ) -> Result<Arc<AtomicBool>> {
         let cancellation = Arc::new(AtomicBool::new(false));
         self.enqueue(Command::Transfer(super::files::Transfer::Upload {
             id,
             session_id,
             path,
+            convert_image,
             cancellation: Arc::clone(&cancellation),
         }))?;
         Ok(cancellation)

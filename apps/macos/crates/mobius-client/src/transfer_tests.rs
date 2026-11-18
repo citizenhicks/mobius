@@ -67,6 +67,7 @@ async fn attachment_lifecycle_uploads_cancels_deletes_and_preserves_downloads() 
         id: "upload".into(),
         session_id: session_id.share(),
         path: source,
+        convert_image: |_, _| panic!("ordinary uploads keep their bytes"),
         cancellation: Default::default(),
     };
     let Update::Uploaded {
@@ -112,6 +113,7 @@ async fn attachment_lifecycle_uploads_cancels_deletes_and_preserves_downloads() 
         id: "cancelled".into(),
         session_id,
         path: root.path().join("never-opened"),
+        convert_image: |_, _| panic!("ordinary uploads keep their bytes"),
         cancellation: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     };
     assert!(matches!(
@@ -208,7 +210,9 @@ async fn assert_conversation_attachments(
     session: &SessionId,
     root: &std::path::Path,
 ) {
-    let source = root.join("conversation.txt");
+    use base64::Engine as _;
+    const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+    let source = root.join("conversation.tif");
     std::fs::write(&source, b"persistent conversation attachment").unwrap();
     let Update::Uploaded {
         result: Ok(Some(file)),
@@ -217,6 +221,15 @@ async fn assert_conversation_attachments(
         id: "conversation-upload".into(),
         session_id: session.share(),
         path: source,
+        convert_image: |_, output| {
+            std::fs::write(
+                output,
+                base64::engine::general_purpose::STANDARD
+                    .decode(PNG)
+                    .unwrap(),
+            )?;
+            Ok("png")
+        },
         cancellation: Default::default(),
     })
     .run(transfers)
@@ -226,6 +239,8 @@ async fn assert_conversation_attachments(
     else {
         panic!("conversation upload expected")
     };
+    assert_eq!(file.name, "conversation.png");
+    assert_eq!(file.media_type, "image/png");
     let preview = Transfer::Preview {
         id: "conversation-files".into(),
         session_id: session.share(),
@@ -249,7 +264,9 @@ async fn assert_conversation_attachments(
     .unwrap();
     assert_eq!(
         std::fs::read(destination).unwrap(),
-        b"persistent conversation attachment"
+        base64::engine::general_purpose::STANDARD
+            .decode(PNG)
+            .unwrap()
     );
     let preview = Transfer::Preview {
         id: "no-project-files".into(),
@@ -361,6 +378,7 @@ async fn assert_unconfirmed_upload_removed(
         id: "lost-ack".into(),
         session_id: session_id.share(),
         path: root.join("source.txt"),
+        convert_image: |_, _| panic!("ordinary uploads keep their bytes"),
         cancellation: Default::default(),
     };
     let interrupted = Transfers::new(interrupted, transfers.token.as_str().into());

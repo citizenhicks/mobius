@@ -130,11 +130,15 @@ impl Workspace {
                 .unwrap_or_default()
                 .to_string_lossy()
                 .into_owned();
-            let (cancellation, error) =
-                match gateway.upload(Arc::clone(&id), session_id.share(), path) {
-                    Ok(cancellation) => (cancellation, None),
-                    Err(error) => (Default::default(), Some(gateway::describe(&error))),
-                };
+            let (cancellation, error) = match gateway.upload(
+                Arc::clone(&id),
+                session_id.share(),
+                path,
+                crate::host::platform::convert_upload_image,
+            ) {
+                Ok(cancellation) => (cancellation, None),
+                Err(error) => (Default::default(), Some(gateway::describe(&error))),
+            };
             attachments.push(DraftAttachment {
                 id,
                 name,

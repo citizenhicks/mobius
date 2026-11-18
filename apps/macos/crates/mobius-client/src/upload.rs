@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures_util::{StreamExt as _, TryStreamExt as _, stream};
@@ -27,26 +27,80 @@ impl From<Error> for UploadFailure {
     }
 }
 
+/// Native ImageIO encoder. Writes to the supplied scratch file and returns its extension.
+pub type ConvertImage = fn(&Path, &Path) -> Result<&'static str>;
+
+struct UploadInput {
+    file: std::fs::File,
+    name: PathBuf,
+}
+
+impl UploadInput {
+    fn open(path: &Path, convert: ConvertImage) -> Result<Self> {
+        let original = std::fs::metadata(path)?;
+        regular_file(&original)?;
+        let name = path
+            .file_name()
+            .ok_or_else(|| Error::Invalid("Missing attachment name.".into()))?;
+        let media_type = mime_guess::from_path(path).first_or_octet_stream();
+        if matches!(
+            media_type.essence_str(),
+            "image/heic" | "image/heif" | "image/avif" | "image/tiff" | "image/bmp"
+        ) {
+            if original.len() > mobius::backend::session_files::session_file_limits().max_file_bytes
+            {
+                return Err(Error::Invalid(
+                    "The selected image exceeds the attachment size limit.".into(),
+                ));
+            }
+            let directory = tempfile::tempdir()?;
+            let destination = directory.path().join("image");
+            let extension = convert(path, &destination)?;
+            let after = std::fs::metadata(path)?;
+            if original.len() != after.len() || original.modified()? != after.modified()? {
+                return Err(Error::Invalid(
+                    "The image changed during conversion; attach it again.".into(),
+                ));
+            }
+            // On macOS the open file stays readable after the private directory is removed.
+            return Ok(Self {
+                file: std::fs::File::open(destination)?,
+                name: Path::new(name).with_extension(extension),
+            });
+        }
+        Ok(Self {
+            file: std::fs::File::open(path)?,
+            name: name.into(),
+        })
+    }
+}
+
 pub(super) async fn upload(
     link: &TransferLink,
     session_id: &SessionId,
     path: &Path,
+    convert_image: ConvertImage,
     cancellation: &AtomicBool,
 ) -> std::result::Result<Option<SessionFileReference>, UploadFailure> {
     if cancellation.load(Ordering::Relaxed) {
         return Ok(None);
     }
-    let metadata = tokio::fs::metadata(path).await.map_err(Error::from)?;
-    regular_file(&metadata)?;
-    let mut input = tokio::fs::File::open(path).await.map_err(Error::from)?;
+    let path = path.to_owned();
+    let prepared = tokio::task::spawn_blocking(move || UploadInput::open(&path, convert_image))
+        .await
+        .map_err(|error| Error::Internal(error.to_string()))??;
+    if cancellation.load(Ordering::Relaxed) {
+        return Ok(None);
+    }
+    let mut input = tokio::fs::File::from_std(prepared.file);
     let metadata = input.metadata().await.map_err(Error::from)?;
     regular_file(&metadata)?;
     let size = metadata.len();
-    let name = path
-        .file_name()
-        .and_then(|name| name.to_str())
+    let name = prepared
+        .name
+        .to_str()
         .ok_or_else(|| Error::Invalid("The file needs a valid UTF-8 name.".into()))?;
-    let media_type = mime_guess::from_path(path).first_or_octet_stream();
+    let media_type = mime_guess::from_path(name).first_or_octet_stream();
     let response = link
         .request(|request_id| ClientMessage::BeginSessionFileUpload {
             request_id,

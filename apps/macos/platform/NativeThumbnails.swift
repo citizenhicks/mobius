@@ -19,7 +19,7 @@ public func nativeThumbnail(
     let source = URL(fileURLWithPath: String(cString: source))
     let destination = URL(fileURLWithPath: String(cString: destination))
     guard let image = thumbnailImage(of: source, maxPixels: Int(maxPixels)),
-        writePNG(image, to: destination)
+        writeImage(image, to: destination, type: .png)
     else { return false }
     size[0] = UInt32(image.width)
     size[1] = UInt32(image.height)
@@ -37,6 +37,10 @@ func thumbnailImage(of url: URL, maxPixels: Int) -> CGImage? {
         let source = CGImageSourceCreateWithURL(
             url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary)
     else { return nil }
+    return downsample(source, maxPixels: maxPixels)
+}
+
+private func downsample(_ source: CGImageSource, maxPixels: Int) -> CGImage? {
     // The same downsampling as ChatSessionModel.downsampledFileThumbnail, orientation applied.
     let options: [CFString: Any] = [
         kCGImageSourceCreateThumbnailFromImageAlways: true,
@@ -69,11 +73,31 @@ private func videoThumbnail(of url: URL, maxPixels: Int) -> CGImage? {
     return result.image
 }
 
-private func writePNG(_ image: CGImage, to url: URL) -> Bool {
+/// Returns the format of the encoded still (1 for JPEG, 2 for PNG), or zero on failure.
+@_cdecl("mobius_native_convert_upload_image")
+public func nativeConvertUploadImage(
+    _ sourcePath: UnsafePointer<CChar>, _ destinationPath: UnsafePointer<CChar>
+) -> UInt8 {
+    let url = URL(fileURLWithPath: String(cString: sourcePath))
+    guard let source = CGImageSourceCreateWithURL(
+        url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+        CGImageSourceGetCount(source) == 1,
+        let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+        let image = downsample(source, maxPixels: 4096)
+    else { return 0 }
+    // Downsampling can add an alpha channel even to an opaque camera photo.
+    let hasAlpha = properties[kCGImagePropertyHasAlpha] as? Bool == true
+    let destination = URL(fileURLWithPath: String(cString: destinationPath))
+    guard writeImage(image, to: destination, type: hasAlpha ? .png : .jpeg) else { return 0 }
+    return hasAlpha ? 2 : 1
+}
+
+private func writeImage(_ image: CGImage, to url: URL, type: UTType) -> Bool {
     guard
         let destination = CGImageDestinationCreateWithURL(
-            url as CFURL, UTType.png.identifier as CFString, 1, nil)
+            url as CFURL, type.identifier as CFString, 1, nil)
     else { return false }
-    CGImageDestinationAddImage(destination, image, nil)
+    let options = [kCGImageDestinationLossyCompressionQuality: 0.9] as CFDictionary
+    CGImageDestinationAddImage(destination, image, type == .jpeg ? options : nil)
     return CGImageDestinationFinalize(destination)
 }

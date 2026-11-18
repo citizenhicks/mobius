@@ -308,6 +308,10 @@ impl Workspace {
             .is_none()
             .then(|| self.draft_thumbnail(&attachment.id))
             .flatten();
+        let name = attachment
+            .file
+            .as_ref()
+            .map_or(&attachment.name, |file| &file.name);
         let media_type = attachment.file.as_ref().map_or_else(
             || {
                 Cow::Owned(
@@ -320,7 +324,7 @@ impl Workspace {
         );
         let remove = mini_button(
             SharedString::from(format!("remove-{id}")),
-            format!("Remove {}", attachment.name),
+            format!("Remove {name}"),
             "hi.x",
             cx,
         )
@@ -335,7 +339,7 @@ impl Workspace {
         file_card(
             SharedString::from(format!("attachment-{}", attachment.id)),
             file_glyph(&media_type),
-            attachment.name.clone(), // rules-allow: the tile owns its name while the draft keeps the attachment
+            name.to_owned(),
             detail,
             color,
             thumbnail.as_ref(),

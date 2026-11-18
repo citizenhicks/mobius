@@ -128,6 +128,28 @@ pub fn speak(text: &str) -> std::io::Result<Speech> {
     std::process::Command::new("/usr/bin/say").arg(text).spawn()
 }
 
+/// Encodes a single still image for upload and returns its filename extension.
+pub fn convert_upload_image(
+    source: &std::path::Path,
+    destination: &std::path::Path,
+) -> mobius_gateway::Result<&'static str> {
+    let to_c = |path: &std::path::Path| {
+        CString::new(path.as_os_str().as_encoded_bytes()).map_err(|error| {
+            mobius_gateway::Error::Invalid(format!("Invalid attachment path: {error}"))
+        })
+    };
+    let source = to_c(source)?;
+    let destination = to_c(destination)?;
+    // SAFETY: Swift only reads these NUL-terminated paths during this call.
+    match unsafe { mobius_native_convert_upload_image(source.as_ptr(), destination.as_ptr()) } {
+        1 => Ok("jpg"),
+        2 => Ok("png"),
+        _ => Err(mobius_gateway::Error::Invalid(
+            "Could not convert this still image. Attach a JPEG or PNG instead.".into(),
+        )),
+    }
+}
+
 /// Draws `source` as a PNG thumbnail at `destination` and returns its size. A `downloaded`
 /// source was fetched only for this and is removed; a failed drawing leaves no file.
 pub fn draw_thumbnail(
@@ -932,6 +954,7 @@ unsafe extern "C" {
     fn mobius_native_browser(tab_id: *const c_char, x: f64, y: f64, width: f64, height: f64);
     fn mobius_native_focus_browser(tab_id: *const c_char);
     fn mobius_native_focus_app();
+    fn mobius_native_convert_upload_image(source: *const c_char, destination: *const c_char) -> u8;
     fn mobius_native_thumbnail(
         source: *const c_char,
         destination: *const c_char,

@@ -54,6 +54,7 @@ pub(super) enum Transfer {
         id: Arc<str>,
         session_id: SessionId,
         path: PathBuf,
+        convert_image: super::upload::ConvertImage,
         cancellation: Arc<AtomicBool>,
     },
     Delete {
@@ -436,9 +437,12 @@ impl Transfer {
                 id,
                 session_id,
                 path,
+                convert_image,
                 cancellation,
             } => {
-                let result = super::upload::upload(link, session_id, path, cancellation).await;
+                let result =
+                    super::upload::upload(link, session_id, path, *convert_image, cancellation)
+                        .await;
                 Ok(Some(Update::Uploaded {
                     endpoint: endpoint.to_string(),
                     session_id: session_id.share(),
