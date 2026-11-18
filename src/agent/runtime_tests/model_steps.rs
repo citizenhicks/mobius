@@ -186,15 +186,11 @@ struct RepeatedTool {
 
 impl crate::middleware::tools::Tool for RepeatedTool {
     fn definition(&self) -> &Arc<ToolDefinition> {
-        static DEFINITION: std::sync::LazyLock<Arc<ToolDefinition>> =
-            std::sync::LazyLock::new(|| {
-                Arc::new(ToolDefinition {
-                    name: "repeated".into(),
-                    description: "returns the same result".into(),
-                    parameters: serde_json::json!({"type": "object", "properties": {}}),
-                })
-            });
-        &DEFINITION
+        crate::backend::model::test_support::static_tool_definition!(
+            "repeated",
+            "returns the same result",
+            serde_json::json!({"type": "object", "properties": {}})
+        )
     }
 
     fn exposure(&self) -> crate::middleware::tools::ToolExposure {

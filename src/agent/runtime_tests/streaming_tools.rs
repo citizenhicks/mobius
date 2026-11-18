@@ -235,17 +235,13 @@ impl Model for StreamingModel {
 
 impl Tool for StreamingTool {
     fn definition(&self) -> &std::sync::Arc<ToolDefinition> {
-        static DEFINITION: std::sync::LazyLock<std::sync::Arc<ToolDefinition>> =
-            std::sync::LazyLock::new(|| {
-                std::sync::Arc::new(ToolDefinition {
-                    name: "streaming_tool".into(),
-                    description: "a deterministic streaming test tool".into(),
-                    parameters: serde_json::json!({"type": "object", "properties": {
-                        "limit": {"type": "integer"}
-                    }}),
-                })
-            });
-        &DEFINITION
+        crate::backend::model::test_support::static_tool_definition!(
+            "streaming_tool",
+            "a deterministic streaming test tool",
+            serde_json::json!({"type": "object", "properties": {
+                "limit": {"type": "integer"}
+            }})
+        )
     }
 
     fn exposure(&self) -> ToolExposure {

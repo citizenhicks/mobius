@@ -16,6 +16,23 @@ use super::authorization::{OpenAiAuthorization, ResolvedAuthorization};
 use crate::BoxFuture;
 use crate::Result;
 
+/// Gives each test tool its own lazily initialized, borrowed schema.
+macro_rules! static_tool_definition {
+    ($name:literal, $description:literal, $parameters:expr) => {{
+        static DEFINITION: std::sync::LazyLock<
+            std::sync::Arc<$crate::backend::model::ToolDefinition>,
+        > = std::sync::LazyLock::new(|| {
+            std::sync::Arc::new($crate::backend::model::ToolDefinition {
+                name: $name.into(),
+                description: $description.into(),
+                parameters: $parameters,
+            })
+        });
+        &DEFINITION
+    }};
+}
+pub(crate) use static_tool_definition;
+
 pub(crate) fn record_events() -> (ModelEventSink, Arc<StdMutex<Vec<ModelEvent>>>) {
     let events = Arc::new(StdMutex::new(Vec::new()));
     let recorded = Arc::clone(&events);

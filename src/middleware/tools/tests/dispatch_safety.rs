@@ -4,15 +4,11 @@ struct ApprovalRequiredTool;
 
 impl Tool for ApprovalRequiredTool {
     fn definition(&self) -> &std::sync::Arc<ToolDefinition> {
-        static DEFINITION: std::sync::LazyLock<std::sync::Arc<ToolDefinition>> =
-            std::sync::LazyLock::new(|| {
-                std::sync::Arc::new(ToolDefinition {
-                    name: "approval_required".into(),
-                    description: String::new(),
-                    parameters: serde_json::json!({}),
-                })
-            });
-        &DEFINITION
+        crate::backend::model::test_support::static_tool_definition!(
+            "approval_required",
+            "",
+            serde_json::json!({})
+        )
     }
 
     fn approval(&self) -> ApprovalRequirement {
@@ -32,15 +28,11 @@ struct PermissionEchoTool;
 
 impl Tool for PermissionEchoTool {
     fn definition(&self) -> &std::sync::Arc<ToolDefinition> {
-        static DEFINITION: std::sync::LazyLock<std::sync::Arc<ToolDefinition>> =
-            std::sync::LazyLock::new(|| {
-                std::sync::Arc::new(ToolDefinition {
-                    name: "permission_echo".into(),
-                    description: String::new(),
-                    parameters: serde_json::json!({}),
-                })
-            });
-        &DEFINITION
+        crate::backend::model::test_support::static_tool_definition!(
+            "permission_echo",
+            "",
+            serde_json::json!({})
+        )
     }
 
     fn execution_mode(&self) -> ExecutionMode {

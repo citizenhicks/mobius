@@ -390,15 +390,11 @@ impl Model for BlockingModel {
 
 impl Tool for ApprovalRequiredTestTool {
     fn definition(&self) -> &std::sync::Arc<ToolDefinition> {
-        static DEFINITION: std::sync::LazyLock<std::sync::Arc<ToolDefinition>> =
-            std::sync::LazyLock::new(|| {
-                std::sync::Arc::new(ToolDefinition {
-                    name: "approval_required".into(),
-                    description: "performs one reviewed mutation".into(),
-                    parameters: serde_json::json!({"type": "object"}),
-                })
-            });
-        &DEFINITION
+        crate::backend::model::test_support::static_tool_definition!(
+            "approval_required",
+            "performs one reviewed mutation",
+            serde_json::json!({"type": "object"})
+        )
     }
 
     fn exposure(&self) -> ToolExposure {
