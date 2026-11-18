@@ -1,6 +1,5 @@
 //! Bounded workspace instruction discovery.
 
-use std::io::Read as _;
 use std::path::Path;
 
 use cap_std::ambient_authority;
@@ -106,14 +105,11 @@ fn read_optional(directory: &Dir, name: &str) -> Result<Option<String>> {
             "workspace instruction `{name}` changed while opening"
         )));
     }
-    let mut bytes = Vec::new();
-    file.take(MAX_INSTRUCTIONS_BYTES + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_INSTRUCTIONS_BYTES {
-        return Err(Error::Invalid(format!(
+    let bytes = crate::read_within(file, MAX_INSTRUCTIONS_BYTES)?.ok_or_else(|| {
+        Error::Invalid(format!(
             "workspace instruction `{name}` exceeds {MAX_INSTRUCTIONS_BYTES} bytes"
-        )));
-    }
+        ))
+    })?;
     String::from_utf8(bytes).map(Some).map_err(|error| {
         Error::Invalid(format!(
             "workspace instruction `{name}` is not valid UTF-8: {error}"

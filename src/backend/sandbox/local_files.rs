@@ -71,13 +71,7 @@ pub(super) fn read_limited(
     limit_error: &'static str,
 ) -> Result<Vec<u8>> {
     let file = open_regular_file(root, relative, requested)?;
-    let mut bytes = Vec::new();
-    file.take((max_bytes as u64).saturating_add(1))
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > max_bytes {
-        return Err(Error::Sandbox(limit_error.into()));
-    }
-    Ok(bytes)
+    crate::read_within(file, max_bytes as u64)?.ok_or_else(|| Error::Sandbox(limit_error.into()))
 }
 
 pub(super) fn read_file_range(

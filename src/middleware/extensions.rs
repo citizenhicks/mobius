@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::env;
 use std::fs::File;
-use std::io::{Read as _, Write as _};
+use std::io::Write as _;
 use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
@@ -575,12 +575,8 @@ fn read_bounded_file(path: &Path, max_bytes: u64, name: &str) -> Result<Vec<u8>>
             path.display()
         )));
     }
-    let mut bytes = Vec::new();
-    file.take(max_bytes + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > max_bytes {
-        return Err(Error::Invalid(format!("{name} exceeds {max_bytes} bytes")));
-    }
-    Ok(bytes)
+    crate::read_within(file, max_bytes)?
+        .ok_or_else(|| Error::Invalid(format!("{name} exceeds {max_bytes} bytes")))
 }
 
 fn discover_roots(
@@ -1209,15 +1205,9 @@ fn read_skill_resource(directory: &Dir, path: &Path) -> Result<String> {
     {
         return Err(unavailable_skill_resource());
     }
-    let mut bytes = Vec::new();
-    file.take(MAX_SKILL_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|error| skill_resource_error(&error))?;
-    if bytes.len() as u64 > MAX_SKILL_BYTES {
-        return Err(Error::Tool(format!(
-            "skill resource exceeds {MAX_SKILL_BYTES} bytes"
-        )));
-    }
+    let bytes = crate::read_within(file, MAX_SKILL_BYTES)
+        .map_err(|error| skill_resource_error(&error))?
+        .ok_or_else(|| Error::Tool(format!("skill resource exceeds {MAX_SKILL_BYTES} bytes")))?;
     String::from_utf8(bytes)
         .map_err(|error| Error::Tool(format!("skill resource is not valid UTF-8: {error}")))
 }

@@ -472,6 +472,20 @@ pub(crate) fn validate_identifier(name: &str, value: &str, limit: usize) -> Resu
     Ok(())
 }
 
+/// Returns None if the reader contains more than the allowed number of bytes.
+pub(crate) fn read_within(
+    mut reader: impl std::io::Read,
+    limit: u64,
+) -> std::io::Result<Option<Vec<u8>>> {
+    use std::io::Read as _;
+    let mut bytes = Vec::new();
+    reader
+        .by_ref()
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    Ok((bytes.len() as u64 <= limit).then_some(bytes))
+}
+
 pub(crate) fn preview_json(value: &serde_json::Value) -> String {
     let value = value.to_string();
     if value.len() <= 10_000 {
