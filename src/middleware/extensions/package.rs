@@ -36,17 +36,11 @@ pub(super) struct LoadedPackage {
 
 pub(super) fn load(root: PathBuf) -> Result<LoadedPackage> {
     let mut skills = BTreeMap::new();
-    let (name, version, description, hooks) = match agent_plugin_schema(&root)? {
-        Some(schema) if schema == AGENT_PLUGIN_SCHEMA => {
-            let manifest = load_agent_plugin_manifest(&root)?;
+    let (name, version, description, hooks) = match load_agent_plugin_manifest(&root)? {
+        Some(manifest) => {
             reject_mcp_components(&root, &manifest.name)?;
             discover_agent_plugin_skills(&root, &manifest.name, &mut skills)?;
             (manifest.name, manifest.version, manifest.description, None)
-        }
-        Some(schema) => {
-            return Err(Error::Invalid(format!(
-                "unsupported Agent Plugin schema `{schema}`"
-            )));
         }
         None if root.join(OPENAI_PLUGIN_MANIFEST).exists() => {
             let manifest = load_openai_plugin_manifest(&root)?;
@@ -243,41 +237,34 @@ struct AgentPluginAuthor {
     url: Option<String>,
 }
 
-fn agent_plugin_schema(root: &Path) -> Result<Option<String>> {
-    let path = root.join(AGENT_PLUGIN_MANIFEST);
-    match path.symlink_metadata() {
-        Ok(metadata) if metadata.file_type().is_file() => {}
-        Ok(_) => return Ok(Some(String::new())),
+fn load_agent_plugin_manifest(root: &Path) -> Result<Option<AgentPluginManifest>> {
+    fn unsupported(schema: &str) -> Error {
+        Error::Invalid(format!("unsupported Agent Plugin schema `{schema}`"))
+    }
+    match root.join(AGENT_PLUGIN_MANIFEST).symlink_metadata() {
+        Ok(metadata) if metadata.is_file() => {}
+        Ok(_) => return Err(unsupported("")),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     }
-    let Ok(mut value) = serde_json::from_slice::<Value>(&read_bounded_file(
-        &path,
-        MAX_PLUGIN_MANIFEST_BYTES,
-        "Agent Plugin manifest",
-    )?) else {
-        return Ok(Some(String::new()));
-    };
-    Ok(Some(
-        match value
-            .as_object_mut()
-            .and_then(|object| object.remove("$schema"))
-        {
-            Some(Value::String(schema)) => schema,
-            _ => String::new(),
-        },
-    ))
-}
-
-fn load_agent_plugin_manifest(root: &Path) -> Result<AgentPluginManifest> {
     let path = confined_path(root, AGENT_PLUGIN_MANIFEST, false)?;
-    let manifest: AgentPluginManifest = serde_json::from_slice(&read_bounded_file(
-        &path,
-        MAX_PLUGIN_MANIFEST_BYTES,
-        "Agent Plugin manifest",
-    )?)?;
-    if manifest.schema != AGENT_PLUGIN_SCHEMA
-        || manifest.name.len() > 64
+    let bytes = read_bounded_file(&path, MAX_PLUGIN_MANIFEST_BYTES, "Agent Plugin manifest")?;
+    let manifest: AgentPluginManifest = serde_json::from_slice(&bytes).map_err(|error| {
+        // Preserve schema diagnostics even when the rest of an unfamiliar manifest cannot be decoded.
+        let value = serde_json::from_slice::<Value>(&bytes).unwrap_or_default();
+        match value
+            .get("$schema")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+        {
+            AGENT_PLUGIN_SCHEMA => Error::from(error),
+            schema => unsupported(schema),
+        }
+    })?;
+    if manifest.schema != AGENT_PLUGIN_SCHEMA {
+        return Err(unsupported(&manifest.schema));
+    }
+    if manifest.name.len() > 64
         || !valid_package_name(&manifest.name)
         || manifest
             .version
@@ -309,7 +296,7 @@ fn load_agent_plugin_manifest(root: &Path) -> Result<AgentPluginManifest> {
             manifest.name
         )));
     }
-    Ok(manifest)
+    Ok(Some(manifest))
 }
 
 impl AgentPluginAuthor {
