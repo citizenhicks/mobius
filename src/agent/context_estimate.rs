@@ -237,15 +237,17 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn schema(name: &str) -> Arc<ToolDefinition> {
+        Arc::new(ToolDefinition {
+            name: name.into(),
+            description: "test".into(),
+            parameters: json!({"type": "object"}),
+        })
+    }
+
     #[test]
     fn loaded_schemas_count_as_tools_without_counting_the_load_marker_as_memory() {
-        let tools = ["direct", "loaded", "unloaded"].map(|name| {
-            Arc::new(ToolDefinition {
-                name: name.into(),
-                description: "test".into(),
-                parameters: json!({"type": "object"}),
-            })
-        });
+        let tools = ["direct", "loaded", "unloaded"].map(schema);
         let mut estimate = ContextEstimate::default();
         estimate.add_input(
             [&crate::protocol::ToolLoad {
@@ -274,13 +276,7 @@ mod tests {
 
     #[test]
     fn cached_schema_estimates_follow_materialized_and_exposed_tools() {
-        let tools = ["direct", "loaded"].map(|name| {
-            Arc::new(ToolDefinition {
-                name: name.into(),
-                description: "test".into(),
-                parameters: json!({"type": "object"}),
-            })
-        });
+        let tools = ["direct", "loaded"].map(schema);
         let mut cache = ToolSchemaEstimate::default();
         for (direct, materialized) in [
             (&tools[..1], BTreeSet::new()),
