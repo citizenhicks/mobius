@@ -5,7 +5,7 @@ use crate::host::git::{status as git_status, switch_branch as switch_workspace_b
 use crate::host::rejection::{Rejection, internal};
 use crate::host::replay::{
     ReplayEntry, classify_journal_sequence, compact_replay_deltas, event_sequence, project_record,
-    publish_ready_and_pending, record_and_publish, update_widgets, validate_gateway_event,
+    publish_ready_and_pending, record_and_publish, validate_gateway_event,
 };
 use crate::host::session::{JournalDelivery, JournalSequence, TurnLifecycle, turn_lifecycle};
 use crate::wire::{
@@ -138,7 +138,7 @@ impl HostState {
         let entry = ReplayEntry::new(frame)?;
         let frame = &entry.frame;
         if let ServerMessage::AgentEvent { record, .. } = &frame.message {
-            update_widgets(&mut self.widgets, &record.event.msg);
+            crate::wire::apply_session_widget_event(&mut self.widgets, &record.event.msg);
             super::super::replay::update_token_usage(&mut self.token_usage, &record.event.msg);
             if let EventMsg::TokenCount(count) = &record.event.msg
                 && let Some(usage) = &count.info

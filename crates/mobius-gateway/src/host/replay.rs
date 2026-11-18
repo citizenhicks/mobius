@@ -4,8 +4,7 @@ use super::transcript::TranscriptReducer;
 use super::{MAX_REPLAY_BYTES, REPLAY_CAPACITY, REPLAY_LOAD_PAGE_SIZE};
 use crate::wire::{HistoryCursor, TranscriptOp};
 use crate::wire::{
-    RecordedEvent, ServerFrame, ServerMessage, SessionReadyPayload, SessionWidget, SharedFrame,
-    TranscriptPage,
+    RecordedEvent, ServerFrame, ServerMessage, SessionReadyPayload, SharedFrame, TranscriptPage,
 };
 use crate::{Error, Result};
 use mobius::SessionId;
@@ -178,7 +177,7 @@ pub(super) async fn load_replay(
         let ServerMessage::AgentEvent { record, .. } = &entry.frame.message else {
             continue;
         };
-        update_widgets(&mut widgets, &record.event.msg);
+        crate::wire::apply_session_widget_event(&mut widgets, &record.event.msg);
         update_token_usage(&mut token_usage, &record.event.msg);
     }
     Ok(LoadedReplay {
@@ -510,28 +509,6 @@ pub(super) fn update_token_usage(
         && let Some(info) = &count.info
     {
         *token_usage = Some(Arc::new(info.clone())); // rules-allow: the journal frame keeps its event; the session keeps the latest usage
-    }
-}
-
-pub(super) fn update_widgets(widgets: &mut SessionWidgets, event: &EventMsg) {
-    match event {
-        EventMsg::Frontend(FrontendEvent::Widget { capability, item }) => {
-            if let Some(current) = widgets
-                .iter_mut()
-                .find(|widget| widget.capability == *capability && widget.item.id == item.id)
-            {
-                current.item = Arc::clone(item);
-            } else {
-                widgets.push(SessionWidget {
-                    capability: Arc::clone(capability),
-                    item: Arc::clone(item),
-                });
-            }
-        }
-        EventMsg::Frontend(FrontendEvent::RemoveWidget { capability, id }) => {
-            widgets.retain(|widget| widget.capability != *capability || *widget.item.id != **id);
-        }
-        _ => {}
     }
 }
 

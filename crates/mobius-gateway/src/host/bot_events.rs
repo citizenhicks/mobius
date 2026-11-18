@@ -942,7 +942,7 @@ mod tests {
             },
         };
         let mut widgets = Vec::new();
-        super::super::replay::update_widgets(
+        crate::wire::apply_session_widget_event(
             &mut widgets,
             &record(Arc::new(widget.clone())).event.msg,
         );
@@ -966,7 +966,7 @@ mod tests {
         if let Some(FrontendWidgetContent::ActionList { items, .. }) = &mut widget.content {
             items[0].state = FrontendListItemState::Completed;
         }
-        super::super::replay::update_widgets(
+        crate::wire::apply_session_widget_event(
             &mut widgets,
             &record(Arc::new(widget.clone())).event.msg,
         );

@@ -302,6 +302,33 @@ pub struct SessionWidget {
     pub item: Arc<FrontendWidget>,
 }
 
+/// Applies a widget insertion, update or removal, keeping its position on updates.
+pub fn apply_session_widget_event(
+    widgets: &mut Vec<SessionWidget>,
+    event: &mobius::protocol::EventMsg,
+) {
+    use mobius::protocol::{EventMsg, FrontendEvent};
+    match event {
+        EventMsg::Frontend(FrontendEvent::Widget { capability, item }) => {
+            if let Some(current) = widgets
+                .iter_mut()
+                .find(|widget| widget.capability == *capability && widget.item.id == item.id)
+            {
+                current.item = Arc::clone(item);
+            } else {
+                widgets.push(SessionWidget {
+                    capability: Arc::clone(capability),
+                    item: Arc::clone(item),
+                });
+            }
+        }
+        EventMsg::Frontend(FrontendEvent::RemoveWidget { capability, id }) => {
+            widgets.retain(|widget| widget.capability != *capability || *widget.item.id != **id);
+        }
+        _ => {}
+    }
+}
+
 /// One visible session with gateway-owned catalog presentation metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionRecord {

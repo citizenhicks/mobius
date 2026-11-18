@@ -6,7 +6,7 @@ use mobius::SessionId;
 use mobius::protocol::{EventMsg, FrontendEvent, FrontendPreviewUpdate, TokenUsageInfo};
 use mobius_gateway::wire::{
     BotRecord, HistoryCursor, ReadyPayload, RecordedEvent, RenderedPreview, ServerMessage,
-    SessionReadyPayload, SessionRecord, SessionWidget,
+    SessionReadyPayload, SessionRecord,
 };
 
 use super::TranscriptStore;
@@ -344,26 +344,13 @@ impl GatewayState {
                     session.pending_approvals.push(approval.clone()); // rules-allow: the runtime dispatches the borrowed message after this, so the state stores a copy
                 }
             }
-            EventMsg::Frontend(FrontendEvent::Widget { capability, item }) => {
-                if let Some(widget) = session
-                    .widgets
-                    .iter_mut()
-                    .find(|widget| widget.capability == *capability && widget.item.id == item.id)
-                {
-                    widget.item = Arc::clone(item);
-                } else {
-                    session.widgets.push(SessionWidget {
-                        capability: Arc::clone(capability),
-                        item: Arc::clone(item),
-                    });
-                }
-            }
-            EventMsg::Frontend(FrontendEvent::RemoveWidget { capability, id }) => session
-                .widgets
-                .retain(|widget| widget.capability != *capability || *widget.item.id != **id),
             EventMsg::Frontend(FrontendEvent::Picker { title, options }) => {
                 self.picker = Some((title.clone(), options.clone())); // rules-allow: the runtime dispatches the borrowed message after this, so the state stores a copy
             }
+            EventMsg::Frontend(_) => mobius_gateway::wire::apply_session_widget_event(
+                &mut session.widgets,
+                &record.event.msg,
+            ),
             _ => {}
         }
     }
