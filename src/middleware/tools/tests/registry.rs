@@ -29,11 +29,7 @@ fn only_wholly_cancellable_batches_stop_for_new_input() {
     for (name, interruptible) in [("wait", true), ("write", false)] {
         catalog
             .register(Arc::new(InterruptibleTool {
-                definition: Arc::new(ToolDefinition {
-                    name: name.into(),
-                    description: String::new(),
-                    parameters: serde_json::json!({}),
-                }),
+                definition: named_tool_definition(name),
                 interruptible,
             }))
             .expect("register tool");

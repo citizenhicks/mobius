@@ -2,6 +2,14 @@
 
 use super::*;
 
+fn named_tool_definition(name: &str) -> Arc<ToolDefinition> {
+    Arc::new(ToolDefinition {
+        name: name.into(),
+        description: String::new(),
+        parameters: serde_json::json!({}),
+    })
+}
+
 fn test_sandbox() -> Arc<Sandbox> {
     test_sandbox_at(std::path::Path::new("."))
 }

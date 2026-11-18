@@ -49,11 +49,7 @@ impl SchedulerHarness {
 
     fn tool(&self, name: &'static str, execution_mode: ExecutionMode) -> Arc<dyn Tool> {
         Arc::new(SchedulerTool {
-            definition: Arc::new(ToolDefinition {
-                name: name.into(),
-                description: String::new(),
-                parameters: serde_json::json!({}),
-            }),
+            definition: named_tool_definition(name),
             execution_mode,
             releases: Arc::clone(&self.releases),
             completed: Arc::clone(&self.completed),
