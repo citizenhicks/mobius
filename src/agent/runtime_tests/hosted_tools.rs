@@ -110,9 +110,7 @@ impl Model for HostedSearchModel {
 
 async fn run_hosted(mode: SearchMode) -> (Arc<HostedSearchModel>, Vec<EventMsg>, Checkpoint) {
     let workspace = tempfile::tempdir().expect("workspace");
-    let checkpoints = Arc::new(
-        SqliteCheckpoint::new(workspace.path().join("checkpoint.sqlite3")).expect("store"),
-    );
+    let checkpoints = test_checkpoints(workspace.path());
     let model = Arc::new(HostedSearchModel {
         mode,
         calls: AtomicUsize::new(0),

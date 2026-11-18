@@ -29,10 +29,7 @@ impl Model for BlockingRetainingModel {
 #[tokio::test]
 async fn recorder_delivers_committed_events_and_statistics_without_publishing_failed_saves() {
     let directory = tempfile::tempdir().expect("checkpoint directory");
-    let checkpoints = Arc::new(
-        SqliteCheckpoint::new(directory.path().join("checkpoints.sqlite3"))
-            .expect("checkpoint store"),
-    );
+    let checkpoints = test_checkpoints(directory.path());
     checkpoints
         .save(
             Checkpoint::for_test_owner("session", "test-bot"),
@@ -169,10 +166,7 @@ async fn recorder_delivers_committed_events_and_statistics_without_publishing_fa
 #[tokio::test]
 async fn recorder_stops_without_delivering_when_persistence_fails() {
     let directory = tempfile::tempdir().expect("checkpoint directory");
-    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
-        SqliteCheckpoint::new(directory.path().join("checkpoints.sqlite3"))
-            .expect("checkpoint store"),
-    );
+    let checkpoints: Arc<dyn CheckpointStore> = test_checkpoints(directory.path());
     let (events, mut receiver) = crate::agent::recorder::RecorderIngress::spawn(
         checkpoints,
         "missing".parse().expect("session ID"),

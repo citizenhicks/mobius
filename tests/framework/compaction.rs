@@ -8,6 +8,10 @@ pub(super) fn checkpoint_response(notes: &str) -> ModelOutput {
     )
 }
 
+fn checkpoint_store(workspace: &std::path::Path) -> SqliteCheckpoint {
+    SqliteCheckpoint::new(workspace.join("checkpoint.sqlite3")).expect("store")
+}
+
 fn config_with_store<M: Model + 'static>(
     workspace: &std::path::Path,
     model: Arc<M>,
@@ -128,9 +132,7 @@ async fn checkpoint_preparation_retries_are_bounded_and_interruptible() {
             fallbacks: AtomicUsize::new(0),
             entered: Notify::new(),
         });
-        let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
-            SqliteCheckpoint::new(workspace.path().join("checkpoint.sqlite3")).expect("store"),
-        );
+        let checkpoints: Arc<dyn CheckpointStore> = Arc::new(checkpoint_store(workspace.path()));
         let mut agent = create_agent(config_with_store(
             workspace.path(),
             Arc::clone(&model),
@@ -207,9 +209,7 @@ async fn automatic_plaintext_checkpoint_survives_recreation_and_keeps_the_prefix
         text_response("done"),
         text_response("resumed"),
     ]));
-    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
-        SqliteCheckpoint::new(workspace.path().join("checkpoint.sqlite3")).expect("store"),
-    );
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(checkpoint_store(workspace.path()));
     let config = || {
         config_with_store(
             workspace.path(),
@@ -338,9 +338,7 @@ async fn invalid_checkpoint_preserves_original_and_pending_input() {
         text_response_with_usage("first result", usage(2_000)),
         text_response("I answered instead of saving notes"),
     ]));
-    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
-        SqliteCheckpoint::new(workspace.path().join("checkpoint.sqlite3")).expect("store"),
-    );
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(checkpoint_store(workspace.path()));
     let mut agent = create_agent(config_with_store(
         workspace.path(),
         Arc::clone(&model),
@@ -359,8 +357,7 @@ async fn invalid_checkpoint_preserves_original_and_pending_input() {
         .submit(user_message("pending request"))
         .expect("pending");
     assert!(failed_turn(&mut agent).await.contains("one write_handoff"));
-    let checkpoints =
-        SqliteCheckpoint::new(workspace.path().join("checkpoint.sqlite3")).expect("store");
+    let checkpoints = checkpoint_store(workspace.path());
     let saved = checkpoints
         .load(&SessionId::new("failed-checkpoint").unwrap())
         .await
@@ -380,9 +377,7 @@ async fn oversized_history_summarizes_a_complete_prefix_and_preserves_parallel_r
         checkpoint_response("old task completed"),
         text_response("continued"),
     ]));
-    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
-        SqliteCheckpoint::new(workspace.path().join("checkpoint.sqlite3")).expect("store"),
-    );
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(checkpoint_store(workspace.path()));
     let mut checkpoint = Checkpoint::empty(SessionId::new("over-budget").unwrap());
     checkpoint.session_context = test_session_context().into();
     checkpoint.model_route = Some("test".into());
