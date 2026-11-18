@@ -307,15 +307,7 @@ impl Workspace {
 
     pub(super) fn preserve_previews(&mut self) {
         for tab in self.content.tabs.values_mut() {
-            if let TabContent::Preview {
-                session_id,
-                preview,
-            } = &mut tab.content
-                && self.client.state.selected_session_id.as_ref() == Some(session_id)
-                && let Some(current) = self.client.state.previews.get(&preview.source.id)
-            {
-                *preview = std::rc::Rc::clone(current);
-            }
+            tab.refresh_preview(&self.client.state);
         }
     }
 

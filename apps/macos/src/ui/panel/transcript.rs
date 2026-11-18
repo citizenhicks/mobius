@@ -30,6 +30,21 @@ impl RoutineDoc {
     }
 }
 
+impl ContentTab {
+    /// Captures the current preview while its owning session is selected.
+    pub(in crate::ui) fn refresh_preview(&mut self, state: &crate::gateway::GatewayState) {
+        if let TabContent::Preview {
+            session_id,
+            preview,
+        } = &mut self.content
+            && state.selected_session_id.as_ref() == Some(session_id)
+            && let Some(current) = state.previews.get(&preview.source.id)
+        {
+            *preview = Rc::clone(current);
+        }
+    }
+}
+
 impl Workspace {
     /// Refresh only the visible document. Session switching preserves the other open
     /// snapshots through preserve_previews before the selected-session map is cleared.
@@ -37,18 +52,8 @@ impl Workspace {
         let Some(PageTab::Content(id)) = self.page_tabs.get(self.active_page) else {
             return;
         };
-        if let Some(ContentTab {
-            content:
-                TabContent::Preview {
-                    session_id,
-                    preview,
-                },
-            ..
-        }) = self.content.tabs.get_mut(id)
-            && self.client.state.selected_session_id.as_ref() == Some(session_id)
-            && let Some(current) = self.client.state.previews.get(&preview.source.id)
-        {
-            *preview = Rc::clone(current);
+        if let Some(tab) = self.content.tabs.get_mut(id) {
+            tab.refresh_preview(&self.client.state);
         }
     }
 
