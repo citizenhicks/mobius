@@ -465,19 +465,7 @@ fn test_context(
     checkpoints: Arc<dyn CheckpointStore>,
     frontend: crate::middleware::FrontendEventSink,
 ) -> RuntimeContext {
-    RuntimeContext {
-        children: crate::agent::ChildAgents::default(),
-        sender: crate::agent::test_sender(),
-        checkpoints,
-        session_id: "root".parse().expect("session ID"),
-        model_route: "test".into(),
-        model: "model".into(),
-        approval_policy: crate::backend::sandbox::ApprovalPolicy::Ask,
-        session_context: Default::default(),
-        metadata: Default::default(),
-        role: crate::agent::AgentRole::Main,
-        frontend,
-    }
+    crate::middleware::tests::runtime_with_store(checkpoints, "root", "test", frontend)
 }
 
 fn test_shared() -> Shared {

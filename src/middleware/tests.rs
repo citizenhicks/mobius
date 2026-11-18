@@ -78,20 +78,34 @@ fn lifecycle_probe(
 }
 
 pub(super) fn lifecycle_runtime(path: &std::path::Path) -> RuntimeContext {
+    runtime_with_store(
+        Arc::new(
+            SqliteCheckpoint::new(path.join("checkpoints.sqlite3")).expect("checkpoint store"),
+        ),
+        "session",
+        "model",
+        Arc::new(|_| Ok(())),
+    )
+}
+
+pub(super) fn runtime_with_store(
+    checkpoints: Arc<dyn crate::backend::checkpoint::CheckpointStore>,
+    session: &str,
+    route: &str,
+    frontend: FrontendEventSink,
+) -> RuntimeContext {
     RuntimeContext {
         children: crate::agent::ChildAgents::default(),
         sender: crate::agent::test_sender(),
-        checkpoints: Arc::new(
-            SqliteCheckpoint::new(path.join("checkpoints.sqlite3")).expect("checkpoint store"),
-        ),
-        session_id: "session".parse().expect("session ID"),
-        model_route: "model".into(),
+        checkpoints,
+        session_id: session.parse().expect("session ID"),
+        model_route: route.into(),
         model: "model".into(),
         approval_policy: crate::backend::sandbox::ApprovalPolicy::Ask,
         session_context: Default::default(),
         metadata: BTreeMap::new(),
         role: crate::agent::AgentRole::Main,
-        frontend: Arc::new(|_| Ok(())),
+        frontend,
     }
 }
 
