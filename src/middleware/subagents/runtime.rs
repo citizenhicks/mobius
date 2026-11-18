@@ -111,6 +111,12 @@ struct Tree {
 }
 
 impl Tree {
+    fn presentation_order(&self) -> impl Iterator<Item = (&String, &AgentRecord)> {
+        let mut agents: Vec<_> = self.agents.iter().collect();
+        agents.sort_by_key(|(_, entry)| entry.status.presentation_order());
+        agents.into_iter()
+    }
+
     fn agent_mut(&mut self, path: &str) -> Result<&mut AgentRecord> {
         self.agents
             .get_mut(path)
@@ -177,6 +183,14 @@ impl AgentStatus {
 
     const fn is_active(self) -> bool {
         matches!(self, Self::PendingInit | Self::Running)
+    }
+
+    const fn symbol(self) -> FrontendSymbol {
+        if self.is_active() {
+            FrontendSymbol::Progress
+        } else {
+            FrontendSymbol::Agent
+        }
     }
 
     const fn presentation_order(self) -> u8 {
@@ -809,10 +823,7 @@ fn status_widget(tree: &Tree) -> FrontendWidget {
 }
 
 fn agent_items(tree: &Tree) -> Vec<FrontendActionListItem> {
-    let mut agents = tree.agents.iter().collect::<Vec<_>>();
-    agents.sort_by_key(|(_, entry)| entry.status.presentation_order());
-    agents
-        .into_iter()
+    tree.presentation_order()
         .map(|(path, entry)| FrontendActionListItem {
             outcome: None,
             id: path.as_str().into(),
@@ -821,11 +832,7 @@ fn agent_items(tree: &Tree) -> Vec<FrontendActionListItem> {
             actions: vec![FrontendAction {
                 id: super::OPEN_COMMAND.into(),
                 label: super::text::DEFINITION.render_open.as_str().into(),
-                symbol: if entry.status.is_active() {
-                    FrontendSymbol::Progress
-                } else {
-                    FrontendSymbol::Agent
-                },
+                symbol: entry.status.symbol(),
                 // Action tone marks destructive intent; failure is the item's state.
                 tone: match entry.status {
                     AgentStatus::Interrupted => FrontendTone::Warning,
@@ -844,19 +851,12 @@ fn agent_items(tree: &Tree) -> Vec<FrontendActionListItem> {
 }
 
 fn picker_options(tree: &Tree) -> Vec<FrontendPickerOption> {
-    let mut agents = tree.agents.iter().collect::<Vec<_>>();
-    agents.sort_by_key(|(_, entry)| entry.status.presentation_order());
-    agents
-        .into_iter()
+    tree.presentation_order()
         .map(|(path, entry)| FrontendPickerOption {
             label: path.rsplit('/').next().unwrap_or(path).into(),
             description: entry.status.label().into(),
             detail: entry.model.to_string(),
-            symbol: Some(if entry.status.is_active() {
-                FrontendSymbol::Progress
-            } else {
-                FrontendSymbol::Agent
-            }),
+            symbol: Some(entry.status.symbol()),
             op: Op::command(
                 super::MANIFEST.id,
                 super::OPEN_COMMAND,
