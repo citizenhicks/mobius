@@ -24,12 +24,18 @@ const RAIL_MIN: Pixels = px(140.);
 const RAIL_MAX: Pixels = px(400.);
 const VIEWER_MIN: Pixels = px(160.);
 
+/// Where the tab can request fresh file contents and directory listings.
+#[derive(Clone)]
+pub(super) enum FilesOrigin {
+    Gateway(SessionId),
+    Local(Arc<Path>),
+    Snapshot,
+}
+
 /// The Files tab: the workspace tree in a rail beside the file selected in it.
 #[derive(Clone)]
 pub(in crate::ui) struct FilesDoc {
-    /// None for a tree no chat owns: a local file's or a diff's.
-    session_id: Option<SessionId>,
-    local_root: Option<Arc<Path>>,
+    origin: FilesOrigin,
     source: Rc<RefCell<TreeSource>>,
     tree: Entity<TreeState>,
     truncated: bool,
@@ -97,7 +103,7 @@ impl FileView {
 
 impl FilesDoc {
     pub(super) fn new<T: 'static>(
-        session_id: Option<SessionId>,
+        origin: FilesOrigin,
         files: Vec<WorkspaceFileRecord>,
         truncated: bool,
         cx: &mut Context<T>,
@@ -129,8 +135,7 @@ impl FilesDoc {
         // A caller-owned split redraws its drag only through an observer.
         cx.observe(&resize, |_, _, cx| cx.notify()).detach();
         Self {
-            session_id,
-            local_root: None,
+            origin,
             source,
             tree,
             truncated,
@@ -209,9 +214,9 @@ impl FilesDoc {
     }
 
     pub(super) fn mention(&self, path: &str) -> chat::Mention {
-        match &self.local_root {
-            Some(root) => chat::Mention::Local(root.join(path)),
-            None => chat::Mention::Path(path.to_owned()),
+        match &self.origin {
+            FilesOrigin::Local(root) => chat::Mention::Local(root.join(path)),
+            FilesOrigin::Gateway(_) | FilesOrigin::Snapshot => chat::Mention::Path(path.to_owned()),
         }
     }
 
@@ -295,18 +300,14 @@ impl Workspace {
 
     /// Lists the workspace again without leaving the file on screen.
     pub(super) fn refresh_files(&mut self, id: &str, cx: &mut Context<Self>) {
-        if let Some(root) = self
-            .files_doc_mut(id)
-            .and_then(|doc| doc.local_root.as_ref().map(Arc::clone))
-        {
-            self.refresh_local_files(id, root, cx);
-            return;
-        }
-        let Some(session) = self
-            .files_doc_mut(id)
-            .and_then(|doc| doc.session_id.as_ref().map(SessionId::share))
-        else {
-            return;
+        let session = match self.files_doc(id).map(|doc| &doc.origin) {
+            Some(FilesOrigin::Local(root)) => {
+                let root = Arc::clone(root);
+                self.refresh_local_files(id, root, cx);
+                return;
+            }
+            Some(FilesOrigin::Gateway(session)) => session.share(),
+            Some(FilesOrigin::Snapshot) | None => return,
         };
         let request = gateway::request_id();
         let sent = self.send_preview(Arc::clone(&request), session, PreviewRequest::Files);
@@ -348,7 +349,7 @@ impl Workspace {
             return;
         }
         if self
-            .files_doc_mut(id)
+            .files_doc(id)
             .is_some_and(|doc| doc.selected_path() == Some(path))
         {
             return;
@@ -362,18 +363,14 @@ impl Workspace {
         path: String,
         cx: &mut Context<Self>,
     ) {
-        if let Some(root) = self
-            .files_doc_mut(id)
-            .and_then(|doc| doc.local_root.as_ref().map(Arc::clone))
-        {
-            self.load_local_selection(id, path, &root, cx);
-            return;
-        }
-        let Some(session) = self
-            .files_doc_mut(id)
-            .and_then(|doc| doc.session_id.as_ref().map(SessionId::share))
-        else {
-            return;
+        let session = match self.files_doc(id).map(|doc| &doc.origin) {
+            Some(FilesOrigin::Local(root)) => {
+                let root = Arc::clone(root);
+                self.load_local_selection(id, path, &root, cx);
+                return;
+            }
+            Some(FilesOrigin::Gateway(session)) => session.share(),
+            Some(FilesOrigin::Snapshot) | None => return,
         };
         let request = gateway::request_id();
         let sent = self.send_preview(
@@ -408,10 +405,10 @@ impl Workspace {
         path: &str,
         cx: &mut Context<Self>,
     ) {
-        if self.files_doc_mut(&id).is_none() {
+        if self.files_doc(&id).is_none() {
             let owner = TabOwner::Chat(session.share());
             let doc = FilesDoc::new(
-                Some(session),
+                FilesOrigin::Gateway(session),
                 vec![WorkspaceFileRecord {
                     path: path.to_owned(),
                     size: 0,
@@ -570,7 +567,7 @@ impl Workspace {
         };
         let content = match result {
             Ok(PreviewData::Files { files, truncated }) => TabContent::Files(Box::new(
-                FilesDoc::new(Some(session.share()), files, truncated, cx),
+                FilesDoc::new(FilesOrigin::Gateway(session.share()), files, truncated, cx),
             )),
             Ok(PreviewData::Diff {
                 scope,
@@ -597,7 +594,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let pending = |doc: &FilesDoc| {
-            doc.session_id.as_ref() == Some(session)
+            matches!(&doc.origin, FilesOrigin::Gateway(owner) if owner == session)
                 && (doc.refreshing.as_deref() == Some(request)
                     || matches!(&doc.selected, Some(Selection { view: FileView::Loading(id), .. }) if **id == *request))
         };
@@ -680,7 +677,7 @@ impl Workspace {
             }
         };
         let mut doc = FilesDoc::new(
-            None,
+            FilesOrigin::Local(root),
             vec![WorkspaceFileRecord {
                 path: name.clone(), // rules-allow: the tree listing and the selection each own the name
                 size: 0,
@@ -688,7 +685,6 @@ impl Workspace {
             false,
             cx,
         );
-        doc.local_root = Some(root);
         doc.selected = Some(Selection { path: name, view });
         tab.content = TabContent::Files(Box::new(doc));
         self.refresh_files(id, cx);
@@ -1190,7 +1186,7 @@ impl Workspace {
             .into_iter()
             .map(|path| WorkspaceFileRecord { path, size: 0 })
             .collect();
-        let doc = FilesDoc::new(None, files, false, cx);
+        let doc = FilesDoc::new(FilesOrigin::Snapshot, files, false, cx);
         doc.source
             .borrow_mut()
             .expanded

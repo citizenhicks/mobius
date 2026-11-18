@@ -77,7 +77,12 @@ impl DiffDoc {
                 size: 0,
             })
             .collect();
-        let explorer = FilesDoc::new(None, files, document.truncated, cx);
+        let explorer = FilesDoc::new(
+            super::source::FilesOrigin::Snapshot,
+            files,
+            document.truncated,
+            cx,
+        );
         let totals = (document.added(), document.removed());
         let collapse = text.lines().count() > EXPANDED_ROWS;
         let DiffDocument { files, truncated } = document;
