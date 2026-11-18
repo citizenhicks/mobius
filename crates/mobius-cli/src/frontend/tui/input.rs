@@ -13,9 +13,8 @@ use crate::frontend::dashboard::{OverlayKey, insert_overlay_input, overlay_key};
 use crate::frontend::terminal::terminal_text;
 use crate::frontend::wrap_step;
 use mobius::protocol::{
-    ActiveMessageDelivery, FrontendSlot, FrontendWidget, MAX_MESSAGE_BYTES, MessageAuthor,
-    MessageSubmission, Op, ReviewDecision, SessionFileOrigin, SessionFileRecord,
-    SessionFileReference,
+    ActiveMessageDelivery, FrontendSlot, FrontendWidget, MAX_MESSAGE_BYTES, MessageSubmission, Op,
+    ReviewDecision, SessionFileOrigin, SessionFileRecord, SessionFileReference,
 };
 use mobius_gateway::wire::{BackgroundApproval, BotRecord, GitStatus};
 use std::fmt::Write as _;
@@ -1062,12 +1061,9 @@ impl TuiState {
         }
         let op = Op::Message {
             message: MessageSubmission {
-                author: MessageAuthor::User,
-                text: line.into(),
-                attachments: std::mem::take(&mut self.composer.attachments),
-                reply: None,
                 requested_delivery: self.composer_target_turn().and(delivery),
                 target_turn_id: self.composer_target_turn().map(str::to_owned),
+                ..MessageSubmission::user(line, std::mem::take(&mut self.composer.attachments))
             },
         };
         UiAction::submit(op)

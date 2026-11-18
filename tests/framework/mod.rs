@@ -37,7 +37,6 @@ use mobius::middleware::messages::Messages;
 use mobius::middleware::tools::Tools;
 use mobius::protocol::AssistantMessageEvent;
 use mobius::protocol::EventMsg;
-use mobius::protocol::MessageAuthor;
 use mobius::protocol::MessageSubmission;
 use mobius::protocol::ModelEvent;
 use mobius::protocol::ModelStepContentPhase;
@@ -197,14 +196,7 @@ fn user_message_with_attachments(
     attachments: Vec<SessionFileReference>,
 ) -> Op {
     Op::Message {
-        message: MessageSubmission {
-            author: MessageAuthor::User,
-            text: text.into(),
-            attachments,
-            reply: None,
-            requested_delivery: None,
-            target_turn_id: None,
-        },
+        message: MessageSubmission::user(text, attachments),
     }
 }
 

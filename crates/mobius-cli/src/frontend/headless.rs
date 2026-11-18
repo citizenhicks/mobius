@@ -1,8 +1,6 @@
 use std::sync::Arc;
 
-use mobius::protocol::{
-    EventMsg, MessageAuthor, MessageSubmission, ModelStepContentPhase, Op, ReviewDecision,
-};
+use mobius::protocol::{EventMsg, MessageSubmission, ModelStepContentPhase, Op, ReviewDecision};
 use mobius::{Error, Result};
 use mobius_gateway::client::{GatewayEvents, GatewaySender};
 use mobius_gateway::wire::ServerMessage;
@@ -25,14 +23,7 @@ pub async fn run(
         &session_id,
         Arc::clone(&submission_id),
         Op::Message {
-            message: MessageSubmission {
-                author: MessageAuthor::User,
-                text: task,
-                attachments: Vec::new(),
-                reply: None,
-                requested_delivery: None,
-                target_turn_id: None,
-            },
+            message: MessageSubmission::user(task, Vec::new()),
         },
     )
     .await?;

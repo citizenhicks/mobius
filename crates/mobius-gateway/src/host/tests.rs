@@ -245,12 +245,8 @@ pub(crate) async fn test_gateway() -> TestGateway {
 fn test_user_message(text: &str, delivery: Option<mobius::protocol::ActiveMessageDelivery>) -> Op {
     Op::Message {
         message: MessageSubmission {
-            author: MessageAuthor::User,
-            text: text.into(),
-            attachments: Vec::new(),
-            reply: None,
             requested_delivery: delivery,
-            target_turn_id: None,
+            ..MessageSubmission::user(text, Vec::new())
         },
     }
 }

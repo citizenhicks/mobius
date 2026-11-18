@@ -356,14 +356,7 @@ async fn wait_session_activity(
 
 fn user_message(text: impl Into<String>, attachments: Vec<SessionFileReference>) -> Op {
     Op::Message {
-        message: MessageSubmission {
-            author: MessageAuthor::User,
-            text: text.into(),
-            attachments,
-            reply: None,
-            requested_delivery: None,
-            target_turn_id: None,
-        },
+        message: MessageSubmission::user(text, attachments),
     }
 }
 

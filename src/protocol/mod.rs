@@ -438,6 +438,19 @@ pub struct MessageSubmission {
 }
 
 impl MessageSubmission {
+    /// Builds an untargeted user message with the supplied immutable file references.
+    #[must_use]
+    pub fn user(text: impl Into<String>, attachments: Vec<SessionFileReference>) -> Self {
+        Self {
+            author: MessageAuthor::User,
+            text: text.into(),
+            attachments,
+            reply: None,
+            requested_delivery: None,
+            target_turn_id: None,
+        }
+    }
+
     /// Validates neutral message and file-reference invariants at the agent boundary.
     /// # Errors
     ///
