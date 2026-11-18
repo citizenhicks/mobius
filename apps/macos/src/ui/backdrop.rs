@@ -746,21 +746,13 @@ pub(super) fn scanlines(cx: &App) -> Option<Div> {
 /// A card, group or composer, with tile corners: frosted over a picture, otherwise its own
 /// fill. The surface must be positioned, as the frost fills it.
 pub(super) fn surface<E: Styled + ParentElement>(surface: E, fill: Hsla, cx: &App) -> E {
-    let surface = surface.tile_corners();
-    match frost(fill, cx) {
-        Some(frost) => surface.child(frost),
-        None => surface.bg(fill),
-    }
+    tile(surface, fill, fill, cx)
 }
 
 /// A card floating over other content, with tile corners: frosted over a picture,
 /// otherwise opaque.
 pub(super) fn floating<E: Styled + ParentElement>(surface: E, fill: Hsla, cx: &App) -> E {
-    let surface = surface.tile_corners();
-    match frost(fill, cx) {
-        Some(frost) => surface.child(frost),
-        None => surface.bg(fill.alpha(1.)),
-    }
+    tile(surface, fill, fill.alpha(1.), cx)
 }
 
 /// Whether surfaces have something solid painted beneath their own fill.
@@ -769,18 +761,21 @@ pub(super) fn frosted(cx: &App) -> bool {
         .is_some_and(|scenery| scenery.frosted && scenery.pictures.is_some())
 }
 
-fn frost(fill: Hsla, cx: &App) -> Option<Div> {
-    if !frosted(cx) {
-        return None;
+fn tile<E: Styled + ParentElement>(surface: E, fill: Hsla, solid: Hsla, cx: &App) -> E {
+    let surface = surface.tile_corners();
+    if frosted(cx)
+        && let Some(slice) = picture(true, radius::TILE, cx)
+    {
+        surface.child(
+            div()
+                .absolute()
+                .inset_0()
+                .child(slice)
+                .child(div().absolute().inset_0().tile_corners().bg(fill)),
+        )
+    } else {
+        surface.bg(solid)
     }
-    let slice = picture(true, radius::TILE, cx)?;
-    Some(
-        div()
-            .absolute()
-            .inset_0()
-            .child(slice)
-            .child(div().absolute().inset_0().tile_corners().bg(fill)),
-    )
 }
 
 /// The window's picture under its dim, painted where this element lies.
