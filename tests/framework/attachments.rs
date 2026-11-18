@@ -5,6 +5,25 @@ pub(super) fn png() -> Vec<u8> {
     base64::engine::general_purpose::STANDARD.decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=").expect("PNG")
 }
 
+async fn attachment_agent(
+    workspace: &std::path::Path,
+    model: &Arc<ScriptedModel>,
+    store: SessionFileStore,
+    session: SessionId,
+    compaction: Option<Compaction>,
+) -> mobius::agent::Agent {
+    let mut middleware: Vec<Arc<dyn Middleware>> = vec![
+        Arc::new(Tools::new(Vec::new())),
+        Arc::new(Attachments::new(store)),
+    ];
+    if let Some(compaction) = compaction {
+        middleware.push(Arc::new(compaction));
+    }
+    create_agent(test_config(workspace, Arc::clone(model), middleware).session_id(session))
+        .await
+        .expect("create agent")
+}
+
 #[tokio::test]
 async fn attachment_hydration_survives_plaintext_checkpoint_reset() {
     let workspace = TempDir::new().expect("create workspace");
@@ -19,29 +38,24 @@ async fn attachment_hydration_survives_plaintext_checkpoint_reset() {
         ])
         .with_image_input(),
     );
-    let config = test_config(
+    let mut agent = attachment_agent(
         workspace.path(),
-        Arc::clone(&model),
-        vec![
-            Arc::new(Tools::new(Vec::new())),
-            Arc::new(Attachments::new(store)),
-            Arc::new(Compaction::new(1_000).expect("compaction")),
-        ],
+        &model,
+        store,
+        session_id,
+        Some(Compaction::new(1_000).expect("compaction")),
     )
-    .session_id(session_id.share());
-    let mut agent = create_agent(config).await.expect("create agent");
+    .await;
 
     agent
         .sender()
         .submit(user_message("first"))
         .expect("submit first turn");
     assert_eq!(final_message(&mut agent).await, "draft");
+    let attachment_id = attachment.id.clone();
     agent
         .sender()
-        .submit(user_message_with_attachments(
-            "inspect",
-            vec![attachment.clone()],
-        ))
+        .submit(user_message_with_attachments("inspect", vec![attachment]))
         .expect("submit attachment turn");
     assert_eq!(final_message(&mut agent).await, "done");
 
@@ -51,7 +65,7 @@ async fn attachment_hydration_survives_plaintext_checkpoint_reset() {
     assert_eq!(request_image_count(&requests[2].input), 1);
     let final_input = serde_json::to_string(&requests[2].input).expect("serialize final input");
     assert!(final_input.contains("Checkpoint: inspect the uploaded photo"));
-    assert!(final_input.contains(&attachment.id));
+    assert!(final_input.contains(&attachment_id));
 }
 
 #[tokio::test]
@@ -77,23 +91,12 @@ async fn malformed_current_image_fails_but_does_not_poison_later_turns() {
         ])
         .with_image_input(),
     );
-    let config = test_config(
-        workspace.path(),
-        Arc::clone(&model),
-        vec![
-            Arc::new(Tools::new(Vec::new())),
-            Arc::new(Attachments::new(store)),
-        ],
-    )
-    .session_id(session_id.share());
-    let mut agent = create_agent(config).await.expect("create agent");
+    let mut agent = attachment_agent(workspace.path(), &model, store, session_id, None).await;
 
+    let oversized_id = oversized.id.clone();
     agent
         .sender()
-        .submit(user_message_with_attachments(
-            "too large",
-            vec![oversized.clone()],
-        ))
+        .submit(user_message_with_attachments("too large", vec![oversized]))
         .expect("submit oversized image");
     assert!(
         failed_turn(&mut agent)
@@ -108,11 +111,12 @@ async fn malformed_current_image_fails_but_does_not_poison_later_turns() {
         .expect("submit recovery turn");
     assert_eq!(final_message(&mut agent).await, "text recovered");
 
+    let current_id = current.id.clone();
     agent
         .sender()
         .submit(user_message_with_attachments(
             "use this smaller image",
-            vec![current.clone()],
+            vec![current],
         ))
         .expect("submit current image");
     assert_eq!(final_message(&mut agent).await, "image recovered");
@@ -121,8 +125,8 @@ async fn malformed_current_image_fails_but_does_not_poison_later_turns() {
     assert_eq!(request_image_count(&requests[0].input), 0);
     assert_eq!(request_image_count(&requests[1].input), 1);
     let recovery = serde_json::to_string(&requests[1].input).expect("serialize recovery input");
-    assert!(recovery.contains(&oversized.id));
-    assert!(recovery.contains(&current.id));
+    assert!(recovery.contains(&oversized_id));
+    assert!(recovery.contains(&current_id));
     assert!(
         !recovery.contains("Unavailable file references"),
         "failed preparation stays provisional"
