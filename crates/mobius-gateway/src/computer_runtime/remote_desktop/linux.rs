@@ -766,9 +766,7 @@ impl Desktop {
         })
     }
 
-    // Called while the server is grabbed. Release our probe before sending input,
-    // so the selected application's connection receives the normal events.
-    fn pointer_ready(&self, window: Window) -> Result<()> {
+    fn require_released_input(&self, message: &str) -> Result<()> {
         let mask = self
             .connection
             .query_pointer(self.root)
@@ -777,10 +775,15 @@ impl Desktop {
             .map_err(xerror)?
             .mask;
         if u16::from(mask) != 0 {
-            return Err(failure(
-                "release mouse buttons and keyboard modifiers before input",
-            ));
+            return Err(failure(message));
         }
+        Ok(())
+    }
+
+    // Called while the server is grabbed. Release our probe before sending input,
+    // so the selected application's connection receives the normal events.
+    fn pointer_ready(&self, window: Window) -> Result<()> {
+        self.require_released_input("release mouse buttons and keyboard modifiers before input")?;
         let status = self
             .connection
             .grab_pointer(
@@ -1044,18 +1047,7 @@ impl Desktop {
         {
             return Err(failure("keyboard focus or window changed; capture again"));
         }
-        let mask = self
-            .connection
-            .query_pointer(self.root)
-            .map_err(xerror)?
-            .reply()
-            .map_err(xerror)?
-            .mask;
-        if u16::from(mask) != 0 {
-            return Err(failure(
-                "release mouse buttons and keyboard modifiers, and turn off locked modifiers before typing",
-            ));
-        }
+        self.require_released_input("release mouse buttons and keyboard modifiers, and turn off locked modifiers before typing")?;
         let status = self
             .connection
             .grab_keyboard(
