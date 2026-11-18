@@ -356,6 +356,19 @@ pub fn text_field(state: &Entity<InputState>) -> Input {
     Input::new(state).h(height::REGULAR)
 }
 
+/// An editable multiline field initialized with text and bounded growth.
+pub fn growing_field(
+    value: impl Into<gpui_component::input::InputContent>,
+    min: usize,
+    max: usize,
+    window: &mut Window,
+    cx: &mut App,
+) -> Entity<TextareaState> {
+    let input = cx.new(|cx| TextareaState::new(window, cx).auto_grow(min, max));
+    input.update(cx, |input, cx| input.set_value(value, window, cx));
+    input
+}
+
 pub fn textarea(state: &Entity<TextareaState>) -> Textarea {
     Textarea::new(state)
 }

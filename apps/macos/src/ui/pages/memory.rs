@@ -912,11 +912,8 @@ impl Workspace {
         let (description, text) = (Arc::clone(&memory.description), Arc::clone(&memory.text));
         let description_input = cx.new(|cx| InputState::new(window, cx));
         description_input.update(cx, |input, cx| input.set_value(&*description, window, cx));
-        let body = cx.new(|cx| TextareaState::new(window, cx).auto_grow(6, 24));
-        body.update(cx, |input, cx| {
-            input.set_value(&*text, window, cx);
-            input.focus(window, cx);
-        });
+        let body = crate::ui::primitives::growing_field(text, 6, 24, window, cx);
+        body.update(cx, |input, cx| input.focus(window, cx));
         self.memory.editor = Some(Editor {
             key,
             description: description_input,

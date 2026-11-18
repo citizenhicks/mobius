@@ -3,7 +3,7 @@
 
 use crate::numeric::ToFloat as _;
 use crate::ui::Workspace;
-use crate::ui::primitives::field;
+use crate::ui::primitives::{field, growing_field};
 use gpui::{App, AppContext as _, Context, Entity, Subscription, Window};
 use gpui_component::input::{InputEvent, InputState, TextareaState};
 use mobius::protocol::{FrontendSettingKind, FrontendSettingValue};
@@ -75,12 +75,7 @@ impl AgentDraft {
             .map_or_else(Default::default, |(name, description, tint)| {
                 (Arc::clone(name), Arc::clone(description), *tint)
             });
-        let area = |value: Arc<str>, min, max, window: &mut Window, cx: &mut Context<Workspace>| {
-            let input = cx.new(|cx| TextareaState::new(window, cx).auto_grow(min, max));
-            input.update(cx, |input, cx| input.set_value(value, window, cx));
-            input
-        };
-        let description = area(description, 3, 6, window, cx);
+        let description = growing_field(description, 3, 6, window, cx);
         let composition = saved.config.mobius().map(Arc::as_ref);
         let prompt = cx.new(|cx| TextareaState::new(window, cx));
         prompt.update(cx, |input, cx| {

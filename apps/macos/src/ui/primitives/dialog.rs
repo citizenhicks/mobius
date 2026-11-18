@@ -71,9 +71,7 @@ impl EditInput {
                 Self::Line(input)
             }
             EditKind::Multiline { min, max } => {
-                let input = cx.new(|cx| TextareaState::new(window, cx).auto_grow(min, max));
-                input.update(cx, |input, cx| input.set_value(value, window, cx));
-                Self::Area(input)
+                Self::Area(super::growing_field(value, min, max, window, cx))
             }
         }
     }
