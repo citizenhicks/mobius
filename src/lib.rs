@@ -455,6 +455,13 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 pub(crate) const MAX_IDENTIFIER_BYTES: usize = 4 * 1024;
 
+/// Whether the path is relative and every component stays under its starting directory.
+pub(crate) fn is_confined_relative(path: &std::path::Path) -> bool {
+    use std::path::Component;
+    path.components()
+        .all(|part| matches!(part, Component::Normal(_) | Component::CurDir))
+}
+
 pub(crate) fn validate_identifier(name: &str, value: &str, limit: usize) -> Result<()> {
     if value.trim().is_empty() {
         return Err(Error::Invalid(format!("{name} cannot be empty")));

@@ -279,10 +279,7 @@ impl LocalSandbox {
         let Ok(relative) = requested.strip_prefix(self.temporary_directory()) else {
             return Ok(None);
         };
-        if relative
-            .components()
-            .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
-        {
+        if !crate::is_confined_relative(relative) {
             return Err(Error::Sandbox("temporary path escapes its owner".into()));
         }
         validate_root(self.temp.path(), &self.temp.root)?;
@@ -575,11 +572,7 @@ impl LocalSandbox {
 
     fn relative(path: &str) -> Result<PathBuf> {
         let path = Path::new(path);
-        if path.is_absolute()
-            || path
-                .components()
-                .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
-        {
+        if !crate::is_confined_relative(path) {
             return Err(Rejected::OutsideRoots.path(path.display()));
         }
         Ok(path.to_path_buf())
@@ -647,10 +640,7 @@ impl LocalSandbox {
             let Ok(relative) = requested.strip_prefix(path) else {
                 continue;
             };
-            if relative
-                .components()
-                .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
-            {
+            if !crate::is_confined_relative(relative) {
                 break;
             }
             validate_root(path, directory)?;

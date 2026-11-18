@@ -532,11 +532,7 @@ fn confined_path(root: &Path, value: &str, require_dot_prefix: bool) -> Result<P
         )));
     }
     let relative = Path::new(value);
-    if relative.is_absolute()
-        || relative
-            .components()
-            .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
-    {
+    if !crate::is_confined_relative(relative) {
         return Err(Error::Invalid(format!(
             "plugin path `{value}` is not confined to its package"
         )));
@@ -1192,12 +1188,7 @@ impl Middleware for Extensions {
 }
 
 fn read_skill_resource(directory: &Dir, path: &Path) -> Result<String> {
-    if path.as_os_str().is_empty()
-        || path.is_absolute()
-        || path
-            .components()
-            .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
-    {
+    if path.as_os_str().is_empty() || !crate::is_confined_relative(path) {
         return Err(unavailable_skill_resource());
     }
     // Avoid blocking on static special files, then verify the opened handle again.
