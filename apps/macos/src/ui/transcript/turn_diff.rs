@@ -41,12 +41,9 @@ impl Workspace {
         let (added, removed) = (changes.totals.additions, changes.totals.deletions);
         let count = format!("{} changed", counted(files.len(), "file", "files"));
         let totals = |added: &dyn std::fmt::Display, removed: &dyn std::fmt::Display| {
-            div()
-                .flex()
-                .flex_shrink_0()
-                .gap(space::S)
-                .child(div().text_color(p.signal).child(format!("+{added}")))
-                .child(div().text_color(p.danger).child(format!("−{removed}")))
+            div().flex().flex_shrink_0().gap(space::S).children(
+                crate::ui::primitives::diff_count_labels(added, removed, "", &p),
+            )
         };
         let row = || {
             div()

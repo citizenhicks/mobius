@@ -546,12 +546,9 @@ impl Workspace {
                         .flex_shrink_0()
                         .gap(space::XS)
                         .typography(Type::Caption)
-                        .child(div().text_color(p.signal).child(format!("{bound}+{added}")))
-                        .child(
-                            div()
-                                .text_color(p.danger)
-                                .child(format!("{bound}−{removed}")),
-                        )
+                        .children(crate::ui::primitives::diff_count_labels(
+                            added, removed, bound, &p,
+                        ))
                 }))
                 .into_any_element(),
         )

@@ -45,14 +45,9 @@ impl Workspace {
                     .px(space::S)
                     .accessibility_label(format!("Code changes: +{added} −{removed}"))
                     .tooltip("Changed files")
-                    .child(
-                        div()
-                            .flex()
-                            .gap(space::S)
-                            .typography(Type::Label)
-                            .child(div().text_color(p.signal).child(format!("+{added}")))
-                            .child(div().text_color(p.danger).child(format!("−{removed}"))),
-                    )
+                    .child(div().flex().gap(space::S).typography(Type::Label).children(
+                        crate::ui::primitives::diff_count_labels(added, removed, "", &p),
+                    ))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.open_git_diff(mobius_gateway::wire::GitDiffScope::Unstaged, cx);
                     }))

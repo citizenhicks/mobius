@@ -107,8 +107,9 @@ pub(super) fn totals(added: usize, removed: usize, cx: &App) -> Div {
         .flex_shrink_0()
         .gap(space::XS)
         .typography(Type::Mono)
-        .child(div().text_color(p.signal).child(format!("+{added}")))
-        .child(div().text_color(p.danger).child(format!("−{removed}")))
+        .children(crate::ui::primitives::diff_count_labels(
+            added, removed, "", &p,
+        ))
 }
 
 /// "1 line", "12,345 lines".

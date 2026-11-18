@@ -1001,3 +1001,18 @@ pub fn live_field<T: 'static>(
         .detach();
     input
 }
+
+/// Signed addition and removal counts; a truncated diff supplies a lower-bound prefix.
+pub fn diff_count_labels(
+    added: impl std::fmt::Display,
+    removed: impl std::fmt::Display,
+    bound: &str,
+    p: &Palette,
+) -> [Div; 2] {
+    [
+        div().text_color(p.signal).child(format!("{bound}+{added}")),
+        div()
+            .text_color(p.danger)
+            .child(format!("{bound}−{removed}")),
+    ]
+}
