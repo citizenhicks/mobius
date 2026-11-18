@@ -145,22 +145,13 @@ pub(crate) fn tool_complete_boundaries<'a>(
     let mut complete = Vec::new();
     for (index, item) in input.into_iter().enumerate() {
         match item.get("type").and_then(Value::as_str) {
-            Some("function_call") => {
-                let call_id = item
-                    .get("call_id")
-                    .and_then(Value::as_str)
-                    .filter(|call_id| !call_id.is_empty())
-                    .map_or_else(|| format!("missing-{index}"), str::to_owned);
-                open_calls.insert(call_id);
-            }
-            Some("tool_search_call")
-                if item.get("execution").and_then(Value::as_str) != Some("server") =>
+            Some(kind @ ("function_call" | "tool_search_call"))
+                if kind == "function_call" || item["execution"].as_str() != Some("server") =>
             {
-                let call_id = item
-                    .get("call_id")
-                    .and_then(Value::as_str)
-                    .filter(|call_id| !call_id.is_empty())
-                    .map_or_else(|| format!("missing-{index}"), str::to_owned);
+                let Some(call_id) = super::nonempty_string(item, "call_id") else {
+                    // No later output can identify this unfinished call.
+                    break;
+                };
                 open_calls.insert(call_id);
             }
             Some("function_call_output" | "tool_search_output") => {
@@ -390,6 +381,19 @@ fn arguments(value: Option<&Value>) -> Value {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn orphaned_call_cannot_be_completed_by_a_synthetic_id() {
+        for kind in ["function_call", "tool_search_call"] {
+            let rows = [
+                serde_json::json!({"role":"user","content":"hello"}),
+                serde_json::json!({"type":kind}),
+                serde_json::json!({"type":"function_call_output","call_id":"missing-1"}),
+            ];
+            assert_eq!(super::tool_complete_boundaries(&rows), [1]);
+        }
+    }
+
     #[test]
     fn stripped_attachment_only_messages_keep_a_neutral_fork_placeholder() {
         use crate::backend::model::internal_user_message;

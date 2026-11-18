@@ -13,6 +13,7 @@ use sha2::Sha256;
 use crate::BoxFuture;
 use crate::Error;
 use crate::Result;
+use crate::protocol::nonempty_string;
 use crate::protocol::{MAX_TOOL_NAME_BYTES, TOOL_LOAD_MARKER, TokenUsage, ToolCall};
 use crate::protocol::{
     ModelStepAnnotation, ModelStepContent, ModelStepContentPhase, PromptCacheMode,
@@ -804,13 +805,6 @@ pub trait Model: Send + Sync {
 
 fn wire_index(value: &Value) -> Option<usize> {
     value.get("index")?.as_u64()?.try_into().ok()
-}
-
-fn nonempty_string<'a>(value: &'a Value, field: &str) -> Option<&'a str> {
-    value
-        .get(field)
-        .and_then(Value::as_str)
-        .filter(|text| !text.is_empty())
 }
 
 pub(crate) fn image_input<'a>(

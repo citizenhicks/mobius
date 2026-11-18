@@ -10,6 +10,10 @@ use serde::Deserializer;
 use serde::Serialize;
 use uuid::Uuid;
 
+pub(crate) fn nonempty_string<'a>(value: &'a serde_json::Value, field: &str) -> Option<&'a str> {
+    value.get(field)?.as_str().filter(|text| !text.is_empty())
+}
+
 pub use self::replay::events as replay_events;
 pub(crate) use self::replay::{
     ATTACHMENT_CONTEXT_MARKER, ATTACHMENTS_FIELD, CONTEXT_COMPACTED_MARKER, INTERNAL_MESSAGE_FIELD,
