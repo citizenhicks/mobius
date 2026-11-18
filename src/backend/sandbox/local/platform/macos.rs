@@ -83,18 +83,14 @@ pub(crate) fn sandboxed_command(
         }
     }
     command.arg("-p").arg(policy);
-    let root = sandbox
-        .root
-        .to_str()
-        .ok_or_else(|| Error::Sandbox("sandbox path is not UTF-8".into()))?;
-    command.arg(format!("-DWRITABLE_ROOT={root}"));
+    path_parameter(&mut command, "WRITABLE_ROOT", &sandbox.root)?;
     append_temporary_parameters(&mut command, sandbox)?;
     for (index, root) in sandbox.policy.workspace_roots.iter().enumerate() {
-        let path = root
-            .path
-            .to_str()
-            .ok_or_else(|| Error::Sandbox("sandbox path is not UTF-8".into()))?;
-        command.arg(format!("-DWORKSPACE_ROOT_{index}={path}"));
+        path_parameter(
+            &mut command,
+            format_args!("WORKSPACE_ROOT_{index}"),
+            &root.path,
+        )?;
     }
     append_denied_read_parameters(&mut command, sandbox)?;
     append_isolated_invocation(&mut command, invocation, sandbox.isolated_home);
@@ -132,13 +128,17 @@ fn append_denied_read_rules(
     Ok(())
 }
 
+fn path_parameter(command: &mut Command, name: impl std::fmt::Display, path: &Path) -> Result<()> {
+    let path = path
+        .to_str()
+        .ok_or_else(|| Error::Sandbox("sandbox path is not UTF-8".into()))?;
+    command.arg(format!("-D{name}={path}"));
+    Ok(())
+}
+
 fn append_denied_read_parameters(command: &mut Command, sandbox: &LocalSandbox) -> Result<()> {
     for (index, denied) in sandbox.policy.denied_reads.iter().enumerate() {
-        let path = denied
-            .path
-            .to_str()
-            .ok_or_else(|| Error::Sandbox("sandbox path is not UTF-8".into()))?;
-        command.arg(format!("-DDENIED_READ_{index}={path}"));
+        path_parameter(command, format_args!("DENIED_READ_{index}"), &denied.path)?;
     }
     Ok(())
 }
@@ -149,10 +149,7 @@ fn append_temporary_parameters(command: &mut Command, sandbox: &LocalSandbox) ->
         .parent()
         .ok_or_else(|| Error::Sandbox("temporary parent unavailable".into()))?;
     for (name, path) in [("TEMP_PARENT", parent), ("TEMP_ROOT", temp.as_path())] {
-        let path = path
-            .to_str()
-            .ok_or_else(|| Error::Sandbox("sandbox path is not UTF-8".into()))?;
-        command.arg(format!("-D{name}={path}"));
+        path_parameter(command, name, path)?;
     }
     Ok(())
 }
