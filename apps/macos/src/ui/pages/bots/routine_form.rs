@@ -158,8 +158,6 @@ fn interval_unit(seconds: u64) -> usize {
         .unwrap_or(0)
 }
 
-/// A single-line input whose edits redraw the dialog.
-
 impl Inputs {
     /// The routine's own text, or 9:00 and this Mac's time zone.
     pub(super) fn new(
