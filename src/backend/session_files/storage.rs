@@ -107,7 +107,7 @@ pub(super) async fn list_completed(
     blob_root: &Path,
 ) -> Result<Vec<CompletedFile>> {
     match tokio::fs::symlink_metadata(session_dir).await {
-        Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {}
+        Ok(metadata) if metadata.is_dir() => {}
         Ok(_) => {
             return Err(Error::Tool("session file path is not a directory".into()));
         }
@@ -531,7 +531,7 @@ pub(super) async fn existing_directory(path: &Path) -> Result<bool> {
 
 pub(super) async fn require_directory(path: &Path) -> Result<()> {
     let metadata = tokio::fs::symlink_metadata(path).await?;
-    if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() {
+    if metadata.is_dir() {
         Ok(())
     } else {
         Err(Error::Tool(
@@ -542,7 +542,7 @@ pub(super) async fn require_directory(path: &Path) -> Result<()> {
 
 async fn require_regular_file(path: &Path) -> Result<std::fs::Metadata> {
     let metadata = tokio::fs::symlink_metadata(path).await?;
-    if metadata.file_type().is_file() && !metadata.file_type().is_symlink() {
+    if metadata.is_file() {
         Ok(metadata)
     } else {
         Err(Error::Tool(
