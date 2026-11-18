@@ -191,7 +191,7 @@ impl SessionFileStore {
         session_id: &SessionId,
         image: &ImageReference,
     ) -> Result<super::StoredSessionFile> {
-        let (mut record, _) = self.resolve(session_id, &image.file.id).await?;
+        let (mut record, path) = self.resolve(session_id, &image.file.id).await?;
         if record.file != image.file {
             return Err(Error::Tool("image reference metadata mismatch".into()));
         }
@@ -200,7 +200,7 @@ impl SessionFileStore {
         {
             dimensions
         } else {
-            let bytes = self.read_file(session_id, &image.file).await?;
+            let bytes = tokio::fs::read(path).await?;
             let (_, media_type, width, height, orientation) =
                 validated_image(bytes, &self.state.image_work).await?;
             if media_type != image.file.media_type {
@@ -292,13 +292,23 @@ impl SessionFileStore {
         file: &SessionFileReference,
     ) -> Result<Vec<u8>> {
         let bytes = self.read_file(session_id, file).await?;
-        let (bytes, media_type, _, _, _) = validated_image(bytes, &self.state.image_work).await?;
+        let (bytes, _, _, _) = self.validate_stored_image(file, bytes).await?;
+        Ok(bytes)
+    }
+
+    async fn validate_stored_image(
+        &self,
+        file: &SessionFileReference,
+        bytes: Vec<u8>,
+    ) -> Result<(Vec<u8>, u32, u32, u8)> {
+        let (bytes, media_type, width, height, orientation) =
+            validated_image(bytes, &self.state.image_work).await?;
         if file.media_type != media_type {
             return Err(Error::Tool(
                 "stored file media type does not match the image".into(),
             ));
         }
-        Ok(bytes)
+        Ok((bytes, width, height, orientation))
     }
 
     /// Reopens an owned image and retains its bytes independently of an upload.
@@ -338,13 +348,7 @@ impl SessionFileStore {
         bytes: Vec<u8>,
         detail: ImageDetail,
     ) -> Result<ImageReference> {
-        let (_, media_type, width, height, orientation) =
-            validated_image(bytes, &self.state.image_work).await?;
-        if file.media_type != media_type {
-            return Err(Error::Tool(
-                "stored file media type does not match the image".into(),
-            ));
-        }
+        let (_, width, height, orientation) = self.validate_stored_image(file, bytes).await?;
         let file = self
             .retain_reference(session_id, session_id, file, SessionFileOrigin::Observation)
             .await?;
