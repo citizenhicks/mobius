@@ -228,6 +228,18 @@ pub struct MessageEvent {
 }
 
 impl MessageEvent {
+    #[cfg(test)]
+    pub(crate) fn test_user(delivery: MessageDelivery, text: impl Into<String>) -> Self {
+        Self {
+            author: MessageAuthor::User,
+            delivery,
+            text: text.into(),
+            attachments: Vec::new(),
+            reply: None,
+            message_target: None,
+        }
+    }
+
     pub(crate) fn reply_text(&self) -> Option<Cow<'_, str>> {
         if !self.text.is_empty() {
             return Some(Cow::Borrowed(&self.text));

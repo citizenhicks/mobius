@@ -3,7 +3,6 @@ use std::collections::BTreeMap;
 use super::*;
 use crate::backend::checkpoint::QueuedMessageBoundary;
 use crate::backend::checkpoint::sqlite::SqliteCheckpoint;
-use crate::protocol::MessageAuthor;
 use crate::protocol::MessageEvent;
 
 struct LifecycleProbe {
@@ -325,14 +324,7 @@ fn pre_tool_rewrite_rejects_invalid_calls_without_mutation() {
 }
 
 fn user_event(text: &str) -> MessageEvent {
-    MessageEvent {
-        author: MessageAuthor::User,
-        delivery: crate::protocol::MessageDelivery::Turn,
-        text: text.into(),
-        attachments: Vec::new(),
-        reply: None,
-        message_target: None,
-    }
+    MessageEvent::test_user(crate::protocol::MessageDelivery::Turn, text)
 }
 
 fn queued(owner: &str, id: &str, text: &str) -> DurableQueuedMessage {

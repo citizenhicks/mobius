@@ -220,14 +220,7 @@ fn peer_op(
 }
 
 fn queued_user_message(id: &str, text: &str, boundary: QueuedMessageBoundary) -> QueuedMessage {
-    let event = MessageEvent {
-        author: MessageAuthor::User,
-        delivery: boundary.delivery(),
-        text: text.into(),
-        attachments: Vec::new(),
-        reply: None,
-        message_target: None,
-    };
+    let event = MessageEvent::test_user(boundary.delivery(), text);
     QueuedMessage::new("messages", id, boundary, event).expect("queued message")
 }
 

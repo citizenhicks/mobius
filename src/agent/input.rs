@@ -575,14 +575,10 @@ mod tests {
                 context.queued_messages.enqueue(
                     context.submission_id,
                     crate::backend::checkpoint::QueuedMessageBoundary::Turn,
-                    crate::protocol::MessageEvent {
-                        author: crate::protocol::MessageAuthor::User,
-                        delivery: crate::protocol::MessageDelivery::Turn,
-                        text: context.message.text.clone(),
-                        attachments: Vec::new(),
-                        reply: None,
-                        message_target: None,
-                    },
+                    crate::protocol::MessageEvent::test_user(
+                        crate::protocol::MessageDelivery::Turn,
+                        &context.message.text,
+                    ),
                 )?;
                 match self.0 {
                     MutatingRoute::Handled => Ok(SubmissionResult::Handled),
