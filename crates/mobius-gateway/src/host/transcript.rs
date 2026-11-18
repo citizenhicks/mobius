@@ -81,22 +81,23 @@ struct Step {
 impl Step {
     /// Marks the item `id` changed in a way only a whole `Item` op carries.
     fn touch(&mut self, id: &Arc<str>, turn: Option<&Arc<str>>) {
-        match self.items.iter_mut().find(|(item, _)| item == id) {
-            Some((_, delta)) => *delta = None,
-            None => self.items.push((Arc::clone(id), None)),
-        }
+        self.touch_item(id, None);
         self.touch_turn(turn);
     }
 
     /// Marks the block item `id` appended to. A second change to it in this event sends
     /// the whole item instead. Its rows are rebuilt only when `turn` is given.
     fn touch_delta(&mut self, id: &Arc<str>, turn: Option<Option<&Arc<str>>>, delta: BlockDelta) {
-        match self.items.iter_mut().find(|(item, _)| item == id) {
-            Some((_, current)) => *current = None,
-            None => self.items.push((Arc::clone(id), Some(delta))),
-        }
+        self.touch_item(id, Some(delta));
         if let Some(turn) = turn {
             self.touch_turn(turn);
+        }
+    }
+
+    fn touch_item(&mut self, id: &Arc<str>, delta: Option<BlockDelta>) {
+        match self.items.iter_mut().find(|(item, _)| item == id) {
+            Some((_, current)) => *current = None,
+            None => self.items.push((Arc::clone(id), delta)),
         }
     }
 
