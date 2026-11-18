@@ -638,12 +638,12 @@ impl HostHandle {
 
     pub(crate) async fn read_workspace_file(
         &self,
-        path: String,
+        path: &str,
         offset: u64,
         max_bytes: usize,
     ) -> std::result::Result<WorkspaceRead, Rejection> {
         let (sandbox, workspace) = self.workspace().await?;
-        read_workspace_file(&sandbox, workspace.as_deref(), &path, offset, max_bytes).await
+        read_workspace_file(&sandbox, workspace.as_deref(), path, offset, max_bytes).await
     }
 
     pub(crate) async fn delete_workspace_file(

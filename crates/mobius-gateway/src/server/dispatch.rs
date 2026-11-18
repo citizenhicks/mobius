@@ -1101,6 +1101,17 @@ async fn session_history(
     write_session_history(writer, page, request_id, session_id).await
 }
 
+async fn on_selected<'a, T, F>(
+    selected: Option<&'a SelectedChat>,
+    session_id: &SessionId,
+    operation: impl FnOnce(&'a HostHandle) -> F,
+) -> std::result::Result<T, Rejection>
+where
+    F: Future<Output = std::result::Result<T, Rejection>>,
+{
+    operation(require_selected(selected, session_id)?).await
+}
+
 async fn set_session_memory(
     writer: &mut (impl AsyncWrite + Unpin),
     selected: Option<&SelectedChat>,
@@ -1108,10 +1119,7 @@ async fn set_session_memory(
     session_id: SessionId,
     memory: Option<bool>,
 ) -> Result<()> {
-    let result = match require_selected(selected, &session_id) {
-        Ok(host) => host.set_memory(memory).await,
-        Err(rejection) => Err(rejection),
-    };
+    let result = on_selected(selected, &session_id, |host| host.set_memory(memory)).await;
     write_result(writer, request_id, result).await
 }
 
@@ -1122,11 +1130,8 @@ async fn attach_session_folder(
     session_id: SessionId,
     folder: PathBuf,
 ) -> Result<()> {
-    let host = match require_selected(selected, &session_id) {
-        Ok(host) => host,
-        Err(rejection) => return write_rejection(writer, request_id, rejection).await,
-    };
-    write_result(writer, request_id, host.attach_folder(folder).await).await
+    let result = on_selected(selected, &session_id, |host| host.attach_folder(folder)).await;
+    write_result(writer, request_id, result).await
 }
 
 async fn set_message_pinned(
@@ -1137,16 +1142,11 @@ async fn set_message_pinned(
     target: MessageTarget,
     pinned: bool,
 ) -> Result<()> {
-    let host = match require_selected(selected, &session_id) {
-        Ok(host) => host,
-        Err(rejection) => return write_rejection(writer, request_id, rejection).await,
-    };
-    write_result(
-        writer,
-        request_id,
-        host.set_message_pinned(target, pinned).await,
-    )
-    .await
+    let result = on_selected(selected, &session_id, |host| {
+        host.set_message_pinned(target, pinned)
+    })
+    .await;
+    write_result(writer, request_id, result).await
 }
 
 /// Answers a Bot request with the current Bot catalog.
@@ -1249,45 +1249,34 @@ async fn submit(
     submission: Submission,
 ) -> Result<()> {
     let request_id = Arc::clone(&submission.id);
-    let host = match require_selected(selected, &session_id) {
-        Ok(host) => host,
-        Err(rejection) => return write_rejection(writer, request_id, rejection).await,
-    };
-    let submission = match crate::host::validated(submission) {
-        Ok(submission) => submission,
-        Err(rejection) => return write_rejection(writer, request_id, rejection).await,
-    };
-    let user_message = match &submission.submission().op {
-        Op::Message { message } => match &message.author {
-            MessageAuthor::User => Some(message),
-            MessageAuthor::Source { .. } => {
-                return write_rejection(
-                    writer,
-                    request_id,
-                    Rejection::new("invalid_submission", "peer messages are gateway-owned"),
-                )
-                .await;
+    let result = on_selected(selected, &session_id, |host| async {
+        let submission = crate::host::validated(submission)?;
+        if let Op::Message { message } = &submission.submission().op {
+            match &message.author {
+                MessageAuthor::Source { .. } => {
+                    return Err(Rejection::new(
+                        "invalid_submission",
+                        "peer messages are gateway-owned",
+                    ));
+                }
+                MessageAuthor::User => {}
             }
-        },
-        _ => None,
-    };
-    if let Some(message) = user_message
-        && !message.attachments.is_empty()
-    {
-        match host.accepts_file_attachments().await {
-            Ok(true) => {}
-            Ok(false) => {
-                return write_rejection(writer, request_id, uploads_disabled_rejection()).await;
-            }
-            Err(rejection) => return write_rejection(writer, request_id, rejection).await,
-        }
-        for reference in &message.attachments {
-            if let Err(error) = session_files.verify_upload(&session_id, reference).await {
-                return write_rejection(writer, request_id, session_file_rejection(error)).await;
+            if !message.attachments.is_empty() {
+                if !host.accepts_file_attachments().await? {
+                    return Err(uploads_disabled_rejection());
+                }
+                for reference in &message.attachments {
+                    session_files
+                        .verify_upload(&session_id, reference)
+                        .await
+                        .map_err(session_file_rejection)?;
+                }
             }
         }
-    }
-    write_result(writer, request_id, host.submit_validated(submission).await).await
+        host.submit_validated(submission).await
+    })
+    .await;
+    write_result(writer, request_id, result).await
 }
 
 async fn contribution_response(
@@ -1640,11 +1629,8 @@ async fn switch_git_branch(
     session_id: SessionId,
     branch: String,
 ) -> Result<()> {
-    let host = match require_selected(selected, &session_id) {
-        Ok(host) => host,
-        Err(rejection) => return write_rejection(writer, request_id, rejection).await,
-    };
-    write_result(writer, request_id, host.switch_git_branch(branch).await).await
+    let result = on_selected(selected, &session_id, |host| host.switch_git_branch(branch)).await;
+    write_result(writer, request_id, result).await
 }
 
 async fn list_workspace_files(
@@ -1654,11 +1640,7 @@ async fn list_workspace_files(
     session_id: SessionId,
     scope: WorkspaceFileScope,
 ) -> Result<()> {
-    let host = match require_selected(selected, &session_id) {
-        Ok(host) => host,
-        Err(rejection) => return write_rejection(writer, request_id, rejection).await,
-    };
-    let catalog = host.workspace_files(scope).await;
+    let catalog = on_selected(selected, &session_id, |host| host.workspace_files(scope)).await;
     respond(writer, request_id, catalog, |request_id, catalog| {
         ServerMessage::WorkspaceFiles {
             request_id,
@@ -1679,13 +1661,10 @@ async fn read_workspace_file(
     offset: u64,
     max_bytes: usize,
 ) -> Result<()> {
-    let host = match require_selected(selected, &session_id) {
-        Ok(host) => host,
-        Err(rejection) => return write_rejection(writer, request_id, rejection).await,
-    };
-    let chunk = host
-        .read_workspace_file(path.clone(), offset, max_bytes) // rules-allow: the host takes the path and the chunk frame echoes it
-        .await;
+    let chunk = on_selected(selected, &session_id, |host| {
+        host.read_workspace_file(&path, offset, max_bytes)
+    })
+    .await;
     respond(writer, request_id, chunk, |request_id, chunk| {
         ServerMessage::WorkspaceFileChunk {
             request_id,
@@ -1707,16 +1686,11 @@ async fn write_workspace_file(
     path: String,
     content: String,
 ) -> Result<()> {
-    let host = match require_selected(selected, &session_id) {
-        Ok(host) => host,
-        Err(rejection) => return write_rejection(writer, request_id, rejection).await,
-    };
-    write_result(
-        writer,
-        request_id,
-        host.write_workspace_file(path, content).await,
-    )
-    .await
+    let result = on_selected(selected, &session_id, |host| {
+        host.write_workspace_file(path, content)
+    })
+    .await;
+    write_result(writer, request_id, result).await
 }
 
 async fn list_directories_response(
