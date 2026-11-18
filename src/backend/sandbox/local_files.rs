@@ -103,12 +103,7 @@ pub(super) fn read_file_range(
 
 fn open_regular_file(root: Dir, relative: &Path, requested: &str) -> Result<cap_std::fs::File> {
     let (parent, name) = open_named_parent(root, relative, requested)?;
-    let before = parent
-        .symlink_metadata(name)
-        .map_err(|error| Error::Sandbox(format!("{requested}: {error}")))?;
-    if before.is_symlink() || !before.is_file() {
-        return Err(Rejected::NotRegularFile.path(requested));
-    }
+    let before = regular_metadata(&parent, name, requested)?;
     open_checked_file(&parent, name, &before, requested)
 }
 
