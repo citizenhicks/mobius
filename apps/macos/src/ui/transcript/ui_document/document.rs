@@ -278,22 +278,33 @@ impl Workspace {
                     .child(trailing.to_owned())
             }));
         match item.url.as_deref() {
-            Some(url) => {
-                let (url, session) = (url.to_owned(), session_id.map(SessionId::share));
-                row.cursor_pointer()
-                    .role(gpui::accesskit::Role::Link)
-                    .aria_label(title)
-                    .focusable()
-                    .tab_stop(true)
-                    .focus_visible(|style| style.bg(p.accent_soft))
-                    .hover(move |row| row.bg(p.hover))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.open_transcript_link(&url, session.as_ref(), cx);
-                    }))
-                    .into_any_element()
-            }
+            Some(url) => self
+                .document_link(row, title, url, session_id, cx)
+                .into_any_element(),
             None => row.into_any_element(),
         }
+    }
+
+    fn document_link(
+        &self,
+        row: gpui::Stateful<Div>,
+        title: SharedString,
+        url: &str,
+        session: Option<&SessionId>,
+        cx: &Context<Self>,
+    ) -> gpui::Stateful<Div> {
+        let p = self.palette;
+        let (url, session) = (url.to_owned(), session.map(SessionId::share));
+        row.cursor_pointer()
+            .role(gpui::accesskit::Role::Link)
+            .aria_label(title)
+            .focusable()
+            .tab_stop(true)
+            .focus_visible(|style| style.bg(p.accent_soft))
+            .hover(move |row| row.bg(p.hover))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.open_transcript_link(&url, session.as_ref(), cx);
+            }))
     }
 
     /// A hairline-framed table: a muted header row, dividers between rows, and columns of
@@ -402,25 +413,15 @@ impl Workspace {
         cx: &Context<Self>,
     ) -> AnyElement {
         let p = self.palette;
-        let (href, session) = (url.to_owned(), session_id.map(SessionId::share));
-        div()
-            .id(SharedString::from(id.to_owned()))
+        let title = SharedString::from(title.to_owned());
+        let frame = div().id(SharedString::from(id.to_owned()));
+        self.document_link(frame, SharedString::clone(&title), url, session_id, cx)
             .flex()
             .flex_col()
             .control_corners()
             .border_1()
             .border_color(p.separator)
             .overflow_hidden()
-            .cursor_pointer()
-            .role(gpui::accesskit::Role::Link)
-            .aria_label(title.to_owned())
-            .focusable()
-            .tab_stop(true)
-            .focus_visible(|style| style.bg(p.accent_soft))
-            .hover(move |card| card.bg(p.hover))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.open_transcript_link(&href, session.as_ref(), cx);
-            }))
             .children(image_url.map(|image| {
                 picture(image, &p, |frame| {
                     frame.top_corners(radius::inner(radius::CONTROL, inset::HAIRLINE))
@@ -441,7 +442,7 @@ impl Workspace {
                             .truncate()
                             .typography(Type::BodyMedium)
                             .text_color(p.text)
-                            .child(title.to_owned()),
+                            .child(title),
                     )
                     .children(description.map(|description| {
                         div()
