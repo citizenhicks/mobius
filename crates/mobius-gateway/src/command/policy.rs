@@ -14,16 +14,12 @@ const MAX_POLICY_BYTES: u64 = 64 * 1024;
 /// `config` with a JSON merge patch (RFC 7386) from `policy` applied: objects merge, other
 /// values replace, and `null` removes a setting so its default applies.
 pub(super) fn apply(config: &GatewayConfig, policy: impl Read) -> Result<GatewayConfig> {
-    let mut text = String::new();
-    policy
-        .take(MAX_POLICY_BYTES + 1)
-        .read_to_string(&mut text)?;
-    if text.len() as u64 > MAX_POLICY_BYTES {
-        return Err(Error::Invalid(format!(
-            "operator policy exceeds {MAX_POLICY_BYTES} bytes"
-        )));
-    }
-    let patch: Value = serde_json::from_str(&text)?;
+    let bytes = mobius::read_within(policy, MAX_POLICY_BYTES)?.ok_or_else(|| {
+        Error::Invalid(format!("operator policy exceeds {MAX_POLICY_BYTES} bytes"))
+    })?;
+    let text = std::str::from_utf8(&bytes)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    let patch: Value = serde_json::from_str(text)?;
     if !patch.is_object() {
         return Err(Error::Invalid(
             "operator policy must be a JSON object".into(),
