@@ -28,8 +28,7 @@ fn message(text: &str, delivery: Option<ActiveMessageDelivery>) -> Op {
 #[tokio::test]
 async fn session_commands_and_chat_messages_preserve_sender_and_hook_ancestry() {
     let (root, gateway, bot) = super::bots::gateway_with_bot().await;
-    let workspace = root.path().join("workspace");
-    std::fs::create_dir(&workspace).unwrap();
+    let workspace = test_workspace(&root);
     let sender = gateway
         .open_session(&bot.conversation_session_id)
         .await
@@ -151,8 +150,7 @@ async fn session_commands_and_chat_messages_preserve_sender_and_hook_ancestry() 
 #[tokio::test]
 async fn peer_delivery_needs_the_current_bot_and_reports_the_agents_rejection() {
     let (root, gateway, bot) = super::bots::gateway_with_bot().await;
-    let workspace = root.path().join("workspace");
-    std::fs::create_dir(&workspace).unwrap();
+    let workspace = test_workspace(&root);
     let target = gateway.create_session(&workspace, &bot.id).await.unwrap();
     let other_bot = gateway
         .state

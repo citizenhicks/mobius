@@ -41,8 +41,7 @@ async fn a_harness_without_an_adapter_is_unavailable_but_its_bots_still_load() {
         codex.routine_interaction_policy,
         RoutineInteractionPolicy::Unattended
     );
-    let workspace = root.path().join("workspace");
-    std::fs::create_dir(&workspace).unwrap();
+    let workspace = test_workspace(&root);
     let host = gateway
         .create_session(&workspace, &mobius_bot.id)
         .await

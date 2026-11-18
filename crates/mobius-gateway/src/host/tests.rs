@@ -212,10 +212,15 @@ pub(super) async fn start_test_gateway(store: ConfigStore, config: GatewayConfig
         .expect("gateway")
 }
 
+fn test_workspace(root: &tempfile::TempDir) -> std::path::PathBuf {
+    let path = root.path().join("workspace");
+    std::fs::create_dir(&path).expect("workspace");
+    path
+}
+
 pub(crate) async fn test_gateway() -> TestGateway {
     let root = tempfile::tempdir().expect("root");
-    let workspace = root.path().join("workspace");
-    std::fs::create_dir(&workspace).expect("workspace");
+    let workspace = test_workspace(&root);
     let listen = "127.0.0.1:8741".parse().expect("listen address");
     let (store, config) =
         ConfigStore::initialize(root.path().join("state"), listen, None).expect("config");

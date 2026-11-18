@@ -8,8 +8,7 @@ use mobius::SessionId;
 #[tokio::test]
 async fn runtime_activity_tracks_reservations_and_pending_deliveries() {
     let (root, gateway, bot) = super::bots::gateway_with_bot().await;
-    let workspace = root.path().join("workspace");
-    std::fs::create_dir(&workspace).unwrap();
+    let workspace = test_workspace(&root);
     let _host = gateway.create_session(&workspace, &bot.id).await.unwrap();
     let bots = Arc::clone(&gateway.state.lock().await.bots);
     let routine = bots
@@ -200,8 +199,7 @@ async fn telemetry_reports_resumed_session_activity_without_duplicate_network_ca
     use crate::wire::{HookData, HookEvent};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     let (root, gateway, bot) = super::bots::gateway_with_bot().await;
-    let workspace = root.path().join("workspace");
-    std::fs::create_dir(&workspace).unwrap();
+    let workspace = test_workspace(&root);
     let session = gateway.create_session(&workspace, &bot.id).await.unwrap();
     let (checkpoints, activities) = {
         let state = gateway.state.lock().await;
@@ -363,8 +361,7 @@ async fn telemetry_reports_resumed_session_activity_without_duplicate_network_ca
 #[tokio::test]
 async fn session_activity_report_stays_complete_with_many_finished_chats() {
     let (root, gateway, bot) = super::bots::gateway_with_bot().await;
-    let workspace = root.path().join("workspace");
-    std::fs::create_dir(&workspace).unwrap();
+    let workspace = test_workspace(&root);
     let session = gateway.create_session(&workspace, &bot.id).await.unwrap();
     gateway.session_activity_report().await.unwrap();
     let activities = Arc::clone(&gateway.state.lock().await.activities);

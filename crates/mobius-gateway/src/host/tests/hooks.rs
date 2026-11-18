@@ -205,8 +205,7 @@ async fn idle_compaction_keeps_the_last_answer_and_emits_no_turn_hooks() {
     let model = Arc::new(CaptureModel::default());
     model.release.notify_one();
     install_model(&gateway, &bot, Arc::clone(&model)).await;
-    let workspace = root.path().join("workspace");
-    std::fs::create_dir(&workspace).unwrap();
+    let workspace = test_workspace(&root);
     let host = gateway.create_session(&workspace, &bot.id).await.unwrap();
     let mut journal = host.subscribe();
     host.submit(user_submission("user", "Say done"))
@@ -317,8 +316,7 @@ async fn a_steered_idle_turn_publishes_normal_activity_and_hooks_without_an_extr
     let (root, gateway, bot) = idle_compaction_gateway().await;
     let model = Arc::new(PausedCompactor::default());
     install_model(&gateway, &bot, Arc::clone(&model)).await;
-    let workspace = root.path().join("workspace");
-    std::fs::create_dir(&workspace).unwrap();
+    let workspace = test_workspace(&root);
     let host = gateway.create_session(&workspace, &bot.id).await.unwrap();
     let mut journal = host.subscribe();
     host.submit(user_submission("initial", "Say done"))

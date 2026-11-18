@@ -44,8 +44,7 @@ async fn committed_statistics_follow_actual_tool_results_and_match_terminal_work
     let (root, gateway, bot) = gateway_with_bot().await;
     let model = Arc::new(PausedReads::default());
     install_model(&gateway, &bot, Arc::clone(&model)).await;
-    let workspace = root.path().join("workspace");
-    std::fs::create_dir(&workspace).unwrap();
+    let workspace = test_workspace(&root);
     std::fs::write(workspace.join("present.txt"), "fixture").unwrap();
     let chat = gateway.create_session(&workspace, &bot.id).await.unwrap();
     let mut events = chat.subscribe();

@@ -41,8 +41,7 @@ pub(super) async fn gateway_with_bot() -> (tempfile::TempDir, GatewayHost, crate
 #[tokio::test]
 async fn reassigning_chat_preserves_history_and_binds_the_target_bot() {
     let (root, gateway, bot) = gateway_with_bot().await;
-    let workspace = root.path().join("workspace");
-    std::fs::create_dir(&workspace).unwrap();
+    let workspace = test_workspace(&root);
     let (bots, checkpoints) = {
         let state = gateway.state.lock().await;
         (Arc::clone(&state.bots), Arc::clone(&state.checkpoints))
@@ -164,8 +163,7 @@ async fn reassigning_chat_preserves_history_and_binds_the_target_bot() {
 #[tokio::test]
 async fn failed_reassignment_restores_the_owner_and_running_chat() {
     let (root, gateway, bot) = gateway_with_bot().await;
-    let workspace = root.path().join("workspace");
-    std::fs::create_dir(&workspace).unwrap();
+    let workspace = test_workspace(&root);
     let host = gateway.create_session(&workspace, &bot.id).await.unwrap();
     let (bots, checkpoints) = {
         let state = gateway.state.lock().await;
@@ -209,8 +207,7 @@ async fn failed_reassignment_restores_the_owner_and_running_chat() {
 #[tokio::test]
 async fn bot_delete_preflight_preserves_sessions_when_instructions_are_invalid() {
     let (root, gateway, bot) = gateway_with_bot().await;
-    let workspace = root.path().join("workspace");
-    std::fs::create_dir(&workspace).expect("workspace");
+    let workspace = test_workspace(&root);
     let chat = gateway
         .create_session(&workspace, &bot.id)
         .await
@@ -262,8 +259,7 @@ async fn bot_delete_preflight_preserves_sessions_when_instructions_are_invalid()
 #[tokio::test]
 async fn startup_finishes_a_bot_cascade() {
     let (root, gateway, bot) = gateway_with_bot().await;
-    let workspace = root.path().join("workspace");
-    std::fs::create_dir(&workspace).expect("workspace");
+    let workspace = test_workspace(&root);
     let chat = gateway
         .create_session(&workspace, &bot.id)
         .await
@@ -322,8 +318,7 @@ async fn startup_finishes_a_bot_cascade() {
 #[tokio::test]
 async fn deleting_a_bot_removes_owned_state() {
     let (root, gateway, bot) = gateway_with_bot().await;
-    let workspace = root.path().join("workspace");
-    std::fs::create_dir(&workspace).expect("workspace");
+    let workspace = test_workspace(&root);
     let chat = gateway
         .create_session(&workspace, &bot.id)
         .await
