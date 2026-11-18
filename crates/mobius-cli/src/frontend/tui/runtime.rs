@@ -459,9 +459,7 @@ async fn handle_terminal_input(
                     &session.session.context.owner_id,
                 )
                 .await;
-                if let Err(error) = sync_session_info(state, session, gateway) {
-                    state.push(error.to_string(), TranscriptTone::Error);
-                }
+                refresh_session_info(state, session, gateway);
                 if let Err(error) = result {
                     state.push(error.to_string(), TranscriptTone::Error);
                 }
@@ -714,9 +712,7 @@ fn handle_server_message(
         }
         ServerMessage::Ready { payload } => {
             gateway.update(payload);
-            if let Err(error) = sync_session_info(state, session, gateway) {
-                state.push(error.to_string(), TranscriptTone::Error);
-            }
+            refresh_session_info(state, session, gateway);
         }
         ServerMessage::Sessions { sessions, .. } => gateway.sessions = sessions,
         ServerMessage::SessionsChanged { sessions, .. } => {
@@ -728,9 +724,7 @@ fn handle_server_message(
         }
         ServerMessage::Bots { bots, .. } => {
             gateway.bots = bots;
-            if let Err(error) = sync_session_info(state, session, gateway) {
-                state.push(error.to_string(), TranscriptTone::Error);
-            }
+            refresh_session_info(state, session, gateway);
         }
         ServerMessage::SessionChanged { payload } if payload.session.session_id == *session_id => {
             if payload.workspace == session.workspace
@@ -1302,9 +1296,7 @@ async fn open_extensions(
     state: &mut TuiState,
 ) {
     let result = extensions::run(terminal, sender, events, gateway).await;
-    if let Err(error) = sync_session_info(state, session, gateway) {
-        state.push(error.to_string(), TranscriptTone::Error);
-    }
+    refresh_session_info(state, session, gateway);
     if let Err(error) = result {
         state.push(error.to_string(), TranscriptTone::Error);
     }
@@ -1336,9 +1328,7 @@ async fn open_bots(
     {
         return Some(FrontendExit::Fresh);
     }
-    if let Err(error) = sync_session_info(state, session, gateway) {
-        state.push(error.to_string(), TranscriptTone::Error);
-    }
+    refresh_session_info(state, session, gateway);
     match result {
         Ok(Some(session_id)) => return Some(FrontendExit::Resume(session_id)),
         Ok(None) => {}
@@ -1377,6 +1367,16 @@ fn sync_session(
         state.begin_approval(request);
     }
     Ok(())
+}
+
+fn refresh_session_info(
+    state: &mut TuiState,
+    session: &SessionReadyPayload,
+    gateway: &ReadyPayload,
+) {
+    if let Err(error) = sync_session_info(state, session, gateway) {
+        state.push(error.to_string(), TranscriptTone::Error);
+    }
 }
 
 fn sync_session_info(
