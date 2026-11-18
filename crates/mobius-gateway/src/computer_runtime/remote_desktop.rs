@@ -261,9 +261,10 @@ impl RemoteDesktop {
             *guard = Some(Runtime::start(&self.state_dir, &self.config).await?);
         }
         let runtime = guard.as_mut().ok_or_else(unavailable)?;
-        for child in &mut runtime.children {
-            child.check_running()?;
-        }
+        runtime
+            .children
+            .iter_mut()
+            .try_for_each(OwnedProcess::check_running)?;
         runtime.ensure_browser(&self.config).await?;
         let page = runtime.page(session_id, activate, &self.config).await?;
         if activate {
@@ -477,9 +478,10 @@ impl RemoteDesktop {
             }
         }
         let runtime = runtime.as_mut().ok_or_else(unavailable)?;
-        for child in &mut runtime.children {
-            child.check_running()?;
-        }
+        runtime
+            .children
+            .iter_mut()
+            .try_for_each(OwnedProcess::check_running)?;
         let socket = UnixStream::connect(&runtime.socket).await?;
         Ok(DesktopStream {
             remote: Arc::clone(self),
@@ -697,9 +699,9 @@ impl Runtime {
                 )
                 .await?;
             }
-            for child in &mut children {
-                child.check_running()?;
-            }
+            children
+                .iter_mut()
+                .try_for_each(OwnedProcess::check_running)?;
             browser.as_mut().ok_or_else(unavailable)?.check_running()?;
             Ok((display, chromium, endpoint, websocket))
         }
@@ -798,9 +800,9 @@ impl Runtime {
     }
 
     async fn show(&mut self, session_id: &SessionId, config: &ComputerConfig) -> Result<()> {
-        for child in &mut self.children {
-            child.check_running()?;
-        }
+        self.children
+            .iter_mut()
+            .try_for_each(OwnedProcess::check_running)?;
         if self.refresh_browser(config).await? {
             self.page(session_id, true, config).await?;
         }
