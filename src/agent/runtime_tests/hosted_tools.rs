@@ -128,22 +128,7 @@ async fn run_hosted(mode: SearchMode) -> (Arc<HostedSearchModel>, Vec<EventMsg>,
     .await
     .expect("agent");
     agent.sender().submit(user_op("research")).expect("submit");
-    let events = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        let mut events = Vec::new();
-        while let Some(event) = agent.next_event().await {
-            let done = matches!(
-                event.msg,
-                EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)
-            );
-            events.push(event.msg);
-            if done {
-                break;
-            }
-        }
-        events
-    })
-    .await
-    .expect("bounded turn");
+    let events = collect_until_turn_end(&mut agent).await;
     let saved = checkpoints
         .load(&"hosted-policy".parse().expect("ID"))
         .await

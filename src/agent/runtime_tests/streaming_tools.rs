@@ -362,25 +362,6 @@ fn streaming_config_with_tools(
     )
 }
 
-async fn collect_until_turn_end(agent: &mut Agent) -> Vec<EventMsg> {
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        let mut events = Vec::new();
-        while let Some(event) = agent.next_event().await {
-            let terminal = matches!(
-                event.msg,
-                EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)
-            );
-            events.push(event.msg);
-            if terminal {
-                break;
-            }
-        }
-        events
-    })
-    .await
-    .expect("streaming turn did not reach a terminal event")
-}
-
 fn canonical_tool_items(context: &[Arc<Value>]) -> Vec<String> {
     context
         .iter()

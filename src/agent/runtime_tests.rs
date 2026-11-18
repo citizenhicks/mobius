@@ -90,6 +90,28 @@ fn test_checkpoints(workspace: &Path) -> Arc<SqliteCheckpoint> {
     )
 }
 
+async fn collect_until_turn_end(agent: &mut Agent) -> Vec<EventMsg> {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let mut events = Vec::new();
+        loop {
+            let event = agent
+                .next_event()
+                .await
+                .expect("agent disconnected during turn");
+            let terminal = matches!(
+                event.msg,
+                EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)
+            );
+            events.push(event.msg);
+            if terminal {
+                break events;
+            }
+        }
+    })
+    .await
+    .expect("turn did not reach a terminal event")
+}
+
 fn test_session_context() -> SessionContext {
     SessionContext {
         owner_id: "test-bot".into(),
