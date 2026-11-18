@@ -802,6 +802,13 @@ pub trait Model: Send + Sync {
     }
 }
 
+fn nonempty_string<'a>(value: &'a Value, field: &str) -> Option<&'a str> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+}
+
 pub(crate) fn image_input<'a>(
     part: &'a Value,
     provider: &str,
@@ -815,10 +822,7 @@ pub(crate) fn image_input<'a>(
         .ok_or_else(|| {
             Error::Provider(format!("{provider} image input omitted media_type").into())
         })?;
-    let data = part
-        .get("data")
-        .and_then(Value::as_str)
-        .filter(|data| !data.is_empty())
+    let data = nonempty_string(part, "data")
         .ok_or_else(|| Error::Provider(format!("{provider} image input omitted data").into()))?;
     let Some(subtype) = media_type.strip_prefix("image/") else {
         return Err(Error::Provider(

@@ -638,10 +638,7 @@ pub(super) fn required_string<'a>(
     field: &str,
     provider: &str,
 ) -> Result<&'a str> {
-    value
-        .get(field)
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
+    super::nonempty_string(value, field)
         .ok_or_else(|| Error::Provider(format!("{provider} value omitted {field}").into()))
 }
 

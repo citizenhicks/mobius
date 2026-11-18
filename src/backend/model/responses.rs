@@ -872,10 +872,7 @@ fn hosted_fields(kind: &str, web_kind: &str) -> Option<(&'static str, &'static s
 }
 
 fn hosted_call_id(item: &Value) -> Result<&str> {
-    item.get("call_id")
-        .and_then(Value::as_str)
-        .filter(|id| !id.is_empty())
-        .map_or_else(|| required_string(item, "id"), Ok)
+    super::nonempty_string(item, "call_id").map_or_else(|| required_string(item, "id"), Ok)
 }
 
 fn hosted_execution(item: Option<&Value>, web_kind: &str) -> Result<Option<HostedToolExecution>> {
@@ -1171,9 +1168,7 @@ fn strip_replay_wire_metadata(item: &mut Value) {
 }
 
 fn required_string<'a>(item: &'a Value, field: &str) -> Result<&'a str> {
-    item.get(field)
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
+    super::nonempty_string(item, field)
         .ok_or_else(|| Error::Provider(format!("function call omitted {field}").into()))
 }
 
