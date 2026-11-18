@@ -83,6 +83,23 @@ fn transcript_viewport_matches_full_paragraph_for_unicode_scroll_and_resize() {
     use ratatui::text::Text;
     use ratatui::widgets::{Block, Paragraph, Wrap};
 
+    fn assert_cells(
+        actual: &Terminal<TestBackend>,
+        reference: &Terminal<TestBackend>,
+        area: Rect,
+        label: &str,
+    ) {
+        for y in area.y..area.bottom() {
+            for x in area.x..area.right() {
+                assert_eq!(
+                    actual.backend().buffer()[(x, y)],
+                    reference.backend().buffer()[(x, y)],
+                    "cell mismatch at ({x}, {y}), {label}"
+                );
+            }
+        }
+    }
+
     fn compare_chat(
         actual: &mut TuiState,
         reference: &mut TuiState,
@@ -121,15 +138,7 @@ fn transcript_viewport_matches_full_paragraph_for_unicode_scroll_and_resize() {
             })
             .expect("reference draw");
 
-        for y in 0..area.height {
-            for x in 0..area.width {
-                assert_eq!(
-                    actual_terminal.backend().buffer()[(x, y)],
-                    reference_terminal.backend().buffer()[(x, y)],
-                    "chat mismatch at ({x}, {y}), {label}"
-                );
-            }
-        }
+        assert_cells(&actual_terminal, &reference_terminal, area, label);
         assert_eq!(
             actual.transcript_viewport.content_height, reference.transcript_viewport.content_height,
             "chat content height mismatch, {label}"
@@ -217,15 +226,7 @@ fn transcript_viewport_matches_full_paragraph_for_unicode_scroll_and_resize() {
             })
             .expect("reference preview draw");
 
-        for y in inner.y..inner.bottom() {
-            for x in inner.x..inner.right() {
-                assert_eq!(
-                    actual_terminal.backend().buffer()[(x, y)],
-                    reference_terminal.backend().buffer()[(x, y)],
-                    "preview mismatch at ({x}, {y}), {label}"
-                );
-            }
-        }
+        assert_cells(&actual_terminal, &reference_terminal, inner, label);
         let actual_preview = actual.preview.as_ref().expect("actual preview");
         assert_eq!(
             actual_preview.viewport.content_height, preview.viewport.content_height,
