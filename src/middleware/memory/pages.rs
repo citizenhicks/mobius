@@ -475,27 +475,28 @@ pub(super) fn canonical_body(body: &str) -> std::result::Result<String, String> 
 }
 
 #[cfg(test)]
+pub(super) fn test_page(name: &str, body: &str) -> Page {
+    Page {
+        name: name.into(),
+        description: format!("about {name}"),
+        body: body.into(),
+        basis: Basis::AgentObservation,
+        updated_at: 1,
+        author: None,
+        digest: Digest::default(),
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
-
-    fn page(name: &str, body: &str) -> Page {
-        Page {
-            name: name.into(),
-            description: format!("about {name}"),
-            body: body.into(),
-            basis: Basis::AgentObservation,
-            updated_at: 1,
-            author: None,
-            digest: Digest::default(),
-        }
-    }
 
     #[tokio::test]
     async fn unchanged_scopes_come_from_the_cache_and_hand_edits_are_reread() {
         let root = tempfile::tempdir().expect("temporary directory");
         let pages = Pages::new(root.path().to_path_buf());
         pages
-            .put(None, &page("deploy", "make ship"))
+            .put(None, &test_page("deploy", "make ship"))
             .await
             .expect("put");
         let first = pages.load(None).await.expect("load").pages;

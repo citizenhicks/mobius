@@ -210,20 +210,8 @@ Links to missing pages: ",
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::middleware::memory::pages::Page;
+    use crate::middleware::memory::pages::test_page;
     use crate::middleware::memory::{MemoryOwner, MemoryProject};
-
-    fn page(name: &str, body: &str) -> Page {
-        Page {
-            name: name.into(),
-            description: format!("about {name}"),
-            body: body.into(),
-            basis: Basis::AgentObservation,
-            updated_at: 1,
-            author: None,
-            digest: Default::default(),
-        }
-    }
 
     #[test]
     fn lint_lists_links_memory_cannot_resolve_from_the_linking_scope() {
@@ -239,11 +227,11 @@ mod tests {
         let visible = [
             Scope {
                 owner: None,
-                pages: vec![page("about-the-user", "See [[deploy]].")].into(),
+                pages: vec![test_page("about-the-user", "See [[deploy]].")].into(),
             },
             Scope {
                 owner: Some(owner),
-                pages: vec![page("deploy", "Run make. See [[missing]].")].into(),
+                pages: vec![test_page("deploy", "Run make. See [[missing]].")].into(),
             },
         ];
         let text = render_pages(&visible).expect("render");
