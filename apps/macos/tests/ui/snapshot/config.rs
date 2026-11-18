@@ -337,22 +337,12 @@ fn provider_fixture(this: &mut Workspace) {
         route("openrouter", LUNA, Some(effort));
     }
     this.client.gateway.take();
-    this.client.state.gateway = catalog(
-        "typed offline provider catalog",
-        json!({
-            "gateway_version": "preview", "machine_name": "Local preview", "computer_view": "unavailable",
-            "sessions": [], "background_approvals": [], "bots": [],
-            "providers": providers, "provider_instances": instances,
-            "agent_catalog": {"limits": {"min_model_steps": 1, "default_model_steps": 2042, "model_steps_step": 100, "max_system_prompt_bytes": 65536, "min_routine_interval_seconds": 60},
-                "bot_defaults": null, "default_capabilities": null,
-                "models": models, "image_models": [], "voice_models": [],
-                "model_providers": model_providers,
-                "middleware_features": [], "extensions": [], "contributions": []
-            },
-            "harnesses": [], "max_active_sessions": 1, "revisions": {}, "omitted": [],
-            "session_file_limits": mobius::backend::session_files::session_file_limits()
-        }),
-    );
+    this.client.state.gateway = catalog("typed offline provider catalog", |ready| {
+        ready["providers"] = serde_json::json!(providers);
+        ready["provider_instances"] = serde_json::json!(instances);
+        ready["agent_catalog"]["models"] = serde_json::json!(models);
+        ready["agent_catalog"]["model_providers"] = serde_json::json!(model_providers);
+    });
 }
 
 fn configurable(

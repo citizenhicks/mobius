@@ -60,34 +60,22 @@ fn overview(this: &mut Workspace, window: &mut Window, cx: &mut Context<Workspac
 fn identity_fixture(this: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     use serde_json::json;
     this.client.gateway.take();
-    this.client.state.gateway = catalog(
-        "typed offline Bot catalog",
-        json!({
-            "gateway_version": "preview", "machine_name": "Local preview", "computer_view": "unavailable", "sessions": [],
-            "background_approvals": [], "providers": [], "provider_instances": [],
-            "agent_catalog": {"limits": {"min_model_steps": 1, "default_model_steps": 2042, "model_steps_step": 100, "max_system_prompt_bytes": 65536, "min_routine_interval_seconds": 60},
-                "bot_defaults": null, "default_capabilities": null, "models": [],
-                "model_providers": {}, "image_models": [], "voice_models": [],
-                "middleware_features": [], "extensions": [], "contributions": []
-            },
-            "harnesses": [], "max_active_sessions": 1, "revisions": {}, "omitted": [],
-            "session_file_limits": mobius::backend::session_files::session_file_limits(),
-            "bots": [{
-                "id": "preview-bot", "handle": "demo", "name": "Demo Bot",
-                "description": "An offline Bot settings preview.", "tint": "blue", "shape": "circle",
+    this.client.state.gateway = catalog("typed offline Bot catalog", |ready| {
+        ready["bots"] = serde_json::json!([{
+            "id": "preview-bot", "handle": "demo", "name": "Demo Bot",
+            "description": "An offline Bot settings preview.", "tint": "blue", "shape": "circle",
+            "harness": "mobius",
+            "conversation_session_id": "preview-conversation", "capabilities": {"attachments": false, "computer": false, "voice": {"state": "off"}, "memory": {"enabled": false, "global": false}},
+            "routine_interaction_policy": "unattended", "built_in": false,
+            "config": {"revision": 1, "config": {
                 "harness": "mobius",
-                "conversation_session_id": "preview-conversation", "capabilities": {"attachments": false, "computer": false, "voice": {"state": "off"}, "memory": {"enabled": false, "global": false}},
-                "routine_interaction_policy": "unattended", "built_in": false,
-                "config": {"revision": 1, "config": {
-                    "harness": "mobius",
-                    "provider": {"instance": "preview", "provider": "preview", "model": "preview",
-                        "endpoint_auth": "credentialless", "web_search": "off"},
-                    "middleware": {"enabled": [], "settings": {}},
-                    "extensions": [], "system_prompt": "", "max_model_steps": 64
-                }}
-            }]
-        }),
-    );
+                "provider": {"instance": "preview", "provider": "preview", "model": "preview",
+                    "endpoint_auth": "credentialless", "web_search": "off"},
+                "middleware": {"enabled": [], "settings": {}},
+                "extensions": [], "system_prompt": "", "max_model_steps": 64
+            }}
+        }]);
+    });
     settings(this, AgentSection::Identity, window, cx);
 }
 
@@ -251,29 +239,22 @@ pub(super) fn media_fixture(this: &mut Workspace) {
             "extensions": [], "system_prompt": "", "max_model_steps": 64
         }}
     });
-    this.client.state.gateway = catalog(
-        "typed offline media catalog",
-        json!({
-            "gateway_version": "preview", "machine_name": "Local preview", "computer_view": "unavailable",
-            "sessions": [], "background_approvals": [],
-            "providers": [
-                media_provider("openai", "OpenAI", "chat_gpt", false),
-                media_provider("lab", "Custom", "route", true)
-            ],
-            "provider_instances": [
-                media_instance("work", "Work", "purple", "openai", "gpt-6"),
-                media_instance("lab", "Lab", "orange", "lab", "lab-1")
-            ],
-            "agent_catalog": {"limits": {"min_model_steps": 1, "default_model_steps": 2042, "model_steps_step": 100, "max_system_prompt_bytes": 65536, "min_routine_interval_seconds": 60},
-                "bot_defaults": null, "default_capabilities": null, "models": models,
-                "image_models": images, "voice_models": voices, "model_providers": model_providers,
-                "middleware_features": [feature, voice], "extensions": [], "contributions": []
-            },
-            "harnesses": [], "max_active_sessions": 1, "revisions": {}, "omitted": [],
-            "session_file_limits": mobius::backend::session_files::session_file_limits(),
-            "bots": [bot]
-        }),
-    );
+    this.client.state.gateway = catalog("typed offline media catalog", |ready| {
+        ready["providers"] = serde_json::json!([
+            media_provider("openai", "OpenAI", "chat_gpt", false),
+            media_provider("lab", "Custom", "route", true)
+        ]);
+        ready["provider_instances"] = serde_json::json!([
+            media_instance("work", "Work", "purple", "openai", "gpt-6"),
+            media_instance("lab", "Lab", "orange", "lab", "lab-1")
+        ]);
+        ready["agent_catalog"]["models"] = serde_json::json!(models);
+        ready["agent_catalog"]["image_models"] = serde_json::json!(images);
+        ready["agent_catalog"]["voice_models"] = serde_json::json!(voices);
+        ready["agent_catalog"]["model_providers"] = serde_json::json!(model_providers);
+        ready["agent_catalog"]["middleware_features"] = serde_json::json!([feature, voice]);
+        ready["bots"] = serde_json::json!([bot]);
+    });
 }
 
 fn conversation(this: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {

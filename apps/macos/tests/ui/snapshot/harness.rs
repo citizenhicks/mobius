@@ -225,29 +225,19 @@ pub(super) fn fixture(this: &mut Workspace) {
     {
         config.remove("harness");
     }
-    this.client.state.gateway = catalog(
-        "typed offline harness catalog",
-        json!({
-            "gateway_version": "preview", "machine_name": "Local preview", "computer_view": "unavailable",
-            "sessions": [], "background_approvals": [], "providers": [], "provider_instances": [],
-            "agent_catalog": {"limits": {"min_model_steps": 1, "default_model_steps": 2042, "model_steps_step": 100, "max_system_prompt_bytes": 65536, "min_routine_interval_seconds": 60},
-                "bot_defaults": defaults, "default_capabilities": null, "models": [],
-                "model_providers": {}, "image_models": [], "voice_models": [],
-                "middleware_features": [{"id": "memory", "label": "Memory",
+    this.client.state.gateway = catalog("typed offline harness catalog", |ready| {
+        ready["agent_catalog"]["bot_defaults"] = serde_json::json!(defaults);
+        ready["agent_catalog"]["middleware_features"] = serde_json::json!([{"id": "memory", "label": "Memory",
                     "description": "Remember short facts across this Bot's chats.",
-                    "required": false, "settings": []}],
-                "extensions": [], "contributions": [{"capability": "memory", "count": null,
+                    "required": false, "settings": []}]);
+        ready["agent_catalog"]["contributions"] = serde_json::json!([{"capability": "memory", "count": null,
                     "commands": [], "references": [], "widgets": [{"id": "navigation",
                         "slot": "navigation", "text": "Memory", "tone": "neutral",
                         "symbol": "brain", "icon_only": false, "progress": null,
-                        "content": null, "action": null}]}]
-            },
-            "harnesses": [mobius],
-            "max_active_sessions": 1, "revisions": {}, "omitted": [],
-            "session_file_limits": mobius::backend::session_files::session_file_limits(),
-            "bots": bots
-        }),
-    );
+                        "content": null, "action": null}]}]);
+        ready["harnesses"] = serde_json::json!([mobius]);
+        ready["bots"] = serde_json::json!(bots);
+    });
 }
 
 /// The live connection, catalog and chats an offline fixture replaces.

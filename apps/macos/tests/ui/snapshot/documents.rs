@@ -383,22 +383,11 @@ fn fixture_gateway() -> Option<ReadyPayload> {
         })
     })
     .collect();
-    catalog(
-        "fixture ready payload",
-        serde_json::json!({
-            "gateway_version": "fixture", "machine_name": "This Mac",
-            "computer_view": "unavailable", "bots": bots,
-            "sessions": [], "background_approvals": [],
-            "agent_catalog": {"limits": {"min_model_steps": 1, "default_model_steps": 2042, "model_steps_step": 100, "max_system_prompt_bytes": 65536, "min_routine_interval_seconds": 60},
-                "bot_defaults": null, "default_capabilities": null, "models": [],
-                "model_providers": {}, "image_models": [], "voice_models": [],
-                "middleware_features": [], "extensions": [], "contributions": []
-            },
-            "harnesses": [], "max_active_sessions": 1,
-            "revisions": {}, "omitted": [], "provider_instances": [], "providers": [],
-            "session_file_limits": mobius::backend::session_files::session_file_limits()
-        }),
-    )
+    catalog("fixture ready payload", |ready| {
+        ready["gateway_version"] = serde_json::json!("fixture");
+        ready["machine_name"] = serde_json::json!("This Mac");
+        ready["bots"] = serde_json::json!(bots);
+    })
 }
 
 #[expect(
