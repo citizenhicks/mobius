@@ -6,7 +6,9 @@ use super::references::{ReferenceToken, active_reference_token, replace_referenc
 use super::view::widget_status;
 use super::{PreviewContent, PreviewState, TranscriptTone, TuiState};
 pub(super) use crate::frontend::catalog::UiAction;
-use crate::frontend::catalog::{CommandAction, CommandContext, GatewayAction, MenuItem, UiCatalog};
+use crate::frontend::catalog::{
+    CommandAction, CommandContext, GatewayAction, KeyedWidgets, MenuItem, UiCatalog,
+};
 use crate::frontend::dashboard::{OverlayKey, insert_overlay_input, overlay_key};
 use crate::frontend::terminal::terminal_text;
 use crate::frontend::wrap_step;
@@ -19,8 +21,6 @@ use mobius_gateway::wire::{BackgroundApproval, BotRecord, GitStatus};
 use std::fmt::Write as _;
 use std::path::Path;
 use std::sync::Arc;
-
-type KeyedWidgets = Vec<(Arc<str>, Arc<FrontendWidget>)>;
 
 const COLLAPSED_PASTE_BYTES: usize = 200;
 const SCROLL_ROWS: usize = 3;
@@ -673,14 +673,9 @@ impl TuiState {
     }
 
     pub(super) fn open_queued_messages(&mut self) {
-        let widgets = self
-            .widgets
-            .iter()
-            .filter(|(_, widget)| {
-                widget.slot == FrontendSlot::TranscriptTail && widget.action.is_some()
-            })
-            .cloned() // rules-allow: the queued-message overlay owns copies while the widget list keeps them
-            .collect::<Vec<_>>();
+        let widgets = self.overlay_widgets(|_, widget| {
+            widget.slot == FrontendSlot::TranscriptTail && widget.action.is_some()
+        });
         if widgets.is_empty() {
             self.push(
                 "there are no editable queued messages",
@@ -1071,12 +1066,8 @@ impl TuiState {
                     UiAction::None
                 }
                 CommandAction::Attention => {
-                    let widgets = self
-                        .widgets
-                        .iter()
-                        .filter(|(_, item)| item.slot == FrontendSlot::Attention)
-                        .cloned() // rules-allow: the attention overlay owns copies while the widget list keeps them
-                        .collect();
+                    let widgets =
+                        self.overlay_widgets(|_, widget| widget.slot == FrontendSlot::Attention);
                     self.capability_overlay = Some(
                         crate::frontend::dashboard::CapabilityOverlay::attention(widgets),
                     );
@@ -1145,20 +1136,23 @@ impl TuiState {
                 )
         })?;
         let action = menu.action.clone()?; // rules-allow: the menu widget keeps its action while the popup submits a copy
-        let widgets = self
-            .widgets
-            .iter()
-            .filter(|(owner, widget)| {
-                owner == capability
-                    && matches!(
-                        widget.slot,
-                        FrontendSlot::ChatMenu | FrontendSlot::Navigation
-                    )
-                    && widget.content.is_some()
-            })
-            .cloned() // rules-allow: the popup overlay owns copies while the widget list keeps them
-            .collect();
+        let widgets = self.overlay_widgets(|owner, widget| {
+            owner == &**capability
+                && matches!(
+                    widget.slot,
+                    FrontendSlot::ChatMenu | FrontendSlot::Navigation
+                )
+                && widget.content.is_some()
+        });
         Some((widgets, action))
+    }
+
+    fn overlay_widgets(&self, include: impl Fn(&str, &FrontendWidget) -> bool) -> KeyedWidgets {
+        self.widgets
+            .iter()
+            .filter(|(owner, item)| include(owner, item))
+            .map(|(owner, item)| (Arc::clone(owner), Arc::clone(item)))
+            .collect()
     }
 
     fn status(&self) -> String {

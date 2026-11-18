@@ -1,7 +1,9 @@
 use std::io;
+use std::sync::Arc;
 use std::time::Duration;
 
 use mobius::Result;
+use mobius::protocol::FrontendWidget;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::cursor::{Hide, Show};
@@ -31,8 +33,37 @@ pub(super) const MAX_ENDPOINT_BYTES: usize = 4 * 1024;
 pub fn terminal_text(value: &str) -> String {
     value
         .chars()
-        .filter(|character| matches!(character, '\n' | '\t') || !character.is_control())
+        .filter(|&character| terminal_character(character))
         .collect()
+}
+
+fn terminal_character(character: char) -> bool {
+    matches!(character, '\n' | '\t') || !character.is_control()
+}
+
+pub(super) const MAX_ENTRY_BYTES: usize = 40_000;
+pub(super) const CONTRIBUTED_WIDGET_BYTES: usize = 32 * 1024;
+
+pub(super) fn bounded_widget(mut item: Arc<FrontendWidget>, limit: usize) -> Arc<FrontendWidget> {
+    if item.text.len() > limit || !item.text.chars().all(terminal_character) {
+        let text = &mut Arc::make_mut(&mut item).text;
+        text.retain(terminal_character);
+        truncate_display_text(text, limit);
+    }
+    item
+}
+
+pub(super) fn bounded_terminal_text(value: &str, limit: usize) -> String {
+    let mut value = terminal_text(value);
+    truncate_display_text(&mut value, limit);
+    value
+}
+
+pub(super) fn truncate_display_text(value: &mut String, limit: usize) {
+    if value.len() > limit {
+        truncate_bytes(value, limit);
+        value.push_str("\n[display truncated]");
+    }
 }
 
 /// Terminal text flattened onto one line: newlines and tabs become spaces.

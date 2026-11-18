@@ -7,16 +7,19 @@ use mobius::{Error, Result};
 use mobius_gateway::wire::GitDiffScope;
 
 use super::setup::SetupMode;
+use super::terminal::{CONTRIBUTED_WIDGET_BYTES, bounded_widget};
 
 const COMMAND_PREFIX: char = '/';
 const WORKSPACE_REFERENCE_TRIGGER: char = '@';
 const MAX_MATCHES: usize = 8;
 
+pub(super) type KeyedWidgets = Vec<(Arc<str>, Arc<FrontendWidget>)>;
+
 pub(crate) struct UiCatalog {
     commands: Vec<UiCommand>,
     references: Vec<UiReference>,
     reference_triggers: Vec<char>,
-    widgets: Vec<(Arc<str>, Arc<FrontendWidget>)>,
+    widgets: KeyedWidgets,
     workspace: Option<PathBuf>,
     workspace_references: Vec<UiReference>,
 }
@@ -224,8 +227,16 @@ impl UiCatalog {
             .collect();
     }
 
-    pub(crate) fn widgets(&self) -> impl Iterator<Item = &(Arc<str>, Arc<FrontendWidget>)> {
-        self.widgets.iter()
+    pub(super) fn initial_widgets(&self) -> KeyedWidgets {
+        self.widgets
+            .iter()
+            .map(|(owner, item)| {
+                (
+                    Arc::clone(owner),
+                    bounded_widget(Arc::clone(item), CONTRIBUTED_WIDGET_BYTES),
+                )
+            })
+            .collect()
     }
 
     pub(crate) fn workspace(&self) -> Option<&Path> {

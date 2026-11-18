@@ -761,7 +761,7 @@ pub(super) fn handle_frame(state: &mut DashboardState, message: ServerMessage) -
                 .filter(|overlay| overlay.session_id.as_ref() == Some(&session_id))
                 && let EventMsg::Frontend(event) = record.event.msg
             {
-                overlay.apply(event);
+                crate::frontend::dashboard::apply_widget_event(event, None, Some(overlay));
             }
         }
         ServerMessage::Rejected {

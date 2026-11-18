@@ -1,15 +1,7 @@
 use crate::client::ConnectOptions;
-use crate::wire::{GitDiffScope, ReadyPayload};
+use crate::wire::GitDiffScope;
 
 use super::*;
-
-async fn ready(events: &mut GatewayEvents) -> ReadyPayload {
-    loop {
-        if let ServerMessage::Ready { payload } = next_gateway_message(events).await {
-            return payload;
-        }
-    }
-}
 
 #[tokio::test]
 async fn pipelined_open_resumes_after_ready_and_selection_skips_replay() {
@@ -20,34 +12,17 @@ async fn pipelined_open_resumes_after_ready_and_selection_skips_replay() {
     fs::write(workspace.join("new.txt"), "one\ntwo\n").unwrap();
     let (server, grant) = configured_test_server(root.path().join("state")).await;
     let endpoint: Endpoint = format!("tcp://{}", server.listen_addr()).parse().unwrap();
-    let (stop, stopped) = tokio::sync::oneshot::channel();
-    let serving = tokio::spawn(server.serve_until(async {
-        stopped.await.ok();
-    }));
-    let (client, identity) = GatewayClient::pair(
-        &endpoint,
-        grant.code,
-        "resume",
-        crate::wire::ClientCapabilities {
-            presence: true,
-            ..Default::default()
-        },
-    )
-    .await
-    .unwrap();
+    let gateway = RunningGateway::start(server).await;
+    let (client, identity) = GatewayClient::pair(&endpoint, grant.code, "resume", PRESENT_CLIENT)
+        .await
+        .unwrap();
     let (sender, mut events) = client.into_parts();
     let session_id = create_chat(&sender, &mut events, &workspace).await;
-    let (_, mut watcher) = GatewayClient::connect(
-        &endpoint,
-        identity.token.as_str(),
-        crate::wire::ClientCapabilities {
-            presence: true,
-            ..Default::default()
-        },
-    )
-    .await
-    .unwrap()
-    .into_parts();
+    let (_, mut watcher) =
+        GatewayClient::connect(&endpoint, identity.token.as_str(), PRESENT_CLIENT)
+            .await
+            .unwrap()
+            .into_parts();
     let submission = Uuid::new_v4().to_string();
     sender
         .send(ClientMessage::Submit {
@@ -68,15 +43,15 @@ async fn pipelined_open_resumes_after_ready_and_selection_skips_replay() {
         session_id: session_id.share(),
         last_sequence,
     };
+    let desktop = ClientCapabilities {
+        browser_renderer: true,
+        desktop_host: true,
+        ..REMOTE_VIEWER
+    };
     let (_, mut full) = GatewayClient::connect_with(
         &endpoint,
         identity.token.as_str(),
-        crate::wire::ClientCapabilities {
-            presence: true,
-            browser_renderer: true,
-            desktop_host: true,
-            remote_desktop_viewer: true,
-        },
+        desktop,
         &mut ConnectOptions {
             pipelined: vec![open(None)],
             ..ConnectOptions::default()
@@ -95,12 +70,7 @@ async fn pipelined_open_resumes_after_ready_and_selection_skips_replay() {
     let (_, mut resumed) = GatewayClient::connect_with(
         &endpoint,
         identity.token.as_str(),
-        crate::wire::ClientCapabilities {
-            presence: true,
-            browser_renderer: true,
-            desktop_host: true,
-            remote_desktop_viewer: true,
-        },
+        desktop,
         &mut ConnectOptions {
             pipelined: vec![open(Some(latest))],
             ..ConnectOptions::default()
@@ -114,12 +84,7 @@ async fn pipelined_open_resumes_after_ready_and_selection_skips_replay() {
     let (selector, mut selected) = GatewayClient::connect_with(
         &endpoint,
         identity.token.as_str(),
-        crate::wire::ClientCapabilities {
-            presence: true,
-            browser_renderer: true,
-            desktop_host: true,
-            remote_desktop_viewer: true,
-        },
+        desktop,
         &mut ConnectOptions {
             pipelined: vec![ClientMessage::SelectSession {
                 request_id: "select".into(),
@@ -165,14 +130,13 @@ async fn pipelined_open_resumes_after_ready_and_selection_skips_replay() {
     let totals = totals.unwrap_or_default();
     assert!(totals.additions >= 2 && totals.deletions == 0, "{totals:?}");
     assert!(diff.is_some_and(|diff| !diff.is_empty()));
-    stop.send(()).unwrap();
-    serving.await.unwrap().unwrap();
+    gateway.shutdown().await;
 }
 
 /// Waits for Ready, then the pipelined open: its latest sequence, replayed events and
 /// the item count of a transcript snapshot.
 async fn opened_replay(events: &mut GatewayEvents) -> (u64, usize, Option<usize>) {
-    ready(events).await;
+    wait_gateway_ready(events).await;
     let mut latest = None;
     let mut replayed = 0;
     let mut transcript = None;

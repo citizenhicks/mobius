@@ -26,21 +26,20 @@ use tempfile::TempPath;
 use self::events::UsageStatus;
 #[cfg(test)]
 use self::input::UiAction;
-use self::view::{bounded_terminal_text, initial_widgets};
-use super::catalog::{GatewayAction, MenuItem, UiCatalog};
+use super::catalog::{GatewayAction, KeyedWidgets, MenuItem, UiCatalog};
 use super::dashboard::CapabilityOverlay;
-use super::terminal::{terminal_text, truncate_bytes};
+use super::terminal::{
+    MAX_ENTRY_BYTES, bounded_terminal_text, terminal_text, truncate_bytes, truncate_display_text,
+};
 #[cfg(test)]
 use mobius::protocol::EventMsg;
 use mobius::protocol::{
     ActiveMessageDelivery, ExecApprovalRequestEvent, FrontendBlock, FrontendBlockFormat,
     FrontendBlockRole, FrontendBlockState, FrontendBlockUpdate, FrontendPickerOption, FrontendTone,
-    FrontendWidget, ModelInfo, Op, RenderedBlock, SessionFileReference,
-    SessionResumeRequestedEvent,
+    ModelInfo, Op, RenderedBlock, SessionFileReference, SessionResumeRequestedEvent,
 };
 use mobius_gateway::wire::BlockDelta;
 
-const MAX_ENTRY_BYTES: usize = 40_000;
 const MAX_COMPOSER_HISTORY_ENTRIES: usize = 100;
 const MAX_TOOL_DETAIL_BYTES: usize = 512;
 const MAX_TOOL_DETAIL_LINES: usize = 3;
@@ -380,7 +379,7 @@ struct InputDraft {
 
 #[derive(Default)]
 struct TuiState {
-    widgets: Vec<(Arc<str>, Arc<FrontendWidget>)>,
+    widgets: KeyedWidgets,
     transcript: VecDeque<TranscriptEntry>,
     transcript_viewport: Viewport,
     reasoning_title: Option<String>,
@@ -445,7 +444,7 @@ impl TuiState {
             .reasoning_effort
             .map(|effort| terminal_text(&effort).into());
         Self {
-            widgets: initial_widgets(catalog),
+            widgets: catalog.initial_widgets(),
             active_message_delivery: Some(ActiveMessageDelivery::Steer),
             cwd: cwd.map_or_else(
                 || "Bot conversation".into(),
@@ -734,7 +733,7 @@ impl TuiState {
         {
             if block.update == FrontendBlockUpdate::Append {
                 block.update.apply(&mut entry.text, &text);
-                view::truncate_display_text(&mut entry.text, MAX_ENTRY_BYTES);
+                truncate_display_text(&mut entry.text, MAX_ENTRY_BYTES);
                 if detail.is_some() {
                     entry.detail = detail;
                 }

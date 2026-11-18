@@ -6,6 +6,9 @@ use mobius::protocol::{
 use mobius_gateway::wire::{ClientStatus, ProfileSnapshot, ReadyPayload, SessionReadyPayload};
 use ratatui::widgets::ListState;
 
+use crate::frontend::catalog::KeyedWidgets;
+use crate::frontend::terminal::{CONTRIBUTED_WIDGET_BYTES, MAX_ENTRY_BYTES, bounded_widget};
+
 pub(super) struct DashboardState {
     pub(super) endpoint: String,
     pub(super) gateway: ReadyPayload,
@@ -63,7 +66,7 @@ pub(in crate::frontend) struct CapabilityOverlay {
     pub(super) title: String,
     pub(super) session_id: Option<mobius::SessionId>,
     pub(super) slots: Vec<FrontendSlot>,
-    pub(super) widgets: Vec<(Arc<str>, Arc<FrontendWidget>)>,
+    pub(super) widgets: KeyedWidgets,
     pub(super) widget_list: ListState,
     pub(super) open: Option<(Arc<str>, Arc<str>)>,
     pub(super) option_list: ListState,
@@ -77,6 +80,61 @@ pub(super) struct ActionInput {
     pub(super) cursor: usize,
 }
 
+/// Updates chat and overlay from the same terminal-safe widget.
+pub(in crate::frontend) fn apply_widget_event(
+    event: FrontendEvent,
+    chat: Option<&mut KeyedWidgets>,
+    mut overlay: Option<&mut CapabilityOverlay>,
+) {
+    match event {
+        FrontendEvent::Widget { capability, item } => {
+            let visible = overlay.as_deref_mut().and_then(|view| {
+                if view.slots.contains(&item.slot) {
+                    Some(&mut view.widgets)
+                } else {
+                    remove(&mut view.widgets, &capability, &item.id);
+                    None
+                }
+            });
+            let mut targets = chat.into_iter().chain(visible);
+            if let Some(first) = targets.next() {
+                let item = bounded_widget(item, MAX_ENTRY_BYTES);
+                if let Some(second) = targets.next() {
+                    upsert(second, Arc::clone(&capability), Arc::clone(&item));
+                }
+                upsert(first, capability, item);
+            }
+        }
+        FrontendEvent::RemoveWidget { capability, id } => {
+            for widgets in chat
+                .into_iter()
+                .chain(overlay.as_deref_mut().map(|view| &mut view.widgets))
+            {
+                remove(widgets, &capability, &id);
+            }
+        }
+        _ => return,
+    }
+    if let Some(overlay) = overlay {
+        overlay.sync_selection();
+    }
+}
+
+fn upsert(widgets: &mut KeyedWidgets, capability: Arc<str>, item: Arc<FrontendWidget>) {
+    if let Some((_, current)) = widgets
+        .iter_mut()
+        .find(|(owner, widget)| *owner == capability && widget.id == item.id)
+    {
+        *current = item;
+    } else {
+        widgets.push((capability, item));
+    }
+}
+
+fn remove(widgets: &mut KeyedWidgets, capability: &str, id: &str) {
+    widgets.retain(|(owner, widget)| **owner != *capability || *widget.id != *id);
+}
+
 impl CapabilityOverlay {
     pub(super) fn from_session(payload: SessionReadyPayload) -> Self {
         let session_id = payload.session.session_id.share();
@@ -86,7 +144,12 @@ impl CapabilityOverlay {
             .flat_map(|contribution| {
                 let capability = contribution.capability;
                 contribution.widgets.into_iter().filter_map(move |item| {
-                    (item.slot == FrontendSlot::Navigation).then(|| (Arc::clone(&capability), item))
+                    (item.slot == FrontendSlot::Navigation).then(|| {
+                        (
+                            Arc::clone(&capability),
+                            bounded_widget(item, CONTRIBUTED_WIDGET_BYTES),
+                        )
+                    })
                 })
             })
             .collect();
@@ -102,16 +165,20 @@ impl CapabilityOverlay {
             input: None,
         };
         for widget in payload.widgets {
-            overlay.apply(FrontendEvent::Widget {
-                capability: widget.capability,
-                item: widget.item,
-            });
+            apply_widget_event(
+                FrontendEvent::Widget {
+                    capability: widget.capability,
+                    item: widget.item,
+                },
+                None,
+                Some(&mut overlay),
+            );
         }
         overlay.sync_selection();
         overlay
     }
 
-    pub(in crate::frontend) fn attention(widgets: Vec<(Arc<str>, Arc<FrontendWidget>)>) -> Self {
+    pub(in crate::frontend) fn attention(widgets: KeyedWidgets) -> Self {
         let mut overlay = Self::from_widgets("Attention".into(), widgets);
         overlay.title = "Attention".into();
         overlay.slots = vec![FrontendSlot::Attention];
@@ -119,10 +186,7 @@ impl CapabilityOverlay {
         overlay
     }
 
-    pub(in crate::frontend) fn from_widgets(
-        fallback_title: String,
-        widgets: Vec<(Arc<str>, Arc<FrontendWidget>)>,
-    ) -> Self {
+    pub(in crate::frontend) fn from_widgets(fallback_title: String, widgets: KeyedWidgets) -> Self {
         let title = widgets
             .first()
             .map_or_else(|| fallback_title, |(_, item)| item.text.clone()); // rules-allow: the widget keeps its text while the overlay owns the title
@@ -149,31 +213,6 @@ impl CapabilityOverlay {
         };
         overlay.sync_selection();
         overlay
-    }
-
-    pub(in crate::frontend) fn apply(&mut self, event: FrontendEvent) {
-        match event {
-            FrontendEvent::Widget { capability, item } => {
-                if !self.slots.contains(&item.slot) {
-                    self.widgets
-                        .retain(|(owner, widget)| *owner != capability || widget.id != item.id);
-                } else if let Some((_, widget)) = self
-                    .widgets
-                    .iter_mut()
-                    .find(|(owner, widget)| *owner == capability && widget.id == item.id)
-                {
-                    *widget = item;
-                } else {
-                    self.widgets.push((capability, item));
-                }
-            }
-            FrontendEvent::RemoveWidget { capability, id } => {
-                self.widgets
-                    .retain(|(owner, widget)| *owner != capability || *widget.id != *id);
-            }
-            _ => return,
-        }
-        self.sync_selection();
     }
 
     pub(in crate::frontend) const fn is_editing(&self) -> bool {

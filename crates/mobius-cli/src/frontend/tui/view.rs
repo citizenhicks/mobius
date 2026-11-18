@@ -17,7 +17,7 @@ use super::{
 };
 use crate::frontend::catalog::{MenuItem, UiCatalog};
 use crate::frontend::dashboard::centered_area;
-use crate::frontend::terminal::{borrow_line, terminal_text, truncate_bytes};
+use crate::frontend::terminal::{borrow_line, terminal_text};
 use crate::frontend::theme::{LOGO, Role, current};
 use mobius::protocol::{
     ActiveMessageDelivery, FrontendBlockFormat, FrontendBlockRole, FrontendSlot, FrontendTone,
@@ -1271,20 +1271,6 @@ const fn delivery_label(delivery: ActiveMessageDelivery) -> &'static str {
     }
 }
 
-pub(super) fn initial_widgets(catalog: &UiCatalog) -> Vec<(Arc<str>, Arc<FrontendWidget>)> {
-    catalog
-        .widgets()
-        .map(|(middleware, item)| {
-            let mut item = Arc::clone(item);
-            let text = bounded_terminal_text(&item.text, 32 * 1024);
-            if text != item.text {
-                Arc::make_mut(&mut item).text = text;
-            }
-            (Arc::clone(middleware), item)
-        })
-        .collect()
-}
-
 pub(super) fn widget_status(widgets: &[(Arc<str>, Arc<FrontendWidget>)]) -> String {
     widgets
         .iter()
@@ -1413,19 +1399,6 @@ fn render_menu(frame: &mut Frame<'_>, area: Rect, items: &[MenuItem], selected: 
         })
         .collect::<Vec<_>>();
     frame.render_widget(Paragraph::new(lines), area);
-}
-
-pub(super) fn bounded_terminal_text(value: &str, limit: usize) -> String {
-    let mut value = terminal_text(value);
-    truncate_display_text(&mut value, limit);
-    value
-}
-
-pub(super) fn truncate_display_text(value: &mut String, limit: usize) {
-    if value.len() > limit {
-        truncate_bytes(value, limit);
-        value.push_str("\n[display truncated]");
-    }
 }
 
 fn display_value(value: &str) -> String {

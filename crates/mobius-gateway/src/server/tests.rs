@@ -11,7 +11,9 @@ use uuid::Uuid;
 
 use super::transport::WebSocketUpgradePolicy;
 use crate::client::{Endpoint, GatewayClient, GatewayEvents, GatewaySender};
-use crate::wire::{MAX_PRE_AUTH_FRAME_BYTES, SessionActivity, SessionActivityState};
+use crate::wire::{
+    ClientCapabilities, MAX_PRE_AUTH_FRAME_BYTES, SessionActivity, SessionActivityState,
+};
 
 use super::*;
 
@@ -80,6 +82,59 @@ async fn configured_test_server_with(
         .await
         .expect("assemble gateway");
     (server, grant)
+}
+
+const PRESENT_CLIENT: ClientCapabilities = ClientCapabilities {
+    presence: true,
+    browser_renderer: false,
+    desktop_host: false,
+    remote_desktop_viewer: false,
+};
+const REMOTE_VIEWER: ClientCapabilities = ClientCapabilities {
+    remote_desktop_viewer: true,
+    ..PRESENT_CLIENT
+};
+
+struct RunningGateway {
+    stop: tokio::sync::oneshot::Sender<()>,
+    task: tokio::task::JoinHandle<crate::Result<()>>,
+}
+
+impl RunningGateway {
+    async fn start(mut server: GatewayServer) -> Self {
+        let ready = server.notify_ready();
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(server.serve_until(async {
+            stopped.await.ok();
+        }));
+        ready.await.expect("listener ready");
+        Self { stop, task }
+    }
+
+    async fn shutdown(self) {
+        self.stop.send(()).expect("stop gateway");
+        self.task
+            .await
+            .expect("gateway task")
+            .expect("gateway shutdown");
+    }
+}
+
+async fn paired_gateway(
+    server: GatewayServer,
+    grant: PairingGrant,
+    capabilities: ClientCapabilities,
+) -> (GatewaySender, GatewayEvents, RunningGateway) {
+    let endpoint = format!("tcp://{}", server.listen_addr())
+        .parse()
+        .expect("endpoint");
+    let gateway = RunningGateway::start(server).await;
+    let (client, _) = GatewayClient::pair(&endpoint, grant.code, "test client", capabilities)
+        .await
+        .expect("pair client");
+    let (sender, mut events) = client.into_parts();
+    wait_gateway_ready(&mut events).await;
+    (sender, events, gateway)
 }
 
 mod bots;

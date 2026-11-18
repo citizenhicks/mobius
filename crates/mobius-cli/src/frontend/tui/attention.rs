@@ -86,7 +86,7 @@ impl TuiState {
                 }),
             }
         };
-        overlay.apply(event);
+        crate::frontend::dashboard::apply_widget_event(event, None, Some(overlay));
     }
 
     pub(super) fn submit_attention_operation(&mut self, op: Op) -> UiAction {

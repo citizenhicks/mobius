@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
-use super::view::bounded_terminal_text;
 use super::{
     BlockKey, Evict, MAX_ENTRY_BYTES, PickerState, PreviewContent, PreviewState, TranscriptTone,
     TuiState, attachment_label,
 };
 use crate::frontend::terminal::terminal_text;
+use crate::frontend::terminal::{bounded_terminal_text, truncate_display_text};
 use mobius::protocol::{
     ErrorKind, EventMsg, FrontendEvent, FrontendPreviewUpdate, FrontendTone, MessageAuthor,
     MessageEvent, ModelStepCompletedEvent, ModelStepContentPhase, ModelStepOutcome, RenderedBlock,
@@ -204,35 +204,13 @@ impl TuiState {
     }
 
     fn handle_frontend_event(&mut self, update: FrontendEvent) {
-        if matches!(
-            update,
-            FrontendEvent::Widget { .. } | FrontendEvent::RemoveWidget { .. }
-        ) && let Some(overlay) = self.capability_overlay.as_mut()
-        {
-            overlay.apply(update.clone()); // rules-allow: the open overlay and the widget list each keep the update
-        }
         match update {
-            FrontendEvent::Widget {
-                capability,
-                mut item,
-            } => {
-                let text = bounded_terminal_text(&item.text, MAX_ENTRY_BYTES);
-                if text != item.text {
-                    Arc::make_mut(&mut item).text = text;
-                }
-                if let Some((_, current)) = self
-                    .widgets
-                    .iter_mut()
-                    .find(|(owner, widget)| *owner == capability && widget.id == item.id)
-                {
-                    *current = item;
-                } else {
-                    self.widgets.push((capability, item));
-                }
-            }
-            FrontendEvent::RemoveWidget { capability, id } => {
-                self.widgets
-                    .retain(|(owner, widget)| *owner != capability || *widget.id != *id);
+            FrontendEvent::Widget { .. } | FrontendEvent::RemoveWidget { .. } => {
+                crate::frontend::dashboard::apply_widget_event(
+                    update,
+                    Some(&mut self.widgets),
+                    self.capability_overlay.as_mut(),
+                );
             }
             FrontendEvent::Picker { title, options } => {
                 self.preview = None;
@@ -351,7 +329,7 @@ pub(super) fn handle_gateway_event(
                         .find(|entry| entry.id.as_ref().is_some_and(|key| key.value == *id))
                     {
                         entry.text.push_str(&terminal_text(&text));
-                        super::view::truncate_display_text(&mut entry.text, MAX_ENTRY_BYTES);
+                        truncate_display_text(&mut entry.text, MAX_ENTRY_BYTES);
                         // Appends only extend the text, so the stream cache reparses just its tail.
                         entry.stream.get_or_insert_with(Box::default);
                         entry.rendered = None;

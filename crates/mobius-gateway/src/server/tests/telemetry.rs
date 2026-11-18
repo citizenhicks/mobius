@@ -155,12 +155,7 @@ async fn ingress_rejects_raw_frames_and_accepts_noise_websockets() {
     let ingress = reservation.local_addr().unwrap();
     drop(reservation);
     server.config.runtime.ingress = Some(ingress);
-    let ready = server.notify_ready();
-    let (stop, signal) = tokio::sync::oneshot::channel();
-    let serving = tokio::spawn(server.serve_until(async {
-        signal.await.ok();
-    }));
-    ready.await.unwrap();
+    let gateway = RunningGateway::start(server).await;
     let mut raw = TcpStream::connect(ingress).await.unwrap();
     raw.write_all(&[0, 0, 0, 2, b'{', b'}']).await.unwrap();
     raw.shutdown().await.unwrap();
@@ -177,8 +172,7 @@ async fn ingress_rejects_raw_frames_and_accepts_noise_websockets() {
     crate::channel::client_handshake(&mut websocket, &grant.code)
         .await
         .unwrap();
-    stop.send(()).unwrap();
-    serving.await.unwrap().unwrap();
+    gateway.shutdown().await;
 }
 
 #[tokio::test]

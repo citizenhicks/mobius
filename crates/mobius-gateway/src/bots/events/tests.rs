@@ -109,6 +109,76 @@ fn facts_and_actions_keep_insertion_order_and_durable_receipts() {
 }
 
 #[test]
+fn dispatch_skips_only_receivers_that_already_handled_an_ancestor() {
+    let (_root, storage) = fixture();
+    let bots = ["bot-a", "bot-b"];
+    let subscribe = |bot: &str, id, source, kind| {
+        let mut sub = report(id, source, kind);
+        sub.bot_id = bot.into();
+        storage.set_subscription(&sub, 0, 0).unwrap();
+    };
+    for bot in bots {
+        subscribe(bot, "room:report", source(), HookKind::SessionTurnStarted);
+    }
+    storage.record_hook(&started("parent")).unwrap();
+    let parent = storage.pending_actions(100, 10).unwrap();
+    assert_eq!(parent.len(), 1);
+    assert_eq!(&*parent[0].bot_id, "bot-a");
+    // Existing databases retain these action IDs across gateway upgrades.
+    assert_eq!(
+        &*parent[0].id,
+        "hook-action-c25d2af7372a500693650de689057b374185ff16d274618e4679e48e37edfbca"
+    );
+    storage.action_accepted(&parent[0].id).unwrap();
+    let bot_source = || HookSource::Bot {
+        bot_id: "bot-a".into(),
+    };
+    for bot in bots {
+        subscribe(bot, "room:report", bot_source(), HookKind::CustomReceived);
+    }
+    subscribe(
+        "bot-a:room",
+        "report",
+        bot_source(),
+        HookKind::CustomReceived,
+    );
+    subscribe("bot-a", "other", bot_source(), HookKind::CustomReceived);
+    let mut child = event(
+        "child",
+        HookData::CustomReceived {
+            name: "custom".into(),
+            data: serde_json::Value::Null,
+        },
+    );
+    child.source = bot_source();
+    child.ancestry = (1..MAX_HOOK_ANCESTRY - 1)
+        .map(|i| i.to_string().into())
+        .collect();
+    child.ancestry.push("parent".into());
+    storage.record_hook(&child).unwrap();
+    child.id = "capped".into();
+    child.ancestry.push("child".into());
+    assert!(storage.record_hook(&child).unwrap());
+    assert!(storage.hook_event("capped").unwrap().is_some());
+    let actions = storage.pending_actions(100, 10).unwrap();
+    assert_eq!(
+        actions
+            .iter()
+            .map(|a| (&*a.event.id, &*a.bot_id))
+            .collect::<Vec<_>>(),
+        [
+            ("child", "bot-a"),
+            ("child", "bot-a:room"),
+            ("child", "bot-b")
+        ]
+    );
+    assert_eq!(
+        &*actions[0].id,
+        stable_id("hook-action", "child", "bot-a:other")
+    );
+}
+
+#[test]
 fn projection_atomically_advances_cursor_with_the_fact_and_matching_actions() {
     let (_root, storage) = fixture();
     storage

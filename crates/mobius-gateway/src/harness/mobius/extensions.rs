@@ -57,6 +57,14 @@ pub(crate) struct InstalledExtension {
 }
 
 impl InstalledExtension {
+    pub(crate) fn replace_snapshot(&mut self, mut staged: Self) {
+        staged.trusted_hook_digest = self
+            .trusted_hook_digest
+            .take()
+            .filter(|_| staged.digest == self.digest);
+        *self = staged;
+    }
+
     /// Whether the owner trusted this exact snapshot's hooks, or it declares none.
     fn hooks_trusted(&self) -> bool {
         self.hooks.is_empty() || self.trusted_hook_digest.as_ref() == Some(&self.digest)

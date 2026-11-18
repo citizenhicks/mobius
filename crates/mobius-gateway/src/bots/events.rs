@@ -408,7 +408,7 @@ fn save_binding(
     let changed = previous
         .as_ref()
         .is_some_and(|previous| previous.1 != selector_json || previous.2 != action_json);
-    tx.execute("INSERT INTO hook_bindings(bot_id,id,routine_id,selector_json,action_json,enabled,after_sequence,starts_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(bot_id,id) DO UPDATE SET selector_json=excluded.selector_json,action_json=excluded.action_json,enabled=excluded.enabled,after_sequence=CASE WHEN hook_bindings.enabled=0 AND excluded.enabled=1 OR hook_bindings.selector_json!=excluded.selector_json THEN excluded.after_sequence ELSE hook_bindings.after_sequence END,starts_at=CASE WHEN hook_bindings.enabled=0 AND excluded.enabled=1 OR hook_bindings.selector_json!=excluded.selector_json THEN excluded.starts_at ELSE hook_bindings.starts_at END",params![bot_id,binding.id,routine_id,serde_json::to_string(&binding.on)?,serde_json::to_string(&binding.action)?,enabled,sequence,now])?;
+    tx.execute("INSERT INTO hook_bindings(bot_id,id,routine_id,selector_json,action_json,enabled,after_sequence,starts_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(bot_id,id) DO UPDATE SET selector_json=excluded.selector_json,action_json=excluded.action_json,enabled=excluded.enabled,after_sequence=CASE WHEN hook_bindings.enabled=0 AND excluded.enabled=1 OR hook_bindings.selector_json!=excluded.selector_json THEN excluded.after_sequence ELSE hook_bindings.after_sequence END,starts_at=CASE WHEN hook_bindings.enabled=0 AND excluded.enabled=1 OR hook_bindings.selector_json!=excluded.selector_json THEN excluded.starts_at ELSE hook_bindings.starts_at END",params![bot_id,binding.id,routine_id,selector_json,action_json,enabled,sequence,now])?;
     if !enabled || changed {
         tx.execute(
             "DELETE FROM hook_outbox WHERE bot_id=?1 AND binding_id=?2 AND accepted=0",
@@ -524,6 +524,13 @@ pub(super) fn record_run(tx: &Transaction<'_>, run: &RoutineRun) -> Result<()> {
     Ok(())
 }
 
+const ENABLED_BINDINGS: &str =
+    "SELECT id, selector_json, action_json, after_sequence, starts_at, bot_id, routine_id
+    FROM hook_bindings WHERE enabled = 1";
+const BOT_BINDINGS: &str =
+    "SELECT id, selector_json, action_json, after_sequence, starts_at, bot_id, routine_id
+    FROM hook_bindings WHERE enabled = 1 AND bot_id = ?1";
+
 pub(super) fn record_event(
     tx: &Transaction<'_>,
     event: &HookEvent,
@@ -559,25 +566,18 @@ pub(super) fn record_event(
     if event.ancestry.len() >= MAX_HOOK_ANCESTRY {
         return Ok(true);
     }
-    let mut query=tx.prepare("SELECT id,selector_json,action_json,after_sequence,starts_at,bot_id,routine_id FROM hook_bindings WHERE enabled=1 AND (bot_id=?1 OR ?2=1)")?;
-    let bindings = query
-        .query_map(
-            params![event.bot_id, matches!(event.source, HookSource::Bot { .. })],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, i64>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, String>(5)?,
-                    row.get::<_, Option<String>>(6)?,
-                ))
-            },
-        )?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    drop(query);
-    for (id, on, action, after_sequence, starts_at, receiver_bot_id, routine_id) in bindings {
+    let (sql, owner) = match event.source {
+        HookSource::Bot { .. } => (ENABLED_BINDINGS, None),
+        _ => (BOT_BINDINGS, Some(&event.bot_id)),
+    };
+    let mut query = tx.prepare_cached(sql)?;
+    let mut bindings = query.query(rusqlite::params_from_iter(owner))?;
+    while let Some(row) = bindings.next()? {
+        let id: String = row.get(0)?;
+        let on: String = row.get(1)?;
+        let after_sequence: i64 = row.get(3)?;
+        let starts_at: i64 = row.get(4)?;
+        let routine_id: Option<String> = row.get(6)?;
         let selector: HookSelector = serde_json::from_str(&on)?;
         if matches!(selector, HookSelector::Schedule { .. })
             && !matches!(&event.source,HookSource::Schedule{binding_id,routine_id:source_routine_id} if **binding_id==*id && routine_id.as_deref()==Some(&**source_routine_id))
@@ -592,14 +592,31 @@ pub(super) fn record_event(
         {
             continue;
         }
-        let mut revisited = false;
-        for ancestor in &event.ancestry {
-            if tx.query_row("SELECT EXISTS(SELECT 1 FROM hook_outbox WHERE bot_id=?1 AND binding_id=?2 AND event_id=?3)",params![receiver_bot_id,id,ancestor],|row|row.get::<_,bool>(0))? {revisited=true;break;}
+        let receiver_bot_id: String = row.get(5)?;
+        let receiver = format!("{receiver_bot_id}:{id}");
+        let action_id = |event_id: &str| stable_id("hook-action", event_id, &receiver);
+        if !event.ancestry.is_empty() {
+            let ancestors = event
+                .ancestry
+                .iter()
+                .map(|id| action_id(id))
+                .collect::<Vec<_>>();
+            // Receiver columns disambiguate bot and binding IDs containing a colon.
+            if tx
+                .prepare_cached(
+                    "SELECT EXISTS(SELECT 1 FROM hook_outbox
+                    WHERE id IN (SELECT value FROM json_each(?1)) AND bot_id=?2 AND binding_id=?3)",
+                )?
+                .query_row(
+                    params![serde_json::to_string(&ancestors)?, receiver_bot_id, id],
+                    |row| row.get::<_, bool>(0),
+                )?
+            {
+                continue;
+            }
         }
-        if revisited {
-            continue;
-        }
-        let outbox_id = stable_id("hook-action", &event.id, &format!("{receiver_bot_id}:{id}"));
+        let action: String = row.get(2)?;
+        let outbox_id = action_id(&event.id);
         tx.execute("INSERT INTO hook_outbox(id,event_id,binding_id,bot_id,action_json,retry_at) VALUES(?1,?2,?3,?4,?5,?6)",params![outbox_id,event.id,id,receiver_bot_id,action,event.occurred_at])?;
     }
     Ok(true)

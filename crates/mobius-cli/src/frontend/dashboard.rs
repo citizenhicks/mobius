@@ -17,7 +17,7 @@ use super::terminal::{TerminalGuard, open_screen};
 
 pub(in crate::frontend) use self::runtime::{OverlayKey, insert_overlay_input, overlay_key};
 use self::runtime::{connect, dashboard_loop};
-pub(in crate::frontend) use self::state::CapabilityOverlay;
+pub(in crate::frontend) use self::state::{CapabilityOverlay, apply_widget_event};
 pub(in crate::frontend) use self::view::{centered_area, render_capability_overlay};
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(1);

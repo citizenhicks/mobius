@@ -30,6 +30,53 @@ fn transcript_text_strips_terminal_control_characters() {
 }
 
 #[test]
+fn widget_updates_share_bounded_text_and_follow_overlay_slots() {
+    use FrontendSlot::{Attention, Navigation};
+    use mobius::protocol::FrontendEvent;
+    let mut state = state();
+    let initial = Arc::new(FrontendWidget::new("view", Navigation, "initial"));
+    state.capability_overlay = Some(CapabilityOverlay::from_widgets(
+        String::new(),
+        vec![("cap".into(), initial)],
+    ));
+    let update = |state: &mut TuiState, slot, text: String| {
+        let event = FrontendEvent::Widget {
+            capability: "cap".into(),
+            item: Arc::new(FrontendWidget::new("view", slot, text)),
+        };
+        state.handle_agent_event(EventMsg::Frontend(event), vec![]);
+    };
+    let long = format!("\x1b{}", "x".repeat(MAX_ENTRY_BYTES + 1));
+    update(&mut state, Navigation, long);
+    let widget = state
+        .capability_overlay
+        .as_ref()
+        .and_then(CapabilityOverlay::open_widget)
+        .unwrap();
+    assert!(std::ptr::eq(widget, state.widgets[0].1.as_ref()));
+    assert_eq!(
+        widget.text,
+        format!("{}\n[display truncated]", "x".repeat(MAX_ENTRY_BYTES))
+    );
+    update(&mut state, Attention, "moved".into());
+    assert!(
+        state
+            .capability_overlay
+            .as_ref()
+            .unwrap()
+            .open_widget()
+            .is_none()
+    );
+    assert_eq!(state.widgets[0].1.slot, Attention);
+    let remove = FrontendEvent::RemoveWidget {
+        capability: "cap".into(),
+        id: "view".into(),
+    };
+    state.handle_agent_event(EventMsg::Frontend(remove), vec![]);
+    assert!(state.widgets.is_empty());
+}
+
+#[test]
 fn transcript_viewport_matches_full_paragraph_for_unicode_scroll_and_resize() {
     use ratatui::layout::Rect;
     use ratatui::style::Modifier;

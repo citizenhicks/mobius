@@ -24,10 +24,7 @@ async fn queued_client_requests_do_not_starve_gateway_broadcasts() {
         &mut writer,
         &ClientFrame::new(ClientMessage::Authenticate {
             token: identity.token,
-            client: crate::wire::ClientCapabilities {
-                presence: true,
-                ..Default::default()
-            },
+            client: PRESENT_CLIENT,
             catalog: Default::default(),
         }),
     )
@@ -114,10 +111,7 @@ async fn non_reading_client_releases_its_authenticated_connection_slot() {
         &mut client,
         &ClientFrame::new(ClientMessage::Authenticate {
             token: identity.token,
-            client: crate::wire::ClientCapabilities {
-                presence: true,
-                ..Default::default()
-            },
+            client: PRESENT_CLIENT,
             catalog: Default::default(),
         }),
     )
@@ -150,18 +144,9 @@ async fn access_lease_stops_the_server_and_closes_existing_clients() {
     let endpoint = format!("tcp://{listen}")
         .parse::<Endpoint>()
         .expect("endpoint");
-    let (client, _) = GatewayClient::pair(
-        &endpoint,
-        grant.code,
-        "lease test",
-        crate::wire::ClientCapabilities {
-            presence: true,
-            remote_desktop_viewer: true,
-            ..Default::default()
-        },
-    )
-    .await
-    .expect("pair client");
+    let (client, _) = GatewayClient::pair(&endpoint, grant.code, "lease test", REMOTE_VIEWER)
+        .await
+        .expect("pair client");
     let (_, mut events) = client.into_parts();
     wait_gateway_ready(&mut events).await;
 
@@ -246,10 +231,7 @@ async fn websocket_preserves_a_pipelined_bulk_frame_across_authentication() {
     .await
     .expect("bootstrap gateway");
     let listen = server.listen_addr();
-    let (shutdown, signal) = tokio::sync::oneshot::channel();
-    let serving = tokio::spawn(server.serve_until(async move {
-        signal.await.ok();
-    }));
+    let gateway = RunningGateway::start(server).await;
     let mut request = format!("ws://{listen}").into_client_request().unwrap();
     request.headers_mut().insert(
         SEC_WEBSOCKET_PROTOCOL,
@@ -265,11 +247,7 @@ async fn websocket_preserves_a_pipelined_bulk_frame_across_authentication() {
         &ClientFrame::new(ClientMessage::Pair {
             code: grant.code,
             client_label: "WebSocket test".into(),
-            client: crate::wire::ClientCapabilities {
-                presence: true,
-                remote_desktop_viewer: true,
-                ..Default::default()
-            },
+            client: REMOTE_VIEWER,
         }),
     )
     .await
@@ -335,8 +313,7 @@ async fn websocket_preserves_a_pipelined_bulk_frame_across_authentication() {
         ) if actual.as_ref() == request_id
     ));
     bridge.abort();
-    shutdown.send(()).expect("stop gateway");
-    serving.await.expect("gateway task").expect("gateway stop");
+    gateway.shutdown().await;
 }
 
 #[tokio::test(start_paused = true)]

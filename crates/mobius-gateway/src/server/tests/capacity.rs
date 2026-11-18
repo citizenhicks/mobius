@@ -27,7 +27,7 @@ async fn expect_capacity_accepted(events: &mut GatewayEvents, expected: &str) {
 #[tokio::test]
 async fn configured_authenticated_limit_rejects_excess_clients_and_keeps_the_first_alive() {
     let root = tempfile::tempdir().expect("state directory");
-    let (mut server, grant) = capacity_server(
+    let (server, grant) = capacity_server(
         root.path().join("state"),
         ConnectionPolicy {
             authenticated: 1,
@@ -41,22 +41,10 @@ async fn configured_authenticated_limit_rejects_excess_clients_and_keeps_the_fir
         .expect("pair client");
     let listen = server.listen_addr();
     let endpoint: Endpoint = format!("tcp://{listen}").parse().expect("endpoint");
-    let ready = server.notify_ready();
-    let (shutdown, stopped) = tokio::sync::oneshot::channel();
-    let serving = tokio::spawn(server.serve_until(async {
-        stopped.await.ok();
-    }));
-    ready.await.expect("listener ready");
-    let first = GatewayClient::connect(
-        &endpoint,
-        &identity.token,
-        crate::wire::ClientCapabilities {
-            presence: true,
-            ..Default::default()
-        },
-    )
-    .await
-    .expect("first connection");
+    let gateway = RunningGateway::start(server).await;
+    let first = GatewayClient::connect(&endpoint, &identity.token, PRESENT_CLIENT)
+        .await
+        .expect("first connection");
     let (sender, mut events) = first.into_parts();
     wait_gateway_ready(&mut events).await;
 
@@ -67,10 +55,7 @@ async fn configured_authenticated_limit_rejects_excess_clients_and_keeps_the_fir
         &mut writer,
         &ClientFrame::new(ClientMessage::Authenticate {
             token: identity.token,
-            client: crate::wire::ClientCapabilities {
-                presence: true,
-                ..Default::default()
-            },
+            client: PRESENT_CLIENT,
             catalog: Default::default(),
         }),
     )
@@ -106,17 +91,13 @@ async fn configured_authenticated_limit_rejects_excess_clients_and_keeps_the_fir
         .await
         .expect("first client remains usable");
     expect_capacity_accepted(&mut events, "first-still-alive").await;
-    shutdown.send(()).expect("shutdown");
-    serving
-        .await
-        .expect("server task")
-        .expect("server shutdown");
+    gateway.shutdown().await;
 }
 
 #[tokio::test]
 async fn configured_pre_authentication_limit_waits_then_releases_after_disconnect() {
     let root = tempfile::tempdir().expect("state directory");
-    let (mut server, grant) = capacity_server(
+    let (server, grant) = capacity_server(
         root.path().join("state"),
         ConnectionPolicy {
             pre_authentication: 1,
@@ -130,23 +111,11 @@ async fn configured_pre_authentication_limit_waits_then_releases_after_disconnec
         .expect("pair client");
     let listen = server.listen_addr();
     let endpoint: Endpoint = format!("tcp://{listen}").parse().expect("endpoint");
-    let ready = server.notify_ready();
-    let (shutdown, stopped) = tokio::sync::oneshot::channel();
-    let serving = tokio::spawn(server.serve_until(async {
-        stopped.await.ok();
-    }));
-    ready.await.expect("listener ready");
+    let gateway = RunningGateway::start(server).await;
     let stalled = TcpStream::connect(listen)
         .await
         .expect("stalled connection");
-    let waiting = GatewayClient::connect(
-        &endpoint,
-        &identity.token,
-        crate::wire::ClientCapabilities {
-            presence: true,
-            ..Default::default()
-        },
-    );
+    let waiting = GatewayClient::connect(&endpoint, &identity.token, PRESENT_CLIENT);
     tokio::pin!(waiting);
     assert!(
         tokio::time::timeout(Duration::from_millis(100), &mut waiting)
@@ -161,11 +130,7 @@ async fn configured_pre_authentication_limit_waits_then_releases_after_disconnec
         .expect("waiting client admitted");
     let (_sender, mut events) = client.into_parts();
     wait_gateway_ready(&mut events).await;
-    shutdown.send(()).expect("shutdown");
-    serving
-        .await
-        .expect("server task")
-        .expect("server shutdown");
+    gateway.shutdown().await;
 }
 
 async fn begin_capacity_upload(
@@ -206,7 +171,7 @@ async fn configured_pending_upload_limit_is_released_by_cancellation() {
     let root = tempfile::tempdir().expect("state directory");
     let workspace = root.path().join("workspace");
     fs::create_dir(&workspace).expect("workspace");
-    let (mut server, grant) = capacity_server(
+    let (server, grant) = capacity_server(
         root.path().join("state"),
         ConnectionPolicy {
             pending_uploads: 1,
@@ -214,29 +179,7 @@ async fn configured_pending_upload_limit_is_released_by_cancellation() {
         },
     )
     .await;
-    let endpoint: Endpoint = format!("tcp://{}", server.listen_addr())
-        .parse()
-        .expect("endpoint");
-    let ready = server.notify_ready();
-    let (shutdown, stopped) = tokio::sync::oneshot::channel();
-    let serving = tokio::spawn(server.serve_until(async {
-        stopped.await.ok();
-    }));
-    ready.await.expect("listener ready");
-    let (client, _) = GatewayClient::pair(
-        &endpoint,
-        grant.code,
-        "upload capacity",
-        crate::wire::ClientCapabilities {
-            presence: true,
-            remote_desktop_viewer: true,
-            ..Default::default()
-        },
-    )
-    .await
-    .expect("pair client");
-    let (sender, mut events) = client.into_parts();
-    wait_gateway_ready(&mut events).await;
+    let (sender, mut events, gateway) = paired_gateway(server, grant, REMOTE_VIEWER).await;
     let mut composition = crate::wire::AgentComposition::default();
     composition.middleware.set_enabled("attachments", true);
     let (session_id, _) =
@@ -283,9 +226,5 @@ async fn configured_pending_upload_limit_is_released_by_cancellation() {
         .expect("cancel pending upload");
     expect_capacity_accepted(&mut events, "cancel-first-upload").await;
     begin_capacity_upload(&sender, &mut events, &session_id, "replacement-upload").await;
-    shutdown.send(()).expect("shutdown");
-    serving
-        .await
-        .expect("server task")
-        .expect("server shutdown");
+    gateway.shutdown().await;
 }

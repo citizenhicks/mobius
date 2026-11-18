@@ -46,26 +46,7 @@ async fn slow_git_diff_does_not_block_chat_history() {
     fs::write(workspace.join("tracked.txt"), "after\n").expect("changed file");
 
     let (server, grant) = configured_test_server(root.path().join("state")).await;
-    let endpoint = format!("tcp://{}", server.config.listen)
-        .parse::<Endpoint>()
-        .expect("endpoint");
-    let (shutdown, signal) = tokio::sync::oneshot::channel();
-    let serving = tokio::spawn(server.serve_until(async move {
-        signal.await.ok();
-    }));
-    let (connection, _) = GatewayClient::pair(
-        &endpoint,
-        grant.code,
-        "Git test",
-        crate::wire::ClientCapabilities {
-            presence: true,
-            ..Default::default()
-        },
-    )
-    .await
-    .expect("pair");
-    let (sender, mut events) = connection.into_parts();
-    wait_gateway_ready(&mut events).await;
+    let (sender, mut events, gateway) = paired_gateway(server, grant, PRESENT_CLIENT).await;
     let session_id = create_chat(&sender, &mut events, &workspace).await;
     sender
         .send(ClientMessage::GetGitDiff {
@@ -138,8 +119,7 @@ async fn slow_git_diff_does_not_block_chat_history() {
             break;
         }
     }
-    shutdown.send(()).expect("shutdown");
-    serving.await.expect("server task").expect("server");
+    gateway.shutdown().await;
 }
 
 #[tokio::test]
@@ -148,28 +128,7 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
     let workspace = root.path().join("workspace");
     fs::create_dir(&workspace).expect("workspace");
     let (server, grant) = configured_test_server(root.path().join("state")).await;
-    let listen = server.config.listen;
-    let (shutdown, signal) = tokio::sync::oneshot::channel();
-    let serving = tokio::spawn(server.serve_until(async move {
-        signal.await.ok();
-    }));
-    let endpoint = format!("tcp://{listen}")
-        .parse::<Endpoint>()
-        .expect("endpoint");
-    let (connection, _) = GatewayClient::pair(
-        &endpoint,
-        grant.code,
-        "attachment test",
-        crate::wire::ClientCapabilities {
-            presence: true,
-            remote_desktop_viewer: true,
-            ..Default::default()
-        },
-    )
-    .await
-    .expect("pair frontend");
-    let (sender, mut events) = connection.into_parts();
-    wait_gateway_ready(&mut events).await;
+    let (sender, mut events, gateway) = paired_gateway(server, grant, REMOTE_VIEWER).await;
     let mut config = crate::wire::AgentComposition::default();
     config.middleware.set_enabled("attachments", true);
     let (session_id, _) =
@@ -526,8 +485,7 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
         model_error.contains("selected provider is not configured"),
         "valid image must reach the model after attachment middleware: {model_error}"
     );
-    shutdown.send(()).expect("stop gateway");
-    serving.await.expect("gateway task").expect("gateway stop");
+    gateway.shutdown().await;
 }
 
 #[tokio::test]
@@ -541,10 +499,7 @@ async fn unpairing_disconnects_the_client_and_rejects_its_token() {
     .expect("bootstrap gateway");
     let listen = server.config.listen;
     let auth = Arc::clone(&server.auth);
-    let (shutdown, signal) = tokio::sync::oneshot::channel();
-    let serving = tokio::spawn(server.serve_until(async move {
-        signal.await.ok();
-    }));
+    let gateway = RunningGateway::start(server).await;
     let endpoint = format!("tcp://{listen}")
         .parse::<Endpoint>()
         .expect("endpoint");
@@ -559,18 +514,10 @@ async fn unpairing_disconnects_the_client_and_rejects_its_token() {
     let (dashboard_sender, mut dashboard_events) = dashboard.into_parts();
     wait_gateway_ready(&mut dashboard_events).await;
     let device_grant = auth.create_pairing_code().expect("device pairing code");
-    let (device, device_identity) = GatewayClient::pair(
-        &endpoint,
-        device_grant.code,
-        "iPhone",
-        crate::wire::ClientCapabilities {
-            presence: true,
-            remote_desktop_viewer: true,
-            ..Default::default()
-        },
-    )
-    .await
-    .expect("pair device");
+    let (device, device_identity) =
+        GatewayClient::pair(&endpoint, device_grant.code, "iPhone", REMOTE_VIEWER)
+            .await
+            .expect("pair device");
     let (_device_sender, mut device_events) = device.into_parts();
     wait_gateway_ready(&mut device_events).await;
 
@@ -604,16 +551,7 @@ async fn unpairing_disconnects_the_client_and_rejects_its_token() {
         .expect("device frame")
         .is_some()
     {}
-    let reconnect = GatewayClient::connect(
-        &endpoint,
-        &device_identity.token,
-        crate::wire::ClientCapabilities {
-            presence: true,
-            remote_desktop_viewer: true,
-            ..Default::default()
-        },
-    )
-    .await;
+    let reconnect = GatewayClient::connect(&endpoint, &device_identity.token, REMOTE_VIEWER).await;
 
     assert_eq!(
         (
@@ -625,11 +563,7 @@ async fn unpairing_disconnects_the_client_and_rejects_its_token() {
         ),
         (true, true, true)
     );
-    shutdown.send(()).expect("send shutdown");
-    serving
-        .await
-        .expect("gateway task")
-        .expect("gateway shutdown");
+    gateway.shutdown().await;
 }
 
 #[tokio::test]
@@ -824,26 +758,7 @@ async fn unselected_chat_history_is_read_without_starting_the_chat() {
     fs::create_dir(&workspace).expect("workspace");
     let (server, grant) = configured_test_server(root.path().join("state")).await;
     let host = Arc::clone(&server.host);
-    let endpoint = format!("tcp://{}", server.config.listen)
-        .parse::<Endpoint>()
-        .expect("endpoint");
-    let (shutdown, signal) = tokio::sync::oneshot::channel();
-    let serving = tokio::spawn(server.serve_until(async move {
-        signal.await.ok();
-    }));
-    let (connection, _) = GatewayClient::pair(
-        &endpoint,
-        grant.code,
-        "Recap test",
-        crate::wire::ClientCapabilities {
-            presence: true,
-            ..Default::default()
-        },
-    )
-    .await
-    .expect("pair");
-    let (sender, mut events) = connection.into_parts();
-    wait_gateway_ready(&mut events).await;
+    let (sender, mut events, gateway) = paired_gateway(server, grant, PRESENT_CLIENT).await;
     let away = create_chat(&sender, &mut events, &workspace).await;
     let selected = create_chat(&sender, &mut events, &workspace).await;
     host.stop_idle_session(&away).await;
@@ -928,8 +843,7 @@ async fn unselected_chat_history_is_read_without_starting_the_chat() {
     );
     assert!(!host.is_resident(&away).await);
     drop(host);
-    shutdown.send(()).expect("shutdown");
-    serving.await.expect("server task").expect("server");
+    gateway.shutdown().await;
 }
 
 #[tokio::test]
