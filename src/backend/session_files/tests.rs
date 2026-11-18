@@ -104,24 +104,7 @@ async fn delete_session_removes_only_that_sessions_files() {
 }
 
 #[tokio::test]
-async fn tampered_content_blob_is_rejected() {
-    let id = session("session");
-    let state = tempfile::tempdir().expect("state");
-    let store = SessionFileStore::new(state.path(), None);
-    let file = store
-        .publish_artifact(&id, "result.txt".into(), "text/plain".into(), b"safe")
-        .await
-        .expect("artifact");
-    let metadata = load_metadata(&store.session_dir(&id).join(&file.id).join(METADATA_FILE))
-        .await
-        .expect("metadata");
-    std::fs::write(store.blob_path(&metadata.content_hash), b"evil").expect("tamper");
-
-    assert!(store.read_chunk(&id, &file.id, 0, 4).await.is_err());
-}
-
-#[tokio::test]
-async fn oversized_metadata_is_rejected() {
+async fn reads_reject_corrupted_file_contents_and_metadata() {
     let id = session("session");
     let state = tempfile::tempdir().expect("state");
     let store = SessionFileStore::new(state.path(), None);
@@ -130,6 +113,11 @@ async fn oversized_metadata_is_rejected() {
         .await
         .expect("artifact");
     let path = store.session_dir(&id).join(&file.id).join(METADATA_FILE);
+    let metadata = load_metadata(&path).await.expect("metadata");
+    std::fs::write(store.blob_path(&metadata.content_hash), b"evil").expect("tamper");
+
+    assert!(store.read_chunk(&id, &file.id, 0, 4).await.is_err());
+
     std::fs::write(&path, vec![b' '; 4 * 1024 + 1]).expect("oversize");
 
     let error = load_metadata(&path).await.expect_err("oversized metadata");
