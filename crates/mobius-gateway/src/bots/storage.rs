@@ -113,19 +113,15 @@ impl BotStorage {
         let connection = Connection::open(path)?;
         protect_database_files(path)?;
         connection.busy_timeout(BUSY_TIMEOUT)?;
-        let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if version == 0
-            && connection.query_row(
-                "SELECT EXISTS (SELECT 1 FROM sqlite_schema LIMIT 1)",
-                [],
-                |row| row.get::<_, bool>(0),
-            )?
-        {
+        let version = mobius::backend::checkpoint::sqlite::existing_schema_version(&connection)?;
+        if version == Some(0) {
             return Err(Error::Internal(
                 "Bot storage is unversioned and not empty; remove that database".into(),
             ));
         }
-        if version != 0 && version != SCHEMA_VERSION {
+        if let Some(version) = version
+            && version != SCHEMA_VERSION
+        {
             return Err(Error::Internal(format!(
                 "unsupported Bot storage schema version {version}; expected {SCHEMA_VERSION}"
             )));
@@ -138,7 +134,7 @@ impl BotStorage {
             )));
         }
         configure_connection(&connection)?;
-        if version == 0 {
+        if version.is_none() {
             connection.execute_batch(SCHEMA)?;
         }
         connection.execute_batch(OPTIONAL_SCHEMA)?;

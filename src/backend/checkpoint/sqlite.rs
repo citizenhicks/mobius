@@ -145,6 +145,28 @@ PRAGMA user_version = 15;
 COMMIT;
 ";
 
+/// Returns the database's declared schema version, or `None` for an empty new database.
+///
+/// An existing unversioned schema reports `Some(0)`, so callers can reject it
+/// before initializing their own schema.
+///
+/// # Errors
+///
+/// Returns SQLite's error if the database header or schema cannot be read.
+pub fn existing_schema_version(connection: &Connection) -> rusqlite::Result<Option<i64>> {
+    let version =
+        connection.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))?;
+    if version != 0 {
+        return Ok(Some(version));
+    }
+    let populated = connection.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_schema LIMIT 1)",
+        [],
+        |row| row.get::<_, bool>(0),
+    )?;
+    Ok(populated.then_some(0))
+}
+
 /// Stores latest checkpoints, transcripts, and middleware state in SQLite.
 pub struct SqliteCheckpoint {
     path: Arc<Path>,
@@ -198,27 +220,23 @@ impl SqliteCheckpoint {
         prepare_path(&path)?;
         let connection = Connection::open(&path)?;
         connection.busy_timeout(BUSY_TIMEOUT)?;
-        let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if version == 0
-            && connection.query_row(
-                "SELECT EXISTS (SELECT 1 FROM sqlite_schema LIMIT 1)",
-                [],
-                |row| row.get::<_, bool>(0),
-            )?
-        {
+        let version = existing_schema_version(&connection)?;
+        if version == Some(0) {
             return Err(Error::Checkpoint(format!(
                 "unversioned SQLite database is not empty; expected schema version \
                  {SCHEMA_VERSION} (start with a fresh database)"
             )));
         }
-        if version != 0 && version != SCHEMA_VERSION {
+        if let Some(version) = version
+            && version != SCHEMA_VERSION
+        {
             return Err(Error::Checkpoint(format!(
                 "unsupported SQLite schema version {version}; expected {SCHEMA_VERSION} \
                  (use a matching runtime or a qualified offline conversion)"
             )));
         }
         configure_connection(&connection)?;
-        if version == 0 {
+        if version.is_none() {
             // auto_vacuum must be chosen before WAL initializes a new database header.
             connection.execute_batch(SCHEMA)?;
         }
