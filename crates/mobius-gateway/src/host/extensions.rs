@@ -260,8 +260,6 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::bots::BotStore;
-    use crate::config::{ConfigStore, CredentialStore};
     use crate::harness::mobius::extensions::{ExtensionSource, InstalledExtension};
     use crate::wire::{AgentComposition, ExtensionHookRecord, ExtensionKind, ServerMessage};
 
@@ -288,12 +286,7 @@ mod tests {
             .config
             .clone();
         bot_config.extensions.insert(EXTENSION_ID.into());
-        let credentials =
-            Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
-        let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
-        let gateway = GatewayHost::start(store, config, credentials, bots)
-            .await
-            .expect("gateway");
+        let gateway = crate::host::tests::start_test_gateway(store, config).await;
         {
             let state = gateway.state.lock().await;
             state

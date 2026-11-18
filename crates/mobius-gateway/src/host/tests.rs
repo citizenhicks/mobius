@@ -203,6 +203,15 @@ pub(crate) struct TestGateway {
     pub(crate) gateway: GatewayHost,
 }
 
+pub(super) async fn start_test_gateway(store: ConfigStore, config: GatewayConfig) -> GatewayHost {
+    let credentials =
+        Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
+    let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
+    GatewayHost::start(store, config, credentials, bots)
+        .await
+        .expect("gateway")
+}
+
 pub(crate) async fn test_gateway() -> TestGateway {
     let root = tempfile::tempdir().expect("root");
     let workspace = root.path().join("workspace");
@@ -210,12 +219,7 @@ pub(crate) async fn test_gateway() -> TestGateway {
     let listen = "127.0.0.1:8741".parse().expect("listen address");
     let (store, config) =
         ConfigStore::initialize(root.path().join("state"), listen, None).expect("config");
-    let credentials =
-        Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
-    let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
-    let gateway = GatewayHost::start(store, config, credentials, bots)
-        .await
-        .expect("gateway");
+    let gateway = start_test_gateway(store, config).await;
     TestGateway {
         root,
         workspace,

@@ -67,12 +67,7 @@ async fn gateway_with_providers(
     store
         .save(&config.clone().validated().expect("valid config"))
         .expect("save config");
-    let credentials =
-        Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
-    let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
-    let gateway = GatewayHost::start(store, config, credentials, bots)
-        .await
-        .expect("gateway");
+    let gateway = crate::host::tests::start_test_gateway(store, config).await;
     (root, gateway)
 }
 
