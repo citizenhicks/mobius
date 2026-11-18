@@ -351,17 +351,12 @@ fn timeout() -> Rejection {
 mod tests {
     use super::*;
 
-    fn sandbox(workspace: &Path) -> (tempfile::TempDir, GatewaySandbox) {
-        let state = tempfile::tempdir().expect("state");
-        let sandbox = GatewaySandbox::new(workspace, state.path(), None, Duration::from_secs(5))
-            .expect("gateway sandbox");
-        (state, sandbox)
-    }
+    use crate::host::tests::test_sandbox;
 
     #[tokio::test]
     async fn read_opens_relative_and_absolute_paths_in_ranges() {
         let workspace = tempfile::tempdir().expect("workspace");
-        let (_state, sandbox) = sandbox(workspace.path());
+        let (_state, sandbox) = test_sandbox(workspace.path(), Duration::from_secs(5));
         let home = std::env::home_dir().expect("gateway home");
         let elsewhere = tempfile::tempdir_in(&home).expect("elsewhere");
         std::fs::write(workspace.path().join("main.rs"), b"fn main() {}").expect("file");
@@ -487,7 +482,7 @@ mod tests {
     #[tokio::test]
     async fn remove_refuses_traversal_git_directories_and_symlinks() {
         let workspace = tempfile::tempdir().unwrap();
-        let (_state, sandbox) = sandbox(workspace.path());
+        let (_state, sandbox) = test_sandbox(workspace.path(), Duration::from_secs(5));
         std::fs::create_dir(workspace.path().join("folder")).unwrap();
         std::fs::create_dir(workspace.path().join(".git")).unwrap();
         std::fs::write(workspace.path().join(".git/config"), b"config").unwrap();
@@ -535,7 +530,7 @@ mod tests {
             )
             .expect("file symlink");
         }
-        let (_state, sandbox) = sandbox(workspace.path());
+        let (_state, sandbox) = test_sandbox(workspace.path(), Duration::from_secs(5));
 
         let catalog = list(&sandbox, workspace.path(), WorkspaceFileScope::All)
             .await

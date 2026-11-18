@@ -212,6 +212,16 @@ pub(super) async fn start_test_gateway(store: ConfigStore, config: GatewayConfig
         .expect("gateway")
 }
 
+pub(super) fn test_sandbox(
+    workspace: &Path,
+    timeout: std::time::Duration,
+) -> (tempfile::TempDir, crate::sandbox::GatewaySandbox) {
+    let state = tempfile::tempdir().expect("state");
+    let sandbox = crate::sandbox::GatewaySandbox::new(workspace, state.path(), None, timeout)
+        .expect("gateway sandbox");
+    (state, sandbox)
+}
+
 fn test_workspace(root: &tempfile::TempDir) -> std::path::PathBuf {
     let path = root.path().join("workspace");
     std::fs::create_dir(&path).expect("workspace");

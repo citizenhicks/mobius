@@ -802,12 +802,7 @@ mod tests {
 
     use crate::git::run_git;
 
-    fn test_sandbox(workspace: &Path) -> (tempfile::TempDir, GatewaySandbox) {
-        let state = tempfile::tempdir().expect("state");
-        let sandbox =
-            GatewaySandbox::new(workspace, state.path(), None, GIT_TIMEOUT).expect("Git sandbox");
-        (state, sandbox)
-    }
+    use crate::host::tests::test_sandbox;
 
     fn initialize_repository(workspace: &Path, branch: &str) {
         run_git(workspace, &["init", "--quiet", "--initial-branch", branch]);
@@ -836,7 +831,7 @@ mod tests {
         .expect("unstaged contents");
         std::fs::write(workspace.path().join("untracked.txt"), "new\nfile\n")
             .expect("untracked contents");
-        let (_state, sandbox) = test_sandbox(workspace.path());
+        let (_state, sandbox) = test_sandbox(workspace.path(), GIT_TIMEOUT);
         for (scope, additions, deletions) in [
             (GitDiffScope::Staged, 2, 1),
             (GitDiffScope::Unstaged, 3, 0),
@@ -891,7 +886,7 @@ mod tests {
         std::fs::write(&hook, "#!/bin/sh\ntouch hook-ran\n").expect("checkout hook");
         std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))
             .expect("hook permissions");
-        let (_state, sandbox) = test_sandbox(workspace.path());
+        let (_state, sandbox) = test_sandbox(workspace.path(), GIT_TIMEOUT);
 
         switch_branch(&sandbox, "feature")
             .await
