@@ -29,6 +29,22 @@ pub fn grouped_count(value: impl Into<i128>) -> String {
     digits
 }
 
+/// Finds the newest visible reasoning heading, bounded to 160 Unicode scalar values.
+/// Clients normalize inline emphasis according to how they render streamed Markdown.
+pub fn latest_reasoning_summary(
+    text: &str,
+    plain: impl Fn(&str) -> Option<std::borrow::Cow<'_, str>>,
+) -> Option<String> {
+    text.lines().rev().find_map(|line| {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with("<!--") {
+            return None;
+        }
+        let title = plain(line.trim_start_matches('#').trim())?;
+        (!title.is_empty()).then(|| title.chars().take(160).collect())
+    })
+}
+
 /// A frontend command declared by a capability.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrontendCommand {

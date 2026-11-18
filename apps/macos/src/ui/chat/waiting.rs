@@ -19,13 +19,12 @@ pub(super) struct Waiting;
 
 /// The newest reasoning summary: its last non-empty line without heading or bold marks.
 pub(in crate::ui) fn reasoning_title(text: &str) -> Option<String> {
-    text.lines().rev().find_map(|line| {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with("<!--") {
-            return None;
-        }
-        let title = line.trim_start_matches('#').trim().replace("**", "");
-        (!title.is_empty()).then(|| title.chars().take(160).collect())
+    mobius::protocol::latest_reasoning_summary(text, |line| {
+        Some(if line.contains("**") {
+            line.replace("**", "").into()
+        } else {
+            line.into()
+        })
     })
 }
 

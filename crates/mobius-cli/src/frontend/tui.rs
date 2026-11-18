@@ -936,19 +936,13 @@ impl TuiState {
 }
 
 fn latest_summary_line(text: &str) -> Option<String> {
-    text.lines().rev().find_map(|line| {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with("<!--") {
-            return None;
-        }
-        let line = line.trim_start_matches('#').trim();
-        let title: std::borrow::Cow<'_, str> = if let Some(bold) = line.strip_prefix("**") {
+    mobius::protocol::latest_reasoning_summary(text, |line| {
+        if let Some(bold) = line.strip_prefix("**") {
             let (title, suffix) = bold.split_once("**")?;
-            format!("{title}{suffix}").into()
+            Some(format!("{title}{suffix}").into())
         } else {
-            line.into()
-        };
-        (!title.is_empty()).then(|| title.chars().take(160).collect())
+            Some(line.into())
+        }
     })
 }
 
