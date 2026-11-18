@@ -1,6 +1,9 @@
 //! The document toolbar and body frame shared by every pane kind.
 
-use super::*;
+use super::{
+    AnyElement, App, Div, FluentBuilder as _, IntoElement, ParentElement as _, SharedString,
+    Styled as _, Type, Typography as _, div, glyph, height, icon, palette, space,
+};
 
 /// A document: the 44 toolbar, when it has something to offer, over a `card` body.
 /// The tab already names the document, so a toolbar never repeats the tab's title.
