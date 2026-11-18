@@ -7,6 +7,10 @@ use mobius::SessionId;
 use mobius::backend::model::{Model, ModelEventSink, ModelOutput, ModelRequest, ModelRouter};
 use mobius::protocol::{ActiveMessageDelivery, MessageSource, ToolDiscoveryMode};
 
+fn completed_answer() -> mobius::Result<ModelOutput> {
+    ModelOutput::from_output(vec![fixture_answer()], true, TokenUsage::default())
+}
+
 #[derive(Default)]
 pub(super) struct CaptureModel {
     pub(super) entered: tokio::sync::Notify,
@@ -43,13 +47,7 @@ impl Model for CaptureModel {
                 self.entered.notify_one();
                 self.release.notified().await;
             }
-            ModelOutput::from_output(
-                vec![
-                    serde_json::json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"Done."}]}),
-                ],
-                true,
-                TokenUsage::default(),
-            )
+            completed_answer()
         })
     }
 }
@@ -293,13 +291,7 @@ async fn a_steered_idle_turn_publishes_normal_activity_and_hooks_without_an_extr
                     self.answering.notify_one();
                     self.release_answer.notified().await;
                 }
-                ModelOutput::from_output(
-                    vec![
-                        serde_json::json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"Done."}]}),
-                    ],
-                    true,
-                    TokenUsage::default(),
-                )
+                completed_answer()
             })
         }
     }

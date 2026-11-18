@@ -242,6 +242,10 @@ pub(crate) async fn test_gateway() -> TestGateway {
     }
 }
 
+fn fixture_answer() -> serde_json::Value {
+    serde_json::json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"Done."}]})
+}
+
 fn test_user_message(text: &str, delivery: Option<mobius::protocol::ActiveMessageDelivery>) -> Op {
     Op::Message {
         message: MessageSubmission {

@@ -33,9 +33,7 @@ async fn committed_statistics_follow_actual_tool_results_and_match_terminal_work
                         })
                         .collect()
                 } else {
-                    vec![
-                        serde_json::json!({"type":"message", "role":"assistant", "content":[{"type":"output_text", "text":"Done."}]}),
-                    ]
+                    vec![fixture_answer()]
                 };
                 ModelOutput::from_output(output, !first, TokenUsage::default())
             })
