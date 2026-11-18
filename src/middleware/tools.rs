@@ -721,14 +721,7 @@ impl Catalog {
         searchable: &BTreeSet<String>,
     ) -> Result<Vec<Arc<ToolDefinition>>> {
         let query = query.trim();
-        if query.is_empty() {
-            return Err(Error::Tool("tools_search query cannot be empty".into()));
-        }
-        if query.len() > MAX_TOOL_SEARCH_QUERY_BYTES {
-            return Err(Error::Tool(format!(
-                "tools_search query exceeds {MAX_TOOL_SEARCH_QUERY_BYTES} bytes"
-            )));
-        }
+        validate_tool_text("tools_search query", query, MAX_TOOL_SEARCH_QUERY_BYTES)?;
         let definitions = self
             .tools
             .iter()
@@ -959,6 +952,16 @@ pub(crate) fn rank_bm25(
         .into_iter()
         .map(|result| result.document.id)
         .collect()
+}
+
+fn validate_tool_text(name: &str, value: &str, max_bytes: usize) -> Result<()> {
+    if value.trim().is_empty() {
+        return Err(Error::Tool(format!("{name} cannot be empty")));
+    }
+    if value.len() > max_bytes {
+        return Err(Error::Tool(format!("{name} exceeds {max_bytes} bytes")));
+    }
+    Ok(())
 }
 
 fn tool_search_text(definition: &ToolDefinition) -> String {

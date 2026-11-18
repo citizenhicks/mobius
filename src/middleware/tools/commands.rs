@@ -116,7 +116,7 @@ impl Tool for Bash {
     ) -> BoxFuture<'_, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             let arguments: BashArgs = serde_json::from_value(arguments)?;
-            validate_command(&arguments.command)?;
+            super::validate_tool_text("command", &arguments.command, MAX_COMMAND_BYTES)?;
             let wait = arguments.wait()?;
             let live = context
                 .frontend()
@@ -415,18 +415,6 @@ fn end_command_block(block: &mut FrontendBlock, output: &ToolContent) {
     }
     block.text = super::compact_output(&text);
     block.group = envelope.command_id;
-}
-
-fn validate_command(command: &str) -> Result<()> {
-    if command.trim().is_empty() {
-        return Err(Error::Tool("command cannot be empty".into()));
-    }
-    if command.len() > MAX_COMMAND_BYTES {
-        return Err(Error::Tool(format!(
-            "command exceeds {MAX_COMMAND_BYTES} bytes"
-        )));
-    }
-    Ok(())
 }
 
 fn rewrite_command_input(mut input: Value) -> Result<Value> {
