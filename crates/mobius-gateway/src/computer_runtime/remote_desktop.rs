@@ -148,10 +148,7 @@ impl RemoteDesktop {
             {
                 return;
             }
-            if let Some(runtime) = runtime.take() {
-                tracing::info!("gateway desktop stopping: no active consumers");
-                runtime.stop().await;
-            }
+            Runtime::stop(&mut runtime, "no active consumers").await;
         });
     }
 
@@ -448,10 +445,8 @@ impl RemoteDesktop {
             }
             if input_submitted {
                 // Timed-out input may still be queued, so retire its private display before reuse.
-                if let Some(runtime) = guard.take() {
-                    tracing::warn!("gateway desktop stopping: X11 input timed out");
-                    runtime.stop().await;
-                }
+                tracing::warn!("X11 input timed out");
+                Runtime::stop(&mut guard, "X11 input timed out").await;
             } else if let Some(runtime) = guard.as_mut() {
                 runtime.native = None;
             }
@@ -604,10 +599,7 @@ impl RemoteDesktop {
 
     pub(crate) async fn shutdown(&self) {
         let mut runtime = self.runtime.lock().await;
-        if let Some(runtime) = runtime.take() {
-            tracing::info!("gateway desktop stopping: shutdown");
-            runtime.stop().await;
-        }
+        Runtime::stop(&mut runtime, "shutdown").await;
     }
 }
 
@@ -734,11 +726,14 @@ impl Runtime {
         })
     }
 
-    async fn stop(mut self) {
-        if let Some(browser) = self.browser.take() {
-            browser.stop().await;
+    async fn stop(slot: &mut Option<Self>, reason: &str) {
+        if let Some(mut runtime) = slot.take() {
+            tracing::info!(reason, "gateway desktop stopping");
+            if let Some(browser) = runtime.browser.take() {
+                browser.stop().await;
+            }
+            stop_children(runtime.children, &runtime.socket).await;
         }
-        stop_children(self.children, &self.socket).await;
     }
 
     fn profile<'config>(&'config self, config: &'config ComputerConfig) -> &'config Path {
