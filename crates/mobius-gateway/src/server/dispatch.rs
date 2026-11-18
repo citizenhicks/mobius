@@ -1431,20 +1431,20 @@ async fn update_session_file_upload(
     write_frame(writer, &ServerFrame::new(reply)).await
 }
 
-async fn authorize_stored_read(
-    connection: &mut ConnectionSessionState<'_>,
+async fn authorize_stored_read<'a>(
+    connection: &mut ConnectionSessionState<'a>,
     session_id: &SessionId,
-) -> std::result::Result<(), Rejection> {
+) -> std::result::Result<&'a SessionFileStore, Rejection> {
     let selected = connection
         .selected
         .as_ref()
         .is_some_and(|selected| **selected.host.session_id() == **session_id);
     if selected || connection.readable.as_ref() == Some(session_id) {
-        return Ok(());
+        return Ok(connection.session_files);
     }
     connection.gateway.authorize_read(session_id).await?;
     *connection.readable = Some(session_id.share());
-    Ok(())
+    Ok(connection.session_files)
 }
 
 async fn switch_bot_models(
@@ -1468,17 +1468,17 @@ async fn list_session_files(
     request_id: Arc<str>,
     session_id: SessionId,
 ) -> Result<()> {
-    let listed = match authorize_stored_read(connection, &session_id).await {
-        Ok(()) => connection
-            .session_files
+    let listed = async {
+        authorize_stored_read(connection, &session_id)
+            .await?
             .list_files_with_modified(
                 &session_id,
                 &[StoredFileOrigin::Upload, StoredFileOrigin::Artifact],
             )
             .await
-            .map_err(session_file_rejection),
-        Err(rejection) => Err(rejection),
-    };
+            .map_err(session_file_rejection)
+    }
+    .await;
     respond(writer, request_id, listed, |request_id, items| {
         ServerMessage::SessionFiles {
             request_id,
@@ -1507,14 +1507,14 @@ async fn read_session_file(
         offset,
         max_bytes,
     } = read;
-    let chunk = match authorize_stored_read(connection, &session_id).await {
-        Ok(()) => connection
-            .session_files
+    let chunk = async {
+        authorize_stored_read(connection, &session_id)
+            .await?
             .read_chunk(&session_id, &file_id, offset, max_bytes)
             .await
-            .map_err(session_file_rejection),
-        Err(rejection) => Err(rejection),
-    };
+            .map_err(session_file_rejection)
+    }
+    .await;
     respond(writer, request_id, chunk, |request_id, chunk| {
         ServerMessage::SessionFileChunk {
             request_id,
