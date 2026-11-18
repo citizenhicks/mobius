@@ -476,6 +476,14 @@ impl std::fmt::Debug for ApiKeyModel {
     }
 }
 
+pub(super) fn parse_reasoning_effort(effort: impl Into<String>) -> Result<Arc<str>> {
+    let effort = effort.into();
+    if effort.trim().is_empty() {
+        return Err(Error::Invalid("reasoning effort cannot be empty".into()));
+    }
+    Ok(effort.into())
+}
+
 impl ApiKeyModel {
     /// Wraps settings that provider assembly has already resolved and validated.
     pub(super) fn new(
@@ -518,11 +526,7 @@ impl ApiKeyModel {
     }
 
     pub(super) fn set_reasoning(&mut self, effort: impl Into<String>) -> Result<()> {
-        let effort = effort.into();
-        if effort.trim().is_empty() {
-            return Err(Error::Invalid("reasoning effort cannot be empty".into()));
-        }
-        self.reasoning_effort = Some(effort.into());
+        self.reasoning_effort = Some(parse_reasoning_effort(effort)?);
         Ok(())
     }
 

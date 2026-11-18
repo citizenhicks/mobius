@@ -238,11 +238,7 @@ impl OpenAi {
     ///
     /// Returns an error if validation or an operation required by this function fails.
     pub fn with_reasoning_effort(mut self, effort: impl Into<String>) -> Result<Self> {
-        let effort = effort.into();
-        if effort.trim().is_empty() {
-            return Err(Error::Invalid("reasoning effort cannot be empty".into()));
-        }
-        self.reasoning_effort = Some(effort.into());
+        self.reasoning_effort = Some(super::transport::parse_reasoning_effort(effort)?);
         Ok(self)
     }
 
