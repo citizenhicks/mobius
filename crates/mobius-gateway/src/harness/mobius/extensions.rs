@@ -2,7 +2,6 @@
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::OsString;
 use std::fs;
 use std::io::Read as _;
 use std::path::{Component, Path, PathBuf};
@@ -860,11 +859,7 @@ fn is_executable(metadata: &fs::Metadata) -> bool {
 }
 
 pub(crate) fn extensions_path(state_dir: &Path) -> PathBuf {
-    let mut name = state_dir
-        .file_name()
-        .map_or_else(|| OsString::from("mobius"), OsString::from);
-    name.push("-extensions");
-    state_dir.with_file_name(name)
+    crate::config::resource_directory(state_dir, "-extensions")
 }
 
 #[cfg(test)]

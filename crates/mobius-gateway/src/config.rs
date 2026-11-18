@@ -948,5 +948,15 @@ impl CloudflareConfig {
     }
 }
 
+/// Executable assets live beside the sandbox-masked state directory.
+pub(crate) fn resource_directory(state_dir: &Path, suffix: &str) -> PathBuf {
+    let mut name = state_dir
+        .file_name()
+        .unwrap_or_else(|| "mobius".as_ref())
+        .to_os_string();
+    name.push(suffix);
+    state_dir.with_file_name(name)
+}
+
 #[cfg(test)]
 mod tests;

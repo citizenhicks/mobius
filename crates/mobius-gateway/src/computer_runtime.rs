@@ -115,11 +115,6 @@ pub(crate) fn managed_directory(state_dir: &Path) -> PathBuf {
 }
 
 fn managed_directory_for(state_dir: &Path, config: &ComputerConfig) -> PathBuf {
-    // Like extensions, executable resources must remain outside sandbox-masked state.
-    let mut name = state_dir
-        .file_name()
-        .map_or_else(|| OsString::from("mobius"), OsString::from);
-    name.push("-runtimes");
     let mut hash = Sha256::new();
     for value in [
         config::DEFAULTS_TEXT,
@@ -145,8 +140,7 @@ fn managed_directory_for(state_dir: &Path, config: &ComputerConfig) -> PathBuf {
         hash.update([0]);
     }
     let revision = format!("{:x}", hash.finalize());
-    state_dir
-        .with_file_name(name)
+    crate::config::resource_directory(state_dir, "-runtimes")
         .join("computer-control")
         .join(revision)
 }
