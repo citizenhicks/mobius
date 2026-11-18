@@ -68,14 +68,10 @@ impl RenderOnce for Label {
     }
 }
 
-/// The heading of a resumed chat's divider: "Today", a weekday this week, or the date.
-pub(super) fn divider_timestamp<Tz: TimeZone>(
+fn transcript_date<Tz: TimeZone>(
     milliseconds: i64,
     now: &DateTime<Tz>,
-) -> Option<String>
-where
-    Tz::Offset: std::fmt::Display,
-{
+) -> Option<(DateTime<Tz>, i64)> {
     if milliseconds <= 0 {
         return None;
     }
@@ -84,6 +80,18 @@ where
         .date_naive()
         .signed_duration_since(time.date_naive())
         .num_days();
+    Some((time, days))
+}
+
+/// The heading of a resumed chat's divider: "Today", a weekday this week, or the date.
+pub(super) fn divider_timestamp<Tz: TimeZone>(
+    milliseconds: i64,
+    now: &DateTime<Tz>,
+) -> Option<String>
+where
+    Tz::Offset: std::fmt::Display,
+{
+    let (time, days) = transcript_date(milliseconds, now)?;
     let format = match days {
         0 => "Today %H:%M",
         1 => "Yesterday %H:%M",
@@ -98,14 +106,7 @@ fn compact_timestamp<Tz: TimeZone>(milliseconds: i64, now: &DateTime<Tz>) -> Opt
 where
     Tz::Offset: std::fmt::Display,
 {
-    if milliseconds <= 0 {
-        return None;
-    }
-    let time = now.timezone().timestamp_millis_opt(milliseconds).single()?;
-    let days = now
-        .date_naive()
-        .signed_duration_since(time.date_naive())
-        .num_days();
+    let (time, days) = transcript_date(milliseconds, now)?;
     let format = match days {
         0 => "%H:%M",
         1..=6 => "%a, %H:%M",
