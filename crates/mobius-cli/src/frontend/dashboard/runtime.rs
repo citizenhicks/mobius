@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use mobius::protocol::{
-    EventMsg, FrontendWidgetContent, MAX_CAPABILITY_INPUT_BYTES, MAX_MESSAGE_BYTES, Op, Submission,
+    EventMsg, FrontendWidgetContent, MAX_CAPABILITY_INPUT_BYTES, MAX_MESSAGE_BYTES, Op,
 };
 use mobius::{Error, Result};
 use mobius_gateway::client::{GatewayClient, GatewayEvents, GatewaySender};
@@ -525,16 +525,7 @@ pub(super) async fn submit_operation(
     session_id: &mobius::SessionId,
     op: Op,
 ) -> Result<()> {
-    sender
-        .send(ClientMessage::Submit {
-            session_id: session_id.share(),
-            submission: Submission {
-                id: crate::fresh_id(),
-                op,
-            },
-        })
-        .await
-        .map_err(gateway_error)
+    crate::frontend::submit(sender, session_id, crate::fresh_id(), op).await
 }
 
 pub(super) fn handle_navigation_key(state: &mut DashboardState, key: KeyEvent, area: Rect) -> bool {

@@ -35,6 +35,21 @@ pub use extensions::standalone as run_extensions;
 pub use reinitialize::confirm as confirm_gateway_reinitialize;
 pub use setup::run_gateway_login;
 
+async fn submit(
+    sender: &GatewaySender,
+    session_id: &mobius::SessionId,
+    id: std::sync::Arc<str>,
+    op: mobius::protocol::Op,
+) -> Result<()> {
+    sender
+        .send(mobius_gateway::wire::ClientMessage::Submit {
+            session_id: session_id.share(),
+            submission: mobius::protocol::Submission { id, op },
+        })
+        .await
+        .map_err(crate::gateway_error)
+}
+
 /// Moves `index` by `delta` within `0..len`, wrapping at both ends.
 fn wrap_step(index: usize, delta: isize, len: usize) -> usize {
     let Some(shift) = delta.unsigned_abs().checked_rem(len) else {

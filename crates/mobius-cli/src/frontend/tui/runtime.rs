@@ -27,7 +27,7 @@ use crate::frontend::terminal::{Screen, TerminalGuard, input_batch, input_interv
 use crate::frontend::{FrontendExit, bots, extensions, gateway, setup};
 use mobius::backend::checkpoint::ExecutionOutcome;
 use mobius::protocol::{
-    Event, EventMsg, FrontendEvent, MessageAuthor, ModelInfo, Op, SessionFileReference, Submission,
+    Event, EventMsg, FrontendEvent, MessageAuthor, ModelInfo, Op, SessionFileReference,
 };
 use mobius::{Error, Result};
 use mobius_gateway::client::{GatewayEvents, GatewaySender};
@@ -1574,17 +1574,8 @@ async fn send_op(
     op: Op,
 ) -> Result<Arc<str>> {
     let id: Arc<str> = crate::fresh_id();
-    sender
-        .send(ClientMessage::Submit {
-            session_id: session_id.share(),
-            submission: Submission {
-                id: Arc::clone(&id),
-                op,
-            },
-        })
-        .await
-        .map(|()| id)
-        .map_err(|error| Error::Stopped(error.to_string()))
+    crate::frontend::submit(sender, session_id, Arc::clone(&id), op).await?;
+    Ok(id)
 }
 
 #[cfg(test)]

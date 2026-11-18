@@ -2,11 +2,10 @@ use std::sync::Arc;
 
 use mobius::protocol::{
     EventMsg, MessageAuthor, MessageSubmission, ModelStepContentPhase, Op, ReviewDecision,
-    Submission,
 };
 use mobius::{Error, Result};
 use mobius_gateway::client::{GatewayEvents, GatewaySender};
-use mobius_gateway::wire::{ClientMessage, ServerMessage};
+use mobius_gateway::wire::ServerMessage;
 
 use crate::gateway_error;
 
@@ -21,25 +20,22 @@ pub async fn run(
     task: String,
 ) -> Result<Option<String>> {
     let submission_id: Arc<str> = crate::fresh_id();
-    sender
-        .send(ClientMessage::Submit {
-            session_id: session_id.share(),
-            submission: Submission {
-                id: Arc::clone(&submission_id),
-                op: Op::Message {
-                    message: MessageSubmission {
-                        author: MessageAuthor::User,
-                        text: task,
-                        attachments: Vec::new(),
-                        reply: None,
-                        requested_delivery: None,
-                        target_turn_id: None,
-                    },
-                },
+    super::submit(
+        &sender,
+        &session_id,
+        Arc::clone(&submission_id),
+        Op::Message {
+            message: MessageSubmission {
+                author: MessageAuthor::User,
+                text: task,
+                attachments: Vec::new(),
+                reply: None,
+                requested_delivery: None,
+                target_turn_id: None,
             },
-        })
-        .await
-        .map_err(gateway_error)?;
+        },
+    )
+    .await?;
 
     let mut turn_id = None;
     let mut first_error = None;
@@ -74,19 +70,16 @@ pub async fn run(
                     "headless run requested tool approval; configure a no-prompt gateway sandbox policy"
                         .into(),
                 ));
-                sender
-                    .send(ClientMessage::Submit {
-                        session_id: session_id.share(),
-                        submission: Submission {
-                            id: crate::fresh_id(),
-                            op: Op::ExecApproval {
-                                id: request.id,
-                                decision: ReviewDecision::Abort,
-                            },
-                        },
-                    })
-                    .await
-                    .map_err(gateway_error)?;
+                super::submit(
+                    &sender,
+                    &session_id,
+                    crate::fresh_id(),
+                    Op::ExecApproval {
+                        id: request.id,
+                        decision: ReviewDecision::Abort,
+                    },
+                )
+                .await?;
             }
             EventMsg::Error(error) if event.submission_id.as_ref() == Some(&submission_id) => {
                 first_error.get_or_insert(error.message);
