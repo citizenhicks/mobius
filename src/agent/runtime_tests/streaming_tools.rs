@@ -20,8 +20,7 @@ struct StreamingModel {
     release: Arc<Notify>,
     terminal: Terminal,
     tool_finished: Arc<Notify>,
-    tool_started: Arc<Notify>,
-    wait_for_tool_start: bool,
+    tool_started: Option<Arc<Notify>>,
 }
 
 struct StreamingTool {
@@ -183,11 +182,7 @@ impl Model for StreamingModel {
         if attempt > 0 {
             return Box::pin(async { Ok(scripted_message("done")) });
         }
-        let release = Arc::clone(&self.release);
         let terminal = self.terminal;
-        let tool_finished = Arc::clone(&self.tool_finished);
-        let tool_started = Arc::clone(&self.tool_started);
-        let wait_for_tool_start = self.wait_for_tool_start;
         Box::pin(async move {
             if !matches!(terminal, Terminal::Repaired { streaming: false }) {
                 events(ModelEvent::ToolCallReady(ToolCall {
@@ -197,7 +192,7 @@ impl Model for StreamingModel {
                 }))
                 .await?;
             }
-            if wait_for_tool_start {
+            if let Some(tool_started) = &self.tool_started {
                 tool_started.notified().await;
             }
             if matches!(
@@ -207,7 +202,7 @@ impl Model for StreamingModel {
                     | Terminal::HttpError
                     | Terminal::Repaired { streaming: true }
             ) {
-                tool_finished.notified().await;
+                self.tool_finished.notified().await;
             }
             match terminal {
                 Terminal::Changed => Ok(streaming_tool_output_with_arguments(
@@ -221,7 +216,7 @@ impl Model for StreamingModel {
                     Some("1".into()),
                 ))),
                 Terminal::Hold => {
-                    release.notified().await;
+                    self.release.notified().await;
                     Ok(streaming_tool_output(false))
                 }
                 Terminal::Repaired { .. } => Ok(streaming_tool_output_with_arguments(
@@ -385,8 +380,7 @@ async fn argument_repair_preserves_the_provider_history_prefix() {
             release: Arc::new(Notify::new()),
             terminal: Terminal::Repaired { streaming },
             tool_finished: Arc::clone(&finished),
-            tool_started: Arc::new(Notify::new()),
-            wait_for_tool_start: false,
+            tool_started: None,
         });
         let mut agent = create_agent(streaming_config(
             workspace.path(),
@@ -458,8 +452,7 @@ async fn streaming_tool_error_or_mismatch_does_not_retry_and_records_unknown_res
             release: Arc::new(Notify::new()),
             terminal,
             tool_finished: Arc::clone(&tool_finished),
-            tool_started: Arc::clone(&tool_started),
-            wait_for_tool_start: true,
+            tool_started: Some(Arc::clone(&tool_started)),
         });
         let mut agent = create_agent(streaming_config(
             workspace.path(),
@@ -643,8 +636,7 @@ async fn interrupt_drops_a_running_streaming_tool() {
         release: Arc::clone(&model_release),
         terminal: Terminal::Hold,
         tool_finished: Arc::new(Notify::new()),
-        tool_started: Arc::new(Notify::new()),
-        wait_for_tool_start: false,
+        tool_started: None,
     });
     let mut agent = create_agent(streaming_config(
         workspace.path(),
