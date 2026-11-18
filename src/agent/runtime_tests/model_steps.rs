@@ -223,23 +223,40 @@ impl crate::middleware::tools::Tool for RepeatedTool {
     }
 }
 
+fn repeated_call(index: usize) -> Value {
+    serde_json::json!({"type":"function_call","call_id":format!("call-{index}"),"name":"repeated","arguments":"{}"})
+}
+
+async fn start_repeated_turn(
+    workspace: &Path,
+    session: &str,
+    model: &Arc<ScriptedModel>,
+    tool: RepeatedTool,
+    warn: usize,
+    stop: usize,
+) -> Agent {
+    let limit = |count| std::num::NonZeroUsize::new(count).expect("positive limit");
+    let tools = Tools::new(vec![Arc::new(tool)]).repeat_limits(limit(warn), limit(stop));
+    let mut config = config_with_model(
+        workspace,
+        test_checkpoints(workspace),
+        session,
+        "test",
+        Arc::<ScriptedModel>::clone(model),
+    );
+    config.middleware = Arc::new(test_middleware(vec![Arc::new(tools)]));
+    let agent = create_agent(config).await.expect("create agent");
+    agent.sender().submit(user_op("go")).expect("submit input");
+    agent
+}
+
 /// Runs a turn whose model calls the tool `calls` times, then answers.
 async fn run_repeated_tool(polls: bool, calls: usize) -> (Arc<ScriptedModel>, usize, Vec<String>) {
     let workspace = tempfile::tempdir().expect("workspace");
-    let checkpoints: Arc<dyn CheckpointStore> = test_checkpoints(workspace.path());
     let mut outputs: VecDeque<ModelOutput> = (0..calls)
         .map(|index| {
-            ModelOutput::from_output(
-                vec![serde_json::json!({
-                    "type": "function_call",
-                    "call_id": format!("call-{index}"),
-                    "name": "repeated",
-                    "arguments": "{}"
-                })],
-                false,
-                scripted_usage(),
-            )
-            .expect("tool output")
+            ModelOutput::from_output(vec![repeated_call(index)], false, scripted_usage())
+                .expect("tool output")
         })
         .collect();
     outputs.push_back(scripted_message("done"));
@@ -248,22 +265,18 @@ async fn run_repeated_tool(polls: bool, calls: usize) -> (Arc<ScriptedModel>, us
         tool_counts: Mutex::new(Vec::new()),
         inputs: Mutex::new(Vec::new()),
     });
-    let limit = |count| std::num::NonZeroUsize::new(count).expect("positive limit");
-    let tools = crate::middleware::tools::Tools::new(vec![Arc::new(RepeatedTool {
-        polls,
-        ..RepeatedTool::default()
-    })])
-    .repeat_limits(limit(2), limit(3));
-    let mut config = config_with_model(
+    let mut agent = start_repeated_turn(
         workspace.path(),
-        checkpoints,
         "repeated-tool",
-        "test",
-        Arc::<ScriptedModel>::clone(&model),
-    );
-    config.middleware = Arc::new(test_middleware(vec![Arc::new(tools)]));
-    let mut agent = create_agent(config).await.expect("create agent");
-    agent.sender().submit(user_op("go")).expect("submit input");
+        &model,
+        RepeatedTool {
+            polls,
+            ..RepeatedTool::default()
+        },
+        2,
+        3,
+    )
+    .await;
     let mut begins = 0;
     let mut warnings = Vec::new();
     while let Some(event) = agent.next_event().await {
@@ -298,17 +311,7 @@ async fn repeated_tool_results_warn_the_model_then_stop_the_turn() {
 /// each ended call in order with its output, and how many model requests there were.
 async fn run_repeated_batch(parallel: bool) -> (usize, Vec<(String, String)>, usize) {
     let workspace = tempfile::tempdir().expect("workspace");
-    let checkpoints: Arc<dyn CheckpointStore> = test_checkpoints(workspace.path());
-    let calls = (0..5)
-        .map(|index| {
-            serde_json::json!({
-                "type": "function_call",
-                "call_id": format!("call-{index}"),
-                "name": "repeated",
-                "arguments": "{}"
-            })
-        })
-        .collect();
+    let calls = (0..5).map(repeated_call).collect();
     let model = Arc::new(ScriptedModel {
         outputs: Mutex::new(VecDeque::from([
             ModelOutput::from_output(calls, false, scripted_usage()).expect("tool output"),
@@ -317,24 +320,13 @@ async fn run_repeated_batch(parallel: bool) -> (usize, Vec<(String, String)>, us
         tool_counts: Mutex::new(Vec::new()),
         inputs: Mutex::new(Vec::new()),
     });
-    let limit = |count| std::num::NonZeroUsize::new(count).expect("positive limit");
     let tool = RepeatedTool {
         parallel,
         ..RepeatedTool::default()
     };
     let runs = Arc::clone(&tool.runs);
-    let tools = crate::middleware::tools::Tools::new(vec![Arc::new(tool)])
-        .repeat_limits(limit(1), limit(2));
-    let mut config = config_with_model(
-        workspace.path(),
-        checkpoints,
-        "repeated-batch",
-        "test",
-        Arc::<ScriptedModel>::clone(&model),
-    );
-    config.middleware = Arc::new(test_middleware(vec![Arc::new(tools)]));
-    let mut agent = create_agent(config).await.expect("create agent");
-    agent.sender().submit(user_op("go")).expect("submit input");
+    let mut agent =
+        start_repeated_turn(workspace.path(), "repeated-batch", &model, tool, 1, 2).await;
     let mut ended = Vec::new();
     while let Some(event) = agent.next_event().await {
         match event.msg {
