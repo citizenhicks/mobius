@@ -307,12 +307,12 @@ impl Middleware for Messages {
 
     fn frontend(&self, _session_id: &str) -> FrontendContribution {
         FrontendContribution {
-            commands: vec![FrontendCommand {
-                name: EDIT_COMMAND.into(),
-                arguments: text::DEFINITION.command_edit_arguments.as_str().into(),
-                description: text::DEFINITION.command_edit_description.as_str().into(),
-                requires_idle: false,
-            }],
+            commands: vec![FrontendCommand::new(
+                EDIT_COMMAND,
+                &text::DEFINITION.command_edit_arguments,
+                &text::DEFINITION.command_edit_description,
+                false,
+            )],
             ..FrontendContribution::default()
         }
     }

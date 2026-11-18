@@ -193,11 +193,8 @@ impl Middleware for Questions {
                 (Command::Skip, &DEFINITION.command_skip_description),
             ]
             .into_iter()
-            .map(|(name, description)| FrontendCommand {
-                name: name.as_str().into(),
-                arguments: "<question-id>".into(),
-                description: description.to_owned().into(),
-                requires_idle: false,
+            .map(|(name, description)| {
+                FrontendCommand::new(name.as_str(), "<question-id>", description, false)
             })
             .collect(),
             ..Default::default()

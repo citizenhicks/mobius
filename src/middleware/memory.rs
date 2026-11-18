@@ -839,12 +839,12 @@ impl Middleware for Memory {
             capability: self.name().into(),
             count: None,
             count_label: None,
-            commands: vec![FrontendCommand {
-                name: "memory".into(),
-                arguments: text::DEFINITION.command_arguments.clone().into(), // rules-allow: owned frontend record built from static text
-                description: text::DEFINITION.command_description.clone().into(), // rules-allow: owned frontend record built from static text
-                requires_idle: false,
-            }],
+            commands: vec![FrontendCommand::new(
+                "memory",
+                &text::DEFINITION.command_arguments,
+                &text::DEFINITION.command_description,
+                false,
+            )],
             widgets: surface_widgets(&[]),
             references: Vec::new(),
         }

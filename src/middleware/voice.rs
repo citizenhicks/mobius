@@ -144,12 +144,7 @@ impl Middleware for Voice {
 }
 
 fn transcript_command() -> FrontendCommand {
-    FrontendCommand {
-        name: COMMAND.into(),
-        arguments: String::new().into(),
-        description: text::DEFINITION.command_description.as_str().into(),
-        requires_idle: false,
-    }
+    FrontendCommand::new(COMMAND, "", &text::DEFINITION.command_description, false)
 }
 
 /// Seeds a new voice call with the Bot's current durable conversation, never the reverse.

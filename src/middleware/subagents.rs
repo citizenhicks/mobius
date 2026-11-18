@@ -674,16 +674,13 @@ impl Middleware for Subagents {
     fn frontend(&self, _session_id: &str) -> FrontendContribution {
         FrontendContribution {
             capability: self.name().into(),
-            count: None,
-            count_label: None,
-            commands: vec![FrontendCommand {
-                name: OPEN_COMMAND.into(),
-                arguments: String::new().into(),
-                description: text::DEFINITION.command_description.clone().into(), // rules-allow: the command owns its description from the static definition
-                requires_idle: false,
-            }],
-            widgets: Vec::new(),
-            references: Vec::new(),
+            commands: vec![FrontendCommand::new(
+                OPEN_COMMAND,
+                "",
+                &text::DEFINITION.command_description,
+                false,
+            )],
+            ..FrontendContribution::default()
         }
     }
 

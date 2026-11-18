@@ -314,11 +314,8 @@ impl Middleware for Sessions {
                 (Command::Fork, &text::DEFINITION.command_fork_description),
             ]
             .into_iter()
-            .map(|(command, description)| FrontendCommand {
-                name: command.as_str().into(),
-                arguments: String::new().into(),
-                description: description.to_owned().into(),
-                requires_idle: true,
+            .map(|(command, description)| {
+                FrontendCommand::new(command.as_str(), "", description, true)
             })
             .collect(),
             widgets: vec![Arc::new(FrontendWidget {

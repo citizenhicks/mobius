@@ -114,12 +114,12 @@ impl Middleware for Tasks {
     fn frontend(&self, _session_id: &str) -> FrontendContribution {
         FrontendContribution {
             capability: self.name().into(),
-            commands: vec![FrontendCommand {
-                name: TASKS_COMMAND.into(),
-                arguments: String::new().into(),
-                description: text::DEFINITION.command_tasks_description.clone().into(), // rules-allow: owned frontend record built from static text
-                requires_idle: true,
-            }],
+            commands: vec![FrontendCommand::new(
+                TASKS_COMMAND,
+                "",
+                &text::DEFINITION.command_tasks_description,
+                true,
+            )],
             ..FrontendContribution::default()
         }
     }

@@ -58,6 +58,17 @@ pub struct FrontendCommand {
     pub requires_idle: bool,
 }
 
+impl FrontendCommand {
+    pub(crate) fn new(name: &str, arguments: &str, description: &str, requires_idle: bool) -> Self {
+        Self {
+            name: name.into(),
+            arguments: arguments.into(),
+            description: description.into(),
+            requires_idle,
+        }
+    }
+}
+
 /// UI metadata exported by one capability.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrontendContribution {
