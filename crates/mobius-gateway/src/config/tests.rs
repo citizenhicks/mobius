@@ -95,15 +95,9 @@ fn opening_unmigratable_versions_never_rewrites_config() {
 fn provider_registration_never_silently_changes_existing_defaults() {
     let config = GatewayConfig::new(DEFAULT_LISTEN, None).expect("gateway config");
     let kimi = ProviderConfig {
-        tool_discovery: None,
-        instance: "kimi".into(),
-        provider: "kimi".into(),
-        model: "kimi-k3.1-pro".into(),
         base_url: Some(BaseUrl::new("https://api.moonshot.ai/v1").unwrap()),
-        endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
         reasoning_effort: Some("max".into()),
-        service_tier: None,
-        web_search: mobius::backend::model::provider::HostedWebSearch::Off,
+        ..crate::config::test_provider("kimi", "kimi", "kimi-k3.1-pro")
     };
     let first = config
         .registering_provider(
@@ -115,15 +109,8 @@ fn provider_registration_never_silently_changes_existing_defaults() {
         )
         .expect("register Kimi");
     let openrouter = ProviderConfig {
-        tool_discovery: None,
-        instance: "openrouter".into(),
-        provider: "openrouter".into(),
-        model: "openrouter/pareto-code".into(),
         base_url: Some(BaseUrl::new("https://openrouter.ai/api/v1/").unwrap()),
-        endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
-        reasoning_effort: None,
-        service_tier: None,
-        web_search: mobius::backend::model::provider::HostedWebSearch::Off,
+        ..crate::config::test_provider("openrouter", "openrouter", "openrouter/pareto-code")
     };
     let second = first
         .registering_provider(
@@ -233,15 +220,9 @@ fn saved_search_options_do_not_prevent_loading_but_fail_when_built() {
 #[test]
 fn credentialless_endpoint_requires_https() {
     let selection = ProviderConfig {
-        tool_discovery: None,
-        instance: "openrouter".into(),
-        provider: "openrouter".into(),
-        model: "openai/gpt-5".into(),
         base_url: Some(BaseUrl::new("http://127.0.0.1:8080/v1").unwrap()),
         endpoint_auth: ProviderEndpointAuth::Credentialless,
-        reasoning_effort: None,
-        service_tier: None,
-        web_search: mobius::backend::model::provider::HostedWebSearch::Off,
+        ..crate::config::test_provider("openrouter", "openrouter", "openai/gpt-5")
     };
 
     let error = GatewayConfig::new(DEFAULT_LISTEN, None)

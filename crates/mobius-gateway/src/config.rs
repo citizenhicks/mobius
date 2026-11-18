@@ -948,6 +948,21 @@ impl CloudflareConfig {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn test_provider(instance: &str, provider: &str, model: &str) -> ProviderConfig {
+    ProviderConfig {
+        instance: instance.into(),
+        provider: provider.into(),
+        model: model.into(),
+        base_url: None,
+        endpoint_auth: ProviderEndpointAuth::ProviderDefault,
+        tool_discovery: None,
+        service_tier: None,
+        reasoning_effort: None,
+        web_search: mobius::backend::model::provider::HostedWebSearch::Off,
+    }
+}
+
 /// Executable assets live beside the sandbox-masked state directory.
 pub(crate) fn resource_directory(state_dir: &Path, suffix: &str) -> PathBuf {
     let mut name = state_dir

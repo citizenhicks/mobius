@@ -25,26 +25,14 @@ async fn provider_removal_gateway(
     let listen = "127.0.0.1:8741".parse().expect("listen address");
     let (store, config) = ConfigStore::initialize(state_dir, listen, None).expect("config");
     let primary = ProviderConfig {
-        tool_discovery: None,
-        instance: "openrouter".into(),
-        provider: "openrouter".into(),
-        model: "openai/gpt-5".into(),
         base_url: Some(BaseUrl::new("https://connector.example/v1").unwrap()),
         endpoint_auth: ProviderEndpointAuth::Credentialless,
-        reasoning_effort: None,
-        service_tier: None,
-        web_search: mobius::backend::model::provider::HostedWebSearch::Off,
+        ..crate::config::test_provider("openrouter", "openrouter", "openai/gpt-5")
     };
     let removable = ProviderConfig {
-        tool_discovery: None,
-        instance: "kimi-unused".into(),
-        provider: "kimi".into(),
-        model: "kimi-k3.1-pro".into(),
         base_url: Some(BaseUrl::new("https://api.moonshot.ai/v1").unwrap()),
-        endpoint_auth: ProviderEndpointAuth::ProviderDefault,
         reasoning_effort: Some("max".into()),
-        service_tier: None,
-        web_search: mobius::backend::model::provider::HostedWebSearch::Off,
+        ..crate::config::test_provider("kimi-unused", "kimi", "kimi-k3.1-pro")
     };
     let config = config
         .registering_provider(
@@ -116,15 +104,8 @@ async fn browser_proxy_registration_requires_operator_and_allows_trusted_root_re
     )
     .expect("write test credential");
     let mut selection = ProviderConfig {
-        tool_discovery: None,
-        instance: "trusted-codex".into(),
-        provider: "openai_codex".into(),
-        model: "gpt-6-luna".into(),
         base_url: Some(BaseUrl::new("https://operator-proxy.example/native").unwrap()),
-        endpoint_auth: ProviderEndpointAuth::ProviderDefault,
-        reasoning_effort: None,
-        service_tier: None,
-        web_search: mobius::backend::model::provider::HostedWebSearch::Off,
+        ..crate::config::test_provider("trusted-codex", "openai_codex", "gpt-6-luna")
     };
     let error = gateway
         .register_provider(

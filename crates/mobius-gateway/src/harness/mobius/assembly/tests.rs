@@ -1,5 +1,4 @@
 use mobius::backend::model::provider::BaseUrl;
-use mobius::backend::model::provider::HostedWebSearch;
 
 use super::*;
 
@@ -86,15 +85,8 @@ fn custom_openai_roots_require_endpoint_bound_stored_credentials() {
         let credentials =
             CredentialStore::open(store.credentials_path()).expect("credential store");
         let selection = ProviderConfig {
-            tool_discovery: None,
-            instance: provider_id.into(),
-            provider: provider_id.into(),
-            model: model.into(),
             base_url: Some(BaseUrl::new("https://example.com/v1").unwrap()),
-            endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
-            reasoning_effort: None,
-            service_tier: None,
-            web_search: HostedWebSearch::Off,
+            ..crate::config::test_provider(provider_id, provider_id, model)
         };
 
         let error = resolve_credential(
@@ -292,17 +284,7 @@ fn voice_capability_follows_the_router_rule_and_flags_unknown_saved_routes() {
     .expect("config");
     let config = config
         .registering_provider(
-            ProviderConfig {
-                tool_discovery: None,
-                instance: "openai_socket".into(),
-                provider: "openai_socket".into(),
-                model: "gpt-6.1-sol".into(),
-                base_url: None,
-                endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
-                reasoning_effort: None,
-                service_tier: None,
-                web_search: HostedWebSearch::Off,
-            },
+            crate::config::test_provider("openai_socket", "openai_socket", "gpt-6.1-sol"),
             "OpenAI".into(),
             Default::default(),
             Vec::new(),
@@ -368,15 +350,8 @@ fn default_voice_capability_matches_the_router_when_an_earlier_provider_has_no_k
         config = config
             .registering_provider(
                 ProviderConfig {
-                    instance: instance.into(),
-                    provider: "openai_socket".into(),
-                    model: "gpt-6.1-sol".into(),
                     base_url: Some(BaseUrl::new("https://voice.example/v1").expect("endpoint")),
-                    endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
-                    reasoning_effort: None,
-                    service_tier: None,
-                    web_search: HostedWebSearch::Off,
-                    tool_discovery: None,
+                    ..crate::config::test_provider(instance, "openai_socket", "gpt-6.1-sol")
                 },
                 instance.into(),
                 Default::default(),

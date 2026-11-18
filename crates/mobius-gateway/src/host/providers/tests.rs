@@ -1,8 +1,6 @@
 use mobius::backend::model::provider::BaseUrl;
 use std::sync::Arc;
 
-use mobius::backend::model::provider::HostedWebSearch;
-
 use crate::bots::BotStore;
 use crate::config::{ConfigStore, CredentialStore};
 use crate::wire::{ProviderEndpointAuth, ProviderTint};
@@ -11,15 +9,9 @@ use super::*;
 
 fn selection(instance: &str, provider: &str, model: &str) -> ProviderConfig {
     ProviderConfig {
-        tool_discovery: None,
-        instance: instance.into(),
-        provider: provider.into(),
-        model: model.into(),
         base_url: Some(BaseUrl::new("https://gateway.example/v1").unwrap()),
         endpoint_auth: ProviderEndpointAuth::Credentialless,
-        reasoning_effort: None,
-        service_tier: None,
-        web_search: HostedWebSearch::Off,
+        ..crate::config::test_provider(instance, provider, model)
     }
 }
 
