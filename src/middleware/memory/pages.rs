@@ -435,15 +435,7 @@ fn invalid(path: &Path, error: &str) -> Error {
 }
 
 pub(super) fn validate_name(name: &str) -> std::result::Result<String, String> {
-    let valid = !name.is_empty()
-        && name.len() <= MAX_NAME_BYTES
-        && name.split('-').all(|part| {
-            !part.is_empty()
-                && part
-                    .bytes()
-                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
-        });
-    if valid {
+    if crate::identifier::valid_kebab_name(name, MAX_NAME_BYTES) {
         Ok(name.to_owned())
     } else {
         Err(format!(

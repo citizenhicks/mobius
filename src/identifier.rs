@@ -28,6 +28,13 @@ pub fn valid_ascii_identifier(
         })
 }
 
+pub(crate) fn valid_kebab_name(value: &str, max_bytes: usize) -> bool {
+    value.len() <= max_bytes
+        && value
+            .split('-')
+            .all(|word| valid_ascii_identifier(word, max_bytes, AsciiCase::Lower, &[]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

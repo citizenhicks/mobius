@@ -86,7 +86,7 @@ fn load_skill(root: PathBuf) -> Result<LoadedPackage> {
         Error::Invalid(format!("skill manifest is not valid UTF-8: {error}"))
     })?;
     let (name, description) = skill_metadata(&path, &content);
-    if !valid_openai_package_name(&name) {
+    if !crate::identifier::valid_kebab_name(&name, MAX_PLUGIN_ID_BYTES) {
         return Err(Error::Invalid(format!(
             "skill name `{name}` must be kebab-case"
         )));
@@ -145,7 +145,7 @@ impl OpenAiPluginManifest {
             "bundledContentVariant",
             "$schema",
         ];
-        if !valid_openai_package_name(&self.name) {
+        if !crate::identifier::valid_kebab_name(&self.name, MAX_PLUGIN_ID_BYTES) {
             return Err(Error::Invalid(format!(
                 "plugin name `{}` must be kebab-case",
                 self.name
@@ -357,17 +357,6 @@ fn discover_agent_plugin_skills(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.into()),
     }
-}
-
-fn valid_openai_package_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= MAX_PLUGIN_ID_BYTES
-        && name.split('-').all(|part| {
-            !part.is_empty()
-                && part
-                    .bytes()
-                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
-        })
 }
 
 pub(super) fn canonical_root(path: &Path) -> Result<PathBuf> {
