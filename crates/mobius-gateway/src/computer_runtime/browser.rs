@@ -166,11 +166,7 @@ pub(crate) async fn reply(
     let result = connection
         .ok_or_else(|| Error::Sandbox("this connection has no registered browser renderer".into()))
         .and_then(|connection| connection.reply(&request_id, endpoint));
-    // A reply answers its request; only a stray one is worth a response.
-    if result.is_ok() {
-        return Ok(());
-    }
-    app_bridge::write_outcome(writer, request_id, "browser", result).await
+    app_bridge::write_reply_error(writer, request_id, "browser", result).await
 }
 
 #[cfg(test)]

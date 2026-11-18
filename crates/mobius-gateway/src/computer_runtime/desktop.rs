@@ -254,9 +254,5 @@ pub(crate) async fn reply(
     let result = connection
         .ok_or_else(unavailable)
         .and_then(|connection| connection.reply(&request_id, response));
-    // Replies are already correlated to the request; do not acknowledge each image again.
-    if result.is_ok() {
-        return Ok(());
-    }
-    app_bridge::write_outcome(writer, request_id, "desktop_control", result).await
+    app_bridge::write_reply_error(writer, request_id, "desktop_control", result).await
 }

@@ -128,6 +128,19 @@ pub(crate) async fn write_update<P>(
     }
 }
 
+/// A host reply already answers a pending request. Only a stray reply gets a rejection.
+pub(crate) async fn write_reply_error(
+    writer: &mut (impl AsyncWrite + Unpin),
+    request_id: Arc<str>,
+    code: &str,
+    result: Result<()>,
+) -> crate::Result<()> {
+    if result.is_ok() {
+        return Ok(());
+    }
+    write_outcome(writer, request_id, code, result).await
+}
+
 /// Answers a registration or a stray reply, rejecting it under `code` on failure.
 pub(crate) async fn write_outcome(
     writer: &mut (impl AsyncWrite + Unpin),
