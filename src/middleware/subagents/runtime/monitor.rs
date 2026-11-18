@@ -11,7 +11,6 @@ use super::Shared;
 use super::Stage;
 use super::coordination::CompletionUpdate;
 use super::subagent_error_notice;
-use crate::Error;
 use crate::Result;
 use crate::agent::AgentEvents;
 use crate::protocol::EventMsg;
@@ -23,11 +22,7 @@ impl Shared {
     async fn turn_started(&self, root_id: &SessionId, path: &str, turn_id: Arc<str>) -> Result<()> {
         self.mutate_root(root_id, |root| {
             root.parent_reports.remove(path);
-            let entry = root
-                .tree
-                .agents
-                .get_mut(path)
-                .ok_or_else(|| Error::Unknown(format!("agent `{path}`")))?;
+            let entry = root.tree.agent_mut(path)?;
             entry.status = AgentStatus::Running;
             entry.active_turn_id = Some(turn_id);
             entry.last_message = None;
@@ -43,11 +38,7 @@ impl Shared {
         turn_id: Arc<str>,
     ) -> Result<()> {
         self.mutate_root(root_id, |root| {
-            let entry = root
-                .tree
-                .agents
-                .get_mut(path)
-                .ok_or_else(|| Error::Unknown(format!("agent `{path}`")))?;
+            let entry = root.tree.agent_mut(path)?;
             entry.status = AgentStatus::Running;
             entry.active_turn_id = Some(turn_id);
             Ok(())
@@ -62,11 +53,7 @@ impl Shared {
         message: String,
     ) -> Result<()> {
         self.mutate_root(root_id, |root| {
-            let entry = root
-                .tree
-                .agents
-                .get_mut(path)
-                .ok_or_else(|| Error::Unknown(format!("agent `{path}`")))?;
+            let entry = root.tree.agent_mut(path)?;
             entry.last_message = Some(bounded(message.into()));
             Ok(())
         })

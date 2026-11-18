@@ -110,6 +110,14 @@ struct Tree {
     updates: VecDeque<CompletionUpdate>,
 }
 
+impl Tree {
+    fn agent_mut(&mut self, path: &str) -> Result<&mut AgentRecord> {
+        self.agents
+            .get_mut(path)
+            .ok_or_else(|| Error::Unknown(format!("agent `{path}`")))
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct AgentRecord {
@@ -396,11 +404,7 @@ impl Shared {
         model: Option<Arc<str>>,
     ) -> Result<()> {
         self.mutate_root(root_id, |root| {
-            let entry = root
-                .tree
-                .agents
-                .get_mut(path)
-                .ok_or_else(|| Error::Unknown(format!("agent `{path}`")))?;
+            let entry = root.tree.agent_mut(path)?;
             if let Some(model) = model {
                 entry.model = model;
             }
