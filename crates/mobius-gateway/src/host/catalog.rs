@@ -393,17 +393,22 @@ mod tests {
 
     use super::*;
 
+    fn catalog_store() -> (tempfile::TempDir, Arc<dyn CheckpointStore>) {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
+            SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
+                .expect("checkpoints"),
+        );
+        (workspace, checkpoints)
+    }
+
     fn activities() -> SessionActivities {
         Arc::new(tokio::sync::Mutex::new(SessionCatalog::default()))
     }
 
     #[tokio::test]
     async fn session_catalog_is_bounded_and_truncates_utf8_previews() {
-        let workspace = tempfile::tempdir().expect("workspace");
-        let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
-            SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
-                .expect("checkpoints"),
-        );
+        let (_workspace, checkpoints) = catalog_store();
         for index in 0..=SESSION_PAGE_SIZE {
             let mut checkpoint = Checkpoint::empty(SessionId::new(format!("{index:03}")).unwrap());
             Arc::make_mut(&mut checkpoint.session_context).owner_id = "bot-fixture".into();
@@ -415,7 +420,7 @@ mod tests {
                 format!("chat {index}")
             });
             checkpoints
-                .save(checkpoint.clone(), Vec::new(), None)
+                .save(checkpoint, Vec::new(), None)
                 .await
                 .expect("save chat");
         }
@@ -439,17 +444,13 @@ mod tests {
 
     #[tokio::test]
     async fn hidden_bot_catalog_contains_only_owned_roots() {
-        let workspace = tempfile::tempdir().expect("workspace");
-        let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
-            SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
-                .expect("checkpoints"),
-        );
+        let (_workspace, checkpoints) = catalog_store();
         let mut root = Checkpoint::empty(SessionId::new("hidden-root").unwrap());
         root.catalog_visible = false;
         Arc::make_mut(&mut root.session_context).owner_id = "bot-a".into();
         root.sequence = 1;
         checkpoints
-            .save(root.clone(), Vec::new(), None)
+            .save(root, Vec::new(), None)
             .await
             .expect("save root");
         let mut child = Checkpoint::empty(SessionId::new("hidden-child").unwrap());
@@ -463,7 +464,7 @@ mod tests {
         other.catalog_visible = false;
         Arc::make_mut(&mut other.session_context).owner_id = "bot-b".into();
         checkpoints
-            .save(other.clone(), Vec::new(), None)
+            .save(other, Vec::new(), None)
             .await
             .expect("save other");
 
