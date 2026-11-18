@@ -530,7 +530,6 @@ async fn run(mut command: Command, path: &Path, config: &ComputerConfig) -> Resu
     fs::create_dir_all(path.join(".tmp"))?;
     command
         .current_dir(path)
-        .kill_on_drop(true)
         .env_clear()
         .env("HOME", path.join(".home"))
         .env("TMPDIR", path.join(".tmp"))
@@ -552,9 +551,7 @@ async fn run(mut command: Command, path: &Path, config: &ComputerConfig) -> Resu
             .env("NODE_EXTRA_CA_CERTS", path)
             .env("npm_config_cafile", path);
     }
-    command.process_group(0);
-    let mut child = command.spawn()?;
-    let _group = ProcessGroupGuard::new(&child)?;
+    let (mut child, _group) = ProcessGroupGuard::spawn(&mut command)?;
     if !child.wait().await?.success() {
         // npm/download errors can contain authenticated proxy URLs. Keep them
         // inside the private installation directory rather than returning them to a client.

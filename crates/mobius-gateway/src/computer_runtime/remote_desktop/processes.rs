@@ -30,11 +30,8 @@ impl OwnedProcess {
         command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
-            .process_group(0)
-            .kill_on_drop(true);
-        let mut child = command.spawn()?;
-        let group = ProcessGroupGuard::new(&child)?;
+            .stderr(Stdio::inherit());
+        let (mut child, group) = ProcessGroupGuard::spawn(command)?;
         let pid = child
             .id()
             .ok_or_else(|| Error::Internal("desktop child PID unavailable".into()))?;

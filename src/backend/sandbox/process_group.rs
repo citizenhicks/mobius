@@ -30,6 +30,17 @@ pub struct ProcessGroupGuard {
 }
 
 impl ProcessGroupGuard {
+    /// Starts a child in a new process group and arms cleanup for cancellation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the child cannot start or has no process ID.
+    pub fn spawn(command: &mut tokio::process::Command) -> Result<(tokio::process::Child, Self)> {
+        let child = command.process_group(0).kill_on_drop(true).spawn()?;
+        let group = Self::new(&child)?;
+        Ok((child, group))
+    }
+
     /// Arms cleanup for the child's process group.
     /// # Errors
     ///

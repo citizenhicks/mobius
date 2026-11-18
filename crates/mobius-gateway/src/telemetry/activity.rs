@@ -310,18 +310,16 @@ impl<'a> ActivityHook<'a> {
         if self.process.is_some() {
             return Ok(());
         }
-        let mut child = Command::new(executable)
-            .args(config.command.iter().skip(1))
-            .env_clear()
-            .env("PATH", "/usr/bin:/bin")
-            .current_dir("/")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
-            .process_group(0)
-            .kill_on_drop(true)
-            .spawn()?;
-        let group = ProcessGroupGuard::new(&child)?;
+        let (mut child, group) = ProcessGroupGuard::spawn(
+            Command::new(executable)
+                .args(config.command.iter().skip(1))
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .current_dir("/")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::inherit()),
+        )?;
         let stdin = child
             .stdin
             .take()

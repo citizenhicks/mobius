@@ -49,15 +49,12 @@ impl WorkerProcess {
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .process_group(0)
-            .kill_on_drop(true);
+            .stderr(Stdio::null());
         #[cfg(target_os = "macos")]
         let (cleanup_lease, child_lease) = std::os::unix::net::UnixStream::pair()?;
         #[cfg(target_os = "macos")]
         command.stderr(Stdio::from(std::os::fd::OwnedFd::from(child_lease)));
-        let mut child = command.spawn()?;
-        let group = ProcessGroupGuard::new(&child)?;
+        let (mut child, group) = ProcessGroupGuard::spawn(command)?;
         let stdin = child
             .stdin
             .take()
