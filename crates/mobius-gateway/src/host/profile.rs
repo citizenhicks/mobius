@@ -174,7 +174,7 @@ pub(super) fn local_machine_name() -> Result<String> {
             ))
         })?;
     let name = name.trim();
-    if name.is_empty() || name.len() > 255 || name.chars().any(char::is_control) {
+    if !crate::single_line_field(name, 255) {
         return Err(Error::Internal("the machine hostname is invalid".into()));
     }
     Ok(name.to_owned())
