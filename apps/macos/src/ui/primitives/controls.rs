@@ -55,7 +55,7 @@ pub(crate) fn palette(cx: &App) -> Palette {
 }
 
 /// Monochrome glyph at rest with a hover fill; disabled buttons dim.
-fn quiet(cx: &App) -> ButtonVariant {
+pub(in crate::ui) fn quiet(cx: &App) -> ButtonVariant {
     let p = palette(cx);
     ButtonVariant::Custom(
         ButtonCustomVariant::new(cx)

@@ -1,7 +1,6 @@
 //! The sidebar's gateway switcher: connection status, machine name and the gateway menu.
 
 use super::*;
-use gpui_component::button::{ButtonCustomVariant, ButtonVariant};
 use gpui_component::menu::DropdownMenu;
 
 impl Workspace {
@@ -33,13 +32,7 @@ impl Workspace {
             })
             .collect();
         Button::new("gateway-switcher")
-            .with_variant(ButtonVariant::Custom(
-                ButtonCustomVariant::new(cx)
-                    .color(transparent_black())
-                    .foreground(p.muted)
-                    .hover(p.hover)
-                    .active(p.pressed),
-            ))
+            .with_variant(crate::ui::primitives::quiet(cx))
             .h(height::MINI)
             .px(space::S)
             .tooltip(self.link_label())
