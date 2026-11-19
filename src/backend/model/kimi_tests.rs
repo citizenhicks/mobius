@@ -20,7 +20,9 @@ async fn credentialless_post_uses_custom_path_and_omits_authorization() {
             None,
             BaseUrl::new(format!("http://{address}/proxy")).unwrap(),
             "test-model".into(),
-            reqwest::Client::new(),
+            crate::backend::model::ModelTransportSettings::default()
+                .streaming_client()
+                .unwrap(),
             ModelTransportSettings::default(),
         )
         .expect("credentialless provider"),

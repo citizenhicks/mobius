@@ -75,6 +75,15 @@ pub use reqwest::Response as HttpResponse;
 /// Redirect policy for shared HTTP clients.
 pub use reqwest::redirect::Policy as HttpRedirectPolicy;
 
+/// Builds a reqwest client with the application's TLS provider, defaulting to ring.
+pub fn http_client_builder() -> reqwest::ClientBuilder {
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        // Concurrent builders may race to install the process-wide provider. The first wins.
+        drop(rustls::crypto::ring::default_provider().install_default());
+    }
+    HttpClient::builder()
+}
+
 /// A reasoning effort, image tier or voice advertised as a variant of one model.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1112,7 +1121,9 @@ mod tests {
                     reasoning_effort: None,
                     service_tier: None,
                     web_search: HostedWebSearch::Off,
-                    http: reqwest::Client::new(),
+                    http: crate::backend::model::ModelTransportSettings::default()
+                        .streaming_client()
+                        .unwrap(),
                     transport: super::super::ModelTransportSettings::default(),
                 });
                 if definition.supports_tool_discovery(discovery) {
@@ -1153,7 +1164,9 @@ mod tests {
                         reasoning_effort: None,
                         service_tier: None,
                         web_search: HostedWebSearch::Off,
-                        http: reqwest::Client::new(),
+                        http: crate::backend::model::ModelTransportSettings::default()
+                            .streaming_client()
+                            .unwrap(),
                         transport: super::super::ModelTransportSettings::default(),
                     })
                     .expect("provider constructor receives its advertised default");
@@ -1217,7 +1230,9 @@ mod tests {
                     reasoning_effort: None,
                     service_tier: None,
                     web_search: HostedWebSearch::Off,
-                    http: reqwest::Client::new(),
+                    http: crate::backend::model::ModelTransportSettings::default()
+                        .streaming_client()
+                        .unwrap(),
                     transport: crate::backend::model::ModelTransportSettings::default(),
                 })
                 .expect("credentialless provider builds without a credential");

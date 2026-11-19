@@ -89,7 +89,9 @@ pub(super) fn socket_provider(address: SocketAddr) -> OpenAiSocket {
         BaseUrl::new(format!("http://{address}")).expect("base URL"),
         format!("ws://{address}/responses"),
         "test-model".into(),
-        reqwest::Client::new(),
+        crate::backend::model::ModelTransportSettings::default()
+            .streaming_client()
+            .unwrap(),
         ModelTransportSettings::default(),
     )
     .expect("provider")

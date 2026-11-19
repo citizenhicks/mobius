@@ -22,7 +22,7 @@ pub(crate) struct ImageClient {
 impl ImageClient {
     pub(crate) fn new() -> anyhow::Result<Self> {
         let user_agent = HeaderValue::from_static(concat!("mobius/", env!("CARGO_PKG_VERSION")));
-        let client = Client::builder()
+        let client = mobius::backend::model::provider::http_client_builder()
             .user_agent(&user_agent)
             .connect_timeout(Duration::from_secs(10))
             .tcp_keepalive(Duration::from_secs(30))

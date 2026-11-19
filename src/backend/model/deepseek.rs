@@ -75,7 +75,9 @@ mod tests {
                         reasoning_effort: None,
                         service_tier: None,
                         web_search: HostedWebSearch::Off,
-                        http: reqwest::Client::new(),
+                        http: crate::backend::model::ModelTransportSettings::default()
+                            .streaming_client()
+                            .unwrap(),
                         transport: crate::backend::model::ModelTransportSettings::default(),
                     })
                     .expect("build provider");

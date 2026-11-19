@@ -79,7 +79,7 @@ async fn transport(api: VoiceApi) -> (Arc<RealtimeTransport>, TcpListener) {
     (
         Arc::new(RealtimeTransport {
             api,
-            client: Client::builder()
+            client: crate::backend::model::provider::http_client_builder()
                 .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .unwrap(),

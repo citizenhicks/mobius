@@ -576,7 +576,9 @@ async fn http_unauthorized_refreshes_and_retries_once() {
         Some(Arc::<RefreshingAuthorization>::clone(&auth)),
         url(&format!("http://{address}")),
         "test-model".into(),
-        reqwest::Client::new(),
+        crate::backend::model::ModelTransportSettings::default()
+            .streaming_client()
+            .unwrap(),
         crate::backend::model::ModelTransportSettings::default(),
     )
     .expect("provider");
@@ -633,7 +635,9 @@ async fn http_transport_failure_does_not_replay_accepted_post() {
         Some("test-key".into()),
         url(&format!("http://{address}")),
         "test-model".into(),
-        reqwest::Client::new(),
+        crate::backend::model::ModelTransportSettings::default()
+            .streaming_client()
+            .unwrap(),
         crate::backend::model::ModelTransportSettings::default(),
     )
     .expect("provider");

@@ -161,7 +161,9 @@ async fn native_stream_round_trip_preserves_thinking_signatures_tools_and_usage(
             Some("test-key".into()),
             BaseUrl::new(root.as_str()).unwrap(),
             "mistral-large-4-0".into(),
-            reqwest::Client::new(),
+            crate::backend::model::ModelTransportSettings::default()
+                .streaming_client()
+                .unwrap(),
             ModelTransportSettings::default(),
         )
         .unwrap(),

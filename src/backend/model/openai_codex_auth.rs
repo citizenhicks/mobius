@@ -359,7 +359,7 @@ async fn save_login_credential(path: PathBuf, credential: OAuthCredential) -> Re
 }
 
 fn http_client_with_settings(settings: &super::super::ModelTransportSettings) -> Result<Client> {
-    Ok(Client::builder()
+    Ok(crate::backend::model::provider::http_client_builder()
         .timeout(Duration::from_millis(settings.oauth_request_timeout_ms))
         .redirect(reqwest::redirect::Policy::none())
         .build()?)

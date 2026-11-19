@@ -17,7 +17,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
-use mobius::backend::model::provider::{HttpCertificate, HttpClient, HttpResponse};
+use mobius::backend::model::provider::{HttpCertificate, HttpResponse};
 use mobius::backend::sandbox::ProcessGroupGuard;
 use mobius::middleware::computer_control::{self, ComputerRuntime};
 use sha2::{Digest, Sha256};
@@ -477,7 +477,7 @@ async fn download(
     checksum: &str,
     config: &ComputerConfig,
 ) -> Result<()> {
-    let mut client = HttpClient::builder()
+    let mut client = mobius::backend::model::provider::http_client_builder()
         .https_only(true)
         .connect_timeout(Duration::from_secs(config.download_connect_timeout_seconds))
         .timeout(Duration::from_secs(config.download_timeout_seconds));
@@ -486,9 +486,7 @@ async fn download(
             std::env::var_os("SSL_CERT_FILE").map(|path| Cow::Owned(PathBuf::from(path)))
         });
     if let Some(path) = ca_file {
-        for certificate in ca_certificates(&path).await? {
-            client = client.add_root_certificate(certificate);
-        }
+        client = client.tls_certs_merge(ca_certificates(&path).await?);
     }
     let client = client
         .build()

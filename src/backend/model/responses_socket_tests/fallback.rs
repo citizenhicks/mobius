@@ -69,7 +69,9 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
         BaseUrl::new(format!("http://{http_address}")).unwrap(),
         &socket_url,
         "gpt-6.1-sol".into(),
-        reqwest::Client::new(),
+        crate::backend::model::ModelTransportSettings::default()
+            .streaming_client()
+            .unwrap(),
         crate::backend::model::ModelTransportSettings::default(),
     )
     .expect("provider")

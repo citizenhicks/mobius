@@ -188,7 +188,7 @@ impl ModelTransportSettings {
     /// # Errors
     /// Returns HTTP client construction errors.
     pub fn streaming_client(&self) -> Result<Client> {
-        Ok(Client::builder()
+        Ok(crate::backend::model::provider::http_client_builder()
             // Provider credentials and account headers must never follow redirects.
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_millis(self.http_connect_timeout_ms))

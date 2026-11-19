@@ -51,7 +51,9 @@ async fn continuation_skips_old_pixels_and_preparation_failure_preserves_connect
         BaseUrl::new("http://127.0.0.1:1").unwrap(),
         format!("ws://{address}/responses"),
         "test-model".into(),
-        reqwest::Client::new(),
+        crate::backend::model::ModelTransportSettings::default()
+            .streaming_client()
+            .unwrap(),
         crate::backend::model::ModelTransportSettings::default(),
     )
     .expect("provider");

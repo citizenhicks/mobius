@@ -304,7 +304,7 @@ impl Telemetry {
             config: RwLock::new(Arc::new(config.clone())), // rules-allow: the live copy is shared with deliveries apart from the durable configuration
             state_dir: state_dir.to_path_buf(),
             // One connection pool and root store for the gateway's lifetime.
-            client: HttpClient::builder()
+            client: mobius::backend::model::provider::http_client_builder()
                 .redirect(HttpRedirectPolicy::none())
                 .timeout(Duration::from_secs(config.policy.request_timeout_seconds))
                 .build()
