@@ -2,8 +2,8 @@
 //! context share and anything else read as a quantity.
 
 use gpui::{
-    AnyElement, App, Bounds, ElementId, GlobalElementId, InspectorElementId, IntoElement, LayoutId,
-    Pixels, SharedString, Window,
+    AnyElement, App, Bounds, ElementId, GlobalElementId, InspectorElementId, LayoutId, Pixels,
+    SharedString, Window,
 };
 use std::time::Instant;
 
@@ -41,14 +41,6 @@ impl State {
         // Ease out quint: quick to start, gentle to land.
         let eased = 1. - (1. - t).powi(5);
         (self.from + (self.to - self.from) * eased, t < 1.)
-    }
-}
-
-impl IntoElement for Counter {
-    type Element = Self;
-
-    fn into_element(self) -> Self {
-        self
     }
 }
 

@@ -11,8 +11,8 @@
 use crate::{
     Along as _, AnyElement, App, AvailableSpace, Axis, Bounds, ContentMask, DispatchPhase, Edges,
     Element, EntityId, FocusHandle, GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId,
-    IntoElement, Overflow, Pixels, Point, ScrollDelta, ScrollEvent, Size, Style, StyleRefinement,
-    Styled, Window, point, px, size,
+    Overflow, Pixels, Point, ScrollDelta, ScrollEvent, Size, Style, StyleRefinement, Styled,
+    Window, point, px, size,
 };
 use collections::VecDeque;
 use refineable::Refineable as _;
@@ -72,10 +72,11 @@ pub(crate) struct StateInner {
     #[allow(clippy::type_complexity)]
     scroll_handler: Option<Box<dyn FnMut(&ListScrollEvent, &mut Window, &mut App)>>,
     scrollbar_drag_start_height: Option<Pixels>,
-    measuring_behavior: ListMeasuringBehavior,
+    pub(crate) measuring_behavior: ListMeasuringBehavior,
     item_measurement_ready: Option<Box<dyn Fn(usize, &App) -> bool>>,
     pub(crate) follow_state: FollowState,
     pub(crate) version: crate::fast::dependencies::StateVersion,
+    pub(crate) fast_measure: crate::fast::list_measure::DeferredMeasure,
 }
 
 #[derive(Clone, Copy)]
@@ -243,7 +244,7 @@ pub(crate) enum ListItem {
 }
 
 impl ListItem {
-    fn with_measurement(&self, size: Size<Pixels>, ready: bool) -> Self {
+    pub(crate) fn with_measurement(&self, size: Size<Pixels>, ready: bool) -> Self {
         if ready {
             Self::Measured {
                 size,
@@ -265,14 +266,14 @@ impl ListItem {
         }
     }
 
-    fn size_hint(&self) -> Option<Size<Pixels>> {
+    pub(crate) fn size_hint(&self) -> Option<Size<Pixels>> {
         match self {
             ListItem::Measured { size, .. } => Some(*size),
             ListItem::Unmeasured { size_hint, .. } => *size_hint,
         }
     }
 
-    fn focus_handle(&self) -> Option<FocusHandle> {
+    pub(crate) fn focus_handle(&self) -> Option<FocusHandle> {
         match self {
             ListItem::Unmeasured { focus_handle, .. } | ListItem::Measured { focus_handle, .. } => {
                 focus_handle.clone()
@@ -295,7 +296,7 @@ impl ListItem {
 pub(crate) struct ListItemSummary {
     pub(crate) count: usize,
     rendered_count: usize,
-    unrendered_count: usize,
+    pub(crate) unrendered_count: usize,
     pub(crate) height: Pixels,
     has_focus_handles: bool,
     pub(crate) has_unknown_height: bool,
@@ -329,6 +330,7 @@ impl ListState {
             item_measurement_ready: None,
             follow_state: FollowState::default(),
             version: crate::fast::dependencies::StateVersion::default(),
+            fast_measure: crate::fast::list_measure::DeferredMeasure::default(),
         })));
         state.splice(0..0, item_count);
         state
@@ -510,6 +512,7 @@ impl ListState {
     ) {
         let state = &mut *self.0.borrow_mut();
         crate::fast::dependencies::StateVersion::bump(&state.version);
+        crate::fast::list_measure::forget_reveal(state);
 
         let mut old_items = state.items.cursor::<Count>(());
         let mut new_items = old_items.slice(&Count(old_range.start), Bias::Right);
@@ -703,6 +706,9 @@ impl ListState {
             .map_or(px(0.), |bounds| bounds.size.height);
         let padding = state.last_padding.unwrap_or_default();
 
+        if crate::fast::list_measure::defer_reveal(state, ix) {
+            return;
+        }
         if ix <= scroll_top.item_ix {
             scroll_top.item_ix = ix;
             scroll_top.offset_in_item = px(0.);
@@ -971,7 +977,7 @@ impl StateInner {
         start.height + logical_scroll_top.offset_in_item
     }
 
-    fn is_item_ready(&self, index: usize, cx: &App) -> bool {
+    pub(crate) fn is_item_ready(&self, index: usize, cx: &App) -> bool {
         self.item_measurement_ready
             .as_ref()
             .is_none_or(|ready| ready(index, cx))
@@ -981,7 +987,8 @@ impl StateInner {
         self.scroll_anchor.is_some_and(|anchor| anchor.provisional)
     }
 
-    fn set_scroll_anchor(&mut self, position: Option<ListOffset>) {
+    pub(crate) fn set_scroll_anchor(&mut self, position: Option<ListOffset>) {
+        crate::fast::list_measure::forget_reveal(self);
         let Some(position) = position else {
             self.scroll_anchor = None;
             return;
@@ -1061,6 +1068,7 @@ impl StateInner {
         self.items = SumTree::from_iter(measured_items, ());
         self.measuring_behavior =
             ListMeasuringBehavior::Measure(self.items.summary().unrendered_count == 0);
+        crate::fast::list_measure::end_deferred(self);
     }
 
     fn layout_items(
@@ -1653,6 +1661,7 @@ impl Element for List {
                 });
         if last_item_width
             .is_none_or(|width| width != bounds.size.width - padding.along(Axis::Horizontal))
+            && !crate::fast::list_measure::defers_width_change(state)
         {
             let new_items = SumTree::from_iter(
                 state.items.iter().map(|item| ListItem::Unmeasured {
@@ -1668,6 +1677,14 @@ impl Element for List {
 
         crate::fast::layers::lists::begin_list(window, cx, state, bounds);
         let mut autoscroll = true;
+        crate::fast::list_measure::begin_prepaint(
+            state,
+            bounds,
+            padding,
+            &mut self.render_item,
+            window,
+            cx,
+        );
         let layout = loop {
             match state.prepaint_items(
                 bounds,
@@ -1695,6 +1712,7 @@ impl Element for List {
 
         state.last_layout_bounds = Some(bounds);
         state.last_padding = Some(padding);
+        crate::fast::list_measure::end_prepaint(state, window);
         ListPrepaintState { hitbox, layout }
     }
 
@@ -1755,14 +1773,6 @@ fn content_insets(style: &Style, size: Size<Pixels>, rem_size: Pixels) -> Edges<
     let border = style.border_widths.to_pixels(rem_size);
 
     padding + border
-}
-
-impl IntoElement for List {
-    type Element = Self;
-
-    fn into_element(self) -> Self::Element {
-        self
-    }
 }
 
 impl Styled for List {

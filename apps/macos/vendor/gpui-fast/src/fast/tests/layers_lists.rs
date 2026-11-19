@@ -4313,14 +4313,6 @@ mod layout_states {
         created: Created,
     }
 
-    impl IntoElement for TextView {
-        type Element = Self;
-
-        fn into_element(self) -> Self {
-            self
-        }
-    }
-
     impl Element for TextView {
         type RequestLayoutState = AnyElement;
         type PrepaintState = ();

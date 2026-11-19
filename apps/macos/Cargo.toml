@@ -21,7 +21,7 @@ members = ["browser-helper", "crates/mobius-client"]
 rust-version = "1.100.0"
 
 [workspace.dependencies]
-gpui = { package = "gpui-fast", version = "=0.1.14" }
+gpui = { package = "gpui-fast", version = "=0.1.17" }
 # Chromium, embedded: one pinned CEF build shared by the app and its helper processes.
 cef = { version = "=156.0.0", default-features = false, features = ["sandbox"] }
 # The framework and gateway this app speaks to, from the same repository.
@@ -36,14 +36,14 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSWo
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSArray", "NSString", "NSURL", "NSData", "NSDictionary"] }
 anyhow = "1"
 gpui.workspace = true
-gpui_platform = { package = "gpui-fast-platform", version = "=0.1.14", features = ["runtime_shaders", "font-kit"] }
+gpui_platform = { package = "gpui-fast-platform", version = "=0.1.17", features = ["runtime_shaders", "font-kit"] }
 reqwest = { version = "0.13", default-features = false, features = ["http2", "system-proxy", "rustls-no-provider", "socks", "stream"] }
 tempfile = "3"
 mime_guess = "2"
 pulldown-cmark = { version = "0.13", default-features = false }
 # Snapshot scenarios read the window's text selection, which only the base layer exposes.
-gpui-base = { version = "=0.9.1", optional = true, features = ["gpui-fast"] }
-gpui-component = { version = "=0.9.1", features = ["gpui-fast", "tree-sitter-rust", "tree-sitter-swift", "tree-sitter-javascript", "tree-sitter-typescript", "tree-sitter-tsx", "tree-sitter-toml", "tree-sitter-python", "tree-sitter-bash", "tree-sitter-diff", "tree-sitter-markdown", "tree-sitter-html", "tree-sitter-css", "tree-sitter-yaml", "tree-sitter-markdown-inline", "tree-sitter-go", "tree-sitter-c", "tree-sitter-cpp", "tree-sitter-java", "tree-sitter-kotlin", "tree-sitter-ruby"] }
+gpui-base = { version = "=0.10.0", optional = true, features = ["gpui-fast"] }
+gpui-component = { version = "=0.10.0", features = ["gpui-fast", "tree-sitter-rust", "tree-sitter-swift", "tree-sitter-javascript", "tree-sitter-typescript", "tree-sitter-tsx", "tree-sitter-toml", "tree-sitter-python", "tree-sitter-bash", "tree-sitter-diff", "tree-sitter-markdown", "tree-sitter-html", "tree-sitter-css", "tree-sitter-yaml", "tree-sitter-markdown-inline", "tree-sitter-go", "tree-sitter-c", "tree-sitter-cpp", "tree-sitter-java", "tree-sitter-kotlin", "tree-sitter-ruby"] }
 mobius.workspace = true
 mobius-client.workspace = true
 mobius-gateway.workspace = true

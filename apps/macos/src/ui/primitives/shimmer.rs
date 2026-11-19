@@ -101,14 +101,6 @@ fn sweep(bounds: Bounds<Pixels>, color: Hsla) -> Motion {
     .max_fps(motion::SMOOTH_FPS)
 }
 
-impl IntoElement for Sweep {
-    type Element = Self;
-
-    fn into_element(self) -> Self::Element {
-        self
-    }
-}
-
 impl Element for Sweep {
     type RequestLayoutState = ();
     type PrepaintState = ();

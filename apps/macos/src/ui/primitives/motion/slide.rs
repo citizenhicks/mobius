@@ -34,14 +34,6 @@ pub struct State {
     until: Instant,
 }
 
-impl IntoElement for Slide {
-    type Element = Self;
-
-    fn into_element(self) -> Self {
-        self
-    }
-}
-
 impl gpui::Element for Slide {
     type RequestLayoutState = ();
     type PrepaintState = State;

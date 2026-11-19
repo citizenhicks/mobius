@@ -1,6 +1,6 @@
 # Vendored UI dependencies
 
-GPUI Kit 0.9.1 comes from the registry with its `gpui-fast` feature. It still
+GPUI Kit 0.10.0 comes from the registry with its `gpui-fast` feature. It still
 unconditionally declares `gpui-pre` 0.3.12, although its Fast-selected Rust sources
 never use that backend. The empty `gpui-pre` package satisfies only this dependency
 metadata; it contains no renderer, API shim or platform implementation. Its empty
@@ -10,7 +10,7 @@ optional. Keep Kit's published sources and assets out of this vendor directory.
 
 ## GPU-presented motion: proposed API exception
 
-The two Fast crates are the published Apache-2.0 0.1.14 archives, with a manually
+The two Fast crates are the published Apache-2.0 0.1.17 archives, with a manually
 reviewed port of a2e2e1bd. New runtime state, algorithms and tests live under
 `src/fast/motion.rs`; upstream files contain qualified hooks, index fields, and
 individual exports. The published Metal shader stays unchanged; the existing

@@ -92,14 +92,6 @@ struct State {
     at: Instant,
 }
 
-impl IntoElement for Smooth {
-    type Element = Self;
-
-    fn into_element(self) -> Self {
-        self
-    }
-}
-
 impl gpui::Element for Smooth {
     /// The child's layout and the height this frame shows, when it is held.
     type RequestLayoutState = (LayoutId, Option<f32>);

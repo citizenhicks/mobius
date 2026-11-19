@@ -61,14 +61,6 @@ pub struct Appear {
     start: Option<Instant>,
 }
 
-impl IntoElement for Appear {
-    type Element = Self;
-
-    fn into_element(self) -> Self {
-        self
-    }
-}
-
 impl gpui::Element for Appear {
     type RequestLayoutState = ();
     type PrepaintState = ();

@@ -158,14 +158,6 @@ pub struct MotionElement<E> {
     fast_motion: Motion,
 }
 
-impl<E: IntoElement + 'static> IntoElement for MotionElement<E> {
-    type Element = MotionElement<E>;
-
-    fn into_element(self) -> Self::Element {
-        self
-    }
-}
-
 impl<E: IntoElement + 'static> Element for MotionElement<E> {
     type RequestLayoutState = AnyElement;
     type PrepaintState = ();

@@ -12,7 +12,7 @@
 [package]
 edition = "2024"
 name = "gpui-fast"
-version = "0.1.14"
+version = "0.1.17"
 authors = [
     "Nathan Sobo <nathan@zed.dev>",
     "Longbridge",
@@ -35,7 +35,7 @@ autotests = false
 autobenches = false
 description = "gpui: GPUI with gpui-fast rendering and layout optimizations"
 homepage = "https://github.com/longbridge/gpui-fast"
-documentation = "https://docs.rs/gpui-fast/0.1.14/gpui/"
+documentation = "https://docs.rs/gpui-fast/0.1.17/gpui/"
 readme = "README.md"
 keywords = [
     "desktop",
@@ -158,7 +158,7 @@ version = "7.7.1"
 optional = true
 
 [dependencies.gpui_macros]
-version = "^0.1.14"
+version = "^0.1.17"
 package = "gpui-fast-macros"
 
 [dependencies.gpui_shared_string]
@@ -345,7 +345,7 @@ version = "=0.3.12"
 package = "gpui-pre-sum-tree"
 
 [dependencies.taffy]
-version = "=0.15.0"
+version = "0.15.0"
 features = [
     "std",
     "taffy_tree",
@@ -405,11 +405,11 @@ default-features = false
 package = "zed-scap"
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies.objc2-core-foundation]
-version = "=0.3.2"
+version = "0.3.2"
 default-features = false
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies.objc2-core-video]
-version = "=0.3.2"
+version = "0.3.2"
 features = [
     "CVBuffer",
     "CVImageBuffer",
@@ -422,11 +422,11 @@ version = "0.33"
 optional = true
 
 [target.'cfg(any(target_os = "macos", target_os = "linux", target_os = "windows", target_os = "ios"))'.dependencies.dioxus-cli-config]
-version = "=0.7.10"
+version = "0.7.10"
 optional = true
 
 [target.'cfg(any(target_os = "macos", target_os = "linux", target_os = "windows", target_os = "ios"))'.dependencies.dioxus-devtools-types]
-version = "=0.7.10"
+version = "0.7.10"
 optional = true
 
 [target.'cfg(any(target_os = "macos", target_os = "linux", target_os = "windows", target_os = "ios"))'.dependencies.smol]
@@ -434,7 +434,7 @@ version = "2.0"
 optional = true
 
 [target.'cfg(any(target_os = "macos", target_os = "linux", target_os = "windows", target_os = "ios"))'.dependencies.subsecond]
-version = "=0.7.10"
+version = "0.7.10"
 optional = true
 
 [target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies.async-channel]

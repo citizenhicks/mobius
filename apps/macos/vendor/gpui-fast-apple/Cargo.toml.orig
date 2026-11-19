@@ -1,14 +1,14 @@
 # Modified by Longbridge for gpui-fast publication.
 [package]
 name = "gpui-fast-apple"
-version = "0.1.14"
+version = "0.1.17"
 edition = "2024"
 publish = ["crates-io"]
 license = "Apache-2.0"
 repository = "https://github.com/longbridge/gpui-fast"
 homepage = "https://github.com/longbridge/gpui-fast"
 readme = "README.md"
-documentation = "https://docs.rs/gpui-fast-apple/0.1.14/gpui_apple/"
+documentation = "https://docs.rs/gpui-fast-apple/0.1.17/gpui_apple/"
 description = "gpui_apple: GPUI with gpui-fast rendering and layout optimizations"
 autoexamples = false
 autobenches = false
@@ -31,7 +31,7 @@ font-kit = ["dep:font-kit", "dep:core-text", "dep:objc2-core-text", "dep:pathfin
 [dependencies.gpui]
 default-features = false
 package = "gpui-fast"
-version = "^0.1.14"
+version = "^0.1.17"
 path = "../gpui"
 
 [target."cfg(any(target_os = \"macos\", target_os = \"ios\"))".dependencies.anyhow]
@@ -102,12 +102,12 @@ version = "0.6"
 version = "0.6"
 
 [target."cfg(any(target_os = \"macos\", target_os = \"ios\"))".dependencies.objc2-core-foundation]
-version = "=0.3.2"
+version = "0.3.2"
 default-features = false
 features = ["std", "CFData", "CFDictionary", "CFString", "CFNumber", "CFBase", "CFCGTypes"]
 
 [target."cfg(any(target_os = \"macos\", target_os = \"ios\"))".dependencies.objc2-core-graphics]
-version = "=0.3.2"
+version = "0.3.2"
 default-features = false
 features = ["CGDirectDisplay", "CGColorSpace"]
 
@@ -118,7 +118,7 @@ features = ["std", "CTFont", "CTFontDescriptor"]
 optional = true
 
 [target."cfg(any(target_os = \"macos\", target_os = \"ios\"))".dependencies.objc2-core-video]
-version = "=0.3.2"
+version = "0.3.2"
 default-features = false
 features = ["CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVMetalTexture", "CVMetalTextureCache", "CVReturn", "objc2", "objc2-metal"]
 
@@ -128,12 +128,12 @@ default-features = false
 features = ["std", "block2", "dispatch2", "MTLAllocation", "MTLBlitCommandEncoder", "MTLBuffer", "MTLCommandBuffer", "MTLCommandEncoder", "MTLCommandQueue", "MTLDevice", "MTLDrawable", "MTLLibrary", "MTLPixelFormat", "MTLRenderCommandEncoder", "MTLRenderPass", "MTLRenderPipeline", "MTLResource", "MTLTexture", "MTLTypes"]
 
 [target."cfg(any(target_os = \"macos\", target_os = \"ios\"))".dependencies.objc2-foundation]
-version = "=0.3.2"
+version = "0.3.2"
 default-features = false
 features = ["NSArray", "NSAttributedString", "NSBundle", "NSCoder", "NSData", "NSDate", "NSDictionary", "NSEnumerator", "NSError", "NSGeometry", "NSNull", "NSObjCRuntime", "NSObject", "NSProcessInfo", "NSRange", "NSRunLoop", "NSSet", "NSString", "NSURL", "NSValue", "objc2-core-foundation", "std", "NSThread", "NSNotification", "NSOperation", "block2"]
 
 [target."cfg(any(target_os = \"macos\", target_os = \"ios\"))".dependencies.objc2-quartz-core]
-version = "=0.3.2"
+version = "0.3.2"
 default-features = false
 features = ["std", "CALayer", "CAMetalDisplayLink", "CAMetalLayer", "objc2-metal", "objc2-core-foundation", "objc2-core-graphics"]
 

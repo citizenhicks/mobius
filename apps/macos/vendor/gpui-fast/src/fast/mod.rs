@@ -32,10 +32,12 @@ pub(crate) mod layout_bounds;
 pub(crate) mod layout_key;
 #[cfg(test)]
 mod line_break;
+pub(crate) mod list_measure;
 pub(crate) mod misc;
 pub(crate) mod motion;
 pub(crate) mod number_shaping;
 pub(crate) mod path_cache;
+pub(crate) mod pointer;
 pub(crate) mod retained;
 pub(crate) mod rounded_clip;
 pub(crate) mod rounded_clip_scene;
@@ -45,6 +47,7 @@ pub(crate) mod stats;
 pub(crate) mod text;
 pub(crate) mod text_style;
 pub(crate) mod tracked_entities;
+pub(crate) mod truncation;
 
 #[cfg(test)]
 mod tests;

@@ -12,7 +12,7 @@
 [package]
 edition = "2024"
 name = "gpui-fast-apple"
-version = "0.1.14"
+version = "0.1.17"
 authors = ["Longbridge"]
 build = "build.rs"
 include = [
@@ -32,7 +32,7 @@ autotests = false
 autobenches = false
 description = "gpui_apple: GPUI with gpui-fast rendering and layout optimizations"
 homepage = "https://github.com/longbridge/gpui-fast"
-documentation = "https://docs.rs/gpui-fast-apple/0.1.14/gpui_apple/"
+documentation = "https://docs.rs/gpui-fast-apple/0.1.17/gpui_apple/"
 readme = "README.md"
 license = "Apache-2.0"
 repository = "https://github.com/longbridge/gpui-fast"
@@ -56,7 +56,7 @@ path = "src/gpui_apple.rs"
 doctest = false
 
 [dependencies.gpui]
-version = "^0.1.14"
+version = "^0.1.17"
 default-features = false
 package = "gpui-fast"
 
@@ -147,7 +147,7 @@ version = "0.6"
 version = "0.6"
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies.objc2-core-foundation]
-version = "=0.3.2"
+version = "0.3.2"
 features = [
     "std",
     "CFData",
@@ -160,7 +160,7 @@ features = [
 default-features = false
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies.objc2-core-graphics]
-version = "=0.3.2"
+version = "0.3.2"
 features = [
     "CGDirectDisplay",
     "CGColorSpace",
@@ -178,7 +178,7 @@ optional = true
 default-features = false
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies.objc2-core-video]
-version = "=0.3.2"
+version = "0.3.2"
 features = [
     "CVBuffer",
     "CVImageBuffer",
@@ -192,7 +192,7 @@ features = [
 default-features = false
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies.objc2-foundation]
-version = "=0.3.2"
+version = "0.3.2"
 features = [
     "NSArray",
     "NSAttributedString",
@@ -249,7 +249,7 @@ features = [
 default-features = false
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies.objc2-quartz-core]
-version = "=0.3.2"
+version = "0.3.2"
 features = [
     "std",
     "CALayer",

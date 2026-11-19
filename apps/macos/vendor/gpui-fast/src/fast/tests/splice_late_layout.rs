@@ -35,12 +35,6 @@ enum Body {
     State(Leaf),
 }
 struct TestElement(Option<ElementId>, Body);
-impl IntoElement for TestElement {
-    type Element = Self;
-    fn into_element(self) -> Self {
-        self
-    }
-}
 impl Element for TestElement {
     type RequestLayoutState = ();
     type PrepaintState = ();
