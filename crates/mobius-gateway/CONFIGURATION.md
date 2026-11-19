@@ -260,7 +260,7 @@ variants = [{ id = "cedar", label = "Cedar", description = "" }]
 ```
 
 The built-in OpenAI Live catalog uses GPT Live 1.1. Calls wake on speech and return
-to standby after 30 seconds of inactivity on the same WebRTC connection.
+to standby after 15 seconds of inactivity on the same WebRTC connection.
 
 Supply the setup credential through the existing credential registration path.
 Edit these stored presets while stopped and restart the gateway to apply them.

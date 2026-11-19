@@ -206,7 +206,7 @@ async fn live_and_codex_wire_contracts_delegate_once_reply_and_close() {
                 assert_eq!(body["transport"], json!({"type":"webrtc","sdp":SDP}));
                 assert_eq!(body["session"]["model"], "gpt-live-1.1");
                 assert_eq!(body["session"]["wake_policy"], json!({"type":"speech"}));
-                assert_eq!(body["session"]["idle_timeout_s"], 30);
+                assert_eq!(body["session"]["idle_timeout_s"], 15);
                 assert_eq!(body["session"]["audio"]["output"]["voice"], "quartz");
                 respond(
                     &mut http,
