@@ -1,5 +1,6 @@
 [openai]
 calls_path = "live/sessions"
+idle_timeout_s = 30
 
 [codex]
 calls_path = "realtime/calls?intent=quicksilver&architecture=avas"
@@ -9,8 +10,8 @@ sideband_base_url = "https://api.openai.com/v1/live"
 openai-alpha = "quicksilver=v2"
 
 [[openai.models]]
-id = "gpt-live-1"
-label = "GPT Live 1"
+id = "gpt-live-1.1"
+label = "GPT Live 1.1"
 description = "OpenAI realtime voice model"
 variants = [
     { id = "marin", label = "Marin" },

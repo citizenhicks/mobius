@@ -191,6 +191,8 @@ async fn live_and_codex_wire_contracts_delegate_once_reply_and_close() {
                 );
                 assert_eq!(body["sdp"], SDP);
                 assert_eq!(body["session"]["model"], "gpt-live-1-codex");
+                assert!(body["session"].get("wake_policy").is_none());
+                assert!(body["session"].get("idle_timeout_s").is_none());
                 assert_eq!(body["session"]["audio"]["output"]["voice"], "maple");
                 respond(
                     &mut http,
@@ -202,7 +204,9 @@ async fn live_and_codex_wire_contracts_delegate_once_reply_and_close() {
             } else {
                 assert!(headers.starts_with("post /api/native/v1/live/sessions "));
                 assert_eq!(body["transport"], json!({"type":"webrtc","sdp":SDP}));
-                assert_eq!(body["session"]["model"], "gpt-live-1");
+                assert_eq!(body["session"]["model"], "gpt-live-1.1");
+                assert_eq!(body["session"]["wake_policy"], json!({"type":"speech"}));
+                assert_eq!(body["session"]["idle_timeout_s"], 30);
                 assert_eq!(body["session"]["audio"]["output"]["voice"], "quartz");
                 respond(
                     &mut http,

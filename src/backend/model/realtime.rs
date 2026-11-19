@@ -38,6 +38,7 @@ struct VoiceProvider {
     models: Vec<super::provider::MediaModelPreset>,
     calls_path: String,
     sideband_base_url: Option<String>,
+    idle_timeout_s: Option<u8>,
     #[serde(default)]
     headers: std::collections::BTreeMap<String, String>,
 }
@@ -52,6 +53,16 @@ static MANIFEST: std::sync::LazyLock<VoiceManifest> = std::sync::LazyLock::new(|
 
 impl VoiceManifest {
     fn validate(&self) -> Result<()> {
+        if self
+            .openai
+            .idle_timeout_s
+            .is_some_and(|s| !(5..=60).contains(&s))
+            || self.codex.idle_timeout_s.is_some()
+        {
+            return Err(Error::Invalid(
+                "idle_timeout_s is supported only for OpenAI Live and must be 5–60 seconds".into(),
+            ));
+        }
         for api in [&self.openai, &self.codex] {
             if api.models.is_empty() || api.models.iter().any(|model| model.variants.is_empty()) {
                 return Err(Error::Invalid(
@@ -310,15 +321,15 @@ impl RealtimeTransport {
         validate_text(&request.session_id, 256, "session identity")?;
         validate_sdp(&request.offer_sdp)?;
         validate_text(&request.instructions, MAX_TEXT_BYTES, "voice instructions")?;
-        let session = Self::session(&request);
-        let voice = field(
-            session.pointer("/audio/output").unwrap_or(&Value::Null),
-            "voice",
-        )?
-        .to_owned();
+        validate_text(&request.voice, 256, "voice")?;
+        let mut session = Self::session(&request);
         let body = serde_json::to_vec(&match self.api {
             VoiceApi::Codex => json!({"sdp":request.offer_sdp,"session":session}),
             VoiceApi::OpenAi => {
+                if let Some(seconds) = MANIFEST.openai.idle_timeout_s {
+                    session.insert("wake_policy".into(), json!({"type": "speech"}));
+                    session.insert("idle_timeout_s".into(), json!(seconds));
+                }
                 json!({"transport":{"type":"webrtc","sdp":request.offer_sdp},"session":session})
             }
         })?;
@@ -408,13 +419,21 @@ impl RealtimeTransport {
             }
         });
         Ok(RealtimeVoiceCall::new(
-            answer_sdp, voice, commands, events, cancel,
+            answer_sdp,
+            request.voice.to_string(),
+            commands,
+            events,
+            cancel,
         ))
     }
 
-    fn session(request: &RealtimeVoiceRequest) -> Value {
-        json!({"model":request.model,"instructions":request.instructions,
-            "audio":{"output":{"voice":request.voice}},"delegation":{"type":"client"}})
+    fn session(request: &RealtimeVoiceRequest) -> serde_json::Map<String, Value> {
+        serde_json::Map::from_iter([
+            ("model".into(), json!(request.model)),
+            ("instructions".into(), json!(request.instructions)),
+            ("audio".into(), json!({"output":{"voice":request.voice}})),
+            ("delegation".into(), json!({"type":"client"})),
+        ])
     }
 
     async fn negotiate(
