@@ -154,7 +154,7 @@ async fn voice_delegation_preserves_committed_speech_and_delayed_final_transcrip
     .unwrap()
     .session_id()
     .to_owned();
-    let voice = "voice-test::gpt-live-1::sol";
+    let voice = "voice-test::gpt-live-1.1::sol";
     let mut router = ModelRouter::new(
         Arc::clone(&route),
         Arc::new(OpenAi::new("test-key", base.share(), "local-test").unwrap()),
@@ -162,13 +162,13 @@ async fn voice_delegation_preserves_committed_speech_and_delayed_final_transcrip
     router
         .register_voice(
             Arc::new(
-                OpenAi::new_with_transport("test-key", base.share(), "gpt-live-1", transport)
+                OpenAi::new_with_transport("test-key", base.share(), "gpt-live-1.1", transport)
                     .unwrap(),
             ),
             mobius::protocol::ModelChoice {
                 route: voice.into(),
                 group: "Voice".into(),
-                model: "gpt-live-1".into(),
+                model: "gpt-live-1.1".into(),
                 reasoning_effort: Some("sol".into()),
                 variant_label: None,
                 context_window: None,
