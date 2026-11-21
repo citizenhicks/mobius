@@ -30,6 +30,7 @@ use crate::serialized_len;
 
 pub mod artifacts;
 pub mod attachments;
+pub mod clock;
 pub mod compaction;
 pub mod computer_control;
 mod context;

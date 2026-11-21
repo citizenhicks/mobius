@@ -922,6 +922,11 @@ fn build_middleware(
                     Arc::new(mobius::middleware::questions::Questions::default())
                 }
                 BuiltinMiddleware::Tasks => Arc::new(Tasks),
+                BuiltinMiddleware::Clock => {
+                    Arc::new(mobius::middleware::clock::Clock::from_settings(|id| {
+                        settings.setting(feature.manifest.id, id)
+                    })?)
+                }
                 BuiltinMiddleware::Subagents => {
                     let middleware = Subagents::new(prepared.subagent_limits.ok_or_else(|| {
                         Error::Internal("subagent limits were not prepared".into())

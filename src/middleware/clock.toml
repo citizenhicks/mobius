@@ -1,0 +1,17 @@
+default_enabled = true
+# Editable text and defaults owned by this middleware.
+manifest_label = "Clock"
+manifest_description = "Tell the model the current date and time, sparingly"
+# `{time}` is the gateway's local time, written with `time_format` (chrono strftime).
+prompt_time = "Current time: {time}"
+time_format = "%Y-%m-%d %H:%M %:z (%A)"
+
+[[settings]]
+default = 30
+description = "Tell the model the time again once this many minutes have passed, or the date changes"
+id = "interval_minutes"
+label = "Time reminder interval"
+max = 1440
+min = 1
+step = 5
+type = "integer"

@@ -25,6 +25,7 @@ pub(crate) enum BuiltinMiddleware {
     Extensions,
     Tasks,
     Questions,
+    Clock,
     Subagents,
     Messages,
     Voice,
@@ -50,7 +51,7 @@ impl MiddlewareRegistration {
     }
 }
 
-pub(crate) static MIDDLEWARE: std::sync::LazyLock<[MiddlewareRegistration; 18]> =
+pub(crate) static MIDDLEWARE: std::sync::LazyLock<[MiddlewareRegistration; 19]> =
     std::sync::LazyLock::new(|| {
         [
             MiddlewareRegistration {
@@ -92,6 +93,10 @@ pub(crate) static MIDDLEWARE: std::sync::LazyLock<[MiddlewareRegistration; 18]> 
             MiddlewareRegistration {
                 kind: BuiltinMiddleware::Tasks,
                 manifest: &mobius::middleware::tasks::MANIFEST,
+            },
+            MiddlewareRegistration {
+                kind: BuiltinMiddleware::Clock,
+                manifest: &mobius::middleware::clock::MANIFEST,
             },
             MiddlewareRegistration {
                 kind: BuiltinMiddleware::Subagents,
