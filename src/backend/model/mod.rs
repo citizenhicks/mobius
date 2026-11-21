@@ -26,6 +26,7 @@ pub mod anthropic;
 mod authorization;
 mod cancellation;
 mod chat_completions;
+pub mod decisions;
 pub mod deepseek;
 mod image_generation;
 pub mod kimi;
@@ -678,6 +679,18 @@ pub trait Model: Send + Sync {
         Box::pin(async {
             Err(Error::Provider(
                 "image generation is unavailable for this provider".into(),
+            ))
+        })
+    }
+
+    /// Answers fixed-choice questions through the provider's decisions endpoint.
+    fn decide<'a>(
+        &'a self,
+        _request: decisions::DecisionRequest<'a>,
+    ) -> BoxFuture<'a, Result<decisions::DecisionAnswers>> {
+        Box::pin(async {
+            Err(Error::Provider(
+                "decision models are unavailable for this provider".into(),
             ))
         })
     }

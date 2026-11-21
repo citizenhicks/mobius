@@ -367,6 +367,20 @@ fn render_models_page(lines: &mut Vec<Line<'static>>, state: &SetupState) {
             );
         }
     }
+    if let Some(row) = state.decision_model_row() {
+        lines.push(Line::from(""));
+        choice(
+            lines,
+            "Decision model IDs",
+            if state.decision_models.is_empty() {
+                "Optional, comma-separated"
+            } else {
+                &state.decision_models
+            },
+            state.row == row,
+            "●",
+        );
+    }
     render_apply_actions(lines, state, state.models_action_start(), None);
 }
 
@@ -536,6 +550,9 @@ pub(super) fn middleware_setting_value<'a>(
                 .into(),
             Role::Accent,
         ),
+        (FrontendSettingKind::Text { .. }, Some(FrontendSettingValue::String(value))) => {
+            (value.as_str().into(), Role::Accent)
+        }
         (FrontendSettingKind::Select { unset_label, .. }, None) => (
             unset_label.as_deref().unwrap_or("Not selected").into(),
             Role::Info,

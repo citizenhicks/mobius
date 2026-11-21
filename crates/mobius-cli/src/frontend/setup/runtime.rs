@@ -209,6 +209,7 @@ pub(super) async fn register_provider(
     config: ProviderConfig,
 ) -> Result<ReadyPayload> {
     let models = state.configured_models();
+    let decision_model_ids = state.configured_decision_models();
     let label = state.effective_label().into();
     configure(terminal, state, sender, events, |request_id| {
         ClientMessage::RegisterProvider {
@@ -220,6 +221,7 @@ pub(super) async fn register_provider(
             tint: None,
             models,
             image_model_ids: None,
+            decision_model_ids,
             operator_managed: false,
         }
     })

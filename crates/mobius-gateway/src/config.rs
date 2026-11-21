@@ -1,5 +1,6 @@
 //! Validated gateway configuration and owner-only persistence.
 
+pub(crate) mod auto_routing;
 mod runtime;
 mod store;
 mod validation;
@@ -161,6 +162,9 @@ pub struct GatewayConfig {
     pub desktop_enabled: bool,
     /// The möbius composition new möbius Bots start from.
     pub bot_defaults: Option<VersionedAgentConfig<AgentComposition>>,
+    /// Auto routing setting values that differ from their defaults.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) auto_routing: auto_routing::Values,
     pub(crate) configured_providers: BTreeMap<String, ConfiguredProvider>,
     pub(crate) installed_extensions:
         BTreeMap<Arc<str>, crate::harness::mobius::extensions::InstalledExtension>,
@@ -184,6 +188,9 @@ pub(crate) struct ConfiguredProvider {
     /// Omission uses the provider catalog; an empty list disables live voice.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) voice_models: Option<Vec<mobius::backend::model::provider::MediaModelPreset>>,
+    /// Decision models this setup serves, on providers with a decisions endpoint.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) decision_model_ids: Vec<String>,
     /// Credential and usage limits are supplied by the gateway operator.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(crate) operator_managed: bool,
@@ -195,6 +202,7 @@ pub(crate) struct ProviderRegistration {
     pub(crate) tint: Option<ProviderTint>,
     pub(crate) models: Vec<ConfiguredModel>,
     pub(crate) image_model_ids: Option<Vec<String>>,
+    pub(crate) decision_model_ids: Option<Vec<String>>,
     pub(crate) operator_managed: bool,
 }
 
@@ -303,6 +311,7 @@ impl GatewayConfig {
             cloudflare,
             desktop_enabled: false,
             bot_defaults: None,
+            auto_routing: Default::default(),
             configured_providers: BTreeMap::new(),
             installed_extensions: BTreeMap::new(),
         }
@@ -334,6 +343,7 @@ impl GatewayConfig {
                 tint: Some(tint),
                 models,
                 image_model_ids: Some(image_model_ids),
+                decision_model_ids: None,
                 operator_managed: false,
             },
             false,
@@ -371,6 +381,7 @@ impl GatewayConfig {
                 configured.tint = None;
                 configured.models.clear();
                 configured.image_model_ids = None;
+                configured.decision_model_ids = None;
             }
             if configured.selection.tool_discovery.is_none() {
                 configured.selection.tool_discovery = previous.selection.tool_discovery;
@@ -394,6 +405,14 @@ impl GatewayConfig {
                 previous
                     .as_mut()
                     .map(|previous| std::mem::take(&mut previous.image_model_ids))
+            })
+            .unwrap_or_default();
+        let decision_model_ids = configured
+            .decision_model_ids
+            .or_else(|| {
+                previous
+                    .as_mut()
+                    .map(|previous| std::mem::take(&mut previous.decision_model_ids))
             })
             .unwrap_or_default();
         let image_models = previous
@@ -452,6 +471,7 @@ impl GatewayConfig {
             image_model_ids,
             image_models,
             voice_models,
+            decision_model_ids,
             operator_managed,
         };
         validate_configured_provider(&entry)?;
@@ -532,6 +552,16 @@ impl GatewayConfig {
         Ok(ValidatedGatewayConfig(next))
     }
 
+    /// Replaces how new chats left on Auto are routed.
+    pub(crate) fn replacing_auto_routing(
+        &self,
+        values: auto_routing::Values,
+    ) -> Result<ValidatedGatewayConfig> {
+        let mut next = self.clone(); // rules-allow: staged copy; the caller keeps the current value until the new one is published
+        next.auto_routing = values;
+        next.validated()
+    }
+
     /// Validates every persisted trust-boundary field.
     /// # Errors
     ///
@@ -549,6 +579,7 @@ impl GatewayConfig {
         self.auth.validate()?;
         self.computer.validate()?;
         self.execution.validate()?;
+        auto_routing::validate(&self.auto_routing, None)?;
         if let Some(ingress) = self.runtime.ingress
             && (ingress == self.listen
                 || ingress.port() == 0

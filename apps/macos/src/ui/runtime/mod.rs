@@ -378,6 +378,10 @@ impl Workspace {
             message,
             ServerMessage::Ready { .. } | ServerMessage::GatewayConfigured { .. }
         ) {
+            if let Some(gateway) = &self.client.state.gateway {
+                self.draft_auto
+                    .retain(|target| gateway.agent_catalog.auto_routing.targets.contains(target));
+            }
             self.remind_risky_defaults(cx);
         }
         if matches!(message, ServerMessage::Ready { .. }) {

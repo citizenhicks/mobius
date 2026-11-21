@@ -719,7 +719,7 @@ impl ModelCredentialLifetime {
     }
 }
 
-async fn while_valid<T, F: Future<Output = Result<T>>>(
+pub(super) async fn while_valid<T, F: Future<Output = Result<T>>>(
     credential: &ModelCredentialLifetime,
     cancellation: Option<&ModelCancellation>,
     operation: impl FnOnce() -> F,

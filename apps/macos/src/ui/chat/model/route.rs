@@ -28,6 +28,11 @@ impl Workspace {
                 );
                 return;
             }
+            ModelTarget::AutoRouting { setting } => {
+                let value = route.map(|route| FrontendSettingValue::String(route.to_owned()));
+                self.save_auto_routing(Some((setting, value)), cx);
+                return;
+            }
             ModelTarget::Bot(_) | ModelTarget::Draft(_) => {}
         }
         let Some(route) = route else {
@@ -53,6 +58,7 @@ impl Workspace {
             ModelTarget::Draft(scope) | ModelTarget::Setting { scope, .. } => {
                 self.edit_draft_config(scope, |draft| *draft = config, cx);
             }
+            ModelTarget::AutoRouting { .. } => {}
         }
     }
 }

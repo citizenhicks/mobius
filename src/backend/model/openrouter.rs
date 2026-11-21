@@ -50,7 +50,8 @@ fn build_provider(
     .with_service_tier(config.service_tier)
     .with_max_output_tokens(MANIFEST.max_output_tokens)
     .with_headers(&MANIFEST.headers)
-    .with_image_api(Some(super::image_generation::image_api("openrouter")?));
+    .with_image_api(Some(super::image_generation::image_api("openrouter")?))
+    .with_decisions(MANIFEST.decisions_path.as_deref());
     let provider = match tool_discovery {
         ToolDiscoveryMode::Native => {
             provider.with_inline_tool_search(MANIFEST.tool_search_type.as_deref().ok_or_else(

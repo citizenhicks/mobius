@@ -27,6 +27,7 @@ pub(crate) use telemetry::SessionActivityReport;
 pub use transcript::TranscriptReducer;
 
 mod activity;
+mod auto_route;
 mod composition;
 mod gateway_host;
 mod publication;
@@ -53,6 +54,7 @@ pub(crate) use self::replay::{RenderEvents, event_sequence};
 pub(crate) use self::session::{HostHandle, SessionRuntimeState};
 
 pub(crate) use activity::{RuntimeActivity, WorkActivity};
+pub(crate) use auto_route::NewChat;
 use composition::validate_composition;
 pub(crate) use composition::validated;
 

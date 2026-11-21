@@ -88,6 +88,7 @@ pub(super) struct SetupState {
     /// Index of the original model in the gateway's model choices.
     pub(super) original_model_choice: Option<usize>,
     pub(super) custom_model: String,
+    pub(super) decision_models: String,
     pub(super) reasoning: usize,
     pub(super) web_search: usize,
     pub(super) features: Vec<MiddlewareFeature>,
@@ -186,6 +187,7 @@ impl SetupState {
             bot_model_routes: Vec::new(),
             original_model_choice: None,
             custom_model: String::new(),
+            decision_models: String::new(),
             reasoning: 0,
             web_search: 0,
             features,
@@ -429,8 +431,18 @@ impl SetupState {
         if count > 1 { count } else { 0 }
     }
 
-    pub(super) fn models_action_start(&self) -> usize {
+    fn search_end(&self) -> usize {
         self.model_choice_count() + self.reasoning_choice_count() + self.search_choice_count()
+    }
+
+    pub(super) fn decision_model_row(&self) -> Option<usize> {
+        (self.mode == SetupMode::Login && self.definition().decision_model_ids_configurable)
+            .then(|| self.search_end())
+    }
+
+    pub(super) fn models_action_start(&self) -> usize {
+        self.decision_model_row()
+            .map_or_else(|| self.search_end(), |row| row + 1)
     }
 
     pub(super) fn agent_action_start(&self) -> usize {
@@ -518,12 +530,7 @@ impl SetupState {
         match self.page {
             Page::Provider => self.providers.len(),
             Page::Authentication => 0,
-            Page::Models => {
-                self.model_choice_count()
-                    + self.reasoning_choice_count()
-                    + self.search_choice_count()
-                    + 1
-            }
+            Page::Models => self.models_action_start() + 1,
             Page::Agent => self.agent_action_start() + 1,
         }
     }
@@ -636,9 +643,8 @@ impl SetupState {
     }
 
     pub(super) fn handle_models_key(&mut self, key: KeyEvent) -> Flow {
-        let custom_row = (self.mode != SetupMode::BotModel
-            && self.definition().model_ids_configurable)
-            .then_some(0);
+        let edits_models = self.editing_chat_models();
+        let edits_decisions = self.decision_model_row() == Some(self.row);
         match key.code {
             KeyCode::Esc => {
                 if self.mode == SetupMode::BotModel {
@@ -647,19 +653,25 @@ impl SetupState {
                 self.page = Page::Authentication;
                 self.error = None;
             }
-            KeyCode::Backspace if Some(self.row) == custom_row => {
-                self.model = 0;
-                self.custom_model.pop();
+            KeyCode::Backspace if edits_models || edits_decisions => {
+                if edits_decisions {
+                    self.decision_models.pop();
+                } else {
+                    self.model = 0;
+                    self.custom_model.pop();
+                }
                 self.error = None;
             }
             KeyCode::Char(character)
-                if Some(self.row) == custom_row
+                if (edits_models || edits_decisions)
                     && character != ' '
                     && !key
                         .modifiers
                         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
-                self.model = 0;
+                if edits_models {
+                    self.model = 0;
+                }
                 self.push_text(&character.to_string());
             }
             KeyCode::Up | KeyCode::BackTab => self.move_selection(-1),
@@ -779,7 +791,7 @@ impl SetupState {
             }
         } else if self.row < models + self.reasoning_choice_count() {
             self.reasoning = self.row - models;
-        } else if self.row < self.models_action_start() {
+        } else if self.row < self.search_end() {
             self.web_search = self.row - models - self.reasoning_choice_count();
         }
         self.error = None;
@@ -855,6 +867,8 @@ impl SetupState {
                 };
                 FrontendSettingValue::String(option.value.to_string())
             }
+            // Free text has no step; the setup keeps its value.
+            FrontendSettingKind::Text { .. } => return Ok(()),
         };
         self.middleware
             .set_setting(&feature.id, &setting.id, Some(value));
@@ -876,21 +890,32 @@ impl SetupState {
     }
 
     pub(super) fn paste(&mut self, text: &str) {
-        if self.page == Page::Authentication && self.authentication_is_editable() {
-            self.push_text(text.trim());
-        } else if self.page == Page::Models
-            && self.mode != SetupMode::BotModel
-            && self.definition().model_ids_configurable
-            && self.row == 0
-        {
+        let edits_models = self.page == Page::Models && self.editing_chat_models();
+        if edits_models {
             self.model = 0;
+        }
+        if self.page == Page::Authentication && self.authentication_is_editable()
+            || edits_models
+            || self.page == Page::Models && self.decision_model_row() == Some(self.row)
+        {
             self.push_text(text.trim());
         }
     }
 
+    fn editing_chat_models(&self) -> bool {
+        self.mode != SetupMode::BotModel
+            && self.row == 0
+            && self.definition().model_ids_configurable
+    }
+
     pub(super) fn push_text(&mut self, text: &str) {
         let (target, limit) = if self.page == Page::Models {
-            (&mut self.custom_model, MAX_MODEL_IDS_BYTES)
+            let model_ids = if self.decision_model_row() == Some(self.row) {
+                &mut self.decision_models
+            } else {
+                &mut self.custom_model
+            };
+            (model_ids, MAX_MODEL_IDS_BYTES)
         } else {
             match self.auth_field {
                 AuthField::Label => (&mut self.label, MAX_PROVIDER_LABEL_BYTES),
@@ -952,6 +977,12 @@ impl SetupState {
         } else {
             String::new()
         };
+        self.decision_models = self
+            .instance()
+            .filter(|_| definition.decision_model_ids_configurable)
+            .map_or_else(String::new, |instance| {
+                instance.decision_model_ids.join(", ")
+            });
         let reasoning = if same_instance {
             current.reasoning_effort.as_deref()
         } else {
@@ -999,11 +1030,12 @@ impl SetupState {
         if !self.definition().model_ids_configurable {
             return Vec::new();
         }
-        self.custom_model
-            .split(',')
-            .map(str::trim)
-            .map(str::to_owned)
-            .collect()
+        model_ids(&self.custom_model)
+    }
+
+    pub(super) fn configured_decision_models(&self) -> Option<Vec<String>> {
+        self.decision_model_row()
+            .map(|_| model_ids(&self.decision_models))
     }
 
     pub(super) fn selected_base_url(&self) -> &str {
@@ -1253,4 +1285,13 @@ pub(super) fn provider_rows(
         instance: None,
     }));
     rows
+}
+
+/// Comma-separated model IDs as typed; the gateway validates each one.
+fn model_ids(text: &str) -> Vec<String> {
+    text.split(',')
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+        .collect()
 }

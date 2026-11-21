@@ -2,15 +2,16 @@ use mobius::SessionId;
 use std::sync::Arc;
 
 use super::{
-    AgentComposition, BTreeSet, BackgroundApproval, BotModelSwitch, BotRecord, BotShape,
+    AgentComposition, BTreeMap, BTreeSet, BackgroundApproval, BotModelSwitch, BotRecord, BotShape,
     CatalogHint, CliHarnessConfig, ClientCapabilities, ClientStatus, ConfiguredModel, Deserialize,
     DiffTotals, DirectoryListing, FrontendContribution, GatewayNotification, GitDiffScope,
     HarnessConfig, HarnessKind, HistoryCursor, MemoryRecord, MessageTarget, Op, PROTOCOL_VERSION,
     PathBuf, ProfileParts, ProfileSnapshot, ProviderConfig, ProviderTint, ReadyPayload,
-    RecordedEvent, Routine, RoutineChange, RoutineDefinition, RoutineRun, RoutineRunPreview,
-    RunStats, Serialize, SessionFileRecord, SessionFileReference, SessionReadyPayload,
-    SessionRecord, SessionSlot, SshIdentityRecord, Submission, TranscriptOp, TranscriptPage, Value,
-    WorkspaceFileRecord, WorkspaceFileScope, base64_bytes, deserialize_frame, desktop_bytes,
+    RecordedEvent, RouteTarget, Routine, RoutineChange, RoutineDefinition, RoutineRun,
+    RoutineRunPreview, RunStats, Serialize, SessionFileRecord, SessionFileReference,
+    SessionReadyPayload, SessionRecord, SessionSlot, SshIdentityRecord, Submission, TranscriptOp,
+    TranscriptPage, Value, WorkspaceFileRecord, WorkspaceFileScope, base64_bytes,
+    deserialize_frame, desktop_bytes,
 };
 use serde::de::Error as _;
 
@@ -236,10 +237,16 @@ pub enum ClientMessage {
     CreateSession {
         /// The request identifier.
         request_id: Arc<str>,
-        /// The workspace.
+        /// The workspace, and Auto's fallback when it is in `auto`.
         workspace: PathBuf,
-        /// The bot identifier.
+        /// The bot identifier, and Auto's fallback when it is in `auto`.
         bot_id: Arc<str>,
+        /// The targets Auto routing may pick from `prompt`.
+        #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+        auto: BTreeSet<RouteTarget>,
+        /// The first message, which Auto routes on.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prompt: Option<String>,
     },
     /// Selects the create workspace directory case.
     CreateWorkspaceDirectory {
@@ -507,6 +514,13 @@ pub enum ClientMessage {
         /// The config.
         config: AgentComposition,
     },
+    /// Saves how new chats left on Auto are routed. Answered with `gateway_configured`.
+    ConfigureAutoRouting {
+        /// The request identifier.
+        request_id: Arc<str>,
+        /// Setting values that differ from their defaults; a missing setting resets.
+        values: BTreeMap<String, mobius::protocol::FrontendSettingValue>,
+    },
     /// Moves every Bot and the Bot defaults off retired models of one provider setup.
     SwitchBotModels {
         /// The request identifier.
@@ -716,6 +730,9 @@ pub enum ClientMessage {
         /// Omission retains live image models; an explicit empty list clears them.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         image_model_ids: Option<Vec<String>>,
+        /// Omission retains live decision models; an explicit empty list clears them.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        decision_model_ids: Option<Vec<String>>,
         /// Marks the setup's credential and usage limits as supplied by the gateway operator;
         /// accepted only from the operator's local connection.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]

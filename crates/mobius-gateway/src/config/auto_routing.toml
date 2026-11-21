@@ -1,0 +1,72 @@
+# Auto routing: a new chat left on Auto sends its first message to a decision model, which
+# picks each target that has a question. Settings use the same schema as middleware settings,
+# so every client renders and validates them generically.
+label = "Auto routing"
+description = "A new chat on Auto sends its first message to the decision model to pick its Bot and folder."
+
+[[settings]]
+type = "select"
+id = "model"
+label = "Decision model"
+description = "Answers which Bot and folder a new chat on Auto belongs to. Add decision model IDs to a provider to list them here."
+choices = { "source" = "decision_models" }
+unset_label = "Off"
+max_bytes = 4096
+composer = false
+
+# A target is routable while its `<target>_question` setting is present.
+[[settings]]
+type = "text"
+id = "bot_question"
+label = "Bot question"
+description = "Asked of the decision model to pick a Bot; each option is a Bot's name and description."
+max_bytes = 4096
+default = "Which Bot is best suited to handle this message?"
+
+[[settings]]
+type = "text"
+id = "workspace_question"
+label = "Folder question"
+description = "Asked of the decision model to pick a folder; each option is a recent folder and its chats."
+max_bytes = 4096
+default = "Which project folder is this message about?"
+
+[[settings]]
+type = "integer"
+id = "min_confidence_percent"
+label = "Minimum confidence"
+description = "Below this a new chat keeps the Bot and folder you chose."
+min = 0
+max = 100
+step = 5
+default = 50
+
+[[settings]]
+type = "integer"
+id = "timeout_ms"
+label = "Timeout (ms)"
+description = "Past this the chat starts without waiting for an answer."
+min = 100
+max = 30000
+step = 100
+default = 3000
+
+[[settings]]
+type = "integer"
+id = "max_options"
+label = "Options offered"
+description = "Most recent Bots and folders the decision model chooses from; the decision API takes at most 255."
+min = 2
+max = 255
+step = 1
+default = 12
+
+[[settings]]
+type = "integer"
+id = "recent_titles"
+label = "Recent chats per folder"
+description = "Chat titles that describe each folder to the decision model."
+min = 0
+max = 10
+step = 1
+default = 3

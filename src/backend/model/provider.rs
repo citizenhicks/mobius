@@ -35,6 +35,9 @@ pub(super) struct ProviderMetadata {
     pub(super) max_output_tokens: Option<u64>,
     pub(super) tool_search_type: Option<String>,
     pub(super) web_search_type: Option<String>,
+    /// Path under the base URL that answers decision-model requests.
+    #[serde(default)]
+    pub(super) decisions_path: Option<String>,
 }
 
 fn default_supported_tool_discovery() -> Vec<ToolDiscoveryMode> {
@@ -525,6 +528,7 @@ pub struct ProviderDefinition {
     builder: ProviderBuilder,
     pub(super) replay_reasoning_field: Option<&'static str>,
     pub(super) web_search_type: Option<&'static str>,
+    decisions_path: Option<&'static str>,
 }
 
 impl std::fmt::Debug for ProviderDefinition {
@@ -551,6 +555,7 @@ impl ProviderDefinition {
         Self {
             replay_reasoning_field: None,
             web_search_type: metadata.web_search_type.as_deref(),
+            decisions_path: metadata.decisions_path.as_deref(),
             id,
             label: &metadata.label,
             symbol: &metadata.symbol,
@@ -691,6 +696,7 @@ impl ProviderDefinition {
         match capability {
             ModelCapability::ImageGeneration => self.supports_image_generation,
             ModelCapability::RealtimeVoice => !self.voice_models.is_empty(),
+            ModelCapability::Decisions => self.decisions_path.is_some(),
         }
     }
 

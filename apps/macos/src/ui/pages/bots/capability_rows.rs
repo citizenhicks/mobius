@@ -5,10 +5,11 @@ use super::settings::{AgentDraft, AgentScope};
 use crate::ui::Workspace;
 use crate::ui::chat::ModelTarget;
 use crate::ui::pages::harness::{Choice, option_menu};
-use crate::ui::primitives::{Leading, Row, toggle, width};
+use crate::ui::primitives::{Leading, Row, text_field, toggle, width};
+use gpui::Entity;
 use gpui::{AnyElement, Context, IntoElement as _, SharedString, Styled as _};
 use gpui_component::Disableable as _;
-use gpui_component::input::NumberInput;
+use gpui_component::input::{InputState, NumberInput};
 use mobius::protocol::{
     FrontendSetting, FrontendSettingKind, FrontendSettingValue, MiddlewareFeature,
 };
@@ -47,17 +48,12 @@ impl Workspace {
                 .into_any_element();
         }
         match &setting.kind {
-            FrontendSettingKind::Integer { .. } => {
-                match draft
-                    .numbers
+            FrontendSettingKind::Integer { .. } | FrontendSettingKind::Text { .. } => {
+                let input = draft
+                    .inputs
                     .get(&feature.id)
-                    .and_then(|settings| settings.get(&setting.id))
-                {
-                    Some((input, _)) => {
-                        row.control(NumberInput::new(input).w(width::STEPPER).disabled(!enabled))
-                    }
-                    None => row,
-                }
+                    .and_then(|settings| settings.get(&setting.id));
+                input_row(row, setting, input.map(|(input, _)| input), enabled)
             }
             FrontendSettingKind::Select {
                 options,
@@ -148,5 +144,23 @@ impl Workspace {
             })),
         )
         .into_any_element()
+    }
+}
+
+/// A typed setting's field: a stepper for a count, a text field for text.
+pub(super) fn input_row(
+    row: Row,
+    setting: &FrontendSetting,
+    input: Option<&Entity<InputState>>,
+    enabled: bool,
+) -> Row {
+    match (input, &setting.kind) {
+        (Some(input), FrontendSettingKind::Integer { .. }) => {
+            row.control(NumberInput::new(input).w(width::STEPPER).disabled(!enabled))
+        }
+        (Some(input), FrontendSettingKind::Text { .. }) => {
+            row.control(text_field(input).w(width::FIELD).disabled(!enabled))
+        }
+        _ => row,
     }
 }

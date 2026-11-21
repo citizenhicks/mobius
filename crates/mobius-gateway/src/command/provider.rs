@@ -87,6 +87,7 @@ pub(super) async fn register_provider_command(
         tint: None,
         models,
         image_model_ids: options.image_model_ids,
+        decision_model_ids: options.decision_model_ids,
         operator_managed: options.operator_managed,
     };
     request_provider_registration(
@@ -197,6 +198,7 @@ async fn request_provider_registration(
             tint: registration.tint,
             models: registration.models,
             image_model_ids: registration.image_model_ids,
+            decision_model_ids: registration.decision_model_ids,
             operator_managed: registration.operator_managed,
         },
         |request_id, message| {

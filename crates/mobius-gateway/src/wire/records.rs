@@ -87,6 +87,10 @@ pub struct AgentCatalog {
     pub image_models: Vec<ModelChoice>,
     /// Selectable voice routes; each route's variant is its voice.
     pub voice_models: Vec<ModelChoice>,
+    /// Selectable decision model routes, keyed into `model_providers` like `models`.
+    pub decision_models: Vec<ModelChoice>,
+    /// How new chats left on Auto pick their Bot and workspace.
+    pub auto_routing: AutoRoutingCatalog,
     /// The middleware features.
     pub middleware_features: Vec<MiddlewareFeature>,
     /// The extensions.
@@ -667,6 +671,9 @@ pub struct ProviderStatus {
     /// Whether setups list their own image model identifiers.
     #[serde(default)]
     pub image_model_ids_configurable: bool,
+    /// Whether setups list decision model identifiers.
+    #[serde(default)]
+    pub decision_model_ids_configurable: bool,
     /// Realtime voice models the provider advertises, default first.
     #[serde(default)]
     pub voice_models: Cow<'static, [MediaModelPreset]>,
@@ -678,6 +685,41 @@ pub struct ProviderStatus {
     pub supported_tool_discovery: Vec<ToolDiscoveryMode>,
     /// The custom endpoint tool discovery.
     pub custom_endpoint_tool_discovery: Option<ToolDiscoveryMode>,
+}
+
+/// What Auto routing can choose for a new chat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteTarget {
+    /// The Bot the chat runs as.
+    Bot,
+    /// The workspace the chat runs in.
+    Workspace,
+}
+
+impl RouteTarget {
+    /// Every target, in wire order.
+    pub const ALL: [Self; 2] = [Self::Bot, Self::Workspace];
+
+    /// The target's wire name, which also keys its routing question.
+    #[must_use]
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Bot => "bot",
+            Self::Workspace => "workspace",
+        }
+    }
+}
+
+/// Auto routing's settings, rendered like any capability's settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AutoRoutingCatalog {
+    /// The settings schema.
+    pub feature: mobius::protocol::MiddlewareFeature,
+    /// Every setting's current value.
+    pub values: BTreeMap<String, mobius::protocol::FrontendSettingValue>,
+    /// The targets a new chat starts on Auto for.
+    pub targets: std::collections::BTreeSet<RouteTarget>,
 }
 
 /// User-chosen accent for distinguishing provider instances in model selectors.
@@ -755,6 +797,9 @@ pub struct ProviderInstance {
     /// Image model identifiers listed by this setup.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub image_model_ids: Vec<String>,
+    /// Decision model identifiers listed by this setup.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decision_model_ids: Vec<String>,
     /// Credential and usage limits are supplied by the gateway operator.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub operator_managed: bool,

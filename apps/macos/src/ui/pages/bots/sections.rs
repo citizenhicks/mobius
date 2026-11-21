@@ -268,7 +268,12 @@ impl Workspace {
             AgentScope::Bot(_) => "Sets the provider, model, and reasoning used by this Bot.",
         };
         let picker = self.model_popover(surface, ModelTarget::Draft(Rc::clone(scope)), true, cx);
-        let group = Group::new().child(
+        // Auto routing is gateway-wide, so it leads the defaults' Model section.
+        let routing = match scope.as_ref() {
+            AgentScope::Defaults => self.auto_routing_rows(surface, cx),
+            AgentScope::Bot(_) => Vec::new(),
+        };
+        let group = Group::new().children(routing).child(
             Row::new("agent-model", "Model")
                 .subtitle(detail)
                 .control(picker),

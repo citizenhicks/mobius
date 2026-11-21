@@ -229,13 +229,19 @@ pub(super) async fn handle_message(
             request_id,
             workspace,
             bot_id,
+            auto,
+            prompt,
         } => {
             return create_session(
                 writer,
                 connection.selected,
                 request_id,
-                workspace,
-                bot_id,
+                crate::host::NewChat {
+                    workspace,
+                    bot_id,
+                    auto,
+                    prompt,
+                },
                 gateway,
             )
             .await;
@@ -504,6 +510,10 @@ pub(super) async fn handle_message(
                 .await;
             return write_gateway_result(writer, connection.view, request_id, configured).await;
         }
+        ClientMessage::ConfigureAutoRouting { request_id, values } => {
+            return configure_auto_routing(writer, connection.view, request_id, values, gateway)
+                .await;
+        }
         ClientMessage::SwitchBotModels {
             request_id,
             instance,
@@ -709,6 +719,7 @@ pub(super) async fn handle_message(
             tint,
             models,
             image_model_ids,
+            decision_model_ids,
             operator_managed,
         } => {
             let registered = gateway
@@ -720,6 +731,7 @@ pub(super) async fn handle_message(
                         tint,
                         models,
                         image_model_ids,
+                        decision_model_ids,
                         operator_managed,
                     },
                     preserve_selection,
@@ -1014,11 +1026,10 @@ async fn create_session(
     writer: &mut (impl AsyncWrite + Unpin),
     selected: &mut Option<SelectedChat>,
     request_id: Arc<str>,
-    workspace: PathBuf,
-    bot_id: Arc<str>,
+    chat: crate::host::NewChat,
     gateway: &GatewayHost,
 ) -> Result<()> {
-    let host = gateway.create_session(&workspace, &bot_id).await;
+    let host = gateway.create_routed_session(chat).await;
     open_selected(writer, selected, request_id, host, None).await
 }
 
@@ -1445,6 +1456,17 @@ async fn authorize_stored_read<'a>(
     connection.gateway.authorize_read(session_id).await?;
     *connection.readable = Some(session_id.share());
     Ok(connection.session_files)
+}
+
+async fn configure_auto_routing(
+    writer: &mut (impl AsyncWrite + Unpin),
+    view: &mut ClientView,
+    request_id: Arc<str>,
+    values: crate::config::auto_routing::Values,
+    gateway: &GatewayHost,
+) -> Result<()> {
+    let configured = gateway.configure_auto_routing(values).await;
+    write_gateway_result(writer, view, request_id, configured).await
 }
 
 async fn switch_bot_models(

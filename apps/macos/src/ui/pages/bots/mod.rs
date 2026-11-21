@@ -1,5 +1,6 @@
 //! Bots: the list, each Bot's overview and settings, routines and agent defaults (WP4).
 
+mod auto_routing;
 mod bots_ui;
 mod capabilities;
 mod capability_rows;

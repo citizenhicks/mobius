@@ -499,6 +499,7 @@ async fn create_session(
                 ..Default::default()
             }],
             image_model_ids: None,
+            decision_model_ids: None,
             operator_managed: false,
             preserve_selection: false,
             if_configured: false,
@@ -528,6 +529,8 @@ async fn create_session(
             request_id: "session".into(),
             workspace,
             bot_id: bot.id,
+            auto: Default::default(),
+            prompt: None,
         })
         .await
         .unwrap();

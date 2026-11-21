@@ -34,7 +34,7 @@ macro_rules! static_tool_definition {
 pub(crate) use static_tool_definition;
 
 /// Binds a loopback peer on an ephemeral port.
-pub(super) async fn loopback_listener() -> (tokio::net::TcpListener, std::net::SocketAddr) {
+pub(crate) async fn loopback_listener() -> (tokio::net::TcpListener, std::net::SocketAddr) {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
         .expect("loopback listener");

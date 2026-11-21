@@ -42,6 +42,8 @@ pub struct ModelCatalogs<'a> {
     pub images: &'a [ModelChoice],
     /// Selectable realtime voice routes.
     pub voices: &'a [ModelChoice],
+    /// Selectable decision model routes.
+    pub decisions: &'a [ModelChoice],
 }
 
 /// Static metadata and configurable policy exported by one middleware module.
@@ -122,6 +124,19 @@ pub enum MiddlewareSettingManifest {
         /// The composer.
         composer: bool,
     },
+    /// Selects the free text case.
+    Text {
+        /// The identifier.
+        id: String,
+        /// The label.
+        label: String,
+        /// The description.
+        description: String,
+        /// The max bytes.
+        max_bytes: usize,
+        /// The default.
+        default: String,
+    },
 }
 
 impl MiddlewareSettingManifest {
@@ -129,7 +144,7 @@ impl MiddlewareSettingManifest {
     #[must_use]
     pub fn id(&self) -> &str {
         match self {
-            Self::Integer { id, .. } | Self::Select { id, .. } => id,
+            Self::Integer { id, .. } | Self::Select { id, .. } | Self::Text { id, .. } => id,
         }
     }
 
@@ -153,6 +168,7 @@ impl MiddlewareSettingManifest {
             Self::Select { default, .. } => default
                 .as_ref()
                 .map(|value| FrontendSettingValue::String(value.clone())), // rules-allow: the setting value is owned by the caller
+            Self::Text { default, .. } => Some(FrontendSettingValue::String(default.clone())), // rules-allow: the setting value is owned by the caller
         }
     }
 
@@ -197,6 +213,21 @@ impl MiddlewareSettingManifest {
                     unset_label: unset_label.clone(), // rules-allow: owned frontend record built from the shared manifest
                 },
             },
+            Self::Text {
+                id,
+                label,
+                description,
+                max_bytes,
+                ..
+            } => FrontendSetting {
+                id: id.into(),
+                label: label.into(),
+                description: description.into(),
+                composer: false,
+                kind: FrontendSettingKind::Text {
+                    max_bytes: *max_bytes,
+                },
+            },
         }
     }
 
@@ -232,7 +263,8 @@ impl MiddlewareSettingManifest {
                     }
                     MiddlewareSettingChoices::ModelRoutes
                     | MiddlewareSettingChoices::ImageModels
-                    | MiddlewareSettingChoices::VoiceModels => true,
+                    | MiddlewareSettingChoices::VoiceModels
+                    | MiddlewareSettingChoices::DecisionModels => true,
                 } =>
             {
                 Ok(())
@@ -242,9 +274,20 @@ impl MiddlewareSettingManifest {
                     "middleware setting `{middleware}.{id}` must be an advertised choice of 1–{max_bytes} bytes"
                 )))
             }
-            (Self::Select { id, .. }, Some(FrontendSettingValue::Integer(_))) => {
-                Err(setting_type(middleware, id, "string"))
+            (Self::Text { max_bytes, .. }, Some(FrontendSettingValue::String(value)))
+                if !value.trim().is_empty() && value.len() <= *max_bytes =>
+            {
+                Ok(())
             }
+            (Self::Text { id, max_bytes, .. }, Some(FrontendSettingValue::String(_))) => {
+                Err(Error::Invalid(format!(
+                    "middleware setting `{middleware}.{id}` must be 1–{max_bytes} bytes"
+                )))
+            }
+            (
+                Self::Select { id, .. } | Self::Text { id, .. },
+                Some(FrontendSettingValue::Integer(_)),
+            ) => Err(setting_type(middleware, id, "string")),
             (
                 Self::Select {
                     unset_label: Some(_),
@@ -252,9 +295,11 @@ impl MiddlewareSettingManifest {
                 },
                 None,
             ) => Ok(()),
-            (Self::Integer { id, .. } | Self::Select { id, .. }, None) => Err(Error::Invalid(
-                format!("missing middleware setting `{middleware}.{id}`"),
-            )),
+            (Self::Integer { id, .. } | Self::Select { id, .. } | Self::Text { id, .. }, None) => {
+                Err(Error::Invalid(format!(
+                    "missing middleware setting `{middleware}.{id}`"
+                )))
+            }
         }
     }
 
@@ -304,6 +349,8 @@ pub enum MiddlewareSettingChoices {
     ImageModels,
     /// Selects the realtime voice routes case.
     VoiceModels,
+    /// Selects the decision model routes case.
+    DecisionModels,
 }
 
 impl MiddlewareSettingChoices {
@@ -323,6 +370,7 @@ impl MiddlewareSettingChoices {
             Self::ModelRoutes => route_options(catalogs.models),
             Self::ImageModels => route_options(catalogs.images),
             Self::VoiceModels => route_options(catalogs.voices),
+            Self::DecisionModels => route_options(catalogs.decisions),
         }
     }
 
@@ -332,6 +380,7 @@ impl MiddlewareSettingChoices {
             Self::ModelRoutes => catalogs.models,
             Self::ImageModels => catalogs.images,
             Self::VoiceModels => catalogs.voices,
+            Self::DecisionModels => catalogs.decisions,
         };
         routes.iter().any(|choice| *choice.route == *value)
     }
@@ -376,7 +425,10 @@ pub struct MiddlewareSettingChoice {
     pub disables: Arc<[String]>,
 }
 
-pub(crate) fn deserialize_settings<'de, D>(
+/// Reads a manifest's settings, rejecting duplicate IDs, bad ranges and invalid defaults.
+/// # Errors
+/// Returns a deserialization error naming the first invalid setting.
+pub fn deserialize_settings<'de, D>(
     deserializer: D,
 ) -> std::result::Result<Vec<MiddlewareSettingManifest>, D::Error>
 where

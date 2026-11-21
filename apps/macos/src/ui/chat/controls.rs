@@ -6,6 +6,7 @@ use crate::numeric::ToFloat;
 use gpui_component::menu::{DropdownMenu, PopupMenu, PopupMenuItem};
 use mobius::protocol::{FrontendSettingKind, FrontendSettingValue, FrontendTone};
 use mobius_gateway::wire::HarnessConfig;
+use mobius_gateway::wire::RouteTarget;
 use std::borrow::Cow;
 use std::rc::Rc;
 
@@ -124,28 +125,44 @@ impl Workspace {
         let folder_view = cx.entity().downgrade();
         let folder_path = SharedString::clone(&path);
         let view = cx.entity().downgrade();
-        let bot_name = self
-            .draft_bot()
-            .map_or("Choose Bot", |bot| bot.name.as_ref());
-        let bot_glyph = self.draft_bot().map_or_else(
-            || icon("bot.face", &p).size(glyph::INLINE).into_any_element(),
-            |bot| {
-                BotFace::new(Accent::from(bot.tint).color(), bot.shape, glyph::INLINE)
-                    .into_any_element()
-            },
-        );
+        let auto_bot = self.draft_auto.contains(&RouteTarget::Bot);
+        let bot_name = if auto_bot {
+            AUTO
+        } else {
+            self.draft_bot()
+                .map_or("Choose Bot", |bot| bot.name.as_ref())
+        };
+        let bot_glyph = match self.draft_bot() {
+            _ if auto_bot => icon(AUTO_GLYPH, &p).size(glyph::INLINE).into_any_element(),
+            Some(bot) => BotFace::new(Accent::from(bot.tint).color(), bot.shape, glyph::INLINE)
+                .into_any_element(),
+            None => icon("bot.face", &p).size(glyph::INLINE).into_any_element(),
+        };
         let bot = menu_row("draft-bot", bot_glyph, bot_name.to_owned(), &p)
             .accessibility_label(format!("Choose Bot: {bot_name}"));
         #[cfg(feature = "snapshot")]
         let bot = bot.child(crate::ui::snapshot::probe("chat-draft-bot".into()));
+        let auto_folder = self.draft_auto.contains(&RouteTarget::Workspace);
         let folder = menu_row(
             "draft-workspace",
             icon("hi.folder", &p).size(glyph::INLINE),
-            folder_name(&path),
+            if auto_folder {
+                AUTO.to_owned()
+            } else {
+                folder_name(&path)
+            },
             &p,
         )
-        .accessibility_label(format!("Folder: {path}"))
-        .tooltip(path);
+        .accessibility_label(if auto_folder {
+            format!("Folder: {AUTO}")
+        } else {
+            format!("Folder: {path}")
+        })
+        .tooltip(if auto_folder {
+            SharedString::from(AUTO)
+        } else {
+            path
+        });
         if let Some(reason) = unavailable_reason {
             return div()
                 .flex()
@@ -169,13 +186,7 @@ impl Workspace {
                 let Some(gateway) = &workspace.client.state.gateway else {
                     return menu;
                 };
-                bot_menu(
-                    menu,
-                    &gateway.bots,
-                    workspace.draft_bot().map(|bot| bot.id.as_ref()),
-                    &view,
-                    cx,
-                )
+                bot_menu(menu, &gateway.bots, workspace, &view, cx)
             })
             .on_open_change(cx.listener(|this, open, _, cx| this.overlay_changed(*open, cx)));
         div()
@@ -256,6 +267,16 @@ impl Workspace {
     fn set_draft_folder(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
         if self.draft_selected() {
             self.draft_workspace = path;
+            self.draft_auto.remove(&RouteTarget::Workspace);
+            cx.notify();
+        }
+    }
+
+    /// Leaves `target` to Auto routing, as the new chat's pickers offer while it has a
+    /// decision model.
+    fn set_draft_auto(&mut self, target: RouteTarget, cx: &mut Context<Self>) {
+        if self.draft_selected() {
+            self.draft_auto.insert(target);
             cx.notify();
         }
     }
@@ -514,14 +535,46 @@ pub(super) fn menu_row(
         )
 }
 
+/// The label a picker shows while the gateway picks its value.
+const AUTO: &str = "Auto";
+const AUTO_GLYPH: &str = "hi.sparkles";
+
+/// Offers Auto first when the gateway routes `target` for new chats.
+fn auto_item(
+    menu: PopupMenu,
+    workspace: &Workspace,
+    target: RouteTarget,
+    view: &WeakEntity<Workspace>,
+    cx: &App,
+) -> PopupMenu {
+    let Some(gateway) = &workspace.client.state.gateway else {
+        return menu;
+    };
+    if !gateway.agent_catalog.auto_routing.targets.contains(&target) {
+        return menu;
+    }
+    let run = move |this: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>| {
+        this.set_draft_auto(target, cx);
+    };
+    menu.item(
+        workspace_item(AUTO, AUTO_GLYPH, view, run, &palette(cx))
+            .checked(workspace.draft_auto.contains(&target)),
+    )
+    .separator()
+}
+
 /// Chooses the pending Bot for a new chat without changing any session's owner.
 pub(in crate::ui) fn bot_menu(
-    mut menu: PopupMenu,
+    menu: PopupMenu,
     bots: &[mobius_gateway::wire::BotRecord],
-    current: Option<&str>,
+    workspace: &Workspace,
     view: &WeakEntity<Workspace>,
-    _cx: &App,
+    cx: &App,
 ) -> PopupMenu {
+    let mut menu = auto_item(menu, workspace, RouteTarget::Bot, view, cx);
+    let current = (!workspace.draft_auto.contains(&RouteTarget::Bot))
+        .then(|| workspace.draft_bot().map(|bot| bot.id.as_ref()))
+        .flatten();
     for bot in bots {
         let id = Arc::clone(&bot.id);
         let view = WeakEntity::clone(view);
@@ -532,6 +585,7 @@ pub(in crate::ui) fn bot_menu(
                 .on_click(move |_, _, cx| {
                     if let Err(error) = view.update(cx, |this, cx| {
                         this.draft_bot = Some(Arc::clone(&id));
+                        this.draft_auto.remove(&RouteTarget::Bot);
                         cx.notify();
                     }) {
                         tracing::debug!(%error, "the workspace closed before the Bot was chosen");
@@ -556,12 +610,18 @@ pub(super) fn folder_menu(
     view: &WeakEntity<Workspace>,
     cx: &App,
 ) -> PopupMenu {
+    let mut auto = false;
+    if let Some(workspace) = view.upgrade() {
+        let workspace = workspace.read(cx);
+        auto = workspace.draft_auto.contains(&RouteTarget::Workspace);
+        menu = auto_item(menu, workspace, RouteTarget::Workspace, view, cx);
+    }
     let mut entries: Vec<String> = folders.to_vec();
     if !entries.iter().any(|folder| folder == ".") {
         entries.push(".".into());
     }
     for folder in entries {
-        let (label, checked) = (folder_name(&folder), folder == current);
+        let (label, checked) = (folder_name(&folder), !auto && folder == current);
         let run = move |this: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>| {
             this.set_draft_folder(folder.clone().into(), cx); // rules-allow: every click hands the draft its own path
         };

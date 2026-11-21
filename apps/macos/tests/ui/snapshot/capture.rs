@@ -36,7 +36,9 @@ pub(super) fn catalog(
     let mut agents = serde_json::json!({"limits": {"min_model_steps": 1, "default_model_steps": 2042, "model_steps_step": 100,
             "max_system_prompt_bytes": 65536, "min_routine_interval_seconds": 60}, "bot_defaults": null,
             "default_capabilities": null, "models": [], "model_providers": {}, "image_models": [],
-            "voice_models": [], "middleware_features": [], "extensions": [], "contributions": []});
+            "voice_models": [], "decision_models": [],
+            "auto_routing": mobius_gateway::wire::AutoRoutingCatalog::default(),
+            "middleware_features": [], "extensions": [], "contributions": []});
     fill(&mut value, &mut agents);
     if let Some(fields) = value.as_object_mut() {
         fields.insert("agent_catalog".into(), agents);

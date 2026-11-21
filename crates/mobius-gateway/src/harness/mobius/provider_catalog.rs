@@ -77,6 +77,7 @@ pub(crate) fn provider_instances(
                 selection: configured.selection.clone(), // rules-allow: provider records are sent to clients
                 models: configured_models(definition, configured),
                 image_model_ids: configured.image_model_ids.clone(), // rules-allow: provider records are sent to clients
+                decision_model_ids: configured.decision_model_ids.clone(), // rules-allow: provider records are sent to clients
                 operator_managed: configured.operator_managed,
                 tool_discovery: selected_route(definition, Some(configured), &configured.selection)
                     .preset
@@ -142,11 +143,12 @@ impl VoiceRoutes {
     }
 }
 
-/// Independent chat, image and voice catalogs.
+/// Independent chat, image, voice and decision catalogs.
 pub(crate) struct ConfiguredChoices {
     pub(crate) models: Vec<ModelChoice>,
     pub(crate) images: Vec<ModelChoice>,
     voices: Vec<ModelChoice>,
+    decisions: Vec<ModelChoice>,
 }
 
 impl ConfiguredChoices {
@@ -154,6 +156,11 @@ impl ConfiguredChoices {
         Self {
             images: media.images.into_iter().map(|media| media.choice).collect(),
             voices: media.voices.into_iter().map(|media| media.choice).collect(),
+            decisions: media
+                .decisions
+                .into_iter()
+                .map(|media| media.choice)
+                .collect(),
             models: routes.into_iter().map(|route| route.choice).collect(),
         }
     }
@@ -164,6 +171,7 @@ impl ConfiguredChoices {
             models: &self.models,
             images: &self.images,
             voices: &self.voices,
+            decisions: &self.decisions,
         }
     }
 }
@@ -494,11 +502,12 @@ pub(crate) struct CatalogRoute {
     pub(crate) capability: Option<ModelCapability>,
 }
 
-/// Image and voice choices, independent of the chat catalog.
+/// Image, voice and decision choices, independent of the chat catalog.
 #[derive(Default)]
 pub(crate) struct MediaRoutes {
     pub(crate) images: Vec<CatalogRoute>,
     pub(crate) voices: Vec<CatalogRoute>,
+    pub(crate) decisions: Vec<CatalogRoute>,
 }
 
 /// Derives media choices directly from configured providers, optionally checking credentials.
@@ -513,41 +522,42 @@ pub(crate) fn media_routes(
             continue;
         }
         let definition = provider(&configured.selection.provider)?;
-        let media_choice = |model: &str,
-                            label: &str,
-                            variant: Option<&ReasoningPreset>,
-                            voice: bool| CatalogRoute {
-            choice: ModelChoice {
-                route: model_route_id(instance, model, variant.map(|variant| variant.id.as_str()))
+        let media_choice =
+            |model: &str,
+             label: &str,
+             variant: Option<&ReasoningPreset>,
+             capability: Option<ModelCapability>| CatalogRoute {
+                choice: ModelChoice {
+                    route: model_route_id(
+                        instance,
+                        model,
+                        variant.map(|variant| variant.id.as_str()),
+                    )
                     .into(),
-                group: format!("{} · {label}", configured.label).into(),
-                model: model.into(),
-                reasoning_effort: variant.map(|variant| variant.id.as_str().into()),
-                variant_label: variant.map(|variant| variant.label.as_str().into()),
-                context_window: None,
-                supports_image_input: false,
-                supports_image_generation: !voice,
-                supports_realtime_voice: voice,
-                tool_discovery: definition
-                    .tool_discovery(model, configured.selection.base_url.as_deref()),
-            },
-            provider: ProviderConfig {
-                instance: instance.into(),
-                provider: configured.selection.provider.as_str().into(),
-                model: model.into(),
-                base_url: configured.selection.base_url.as_ref().map(BaseUrl::share),
-                endpoint_auth: configured.selection.endpoint_auth,
-                reasoning_effort: None,
-                service_tier: None,
-                web_search: Default::default(),
-                tool_discovery: None,
-            },
-            capability: Some(if voice {
-                ModelCapability::RealtimeVoice
-            } else {
-                ModelCapability::ImageGeneration
-            }),
-        };
+                    group: format!("{} · {label}", configured.label).into(),
+                    model: model.into(),
+                    reasoning_effort: variant.map(|variant| variant.id.as_str().into()),
+                    variant_label: variant.map(|variant| variant.label.as_str().into()),
+                    context_window: None,
+                    supports_image_input: false,
+                    supports_image_generation: capability == Some(ModelCapability::ImageGeneration),
+                    supports_realtime_voice: capability == Some(ModelCapability::RealtimeVoice),
+                    tool_discovery: definition
+                        .tool_discovery(model, configured.selection.base_url.as_deref()),
+                },
+                provider: ProviderConfig {
+                    instance: instance.into(),
+                    provider: configured.selection.provider.as_str().into(),
+                    model: model.into(),
+                    base_url: configured.selection.base_url.as_ref().map(BaseUrl::share),
+                    endpoint_auth: configured.selection.endpoint_auth,
+                    reasoning_effort: None,
+                    service_tier: None,
+                    web_search: Default::default(),
+                    tool_discovery: None,
+                },
+                capability,
+            };
         if configured.image_model_ids.is_empty()
             && (configured.image_models.is_some()
                 || definition.supports_at(
@@ -561,15 +571,28 @@ pub(crate) fn media_routes(
                 .unwrap_or_else(|| definition.image_models())
             {
                 for quality in with_default(&preset.variants) {
-                    media
-                        .images
-                        .push(media_choice(&preset.id, &preset.label, quality, false));
+                    media.images.push(media_choice(
+                        &preset.id,
+                        &preset.label,
+                        quality,
+                        Some(ModelCapability::ImageGeneration),
+                    ));
                 }
             }
         }
         // Explicit image IDs opt a compatible endpoint into its image API.
         for id in &configured.image_model_ids {
-            media.images.push(media_choice(id, id, None, false));
+            media.images.push(media_choice(
+                id,
+                id,
+                None,
+                Some(ModelCapability::ImageGeneration),
+            ));
+        }
+        for id in &configured.decision_model_ids {
+            media
+                .decisions
+                .push(media_choice(id, id, None, Some(ModelCapability::Decisions)));
         }
         if configured.voice_models.is_some()
             || definition.supports_at(
@@ -583,9 +606,12 @@ pub(crate) fn media_routes(
                 .unwrap_or_else(|| definition.voice_models())
             {
                 for voice in with_default(&preset.variants) {
-                    media
-                        .voices
-                        .push(media_choice(&preset.id, &preset.label, voice, true));
+                    media.voices.push(media_choice(
+                        &preset.id,
+                        &preset.label,
+                        voice,
+                        Some(ModelCapability::RealtimeVoice),
+                    ));
                 }
             }
         }
@@ -683,6 +709,7 @@ fn provider_status(definition: &ProviderDefinition) -> ProviderStatus {
         image_models: std::borrow::Cow::Borrowed(definition.image_models()),
         image_model_ids_configurable: definition.image_models().is_empty()
             && definition.supports_at(ModelCapability::ImageGeneration, None),
+        decision_model_ids_configurable: definition.supports(ModelCapability::Decisions),
         voice_models: std::borrow::Cow::Borrowed(definition.voice_models()),
         auth,
         default_base_url: definition.default_base_url().share(),
@@ -790,6 +817,7 @@ mod tests {
             image_model_ids: Vec::new(),
             image_models: None,
             voice_models: None,
+            decision_model_ids: Vec::new(),
         };
         let definition = provider("responses").expect("custom provider");
         let models = configured_models(definition, &configured);

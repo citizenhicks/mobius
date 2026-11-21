@@ -167,6 +167,11 @@ pub enum FrontendSettingKind {
         /// The unset label.
         unset_label: Option<String>,
     },
+    /// Free text, such as a question a model is asked.
+    Text {
+        /// The longest accepted value.
+        max_bytes: usize,
+    },
 }
 
 /// One exact value in a schema-advertised select control.

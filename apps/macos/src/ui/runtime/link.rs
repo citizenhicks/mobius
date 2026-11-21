@@ -94,6 +94,7 @@ impl Workspace {
         self.save_draft(cx);
         self.draft_workspace = UNSELECTED_FOLDER.into();
         self.draft_bot = None;
+        self.draft_auto.clear();
         self.interrupt_uploads();
         self.stop_dictation();
         self.cancel_session_selection();

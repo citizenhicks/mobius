@@ -34,6 +34,8 @@ pub(in crate::ui) enum ModelTarget {
         feature: String,
         setting: String,
     },
+    /// A gateway Auto routing setting; picking saves it at once, and unset turns it off.
+    AutoRouting { setting: String },
 }
 
 /// The routes a select setting offers, in its order, when every option is a route of one
@@ -52,6 +54,7 @@ pub(super) fn route_options<'a>(
         &gateway.agent_catalog.models,
         &gateway.agent_catalog.image_models,
         &gateway.agent_catalog.voice_models,
+        &gateway.agent_catalog.decision_models,
     ]
     .into_iter()
     .find_map(|catalog| {
@@ -159,24 +162,26 @@ impl Workspace {
             ModelTarget::Draft(scope) | ModelTarget::Setting { scope, .. } => {
                 self.draft_config(scope)
             }
+            ModelTarget::AutoRouting { .. } => None,
         }
     }
 
     fn target_setting(&self, target: &ModelTarget) -> Option<&FrontendSetting> {
-        let ModelTarget::Setting {
-            feature, setting, ..
-        } = target
-        else {
-            return None;
+        let catalog = &self.client.state.gateway.as_ref()?.agent_catalog;
+        let (feature, setting) = match target {
+            ModelTarget::Setting {
+                feature, setting, ..
+            } => (
+                catalog
+                    .middleware_features
+                    .iter()
+                    .find(|candidate| candidate.id == *feature)?,
+                setting,
+            ),
+            ModelTarget::AutoRouting { setting } => (&catalog.auto_routing.feature, setting),
+            ModelTarget::Bot(_) | ModelTarget::Draft(_) => return None,
         };
-        self.client
-            .state
-            .gateway
-            .as_ref()?
-            .agent_catalog
-            .middleware_features
-            .iter()
-            .find(|candidate| candidate.id == *feature)?
+        feature
             .settings
             .iter()
             .find(|candidate| candidate.id == *setting)
@@ -199,7 +204,7 @@ impl Workspace {
             ModelTarget::Bot(_) | ModelTarget::Draft(_) => {
                 gateway.agent_catalog.models.iter().collect()
             }
-            ModelTarget::Setting { .. } => self
+            ModelTarget::Setting { .. } | ModelTarget::AutoRouting { .. } => self
                 .target_setting(target)
                 .and_then(|setting| route_options(gateway, setting))
                 .unwrap_or_default(),
@@ -210,13 +215,24 @@ impl Workspace {
     pub(in crate::ui) fn target_unset_label(&self, target: &ModelTarget) -> Option<String> {
         match &self.target_setting(target)?.kind {
             FrontendSettingKind::Select { unset_label, .. } => unset_label.clone(), // rules-allow: callers here and in pages/bots own the label as row text
-            FrontendSettingKind::Integer { .. } => None,
+            FrontendSettingKind::Integer { .. } | FrontendSettingKind::Text { .. } => None,
         }
     }
 
     /// The model `target` has now, including a draft's unsaved choice.
     pub(in crate::ui) fn target_current(&self, target: &ModelTarget) -> Option<&ModelChoice> {
         let gateway = self.client.state.gateway.as_ref()?;
+        if let ModelTarget::AutoRouting { setting } = target {
+            let Some(FrontendSettingValue::String(route)) =
+                gateway.agent_catalog.auto_routing.values.get(setting)
+            else {
+                return None;
+            };
+            return self
+                .target_choices(target)
+                .into_iter()
+                .find(|choice| *choice.route == **route);
+        }
         let config = self.target_config(target)?;
         match target {
             ModelTarget::Setting {
@@ -231,7 +247,7 @@ impl Workspace {
                     .into_iter()
                     .find(|choice| *choice.route == **route)
             }
-            ModelTarget::Bot(_) | ModelTarget::Draft(_) => {
+            ModelTarget::Bot(_) | ModelTarget::Draft(_) | ModelTarget::AutoRouting { .. } => {
                 configured_model(gateway, &config.provider)
             }
         }

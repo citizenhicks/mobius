@@ -1271,6 +1271,8 @@ mod tests {
                     request_id: "open".into(),
                     bot_id: "bot".into(),
                     workspace: "/workspace".into(),
+                    auto: Default::default(),
+                    prompt: None,
                 })
                 .await
                 .unwrap();

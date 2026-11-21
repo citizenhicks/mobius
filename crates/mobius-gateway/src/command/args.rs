@@ -234,6 +234,10 @@ pub(super) struct RegisterProviderArgs {
     #[arg(long = "image-model-id", value_name = "ID")]
     pub(super) image_model_ids: Option<Vec<String>>,
 
+    /// Decision model ID; repeat to replace the list. Omit to preserve existing IDs.
+    #[arg(long = "decision-model-id", value_name = "ID")]
+    pub(super) decision_model_ids: Option<Vec<String>>,
+
     /// Mark this setup's credential and usage limits as supplied by the gateway operator.
     #[arg(long)]
     pub(super) operator_managed: bool,

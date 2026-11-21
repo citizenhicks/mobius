@@ -155,6 +155,7 @@ impl GatewayHost {
                     tint: None,
                     models: Vec::new(),
                     image_model_ids: None,
+                    decision_model_ids: None,
                     operator_managed: false,
                 });
             let publication = crate::publication::Outcome::applied(state.credentials.set(

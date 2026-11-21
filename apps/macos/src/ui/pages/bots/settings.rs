@@ -6,7 +6,7 @@ use crate::ui::Workspace;
 use crate::ui::primitives::{field, growing_field};
 use gpui::{App, AppContext as _, Context, Entity, Subscription, Window};
 use gpui_component::input::{InputEvent, InputState, TextareaState};
-use mobius::protocol::{FrontendSettingKind, FrontendSettingValue};
+use mobius::protocol::{FrontendSetting, FrontendSettingKind, FrontendSettingValue};
 use mobius_gateway::wire::{
     AgentComposition, BotShape, HarnessConfig, HarnessKind, ProviderTint, ReadyPayload,
 };
@@ -51,15 +51,64 @@ pub(super) struct AgentDraft {
     pub(super) description: Entity<TextareaState>,
     pub(super) prompt: Entity<TextareaState>,
     pub(super) steps: Entity<InputState>,
-    /// Integer capability settings by feature and setting ID, with the initial value.
-    pub(super) numbers: BTreeMap<String, BTreeMap<String, (Entity<InputState>, i64)>>,
+    /// Typed capability settings (counts and text) by feature and setting ID, with the
+    /// initial value.
+    pub(super) inputs: BTreeMap<String, SettingInputs>,
+    /// Auto routing's typed settings; they save when they lose focus, apart from the draft.
+    pub(super) routing: SettingInputs,
     pub(super) saving: Option<Arc<str>>,
     pub(super) rejected: Option<Arc<str>>,
     _subscriptions: Vec<Subscription>,
 }
 
-fn number_input(value: i64, label: &str, window: &mut Window, cx: &mut App) -> Entity<InputState> {
-    field(&value.to_string(), label, window, cx)
+/// Typed setting fields by setting ID, each with the value it started from.
+pub(super) type SettingInputs = BTreeMap<String, (Entity<InputState>, FrontendSettingValue)>;
+
+/// A field for each counted or text setting, starting from `value_of` or the kind's floor.
+fn setting_inputs<'a>(
+    settings: impl IntoIterator<Item = &'a FrontendSetting>,
+    value_of: impl Fn(&str) -> Option<&'a FrontendSettingValue>,
+    window: &mut Window,
+    cx: &mut App,
+) -> SettingInputs {
+    settings
+        .into_iter()
+        .filter_map(|setting| {
+            let value = match (&setting.kind, value_of(&setting.id)) {
+                (FrontendSettingKind::Select { .. }, _) => return None,
+                (_, Some(value)) => value.clone(), // rules-allow: the draft owns its starting values
+                (FrontendSettingKind::Integer { min, .. }, None) => {
+                    FrontendSettingValue::Integer(*min)
+                }
+                (FrontendSettingKind::Text { .. }, None) => {
+                    FrontendSettingValue::String(String::new())
+                }
+            };
+            let text = match &value {
+                FrontendSettingValue::Integer(value) => value.to_string(),
+                FrontendSettingValue::String(value) => value.clone(), // rules-allow: the field owns its text
+            };
+            let input = field(&text, &setting.label, window, cx);
+            Some((setting.id.clone(), (input, value))) // rules-allow: the draft outlives the gateway payload, so its keys own the setting ID
+        })
+        .collect()
+}
+
+/// What a typed setting field holds now, in its starting value's kind; `None` while it does
+/// not parse or is empty.
+pub(super) fn input_value(
+    input: &Entity<InputState>,
+    initial: &FrontendSettingValue,
+    cx: &App,
+) -> Option<FrontendSettingValue> {
+    let text = input.read(cx).value();
+    let text = text.trim();
+    match initial {
+        FrontendSettingValue::Integer(_) => text.parse().ok().map(FrontendSettingValue::Integer),
+        FrontendSettingValue::String(_) => {
+            (!text.is_empty()).then(|| FrontendSettingValue::String(text.to_owned()))
+        }
+    }
 }
 
 impl AgentDraft {
@@ -90,29 +139,30 @@ impl AgentDraft {
                 .step(limits.model_steps_step.to_f64())
                 .min(limits.min_model_steps.to_f64())
         });
-        let mut numbers = BTreeMap::new();
+        let mut inputs = BTreeMap::new();
         if let Some(config) = composition {
             steps.update(cx, |input, cx| {
                 input.set_value(config.max_model_steps.to_string(), window, cx);
             });
             for feature in &gateway.agent_catalog.middleware_features {
-                for setting in &feature.settings {
-                    if let FrontendSettingKind::Integer { min, .. } = setting.kind {
-                        let value = match config.middleware.setting(&feature.id, &setting.id) {
-                            Some(FrontendSettingValue::Integer(value)) => *value,
-                            _ => min,
-                        };
-                        numbers
-                            .entry(feature.id.clone()) // rules-allow: the draft outlives the gateway payload, so its keys own the feature ID
-                            .or_insert_with(BTreeMap::new)
-                            .insert(
-                                setting.id.clone(), // rules-allow: the draft outlives the gateway payload, so its keys own the setting ID
-                                (number_input(value, &setting.label, window, cx), value),
-                            );
-                    }
+                let fields = setting_inputs(
+                    &feature.settings,
+                    |setting| config.middleware.setting(&feature.id, setting),
+                    window,
+                    cx,
+                );
+                if !fields.is_empty() {
+                    inputs.insert(feature.id.clone(), fields); // rules-allow: the draft outlives the gateway payload, so its keys own the feature ID
                 }
             }
         }
+        let auto_routing = &gateway.agent_catalog.auto_routing;
+        let routing = setting_inputs(
+            &auto_routing.feature.settings,
+            |setting| auto_routing.values.get(setting),
+            window,
+            cx,
+        );
         let notify = |cx: &mut Context<Workspace>, input: &Entity<InputState>| {
             cx.subscribe(input, |_, _, _: &InputEvent, cx| cx.notify())
         };
@@ -123,11 +173,18 @@ impl AgentDraft {
             cx.subscribe(&prompt, |_, _, _: &InputEvent, cx| cx.notify()),
         ];
         subscriptions.extend(
-            numbers
+            inputs
                 .values()
                 .flat_map(|settings| settings.values())
                 .map(|(input, _)| notify(cx, input)),
         );
+        subscriptions.extend(routing.values().map(|(input, _)| {
+            cx.subscribe(input, |this, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
+                    this.save_auto_routing(None, cx);
+                }
+            })
+        }));
         Self {
             config: saved.config.clone(), // rules-allow: the draft edits its own copy while `base` keeps the saved values (a möbius composition is shared until first edited)
             tint,
@@ -137,7 +194,8 @@ impl AgentDraft {
             description,
             prompt,
             steps,
-            numbers,
+            inputs,
+            routing,
             saving: None,
             rejected: None,
             _subscriptions: subscriptions,
@@ -166,13 +224,12 @@ impl AgentDraft {
             if let Ok(steps) = self.steps.read(cx).value().trim().parse::<u64>() {
                 config.max_model_steps = steps;
             }
-            for (feature, settings) in &self.numbers {
+            for (feature, settings) in &self.inputs {
                 for (setting, (input, initial)) in settings {
-                    if let Ok(value) = input.read(cx).value().trim().parse::<i64>()
+                    if let Some(value) = input_value(input, initial, cx)
                         && value != *initial
                     {
-                        let value = Some(FrontendSettingValue::Integer(value));
-                        config.middleware.set_setting(feature, setting, value);
+                        config.middleware.set_setting(feature, setting, Some(value));
                     }
                 }
             }

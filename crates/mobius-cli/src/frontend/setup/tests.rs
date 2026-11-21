@@ -53,6 +53,7 @@ fn status(provider: &str) -> ProviderStatus {
         supported_tool_discovery: vec![ToolDiscoveryMode::Native, ToolDiscoveryMode::Rebuild],
         image_models: Default::default(),
         image_model_ids_configurable: false,
+        decision_model_ids_configurable: false,
         voice_models: Default::default(),
         auth,
         default_base_url,
@@ -123,6 +124,7 @@ fn state(mode: SetupMode, provider: &str, configured: bool) -> SetupState {
     original.provider.base_url = Some(statuses[0].default_base_url.clone());
     let instances = vec![ProviderInstance {
         operator_managed: false,
+        decision_model_ids: Vec::new(),
         tool_discovery: mobius::protocol::ToolDiscoveryMode::Native,
         label: provider.into(),
         tint: Default::default(),
@@ -232,6 +234,25 @@ fn features() -> Vec<MiddlewareFeature> {
             requires: Vec::new(),
         },
     ]
+}
+
+#[test]
+fn provider_setup_edits_and_clears_advertised_decision_models() {
+    let mut state = state(SetupMode::Login, "kimi", true);
+    assert!(state.decision_model_row().is_none());
+    Arc::make_mut(&mut state.providers[state.provider].status).decision_model_ids_configurable =
+        true;
+    state.page = Page::Models;
+    state.row = state.decision_model_row().expect("decision model row");
+    state.paste("fixture/a, fixture/b");
+    assert_eq!(
+        state.configured_decision_models(),
+        Some(vec!["fixture/a".into(), "fixture/b".into()])
+    );
+    assert_eq!(state.custom_model, "kimi-k3");
+    assert_eq!(state.row + 1, state.models_action_start());
+    state.decision_models.clear();
+    assert_eq!(state.configured_decision_models(), Some(Vec::new()));
 }
 
 fn feature_row(state: &SetupState, id: &str) -> usize {

@@ -214,6 +214,19 @@ pub(super) fn validate_configured_provider(configured: &ConfiguredProvider) -> R
         )?;
         validate_image_ids(configured.image_model_ids.iter().map(String::as_str))?;
     }
+    if !configured.decision_model_ids.is_empty() {
+        if !definition.supports(mobius::protocol::ModelCapability::Decisions) {
+            return Err(Error::Invalid(format!(
+                "provider `{}` does not serve decision models",
+                configured.selection.provider
+            )));
+        }
+        validate_catalog_entries(
+            configured.decision_model_ids.iter().map(String::as_str),
+            "decision model IDs",
+            "decision model ID",
+        )?;
+    }
     validate_media_catalog(
         definition,
         configured.image_models.as_deref(),

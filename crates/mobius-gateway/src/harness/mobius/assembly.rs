@@ -605,7 +605,7 @@ fn register_route(router: &mut ModelRouter, route: RouteValue) -> Result<()> {
     Ok(())
 }
 
-fn instantiate_routes(
+pub(crate) fn instantiate_routes(
     catalog: Vec<CatalogRoute>,
     store: &ConfigStore,
     credentials: &CredentialStore,
@@ -738,12 +738,12 @@ fn build_route(
     })
 }
 
-struct RouteValue {
+pub(crate) struct RouteValue {
     instance: String,
     capability: Option<mobius::protocol::ModelCapability>,
-    lifetime: ModelCredentialLifetime,
+    pub(crate) lifetime: ModelCredentialLifetime,
     choice: ModelChoice,
-    model: Arc<dyn Model>,
+    pub(crate) model: Arc<dyn Model>,
 }
 
 struct UnavailableModel {

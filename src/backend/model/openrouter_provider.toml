@@ -11,6 +11,8 @@ max_output_tokens = 32000
 
 tool_search_type = "openrouter:tool_search"
 web_search_type = "openrouter:web_search"
+# Decision models (fixed-choice questions with probabilities) answer here.
+decisions_path = "systemone"
 
 # App attribution for OpenRouter rankings and analytics.
 [headers]

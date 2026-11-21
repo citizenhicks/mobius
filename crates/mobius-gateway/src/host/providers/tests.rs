@@ -269,6 +269,7 @@ async fn provider_replacement_rejects_a_bot_reference_without_changing_either_st
                     ..Default::default()
                 }],
                 image_model_ids: Some(Vec::new()),
+                decision_model_ids: None,
                 operator_managed: false,
             },
             false,

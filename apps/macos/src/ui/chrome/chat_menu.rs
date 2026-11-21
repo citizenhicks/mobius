@@ -130,13 +130,7 @@ impl Workspace {
                     let Some(gateway) = &workspace.client.state.gateway else {
                         return menu;
                     };
-                    return chat::bot_menu(
-                        menu,
-                        &gateway.bots,
-                        workspace.draft_bot().map(|bot| bot.id.as_ref()),
-                        &view,
-                        cx,
-                    );
+                    return chat::bot_menu(menu, &gateway.bots, workspace, &view, cx);
                 }
                 match session_id.as_ref() {
                     Some(session_id) => {

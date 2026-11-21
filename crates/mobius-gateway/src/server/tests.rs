@@ -247,6 +247,8 @@ async fn create_bot_chat_with_config(
             request_id: request_id.as_str().into(),
             workspace: workspace.into(),
             bot_id: Arc::clone(&bot_id),
+            auto: Default::default(),
+            prompt: None,
         })
         .await
         .expect("create chat");

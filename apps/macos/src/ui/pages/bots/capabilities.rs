@@ -137,9 +137,9 @@ impl Workspace {
     ) -> String {
         let mut parts: Vec<Cow<'_, str>> = settings(feature)
             .map(|setting| match &setting.kind {
-                FrontendSettingKind::Integer { .. } => {
+                FrontendSettingKind::Integer { .. } | FrontendSettingKind::Text { .. } => {
                     let value = draft
-                        .numbers
+                        .inputs
                         .get(&feature.id)
                         .and_then(|settings| settings.get(&setting.id))
                         .map(|(input, _)| input.read(cx).value().to_string());

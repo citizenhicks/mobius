@@ -80,6 +80,7 @@ pub struct OpenAi {
     hosted_tools: Vec<Value>,
     image_input: bool,
     image_api: Option<&'static ImageApi>,
+    decisions_path: Option<&'static str>,
     tool_discovery: ToolDiscoveryWire,
     web_search_event_type: &'static str,
 }
@@ -178,6 +179,7 @@ impl OpenAi {
             hosted_tools: Vec::new(),
             image_input: true,
             image_api,
+            decisions_path: None,
             tool_discovery: ToolDiscoveryWire::Rebuild,
             web_search_event_type: "web_search_call",
         })
@@ -233,6 +235,11 @@ impl OpenAi {
 
     pub(super) fn with_image_api(mut self, api: Option<&'static ImageApi>) -> Self {
         self.image_api = api;
+        self
+    }
+
+    pub(super) const fn with_decisions(mut self, path: Option<&'static str>) -> Self {
+        self.decisions_path = path;
         self
     }
 
@@ -401,6 +408,23 @@ impl OpenAi {
         api.decode(&read_limited(response, MAX_IMAGE_RESPONSE_BYTES, "Images").await?)
     }
 
+    async fn send_decision(
+        &self,
+        request: super::decisions::DecisionRequest<'_>,
+    ) -> Result<super::decisions::DecisionAnswers> {
+        let path = self.decisions_path.ok_or_else(|| {
+            Error::Provider("decision models are unavailable for this provider".into())
+        })?;
+        let body = super::decisions::Body::new(&self.model, request);
+        let response = self.send_authorized(path, &body, false, None).await?;
+        if !response.status().is_success() {
+            return Err(status_error(response, "Decisions").await);
+        }
+        let bytes =
+            read_limited(response, super::decisions::MAX_RESPONSE_BYTES, "Decisions").await?;
+        super::decisions::decode(&bytes, request, "Decisions")
+    }
+
     fn response_body<'a>(&'a self, request: ModelRequest<'a>) -> Result<ResponsesBody<'a>> {
         let additional_tools = match self.tool_discovery {
             ToolDiscoveryWire::AdditionalTools => request.deferred_tools,
@@ -552,6 +576,13 @@ impl Model for OpenAi {
         request: ImageGenerationRequest<'a>,
     ) -> BoxFuture<'a, Result<GeneratedImage>> {
         Box::pin(self.send_image(request))
+    }
+
+    fn decide<'a>(
+        &'a self,
+        request: super::decisions::DecisionRequest<'a>,
+    ) -> BoxFuture<'a, Result<super::decisions::DecisionAnswers>> {
+        Box::pin(self.send_decision(request))
     }
 
     fn supports_realtime_voice(&self) -> bool {

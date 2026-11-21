@@ -87,15 +87,26 @@ pub(super) async fn gateway_ready(
     let models = route_choices(routes, &mut model_providers);
     let image_models = route_choices(media.images, &mut model_providers);
     let voice_models = route_choices(media.voices, &mut model_providers);
+    let decision_models = route_choices(media.decisions, &mut model_providers);
     let subagent_ceilings = state.subagent_ceilings;
-    let middleware_features = crate::harness::mobius::middleware_manifest::features(
-        mobius::middleware::manifest::ModelCatalogs {
-            models: &models,
-            images: &image_models,
-            voices: &voice_models,
-        },
-        subagent_ceilings,
-    );
+    let catalogs = mobius::middleware::manifest::ModelCatalogs {
+        models: &models,
+        images: &image_models,
+        voices: &voice_models,
+        decisions: &decision_models,
+    };
+    let middleware_features =
+        crate::harness::mobius::middleware_manifest::features(catalogs, subagent_ceilings);
+    let auto_routing = {
+        use crate::config::auto_routing;
+        let values = auto_routing::effective(&state.auto_routing);
+        let targets = auto_routing::targets(&values, &decision_models);
+        crate::wire::AutoRoutingCatalog {
+            feature: auto_routing::feature(catalogs),
+            values,
+            targets,
+        }
+    };
     let default_capabilities = state
         .bot_defaults
         .as_ref()
@@ -139,6 +150,8 @@ pub(super) async fn gateway_ready(
             model_providers,
             image_models,
             voice_models,
+            decision_models,
+            auto_routing,
             middleware_features,
             extensions,
             contributions,

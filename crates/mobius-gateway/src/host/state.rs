@@ -47,6 +47,7 @@ pub(super) struct GatewayReadySnapshot {
     pub(super) store: ConfigStore,
     pub(super) configured_providers: BTreeMap<String, crate::config::ConfiguredProvider>,
     pub(super) bot_defaults: Option<crate::wire::VersionedAgentConfig<AgentComposition>>,
+    pub(super) auto_routing: crate::config::auto_routing::Values,
     pub(super) subagent_ceilings: mobius::middleware::subagents::SubagentCeilings,
     pub(super) extensions: Vec<crate::wire::ExtensionRecord>,
     pub(super) computer_view: crate::wire::ComputerView,
@@ -99,6 +100,7 @@ impl GatewayState {
             store: self.store.clone(), // rules-allow: the ready snapshot outlives the state lock
             configured_providers: config.configured_providers.clone(), // rules-allow: the ready snapshot outlives the config lock
             bot_defaults: config.bot_defaults.clone(), // rules-allow: the ready snapshot outlives the config lock
+            auto_routing: config.auto_routing.clone(), // rules-allow: the ready snapshot outlives the config lock
             subagent_ceilings: config.execution.subagent_ceilings,
             extensions: crate::harness::mobius::extensions::records(&config),
             computer_view: if !config.desktop_enabled {

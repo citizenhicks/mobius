@@ -564,6 +564,8 @@ async fn create_session(
             request_id: Arc::clone(&request_id),
             workspace,
             bot_id,
+            auto: Default::default(),
+            prompt: None,
         })
         .await;
     if let Err(error) = result {

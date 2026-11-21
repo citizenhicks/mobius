@@ -6,6 +6,7 @@ use mobius::backend::model::provider::{BaseUrl, HostedWebSearch};
 use mobius::protocol::ToolDiscoveryMode;
 
 const IMAGE_MODEL_IDS_INFO: &str = "Enter the exact provider image model IDs separated by commas. Whitespace, empty entries, and duplicates are ignored. Choose one in a Bot's Image generation capability.";
+const DECISION_MODEL_IDS_INFO: &str = "Enter the exact provider decision model IDs separated by commas. Whitespace, empty entries, and duplicates are ignored. Choose one in Agent defaults under Auto routing.";
 const WEB_SEARCH: [HostedWebSearch; 3] = [
     HostedWebSearch::Off,
     HostedWebSearch::Cached,
@@ -40,6 +41,7 @@ pub(super) struct ProviderDraft {
     expanded: Option<usize>,
     new_model: Entity<InputState>,
     image_models: Entity<InputState>,
+    decision_models: Entity<InputState>,
     base_url: Entity<InputState>,
     pub api_key: Entity<InputState>,
     changes: Vec<Subscription>,
@@ -77,6 +79,11 @@ impl ProviderDraft {
             "image-model-a, image-model-b",
             false,
         );
+        let decision_models = input(
+            &record.decision_model_ids.join(", "),
+            "decision-model-a, decision-model-b",
+            false,
+        );
         let base_url = input(
             record.selection.base_url.as_deref().unwrap_or_default(),
             "Provider endpoint",
@@ -88,17 +95,18 @@ impl ProviderDraft {
             "Paste a new key to replace it"
         };
         let api_key = input("", key_placeholder, true);
-        let mut changes: Vec<Subscription> = [&name, &image_models, &base_url, &api_key]
-            .into_iter()
-            .chain(models.iter().map(|model| &model.efforts))
-            .map(|field| {
-                cx.subscribe(field, |_, _, event: &InputEvent, cx| {
-                    if matches!(event, InputEvent::Change) {
-                        cx.notify();
-                    }
+        let mut changes: Vec<Subscription> =
+            [&name, &image_models, &decision_models, &base_url, &api_key]
+                .into_iter()
+                .chain(models.iter().map(|model| &model.efforts))
+                .map(|field| {
+                    cx.subscribe(field, |_, _, event: &InputEvent, cx| {
+                        if matches!(event, InputEvent::Change) {
+                            cx.notify();
+                        }
+                    })
                 })
-            })
-            .collect();
+                .collect();
         changes.push(cx.subscribe_in(
             &new_model,
             window,
@@ -118,6 +126,7 @@ impl ProviderDraft {
             expanded: None,
             new_model,
             image_models,
+            decision_models,
             base_url,
             api_key,
             changes,
@@ -139,6 +148,7 @@ impl ProviderDraft {
                 .collect()
         };
         let image_model_ids = entries(&self.image_models);
+        let decision_model_ids = entries(&self.decision_models);
         let values = self.effort_values(cx);
         // Each row as (id, efforts, default); the first is the setup's selected model.
         let rows: Vec<(String, Vec<String>, Option<String>)> =
@@ -203,6 +213,10 @@ impl ProviderDraft {
                 .definition
                 .image_model_ids_configurable
                 .then_some(image_model_ids),
+            decision_model_ids: self
+                .definition
+                .decision_model_ids_configurable
+                .then_some(decision_model_ids),
             operator_managed: false,
             preserve_selection: false,
             if_configured: false,
@@ -235,6 +249,8 @@ impl ProviderDraft {
         }
         let image_models = self.image_models.read(cx).value();
         let image_model_ids = split_entries(&image_models);
+        let decision_models = self.decision_models.read(cx).value();
+        let decision_model_ids = split_entries(&decision_models);
         let model = match self.models.first() {
             Some(first) if self.definition.model_ids_configurable => first.id.as_ref(),
             _ => &self.record.selection.model,
@@ -258,6 +274,10 @@ impl ProviderDraft {
                 .iter()
                 .copied()
                 .eq(live.image_model_ids.iter().map(String::as_str))
+            || !decision_model_ids
+                .iter()
+                .copied()
+                .eq(live.decision_model_ids.iter().map(String::as_str))
             || model != live.selection.model
             || (!base_url.is_empty()).then_some(base_url) != live.selection.base_url.as_deref()
             || self.record.selection.web_search != live.selection.web_search
@@ -377,6 +397,11 @@ impl Workspace {
                     .control(muted(ids.collect::<Vec<_>>().join(", ")))
             })
         };
+        let decision_models = definition.decision_model_ids_configurable.then(|| {
+            StackedField::new("Decision model ID(s)")
+                .info(DECISION_MODEL_IDS_INFO)
+                .control(text_field(&editor.decision_models))
+        });
         let voices = definition
             .voice_models
             .iter()
@@ -392,6 +417,7 @@ impl Workspace {
             ToolDiscoveryMode::Rebuild => "Rebuilds context · cache miss",
         };
         group
+            .children(decision_models)
             .children(image_models)
             .children(voice_models)
             .child(base_url)

@@ -268,6 +268,8 @@ pub enum ModelCapability {
     ImageGeneration,
     /// Live provider voice.
     RealtimeVoice,
+    /// Fixed-choice decisions with probabilities.
+    Decisions,
 }
 
 /// One selectable runtime model route.
@@ -294,17 +296,6 @@ pub struct ModelChoice {
     pub supports_realtime_voice: bool,
     /// The tool discovery.
     pub tool_discovery: ToolDiscoveryMode,
-}
-
-impl ModelChoice {
-    /// Reports whether this route supports a neutral provider capability.
-    #[must_use]
-    pub const fn supports(&self, capability: ModelCapability) -> bool {
-        match capability {
-            ModelCapability::ImageGeneration => self.supports_image_generation,
-            ModelCapability::RealtimeVoice => self.supports_realtime_voice,
-        }
-    }
 }
 
 /// A non-user message's neutral source, assigned by the trusted host.

@@ -684,6 +684,8 @@ async fn create_session(
             request_id,
             workspace,
             bot_id,
+            auto: Default::default(),
+            prompt: None,
         },
         session_opened,
     )

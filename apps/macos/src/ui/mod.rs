@@ -157,6 +157,8 @@ pub struct Workspace {
     motion: layout::PanelMotion,
     draft_workspace: std::path::PathBuf,
     draft_bot: Option<Arc<str>>,
+    /// What the gateway picks from the new chat's first message instead of the draft.
+    draft_auto: std::collections::BTreeSet<mobius_gateway::wire::RouteTarget>,
     queued_draft: Option<(Arc<str>, runtime::DraftIntent)>,
     appearance: Appearance,
     accent: Accent,
@@ -248,6 +250,7 @@ impl Workspace {
             motion: Default::default(),
             draft_workspace: runtime::UNSELECTED_FOLDER.into(),
             draft_bot: None,
+            draft_auto: Default::default(),
             queued_draft: None,
             appearance: preferences.appearance,
             accent: preferences.accent,

@@ -11,7 +11,8 @@ fn catalog() -> ReadyPayload {
         "background_approvals":[], "harnesses":[], "max_active_sessions":1, "revisions":{}, "omitted":[],
         "agent_catalog": {"limits": {"min_model_steps": 1, "default_model_steps": 2042, "model_steps_step": 100, "max_system_prompt_bytes": 65536, "min_routine_interval_seconds": 60},
             "bot_defaults":null, "middleware_features":[], "extensions":[], "contributions":[],
-            "models":[], "model_providers":{}, "image_models":[], "voice_models":[]
+            "models":[], "model_providers":{}, "image_models":[], "voice_models":[],
+            "decision_models":[], "auto_routing": mobius_gateway::wire::AutoRoutingCatalog::default()
         },
         "session_file_limits": {
             "max_attachment_references":1, "max_file_bytes":100, "max_session_files":1,

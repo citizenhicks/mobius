@@ -97,6 +97,12 @@ impl Workspace {
         self.client.state.reset_session();
         self.activate_tab(PageTab::Draft);
         self.load_draft("", window, cx);
+        self.draft_auto = self
+            .client
+            .state
+            .gateway
+            .as_ref()
+            .map_or_default(|gateway| gateway.agent_catalog.auto_routing.targets.clone()); // rules-allow: the draft owns its Auto targets
         self.focus_composer(window, cx);
         cx.notify();
     }
@@ -109,6 +115,8 @@ impl Workspace {
     ) {
         self.new_chat(window, cx);
         self.draft_bot = Some(bot_id);
+        self.draft_auto
+            .remove(&mobius_gateway::wire::RouteTarget::Bot);
     }
 
     pub(in crate::ui) fn draft_bot(&self) -> Option<&mobius_gateway::wire::BotRecord> {
@@ -130,10 +138,20 @@ impl Workspace {
             return;
         };
         let request_id = gateway::request_id();
+        // Ready keeps `draft_auto` to the targets the gateway offers.
+        let auto = self.draft_auto.clone(); // rules-allow: the request owns its Auto targets
+        let prompt = match &intent {
+            DraftIntent::Message(text) if !auto.is_empty() && !text.trim().is_empty() => {
+                Some(text.clone()) // rules-allow: the request owns the text Auto routes on
+            }
+            _ => None,
+        };
         let message = ClientMessage::CreateSession {
             request_id: Arc::clone(&request_id),
             workspace: self.draft_workspace.clone(), // rules-allow: the draft keeps its workspace until the chat opens
             bot_id,
+            auto,
+            prompt,
         };
         match self.enqueue(message) {
             Ok(()) => self.queued_draft = Some((request_id, intent)),
