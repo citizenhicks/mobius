@@ -8,7 +8,20 @@ use crate::backend::sandbox::{
 };
 use crate::middleware::MiddlewareStack;
 use crate::middleware::messages::Messages;
-use crate::protocol::{SessionContext, TokenUsage};
+use crate::protocol::{MessageAuthor, MessageSubmission, SessionContext, Submission, TokenUsage};
+
+const ANSWERED_A: &str = r#"{"answer":"A","status":"answered"}"#;
+
+/// Whether the saved context holds the tool's later result carrying `output`.
+fn has_tool_result(context: &[Arc<Value>], output: &str) -> bool {
+    context.iter().any(|message| {
+        message["role"] == "user"
+            && message["content"][0]["text"].as_str().is_some_and(|text| {
+                text.starts_with("Result of an earlier asynchronous `ask_user` call \"q\".")
+                    && text.ends_with(output)
+            })
+    })
+}
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::Notify;
 
@@ -18,7 +31,9 @@ fn question(id: &str, at: i64) -> Question {
         title: "Choose {answer}?".into(),
         options: vec!["A".into(), "B".into()],
         asked_at: at,
+        asked_turn: None,
         outcome: None,
+        pending_outcome: None,
     }
 }
 
@@ -83,6 +98,11 @@ async fn next(agent: &mut Agent, predicate: impl Fn(&EventMsg) -> bool + Sync) -
     })
     .await
     .expect("event deadline")
+}
+
+fn closed_question(event: &EventMsg) -> bool {
+    matches!(event, EventMsg::Frontend(FrontendEvent::Widget { capability, item })
+        if &**capability == "questions" && item.text == "0")
 }
 
 async fn agent(
@@ -166,22 +186,19 @@ async fn answers_reach_model_history_without_duplicate_frontend_messages() {
             })
             .expect("answer");
         if active {
-            next(&mut agent, |event| {
-                matches!(event, EventMsg::Frontend(FrontendEvent::Widget { capability, item })
-                    if &**capability == "messages" && item.text == "> Choose {answer}?\n\nA")
-            })
-            .await;
+            next(&mut agent, closed_question).await;
             model.release.notify_one();
         }
-        loop {
+        let mut complete = false;
+        let mut closed = active;
+        while !complete || !closed {
             let event = next(&mut agent, |_| true).await;
             assert!(
-                !matches!(&event, EventMsg::Message(message) if message.text.starts_with("> ")),
+                !matches!(&event, EventMsg::Message(message) if message.text == ANSWERED_A),
                 "the question card already shows its answer"
             );
-            if matches!(event, EventMsg::TurnComplete(_)) {
-                break;
-            }
+            complete |= matches!(event, EventMsg::TurnComplete(_));
+            closed |= closed_question(&event);
         }
         let checkpoint = store
             .load(&"session".parse().expect("session ID"))
@@ -189,14 +206,8 @@ async fn answers_reach_model_history_without_duplicate_frontend_messages() {
             .expect("checkpoint")
             .expect("saved");
         assert!(
-            checkpoint
-                .context
-                .iter()
-                .any(|message| message["role"] == "user"
-                    && message["content"].as_array().is_some_and(|parts| parts
-                        .iter()
-                        .any(|part| part["text"] == "> Choose {answer}?\n\nA"))),
-            "the model keeps the actual user answer"
+            has_tool_result(&checkpoint.context, ANSWERED_A),
+            "the model reads the answer as the call's result"
         );
         let session = questions
             .session(&"session".parse().expect("session ID"))
@@ -205,7 +216,7 @@ async fn answers_reach_model_history_without_duplicate_frontend_messages() {
         assert!(matches!(&saved[0].outcome, Some(Outcome::Answered { .. })));
         assert!(
             session
-                .command("answer_question", "q", Some("B"), None)
+                .command("answer_question", "q", Some("B"))
                 .await
                 .is_err()
         );
@@ -256,6 +267,17 @@ async fn concurrent_answers_close_a_question_once() {
     };
     let (first, second) = tokio::join!(answer("A"), answer("B"));
     assert_ne!(first.is_ok(), second.is_ok());
+    let mut complete = false;
+    let mut closed = false;
+    while !complete || !closed {
+        let event = next(&mut agent, |_| true).await;
+        assert!(
+            !matches!(event, EventMsg::Message(_)),
+            "the card owns the displayed answer"
+        );
+        complete |= matches!(event, EventMsg::TurnComplete(_));
+        closed |= closed_question(&event);
+    }
     let saved = questions
         .session(&"session".parse().expect("session ID"))
         .expect("session")
@@ -266,32 +288,72 @@ async fn concurrent_answers_close_a_question_once() {
         panic!("answered once")
     };
     assert_eq!(text, if first.is_ok() { "A" } else { "B" });
-    let mut messages = Vec::new();
-    loop {
-        match next(&mut agent, |event| {
-            matches!(event, EventMsg::Message(_) | EventMsg::TurnComplete(_))
-        })
-        .await
-        {
-            EventMsg::Message(message) => messages.push(message.text),
-            EventMsg::TurnComplete(_) => break,
-            _ => unreachable!(),
-        }
-    }
-    assert!(messages.is_empty(), "the card owns the displayed answer");
     let checkpoint = store
         .load(&"session".parse().expect("session ID"))
         .await
         .expect("checkpoint")
         .expect("saved");
-    let expected = format!("> Choose {{answer}}?\n\n{text}");
-    let user_messages: Vec<_> = checkpoint
+    let expected = serde_json::json!({"answer": text, "status": "answered"}).to_string();
+    let user_messages = checkpoint
         .context
         .iter()
         .filter(|message| message["role"] == "user")
-        .collect();
-    assert_eq!(user_messages.len(), 1);
-    assert_eq!(user_messages[0]["content"][0]["text"], expected);
+        .count();
+    assert_eq!(user_messages, 1, "the call gets exactly one result");
+    assert!(has_tool_result(&checkpoint.context, &expected));
+}
+
+#[tokio::test]
+async fn a_skipped_question_tells_the_model_no_answer() {
+    check_skip(false).await;
+    check_skip(true).await;
+}
+
+async fn check_skip(recovering: bool) {
+    let (temp, store) = SqliteCheckpoint::temporary();
+    let store: Arc<dyn CheckpointStore> = Arc::new(store);
+    let mut question = question("q", 1);
+    if recovering {
+        question.asked_turn = Some("completed-turn".into());
+        question.pending_outcome = Some(Outcome::Skipped { at: 2 });
+    }
+    store
+        .save_state("session", STATE_KEY, &serde_json::json!([question]))
+        .await
+        .expect("seed");
+    let questions = Arc::new(Questions::default());
+    let mut agent = agent(
+        temp.path(),
+        Arc::clone(&store),
+        Arc::clone(&questions),
+        Arc::new(TestModel {
+            block: AtomicBool::new(false),
+            release: Notify::new(),
+        }),
+    )
+    .await;
+    if !recovering {
+        agent
+            .sender()
+            .submit(Op::CapabilityCommand {
+                capability: "questions".into(),
+                command: "skip_question".into(),
+                arguments: "q".into(),
+                input: None,
+                target: None,
+            })
+            .expect("skip");
+    }
+    next(&mut agent, closed_question).await;
+    let checkpoint = store
+        .load(&"session".parse().expect("session ID"))
+        .await
+        .expect("checkpoint")
+        .expect("saved");
+    assert!(has_tool_result(
+        &checkpoint.context,
+        r#"{"status":"no_answer"}"#
+    ));
 }
 
 #[tokio::test]
@@ -355,8 +417,7 @@ async fn ask_skip_restore_and_bounds_are_durable() {
             .command(
                 "answer_question",
                 "0",
-                Some(&"a".repeat(MAX_ANSWER_BYTES + 1)),
-                None
+                Some(&"a".repeat(MAX_ANSWER_BYTES + 1))
             )
             .await
             .is_err()
@@ -364,17 +425,12 @@ async fn ask_skip_restore_and_bounds_are_durable() {
     // A dead sender must leave the question open for another client to retry.
     assert!(
         session
-            .command("answer_question", "0", Some("A"), None)
+            .command("answer_question", "0", Some("A"))
             .await
             .is_err()
     );
     assert!(session.load().await.expect("load")[0].outcome.is_none());
-    session
-        .command("skip_question", "0", None, None)
-        .await
-        .expect("skip");
-    assert!(matches!(
-        session.load().await.expect("restore")[0].outcome,
-        Some(Outcome::Skipped { .. })
-    ));
+    // A skip is a result too: undelivered, it leaves the question open as well.
+    assert!(session.command("skip_question", "0", None).await.is_err());
+    assert!(session.load().await.expect("restore")[0].outcome.is_none());
 }

@@ -13,6 +13,9 @@ fn peer_audience_follows_delivery_without_changing_source_authority() {
             source_id: "webhook".into(),
             event_id: "source-event".into(),
         },
+        MessageSource::Tool {
+            call_id: "call-1".into(),
+        },
     ] {
         for delivery in [
             crate::protocol::MessageDelivery::Turn,
@@ -54,6 +57,12 @@ fn peer_audience_follows_delivery_without_changing_source_authority() {
                 MessageSource::External { .. } => assert_eq!(
                     text,
                     "Source reviewer (advisory).\n\nReply with test successful"
+                ),
+                MessageSource::Tool { .. } => assert!(
+                    text.starts_with(
+                        "Result of an earlier asynchronous `reviewer` call \"call-1\"."
+                    ),
+                    "{text}"
                 ),
             }
             let metadata: MessageEvent =

@@ -9,18 +9,16 @@ use serde_json::Value;
 
 use super::tools::{ApprovalRequirement, Catalog, ExecutionMode, Tool, ToolContext, ToolExposure};
 use super::{
-    ActiveCommandContext, FrontendEventSink, MessageSubmitContext, Middleware,
-    MiddlewareCommandContext, MiddlewareCommandOutput, RuntimeContext, SessionStartContext,
-    SubmissionResult,
+    ActiveCommandContext, FrontendEventSink, Middleware, MiddlewareCommandContext,
+    MiddlewareCommandOutput, RuntimeContext, SessionStartContext, SubmissionResult,
 };
 use crate::agent::{AgentRole, WeakAgentSender};
 use crate::backend::checkpoint::CheckpointStore;
 use crate::backend::model::ToolDefinition;
 use crate::protocol::{
-    ActiveMessageDelivery, EventMsg, FrontendAction, FrontendActionListItem, FrontendBlock,
-    FrontendCommand, FrontendContribution, FrontendEditor, FrontendEvent, FrontendListItemState,
-    FrontendSlot, FrontendSymbol, FrontendTone, FrontendWidget, FrontendWidgetContent,
-    MessageAuthor, MessageSubmission, Op, Submission,
+    EventMsg, FrontendAction, FrontendActionListItem, FrontendBlock, FrontendCommand,
+    FrontendContribution, FrontendEditor, FrontendEvent, FrontendListItemState, FrontendSlot,
+    FrontendSymbol, FrontendTone, FrontendWidget, FrontendWidgetContent, Op,
 };
 use crate::{BoxFuture, Error, Result};
 
@@ -43,7 +41,6 @@ struct Definition {
     editor_description: String,
     editor_submit_label: String,
     result_waiting: String,
-    answer_message: String,
     message_not_found: String,
     message_closed: String,
     message_empty_answer: String,
@@ -58,7 +55,6 @@ super::manifest::middleware_manifest! {
     "questions", DEFINITION, required: false, settings: &[]
 }
 const STATE_KEY: &str = "questions.v1";
-const ANSWER_SUBMISSION_PREFIX: &str = "question-answer:";
 const MAX_TITLE_BYTES: usize = 1024;
 const MAX_OPTIONS: usize = 6;
 const MAX_OPTION_BYTES: usize = 200;
@@ -88,7 +84,11 @@ struct Question {
     title: String,
     options: Vec<String>,
     asked_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    asked_turn: Option<Arc<str>>,
     outcome: Option<Outcome>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pending_outcome: Option<Outcome>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -96,6 +96,15 @@ struct Question {
 enum Outcome {
     Answered { text: String, at: i64 },
     Skipped { at: i64 },
+}
+
+impl Outcome {
+    fn tool_output(&self) -> Value {
+        match self {
+            Self::Answered { text, .. } => serde_json::json!({"status":"answered", "answer":text}),
+            Self::Skipped { .. } => serde_json::json!({"status":"no_answer"}),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -222,27 +231,13 @@ impl Middleware for Questions {
             }
             let session = self.session(&context.runtime.session_id)?;
             let _access = session.access.lock().await;
-            session.publish(session.load().await?)
-        })
-    }
-
-    fn message_submit<'a>(
-        &'a self,
-        context: &'a mut MessageSubmitContext<'_>,
-    ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            let Some(id) = context.submission_id.strip_prefix(ANSWER_SUBMISSION_PREFIX) else {
-                return Ok(());
-            };
-            let session = self.session(context.turn.session_id)?;
             let questions = session.load().await?;
-            if questions.iter().any(|question| {
-                &*question.id == id && matches!(&question.outcome,
-                    Some(Outcome::Answered { text, .. }) if context.message == answer_message(&question.title, text))
-            }) {
-                context.hide_message();
+            for question in &questions {
+                if let Some(outcome) = &question.pending_outcome {
+                    session.deliver(&question.id, outcome, question.asked_turn.as_deref())?;
+                }
             }
-            Ok(())
+            session.publish(questions)
         })
     }
 
@@ -261,7 +256,7 @@ impl Middleware for Questions {
             let session = self.session(context.session_id)?;
             let _access = session.access.lock().await;
             session
-                .command(context.command, context.arguments, context.input, None)
+                .command(context.command, context.arguments, context.input)
                 .await?;
             Ok(MiddlewareCommandOutput::events(Vec::new()))
         })
@@ -280,12 +275,7 @@ impl Middleware for Questions {
                 )));
             };
             match session
-                .command(
-                    context.command,
-                    context.arguments,
-                    context.input,
-                    Some(context.active_turn_id),
-                )
+                .command(context.command, context.arguments, context.input)
                 .await
             {
                 Ok(()) => Ok(Some(SubmissionResult::Handled)),
@@ -316,13 +306,7 @@ impl QuestionSession {
         })
     }
 
-    async fn command(
-        &self,
-        command: &str,
-        id: &str,
-        input: Option<&str>,
-        turn_id: Option<&str>,
-    ) -> Result<()> {
+    async fn command(self: &Arc<Self>, command: &str, id: &str, input: Option<&str>) -> Result<()> {
         let mut questions = self.load().await?;
         let (index, question) = questions
             .iter_mut()
@@ -332,63 +316,101 @@ impl QuestionSession {
         if question.outcome.is_some() {
             return Err(Error::Tool(DEFINITION.message_closed.clone())); // rules-allow: the error owns a copy of the embedded message
         }
+        if question.pending_outcome.is_some() {
+            return Err(Error::Busy(DEFINITION.message_busy.clone())); // rules-allow: the error owns a copy of the embedded message
+        }
         let at = chrono::Utc::now().timestamp_millis();
-        let message = match Command::parse(command)? {
+        let outcome = match Command::parse(command)? {
             Command::Answer => {
                 let answer = input
                     .filter(|answer| !answer.trim().is_empty() && answer.len() <= MAX_ANSWER_BYTES)
                     .ok_or_else(|| Error::Tool(DEFINITION.message_empty_answer.clone()))?; // rules-allow: the error owns a copy of the embedded message
-                question.outcome = Some(Outcome::Answered {
+                Outcome::Answered {
                     text: answer.into(),
                     at,
-                });
-                Some(answer_message(&question.title, answer))
+                }
             }
-            Command::Skip => {
-                question.outcome = Some(Outcome::Skipped { at });
-                None
-            }
+            Command::Skip => Outcome::Skipped { at },
         };
+        question.pending_outcome = Some(outcome);
         self.save(&questions).await?;
-        if let Some(text) = message {
-            // Enqueue only. Waiting for admission from inside the same command loop deadlocks.
-            let sent = self
-                .sender
-                .upgrade()
-                .ok_or_else(|| Error::Stopped(DEFINITION.message_unavailable.clone())) // rules-allow: the error owns a copy of the embedded message
-                .and_then(|sender| {
-                    sender.send(Submission {
-                        id: format!("{ANSWER_SUBMISSION_PREFIX}{id}").into(),
-                        op: Op::Message {
-                            message: MessageSubmission {
-                                author: MessageAuthor::User,
-                                text,
-                                attachments: Vec::new(),
-                                reply: None,
-                                requested_delivery: Some(ActiveMessageDelivery::Steer),
-                                target_turn_id: turn_id.map(str::to_owned),
-                            },
-                        },
-                    })
-                });
-            if let Err(error) = sent {
-                if let Some(question) = questions.get_mut(index) {
-                    question.outcome = None;
-                }
-                if let Err(rollback) = self.save(&questions).await {
-                    return Err(Error::Rollback {
-                        primary: Box::new(error),
-                        rollback: Box::new(rollback),
-                    });
-                }
+        let sent = questions.get(index).and_then(|question| {
+            let outcome = question.pending_outcome.as_ref()?;
+            Some(self.deliver(&question.id, outcome, question.asked_turn.as_deref()))
+        });
+        let sent =
+            sent.unwrap_or_else(|| Err(Error::Internal("question outcome was not staged".into())));
+        if let Err(error) = sent {
+            if let Some(question) = questions.get_mut(index) {
+                question.pending_outcome = None;
+            }
+            return match self.save(&questions).await {
+                Ok(()) => Err(error),
+                Err(rollback) => Err(Error::Rollback {
+                    primary: Box::new(error),
+                    rollback: Box::new(rollback),
+                }),
+            };
+        }
+        Ok(())
+    }
+
+    fn deliver(
+        self: &Arc<Self>,
+        call_id: &Arc<str>,
+        outcome: &Outcome,
+        turn_id: Option<&str>,
+    ) -> Result<()> {
+        // An acknowledgment must be awaited outside the command loop. A durable pending
+        // outcome survives a restart, and the agent's receipt prevents duplicate admission.
+        let admission = self
+            .sender
+            .upgrade()
+            .ok_or_else(|| Error::Stopped(DEFINITION.message_unavailable.clone()))? // rules-allow: the error owns a copy of the embedded message
+            .send_with_admission(super::tools::async_tool_result(
+                call_id,
+                &DEFINITION.ask_user.tool.name,
+                &outcome.tool_output(),
+                turn_id.map(str::to_owned),
+            ))?;
+        let session = Arc::clone(self);
+        let call_id = Arc::clone(call_id);
+        tokio::spawn(async move {
+            let admitted = admission.wait().await;
+            let _access = session.access.lock().await;
+            if let Err(error) = session.finish_answer(&call_id, admitted).await {
+                tracing::warn!(%error, "question result could not be finalized");
+            }
+        });
+        Ok(())
+    }
+
+    async fn finish_answer(
+        &self,
+        call_id: &str,
+        admitted: Result<crate::agent::MessageAcceptance>,
+    ) -> Result<()> {
+        let mut questions = self.load().await?;
+        let Some(question) = questions
+            .iter_mut()
+            .find(|question| *question.id == *call_id)
+        else {
+            return Ok(());
+        };
+        let Some(outcome) = question.pending_outcome.take() else {
+            return Ok(());
+        };
+        match admitted {
+            Ok(_) => question.outcome = Some(outcome),
+            Err(error @ Error::Invalid(_)) => {
+                self.save(&questions).await?;
+                self.publish(questions)?;
                 return Err(error);
             }
+            Err(error) => return Err(error),
         }
-        let previous_len = questions.len();
         prune(&mut questions);
-        if questions.len() != previous_len {
-            self.save(&questions).await?;
-        }
+        self.save(&questions).await?;
         self.publish(questions)
     }
 }
@@ -407,6 +429,9 @@ impl Tool for AskUser {
     fn approval(&self) -> ApprovalRequirement {
         ApprovalRequirement::Never
     }
+    fn asynchronous(&self) -> bool {
+        true
+    }
     fn call(
         &self,
         context: ToolContext,
@@ -419,8 +444,6 @@ impl Tool for AskUser {
             validate(&args)?;
             let _access = self.0.access.lock().await;
             let mut questions = self.0.load().await?;
-            let response =
-                serde_json::json!({"accepted":true,"question_id":context.call_id}).to_string();
             if !questions
                 .iter()
                 .any(|question| question.id == context.call_id)
@@ -438,31 +461,17 @@ impl Tool for AskUser {
                     title: args.title,
                     options: args.options,
                     asked_at: chrono::Utc::now().timestamp_millis(),
+                    asked_turn: Some(context.turn_id),
                     outcome: None,
+                    pending_outcome: None,
                 });
                 self.0.save(&questions).await?;
             }
             self.0.publish(questions)?;
-            Ok(response.into())
+            // The catalog answers `pending` for this asynchronous call.
+            Ok(String::new().into())
         })
     }
-}
-
-fn answer_message(title: &str, answer: &str) -> String {
-    // Substitute the template only, leaving placeholder-like user text intact.
-    DEFINITION
-        .answer_message
-        .split("{title}")
-        .enumerate()
-        .map(|(index, part)| {
-            let rendered = part.replace("{answer}", answer);
-            if index == 0 {
-                rendered
-            } else {
-                format!("{title}{rendered}")
-            }
-        })
-        .collect()
 }
 
 fn validate(args: &AskArgs) -> Result<()> {

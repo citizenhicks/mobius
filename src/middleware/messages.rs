@@ -130,8 +130,9 @@ impl Messages {
         &self,
         context: &MessageRouteContext<'_>,
     ) -> std::result::Result<QueuedMessageBoundary, String> {
+        let tool_result = context.message.author.is_tool_result();
         let Some(turn_id) = context.active_turn_id else {
-            return if context.message.target_turn_id.is_some() {
+            return if !tool_result && context.message.target_turn_id.is_some() {
                 Err(text::DEFINITION.stale_turn.as_str().into())
             } else {
                 Ok(QueuedMessageBoundary::Turn)
@@ -140,7 +141,11 @@ impl Messages {
         if let Some(target) = &context.message.target_turn_id
             && target != turn_id
         {
-            return Err(text::DEFINITION.stale_turn.as_str().into());
+            return if tool_result {
+                Ok(QueuedMessageBoundary::Queue)
+            } else {
+                Err(text::DEFINITION.stale_turn.as_str().into())
+            };
         }
         match context.message.requested_delivery.unwrap_or(self.delivery) {
             ActiveMessageDelivery::Steer => Ok(QueuedMessageBoundary::Steer {
@@ -167,7 +172,9 @@ impl Messages {
             reply: message.reply.take(),
             message_target: None,
         };
-        let widget = (!matches!(boundary, QueuedMessageBoundary::Turn)).then(|| {
+        let widget = (!matches!(boundary, QueuedMessageBoundary::Turn)
+            && !event.author.is_tool_result())
+        .then(|| {
             self.queued_widget(
                 context.submission_id,
                 &event.author,
@@ -250,6 +257,7 @@ impl Middleware for Messages {
             source,
             crate::protocol::MessageSource::Session { .. }
                 | crate::protocol::MessageSource::Call { .. }
+                | crate::protocol::MessageSource::Tool { .. }
         ) {
             return None;
         }
@@ -293,7 +301,10 @@ impl Middleware for Messages {
         context: &'a mut MessageSubmitContext<'_>,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            if matches!(context.author, MessageAuthor::Source { .. }) {
+            if context.author.is_tool_result() {
+                // An asynchronous tool's own card shows its result.
+                context.hide_message();
+            } else if matches!(context.author, MessageAuthor::Source { .. }) {
                 context.deliver_once("permissions", || {
                     internal_user_message(
                         "message_permissions",

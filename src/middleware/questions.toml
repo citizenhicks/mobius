@@ -13,7 +13,6 @@ editor_label = "Your answer"
 editor_description = "Choose a suggested answer or provide your own."
 editor_submit_label = "Send answer"
 result_waiting = "Waiting for your answer"
-answer_message = "> {title}\n\n{answer}"
 message_not_found = "question was not found"
 message_closed = "question has already been answered or skipped"
 message_empty_answer = "answer must contain 1–4096 bytes"
@@ -29,7 +28,7 @@ detail = "title"
 
 [ask_user.tool]
 name = "ask_user"
-description = "Ask the user one short, self-contained question, only for missing information, a preference, a constraint, or clarification. Returns immediately: keep doing work that does not depend on the answer. The answer arrives later as a user message quoting the question; if it is required, finish independent work and end the turn. Elapsed time is not an answer. Offer a few short options with the recommended one first."
+description = "Ask the user one short, self-contained question, only for missing information, a preference, a constraint, or clarification. Answers `pending` at once: keep doing work that does not depend on the answer. The answer arrives later as a message from this tool for this call: `{\"status\":\"answered\",\"answer\":...}`, or `{\"status\":\"no_answer\"}` when the user skips it. If the answer is required, finish independent work and end the turn. Elapsed time is not an answer. Offer a few short options with the recommended one first."
 
 [ask_user.tool.parameters]
 type = "object"

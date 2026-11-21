@@ -42,6 +42,7 @@ mod text {
         pub(super) prompt_safety: String,
         pub(super) prompt_turns: String,
         pub(super) render_load: String,
+        pub(super) async_pending_note: String,
         pub(super) repeat_notice: String,
         pub(super) repeat_skipped: String,
         pub(super) repeat_stop: String,
@@ -284,6 +285,13 @@ pub trait Tool: Send + Sync {
         false
     }
 
+    /// Declares that a call answers `pending` at once and its result arrives later, through
+    /// [`async_tool_result`], while the model keeps working. A successful call's own output
+    /// is replaced by the pending answer; an error still ends the call.
+    fn asynchronous(&self) -> bool {
+        false
+    }
+
     /// Declares an external hook alias and matcher subjects.
     fn hook_identity(&self) -> Option<HookIdentity> {
         None
@@ -326,6 +334,7 @@ struct RegisteredTool {
     cancel_on_input: bool,
     read_only: bool,
     polls: bool,
+    asynchronous: bool,
     handler: RegisteredHandler,
 }
 
@@ -528,6 +537,7 @@ impl Catalog {
             cancel_on_input: tool.cancel_on_input(),
             read_only: tool.read_only(),
             polls: tool.polls(),
+            asynchronous: tool.asynchronous(),
             handler: RegisteredHandler::Tool(tool),
         };
         self.insert(entry)
@@ -547,6 +557,7 @@ impl Catalog {
             cancel_on_input: false,
             read_only: true,
             polls: false,
+            asynchronous: false,
             handler: RegisteredHandler::Search,
         })
     }
@@ -1370,6 +1381,12 @@ async fn run_call(
             .ok_or_else(|| Error::Tool("tools_search scope is unavailable".into()))
             .and_then(|search_scope| tools_search(catalog, &arguments, &search_scope)),
     };
+    let result = match result {
+        Ok(output) if tool.asynchronous && !output.content.is_error => {
+            Ok(DispatchOutput::content(pending_response(&call_id)))
+        }
+        other => other,
+    };
     match result {
         Ok(output) => {
             let effects =
@@ -1389,6 +1406,55 @@ async fn run_call(
         Err(error) => ToolResult::failure(call_id, name, &error.to_string(), true, output_limit),
     }
     .with_usage(&pending_usage)
+}
+
+/// What an asynchronous call answers at once: the model reads that the result comes later.
+fn pending_response(call_id: &str) -> crate::protocol::ToolResponse {
+    serde_json::json!({
+        "status": "pending",
+        "call_id": call_id,
+        "note": text::DEFINITION.async_pending_note,
+    })
+    .to_string()
+    .into()
+}
+
+/// Delivers an asynchronous call's result: a message from the tool, without user authority,
+/// that steers `turn_id` when that turn is still running and otherwise starts a turn.
+/// Producers send it once per call; `output` is the result the model reads, such as
+/// `{"status":"answered",...}`, or `{"status":"no_answer"}` when none will come.
+#[must_use]
+pub fn async_tool_result(
+    call_id: &Arc<str>,
+    tool: &str,
+    output: &Value,
+    turn_id: Option<String>,
+) -> crate::protocol::Submission {
+    use sha2::Digest as _;
+    // Fit even a maximum-length provider call ID in the durable submission receipt.
+    let receipt = sha2::Sha256::digest(call_id.as_bytes());
+    crate::protocol::Submission {
+        id: format!("tool-result:{receipt:x}").into(),
+        op: crate::protocol::Op::Message {
+            message: crate::protocol::MessageSubmission {
+                author: crate::protocol::MessageAuthor::Source {
+                    message_id: Arc::clone(call_id),
+                    source: crate::protocol::MessageSource::Tool {
+                        call_id: Arc::clone(call_id),
+                    },
+                    cause_id: None,
+                    ancestry: Vec::new(),
+                    handle: tool.into(),
+                    symbol: None,
+                },
+                text: output.to_string(),
+                attachments: Vec::new(),
+                reply: None,
+                requested_delivery: Some(crate::protocol::ActiveMessageDelivery::Steer),
+                target_turn_id: turn_id,
+            },
+        },
+    }
 }
 
 struct DispatchOutput {

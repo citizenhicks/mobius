@@ -1039,6 +1039,7 @@ struct MessageText {
     session_turn: String,
     session_steer: String,
     external: String,
+    tool: String,
 }
 
 crate::embedded_config! {
@@ -1071,11 +1072,13 @@ pub(crate) fn message_input(event: &MessageEvent) -> Result<Value> {
                     }
                 )),
                 MessageSource::External { .. } => Cow::Borrowed(MESSAGE_TEXT.external.as_str()),
+                MessageSource::Tool { .. } => Cow::Borrowed(MESSAGE_TEXT.tool.as_str()),
             };
-            internal_user_message(
-                "message_advisory",
-                &format!("{}\n\n{text}", instruction.replace("{handle}", handle)),
-            )
+            let mut instruction = instruction.replace("{handle}", handle);
+            if let MessageSource::Tool { call_id } = source {
+                instruction = instruction.replace("{call_id}", &serde_json::to_string(call_id)?);
+            }
+            internal_user_message("message_advisory", &format!("{instruction}\n\n{text}"))
         }
     };
     set_field(

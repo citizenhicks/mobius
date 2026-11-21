@@ -319,6 +319,11 @@ pub enum MessageSource {
         /// The voice call's transcript session.
         call_id: SessionId,
     },
+    /// The later result of an asynchronous tool call, which answered `pending` at once.
+    Tool {
+        /// The provider call identifier the result belongs to.
+        call_id: Arc<str>,
+    },
 }
 
 impl MessageSource {
@@ -329,6 +334,7 @@ impl MessageSource {
             Self::Session { session_id } => session_id,
             Self::External { source_id, .. } => source_id,
             Self::Call { call_id } => call_id,
+            Self::Tool { call_id } => call_id,
         }
     }
 }
@@ -359,6 +365,18 @@ pub enum MessageAuthor {
 }
 
 impl MessageAuthor {
+    /// Whether this is an asynchronous tool's result rather than a new message.
+    #[must_use]
+    pub const fn is_tool_result(&self) -> bool {
+        matches!(
+            self,
+            Self::Source {
+                source: MessageSource::Tool { .. },
+                ..
+            }
+        )
+    }
+
     /// Retains source ancestry when a source turn coordinates with another session.
     #[must_use]
     pub fn causal_origin(&self) -> (Option<Arc<str>>, Vec<Arc<str>>) {
@@ -374,7 +392,9 @@ impl MessageAuthor {
                 let mut lineage = ancestry.iter().map(Arc::clone).collect::<Vec<_>>();
                 let origin = cause_id.as_ref().or(match source {
                     MessageSource::External { event_id, .. } => Some(event_id),
-                    MessageSource::Session { .. } | MessageSource::Call { .. } => None,
+                    MessageSource::Session { .. }
+                    | MessageSource::Call { .. }
+                    | MessageSource::Tool { .. } => None,
                 });
                 for id in origin.into_iter().chain(std::iter::once(message_id)) {
                     if !lineage.contains(id) {

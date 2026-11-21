@@ -135,8 +135,11 @@ impl TuiState {
                 TranscriptTone::Neutral,
                 Some(format!("source:{}:{source_id}:{message_id}", source_id.len()).into()),
             ),
+            // A tool's own card shows its result; external events are advisory.
             MessageAuthor::Source {
-                source: mobius::protocol::MessageSource::External { .. },
+                source:
+                    mobius::protocol::MessageSource::External { .. }
+                    | mobius::protocol::MessageSource::Tool { .. },
                 ..
             } => return,
         };

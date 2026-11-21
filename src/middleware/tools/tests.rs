@@ -69,6 +69,7 @@ fn finalize_and_bind(catalog: &mut Catalog, calls: &[ToolCall]) -> Vec<BoundTool
 }
 
 mod apply_patch;
+mod asynchronous;
 mod background_commands;
 mod batch_scheduling;
 mod discovery;
