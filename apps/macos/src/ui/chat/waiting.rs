@@ -106,7 +106,7 @@ impl Workspace {
             div()
                 .min_w_0()
                 .truncate()
-                .child(composer::shimmer_text(text))
+                .child(crate::ui::primitives::Shimmer::new(text).swaps("phrase"))
                 .into_any_element(),
         )
     }

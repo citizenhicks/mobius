@@ -58,6 +58,33 @@ pub(super) const SCENARIOS: &[Scenario] = &[
             coding_change(this, crate::ui::chat::CodingChange::Reply, cx);
         });
     }),
+    ("motion-chat-controls", |this, window, cx| {
+        coding_chat(this, window, cx, false);
+        super::strip_after_capture(|this, window, cx| {
+            this.mark_copied(
+                "chat:fixture-coding:assistant:answer:final_answer".into(),
+                cx,
+            );
+            this.composer
+                .update(cx, |input, cx| input.set_value("Send this", window, cx));
+            cx.notify();
+        });
+    }),
+    ("motion-status-swap", |this, window, cx| {
+        // A folded running turn on its search; the strip reads its edit arriving, a new glyph.
+        open_demo(
+            this,
+            window,
+            cx,
+            "fixture-coding",
+            "Fix the recap button flicker",
+            crate::ui::chat::coding_running(1),
+        );
+        super::strip_after_capture(|this, _, cx| {
+            this.client.state.transcript = crate::ui::chat::coding_running(3);
+            cx.notify();
+        });
+    }),
     ("motion-transcript-stream", |this, window, cx| {
         coding_motion(this, window, cx, true, |this, _, cx| {
             coding_change(this, crate::ui::chat::CodingChange::Stream, cx);

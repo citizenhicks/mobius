@@ -247,34 +247,50 @@ impl Workspace {
 
     /// Stop while a turn runs with nothing typed, Voice while empty, otherwise Send.
     fn composer_primary(&self, cx: &Context<Self>) -> AnyElement {
+        use crate::ui::primitives::{morph_icon, primary_control};
         let interrupt = self.interrupt_target(cx);
         let slot = div()
+            .id("composer-primary-slot")
+            .relative()
             .size(height::LARGE)
             .flex()
             .items_center()
             .justify_center();
+        // Keep the mark in one slot while the action switches between a menu, a popover and a button.
+        let mark = |name, dim: bool| {
+            let ink = self.palette.on_button_accent();
+            div().absolute().child(morph_icon(
+                "primary-mark",
+                name,
+                glyph::LEAD,
+                if dim { ink.opacity(alpha::DIM) } else { ink },
+            ))
+        };
         if let Some(turn_id) = interrupt {
             return slot
-                .child(
-                    primary_button("stop", "Stop", "hi.stopFill", cx).on_click(cx.listener(
-                        move |this, _, _, cx| {
-                            let turn_id = Arc::clone(&turn_id);
-                            this.submit_op(Op::Interrupt { turn_id }, cx);
-                        },
-                    )),
-                )
+                .child(primary_control("stop", "Stop").on_click(cx.listener(
+                    move |this, _, _, cx| {
+                        let turn_id = Arc::clone(&turn_id);
+                        this.submit_op(Op::Interrupt { turn_id }, cx);
+                    },
+                )))
+                .child(mark("hi.stopFill", false))
                 .into_any_element();
         }
         let empty = self.draft_is_empty(cx);
         if empty && self.queued_draft.is_none() {
-            let voice = primary_button("voice", "Start voice chat", "hi.audioWave01", cx);
-            let voice = match self.voice_unavailable_reason() {
+            let voice = primary_control("voice", "Start voice chat");
+            let reason = self.voice_unavailable_reason();
+            let voice = match reason {
                 Some(reason) => unavailable("voice-unavailable", voice, reason.to_owned(), cx),
                 None => voice
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_voice(cx)))
                     .into_any_element(),
             };
-            return slot.child(voice).into_any_element();
+            return slot
+                .child(voice)
+                .child(mark("hi.audioWave01", reason.is_some()))
+                .into_any_element();
         }
         let delivery = self.active_delivery();
         let (label, glyph) = delivery_label(delivery);
@@ -293,19 +309,21 @@ impl Workspace {
                 )
                 .into_any_element();
         }
-        let send = primary_button("send", label, glyph, cx)
+        let send = primary_control("send", label)
             .disabled(empty || !self.attachments_ready())
             .on_click(cx.listener(|this, _, window, cx| this.send_message(window, cx)));
         let Some(current) = delivery else {
-            return slot.child(send).into_any_element();
+            return slot
+                .child(send)
+                .child(mark(glyph, empty || !self.attachments_ready()))
+                .into_any_element();
         };
         let alternate = match current {
             ActiveMessageDelivery::Steer => ActiveMessageDelivery::Queue,
             ActiveMessageDelivery::Queue => ActiveMessageDelivery::Steer,
         };
         let view = cx.entity().downgrade();
-        slot.id("send-slot")
-            .child(send)
+        slot.child(send).child(mark(glyph, empty || !self.attachments_ready()))
             .context_menu(move |menu, _, cx| {
                 let (label, glyph) = delivery_label(Some(alternate));
                 let view = WeakEntity::clone(&view);

@@ -23,7 +23,7 @@ pub(super) use controls::{bot_menu, file_card, file_detail, file_glyph, tile_siz
 pub(super) use detail::ChatDetail;
 #[cfg(feature = "snapshot")]
 pub(super) use fixtures::{
-    CODING_DIFF, CodingChange, Scene, apply_coding_change, coding_demo_transcript,
+    CODING_DIFF, CodingChange, Scene, apply_coding_change, coding_demo_transcript, coding_running,
     ui_demo_transcript,
 };
 pub(super) use mention::Mention;

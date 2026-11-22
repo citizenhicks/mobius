@@ -22,8 +22,10 @@ tripwire, not an authenticity check. The archive hashes remain in `provenance.js
 This is a private proposed exception to GPUI Fast's unchanged-public-API rule,
 approved by the application owner, not approved by upstream maintainers:
 
-- `Motion`, `MotionFrame`, `MotionHighlight`, `MotionExt`, `MotionElement` let the
-  app supply its own curves while GPUI presents the retained scene. `Window`
+- `Motion`, `MotionFrame`, `MotionHighlight`, `MotionReveal`, `MotionExt`,
+  `MotionElement` let the app supply its own curves while GPUI presents the retained
+  scene. `MotionReveal` fades monochrome glyphs across a soft vertical edge (a text
+  wipe); like a highlight, a nested motion without its own inherits its parent's. `Window`
   gains only `with_motion` and `refresh_motions`. `Motion::opacity` guarantees fixed
   geometry so fades retain ordinary clipping/batching; it is the only specialized
   constructor, not an unchecked bounds hint.

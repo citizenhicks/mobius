@@ -374,6 +374,7 @@ pub use fast::motion::MotionElement;
 pub use fast::motion::MotionExt;
 pub use fast::motion::MotionFrame;
 pub use fast::motion::MotionHighlight;
+pub use fast::motion::MotionReveal;
 pub use fast::motion::MotionTransform;
 #[cfg(any(test, feature = "test-support"))]
 pub use fast::motion::assert_motion_invariants;

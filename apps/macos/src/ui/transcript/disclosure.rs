@@ -4,8 +4,8 @@
 use crate::gateway::RowChild;
 use crate::gateway::{TranscriptEntry, TranscriptStore};
 use crate::ui::primitives::{
-    Notice, Shape as _, Tone, Type, Typography as _, chevron, clock_duration, counted, first_line,
-    glyph, height, icon, motion, palette, space, symbol_icon_or,
+    Notice, Shape as _, Shimmer, Tone, Type, Typography as _, chevron, clock_duration, counted,
+    first_line, glyph, height, icon, morph_icon, motion, palette, space, symbol_icon_or,
 };
 use crate::ui::theme::Palette;
 use crate::ui::{Workspace, chat};
@@ -25,7 +25,7 @@ use mobius_gateway::wire::{TranscriptItemContent, TranscriptRow};
 
 /// A disclosure summary row: glyph, one line of muted text and a trailing mark.
 fn summary_row(
-    glyph: &'static str,
+    glyph: impl IntoElement,
     text: impl IntoElement,
     trailing: AnyElement,
     p: &Palette,
@@ -38,7 +38,7 @@ fn summary_row(
         .gap(space::S)
         .typography(Type::Body)
         .text_color(p.muted)
-        .child(icon(glyph, p).size(glyph::INLINE))
+        .child(glyph)
         .child(div().min_w_0().truncate().child(text))
         .child(trailing)
 }
@@ -151,12 +151,46 @@ impl Workspace {
                 )
             ),
         };
-        let text = if duration_ms.is_none() {
-            Self::running_summary(label.clone()) // rules-allow: the shimmer and the accessibility label each own the text
-        } else {
-            SharedString::from(label.clone()).into_any_element() // rules-allow: the row and the accessibility label each own the text
+        // A closed running turn names its current step in place of its title, its glyph
+        // morphing and its text wiping in as the steps change.
+        let live = (duration_ms.is_none() && !self.expanded.contains(&id)).then(|| {
+            let step = transcript
+                .row_items(row)
+                .rev()
+                .find_map(|entry| activity_line(entry).map(|line| (entry, line)));
+            match step {
+                Some((entry, line)) => (activity_glyph(entry), line),
+                None => ("hi.loader", "thinking".into()),
+            }
+        });
+        let (glyph_name, text) = match &live {
+            Some((glyph_name, line)) => (
+                *glyph_name,
+                Shimmer::new(SharedString::from(line.as_str()))
+                    .swaps("live")
+                    .into_any_element(),
+            ),
+            None if duration_ms.is_none() => (
+                "hi.combine",
+                Self::running_summary(label.clone()), // rules-allow: the shimmer and the accessibility label each own the text
+            ),
+            None => (
+                "hi.combine",
+                SharedString::from(label.clone()).into_any_element(), // rules-allow: the row and the accessibility label each own the text
+            ),
         };
-        let header = summary_row("hi.combine", text, caret, &self.palette);
+        let header = summary_row(
+            morph_icon(
+                format!("{id}:glyph"),
+                glyph_name,
+                glyph::INLINE,
+                self.palette.icon_ink(),
+            ),
+            text,
+            caret,
+            &self.palette,
+        );
+        let label = live.map_or(label, |(_, line)| line);
         let summary = activity_summary(counts);
         let header = self.disclosure_button(
             format!("{id}:heading").into(),
@@ -240,7 +274,12 @@ impl Workspace {
         let last = transcript.row_items(row).next_back();
         let label = activity_summary(counts);
         let heading = summary_row(
-            last.map_or("hi.loader", activity_glyph),
+            morph_icon(
+                format!("{id}:glyph"),
+                last.map_or("hi.loader", activity_glyph),
+                glyph::INLINE,
+                p.icon_ink(),
+            ),
             SharedString::from(label.clone()), // rules-allow: the row and the accessibility label each own the text
             div().into_any_element(),
             &p,

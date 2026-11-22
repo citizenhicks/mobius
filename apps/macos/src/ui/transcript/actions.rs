@@ -319,7 +319,12 @@ impl Workspace {
         let buttons = self.actions(message, chat).into_iter().enumerate().map(
             |(index, (action, label, glyph, enabled))| {
                 let id = SharedString::from(format!("{}:action:{index}", message.key));
-                inline_button(id, label, glyph, cx)
+                let button = if matches!(action, Action::Copy { .. }) {
+                    crate::ui::primitives::inline_morph_button(id, label, glyph, cx)
+                } else {
+                    inline_button(id, label, glyph, cx)
+                };
+                button
                     .flex_shrink_0()
                     .disabled(!enabled)
                     .on_click(cx.listener(move |this, _, window, cx| {

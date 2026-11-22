@@ -962,4 +962,7 @@ pub struct MotionTransform {
     /// Zero when the motion has no highlight.
     pub highlight_layers: u32,
     pub highlight_color: Hsla,
+    pub reveal_edge: f32,
+    /// Zero when the motion has no reveal.
+    pub reveal_feather: f32,
 }

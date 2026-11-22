@@ -4556,6 +4556,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "pulldown-cmark",
  "reqwest",
+ "resvg 0.46.0",
  "rust-embed",
  "serde",
  "serde_json",

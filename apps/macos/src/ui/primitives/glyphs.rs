@@ -6,11 +6,16 @@ use gpui_component::Icon;
 use mobius::protocol::FrontendSymbol;
 use std::f32::consts::FRAC_PI_2;
 
+/// The asset path of the glyph named `name`.
+pub(super) fn glyph_path(name: &str) -> String {
+    format!("icons/{name}.svg")
+}
+
 /// An SVG glyph using the appearance's monochrome ink.
 #[must_use]
 pub fn icon(name: &str, palette: &Palette) -> Icon {
     Icon::empty()
-        .path(SharedString::from(format!("icons/{name}.svg")))
+        .path(SharedString::from(glyph_path(name)))
         .text_color(palette.icon_ink())
 }
 

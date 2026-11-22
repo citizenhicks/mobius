@@ -194,6 +194,21 @@ pub fn inline_button(
     icon_button(id, label, glyph, height::COMPACT, glyph::INLINE, cx)
 }
 
+/// A transcript action whose icon changes while the same button stays mounted.
+pub fn inline_morph_button(
+    id: SharedString,
+    label: SharedString,
+    glyph_name: &'static str,
+    cx: &App,
+) -> Button {
+    quiet_button(id, label, height::COMPACT, cx).child(super::morph_icon(
+        "mark",
+        glyph_name,
+        glyph::INLINE,
+        palette(cx).icon_ink(),
+    ))
+}
+
 /// Actions inside a sidebar row, over the row's own hover or selected fill: glyph only,
 /// so the row never shows a second highlight.
 pub fn row_button(
@@ -266,6 +281,15 @@ pub fn primary_button(
     glyph: impl IntoGlyph,
     cx: &App,
 ) -> Button {
+    primary_control(id, label).child(
+        glyph
+            .into_glyph(cx)
+            .size(glyph::LEAD)
+            .text_color(palette(cx).on_button_accent()),
+    )
+}
+
+pub(crate) fn primary_control(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Button {
     let label = label.into();
     Button::new(id)
         .primary()
@@ -274,12 +298,6 @@ pub fn primary_button(
         .pill_corners()
         .tooltip(SharedString::clone(&label))
         .accessibility_label(label)
-        .child(
-            glyph
-                .into_glyph(cx)
-                .size(glyph::LEAD)
-                .text_color(palette(cx).on_button_accent()),
-        )
 }
 
 /// The titlebar chat menu, drawn as the chat's Bot face.

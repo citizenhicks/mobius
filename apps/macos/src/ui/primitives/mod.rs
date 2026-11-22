@@ -9,6 +9,7 @@ mod glyphs;
 #[cfg(test)]
 mod guard;
 mod list;
+mod morph;
 pub(crate) mod motion;
 mod navigation;
 pub(crate) mod organic;
@@ -30,6 +31,7 @@ pub(crate) use feedback::*;
 pub(crate) use format::*;
 pub(crate) use glyphs::*;
 pub(crate) use list::*;
+pub(crate) use morph::morph_icon;
 pub(crate) use navigation::*;
 pub(crate) use shape::{Shape, pill_quad};
 pub(crate) use shimmer::Shimmer;

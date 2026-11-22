@@ -724,6 +724,10 @@ fragment float4 monochrome_sprite_fragment(
       color = float4(rgb / max(alpha, 1e-6), alpha);
     }
   }
+  // A reveal fades glyphs out across its edge; the feather's sign picks the shown side.
+  if (motion.reveal_feather != 0.) {
+    color.a *= saturate((motion.reveal_edge - input.position.x) / motion.reveal_feather + 0.5);
+  }
   color.a *= motion.opacity;
   return color;
 }

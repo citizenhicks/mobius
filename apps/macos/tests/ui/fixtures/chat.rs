@@ -116,7 +116,27 @@ pub(in crate::ui) fn coding_demo_transcript() -> TranscriptStore {
     coding_demo().store()
 }
 
+/// The coding turn still running after its first `steps` tool calls, its steps folded.
+pub(in crate::ui) fn coding_running(steps: usize) -> TranscriptStore {
+    coding_steps(steps).store()
+}
+
 fn coding_demo() -> Script {
+    let mut script = coding_steps(usize::MAX);
+    script.text(
+        DONE,
+        "answer",
+        ModelStepContentPhase::FinalAnswer,
+        "The button checked `unread` while the catalog was still catching up after the turn, \
+so it showed news for a frame and then cleared. It now waits for `tracking` before it \
+counts, and all **4** recap tests pass.",
+    );
+    script.turn(DONE, false);
+    script
+}
+
+/// The coding turn's ask, its reasoning and up to `steps` of its tool calls.
+fn coding_steps(steps: usize) -> Script {
     let mut script = Script::default();
     script.turn(DONE, true);
     script.user(
@@ -131,7 +151,7 @@ fn coding_demo() -> Script {
         ModelStepContentPhase::Reasoning,
         "**Tracing the recap state**\nThe button reads `unread` before the catalog has settled.",
     );
-    script.tool(tool(
+    let search = tool(
         "code-search",
         DONE,
         "rg \"unread\" src/ui/navigation",
@@ -139,7 +159,7 @@ fn coding_demo() -> Script {
 catalog.rs:44:    pub(super) unread: BTreeSet<String>,\n\
 chats.rs:212:            self.catalog.unread.insert(session_id);\n",
         FrontendBlockFormat::PlainText,
-    ));
+    );
     let mut read = tool(
         "code-read",
         DONE,
@@ -151,34 +171,31 @@ chats.rs:212:            self.catalog.unread.insert(session_id);\n",
         label: "recaps.rs".into(),
         href: "src/ui/navigation/recaps.rs".into(),
     });
-    script.tool(read);
-    script.tool(tool(
-        "code-edit",
-        DONE,
-        "Edit recaps.rs",
-        CODING_DIFF,
-        FrontendBlockFormat::UnifiedDiff,
-    ));
-    script.tool(tool(
-        "code-test",
-        DONE,
-        "cargo test recaps",
-        "running 4 tests\ntest navigation::recaps::waits_for_the_catalog ... ok\n\
+    let tools = [
+        search,
+        read,
+        tool(
+            "code-edit",
+            DONE,
+            "Edit recaps.rs",
+            CODING_DIFF,
+            FrontendBlockFormat::UnifiedDiff,
+        ),
+        tool(
+            "code-test",
+            DONE,
+            "cargo test recaps",
+            "running 4 tests\ntest navigation::recaps::waits_for_the_catalog ... ok\n\
 test navigation::recaps::counts_unread_chats ... ok\n\
 test navigation::recaps::keeps_a_recap_until_news ... ok\n\
 test navigation::recaps::follows_the_chat_language ... ok\n\n\
 test result: ok. 4 passed; 0 failed\n",
-        FrontendBlockFormat::PlainText,
-    ));
-    script.text(
-        DONE,
-        "answer",
-        ModelStepContentPhase::FinalAnswer,
-        "The button checked `unread` while the catalog was still catching up after the turn, \
-so it showed news for a frame and then cleared. It now waits for `tracking` before it \
-counts, and all **4** recap tests pass.",
-    );
-    script.turn(DONE, false);
+            FrontendBlockFormat::PlainText,
+        ),
+    ];
+    for step in tools.into_iter().take(steps) {
+        script.tool(step);
+    }
     script
 }
 

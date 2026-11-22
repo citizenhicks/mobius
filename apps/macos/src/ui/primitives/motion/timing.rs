@@ -18,6 +18,12 @@ pub const BLINK: Duration = Duration::from_millis(110);
 pub const WINK: Duration = Duration::from_millis(800);
 pub const REACTION: Duration = Duration::from_millis(1400);
 pub const SHIMMER_PERIOD: Duration = Duration::from_millis(1600);
+/// A status line swapping its text: the old text dims, the new one wipes in from the
+/// leading edge, then settles into the shimmer. Its glyph morphs over the first two.
+pub const SWAP_DIM: Duration = Duration::from_millis(175);
+pub const SWAP_WIPE: Duration = Duration::from_millis(200);
+pub const SWAP_SETTLE: Duration = Duration::from_millis(175);
+pub const MORPH: Duration = Duration::from_millis(375);
 /// At most 30 frames per second.
 pub const FRAME: Duration = Duration::from_millis(33);
 /// A display frame, for motion driven from a task rather than the renderer.

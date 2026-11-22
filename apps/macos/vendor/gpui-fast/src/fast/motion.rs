@@ -106,6 +106,8 @@ pub struct MotionFrame {
     pub opacity: f32,
     /// A band brightening glyphs as it passes over them.
     pub highlight: Option<MotionHighlight>,
+    /// A soft vertical edge that shows glyphs on one side of it and hides them on the other.
+    pub reveal: Option<MotionReveal>,
 }
 
 impl Default for MotionFrame {
@@ -116,8 +118,20 @@ impl Default for MotionFrame {
             scale: size(1., 1.),
             opacity: 1.,
             highlight: None,
+            reveal: None,
         }
     }
+}
+
+/// Glyphs shown on one side of a vertical edge at `edge` and hidden on the other, fading
+/// across `feather` points: leading glyphs show when `feather` is positive, trailing
+/// glyphs when it is negative. A wipe moves the edge.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MotionReveal {
+    /// Horizontal window position of the edge's centre.
+    pub edge: Pixels,
+    /// Width of the fade across the edge; its sign picks the shown side.
+    pub feather: Pixels,
 }
 
 /// Bands of `color` stacked `layers` deep at `center` and thinning out to nothing at
@@ -245,6 +259,9 @@ pub struct MotionTransform {
     /// Zero when the motion has no highlight.
     pub highlight_layers: u32,
     pub highlight_color: Hsla,
+    pub reveal_edge: f32,
+    /// Zero when the motion has no reveal.
+    pub reveal_feather: f32,
 }
 
 impl Default for MotionTransform {
@@ -256,6 +273,8 @@ impl Default for MotionTransform {
             highlight_radius: 0.,
             highlight_layers: 0,
             highlight_color: Hsla::default(),
+            reveal_edge: 0.,
+            reveal_feather: 0.,
         }
     }
 }
@@ -486,21 +505,23 @@ impl Scene {
                 .translate(point(ScaledPixels(-origin.x.0), ScaledPixels(-origin.y.0)));
             // Parents precede their children, so theirs are already composed.
             let parent = transforms[motion.parent as usize];
-            transforms.push(match frame.highlight {
-                Some(highlight) => MotionTransform {
-                    transformation: parent.transformation.compose(local),
-                    opacity: parent.opacity * frame.opacity,
-                    highlight_center: highlight.center.scale(scale).0,
-                    highlight_radius: highlight.radius.scale(scale).0,
-                    highlight_layers: highlight.layers,
-                    highlight_color: highlight.color,
-                },
-                None => MotionTransform {
-                    transformation: parent.transformation.compose(local),
-                    opacity: parent.opacity * frame.opacity,
-                    ..parent
-                },
-            });
+            // A motion without its own highlight or reveal keeps its parent's.
+            let mut transform = MotionTransform {
+                transformation: parent.transformation.compose(local),
+                opacity: parent.opacity * frame.opacity,
+                ..parent
+            };
+            if let Some(highlight) = frame.highlight {
+                transform.highlight_center = highlight.center.scale(scale).0;
+                transform.highlight_radius = highlight.radius.scale(scale).0;
+                transform.highlight_layers = highlight.layers;
+                transform.highlight_color = highlight.color;
+            }
+            if let Some(reveal) = frame.reveal {
+                transform.reveal_edge = reveal.edge.scale(scale).0;
+                transform.reveal_feather = reveal.feather.scale(scale).0;
+            }
+            transforms.push(transform);
         }
         transforms
     }
@@ -596,11 +617,12 @@ pub(crate) fn bounds(scene: &mut Scene, primitive: &mut Primitive) -> Bounds<Sca
 pub fn assert_motion_invariants() {
     tests::retained_paint_rebases_outer_motion_and_keeps_inner_motion();
     tests::fps_bounds_and_final_sample_do_not_panic_or_leave_a_motion_unfinished();
+    tests::a_reveal_reaches_nested_content_in_device_pixels();
 }
 
 #[cfg(any(test, feature = "test-support"))]
 mod tests {
-    use super::{Motion, MotionClock, MotionFrame, Scope, interval, replay, scope};
+    use super::{Motion, MotionClock, MotionFrame, MotionReveal, Scope, interval, replay, scope};
     use crate::{Bounds, ContentMask, Quad, ScaledPixels, Scene, point, px, size};
     use scheduler::Instant;
     use std::time::Duration;
@@ -632,6 +654,30 @@ mod tests {
                 .apply(point(px(0.), px(0.)))
                 .x,
         )
+    }
+    #[cfg_attr(test, test)]
+    pub(super) fn a_reveal_reaches_nested_content_in_device_pixels() {
+        let mut scene = Scene::default();
+        scene.push_motion(
+            Motion::new(|_| MotionFrame {
+                reveal: Some(MotionReveal {
+                    edge: px(10.),
+                    feather: px(-4.),
+                }),
+                ..MotionFrame::default()
+            }),
+            point(ScaledPixels(0.), ScaledPixels(0.)),
+            2.,
+            None,
+        );
+        push(&mut scene, Motion::opacity(|_| 0.5));
+        scene.insert_primitive(quad());
+        let transform = scene.motion_transforms(Instant::now())[2];
+        assert_eq!(
+            (transform.reveal_edge, transform.reveal_feather, transform.opacity),
+            (20., -8., 0.5),
+            "a nested fade keeps its parent's reveal, scaled to device pixels"
+        );
     }
     #[cfg_attr(test, test)]
     pub(super) fn retained_paint_rebases_outer_motion_and_keeps_inner_motion() {
