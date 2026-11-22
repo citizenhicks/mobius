@@ -6,7 +6,7 @@
 //! `screencapture` of native views or for driving the in-app browser from outside.
 //! `MOBIUS_SNAPSHOT_REDUCE_MOTION=1` disables motion for this capture process only.
 //! Native QuickLook and terminal panels are not part of the GPUI scene and render blank.
-//! Scenarios only change local UI state; they never send chat messages or edit gateway records.
+//! Explicitly selecting `live-command-stop` clicks Stop in the isolated command test chat.
 #![expect(
     clippy::print_stderr,
     reason = "this development harness reports each capture and check on stderr"

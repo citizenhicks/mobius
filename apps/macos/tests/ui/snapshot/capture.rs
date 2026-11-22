@@ -90,7 +90,9 @@ pub(super) fn forced_appearance() -> Option<Appearance> {
 }
 
 pub(super) fn selected(name: &str, only: Option<&str>) -> bool {
-    only.is_none_or(|only| only.split(',').any(|n| n == name))
+    only.map_or(name != "live-command-stop", |only| {
+        only.split(',').any(|n| n == name)
+    })
 }
 
 /// Clicks each disclosure twice and records its changing bounds and painted frames.
@@ -104,6 +106,11 @@ pub(super) async fn capture_clicks(
     this: &WeakEntity<Workspace>,
     cx: &mut AsyncWindowContext,
 ) {
+    if name == "live-command-stop" {
+        let result = stop_live_command(dir, this, cx).await;
+        assert!(result.is_ok(), "live Stop exercise failed: {result:?}");
+        return;
+    }
     let control = match name {
         "motion-sidebar" => Some("motion:sidebar-toggle"),
         "motion-session-card" => Some("motion:session-toggle"),
@@ -172,6 +179,97 @@ pub(super) async fn capture_clicks(
             }
         }
     }
+}
+
+/// Drive both controls on the isolated command_gateway.py chat, then verify its live update.
+#[expect(
+    clippy::future_not_send,
+    reason = "the test drives the GPUI foreground window"
+)]
+async fn stop_live_command(
+    dir: &std::path::Path,
+    this: &WeakEntity<Workspace>,
+    cx: &mut AsyncWindowContext,
+) -> gpui::Result<()> {
+    use mobius::protocol::{FrontendListItemState, FrontendWidgetContent};
+    let session_id = std::env::var("MOBIUS_SNAPSHOT_SESSION")?;
+    let state = |workspace: &Workspace, _: &gpui::App| {
+        let session = workspace.client.state.session.as_ref()?;
+        let record = &session.session;
+        if record.session_id.as_str() != session_id {
+            return None;
+        }
+        let row = workspace
+            .client
+            .state
+            .sessions
+            .iter()
+            .find(|r| r.session_id == record.session_id)?;
+        if row.first_user_message.as_deref() != Some("Exercise Stop for macos") {
+            return None;
+        }
+        let activity = row.activity.running_commands;
+        let widget = session.widgets.iter().find(|w| {
+            w.capability.as_ref() == "sandbox" && w.item.id.as_ref() == "running-commands"
+        })?;
+        let FrontendWidgetContent::ActionList { items, .. } = widget.item.content.as_ref()?;
+        let [row] = items.as_slice() else { return None };
+        (row.text == "echo $$ > command.pid; exec /bin/sleep 900").then(|| {
+            (
+                activity,
+                widget.item.count,
+                row.state,
+                row.actions
+                    .first()
+                    .map(|a| format!("widget-action:{}", a.id)),
+            )
+        })
+    };
+    let Some((1, Some(1), FrontendListItemState::InProgress, Some(stop))) =
+        this.read_with(cx, state)?
+    else {
+        anyhow::bail!("expected one running command in the isolated macOS test chat")
+    };
+    let footer = "footer:sandbox:running-commands";
+    for (probe, phase) in [(footer, "before"), (stop.as_str(), "details")] {
+        let bounds = PROBES
+            .with(|p| p.borrow().get(probe).copied())
+            .ok_or_else(|| anyhow::anyhow!("missing {phase} control"))?;
+        this.update_in(cx, |_, window, _| window.render_to_image())??
+            .save(dir.join(format!("macos-{phase}.png")))?;
+        cx.update(|window, cx| click(bounds.center(), window, cx))?;
+        wait(cx.background_executor(), 400).await;
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+        })?;
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(12);
+    loop {
+        if matches!(
+            this.read_with(cx, state)?,
+            Some((0, Some(0), FrontendListItemState::Interrupted, None))
+        ) {
+            break;
+        }
+        anyhow::ensure!(
+            std::time::Instant::now() < deadline,
+            "Stop did not clear command and catalog activity"
+        );
+        wait(cx.background_executor(), 100).await;
+    }
+    PROBES.with(|p| p.borrow_mut().clear());
+    cx.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear(cx);
+    })?;
+    anyhow::ensure!(
+        PROBES.with(|p| !p.borrow().contains_key(footer) && !p.borrow().contains_key(&stop)),
+        "running controls still rendered"
+    );
+    this.update_in(cx, |_, window, _| window.render_to_image())??
+        .save(dir.join("macos-stopped.png"))?;
+    Ok(())
 }
 
 /// Sends `text` from the composer, as the reader would.

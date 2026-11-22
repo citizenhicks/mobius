@@ -32,6 +32,11 @@ impl Workspace {
                 })
                 .text_color(self.palette.tone(action.tone))
         };
+        #[cfg(feature = "snapshot")]
+        let control = control.child(crate::ui::snapshot::probe(format!(
+            "widget-action:{}",
+            action.id
+        )));
         control
             .disabled(self.widget_operation_blocked(&action.op))
             .on_click(cx.listener(move |this, _, window, cx| {

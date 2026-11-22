@@ -4529,7 +4529,7 @@ dependencies = [
 
 [[package]]
 name = "mobius-desktop"
-version = "0.17.16"
+version = "0.17.17"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
