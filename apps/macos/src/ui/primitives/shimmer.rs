@@ -16,6 +16,8 @@ use gpui::{
     StyledText, Window, div, prelude::*, px,
 };
 use gpui_component::{ActiveTheme as _, Colorize as _};
+use std::cell::Cell;
+use std::rc::Rc;
 use std::time::Instant;
 
 /// Nested bands; the innermost is the brightest.
@@ -51,10 +53,12 @@ impl Shimmer {
     }
 }
 
-/// The text a swapping shimmer last showed, and the one it is replacing.
+/// The text a swapping shimmer last showed and how wide it was painted, and the one it is
+/// replacing at the width it had on screen.
 struct Swap {
     text: SharedString,
-    previous: Option<(SharedString, Instant)>,
+    width: Rc<Cell<Pixels>>,
+    previous: Option<(SharedString, Instant, Pixels)>,
 }
 
 fn swap_end(since: Instant) -> Instant {
@@ -70,49 +74,67 @@ impl RenderOnce for Shimmer {
                 .into_any_element();
         }
         let now = motion::now();
+        let mut painted = None;
         let previous = self.swap.and_then(|id| {
             let swap = window.use_keyed_state(id, cx, |_, _| Swap {
                 text: SharedString::clone(&self.text),
+                width: Rc::default(),
                 previous: None,
             });
             swap.update(cx, |swap, _| {
                 if swap.text != self.text {
                     let old = std::mem::replace(&mut swap.text, SharedString::clone(&self.text));
-                    swap.previous = Some((old, now));
+                    // Text that streams in keeps the width its first swap left with.
+                    let width = match &swap.previous {
+                        Some((_, _, width)) => (*width).max(swap.width.get()),
+                        None => swap.width.get(),
+                    };
+                    swap.previous = Some((old, now, width));
                 }
                 if swap
                     .previous
                     .as_ref()
-                    .is_some_and(|(_, since)| now >= swap_end(*since))
+                    .is_some_and(|(_, since, _)| now >= swap_end(*since))
                 {
                     swap.previous = None;
                 }
+                painted = Some(Rc::clone(&swap.width));
                 swap.previous
                     .as_ref()
-                    .map(|(text, since)| (SharedString::clone(text), *since))
+                    .map(|(text, since, width)| (SharedString::clone(text), *since, *width))
             })
         });
         let tokens = cx.theme().semantic_tokens();
-        let sweep = |text, swap| Sweep {
+        let sweep = |text, swap, painted| Sweep {
             text: StyledText::new(text),
             background: tokens.colors.background,
             foreground: tokens.colors.foreground,
             dark: cx.theme().is_dark(),
             swap,
+            painted,
         };
-        let since = previous.as_ref().map(|(_, since)| *since);
-        let incoming = sweep(self.text, since.map(|since| (since, Role::Incoming)));
-        let outgoing = previous.map(|(text, since)| {
+        let since = previous.as_ref().map(|(_, since, _)| *since);
+        let incoming = sweep(
+            self.text,
+            since.map(|since| (since, Role::Incoming)),
+            painted,
+        );
+        // The old text keeps the room it had: laid out in the new text's width it would
+        // be cut short to it for as long as it takes to dim.
+        let held = previous.as_ref().map(|(_, _, width)| *width);
+        let outgoing = previous.map(|(text, since, width)| {
             div()
                 .absolute()
                 .top_0()
                 .left_0()
+                .w(width)
                 .whitespace_nowrap()
-                .child(sweep(text, Some((since, Role::Outgoing))))
+                .child(sweep(text, Some((since, Role::Outgoing)), None))
         });
         div()
             .relative()
             .min_w_0()
+            .when_some(held, gpui::Styled::min_w)
             .child(incoming)
             .children(outgoing)
             .into_any_element()
@@ -133,6 +155,8 @@ struct Sweep {
     foreground: Hsla,
     dark: bool,
     swap: Option<(Instant, Role)>,
+    /// Where the width this text is painted at is kept for its next swap.
+    painted: Option<Rc<Cell<Pixels>>>,
 }
 
 impl Sweep {
@@ -293,6 +317,9 @@ impl Element for Sweep {
         window: &mut Window,
         cx: &mut App,
     ) {
+        if let Some(painted) = &self.painted {
+            painted.set(bounds.size.width);
+        }
         let color = self.highlight(window.text_style().color);
         let motion = motion::in_view(bounds, window).then(|| match self.swap {
             None => sweep(bounds, color),

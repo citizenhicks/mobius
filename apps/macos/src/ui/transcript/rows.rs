@@ -68,16 +68,49 @@ impl Workspace {
         let view = view
             .relative()
             .child(crate::ui::snapshot::probe(format!("row:{}", row.id)));
-        // New rows grow in from nothing while fading, so neighbours slide rather than jump.
-        let arriving = self.animate_transcript_row(scope, &row.id);
-        let view = if arriving {
+        // A new row fades in while its list item grows, so neighbours slide rather than jump.
+        if self.animate_transcript_row(scope, &row.id) {
             let id = SharedString::from(format!("reveal:{scope}:{}", row.id));
             motion::fade_in(view, id, motion::REVEAL, cx)
         } else {
             view.into_any_element()
+        }
+    }
+
+    /// One transcript list item: `parts` in a column with the gap to the next item, at a
+    /// height that follows them. Everything an item holds moves together, so a card or a
+    /// gap that arrives late slides its neighbours instead of stepping them. The last item
+    /// also carries the slack a removed tail leaves behind, closing on the same spring.
+    pub(in crate::ui) fn transcript_list_item(
+        &self,
+        scope: &str,
+        id: &str,
+        last: bool,
+        parts: impl IntoIterator<Item = AnyElement>,
+    ) -> AnyElement {
+        let column = div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(space::S)
+            .children(parts)
+            .when(!last, |column| column.pb(space::S));
+        let item = motion::smooth(row_motion_id(scope, id), column)
+            .grow_in(self.animate_transcript_row(scope, id));
+        if !last {
+            return item.into_any_element();
+        }
+        // A gliding turn has a screen of its own below its message, as room at the end.
+        let room = if scope.starts_with("chat:") {
+            self.glide_room()
+        } else {
+            px(0.)
         };
-        motion::smooth(row_motion_id(scope, &row.id), view)
-            .grow_in(arriving)
+        div()
+            .w_full()
+            .child(item)
+            .child(motion::smooth(tail_slack_id(scope), div()))
+            .when(room > px(0.), |end| end.child(div().h(room)))
             .into_any_element()
     }
 
@@ -753,6 +786,11 @@ impl Workspace {
 /// The id a transcript row's height follows under, for handing it on when rows change.
 pub(in crate::ui) fn row_motion_id(scope: &str, row: &str) -> String {
     format!("row:{scope}:{row}")
+}
+
+/// The id of the space a removed last row leaves at the list's end while it closes.
+pub(in crate::ui) fn tail_slack_id(scope: &str) -> String {
+    format!("row:{scope}:\u{0}slack")
 }
 
 fn image_badge(label: &'static str, p: &Palette) -> Div {

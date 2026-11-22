@@ -413,6 +413,20 @@ impl Workspace {
         self.palette.install(cx);
     }
 
+    pub(super) fn set_turn_motion(
+        &mut self,
+        motion: super::transcript::TurnMotion,
+        cx: &mut Context<Self>,
+    ) {
+        self.turn_motion = motion;
+        self.save_preferences(
+            "the transcript motion",
+            move |preferences| preferences.turn_motion = motion,
+            cx,
+        );
+        cx.notify();
+    }
+
     pub(super) fn set_font_set(&mut self, font_set: FontSet, cx: &mut Context<Self>) {
         self.install_palette(font_set, cx);
         self.save_preferences(

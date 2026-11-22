@@ -6,6 +6,7 @@ use crate::host::platform::{
     DesktopPermission, DictationModel, FoundationStatus, PermissionStatus,
 };
 use crate::numeric::Saturating;
+use crate::ui::transcript::TurnMotion;
 use gpui_component::button::ButtonCustomVariant;
 use gpui_component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
 use gpui_component::text::TextView;
@@ -202,7 +203,8 @@ impl Workspace {
                     )
                     .child(background)
                     .child(foreground)
-                    .child(Self::font_row(cx)),
+                    .child(Self::font_row(cx))
+                    .child(self.turn_motion_row(cx)),
             )
             .child(self.background_section(cx))
     }
@@ -255,6 +257,36 @@ impl Workspace {
                     }))
                     .child(preview)
             }))
+    }
+
+    fn turn_motion_row(&self, cx: &Context<Self>) -> Row {
+        let selected = self.turn_motion;
+        let items = TurnMotion::ALL
+            .into_iter()
+            .map(|motion| {
+                MenuChoice::new(
+                    motion.label(),
+                    motion == selected,
+                    cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.set_turn_motion(motion, cx);
+                    }),
+                )
+            })
+            .collect();
+        Row::new("turn-motion", "When you send")
+            .subtitle(match selected {
+                TurnMotion::Follow => "The transcript keeps its end in view as the reply arrives.",
+                TurnMotion::Glide => {
+                    "Your message glides to the top and the reply fills in below it."
+                }
+            })
+            .control(menu_select(
+                "turn-motion-picker",
+                selected.label(),
+                None,
+                items,
+                cx,
+            ))
     }
 
     fn font_row(cx: &Context<Self>) -> Row {

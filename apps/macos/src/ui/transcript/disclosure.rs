@@ -74,6 +74,8 @@ impl Workspace {
             .px_0()
             .h_auto()
             .min_w_0()
+            // Buttons do not shrink by default; a long live line must, to end in an ellipsis.
+            .flex_shrink(1.)
             .accessibility_label(format!(
                 "{label}, {}",
                 if self.expanded.contains(id) {

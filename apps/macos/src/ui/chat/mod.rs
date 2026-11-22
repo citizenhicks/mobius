@@ -74,13 +74,19 @@ pub(in crate::ui) struct ChatUi {
     projection: Option<(Option<SessionId>, u64)>,
     list: Option<gpui::ListState>,
     tail_ids: Vec<Arc<str>>,
-    history_visible: bool,
     removable_revision: Option<(Option<SessionId>, u64)>,
     rail_marks: Vec<rail::Mark>,
     /// The transcript revision `rail_marks` read their words from.
     rail_revision: u64,
     /// The pinned answers the rail marks were built from.
     rail_pins: Vec<mobius::protocol::MessageTarget>,
+    /// The answer row kept back while it may still join the turn's work, until when, and
+    /// the timer that shows it.
+    answer_hold: Option<(Arc<str>, std::time::Instant, Task<()>)>,
+    /// The reader's latest message in the chat on screen, so a newly sent one is noticed.
+    turn_mark: Option<(Option<SessionId>, SharedString)>,
+    /// The message gliding to the top, or resting there while its answer fills the screen.
+    glide: Option<(SharedString, Pixels)>,
     /// The history page on its way, so each earlier turn is asked for once.
     history_request: Option<Arc<str>>,
     /// The message tick under the pointer on the rail.
@@ -582,6 +588,7 @@ impl Workspace {
                 .map(|row| Arc::clone(&row.id))
                 .collect();
             self.chat_ui.projection = Some((selected.map(SessionId::share), revision));
+            self.hold_interim_answer(cx);
         }
         let projected = &self.chat_ui.rows;
         self.chat_ui.running_row = self.live_worked_row();
@@ -606,7 +613,6 @@ impl Workspace {
             tail_items.push(ChatItem::Pending(index));
             tail_ids.push(format!("pending-message:{id}").into());
         }
-        let history = self.history_pending();
         let pins = || {
             self.client
                 .state
@@ -618,17 +624,9 @@ impl Workspace {
         if pins_changed {
             self.chat_ui.rail_pins = pins().copied().collect();
         }
-        if projection_changed
-            || history != self.chat_ui.history_visible
-            || tail_ids != self.chat_ui.tail_ids
-            || self.chat_ui.list.is_none()
-        {
+        if projection_changed || tail_ids != self.chat_ui.tail_ids || self.chat_ui.list.is_none() {
             let mut items = Vec::new();
             let mut ids = Vec::new();
-            if history {
-                items.push(ChatItem::History);
-                ids.push(transcript::HISTORY.into());
-            }
             for (index, row) in projected.iter().enumerate() {
                 items.push(ChatItem::Row(index));
                 ids.push(Arc::clone(row));
@@ -638,7 +636,6 @@ impl Workspace {
             self.chat_ui.list =
                 Some(self.prepare_chat_list(&scope, ids, !self.client.state.replaying, window, cx));
             self.chat_ui.tail_ids = tail_ids;
-            self.chat_ui.history_visible = history;
             self.chat_ui.items = items;
             self.refresh_rail_marks();
         } else if pins_changed || self.rail_words_stale() {
@@ -648,14 +645,143 @@ impl Workspace {
             return div().into_any_element();
         };
         let list = gpui::ListState::clone(list);
+        self.glide_turn(&scope, &list, cx);
         let rail = self.message_rail(&scope, cx);
+        let overlay = div()
+            .absolute()
+            .inset_0()
+            .children(rail)
+            .children(self.earlier_history(&scope, &list, cx))
+            .into_any_element();
         let entity = cx.entity().downgrade();
         let render = move |index: usize, window: &mut Window, cx: &mut App| {
             entity
                 .update(cx, |this, cx| this.chat_item(index, window, cx))
                 .unwrap_or_else(|_| div().into_any_element())
         };
-        self.chat_list(&scope, list, rail, render, cx)
+        self.chat_list(&scope, list, Some(overlay), render, cx)
+    }
+
+    /// The room a gliding turn has below its message: a screen of its own.
+    pub(in crate::ui) fn glide_room(&self) -> Pixels {
+        self.chat_ui
+            .glide
+            .as_ref()
+            .map_or(px(0.), |(_, room)| *room)
+    }
+
+    /// Gliding (Settings → Appearance), a message the reader sends goes to the top at once
+    /// and the answer fills the screen under it, after which the end is followed as usual.
+    fn glide_turn(&mut self, scope: &str, list: &gpui::ListState, cx: &Context<Self>) {
+        if self.turn_motion != transcript::TurnMotion::Glide {
+            // The setting changed under a gliding turn.
+            if self.chat_ui.glide.take().is_some() {
+                list.set_follow_mode(gpui::FollowMode::Tail);
+            }
+            return;
+        }
+        // A chat that is still loading changes its latest message without one being sent.
+        if self.client.state.replaying {
+            return;
+        }
+        let Some((id, item)) = self.latest_turn_mark() else {
+            return;
+        };
+        let session = self.client.state.selected_session_id.as_ref();
+        let header = if self.active_conversation_bot().is_some() {
+            height::BOT_CHAT_HEADER
+        } else {
+            px(0.)
+        };
+        let rest = space::L + header;
+        let known = self
+            .chat_ui
+            .turn_mark
+            .as_ref()
+            .filter(|(known, _)| known.as_ref() == session)
+            .map(|(_, known)| known == &id);
+        if known != Some(true) {
+            self.chat_ui.turn_mark =
+                Some((session.map(SessionId::share), SharedString::clone(&id)));
+            if known == Some(false) {
+                let room = list.viewport_bounds().size.height;
+                self.chat_ui.glide = Some((SharedString::clone(&id), room));
+                self.glide_item_to_top(scope.into(), item, rest, cx);
+            } else {
+                // Another chat, or this one just opened: nothing was sent while it was read.
+                self.chat_ui.glide = None;
+            }
+        }
+        // The answer reached the foot of the screen: the room below it has been used up,
+        // so the end is followed from exactly where it stands.
+        if let Some((_, room)) = self.chat_ui.glide.as_ref().filter(|(turn, _)| turn == &id)
+            && let Some(last) = list.item_count().checked_sub(1)
+            && let Some(end) = list.bounds_for_item(last)
+        {
+            let view = list.viewport_bounds();
+            // The composer floats over the list's foot, so the screen is full above it.
+            let foot = view.bottom() - space::L - self.composer_inset();
+            if end.bottom() - *room >= foot {
+                let resting = list
+                    .bounds_for_item(item)
+                    .is_some_and(|row| (row.top() - view.top() - rest).abs() < px(2.));
+                self.chat_ui.glide = None;
+                if resting {
+                    list.set_follow_mode(gpui::FollowMode::Tail);
+                }
+            }
+        }
+    }
+
+    /// Text a working turn writes between its steps arrives as an answer under the Worked
+    /// row and joins that row's work when the next step starts, usually a moment later.
+    /// A fresh one is kept back for `ANSWER_HOLD`, so only text that stays is shown.
+    fn hold_interim_answer(&mut self, cx: &Context<Self>) {
+        const ANSWER_HOLD: std::time::Duration = std::time::Duration::from_millis(500);
+        let transcript = &self.client.state.transcript;
+        let fresh = transcript
+            .rows()
+            .next_back()
+            .filter(|row| {
+                matches!(
+                    row.kind,
+                    mobius_gateway::wire::TranscriptRowKind::Entry { .. }
+                ) && self.live_worked_row().is_some()
+                    && transcript.row_items(row).all(|entry| {
+                        !entry.terminal
+                            && matches!(
+                                entry.content,
+                                mobius_gateway::wire::TranscriptItemContent::Assistant { .. }
+                            )
+                    })
+            })
+            .map(|row| Arc::clone(&row.id));
+        let Some(id) = fresh else {
+            self.chat_ui.answer_hold = None;
+            return;
+        };
+        let now = std::time::Instant::now();
+        let until = match &self.chat_ui.answer_hold {
+            Some((held, until, _)) if *held == id => *until,
+            _ => {
+                let until = now + ANSWER_HOLD;
+                let timer = cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(ANSWER_HOLD).await;
+                    if let Err(error) = this.update(cx, |this, cx| {
+                        // Project again: the row has stayed, so it shows.
+                        this.chat_ui.projection = None;
+                        cx.notify();
+                    }) {
+                        tracing::debug!(%error, "the workspace closed before the answer showed");
+                    }
+                });
+                self.chat_ui.answer_hold = Some((id, until, timer));
+                until
+            }
+        };
+        if now < until {
+            self.chat_ui.rows.pop();
+        }
     }
 
     /// A running turn's Worked row owns the waiting phrase from the moment it exists
@@ -684,60 +810,87 @@ impl Workspace {
         let session_id = self.client.state.selected_session_id.as_ref();
         let scope = format!("chat:{}", session_id.map_or("", SessionId::as_str));
         let last = index + 1 == self.chat_ui.items.len();
-        let item = match self.chat_ui.items.get(index) {
-            Some(ChatItem::History) => Some(self.earlier_history(cx)),
-            Some(ChatItem::Row(row)) => self
-                .chat_ui
-                .rows
-                .get(*row)
-                .and_then(|id| self.client.state.transcript.row(id))
-                .map(|row| {
+        let mut parts = Vec::new();
+        match self.chat_ui.items.get(index) {
+            Some(ChatItem::Row(row)) => {
+                if let Some(row) = self
+                    .chat_ui
+                    .rows
+                    .get(*row)
+                    .and_then(|id| self.client.state.transcript.row(id))
+                {
                     // A question's call or an approval's block says only what its card says.
                     let decisions = self.row_decisions(row, cx);
-                    let view = decisions.show_source.then(|| {
-                        self.transcript_row_view(
+                    if decisions.show_source {
+                        parts.push(self.transcript_row_view(
                             &self.client.state.transcript,
                             row,
                             session_id,
                             &scope,
                             cx,
-                        )
-                    });
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(space::S)
-                        .children(view)
-                        .children(decisions.cards.into_iter().map(|card| {
-                            div()
-                                .mx_auto()
-                                .w_full()
-                                .max_w(width::TRANSCRIPT)
-                                .child(card)
-                        }))
-                        .into_any_element()
-                }),
-            Some(ChatItem::Waiting) => self.waiting_tail(&scope, cx),
-            Some(ChatItem::Tail(tail)) => self.transcript_tail(cx).into_iter().nth(*tail),
-            Some(ChatItem::Decisions) => self.decision_deck(cx),
-            Some(ChatItem::Pending(pending)) => self.pending_bubbles(cx).into_iter().nth(*pending),
-            None => None,
-        };
-        div()
+                        ));
+                    }
+                    parts.extend(decisions.cards.into_iter().map(|card| {
+                        div()
+                            .mx_auto()
+                            .w_full()
+                            .max_w(width::TRANSCRIPT)
+                            .child(card)
+                            .into_any_element()
+                    }));
+                }
+            }
+            Some(ChatItem::Waiting) => parts.extend(self.waiting_tail(&scope, cx)),
+            Some(ChatItem::Tail(tail)) => {
+                parts.extend(self.transcript_tail(cx).into_iter().nth(*tail));
+            }
+            Some(ChatItem::Decisions) => parts.extend(self.decision_deck(cx)),
+            Some(ChatItem::Pending(pending)) => {
+                parts.extend(self.pending_bubbles(cx).into_iter().nth(*pending));
+            }
+            None => {}
+        }
+        let id = self
+            .transcript_scrolls
+            .get(&scope)
+            .and_then(|state| state.rows.get(index))
+            .map_or("", |id| &**id);
+        let view = self.transcript_list_item(&scope, id, last, parts);
+        // Every list item's painted bounds, for the live motion watch.
+        #[cfg(feature = "snapshot")]
+        let view = div()
             .w_full()
-            .when(!last, |item| item.pb(space::S))
-            .children(item)
-            .into_any_element()
+            .relative()
+            .child(view)
+            .child(super::snapshot::probe(format!("item:{id}")))
+            .into_any_element();
+        view
     }
 
-    /// Fetches one earlier turn: its own pages first, then what a fork inherits.
-    /// One request at a time, never twice for
-    /// the same cursor; the gateway answers each with exactly one turn.
-    /// A quiet divider above the oldest loaded turn; it pages in earlier ones.
-    fn earlier_history(&self, cx: &Context<Self>) -> AnyElement {
+    /// Earlier turns page in above the reader, who stays on the row they were reading: the
+    /// loader floats over the transcript's head instead of standing in the list, where a
+    /// page landing under it would push everything down. It shows at the oldest loaded
+    /// turn, and asks for the next one when pressed; scrolling there asks too.
+    fn earlier_history(
+        &self,
+        scope: &str,
+        list: &gpui::ListState,
+        cx: &Context<Self>,
+    ) -> Option<AnyElement> {
+        if !self.history_pending() {
+            return None;
+        }
         let p = self.palette;
         let loading = self.chat_ui.history_request.is_some();
-        let rule = || hairline(&p).flex_1();
+        let at_head = if list.is_following_tail() {
+            // A transcript shorter than its view cannot be scrolled to ask.
+            list.max_offset_for_scrollbar().y <= px(0.)
+        } else {
+            list.logical_scroll_top().item_ix == 0
+        };
+        if !loading && !at_head {
+            return None;
+        }
         let label = if loading {
             div()
                 .flex()
@@ -755,23 +908,43 @@ impl Workspace {
                 .child("Earlier messages")
                 .into_any_element()
         };
-        div()
+        let header = if self.active_conversation_bot().is_some() {
+            height::BOT_CHAT_HEADER
+        } else {
+            px(0.)
+        };
+        let pill = div()
             .id("earlier-history")
-            .flex()
-            .items_center()
-            .gap(space::S)
-            .py(space::S)
+            .px(space::L)
+            .py(space::XS)
+            .pill_corners()
+            .bg(p.card)
+            .border_1()
+            .border_color(p.separator)
             .typography(Type::Caption)
             .text_color(p.muted)
-            .child(rule())
             .child(label)
-            .child(rule())
-            .when(!loading, |row| {
-                row.cursor_pointer()
+            .when(!loading, |pill| {
+                pill.cursor_pointer()
                     .hover(|style| style.text_color(p.text))
                     .on_click(cx.listener(|this, _, _, cx| this.continue_history(cx)))
-            })
-            .into_any_element()
+            });
+        Some(
+            div()
+                .absolute()
+                .top(space::S + header)
+                .left_0()
+                .right_0()
+                .flex()
+                .justify_center()
+                .child(motion::fade_in(
+                    pill,
+                    SharedString::from(format!("{scope}:earlier")),
+                    motion::APPEAR,
+                    cx,
+                ))
+                .into_any_element(),
+        )
     }
 
     pub(in crate::ui) fn continue_history(&mut self, cx: &mut Context<Self>) {
@@ -805,7 +978,6 @@ impl Workspace {
 
 /// What one row of the chat list draws.
 pub(in crate::ui) enum ChatItem {
-    History,
     Row(usize),
     Waiting,
     Tail(usize),

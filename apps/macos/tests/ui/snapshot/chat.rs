@@ -42,6 +42,9 @@ pub(super) const SCENARIOS: &[Scenario] = &[
         );
     }),
     ("chat", open_chat),
+    // Opens `MOBIUS_SNAPSHOT_SESSION` and logs every list item's position each frame for
+    // `MOBIUS_SNAPSHOT_WATCH_MS`, while a turn driven from another client runs in it.
+    ("live-watch", open_chat),
     // The message rail with a tick under the pointer: its falloff and preview card.
     ("chat-rail-hover", |this, window, cx| {
         open_chat(this, window, cx);

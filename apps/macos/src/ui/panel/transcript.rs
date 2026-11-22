@@ -303,11 +303,8 @@ impl Workspace {
             let row = transcript.row(id)?;
             Some(self.transcript_row_view(transcript, row, session, scope, cx))
         });
-        div()
-            .w_full()
-            .when(index + 1 < rows.len(), |item| item.pb(space::S))
-            .children(row)
-            .into_any_element()
+        let id = rows.get(index).map_or("", |id| &**id);
+        self.transcript_list_item(scope, id, index + 1 == rows.len(), row)
     }
 
     /// The button that asks for a document's earlier page, keeping the reader in place.

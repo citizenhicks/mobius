@@ -12,6 +12,10 @@ use std::time::Instant;
 
 use super::spring;
 
+/// The fastest a height changes, in points a second: quick enough to keep up with streamed
+/// text, slow enough that the eye follows the rows it moves.
+const GLIDE: f32 = 2400.;
+
 // ponytail: registries keep one float per row ever painted (bytes per chat); prune by
 // scope if long sessions ever show it.
 thread_local! {
@@ -93,8 +97,9 @@ struct State {
 }
 
 impl gpui::Element for Smooth {
-    /// The child's layout and the height this frame shows, when it is held.
-    type RequestLayoutState = (LayoutId, Option<f32>);
+    /// The child's layout, the height this frame shows when it is held, and whether that
+    /// height was handed over this frame.
+    type RequestLayoutState = (LayoutId, Option<f32>, bool);
     /// Whether the child is clipped this frame.
     type PrepaintState = bool;
 
@@ -139,7 +144,7 @@ impl gpui::Element for Smooth {
             style.overflow.y = Overflow::Hidden;
         }
         let layout = window.request_layout(style, [child], cx);
-        (layout, (child, shown))
+        (layout, (child, shown, handed.is_some()))
     }
 
     fn prepaint(
@@ -147,7 +152,7 @@ impl gpui::Element for Smooth {
         id: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
         _: Bounds<Pixels>,
-        (child, shown): &mut Self::RequestLayoutState,
+        (child, shown, handed): &mut Self::RequestLayoutState,
         window: &mut Window,
         cx: &mut App,
     ) -> bool {
@@ -158,11 +163,16 @@ impl gpui::Element for Smooth {
         let still = cx.reduce_motion();
         let height = match id {
             Some(id) => window.with_element_state(id, |state: Option<Option<State>>, window| {
-                let start = state.flatten().unwrap_or_else(|| State {
-                    height: shown.unwrap_or(target),
-                    velocity: 0.,
-                    at: now,
-                });
+                // A handed height restarts an element that was already at rest, such as the
+                // row after a removed one, from that height.
+                let start = state
+                    .flatten()
+                    .filter(|_| !*handed)
+                    .unwrap_or_else(|| State {
+                        height: shown.unwrap_or(target),
+                        velocity: 0.,
+                        at: now,
+                    });
                 let next = if still {
                     State {
                         height: target,
@@ -170,8 +180,18 @@ impl gpui::Element for Smooth {
                         at: now,
                     }
                 } else {
+                    let elapsed = now - start.at;
                     let (height, velocity) =
-                        spring::step(start.height, start.velocity, target, now - start.at);
+                        spring::step(start.height, start.velocity, target, elapsed);
+                    // A spring covers a long way fast: a whole answer landing at once would
+                    // fling the rows above it. Past this speed the height glides instead.
+                    let reach = GLIDE * elapsed.as_secs_f32().min(0.05);
+                    let step = height - start.height;
+                    let (height, velocity) = if step.abs() > reach && reach > 0. {
+                        (start.height + reach.copysign(step), GLIDE.copysign(step))
+                    } else {
+                        (height, velocity)
+                    };
                     State {
                         height,
                         velocity,

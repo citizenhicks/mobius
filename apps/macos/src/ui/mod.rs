@@ -162,6 +162,7 @@ pub struct Workspace {
     queued_draft: Option<(Arc<str>, runtime::DraftIntent)>,
     appearance: Appearance,
     accent: Accent,
+    turn_motion: transcript::TurnMotion,
     dark_colors: theme::Colors,
     light_colors: theme::Colors,
     palette: Palette,
@@ -254,6 +255,10 @@ impl Workspace {
             queued_draft: None,
             appearance: preferences.appearance,
             accent: preferences.accent,
+            #[cfg(not(feature = "snapshot"))]
+            turn_motion: preferences.turn_motion,
+            #[cfg(feature = "snapshot")]
+            turn_motion: preferences.turn_motion.or_harness(),
             dark_colors: preferences.dark_colors,
             light_colors: preferences.light_colors,
             palette: preferences.palette(cx).install(cx),

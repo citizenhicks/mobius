@@ -174,6 +174,110 @@ pub(super) async fn capture_clicks(
     }
 }
 
+/// Logs every chat list item's painted position each frame for `MOBIUS_SNAPSHOT_WATCH_MS`,
+/// and keeps every `MOBIUS_SNAPSHOT_WATCH_EVERY`th frame as a PNG, so a live turn's motion
+/// can be checked for jumps.
+#[expect(
+    clippy::future_not_send,
+    reason = "it drives the window on GPUI's foreground executor, whose context is not Send"
+)]
+async fn watch_live(
+    name: &str,
+    dir: &std::path::Path,
+    this: &WeakEntity<Workspace>,
+    cx: &mut AsyncWindowContext,
+) {
+    if name != "live-watch" {
+        return;
+    }
+    let env = |name: &str, default: u64| {
+        std::env::var(name)
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(default)
+    };
+    let (total, every) = (
+        env("MOBIUS_SNAPSHOT_WATCH_MS", 60_000),
+        env("MOBIUS_SNAPSHOT_WATCH_EVERY", 0),
+    );
+    let scroll_at = std::env::var("MOBIUS_SNAPSHOT_WATCH_SCROLL_AT")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok());
+    let scroll_for = env("MOBIUS_SNAPSHOT_WATCH_SCROLL_MS", 4_000);
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a wheel step of a few dozen points"
+    )]
+    let scroll_step = env("MOBIUS_SNAPSHOT_WATCH_SCROLL_STEP", 60) as f32;
+    let started = std::time::Instant::now();
+    let mut frame = 0_u64;
+    let mut last = String::new();
+    while started.elapsed().as_millis() < u128::from(total) {
+        PROBES.with(|probes| probes.borrow_mut().retain(|id, _| !id.starts_with("item:")));
+        let began = std::time::Instant::now();
+        let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        // A scripted wheel toward the top, for watching earlier history page in.
+        let scrolling = scroll_at.is_some_and(|at| elapsed >= at && elapsed < at + scroll_for);
+        report(
+            "watch draw",
+            cx.update(|window, cx| {
+                if scrolling {
+                    let size = window.viewport_size();
+                    window.dispatch_event(
+                        gpui::PlatformInput::Scroll(gpui::ScrollEvent {
+                            position: point(size.width * 0.6, size.height / 2.),
+                            delta: gpui::ScrollDelta::Pixels(point(px(0.), px(scroll_step))),
+                            modifiers: gpui::Modifiers::default(),
+                            touch_phase: gpui::TouchPhase::Moved,
+                            ..Default::default()
+                        }),
+                        cx,
+                    );
+                }
+                window.refresh();
+                window.draw(cx).clear(cx);
+            }),
+        );
+        let cost = began.elapsed().as_micros();
+        let rows = PROBES.with(|probes| {
+            let mut rows: Vec<_> = probes
+                .borrow()
+                .iter()
+                .filter(|(id, _)| id.starts_with("item:"))
+                .map(|(id, bounds)| {
+                    (
+                        f32::from(bounds.top()),
+                        f32::from(bounds.size.height),
+                        id.clone(),
+                    )
+                }) // rules-allow: the log line owns its ids
+                .collect();
+            rows.sort_by(|a, b| a.0.total_cmp(&b.0));
+            rows.iter()
+                .map(|(top, height, id)| format!("{id}={top:.1}+{height:.1}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        });
+        if rows != last {
+            eprintln!(
+                "watch {frame} {} {cost} {rows}",
+                started.elapsed().as_millis()
+            );
+            last = rows;
+        }
+        if every > 0
+            && frame.is_multiple_of(every)
+            && let Ok(Ok(image)) = this.update_in(cx, |_, window, _| window.render_to_image())
+            && let Err(error) = image.save(dir.join(format!("watch-{frame:05}.png")))
+        {
+            eprintln!("snapshot watch: {error}");
+        }
+        frame += 1;
+        wait(cx.background_executor(), 8).await;
+    }
+    eprintln!("watch done {frame} frames");
+}
+
 impl Workspace {
     pub(in crate::ui) fn start_snapshots(window: &Window, cx: &Context<Self>) {
         let Some(dir) = std::env::var_os("MOBIUS_SNAPSHOT").map(PathBuf::from) else {
@@ -258,6 +362,7 @@ impl Workspace {
                 capture_clicks(name, &dir, &this, cx).await;
                 capture_strip(name, &dir, &this, cx).await;
                 clear_probe();
+                watch_live(name, &dir, &this, cx).await;
                 if name.starts_with("perf") {
                     reset_renders();
                     // Drive 30 frames a second, as the display link would for a visible window.

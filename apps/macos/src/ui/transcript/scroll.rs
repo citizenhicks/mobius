@@ -14,6 +14,8 @@ use std::sync::Arc;
 
 /// The list id of the row that pages in earlier history.
 pub(in crate::ui) const HISTORY: &str = "history";
+/// The fastest a sent message travels to the top of the view, in points a second.
+const TRAVEL: f32 = 2400.;
 /// What a chat's transcript scope starts with; documents use their tab's id.
 const CHAT_SCOPE: &str = "chat:";
 
@@ -162,8 +164,12 @@ impl Workspace {
             hand_off_rows(scope, removed, inserted, next);
             if animate && !old.is_empty() {
                 let previous: std::collections::HashSet<_> = old.iter().collect();
+                // Earlier turns land above the reader at their full height: only rows
+                // after the first one that was already here arrive in motion.
+                let known = ids.iter().position(|id| previous.contains(id)).unwrap_or(0);
                 state.animated.extend(
                     ids.iter()
+                        .skip(known)
                         .filter(|id| &***id != HISTORY && !previous.contains(id))
                         .map(Arc::clone),
                 );
@@ -228,7 +234,7 @@ impl Workspace {
         } else {
             px(0.)
         };
-        let following = list.is_following_tail();
+        let following = list.is_following_tail() || (chat && self.glide_room() > px(0.));
         let has_items = list.item_count() > 0;
         let scope: Rc<str> = scope.into();
         div()
@@ -272,6 +278,67 @@ impl Workspace {
                 )
             })
             .into_any_element()
+    }
+
+    /// Scrolls the chat list on the shared spring until item `index` rests `rest` below the
+    /// top of the view; Reduce Motion goes there at once.
+    pub(in crate::ui) fn glide_item_to_top(
+        &self,
+        scope: Rc<str>,
+        index: usize,
+        rest: Pixels,
+        cx: &Context<Self>,
+    ) {
+        let list = move |this: &Self| {
+            this.transcript_scrolls.get(&*scope).and_then(|state| {
+                let list = state.list.as_ref()?;
+                Some(ListState::clone(list))
+            })
+        };
+        let Some(start) = list(self) else {
+            return;
+        };
+        start.pause_following_tail();
+        let still = cx.reduce_motion();
+        cx.spawn(async move |this, cx| {
+            let (mut velocity, mut last) = (0., motion::now());
+            // ponytail: two seconds at most; the row is unmeasured for its first frame.
+            for _ in 0..120 {
+                cx.background_executor().timer(motion::FRAME_60).await;
+                let done = this.update(cx, |this, cx| {
+                    let Some(list) = list(this) else {
+                        return true;
+                    };
+                    let Some(row) = list.bounds_for_item(index) else {
+                        cx.notify();
+                        return false;
+                    };
+                    let left = f32::from(row.top() - list.viewport_bounds().top() - rest);
+                    let now = motion::now();
+                    let (next, speed) = if still {
+                        (0., 0.)
+                    } else {
+                        motion::spring::step(left, velocity, 0., now - last)
+                    };
+                    // Most of a screen is a long way for a spring: it is travelled at a
+                    // pace the eye follows, and eases in only over the last stretch.
+                    let reach = TRAVEL * (now - last).as_secs_f32().min(0.05);
+                    let (next, speed) = if (left - next).abs() > reach {
+                        (left - reach.copysign(left), -TRAVEL.copysign(left))
+                    } else {
+                        (next, speed)
+                    };
+                    (velocity, last) = (speed, now);
+                    list.scroll_by(px(left - next));
+                    cx.notify();
+                    next == 0.
+                });
+                if done.unwrap_or(true) {
+                    break;
+                }
+            }
+        })
+        .detach();
     }
 
     /// Scrolls the chat list down to the latest message on the shared spring, then follows
@@ -363,6 +430,40 @@ impl Workspace {
     }
 }
 
+/// How the transcript treats a turn the reader starts (Settings → Appearance).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(in crate::ui) enum TurnMotion {
+    /// The message glides to the top at once and the answer fills in below it; the end
+    /// is followed again once the screen is full.
+    Glide,
+    /// The end stays in view throughout.
+    #[default]
+    #[serde(other)]
+    Follow,
+}
+
+impl TurnMotion {
+    pub const ALL: [Self; 2] = [Self::Follow, Self::Glide];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Follow => "Follow",
+            Self::Glide => "Glide to top",
+        }
+    }
+
+    /// The recording harness picks the motion of each run.
+    #[cfg(feature = "snapshot")]
+    pub fn or_harness(self) -> Self {
+        match std::env::var("MOBIUS_TRANSCRIPT_MOTION").as_deref() {
+            Ok("glide") => Self::Glide,
+            Ok("follow") => Self::Follow,
+            _ => self,
+        }
+    }
+}
+
 fn splice_chat_rows(
     list: &ListState,
     old: &[Arc<str>],
@@ -449,17 +550,22 @@ fn hand_off_rows(
         .iter()
         .map(|id| super::row_motion_id(scope, id))
         .collect();
-    let from = from.iter().map(String::as_str);
+    let from = || from.iter().map(String::as_str);
     match inserted {
         [worked] if worked.starts_with("worked:") => {
+            // The steps close under the new header, inside an item that starts at their height.
             let header = f32::from(height::REGULAR + space::S);
-            motion::hand_off(from, format!("{scope}:{worked}:body").into(), header);
+            motion::hand_off(from(), format!("{scope}:{worked}:body").into(), header);
+            motion::hand_off(from(), super::row_motion_id(scope, worked).into(), 0.);
         }
-        [first, ..] => motion::hand_off(from, super::row_motion_id(scope, first).into(), 0.),
+        [first, ..] => motion::hand_off(from(), super::row_motion_id(scope, first).into(), 0.),
         [] => {
-            if let Some(next) = next {
-                motion::hand_off(from, super::row_motion_id(scope, next).into(), 0.);
-            }
+            // Nothing follows a removed tail, so its space closes at the list's end.
+            let to = next.map_or_else(
+                || super::tail_slack_id(scope),
+                |next| super::row_motion_id(scope, next),
+            );
+            motion::hand_off(from(), to.into(), 0.);
         }
     }
 }

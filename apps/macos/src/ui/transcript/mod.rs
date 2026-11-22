@@ -17,7 +17,7 @@ pub(in crate::ui) use actions::timestamp;
 pub(in crate::ui) use disclosure::BlockLine;
 pub(in crate::ui) use issue::{IssueAction, ProviderIssue};
 pub(in crate::ui) use links::StreamingMarkdown;
-pub(in crate::ui) use scroll::HISTORY;
 pub(super) use scroll::TranscriptScroll;
+pub(in crate::ui) use scroll::{HISTORY, TurnMotion};
 
-pub(in crate::ui) use rows::row_motion_id;
+pub(in crate::ui) use rows::{row_motion_id, tail_slack_id};

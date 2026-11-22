@@ -10,6 +10,8 @@ pub(super) struct Preferences {
     pub appearance: Appearance,
     pub accent: Accent,
     pub font_set: FontSet,
+    /// How the transcript moves for a message the reader sends.
+    pub turn_motion: super::transcript::TurnMotion,
     pub dark_colors: Colors,
     pub light_colors: Colors,
     /// The window background of each appearance.
@@ -41,6 +43,7 @@ impl Default for Preferences {
             appearance: Appearance::default(),
             accent: Accent::default(),
             font_set: FontSet::default(),
+            turn_motion: Default::default(),
             dark_colors: Colors::default(),
             light_colors: Colors::default(),
             dark_background: Background::default(),
