@@ -734,7 +734,9 @@ impl EventMsg {
             Self::WebSearchBegin(search) => {
                 capability = "web_search";
                 FrontendBlock {
-                    id: Some(format!("{}/{}", search.model_step_id, search.call_id)),
+                    id: Some(
+                        super::scoped_call_id(&search.model_step_id, &search.call_id).to_string(),
+                    ),
                     group: Some(search.turn_id.to_string()),
                     state: FrontendBlockState::Pending,
                     role: FrontendBlockRole::WebSearch,
@@ -775,7 +777,9 @@ impl EventMsg {
                     }
                 };
                 FrontendBlock {
-                    id: Some(format!("{}/{}", search.model_step_id, search.call_id)),
+                    id: Some(
+                        super::scoped_call_id(&search.model_step_id, &search.call_id).to_string(),
+                    ),
                     group: Some(search.turn_id.to_string()),
                     role: FrontendBlockRole::WebSearch,
                     title: title.into(),

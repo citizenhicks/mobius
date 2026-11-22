@@ -278,12 +278,14 @@ async fn prepare_checkpoint(
     context
         .events
         .push(EventMsg::ToolCallBegin(ToolCallBeginEvent {
+            model_step_id: None,
             turn_id: context.turn_id.into(),
             call_id: Arc::clone(&call.call_id),
             name: Arc::clone(&call.name),
             arguments: call.arguments,
         }));
     context.events.push(EventMsg::ToolCallEnd(ToolCallEndEvent {
+        model_step_id: None,
         turn_id: context.turn_id.into(),
         call_id: call.call_id,
         name: call.name,

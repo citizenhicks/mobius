@@ -588,6 +588,9 @@ pub struct SessionResumeRequestedEvent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 /// Data for tool call begin event.
 pub struct ToolCallBeginEvent {
+    /// The originating model request, absent on historical and synthetic calls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_step_id: Option<Arc<str>>,
     /// The turn identifier.
     pub turn_id: Arc<str>,
     /// The call identifier.
@@ -601,6 +604,9 @@ pub struct ToolCallBeginEvent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 /// Data for tool call end event.
 pub struct ToolCallEndEvent {
+    /// The originating model request, absent on historical and synthetic calls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_step_id: Option<Arc<str>>,
     /// The turn identifier.
     pub turn_id: Arc<str>,
     /// The call identifier.

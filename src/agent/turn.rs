@@ -300,6 +300,7 @@ impl Runner {
             tool_calls: 0,
             failed_tool_calls: 0,
             usage: crate::protocol::TokenUsage::default(),
+            tool_step_id: None,
             next_model_step: 0,
             stop_hook_active: false,
             phase: ExecutionPhase::Model,

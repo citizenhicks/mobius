@@ -235,6 +235,7 @@ pub fn events<V: std::borrow::Borrow<Value>>(
                     (Arc::clone(&name), Arc::clone(&item_id)),
                 );
                 events.push(EventMsg::ToolCallBegin(ToolCallBeginEvent {
+                    model_step_id: None,
                     turn_id: item_id,
                     call_id,
                     name,
@@ -268,6 +269,7 @@ pub fn events<V: std::borrow::Borrow<Value>>(
                     |(name, turn_id)| (Arc::clone(name), Arc::clone(turn_id)),
                 );
                 events.push(EventMsg::ToolCallEnd(ToolCallEndEvent {
+                    model_step_id: None,
                     turn_id,
                     name,
                     call_id,

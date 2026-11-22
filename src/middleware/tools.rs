@@ -125,6 +125,7 @@ pub struct ToolContext {
     /// The turn identifier.
     pub turn_id: Arc<str>,
     model_route: Arc<str>,
+    model_step_id: Option<Arc<str>>,
     usage: ToolUsage,
     frontend: Option<super::FrontendEventSink>,
 }
@@ -142,6 +143,7 @@ impl std::fmt::Debug for ToolContext {
 }
 
 impl ToolContext {
+    #[cfg(test)]
     pub(crate) fn new(
         sandbox: Arc<Sandbox>,
         permissions: ToolPermissions,
@@ -154,14 +156,10 @@ impl ToolContext {
             permissions,
             turn_id: turn_id.into(),
             model_route: Arc::default(),
+            model_step_id: None,
             usage: ToolUsage::default(),
             frontend: None,
         }
-    }
-
-    pub(crate) fn with_frontend(mut self, frontend: Option<super::FrontendEventSink>) -> Self {
-        self.frontend = frontend;
-        self
     }
 
     /// The sink for transient progress while this call runs, when a frontend is attached.
@@ -169,19 +167,22 @@ impl ToolContext {
         self.frontend.as_ref()
     }
 
+    #[cfg(test)]
     pub(crate) fn with_model_route(mut self, route: impl Into<Arc<str>>) -> Self {
         self.model_route = route.into();
         self
     }
 
-    pub(crate) fn with_author(mut self, author: Arc<crate::protocol::MessageAuthor>) -> Self {
-        self.author = author;
-        self
-    }
-
+    #[cfg(test)]
     pub(crate) fn with_call_id(mut self, call_id: Arc<str>) -> Self {
         self.call_id = call_id;
         self
+    }
+
+    /// The durable reference for a result this invocation will deliver later.
+    #[must_use]
+    pub fn deferred_call(&self) -> crate::protocol::DeferredToolCall {
+        crate::protocol::DeferredToolCall::new(self.model_step_id.as_deref(), &self.call_id)
     }
 
     /// Returns the model route active for this tool call.
@@ -285,13 +286,6 @@ pub trait Tool: Send + Sync {
         false
     }
 
-    /// Declares that a call answers `pending` at once and its result arrives later, through
-    /// [`async_tool_result`], while the model keeps working. A successful call's own output
-    /// is replaced by the pending answer; an error still ends the call.
-    fn asynchronous(&self) -> bool {
-        false
-    }
-
     /// Declares an external hook alias and matcher subjects.
     fn hook_identity(&self) -> Option<HookIdentity> {
         None
@@ -311,7 +305,7 @@ pub trait Tool: Send + Sync {
         Ok(input)
     }
 
-    /// Executes one validated provider call.
+    /// Starts a validated call and returns its completed output or its accepted deferred invocation.
     fn call(
         &self,
         context: ToolContext,
@@ -334,7 +328,6 @@ struct RegisteredTool {
     cancel_on_input: bool,
     read_only: bool,
     polls: bool,
-    asynchronous: bool,
     handler: RegisteredHandler,
 }
 
@@ -537,7 +530,6 @@ impl Catalog {
             cancel_on_input: tool.cancel_on_input(),
             read_only: tool.read_only(),
             polls: tool.polls(),
-            asynchronous: tool.asynchronous(),
             handler: RegisteredHandler::Tool(tool),
         };
         self.insert(entry)
@@ -557,7 +549,6 @@ impl Catalog {
             cancel_on_input: false,
             read_only: true,
             polls: false,
-            asynchronous: false,
             handler: RegisteredHandler::Search,
         })
     }
@@ -1228,6 +1219,14 @@ impl ToolResult {
     }
 }
 
+/// Shared execution provenance for calls from one provider response.
+pub(crate) struct ToolStep<'a> {
+    pub(crate) turn_id: &'a Arc<str>,
+    pub(crate) model_step_id: Option<&'a Arc<str>>,
+    pub(crate) model_route: &'a Arc<str>,
+    pub(crate) author: &'a Arc<crate::protocol::MessageAuthor>,
+}
+
 /// Executes maximal runs of parallel-safe calls concurrently.
 /// Exclusive calls form barriers and execute alone.
 pub(crate) async fn execute_batch(
@@ -1235,9 +1234,7 @@ pub(crate) async fn execute_batch(
     calls: impl IntoIterator<Item = BoundToolCall>,
     sandbox: Arc<Sandbox>,
     permissions: &SandboxPermissions,
-    turn_id: &Arc<str>,
-    model_route: &Arc<str>,
-    author: &Arc<crate::protocol::MessageAuthor>,
+    step: &ToolStep<'_>,
 ) -> Vec<ToolResult> {
     let mut calls = calls.into_iter().peekable();
     let mut results = Vec::with_capacity(calls.size_hint().0);
@@ -1249,32 +1246,15 @@ pub(crate) async fn execute_batch(
             }
             // ModelOutput validation bounds every batch to 128 calls.
             results.extend(
-                join_all(batch.into_iter().map(|call| {
-                    execute_call(
-                        catalog,
-                        call,
-                        &sandbox,
-                        permissions,
-                        turn_id,
-                        model_route,
-                        author,
-                    )
-                }))
-                .await,
-            );
-        } else {
-            results.push(
-                execute_call(
-                    catalog,
-                    call,
-                    &sandbox,
-                    permissions,
-                    turn_id,
-                    model_route,
-                    author,
+                join_all(
+                    batch
+                        .into_iter()
+                        .map(|call| execute_call(catalog, call, &sandbox, permissions, step)),
                 )
                 .await,
             );
+        } else {
+            results.push(execute_call(catalog, call, &sandbox, permissions, step).await);
         }
     }
     results
@@ -1291,14 +1271,12 @@ pub(crate) async fn execute_call(
     call: BoundToolCall,
     sandbox: &Arc<Sandbox>,
     permissions: &SandboxPermissions,
-    turn_id: &Arc<str>,
-    model_route: &Arc<str>,
-    author: &Arc<crate::protocol::MessageAuthor>,
+    step: &ToolStep<'_>,
 ) -> ToolResult {
     let output_limit = sandbox.output_limit();
     let repeats = &catalog.repeats;
     let tool_call = call.as_call();
-    match repeats.should_stop(turn_id) {
+    match repeats.should_stop(step.turn_id) {
         Ok(false) => {}
         Ok(true) => {
             return ToolResult::error(tool_call, &text::DEFINITION.repeat_skipped, output_limit);
@@ -1307,19 +1285,10 @@ pub(crate) async fn execute_call(
     }
     let identity = (!catalog.polls(&tool_call.name))
         .then(|| repeats::RepeatGuard::call_identity(&tool_call.name, &tool_call.arguments));
-    let mut result = run_call(
-        catalog,
-        call,
-        sandbox,
-        permissions,
-        turn_id,
-        model_route,
-        author,
-    )
-    .await;
+    let mut result = run_call(catalog, call, sandbox, permissions, step).await;
     if let Some(identity) = identity.filter(|_| result.handler_executed) {
         match repeats.observe(
-            turn_id,
+            step.turn_id,
             Some(identity),
             Some(repeats::RepeatGuard::result_fingerprint(&result.output)),
             None,
@@ -1337,22 +1306,10 @@ async fn run_call(
     call: BoundToolCall,
     sandbox: &Arc<Sandbox>,
     permissions: &SandboxPermissions,
-    turn_id: &Arc<str>,
-    model_route: &Arc<str>,
-    author: &Arc<crate::protocol::MessageAuthor>,
+    step: &ToolStep<'_>,
 ) -> ToolResult {
     let output_limit = sandbox.output_limit();
     let BoundToolCall { call, search_scope } = call;
-    let context = ToolContext::new(
-        Arc::clone(sandbox),
-        permissions.for_call(&call.call_id),
-        Arc::clone(turn_id),
-    )
-    .with_model_route(Arc::clone(model_route))
-    .with_call_id(Arc::clone(&call.call_id))
-    .with_author(Arc::clone(author))
-    .with_frontend(catalog.frontend.as_ref().map(Arc::clone));
-    let pending_usage = ToolUsage(Arc::clone(&context.usage.0));
     let Some(tool) = catalog.get(&call.name) else {
         return ToolResult::error(&call, format!("unknown tool `{}`", call.name), output_limit);
     };
@@ -1360,7 +1317,8 @@ async fn run_call(
         Ok(revision) => revision,
         Err(error) => return ToolResult::error(&call, error.to_string(), output_limit),
     };
-    if tool.approval == ApprovalRequirement::Always && !context.permissions.allows_mutation() {
+    let permissions = permissions.for_call(&call.call_id);
+    if tool.approval == ApprovalRequirement::Always && !permissions.allows_mutation() {
         return ToolResult::error(
             &call,
             "tool call is not authorized to mutate state",
@@ -1372,30 +1330,42 @@ async fn run_call(
         name,
         arguments,
     } = call;
+    let pending_usage = ToolUsage::default();
     let result = match &tool.handler {
-        RegisteredHandler::Tool(handler) => handler
-            .call(context, arguments)
-            .await
-            .map(DispatchOutput::content),
+        RegisteredHandler::Tool(handler) => {
+            let context = ToolContext {
+                sandbox: Arc::clone(sandbox),
+                permissions,
+                turn_id: Arc::clone(step.turn_id),
+                model_step_id: step.model_step_id.map(Arc::clone),
+                model_route: Arc::clone(step.model_route),
+                author: Arc::clone(step.author),
+                call_id: Arc::clone(&call_id),
+                frontend: catalog.frontend.as_ref().map(Arc::clone),
+                usage: ToolUsage(Arc::clone(&pending_usage.0)),
+            };
+            handler
+                .call(context, arguments)
+                .await
+                .map(DispatchOutput::from)
+        }
         RegisteredHandler::Search => search_scope
             .ok_or_else(|| Error::Tool("tools_search scope is unavailable".into()))
             .and_then(|search_scope| tools_search(catalog, &arguments, &search_scope)),
     };
-    let result = match result {
-        Ok(output) if tool.asynchronous && !output.content.is_error => {
-            Ok(DispatchOutput::content(pending_response(&call_id)))
-        }
-        other => other,
-    };
     match result {
         Ok(output) => {
-            let effects =
-                materialization_effects(catalog_revision, output.loaded_tools, turn_id, &call_id);
+            let effects = materialization_effects(
+                catalog_revision,
+                output.loaded_tools,
+                step.turn_id,
+                &call_id,
+            );
             ToolResult {
                 call_id,
                 name,
-                output: cap_content(output.content.content, output_limit),
-                is_error: output.content.is_error,
+                output: cap_content(output.content, output_limit),
+                is_error: output.is_error,
                 usage: None,
                 handler_executed: true,
                 additional_input: effects.input,
@@ -1409,7 +1379,7 @@ async fn run_call(
 }
 
 /// What an asynchronous call answers at once: the model reads that the result comes later.
-fn pending_response(call_id: &str) -> crate::protocol::ToolResponse {
+fn pending_response(call_id: &str) -> crate::protocol::ToolContent {
     serde_json::json!({
         "status": "pending",
         "call_id": call_id,
@@ -1425,22 +1395,23 @@ fn pending_response(call_id: &str) -> crate::protocol::ToolResponse {
 /// `{"status":"answered",...}`, or `{"status":"no_answer"}` when none will come.
 #[must_use]
 pub fn async_tool_result(
-    call_id: &Arc<str>,
+    call: &crate::protocol::DeferredToolCall,
     tool: &str,
     output: &Value,
     turn_id: Option<String>,
 ) -> crate::protocol::Submission {
     use sha2::Digest as _;
     // Fit even a maximum-length provider call ID in the durable submission receipt.
-    let receipt = sha2::Sha256::digest(call_id.as_bytes());
+    let receipt = sha2::Sha256::digest(call.id().as_bytes());
+    let receipt: Arc<str> = format!("tool-result:{receipt:x}").into();
     crate::protocol::Submission {
-        id: format!("tool-result:{receipt:x}").into(),
+        id: Arc::clone(&receipt),
         op: crate::protocol::Op::Message {
             message: crate::protocol::MessageSubmission {
                 author: crate::protocol::MessageAuthor::Source {
-                    message_id: Arc::clone(call_id),
+                    message_id: receipt,
                     source: crate::protocol::MessageSource::Tool {
-                        call_id: Arc::clone(call_id),
+                        call_id: Arc::clone(&call.0),
                     },
                     cause_id: None,
                     ancestry: Vec::new(),
@@ -1458,14 +1429,20 @@ pub fn async_tool_result(
 }
 
 struct DispatchOutput {
-    content: crate::protocol::ToolResponse,
+    content: crate::protocol::ToolContent,
+    is_error: bool,
     loaded_tools: Vec<String>,
 }
 
-impl DispatchOutput {
-    fn content(content: crate::protocol::ToolResponse) -> Self {
+impl From<crate::protocol::ToolResponse> for DispatchOutput {
+    fn from(response: crate::protocol::ToolResponse) -> Self {
+        let (content, is_error) = match response {
+            crate::protocol::ToolResponse::Completed { content, is_error } => (content, is_error),
+            crate::protocol::ToolResponse::Deferred(call) => (pending_response(call.id()), false),
+        };
         Self {
             content,
+            is_error,
             loaded_tools: Vec::new(),
         }
     }
@@ -1499,6 +1476,7 @@ fn tools_search(
         "loaded_tools": &loaded_tools
     }))?;
     Ok(DispatchOutput {
+        is_error: false,
         content: content.into(),
         loaded_tools,
     })
@@ -1710,6 +1688,13 @@ impl Middleware for Tools {
     }
 }
 
+fn tool_block_id(turn: &str, step: Option<&str>, call: &str) -> String {
+    match step {
+        Some(step) => format!("{turn}/{}", crate::protocol::scoped_call_id(step, call)),
+        None => format!("{turn}/{call}"),
+    }
+}
+
 /// Renders one named tool's lifecycle events with the default argument preview and result styling.
 ///
 /// Returns `None` for other tools and unrelated events. Middleware can reuse the default
@@ -1735,7 +1720,11 @@ pub(crate) fn render_tool_event(
         EventMsg::ToolCallBegin(call) if owns(&call.name) => {
             let heading = heading(&call.name, &call.arguments);
             Some(FrontendBlock {
-                id: Some(format!("{}/{}", call.turn_id, call.call_id)),
+                id: Some(tool_block_id(
+                    &call.turn_id,
+                    call.model_step_id.as_deref(),
+                    &call.call_id,
+                )),
                 state: FrontendBlockState::Pending,
                 role: FrontendBlockRole::Tool,
                 title: heading.title,
@@ -1746,7 +1735,11 @@ pub(crate) fn render_tool_event(
         EventMsg::ToolCallEnd(result) if owns(&result.name) => {
             let output = formatted_tool_text(&compact_output(&result.output.text()));
             Some(FrontendBlock {
-                id: Some(format!("{}/{}", result.turn_id, result.call_id)),
+                id: Some(tool_block_id(
+                    &result.turn_id,
+                    result.model_step_id.as_deref(),
+                    &result.call_id,
+                )),
                 update: FrontendBlockUpdate::Append,
                 role: FrontendBlockRole::Tool,
                 title: heading(&result.name, &Value::Null).title,

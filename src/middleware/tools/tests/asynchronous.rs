@@ -3,7 +3,6 @@ use super::*;
 /// An asynchronous tool that succeeds with its own output, or fails.
 struct Later {
     definition: Arc<ToolDefinition>,
-    fails: bool,
 }
 
 impl Tool for Later {
@@ -11,21 +10,20 @@ impl Tool for Later {
         &self.definition
     }
 
-    fn asynchronous(&self) -> bool {
-        true
-    }
-
     fn call(
         &self,
-        _context: ToolContext,
-        _arguments: Value,
+        context: ToolContext,
+        arguments: Value,
     ) -> BoxFuture<'_, Result<crate::protocol::ToolResponse>> {
-        let fails = self.fails;
         Box::pin(async move {
-            if fails {
+            if arguments["mode"] == "fail" {
                 Err(Error::Tool("rejected".into()))
+            } else if arguments["mode"] == "complete" {
+                Ok("ready".into())
             } else {
-                Ok("the tool's own output".into())
+                Ok(crate::protocol::ToolResponse::Deferred(
+                    context.deferred_call(),
+                ))
             }
         })
     }
@@ -34,35 +32,33 @@ impl Tool for Later {
 #[tokio::test]
 async fn an_asynchronous_call_answers_pending_and_its_errors_still_end_it() {
     let mut catalog = Catalog::default();
-    for (name, fails) in [("later", false), ("broken", true)] {
-        catalog
-            .register(Arc::new(Later {
-                definition: named_tool_definition(name),
-                fails,
-            }))
-            .expect("register tool");
-    }
-    let calls: Vec<_> = ["later", "broken"]
+    catalog
+        .register(Arc::new(Later {
+            definition: named_tool_definition("later"),
+        }))
+        .expect("register tool");
+    let calls: Vec<_> = ["defer", "fail", "complete"]
         .into_iter()
-        .map(|name| ToolCall {
-            call_id: format!("{name}-call").into(),
-            name: name.into(),
-            arguments: serde_json::json!({}),
+        .map(|mode| ToolCall {
+            call_id: mode.into(),
+            name: "later".into(),
+            arguments: serde_json::json!({"mode":mode}),
         })
         .collect();
     let calls = finalize_and_bind(&mut catalog, &calls);
     let results = run_calls(&catalog, calls, test_sandbox(), &test_permissions("s", &[])).await;
     let pending: Value = serde_json::from_str(&results[0].output.text()).expect("pending JSON");
     assert_eq!(pending["status"], "pending");
-    assert_eq!(pending["call_id"], "later-call");
+    assert_eq!(pending["call_id"], "step/defer");
     assert!(!results[0].is_error);
     assert!(results[1].is_error, "a failed call is not pending");
     assert!(results[1].output.text().contains("rejected"));
+    assert_eq!(results[2].output.text(), "ready");
 }
 
 #[test]
 fn a_later_result_is_a_tool_message_that_steers_its_turn() {
-    let call_id: Arc<str> = "call-1".into();
+    let call_id = crate::protocol::DeferredToolCall("call-1".into());
     let submission = async_tool_result(
         &call_id,
         "ask_user",

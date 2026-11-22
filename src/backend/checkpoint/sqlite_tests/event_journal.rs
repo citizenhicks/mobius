@@ -87,6 +87,7 @@ async fn large_tool_output_is_stored_once_and_restored_for_both_event_readers() 
     let event = Event {
         submission_id: Some("submission".into()),
         msg: EventMsg::ToolCallEnd(ToolCallEndEvent {
+            model_step_id: None,
             turn_id: "turn".into(),
             call_id: "call".into(),
             name: "bash".into(),

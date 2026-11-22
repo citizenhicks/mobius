@@ -379,9 +379,12 @@ mod tests {
             [bound],
             Arc::clone(&sandbox),
             &permissions,
-            &"turn-a".into(),
-            &"test".into(),
-            &crate::protocol::MessageAuthor::User.into(),
+            &crate::middleware::tools::ToolStep {
+                turn_id: &"turn-a".into(),
+                model_step_id: Some(&"step".into()),
+                model_route: &"test".into(),
+                author: &crate::protocol::MessageAuthor::User.into(),
+            },
         )
         .await
         .pop()
@@ -482,9 +485,12 @@ mod tests {
             [clear],
             sandbox,
             &permissions,
-            &"turn-a".into(),
-            &"test".into(),
-            &crate::protocol::MessageAuthor::User.into(),
+            &crate::middleware::tools::ToolStep {
+                turn_id: &"turn-a".into(),
+                model_step_id: Some(&"step".into()),
+                model_route: &"test".into(),
+                author: &crate::protocol::MessageAuthor::User.into(),
+            },
         )
         .await
         .pop()

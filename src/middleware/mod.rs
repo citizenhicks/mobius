@@ -185,6 +185,7 @@ impl FrontendExtensions {
     pub fn preview_approvals(&self, request: &mut crate::protocol::ExecApprovalRequestEvent) {
         for call in &mut request.calls {
             let event = EventMsg::ToolCallBegin(crate::protocol::ToolCallBeginEvent {
+                model_step_id: None,
                 turn_id: Arc::clone(&request.turn_id),
                 call_id: Arc::clone(&call.call_id),
                 name: Arc::clone(&call.name),
@@ -1023,6 +1024,7 @@ fn validate_tool_rendering(
         (
             "ToolCallBegin",
             EventMsg::ToolCallBegin(ToolCallBeginEvent {
+                model_step_id: None,
                 turn_id: "validation".into(),
                 call_id: "validation".into(),
                 name: tool_name.into(),
@@ -1032,6 +1034,7 @@ fn validate_tool_rendering(
         (
             "successful ToolCallEnd",
             EventMsg::ToolCallEnd(ToolCallEndEvent {
+                model_step_id: None,
                 turn_id: "validation".into(),
                 call_id: "validation".into(),
                 name: tool_name.into(),
@@ -1042,6 +1045,7 @@ fn validate_tool_rendering(
         (
             "error ToolCallEnd",
             EventMsg::ToolCallEnd(ToolCallEndEvent {
+                model_step_id: None,
                 turn_id: "validation".into(),
                 call_id: "validation".into(),
                 name: tool_name.into(),

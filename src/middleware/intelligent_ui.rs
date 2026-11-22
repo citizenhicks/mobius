@@ -329,6 +329,7 @@ mod tests {
     #[test]
     fn documents_validate_render_text_and_do_not_claim_other_tools() {
         let event = EventMsg::ToolCallBegin(ToolCallBeginEvent {
+            model_step_id: None,
             turn_id: "turn".into(),
             call_id: "call".into(),
             name: "show_ui".into(),
@@ -344,6 +345,7 @@ mod tests {
         assert!(block.text.contains("A: 0.04$") && block.text.contains("https://example.com/a"));
         for name in ["show_ui", "bash"] {
             let end = EventMsg::ToolCallEnd(ToolCallEndEvent {
+                model_step_id: None,
                 turn_id: "turn".into(),
                 call_id: "call".into(),
                 name: name.into(),

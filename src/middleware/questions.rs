@@ -80,7 +80,8 @@ const MAX_ANSWER_BYTES: usize = 4096;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Question {
-    id: Arc<str>,
+    #[serde(rename = "id")]
+    call: crate::protocol::DeferredToolCall,
     title: String,
     options: Vec<String>,
     asked_at: i64,
@@ -234,7 +235,7 @@ impl Middleware for Questions {
             let questions = session.load().await?;
             for question in &questions {
                 if let Some(outcome) = &question.pending_outcome {
-                    session.deliver(&question.id, outcome, question.asked_turn.as_deref())?;
+                    session.deliver(&question.call, outcome, question.asked_turn.as_deref())?;
                 }
             }
             session.publish(questions)
@@ -311,7 +312,7 @@ impl QuestionSession {
         let (index, question) = questions
             .iter_mut()
             .enumerate()
-            .find(|(_, question)| *question.id == *id)
+            .find(|(_, question)| question.call.id() == id)
             .ok_or_else(|| Error::Tool(DEFINITION.message_not_found.clone()))?; // rules-allow: the error owns a copy of the embedded message
         if question.outcome.is_some() {
             return Err(Error::Tool(DEFINITION.message_closed.clone())); // rules-allow: the error owns a copy of the embedded message
@@ -336,7 +337,7 @@ impl QuestionSession {
         self.save(&questions).await?;
         let sent = questions.get(index).and_then(|question| {
             let outcome = question.pending_outcome.as_ref()?;
-            Some(self.deliver(&question.id, outcome, question.asked_turn.as_deref()))
+            Some(self.deliver(&question.call, outcome, question.asked_turn.as_deref()))
         });
         let sent =
             sent.unwrap_or_else(|| Err(Error::Internal("question outcome was not staged".into())));
@@ -357,7 +358,7 @@ impl QuestionSession {
 
     fn deliver(
         self: &Arc<Self>,
-        call_id: &Arc<str>,
+        call_id: &crate::protocol::DeferredToolCall,
         outcome: &Outcome,
         turn_id: Option<&str>,
     ) -> Result<()> {
@@ -374,11 +375,11 @@ impl QuestionSession {
                 turn_id.map(str::to_owned),
             ))?;
         let session = Arc::clone(self);
-        let call_id = Arc::clone(call_id);
+        let call_id = call_id.clone(); // rules-allow: the admission task retains the shared invocation reference
         tokio::spawn(async move {
             let admitted = admission.wait().await;
             let _access = session.access.lock().await;
-            if let Err(error) = session.finish_answer(&call_id, admitted).await {
+            if let Err(error) = session.finish_answer(call_id.id(), admitted).await {
                 tracing::warn!(%error, "question result could not be finalized");
             }
         });
@@ -393,7 +394,7 @@ impl QuestionSession {
         let mut questions = self.load().await?;
         let Some(question) = questions
             .iter_mut()
-            .find(|question| *question.id == *call_id)
+            .find(|question| question.call.id() == call_id)
         else {
             return Ok(());
         };
@@ -429,9 +430,6 @@ impl Tool for AskUser {
     fn approval(&self) -> ApprovalRequirement {
         ApprovalRequirement::Never
     }
-    fn asynchronous(&self) -> bool {
-        true
-    }
     fn call(
         &self,
         context: ToolContext,
@@ -444,10 +442,8 @@ impl Tool for AskUser {
             validate(&args)?;
             let _access = self.0.access.lock().await;
             let mut questions = self.0.load().await?;
-            if !questions
-                .iter()
-                .any(|question| question.id == context.call_id)
-            {
+            let invocation = context.deferred_call();
+            if !questions.iter().any(|question| question.call == invocation) {
                 if questions
                     .iter()
                     .filter(|question| question.outcome.is_none())
@@ -457,7 +453,7 @@ impl Tool for AskUser {
                     return Err(Error::Tool(DEFINITION.message_too_many_open.clone())); // rules-allow: the error owns a copy of the embedded message
                 }
                 questions.push(Question {
-                    id: context.call_id,
+                    call: invocation.clone(), // rules-allow: the durable question and pending response share the invocation
                     title: args.title,
                     options: args.options,
                     asked_at: chrono::Utc::now().timestamp_millis(),
@@ -468,8 +464,7 @@ impl Tool for AskUser {
                 self.0.save(&questions).await?;
             }
             self.0.publish(questions)?;
-            // The catalog answers `pending` for this asynchronous call.
-            Ok(String::new().into())
+            Ok(crate::protocol::ToolResponse::Deferred(invocation))
         })
     }
 }
@@ -557,7 +552,7 @@ fn question_item(question: Question) -> FrontendActionListItem {
                     .enumerate()
                     .map(|(index, option)| {
                         action(
-                            &question.id,
+                            question.call.id(),
                             index.to_string(),
                             option,
                             &Command::Answer,
@@ -566,7 +561,7 @@ fn question_item(question: Question) -> FrontendActionListItem {
                     }),
             );
             let mut other = action(
-                &question.id,
+                question.call.id(),
                 "other".into(),
                 DEFINITION.action_other_label.clone(), // rules-allow: the widget record owns a copy of the embedded text
                 &Command::Answer,
@@ -580,7 +575,7 @@ fn question_item(question: Question) -> FrontendActionListItem {
             });
             actions.push(other);
             actions.push(action(
-                &question.id,
+                question.call.id(),
                 "skip".into(),
                 DEFINITION.action_skip_label.clone(), // rules-allow: the widget record owns a copy of the embedded text
                 &Command::Skip,
@@ -590,7 +585,7 @@ fn question_item(question: Question) -> FrontendActionListItem {
         }
     };
     FrontendActionListItem {
-        id: question.id,
+        id: question.call.0,
         text: question.title,
         state: if outcome.is_none() {
             FrontendListItemState::Pending

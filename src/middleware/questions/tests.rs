@@ -27,7 +27,7 @@ use tokio::sync::Notify;
 
 fn question(id: &str, at: i64) -> Question {
     Question {
-        id: id.into(),
+        call: crate::protocol::DeferredToolCall(id.into()),
         title: "Choose {answer}?".into(),
         options: vec!["A".into(), "B".into()],
         asked_at: at,
@@ -105,11 +105,11 @@ fn closed_question(event: &EventMsg) -> bool {
         if &**capability == "questions" && item.text == "0")
 }
 
-async fn agent(
+async fn agent<M: Model + 'static>(
     path: &std::path::Path,
     checkpoints: Arc<dyn CheckpointStore>,
     questions: Arc<Questions>,
-    model: Arc<TestModel>,
+    model: Arc<M>,
 ) -> Agent {
     create_agent(
         AgentConfig::new(
@@ -225,6 +225,109 @@ async fn answers_reach_model_history_without_duplicate_frontend_messages() {
         };
         assert_eq!(items[0].state, FrontendListItemState::Completed);
         assert!(items[0].actions.is_empty());
+    }
+}
+
+/// A provider may start its call counter over on each response.
+struct ReusedCall(std::sync::atomic::AtomicUsize);
+
+impl Model for ReusedCall {
+    fn respond<'a>(
+        &'a self,
+        _: ModelRequest,
+        _: ModelEventSink,
+    ) -> BoxFuture<'a, Result<ModelOutput>> {
+        let index = self.0.fetch_add(1, Ordering::Relaxed);
+        Box::pin(async move {
+            let output = if index < 2 {
+                serde_json::json!({"type":"function_call", "call_id":"same/call", "name":"ask_user",
+                    "arguments": serde_json::json!({"title":format!("Question {index}"),"options":["A","B"]}).to_string()})
+            } else {
+                serde_json::json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"Done."}]})
+            };
+            ModelOutput::from_output(vec![output], index >= 2, TokenUsage::default())
+        })
+    }
+}
+
+#[tokio::test]
+async fn repeated_provider_call_ids_have_independent_cards_and_receipts() {
+    let (temp, store) = SqliteCheckpoint::temporary();
+    let store: Arc<dyn CheckpointStore> = Arc::new(store);
+    let questions = Arc::new(Questions::default());
+    let mut agent = agent(
+        temp.path(),
+        Arc::clone(&store),
+        Arc::clone(&questions),
+        Arc::new(ReusedCall(0.into())),
+    )
+    .await;
+    agent
+        .sender()
+        .send(Submission::message(MessageSubmission::user(
+            "Ask twice",
+            Vec::new(),
+        )))
+        .unwrap();
+    let mut calls = Vec::new();
+    while let EventMsg::ToolCallEnd(end) = next(&mut agent, |event| {
+        matches!(event, EventMsg::ToolCallEnd(_) | EventMsg::TurnComplete(_))
+    })
+    .await
+    {
+        assert_eq!(end.call_id.as_ref(), "same/call");
+        let pending: Value = serde_json::from_str(&end.output.text()).unwrap();
+        let event = EventMsg::ToolCallEnd(end);
+        let block = questions.render(&event, "session").unwrap();
+        let call = pending["call_id"].as_str().expect("pending reference");
+        assert_eq!(
+            block.id.as_deref().unwrap().split_once('/').unwrap().1,
+            call
+        );
+        calls.push(call.to_owned());
+    }
+    assert_eq!(calls.len(), 2);
+    assert_ne!(calls[0], calls[1]);
+    let session_id = "session".parse().unwrap();
+    let saved = questions
+        .session(&session_id)
+        .unwrap()
+        .load()
+        .await
+        .unwrap();
+    assert_eq!(saved.len(), calls.len());
+    for (question, call) in saved.iter().zip(&calls) {
+        assert_eq!(question.call.id(), call);
+    }
+    for (index, command) in ["answer_question", "skip_question"].into_iter().enumerate() {
+        agent
+            .sender()
+            .submit(Op::CapabilityCommand {
+                capability: "questions".into(),
+                command: command.into(),
+                arguments: calls[index].as_str().into(),
+                input: (index == 0).then(|| "A".into()),
+                target: None,
+            })
+            .unwrap();
+        next(&mut agent, |event| {
+            matches!(event, EventMsg::TurnComplete(_))
+        })
+        .await;
+    }
+    let checkpoint = store.load(&session_id).await.unwrap().unwrap();
+    let results: Vec<_> = checkpoint
+        .context
+        .iter()
+        .filter_map(|item| item["content"][0]["text"].as_str())
+        .filter(|text| text.starts_with("Result of an earlier asynchronous"))
+        .collect();
+    assert_eq!(results.len(), 2);
+    for ((result, call), status) in results.iter().zip(calls).zip(["answered", "no_answer"]) {
+        assert!(
+            result.contains(&call) && result.contains(status),
+            "{result}"
+        );
     }
 }
 

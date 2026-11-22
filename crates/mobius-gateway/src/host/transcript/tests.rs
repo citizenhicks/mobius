@@ -199,6 +199,7 @@ fn completed(turn: &str) -> EventMsg {
 
 fn call_begin(turn: &str, id: &str) -> EventMsg {
     EventMsg::ToolCallBegin(ToolCallBeginEvent {
+        model_step_id: None,
         turn_id: turn.into(),
         call_id: id.into(),
         name: "fixture_tool".into(),
@@ -208,6 +209,7 @@ fn call_begin(turn: &str, id: &str) -> EventMsg {
 
 fn call_end(turn: &str, id: &str, is_error: bool) -> EventMsg {
     EventMsg::ToolCallEnd(ToolCallEndEvent {
+        model_step_id: None,
         turn_id: turn.into(),
         call_id: id.into(),
         name: "fixture_tool".into(),

@@ -11,7 +11,7 @@ use crate::Error;
 use crate::Result;
 use crate::backend::model::tool_output;
 use crate::backend::sandbox::SandboxPermissions;
-use crate::middleware::tools::{Catalog, ToolBinding, ToolResult, execute_batch};
+use crate::middleware::tools::{Catalog, ToolBinding, ToolResult, ToolStep, execute_batch};
 use crate::middleware::{PostToolUseContext, PreToolUseContext};
 use crate::protocol::Event;
 use crate::protocol::EventMsg;
@@ -137,6 +137,7 @@ impl Runner {
             self.emit(
                 Arc::clone(submission_id),
                 EventMsg::ToolCallBegin(ToolCallBeginEvent {
+                    model_step_id: self.state.tool_step_id().map(Arc::clone),
                     turn_id: Arc::clone(turn_id),
                     call_id: Arc::clone(&call.call_id),
                     name: Arc::clone(&call.name),
@@ -170,14 +171,19 @@ impl Runner {
         }
         let model_route = Arc::clone(&self.config.provider);
         let author = Arc::clone(self.active_author()?);
+        let tool_step_id = self.state.tool_step_id().map(Arc::clone);
+        let step = ToolStep {
+            turn_id,
+            model_step_id: tool_step_id.as_ref(),
+            model_route: &model_route,
+            author: &author,
+        };
         let execution = execute_batch(
             &catalog,
             bound_calls,
             Arc::clone(&self.config.sandbox),
             &permissions,
-            turn_id,
-            &model_route,
-            &author,
+            &step,
         );
         let cancelled_results = || {
             interrupted_results(
@@ -258,7 +264,12 @@ impl Runner {
                     }
                 }
             }
-            events.extend(tool_result_events(submission_id, turn_id, results));
+            events.extend(tool_result_events(
+                submission_id,
+                turn_id,
+                self.state.tool_step_id(),
+                results,
+            ));
             if has_tool_usage {
                 events.push(self.usage_event(submission_id));
             }
@@ -358,7 +369,12 @@ impl Runner {
             return Ok(Vec::new());
         }
         self.append_tool_results(&mut results).await?;
-        Ok(tool_result_events(submission_id, turn_id, results))
+        Ok(tool_result_events(
+            submission_id,
+            turn_id,
+            self.state.tool_step_id(),
+            results,
+        ))
     }
 }
 
@@ -392,6 +408,7 @@ pub(super) fn tool_call_inputs(calls: &[ToolCall]) -> Result<Vec<serde_json::Val
 fn tool_result_events(
     submission_id: &Arc<str>,
     turn_id: &Arc<str>,
+    model_step_id: Option<&Arc<str>>,
     results: Vec<ToolResult>,
 ) -> Vec<Event> {
     let mut events = Vec::with_capacity(results.len() * 2);
@@ -399,6 +416,7 @@ fn tool_result_events(
         events.push(crate::agent::turn::turn_event(
             submission_id,
             EventMsg::ToolCallEnd(ToolCallEndEvent {
+                model_step_id: model_step_id.map(Arc::clone),
                 turn_id: Arc::clone(turn_id),
                 call_id: result.call_id,
                 name: result.name,

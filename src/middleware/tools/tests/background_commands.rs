@@ -24,7 +24,7 @@ async fn bash_caps_output_and_restricts_poll_and_stop_to_its_owner() {
         )
         .await
         .expect("bash");
-    let text = response.content.text();
+    let text = response.completed_content().text();
     assert!(text.len() <= 512, "{} bytes", text.len());
     let output: Value = serde_json::from_str(&text).expect("complete JSON after escaping");
     assert_eq!(output["status"], "running");
@@ -67,7 +67,8 @@ async fn bash_caps_output_and_restricts_poll_and_stop_to_its_owner() {
             )
             .await
             .expect("manage owned command without new approval");
-        let output: Value = serde_json::from_str(&response.content.text()).expect("command output");
+        let output: Value =
+            serde_json::from_str(&response.completed_content().text()).expect("command output");
         assert_eq!(output["status"], expected);
         assert_eq!(output["stdout"], "");
     }

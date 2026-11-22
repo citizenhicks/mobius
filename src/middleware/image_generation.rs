@@ -243,7 +243,7 @@ impl Tool for GenerateImage {
             } else {
                 ContentPart::File { file: image.file }
             };
-            Ok(ToolResponse {
+            Ok(ToolResponse::Completed {
                 content: ToolContent(vec![part]),
                 is_error: false,
             })
@@ -428,9 +428,12 @@ mod tests {
             [call],
             Arc::clone(&sandbox),
             &permissions,
-            &"turn".into(),
-            &"image".into(),
-            &crate::protocol::MessageAuthor::User.into(),
+            &crate::middleware::tools::ToolStep {
+                turn_id: &"turn".into(),
+                model_step_id: Some(&"step".into()),
+                model_route: &"image".into(),
+                author: &crate::protocol::MessageAuthor::User.into(),
+            },
         )
         .await;
         assert_eq!(results.len(), 1);
@@ -483,6 +486,7 @@ mod tests {
         let begin = middleware
             .render(
                 &EventMsg::ToolCallBegin(ToolCallBeginEvent {
+                    model_step_id: None,
                     turn_id: "turn".into(),
                     call_id: "image-call".into(),
                     name: "generate_image".into(),
@@ -494,6 +498,7 @@ mod tests {
         let end = middleware
             .render(
                 &EventMsg::ToolCallEnd(ToolCallEndEvent {
+                    model_step_id: None,
                     turn_id: "turn".into(),
                     call_id: "image-call".into(),
                     name: "generate_image".into(),

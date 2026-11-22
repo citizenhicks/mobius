@@ -96,6 +96,14 @@ pub struct Checkpoint {
 }
 
 impl Checkpoint {
+    /// The provider request that owns the current tool batch, when recorded.
+    pub(crate) fn tool_step_id(&self) -> Option<&Arc<str>> {
+        self.active_model_step
+            .as_ref()
+            .map(|step| &step.model_step_id)
+            .or_else(|| self.active_execution.as_ref()?.tool_step_id.as_ref())
+    }
+
     #[cfg(test)]
     pub(crate) fn for_test_owner(session: &str, owner: &str) -> Self {
         let mut checkpoint = Self::empty(session.parse().expect("session ID"));

@@ -31,6 +31,8 @@ enum StoredEvent<E, S> {
     },
     ToolOutput {
         submission_id: Option<S>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model_step_id: Option<S>,
         turn_id: S,
         call_id: S,
         name: S,
@@ -59,6 +61,7 @@ fn stored_event<'a>(
     {
         return StoredEvent::ToolOutput {
             submission_id: event.submission_id.as_deref(),
+            model_step_id: call.model_step_id.as_deref(),
             turn_id: &call.turn_id,
             call_id: &call.call_id,
             name: &call.name,
@@ -94,6 +97,7 @@ pub(super) fn decode_event(
         StoredEvent::Inline { event } => Ok(event),
         StoredEvent::ToolOutput {
             submission_id,
+            model_step_id,
             turn_id,
             call_id,
             name,
@@ -128,6 +132,7 @@ pub(super) fn decode_event(
             Ok(Event {
                 submission_id: submission_id.map(Arc::from),
                 msg: EventMsg::ToolCallEnd(ToolCallEndEvent {
+                    model_step_id: model_step_id.map(Arc::from),
                     turn_id: turn_id.into(),
                     call_id: call_id.into(),
                     name: name.into(),

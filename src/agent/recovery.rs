@@ -65,6 +65,7 @@ impl Recovery {
             Cause::Restart => uncertain_tools || interrupted_model_step,
             Cause::Failure => state.active_execution.is_some(),
         };
+        let tool_step_id = state.tool_step_id().map(Arc::clone);
         if interrupted_execution && let Some(step) = state.active_model_step.take() {
             let active = state
                 .active_execution
@@ -125,6 +126,7 @@ impl Recovery {
                         .as_ref()
                         .map(|execution| Arc::clone(&execution.submission_id)),
                     msg: EventMsg::ToolCallEnd(ToolCallEndEvent {
+                        model_step_id: tool_step_id.as_ref().map(Arc::clone),
                         turn_id: Arc::clone(&recovered_turn),
                         call_id: call.call_id,
                         name: call.name,

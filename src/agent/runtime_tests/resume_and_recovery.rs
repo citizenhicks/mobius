@@ -289,6 +289,7 @@ async fn restart_recovers_streamed_calls_without_reexecuting_them() {
         tool_calls: 0,
         failed_tool_calls: 0,
         usage: TokenUsage::default(),
+        tool_step_id: None,
         next_model_step: 0,
         stop_hook_active: false,
         phase: crate::backend::checkpoint::ExecutionPhase::Model,

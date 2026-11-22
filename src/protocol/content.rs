@@ -1,5 +1,7 @@
 //! Ordered conversation content shared by tools, replay, and frontends.
 
+use std::{fmt, sync::Arc};
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -118,18 +120,59 @@ impl From<&String> for ToolContent {
     }
 }
 
-/// A completed tool observation, including observations from failed actions.
+/// The outcome of starting a tool call.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ToolResponse {
-    /// The content.
-    pub content: ToolContent,
-    /// The is error.
-    pub is_error: bool,
+#[non_exhaustive]
+pub enum ToolResponse {
+    /// The call finished, including tool-reported failures.
+    Completed {
+        /// Observations for the model.
+        content: ToolContent,
+        /// Whether the operation failed.
+        is_error: bool,
+    },
+    /// The tool accepted the operation. Its result will arrive through the message queue.
+    Deferred(DeferredToolCall),
+}
+
+/// Providers can reuse a call ID on a later model step.
+pub(crate) fn scoped_call_id<'a>(step: &'a str, call: &'a str) -> impl fmt::Display + 'a {
+    fmt::from_fn(move |f| write!(f, "{step}/{call}"))
+}
+
+/// Model-visible reference of a deferred invocation. Existing question records store it as a string.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct DeferredToolCall(pub(crate) Arc<str>);
+
+impl DeferredToolCall {
+    pub(crate) fn new(step: Option<&str>, call: &Arc<str>) -> Self {
+        Self(match step {
+            Some(step) => scoped_call_id(step, call).to_string().into(),
+            None => Arc::clone(call),
+        })
+    }
+
+    /// The same reference is used by the pending receipt, the UI action and the later result.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.0
+    }
+}
+
+#[cfg(test)]
+impl ToolResponse {
+    pub(crate) fn completed_content(&self) -> &ToolContent {
+        match self {
+            Self::Completed { content, .. } => content,
+            Self::Deferred(_) => panic!("expected a completed tool response"),
+        }
+    }
 }
 
 impl From<String> for ToolResponse {
     fn from(text: String) -> Self {
-        Self {
+        Self::Completed {
             content: text.into(),
             is_error: false,
         }

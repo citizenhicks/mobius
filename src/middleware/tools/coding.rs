@@ -126,7 +126,7 @@ impl Tool for ReadFile {
                 }
                 _ => return Err(Error::Tool("provide exactly one of path or file_id".into())),
             };
-            Ok(ToolResponse {
+            Ok(ToolResponse::Completed {
                 content: ToolContent(vec![
                     ContentPart::Text {
                         text: format!(

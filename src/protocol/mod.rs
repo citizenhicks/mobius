@@ -24,9 +24,10 @@ pub(crate) use self::replay::{
 
 mod content;
 pub use content::{
-    ContentPart, ImageDetail, ImageReference, ImageRendition, ToolContent, ToolResponse,
+    ContentPart, DeferredToolCall, ImageDetail, ImageReference, ImageRendition, ToolContent,
+    ToolResponse,
 };
-pub(crate) use content::{content_part_text, content_parts, content_parts_mut};
+pub(crate) use content::{content_part_text, content_parts, content_parts_mut, scoped_call_id};
 
 mod diff;
 mod events;
@@ -321,7 +322,7 @@ pub enum MessageSource {
     },
     /// The later result of an asynchronous tool call, which answered `pending` at once.
     Tool {
-        /// The provider call identifier the result belongs to.
+        /// The invocation reference from the pending tool response.
         call_id: Arc<str>,
     },
 }

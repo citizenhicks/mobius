@@ -1057,6 +1057,8 @@ impl Runner {
             .ok_or_else(|| {
                 Error::Checkpoint("completed model step has no active execution".into())
             })?;
+        active.tool_step_id =
+            (!step.output.tool_calls.is_empty()).then(|| Arc::clone(&step.started.model_step_id));
         active.next_model_step = next_model_step;
         active.phase = if step.output.end_turn && step.output.tool_calls.is_empty() {
             ExecutionPhase::Completion {

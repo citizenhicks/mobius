@@ -33,9 +33,12 @@ async fn run_calls(
         calls,
         sandbox,
         permissions,
-        &"turn".into(),
-        &"test".into(),
-        &crate::protocol::MessageAuthor::User.into(),
+        &crate::middleware::tools::ToolStep {
+            turn_id: &"turn".into(),
+            model_step_id: Some(&"step".into()),
+            model_route: &"test".into(),
+            author: &crate::protocol::MessageAuthor::User.into(),
+        },
     )
     .await
 }

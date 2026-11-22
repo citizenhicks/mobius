@@ -184,6 +184,7 @@ fn image_file_id_heading_does_not_invent_a_workspace_link() {
     let block = tool
         .render(&EventMsg::ToolCallBegin(
             crate::protocol::ToolCallBeginEvent {
+                model_step_id: None,
                 turn_id: "turn".into(),
                 call_id: "read".into(),
                 name: "read_file".into(),

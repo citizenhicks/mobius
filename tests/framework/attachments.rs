@@ -160,7 +160,7 @@ async fn request_budget_failure_records_the_action_without_replaying_on_restart(
         fn call(&self, _: ToolContext, _: Value) -> BoxFuture<'_, Result<ToolResponse>> {
             Box::pin(async move {
                 self.calls.fetch_add(1, Ordering::SeqCst);
-                Ok(ToolResponse {
+                Ok(ToolResponse::Completed {
                     content: self.content.clone(),
                     is_error: false,
                 })

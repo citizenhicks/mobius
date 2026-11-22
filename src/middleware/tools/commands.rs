@@ -536,6 +536,7 @@ mod tests {
         let id = "1a2b3c4d-0000-4000-8000-000000000000";
         let begin = |name: &str, arguments| {
             EventMsg::ToolCallBegin(ToolCallBeginEvent {
+                model_step_id: None,
                 turn_id: "turn".into(),
                 call_id: "call".into(),
                 name: name.into(),
@@ -544,6 +545,7 @@ mod tests {
         };
         let end = |name: &str| {
             EventMsg::ToolCallEnd(ToolCallEndEvent {
+                model_step_id: None,
                 turn_id: "turn".into(),
                 call_id: "call".into(),
                 name: name.into(),
@@ -571,6 +573,7 @@ mod tests {
 
         let finished = |output: serde_json::Value| {
             Bash.render(&EventMsg::ToolCallEnd(ToolCallEndEvent {
+                model_step_id: None,
                 turn_id: "turn".into(),
                 call_id: "call".into(),
                 name: "bash".into(),

@@ -212,7 +212,9 @@ impl Runner {
         let turn_id = Arc::clone(turn_id);
         let model_route = Arc::clone(&self.config.provider);
         let author = Arc::clone(self.active_author()?);
+        let model_step_id = self.state.tool_step_id().map(Arc::clone);
         let begin = ToolCallBeginEvent {
+            model_step_id: model_step_id.as_ref().map(Arc::clone),
             turn_id: Arc::clone(&turn_id),
             call_id: Arc::clone(&call.call_id),
             name: Arc::clone(&call.name),
@@ -233,9 +235,12 @@ impl Runner {
                 bound,
                 &sandbox,
                 &permissions,
-                &turn_id,
-                &model_route,
-                &author,
+                &crate::middleware::tools::ToolStep {
+                    turn_id: &turn_id,
+                    model_step_id: model_step_id.as_ref(),
+                    model_route: &model_route,
+                    author: &author,
+                },
             )
             .await)
         }));

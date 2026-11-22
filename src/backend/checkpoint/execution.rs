@@ -44,6 +44,9 @@ pub struct ActiveExecution {
     pub failed_tool_calls: u64,
     /// The usage.
     pub usage: TokenUsage,
+    /// The model step whose tools may still be executing or awaiting approval.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_step_id: Option<Arc<str>>,
     /// The next model step.
     pub next_model_step: usize,
     /// The stop hook active.

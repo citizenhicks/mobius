@@ -158,7 +158,7 @@ impl Tool for SendArtifact {
                     ));
                 }
             };
-            Ok(crate::protocol::ToolResponse {
+            Ok(crate::protocol::ToolResponse::Completed {
                 content: crate::protocol::ToolContent(vec![crate::protocol::ContentPart::File {
                     file,
                 }]),
@@ -203,7 +203,11 @@ mod tests {
             )
             .await
             .expect("send artifact");
-        let file = output.content.files().next().expect("published file");
+        let file = output
+            .completed_content()
+            .files()
+            .next()
+            .expect("published file");
 
         assert_eq!(tool.approval(), ApprovalRequirement::Always);
         assert!(

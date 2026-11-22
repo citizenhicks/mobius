@@ -128,6 +128,7 @@ impl Script {
             EventMsg::ToolCallBegin(call)
         } else {
             EventMsg::ToolCallEnd(ToolCallEndEvent {
+                model_step_id: None,
                 turn_id: call.turn_id,
                 call_id: call.call_id,
                 name: call.name,
@@ -224,6 +225,7 @@ pub fn tool(
 ) -> ToolFixture {
     ToolFixture {
         call: ToolCallBeginEvent {
+            model_step_id: None,
             turn_id: turn.into(),
             call_id: id.into(),
             name: "fixture_tool".into(),

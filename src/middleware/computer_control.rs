@@ -257,7 +257,7 @@ impl Tool for Evaluate {
                     }
                 }
             }
-            Ok(ToolResponse {
+            Ok(ToolResponse::Completed {
                 content: ToolContent(content),
                 is_error,
             })
@@ -399,8 +399,8 @@ mod tests {
                         )
                         .await
                         .expect("echoed request");
-                    let request: Value =
-                        serde_json::from_str(&result.content.text()).expect("request JSON");
+                    let request: Value = serde_json::from_str(&result.completed_content().text())
+                        .expect("request JSON");
                     assert_eq!(request["code"], "await getPage()");
                     let eligible =
                         mode == SandboxMode::DangerFullAccess && network == NetworkAccess::Allowed;

@@ -39,7 +39,7 @@ async fn apply_with_mode(sandbox: Arc<Sandbox>, patch: &str, mode: SandboxMode) 
             serde_json::json!({ "patch": patch }),
         )
         .await
-        .map(|response| response.content.text())
+        .map(|response| response.completed_content().text())
 }
 
 fn envelope(body: &str) -> String {
@@ -484,6 +484,7 @@ async fn apply_patch_renders_every_committed_file_as_a_linked_diff() {
     }
     let block = ApplyPatch
         .render(&EventMsg::ToolCallEnd(crate::protocol::ToolCallEndEvent {
+            model_step_id: None,
             turn_id: "turn".into(),
             call_id: "patch".into(),
             name: "apply_patch".into(),
@@ -500,6 +501,7 @@ async fn apply_patch_renders_every_committed_file_as_a_linked_diff() {
 fn apply_patch_begin_renders_its_envelope_as_a_linked_unified_diff() {
     let block = ApplyPatch
         .render(&EventMsg::ToolCallBegin(crate::protocol::ToolCallBeginEvent {
+            model_step_id: None,
             turn_id: "turn".into(),
             call_id: "patch".into(),
             name: "apply_patch".into(),
