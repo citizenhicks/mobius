@@ -253,6 +253,11 @@ pub enum FrontendPriority {
 }
 
 impl FrontendWidget {
+    /// Counted icon-only widgets keep their details available when their last live item ends.
+    pub fn shows_slot_indicator(&self) -> bool {
+        !(self.icon_only && self.count == Some(0))
+    }
+
     /// A neutral, primary text widget with no symbol, progress, content, action, or count.
     pub fn new(id: impl Into<Arc<str>>, slot: FrontendSlot, text: impl Into<String>) -> Self {
         Self {

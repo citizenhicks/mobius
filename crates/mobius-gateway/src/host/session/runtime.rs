@@ -2,7 +2,7 @@ use super::super::OpenReplay;
 use super::super::replay::{fork_origin, inherited_cursor};
 use super::{
     ActiveRoutine, HostCommand, HostState, ProviderCutoverStatus, SourceAdmission,
-    fail_active_routine, shutdown_agent, try_begin_session_mutation,
+    fail_active_routine, try_begin_session_mutation,
 };
 use crate::bots::{ActiveRoutineRun, BotStore};
 use crate::config::ChatSpec;
@@ -178,10 +178,25 @@ impl HostState {
         for waiter in self.idle_waiters.drain(..) {
             respond(waiter, (), "idle waiter");
         }
-        shutdown_agent(self.running).await;
+        self.shutdown_agent().await;
         self.alive.store(false, Ordering::Release);
         self.terminated.store(true, Ordering::Release);
         self.termination.notify_waiters();
+    }
+
+    async fn shutdown_agent(&mut self) {
+        self.running.shutdown();
+        while self.running.events().recv().await.is_some() {}
+        if self.activity.running_commands > 0 {
+            self.widgets
+                .retain(|widget| !super::super::replay::is_running_commands(widget));
+            let activity = std::mem::take(&mut self.activity);
+            if let Err(error) = self.set_activity(activity).await {
+                tracing::warn!(%error, "could not clear retired command activity");
+            } else if let Err(error) = self.broadcast_sessions().await {
+                tracing::warn!(message = %error.message, "could not publish retired command activity");
+            }
+        }
     }
 
     pub(super) async fn handle(&mut self, command: HostCommand) -> bool {

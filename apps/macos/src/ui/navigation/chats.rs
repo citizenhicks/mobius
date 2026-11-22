@@ -411,14 +411,34 @@ impl Workspace {
         let (state, unread) = (session.activity.state, self.is_unread(id));
         #[cfg(feature = "snapshot")]
         let (state, unread) = crate::ui::snapshot::activity(id).unwrap_or((state, unread));
-        if session.activity.attention > 0 {
-            return Some(attention_pill(session.activity.attention, &p).into_any_element());
-        }
-        if state == SessionActivityState::AwaitingApproval {
+        let pills: Vec<_> = [
+            (
+                session.activity.attention,
+                "hi.userQuestion01",
+                "Pending questions",
+            ),
+            (
+                u32::from(state == SessionActivityState::AwaitingApproval),
+                "hi.shieldCheck",
+                "Pending approval",
+            ),
+            (
+                session.activity.running_commands,
+                "hi.squareTerminal",
+                "Running commands",
+            ),
+        ]
+        .into_iter()
+        .filter(|(count, _, _)| *count > 0)
+        .map(|(count, glyph, label)| activity_pill(count, glyph, label, &p))
+        .collect();
+        if !pills.is_empty() {
             return Some(
-                icon("hi.mousePointerClick", &p)
-                    .size(glyph::MARK)
-                    .text_color(p.warning)
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(space::XS)
+                    .children(pills)
                     .into_any_element(),
             );
         }
@@ -630,22 +650,20 @@ fn glyph_item(label: &'static str, name: &'static str) -> PopupMenuItem {
     })
 }
 
-/// A yellow capsule holding the attention cursor and how many things wait on the reader.
-fn attention_pill(count: u32, p: &Palette) -> Div {
-    let ink = gpui::black();
+/// A chat activity count and its glyph, in the same capsule for each kind.
+fn activity_pill(count: u32, glyph: &str, label: &'static str, p: &Palette) -> impl IntoElement {
     div()
+        .id(label)
+        .role(gpui::accesskit::Role::Label)
         .flex()
         .items_center()
         .gap(space::XXS)
         .px(space::XS)
         .pill_corners()
-        .bg(p.warning)
+        .bg(p.card)
         .typography(Type::Label)
-        .text_color(ink)
-        .child(
-            icon("hi.mousePointerClick", p)
-                .size(glyph::MARK)
-                .text_color(ink),
-        )
+        .text_color(p.text)
+        .aria_label(format!("{label} · {count}"))
         .child(count.to_string())
+        .child(icon(glyph, p).size(glyph::MARK).text_color(p.text))
 }

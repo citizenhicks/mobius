@@ -1425,7 +1425,14 @@ fn enrich_resume_picker(
         if let Some(title) = &session.title {
             option.label.clone_from(title);
         }
-        let mut details: Vec<std::borrow::Cow<'_, str>> = vec![session_status(session).into()];
+        let mut details: Vec<std::borrow::Cow<'_, str>> = vec![
+            format!(
+                "{}{}",
+                session_status(session),
+                crate::frontend::terminal::chat_indicators(&session.activity)
+            )
+            .into(),
+        ];
         details.push(
             if current_workspace_id.is_some()
                 && session.session_context.workspace_id.as_deref() == current_workspace_id

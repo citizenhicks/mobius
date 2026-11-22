@@ -107,13 +107,18 @@ thread_local! {
     /// A scenario opened a menu, which the next scenario closes first.
     static MENU_OPEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// A change a scenario makes after its capture, recorded as a frame strip.
-    static STRIP: std::cell::Cell<Option<Step>> = const { std::cell::Cell::new(None) };
+    static STRIP: std::cell::Cell<Option<(Step, u64)>> = const { std::cell::Cell::new(None) };
 }
 
 /// After the capture, runs `change` and records the frames that follow, with every
 /// transcript row's position, so motion can be checked for jumps.
 pub(in crate::ui) fn strip_after_capture(change: Step) {
-    STRIP.with(|strip| strip.set(Some(change)));
+    strip_after_capture_every(16, change);
+}
+
+/// Sample longer animations without adding frames to the capture.
+pub(super) fn strip_after_capture_every(step_ms: u64, change: Step) {
+    STRIP.with(|strip| strip.set(Some((change, step_ms))));
 }
 
 /// Records `frames` frames after a scenario's `strip_after_capture` change.
@@ -127,15 +132,16 @@ pub(super) async fn capture_strip(
     this: &WeakEntity<Workspace>,
     cx: &mut AsyncWindowContext,
 ) {
-    let Some(change) = STRIP.with(std::cell::Cell::take) else {
+    let Some((change, step_ms)) = STRIP.with(std::cell::Cell::take) else {
         return;
     };
     let started = std::time::Instant::now();
     let mut captures = Vec::new();
-    // Frame 0 is the settled screen before the change; each frame advances motion's clock
-    // by exactly one display frame, however long its capture takes.
+    // Sample the settled screen and then advance the motion clock independently of capture time.
     for frame in 0..24 {
-        crate::ui::primitives::motion::set_clock(Some(started + Duration::from_millis(16 * frame)));
+        crate::ui::primitives::motion::set_clock(Some(
+            started + Duration::from_millis(step_ms * frame),
+        ));
         if frame == 1 {
             report("strip change", this.update_in(cx, change));
         }
@@ -168,7 +174,7 @@ pub(super) async fn capture_strip(
                 .collect::<Vec<_>>()
                 .join(" ")
         });
-        eprintln!("strip {name} {frame} {} {rows}", 16 * frame);
+        eprintln!("strip {name} {frame} {} {rows}", step_ms * frame);
         if let Ok(Ok(image)) = this.update_in(cx, |_, window, _| window.render_to_image()) {
             captures.push((dir.join(format!("{name}-strip-{frame:02}.png")), image));
         }

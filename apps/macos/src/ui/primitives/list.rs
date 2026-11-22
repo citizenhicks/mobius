@@ -288,6 +288,7 @@ impl RenderOnce for Group {
 pub enum Leading {
     Selection(bool),
     Glyph(SharedString),
+    Content(AnyElement),
     Face(Hsla, BotShape),
     /// A full-height face for a two-line content row.
     LargeFace(Hsla, BotShape),
@@ -332,6 +333,7 @@ impl Leading {
                 .w(super::tokens::face::HERO)
                 .child(BotFace::new(tint, shape, super::tokens::face::HERO))
                 .into_any_element(),
+            Self::Content(content) => gutter.child(content).into_any_element(),
             Self::Gutter => gutter.into_any_element(),
         }
     }

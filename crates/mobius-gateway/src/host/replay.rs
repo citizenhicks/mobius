@@ -492,12 +492,27 @@ pub(crate) fn event_sequence(frame: &ServerFrame) -> Option<u64> {
     }
 }
 
-pub(super) fn attention_count(widgets: &SessionWidgets) -> u32 {
+pub(super) fn is_running_commands(widget: &crate::wire::SessionWidget) -> bool {
+    use mobius::backend::sandbox;
+    widget.capability.as_ref() == sandbox::MANIFEST.id
+        && widget.item.id.as_ref() == sandbox::RUNNING_COMMANDS_WIDGET
+}
+
+/// Counts published to every chat list. Command text stays in the session widget.
+pub(super) fn widget_counts(widgets: &SessionWidgets) -> (u32, u32) {
+    let commands = widgets
+        .iter()
+        .find(|widget| is_running_commands(widget))
+        .and_then(|widget| widget.item.count)
+        .unwrap_or_default();
     let count = widgets
         .iter()
         .flat_map(|widget| widget.item.pending_attention_items())
         .count();
-    u32::try_from(count).unwrap_or(u32::MAX)
+    (
+        u32::try_from(count).unwrap_or(u32::MAX),
+        u32::try_from(commands).unwrap_or(u32::MAX),
+    )
 }
 
 /// Keeps the latest token count, which a fresh open reads from the session's ready payload.

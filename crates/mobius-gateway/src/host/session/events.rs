@@ -452,8 +452,9 @@ impl HostState {
             EventMsg::Frontend(
                 FrontendEvent::Widget { .. } | FrontendEvent::RemoveWidget { .. },
             ) => {
-                (self.activity.attention != super::super::replay::attention_count(&self.widgets))
-                    .then(|| self.activity.clone()) // rules-allow: the catalog receives its own copy of the refreshed activity
+                ((self.activity.attention, self.activity.running_commands)
+                    != super::super::replay::widget_counts(&self.widgets))
+                .then(|| self.activity.clone()) // rules-allow: the catalog receives its own copy of the refreshed activity
             }
             _ => None,
         }
@@ -492,7 +493,8 @@ impl HostState {
     }
 
     pub(super) async fn set_activity(&mut self, mut activity: SessionActivity) -> Result<()> {
-        activity.attention = super::super::replay::attention_count(&self.widgets);
+        (activity.attention, activity.running_commands) =
+            super::super::replay::widget_counts(&self.widgets);
         update_session_activity(
             &self.checkpoints,
             &self.activities,

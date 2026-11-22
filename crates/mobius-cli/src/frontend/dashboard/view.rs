@@ -446,9 +446,10 @@ pub(super) fn render_chats(frame: &mut ratatui::Frame<'_>, area: Rect, state: &m
                     .map_or_else(String::new, |bot| format!(" · @{}", bot.handle));
                 Line::styled(
                     format!(
-                        " {symbol} {}{bot} · {}",
+                        " {symbol} {}{bot} · {}{}",
                         activity_label(session.activity.state),
-                        terminal_text(title)
+                        terminal_text(title),
+                        crate::frontend::terminal::chat_indicators(&session.activity)
                     ),
                     theme.style(role),
                 )

@@ -27,11 +27,14 @@ use super::default_tool_output_limit;
 use crate::BoxFuture;
 use crate::Error;
 use crate::Result;
-use crate::middleware::Middleware;
 use crate::middleware::PromptSection;
 use crate::middleware::RuntimeContext;
 use crate::middleware::SessionStartContext;
 use crate::middleware::SessionStartSource;
+use crate::middleware::{
+    ActiveCommandContext, Middleware, MiddlewareCommandContext, MiddlewareCommandOutput,
+    SubmissionResult,
+};
 use crate::protocol::EventMsg;
 use crate::protocol::FrontendBlock;
 use crate::protocol::FrontendContribution;
@@ -328,7 +331,44 @@ impl Middleware for Sandbox {
     }
 
     fn frontend(&self, _session_id: &str) -> FrontendContribution {
-        self.approval.frontend()
+        let mut contribution = self.approval.frontend();
+        contribution
+            .commands
+            .push(crate::protocol::FrontendCommand::new(
+                super::background::STOP_COMMAND,
+                "<command-id>",
+                &super::text::DEFINITION.stop_command_description,
+                false,
+            ));
+        contribution
+    }
+
+    fn command<'a>(
+        &'a self,
+        context: MiddlewareCommandContext<'a>,
+    ) -> BoxFuture<'a, Result<MiddlewareCommandOutput>> {
+        Box::pin(async move {
+            self.background
+                .request_user_stop(context.session_id, context.arguments)?;
+            Ok(MiddlewareCommandOutput::events(Vec::new()))
+        })
+    }
+
+    fn active_command<'a>(
+        &'a self,
+        context: &'a mut ActiveCommandContext<'_>,
+    ) -> BoxFuture<'a, Result<Option<SubmissionResult>>> {
+        Box::pin(async move {
+            Ok(Some(
+                match self
+                    .background
+                    .request_user_stop(context.session_id, context.arguments)
+                {
+                    Ok(()) => SubmissionResult::Handled,
+                    Err(error) => SubmissionResult::Rejected(error.to_string()),
+                },
+            ))
+        })
     }
 
     fn prompt_section(&self, _runtime: &RuntimeContext) -> Result<Option<PromptSection>> {
@@ -371,8 +411,11 @@ impl Middleware for Sandbox {
                 (context.runtime.frontend)(event)?;
             }
             let sender = context.runtime.sender.clone(); // rules-allow: the listener owns its weak sender handle
-            self.background
-                .listen(&context.runtime.session_id, background_notices(sender))?;
+            self.background.listen(
+                &context.runtime.session_id,
+                background_notices(sender),
+                Arc::clone(&context.runtime.frontend),
+            )?;
             Ok(())
         })
     }

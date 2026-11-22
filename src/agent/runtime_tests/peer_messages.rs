@@ -234,3 +234,189 @@ async fn idle_peer_messages_start_turns_and_replay_without_becoming_user_prompts
             .is_some_and(|message| message["author"]["handle"] == "resumed-reviewer")
     }));
 }
+
+fn shell_call(id: &str, command: &str, background: bool) -> ModelOutput {
+    let arguments = serde_json::json!({"command": command, "run_in_background": background});
+    ModelOutput::from_output(vec![serde_json::json!({
+        "type": "function_call", "name": "bash", "call_id": id, "arguments": arguments.to_string()
+    })], false, scripted_usage()).expect("bash tool call")
+}
+
+fn shell_config(workspace: &std::path::Path, model: Arc<ScriptedModel>) -> AgentConfig {
+    use crate::backend::session_files::SessionFileStore;
+
+    runtime_config(
+        Arc::new(ModelRouter::new("test", model)),
+        test_sandbox(workspace, ApprovalPolicy::FullAccess),
+        test_checkpoints(workspace),
+        test_middleware(vec![Arc::new(Tools::coding(Arc::new(
+            SessionFileStore::new(workspace, None),
+        )))]),
+        "command-wake",
+    )
+}
+
+#[tokio::test]
+async fn stopping_one_background_command_and_finishing_another_each_wake_the_idle_chat() {
+    use crate::backend::sandbox::RUNNING_COMMANDS_WIDGET;
+    use crate::protocol::{FrontendWidgetContent, MessageSource};
+
+    let workspace = tempfile::tempdir().expect("workspace");
+    let build = "while [ ! -f release ]; do sleep 0.05; done; exit 7";
+    let other = "sleep 120";
+    let model = Arc::new(ScriptedModel::new([
+        shell_call("build", build, true),
+        shell_call("other", other, true),
+        scripted_message("Waiting."),
+        scripted_message("The second command was stopped."),
+        scripted_message("The build exited."),
+    ]));
+    let mut agent = create_agent(shell_config(workspace.path(), model))
+        .await
+        .expect("create agent");
+    agent
+        .sender()
+        .submit(user_op("Run both commands."))
+        .expect("start turn");
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        let mut turns = 0;
+        let mut stop = None;
+        let mut build_id = None;
+        let mut stopped_id = None;
+        let mut counts = Vec::new();
+        let mut notices = Vec::new();
+        while turns < 3 || counts.last() != Some(&0) {
+            match agent.next_event().await.expect("agent event").msg {
+                EventMsg::Frontend(FrontendEvent::Widget { item, .. })
+                    if item.id.as_ref() == RUNNING_COMMANDS_WIDGET =>
+                {
+                    let Some(FrontendWidgetContent::ActionList { items, .. }) = &item.content
+                    else {
+                        panic!("clickable command list")
+                    };
+                    let active = items
+                        .iter()
+                        .filter(|row| {
+                            row.state == crate::protocol::FrontendListItemState::InProgress
+                        })
+                        .count();
+                    assert_eq!(item.count, Some(active));
+                    counts.push(active);
+                    for row in items {
+                        match row.state {
+                            crate::protocol::FrontendListItemState::InProgress
+                                if row.text == build =>
+                            {
+                                build_id = Some(Arc::clone(&row.id));
+                            }
+                            crate::protocol::FrontendListItemState::InProgress => {
+                                assert_eq!(row.text, other);
+                                stopped_id = Some(Arc::clone(&row.id));
+                                stop = Some(row.actions[0].operation());
+                            }
+                            crate::protocol::FrontendListItemState::Failed => {
+                                assert_eq!(row.text, build);
+                                assert!(row.actions.is_empty());
+                            }
+                            crate::protocol::FrontendListItemState::Interrupted => {
+                                assert_eq!(row.text, other);
+                                assert!(row.actions.is_empty());
+                            }
+                            state => panic!("unexpected command state {state:?}"),
+                        }
+                    }
+                    if turns > 0 {
+                        assert_eq!(items.len(), 2, "retain both outcomes in open details");
+                    }
+                }
+                EventMsg::Message(message) => {
+                    if let MessageAuthor::Source {
+                        source: MessageSource::External { event_id, .. },
+                        ..
+                    } = &message.author
+                    {
+                        assert_eq!(message.delivery, MessageDelivery::Turn);
+                        let (id, text) = if notices.is_empty() {
+                            (&stopped_id, "stopped by the user")
+                        } else {
+                            (&build_id, "exited with code 7")
+                        };
+                        assert_eq!(Some(event_id.as_ref()), id.as_deref());
+                        assert!(message.text.contains(text), "{}", message.text);
+                        notices.push(Arc::clone(event_id));
+                    }
+                }
+                EventMsg::TurnComplete(_) => {
+                    turns += 1;
+                    match turns {
+                        1 => {
+                            agent
+                                .sender()
+                                .submit(stop.take().expect("stop action from command row"))
+                                .expect("stop command");
+                        }
+                        2 => std::fs::write(workspace.path().join("release"), [])
+                            .expect("release remaining command"),
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(counts, [1, 2, 1, 0]);
+        assert_eq!(notices.len(), 2);
+    })
+    .await
+    .expect("background notices woke the idle chat");
+}
+
+#[tokio::test]
+async fn stopping_a_foreground_command_returns_its_result_to_the_active_turn() {
+    use crate::protocol::FrontendWidgetContent;
+    let workspace = tempfile::tempdir().expect("workspace");
+    let model = Arc::new(ScriptedModel::new([
+        shell_call("foreground", "sleep 120", false),
+        scripted_message("Stopped."),
+    ]));
+    let mut agent = create_agent(shell_config(workspace.path(), Arc::clone(&model)))
+        .await
+        .expect("create agent");
+    agent
+        .sender()
+        .submit(user_op("Run the command."))
+        .expect("start turn");
+    tokio::time::timeout(std::time::Duration::from_secs(6), async {
+        loop {
+            match agent.next_event().await.expect("agent event").msg {
+                EventMsg::Frontend(FrontendEvent::Widget { item, .. })
+                    if item.id.as_ref() == crate::backend::sandbox::RUNNING_COMMANDS_WIDGET
+                        && item.count == Some(1) =>
+                {
+                    let Some(FrontendWidgetContent::ActionList { items, .. }) = &item.content
+                    else {
+                        panic!("command list")
+                    };
+                    agent
+                        .sender()
+                        .submit(items[0].actions[0].operation())
+                        .expect("stop foreground command");
+                }
+                EventMsg::TurnComplete(_) => break,
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("stop did not wait for foreground timeout");
+    let inputs = std::mem::take(&mut *model.inputs.lock().expect("model inputs"));
+    assert!(
+        inputs.last().expect("final step").iter().any(|item| {
+            item["type"] == "function_call_output"
+                && item["output"][0]["text"]
+                    .as_str()
+                    .and_then(|text| serde_json::from_str::<Value>(text).ok())
+                    .is_some_and(|result| result["status"] == "stopped")
+        }),
+        "model must receive the stopped tool result: {inputs:?}"
+    );
+}

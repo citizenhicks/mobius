@@ -1114,7 +1114,10 @@ fn footer_line(state: &TuiState, width: u16) -> Line<'_> {
 fn widget_line(widgets: &[(Arc<str>, Arc<FrontendWidget>)], slot: FrontendSlot) -> Line<'_> {
     let theme = current();
     let mut spans = Vec::new();
-    for (_, item) in widgets.iter().filter(|(_, item)| item.slot == slot) {
+    for (_, item) in widgets
+        .iter()
+        .filter(|(_, item)| item.slot == slot && item.shows_slot_indicator())
+    {
         separator(&mut spans);
         let style = if slot == FrontendSlot::ComposerHeader && item.tone == FrontendTone::Neutral {
             theme.style(Role::Muted).add_modifier(Modifier::ITALIC)

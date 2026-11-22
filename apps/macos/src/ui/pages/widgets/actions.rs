@@ -17,11 +17,22 @@ impl Workspace {
             known_symbol_icon(Some(&action.symbol))
         };
         let action = Rc::new(action.clone()); // rules-allow: the static click handler owns its action while the list keeps it
-        button(SharedString::from(&action.id), &action.label)
-            .when_some(glyph, |button, glyph| {
-                button.icon(icon(glyph, &palette(cx)))
-            })
-            .text_color(self.palette.tone(action.tone))
+        let id = SharedString::from(&action.id);
+        let control = if action.symbol.as_str() == "stop" {
+            inline_button(
+                id,
+                &action.label,
+                symbol_icon_or(Some(&action.symbol), "hi.stopFill"),
+                cx,
+            )
+        } else {
+            button(id, &action.label)
+                .when_some(glyph, |button, glyph| {
+                    button.icon(icon(glyph, &palette(cx)))
+                })
+                .text_color(self.palette.tone(action.tone))
+        };
+        control
             .disabled(self.widget_operation_blocked(&action.op))
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.activate_widget_action(Rc::clone(&action), global, window, cx);

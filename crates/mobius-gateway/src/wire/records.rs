@@ -398,6 +398,9 @@ pub struct SessionRecord {
 pub struct SessionActivity {
     /// Pending capability attention items, independent of turn activity.
     pub attention: u32,
+    /// Shell commands still executing in this session, including between turns.
+    #[serde(default)]
+    pub running_commands: u32,
     /// The state.
     pub state: SessionActivityState,
     /// The turn identifier.

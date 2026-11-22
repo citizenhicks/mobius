@@ -946,7 +946,7 @@ mod tests {
             &mut widgets,
             &record(Arc::new(widget.clone())).event.msg,
         );
-        assert_eq!(super::super::replay::attention_count(&widgets), 1);
+        assert_eq!(super::super::replay::widget_counts(&widgets), (1, 0));
         for _ in 0..2 {
             project_attention(
                 &checkpoints,
@@ -970,7 +970,7 @@ mod tests {
             &mut widgets,
             &record(Arc::new(widget.clone())).event.msg,
         );
-        assert_eq!(super::super::replay::attention_count(&widgets), 0);
+        assert_eq!(super::super::replay::widget_counts(&widgets), (0, 0));
         project_attention(
             &checkpoints,
             &bots,

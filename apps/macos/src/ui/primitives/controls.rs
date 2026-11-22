@@ -577,6 +577,7 @@ pub struct Pill {
     id: ElementId,
     label: Option<SharedString>,
     glyph: Option<SharedString>,
+    trailing_glyph: bool,
     progress: Option<f32>,
     tint: Option<Hsla>,
 }
@@ -587,6 +588,7 @@ pub fn pill(id: impl Into<ElementId>) -> Pill {
         id: id.into(),
         label: None,
         glyph: None,
+        trailing_glyph: false,
         progress: None,
         tint: None,
     }
@@ -614,6 +616,12 @@ impl Pill {
         self
     }
 
+    /// A compact count followed by the status glyph.
+    pub fn count(mut self, count: usize) -> Self {
+        self.trailing_glyph = true;
+        self.label(count.to_string())
+    }
+
     /// A progress ring, `fraction` from 0 to 1.
     pub fn progress(mut self, fraction: f32) -> Self {
         self.progress = Some(fraction);
@@ -626,6 +634,7 @@ impl Pill {
         let icon_only = self.label.is_none() && self.progress.is_none();
         let content = div()
             .flex()
+            .when(self.trailing_glyph, gpui::Styled::flex_row_reverse)
             .items_center()
             .gap(space::S)
             .typography(Type::Label)

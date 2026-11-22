@@ -237,13 +237,18 @@ impl Workspace {
         let body = match &widget.content {
             Some(FrontendWidgetContent::ActionList { items, .. }) => {
                 use FrontendListItemState::*;
-                let faces = widget.symbol == Some(mobius::protocol::FrontendSymbol::Agent);
+                let row_symbol = widget.symbol.as_ref().filter(|symbol| {
+                    (widget.icon_only
+                        && widget.count.is_some()
+                        && widget.slot == FrontendSlot::ComposerFooter)
+                        || **symbol == mobius::protocol::FrontendSymbol::Agent
+                });
                 let rows = |states: &[FrontendListItemState]| -> Vec<Row> {
                     items
                         .iter()
                         .enumerate()
                         .filter(|(_, item)| states.contains(&item.state))
-                        .map(|(index, item)| self.action_row(index, item, global, faces, cx))
+                        .map(|(index, item)| self.action_row(index, item, global, row_symbol, cx))
                         .collect()
                 };
                 let sections = [
@@ -285,19 +290,38 @@ impl Workspace {
         index: usize,
         item: &mobius::protocol::FrontendActionListItem,
         global: bool,
-        faces: bool,
+        symbol: Option<&mobius::protocol::FrontendSymbol>,
         cx: &Context<Self>,
     ) -> Row {
         let p = self.palette;
         let mut row = Row::new(("action-item", index), &item.text);
-        if faces && let Some((tint, shape)) = stable_face(&item.id) {
-            row = row.leading(Leading::Face(tint, shape));
+        if symbol == Some(&mobius::protocol::FrontendSymbol::Agent) {
+            if let Some((tint, shape)) = stable_face(&item.id) {
+                row = row.leading(Leading::Face(tint, shape));
+            }
+        } else if let Some(glyph) = known_symbol_icon(symbol) {
+            let tint = match item.state {
+                FrontendListItemState::InProgress => p.signal,
+                FrontendListItemState::Failed => p.danger,
+                _ => p.muted,
+            };
+            let mark = icon(glyph, &p).size(glyph::LEAD).text_color(tint);
+            let mark = if item.state == FrontendListItemState::InProgress {
+                breathing(mark).into_any_element()
+            } else {
+                mark.into_any_element()
+            };
+            row = row.leading(Leading::Content(mark));
         }
         if item.state == FrontendListItemState::Pending {
             row = row.control(inline_status(p.muted, "Waiting", &p));
         }
         match item.actions.as_slice() {
-            [action] if action.editor.is_none() && !action.input_from_label => {
+            [action]
+                if action.symbol.as_str() != "stop"
+                    && action.editor.is_none()
+                    && !action.input_from_label =>
+            {
                 let action = Rc::new(action.clone()); // rules-allow: the 'static click handler owns its copy of the action from gateway state
                 let entity = cx.entity();
                 row.disclosure().on_click(move |_, window, cx| {

@@ -1,0 +1,77 @@
+{
+  "capability": "sandbox",
+  "item": {
+    "id": "running-commands",
+    "slot": "composer_footer",
+    "text": "Running commands · 2",
+    "tone": "neutral",
+    "symbol": "terminal",
+    "icon_only": true,
+    "progress": null,
+    "action": null,
+    "count": 2,
+    "content": {
+      "type": "action_list",
+      "title": "Running commands",
+      "items": [
+        {
+          "id": "test",
+          "text": "cargo test --workspace",
+          "state": "in_progress",
+          "actions": [
+            {
+              "id": "stop-test",
+              "label": "Stop",
+              "symbol": "stop",
+              "tone": "warning",
+              "op": {
+                "type": "capability_command",
+                "capability": "sandbox",
+                "command": "stop_command",
+                "arguments": "test",
+                "input": null,
+                "target": null
+              },
+              "editor": null
+            }
+          ]
+        },
+        {
+          "id": "build",
+          "text": "npm run build",
+          "state": "in_progress",
+          "actions": [
+            {
+              "id": "stop-build",
+              "label": "Stop",
+              "symbol": "stop",
+              "tone": "warning",
+              "op": {
+                "type": "capability_command",
+                "capability": "sandbox",
+                "command": "stop_command",
+                "arguments": "build",
+                "input": null,
+                "target": null
+              },
+              "editor": null
+            }
+          ]
+        },
+        {
+          "id": "lint",
+          "text": "cargo clippy",
+          "state": "failed",
+          "actions": []
+        },
+        {
+          "id": "check",
+          "text": "cargo check",
+          "state": "completed",
+          "actions": []
+        }
+      ],
+      "actions": []
+    }
+  }
+}

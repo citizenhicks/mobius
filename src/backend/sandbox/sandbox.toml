@@ -1,4 +1,8 @@
 # Editable sandbox text and defaults. Isolation invariants remain in Rust.
+stop_command_label = "Stop"
+stop_command_description = "Stop one running command in this chat"
+background_command_stopped = "Background command {id} was stopped by the user."
+running_commands_title = "Running commands"
 background_command_notice = "Background command {id} (`{command}`) {outcome}."
 background_command_exited = "exited with code {exit_code}"
 background_command_failed = "failed: {error}"

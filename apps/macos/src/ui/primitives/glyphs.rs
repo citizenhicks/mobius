@@ -99,9 +99,11 @@ pub fn known_symbol_icon(symbol: Option<&FrontendSymbol>) -> Option<&'static str
         ("question", "hi.userQuestion01"),
         ("shield_off", "hi.shieldOff"),
         ("sparkle", "hi.sparkle"),
+        ("stop", "hi.stopFill"),
         ("storage", "hi.hardDrives"),
         ("steer", "hi.arrowUpRight01"),
         ("task", "hi.checkCircle"),
+        ("terminal", "hi.squareTerminal"),
         ("voice", "hi.audioWave01"),
     ];
     let name = symbol?.as_str();

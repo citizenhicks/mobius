@@ -12,6 +12,10 @@ use crate::protocol::FrontendTone;
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Definition {
+    pub(super) stop_command_label: String,
+    pub(super) stop_command_description: String,
+    pub(super) background_command_stopped: String,
+    pub(super) running_commands_title: String,
     pub(super) background_command_notice: String,
     pub(super) background_command_exited: String,
     pub(super) background_command_failed: String,

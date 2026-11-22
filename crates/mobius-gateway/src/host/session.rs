@@ -384,7 +384,8 @@ impl HostHandle {
             .activities
             .entry(shared_session_id.share())
             .or_default();
-        activity.attention = super::replay::attention_count(&loaded.widgets);
+        (activity.attention, activity.running_commands) =
+            super::replay::widget_counts(&loaded.widgets);
         let awaiting_approval = activity.state == SessionActivityState::AwaitingApproval;
         let activity = activity.clone(); // rules-allow: the actor keeps its own copy of its catalog entry
         drop(guard);
@@ -878,9 +879,4 @@ pub(super) fn fail_active_routine(
         None,
     )
     .map(|_| ())
-}
-
-async fn shutdown_agent(mut agent: Box<dyn HarnessSession>) {
-    agent.shutdown();
-    while agent.events().recv().await.is_some() {}
 }

@@ -25,6 +25,38 @@ use std::sync::Arc;
     reason = "fixed scenario identities must be valid"
 )]
 pub(super) const SCENARIOS: &[Scenario] = &[
+    ("chat-command-pill", |this, window, cx| {
+        decision_fixture(
+            this,
+            window,
+            cx,
+            mobius::protocol::FrontendBlockState::Pending,
+        );
+        let session = this.client.state.session.as_mut().expect("fixture session");
+        session.widgets.push(
+            serde_json::from_str(include_str!("../fixtures/running_commands.json"))
+                .expect("command widget fixture"),
+        );
+        let row = this
+            .client
+            .state
+            .sessions
+            .iter_mut()
+            .find(|row| row.session_id == session.session.session_id)
+            .expect("fixture chat row");
+        row.activity.state = mobius_gateway::wire::SessionActivityState::AwaitingApproval;
+        row.activity.attention = 1;
+        row.activity.running_commands = 2;
+        super::probes::strip_after_capture_every(100, |_, window, cx| {
+            let bounds = PROBES.with(|p| {
+                p.borrow()
+                    .get("footer:sandbox:running-commands")
+                    .copied()
+                    .expect("running commands pill was drawn")
+            });
+            window.defer(cx, move |window, cx| click(bounds.center(), window, cx));
+        });
+    }),
     ("decisions-pending", |this, window, cx| {
         decision_fixture(
             this,

@@ -107,6 +107,7 @@ impl CatalogState {
     pub(super) fn needs_attention(&self, session: &SessionRecord) -> bool {
         session.activity.state != SessionActivityState::Idle
             || session.activity.attention > 0
+            || session.activity.running_commands > 0
             || self.unread.contains(&session.session_id)
     }
 

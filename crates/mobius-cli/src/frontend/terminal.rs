@@ -279,6 +279,22 @@ pub(super) fn truncate_bytes(value: &mut String, limit: usize) {
     value.truncate(value.floor_char_boundary(limit));
 }
 
+/// Counts supplement the session state, which already reports a pending approval.
+pub(super) fn chat_indicators(activity: &mobius_gateway::wire::SessionActivity) -> String {
+    use std::fmt::Write as _;
+    let mut text = String::new();
+    for (label, count) in [
+        ("pending questions", activity.attention),
+        ("running commands", activity.running_commands),
+    ] {
+        if count > 0 {
+            #[expect(clippy::expect_used, reason = "fmt::Write for String is infallible")]
+            write!(text, " · {label} {count}").expect("writing to String");
+        }
+    }
+    text
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -111,6 +111,7 @@ impl Workspace {
     fn footer_widgets(&self, cx: &Context<Self>) -> Vec<AnyElement> {
         self.footer_widget_items()
             .into_iter()
+            .filter(|(_, (widget, _))| widget.shows_slot_indicator())
             .map(|(key, (widget, _))| footer_pill(key.into(), widget, cx))
             .collect()
     }
@@ -165,14 +166,22 @@ impl Workspace {
 
 /// One primary footer widget as a pill that opens or runs it.
 fn footer_pill(key: Rc<str>, widget: &FrontendWidget, cx: &Context<Workspace>) -> AnyElement {
-    let mut item = pill(SharedString::from(format!("footer:{key}"))).label(footer_label(widget));
+    let item = pill(SharedString::from(format!("footer:{key}")));
+    let mut item = match widget.count.filter(|_| widget.icon_only) {
+        Some(count) => item.count(count),
+        None => item.label(footer_label(widget)),
+    };
     if let Some(progress) = widget.progress {
         item = item.progress(progress.completed.to_f32() / progress.total.max(1).to_f32());
     }
     if let Some(glyph) = known_symbol_icon(widget.symbol.as_ref()) {
         item = item.glyph(glyph);
     }
-    item.button(cx)
+    let button = item.button(cx);
+    #[cfg(feature = "snapshot")]
+    let button = button.child(crate::ui::snapshot::probe(format!("footer:{key}")));
+    button
+        .accessibility_label(footer_label(widget))
         .on_click(cx.listener(move |this, _, window, cx| {
             this.activate_footer_widget(&key, window, cx);
         }))

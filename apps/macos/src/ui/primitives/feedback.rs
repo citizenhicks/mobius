@@ -211,6 +211,33 @@ impl RenderOnce for Skeleton {
     }
 }
 
+/// A mark breathing while its work runs. Like every decoration it holds still under Reduce
+/// Motion and in an inactive window, so an open list never keeps a background window drawing.
+#[derive(IntoElement)]
+pub struct Breathing(AnyElement);
+
+pub fn breathing(mark: impl IntoElement) -> Breathing {
+    Breathing(mark.into_any_element())
+}
+
+impl RenderOnce for Breathing {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        use gpui::MotionExt as _;
+        let body = div().child(self.0);
+        if !motion::is_animating(window, cx) {
+            return body.into_any_element();
+        }
+        body.with_motion(
+            Motion::opacity(|at| {
+                let phase = motion::seconds(at) / motion::SHIMMER_PERIOD.as_secs_f64();
+                (0.7 + 0.3 * (phase * std::f64::consts::TAU).cos()).to_f32()
+            })
+            .max_fps(motion::AMBIENT_FPS),
+        )
+        .into_any_element()
+    }
+}
+
 /// Skeleton rows while a list loads.
 pub fn loading_rows(count: usize) -> Div {
     const WIDTHS: [f32; 3] = [0.6, 0.85, 0.7];

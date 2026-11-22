@@ -26,6 +26,7 @@ pub use process_group::ProcessGroupGuard;
 
 pub use backend::*;
 pub(crate) use background::BackgroundCommandPoll;
+pub use background::RUNNING_COMMANDS_WIDGET;
 pub use command_output::*;
 pub use manifest::*;
 pub use permissions::*;

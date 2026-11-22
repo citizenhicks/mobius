@@ -8,7 +8,7 @@ detail = "command"
 
 [bash.tool]
 name = "bash"
-description = "Run a sandboxed command under the active network policy. Waits up to timeout_ms for it to finish and returns its output and exit status. A command still running then keeps running in the background: the result has status running, the output so far, and a command_id to poll or stop with manage_command. Running does not mean success. A notice arrives when it finishes, so continue other work instead of sleeping or relaunching."
+description = "Run a sandboxed command under the active network policy. Waits up to timeout_ms for it to finish and returns its output and exit status. A command still running then keeps running in the background: the result has status running, the output so far, and a command_id to poll or stop with manage_command. Running does not mean success. Completion notifies this chat, even after the turn ends. Continue independent work, or end the turn if you only need to wait."
 
 [bash.tool.parameters]
 type = "object"

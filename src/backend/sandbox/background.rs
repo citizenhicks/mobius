@@ -1,5 +1,13 @@
 use crate::SessionId;
 use std::collections::BTreeMap;
+use std::mem::DropGuard;
+use std::time::Duration;
+
+use crate::middleware::FrontendEventSink;
+use crate::protocol::{
+    FrontendActionListItem, FrontendEvent, FrontendListItemState, FrontendSlot, FrontendSymbol,
+    FrontendWidget, FrontendWidgetContent,
+};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -13,14 +21,28 @@ use super::{
 };
 use crate::{Error, Result};
 
+/// Session footer widget reporting the sandbox's active commands.
+pub const RUNNING_COMMANDS_WIDGET: &str = "running-commands";
+
 const MAX_POLL_OUTPUT_BYTES: usize = 6_000;
 const MAX_ERROR_BYTES: usize = 512;
 const MAX_NOTICE_COMMAND_BYTES: usize = 200;
 const HELD: u8 = 1;
 const FINISHED: u8 = 2;
+const FAILED: u8 = 4;
+const MAX_RECENT_RESULTS: usize = 8;
+const USER_STOP: u8 = 8;
+pub(super) const STOP_COMMAND: &str = "stop_command";
+const SHOW_AFTER: Duration = Duration::from_millis(250);
 
 /// Receives the command ID and notice of a finished command whose ID the model holds.
 pub(super) type BackgroundListener = Arc<dyn Fn(&str, String) + Send + Sync>;
+
+struct SessionListener {
+    notice: BackgroundListener,
+    frontend: FrontendEventSink,
+    rows: Mutex<Vec<FrontendActionListItem>>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BackgroundCommandStatus {
@@ -53,7 +75,7 @@ pub(crate) struct BackgroundCommandPoll {
 
 pub(super) struct BackgroundCommands {
     limit: usize,
-    listeners: Mutex<BTreeMap<SessionId, BackgroundListener>>,
+    listeners: Mutex<BTreeMap<SessionId, Arc<SessionListener>>>,
     entries: Mutex<BTreeMap<Arc<str>, Entry>>,
 }
 
@@ -77,6 +99,9 @@ pub(super) struct StartingCommand<'a> {
     commands: &'a BackgroundCommands,
     id: Arc<str>,
     completion: oneshot::Receiver<()>,
+    preview: String,
+    state: Arc<AtomicU8>,
+    listener: Option<Arc<SessionListener>>,
     delivered: bool,
 }
 
@@ -86,9 +111,22 @@ impl StartingCommand<'_> {
         owner: &SessionId,
         initial_wait: std::time::Duration,
     ) -> Result<BackgroundCommandPoll> {
-        // Completion and an elapsed wait both continue to the poll, which reports the state.
-        if let Err(elapsed) = tokio::time::timeout(initial_wait, &mut self.completion).await {
-            tracing::trace!(%elapsed, "background command still running after its initial wait");
+        // Fast foreground commands never flash a pill or broadcast the chat catalog.
+        let delay = initial_wait.min(SHOW_AFTER);
+        let deadline = tokio::time::Instant::now() + initial_wait;
+        if tokio::time::timeout(delay, &mut self.completion)
+            .await
+            .is_err()
+        {
+            if let Some(listener) = &self.listener
+                && let Err(error) =
+                    listener.started(&self.id, std::mem::take(&mut self.preview), &self.state)
+            {
+                tracing::warn!(%error, "running command could not be displayed");
+            }
+            if initial_wait > delay {
+                let _elapsed = tokio::time::timeout_at(deadline, &mut self.completion).await;
+            }
         }
         let output = self.commands.poll(owner, &self.id).await?;
         self.delivered = true;
@@ -120,15 +158,24 @@ impl BackgroundCommands {
         Self {
             limit,
             listeners: Mutex::new(BTreeMap::new()),
-            entries: Mutex::new(BTreeMap::new()),
+            entries: Mutex::default(),
         }
     }
 
-    pub(super) fn listen(&self, owner: &SessionId, listener: BackgroundListener) -> Result<()> {
-        self.listeners
-            .lock()
-            .map_err(state_error)?
-            .insert(owner.share(), listener);
+    pub(super) fn listen(
+        &self,
+        owner: &SessionId,
+        notice: BackgroundListener,
+        frontend: FrontendEventSink,
+    ) -> Result<()> {
+        self.listeners.lock().map_err(state_error)?.insert(
+            owner.share(),
+            Arc::new(SessionListener {
+                notice,
+                frontend,
+                rows: Mutex::default(),
+            }),
+        );
         Ok(())
     }
 
@@ -212,7 +259,42 @@ impl BackgroundCommands {
         let state = Arc::new(AtomicU8::new(0));
         let task_state = Arc::clone(&state);
         let task_id = Arc::clone(&id);
+        // The transcript retains the complete script. Cap the text carried in live lists.
+        let prefix = crate::truncate_utf8(&command, 1024);
+        let preview = if prefix.len() == command.len() {
+            prefix.into()
+        } else {
+            format!("{prefix}…")
+        };
+        let activity = listener.as_ref().map(|listener| {
+            let listener = Arc::clone(listener);
+            let id = Arc::clone(&id);
+            // Aborts and panics must dismiss the pill just like a normal exit.
+            DropGuard::new(Arc::clone(&state), move |state| {
+                let previous = state.fetch_or(FINISHED, Ordering::Relaxed);
+                if previous & (USER_STOP | HELD | FINISHED) == (USER_STOP | HELD) {
+                    let text = super::text::DEFINITION
+                        .background_command_stopped
+                        .replace("{id}", &id);
+                    (listener.notice)(&id, text);
+                }
+                let outcome = if previous & FAILED != 0 || std::thread::panicking() {
+                    FrontendListItemState::Failed
+                } else if previous & FINISHED != 0 {
+                    FrontendListItemState::Completed
+                } else {
+                    FrontendListItemState::Interrupted
+                };
+                if let Err(error) = listener.finished(&id, outcome) {
+                    tracing::warn!(%error, "command result could not be displayed");
+                }
+            })
+        });
+        let notice = listener
+            .as_ref()
+            .map(|listener| Arc::clone(&listener.notice));
         let task = tokio::spawn(async move {
+            let _activity = activity;
             let result = backend
                 .execute(
                     &command,
@@ -223,8 +305,13 @@ impl BackgroundCommands {
                 )
                 .await;
             // One atomic handoff chooses either a final poll result or a later completion notice.
-            let held = task_state.fetch_or(FINISHED, Ordering::Relaxed) & HELD != 0;
-            if let Some(listener) = listener
+            let outcome = if result.as_ref().is_ok_and(|output| output.exit_code == 0) {
+                FINISHED
+            } else {
+                FINISHED | FAILED
+            };
+            let held = task_state.fetch_or(outcome, Ordering::Relaxed) & HELD != 0;
+            if let Some(listener) = notice
                 && held
             {
                 listener(&task_id, completion_notice(&task_id, &command, &result));
@@ -239,7 +326,7 @@ impl BackgroundCommands {
             Entry {
                 owner: owner.share(),
                 started: std::time::Instant::now(),
-                state,
+                state: Arc::clone(&state),
                 output,
                 task,
             },
@@ -249,6 +336,9 @@ impl BackgroundCommands {
             commands: self,
             id,
             completion,
+            preview,
+            state,
+            listener,
             delivered: false,
         })
     }
@@ -258,6 +348,7 @@ impl BackgroundCommands {
             let mut entries = self.entries.lock().map_err(state_error)?;
             let entry = owned_entry(&entries, owner, id)?;
             if !entry.task.is_finished()
+                && entry.state.load(Ordering::Relaxed) & USER_STOP == 0
                 && entry.state.fetch_or(HELD, Ordering::Relaxed) & FINISHED == 0
             {
                 return poll_running(id, &entry.output);
@@ -267,6 +358,16 @@ impl BackgroundCommands {
         completed(entry).await
     }
 
+    // The waiting tool still owns its result, including output produced before a user stop.
+    pub(super) fn request_user_stop(&self, owner: &SessionId, id: &str) -> Result<()> {
+        let entries = self.entries.lock().map_err(state_error)?;
+        let entry = owned_entry(&entries, owner, id)?;
+        entry.state.fetch_or(USER_STOP, Ordering::Relaxed);
+        entry.task.abort();
+        drop(entries);
+        Ok(())
+    }
+
     pub(super) async fn stop(&self, owner: &SessionId, id: &str) -> Result<BackgroundCommandPoll> {
         let entry = {
             let mut entries = self.entries.lock().map_err(state_error)?;
@@ -274,14 +375,7 @@ impl BackgroundCommands {
             entries.remove(id).ok_or_else(|| unknown(id))?
         };
         entry.task.abort();
-        let result = entry.task.await;
-        if result
-            .as_ref()
-            .is_err_and(tokio::task::JoinError::is_cancelled)
-        {
-            return stopped(&entry.output);
-        }
-        finish(&entry.output, result)
+        completed(entry).await
     }
 
     pub(super) async fn shutdown(&self, owner: &SessionId) -> Result<()> {
@@ -312,7 +406,7 @@ impl BackgroundCommands {
 
 impl Drop for BackgroundCommands {
     fn drop(&mut self) {
-        if let Ok(entries) = self.entries.get_mut() {
+        if let Ok(entries) = self.entries.lock() {
             for entry in entries.values() {
                 entry.task.abort();
             }
@@ -376,10 +470,6 @@ async fn completed(entry: Entry) -> Result<BackgroundCommandPoll> {
     finish(&entry.output, result)
 }
 
-fn stopped(output: &Arc<Mutex<BufferedOutput>>) -> Result<BackgroundCommandPoll> {
-    Ok(take_output(output)?.into_poll(BackgroundCommandStatus::Stopped))
-}
-
 fn finish(
     output: &Arc<Mutex<BufferedOutput>>,
     result: std::result::Result<Result<CommandOutput>, tokio::task::JoinError>,
@@ -411,6 +501,79 @@ fn finish(
             error: Some("background command task failed".into()),
             ..output.into_poll(BackgroundCommandStatus::Failed)
         }),
+    }
+}
+
+impl SessionListener {
+    fn started(&self, id: &Arc<str>, text: String, state: &AtomicU8) -> Result<()> {
+        let mut rows = self.rows.lock().map_err(state_error)?;
+        if state.load(Ordering::Relaxed) & FINISHED != 0 {
+            return Ok(());
+        }
+        rows.insert(
+            0,
+            FrontendActionListItem {
+                id: Arc::clone(id),
+                text,
+                outcome: None,
+                state: FrontendListItemState::InProgress,
+                actions: vec![crate::protocol::FrontendAction {
+                    id: format!("stop-{id}"),
+                    label: super::text::DEFINITION.stop_command_label.clone(), // rules-allow: each published action owns the manifest label
+                    symbol: FrontendSymbol::Custom("stop".into()),
+                    tone: crate::protocol::FrontendTone::Warning,
+                    op: crate::protocol::Op::command(
+                        super::MANIFEST.id,
+                        STOP_COMMAND,
+                        id.to_string(),
+                    ),
+                    input_from_label: false,
+                    editor: None,
+                }],
+            },
+        );
+        self.publish(rows)
+    }
+
+    fn finished(&self, id: &str, outcome: FrontendListItemState) -> Result<()> {
+        let mut rows = self.rows.lock().map_err(state_error)?;
+        let Some(index) = rows.iter().position(|row| row.id.as_ref() == id) else {
+            return Ok(()); // A fast foreground command was never displayed.
+        };
+        let mut row = rows.remove(index);
+        row.state = outcome;
+        row.actions.clear();
+        let active = rows.partition_point(|row| row.state == FrontendListItemState::InProgress);
+        rows.insert(active, row);
+        rows.truncate(active + MAX_RECENT_RESULTS);
+        self.publish(rows)
+    }
+
+    // The row lock orders snapshots, even when several commands exit together.
+    fn publish(&self, rows: std::sync::MutexGuard<'_, Vec<FrontendActionListItem>>) -> Result<()> {
+        let count = rows.partition_point(|row| row.state == FrontendListItemState::InProgress);
+        let title = &super::text::DEFINITION.running_commands_title;
+        let widget = FrontendWidget {
+            count: Some(count),
+            icon_only: true,
+            symbol: Some(FrontendSymbol::Custom("terminal".into())),
+            content: Some(FrontendWidgetContent::ActionList {
+                title: title.to_owned(),
+                items: rows.to_vec(),
+                actions: Vec::new(),
+            }),
+            ..FrontendWidget::new(
+                RUNNING_COMMANDS_WIDGET,
+                FrontendSlot::ComposerFooter,
+                format!("{title} · {count}"),
+            )
+        };
+        let result = (self.frontend)(FrontendEvent::Widget {
+            capability: super::MANIFEST.id.into(),
+            item: Arc::new(widget),
+        });
+        drop(rows);
+        result
     }
 }
 
@@ -530,6 +693,7 @@ mod tests {
                 Arc::new(move |_, notice| {
                     notices.send(notice).expect("notice receiver");
                 }),
+                Arc::new(|_| Ok(())),
             )
             .expect("listener");
         let start = || {
@@ -569,13 +733,54 @@ mod tests {
         start().expect("collected result releases capacity");
     }
 
+    #[test]
+    fn completed_rows_are_bounded_without_evicting_active_commands() {
+        let (sent, received) = std::sync::mpsc::channel();
+        let listener = SessionListener {
+            notice: Arc::new(|_, _| ()),
+            frontend: Arc::new(move |event| {
+                sent.send(event).expect("widget receiver");
+                Ok(())
+            }),
+            rows: Mutex::default(),
+        };
+        let state = AtomicU8::new(0);
+        listener
+            .started(&Arc::from("active"), "build".into(), &state)
+            .expect("active command");
+        for n in 0..=MAX_RECENT_RESULTS {
+            let id: Arc<str> = format!("done-{n}").into();
+            listener
+                .started(&id, id.to_string(), &state)
+                .expect("start");
+            listener
+                .finished(&id, FrontendListItemState::Completed)
+                .expect("finish");
+        }
+        let FrontendEvent::Widget { item, .. } = received.try_iter().last().expect("last update")
+        else {
+            panic!("command list")
+        };
+        assert_eq!(item.count, Some(1));
+        let Some(FrontendWidgetContent::ActionList { items, .. }) = &item.content else {
+            panic!("command rows")
+        };
+        assert_eq!(items.len(), 1 + MAX_RECENT_RESULTS);
+        assert_eq!(items[0].id.as_ref(), "active");
+        assert!(items[1..].iter().all(|row| row.id.as_ref() != "done-0"
+            && row.state == FrontendListItemState::Completed
+            && row.actions.is_empty()));
+    }
+
     #[tokio::test]
     async fn session_listeners_receive_only_their_held_commands() {
         let commands = BackgroundCommands::default();
         let (notices, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let (updates, mut widgets) = tokio::sync::mpsc::unbounded_channel();
         for name in ["session-a", "session-b"] {
             let session: SessionId = name.parse().expect("session ID");
             let notices = notices.clone();
+            let updates = updates.clone();
             commands
                 .listen(
                     &session,
@@ -584,11 +789,15 @@ mod tests {
                             .send((name, id.to_owned(), notice))
                             .expect("notice receiver");
                     }),
+                    Arc::new(move |event| {
+                        updates.send((name, event)).expect("widget receiver");
+                        Ok(())
+                    }),
                 )
                 .expect("listener");
         }
         let mut pending = Vec::new();
-        for name in ["session-a", "session-b"] {
+        for (name, count) in [("session-a", 1), ("session-b", 1), ("session-a", 2)] {
             let session: SessionId = name.parse().expect("session ID");
             let finish = Arc::new(Notify::new());
             let started = Arc::new(Notify::new());
@@ -612,8 +821,37 @@ mod tests {
                 .await
                 .expect("held");
             assert_eq!(held.status, BackgroundCommandStatus::Running);
+            let (owner, event) = widgets.try_recv().expect("start widget");
+            assert_eq!(owner, name);
+            let FrontendEvent::Widget { item, .. } = event else {
+                panic!("running widget")
+            };
+            assert_eq!(item.count, Some(count));
+            let Some(FrontendWidgetContent::ActionList { items, .. }) = &item.content else {
+                panic!("command list")
+            };
+            assert!(
+                items.iter().all(|item| item.text == name),
+                "another session's command leaked"
+            );
             pending.push((session, held.command_id.expect("command ID"), finish));
         }
+        let (session, stopped, _finish) = pending.pop().expect("second command in session-a");
+        assert!(
+            commands
+                .request_user_stop(&"session-b".parse().expect("session ID"), &stopped)
+                .is_err()
+        );
+        commands
+            .stop(&session, &stopped)
+            .await
+            .expect("stop command");
+        let (owner, event) = widgets.try_recv().expect("remaining command");
+        assert_eq!(owner, session.as_str());
+        let FrontendEvent::Widget { item, .. } = event else {
+            panic!("one command remains")
+        };
+        assert_eq!(item.count, Some(1));
         for (session, id, finish) in pending {
             finish.notify_one();
             let (owner, noticed_id, notice) =
@@ -625,6 +863,12 @@ mod tests {
             assert_eq!(noticed_id, id);
             assert!(notice.contains("exited with code 3"));
             commands.shutdown(&session).await.expect("shutdown");
+            let (owner, event) = widgets.try_recv().expect("last command removed");
+            assert_eq!(owner, session.as_str());
+            assert!(
+                matches!(event, FrontendEvent::Widget { item, .. } if item.count == Some(0)),
+                "finished commands stay in open details but clear the pill count"
+            );
             assert!(
                 !commands
                     .listeners
