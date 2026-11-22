@@ -16,20 +16,51 @@ use super::spring;
 /// text, slow enough that the eye follows the rows it moves.
 const GLIDE: f32 = 2400.;
 
-// ponytail: registries keep one float per row ever painted (bytes per chat); prune by
-// scope if long sessions ever show it.
+/// The most elements whose last painted height is kept. Past it, the half painted longest
+/// ago is forgotten: such a row is treated as never seen, which only matters if it is
+/// still waiting to grow in.
+const KEPT: usize = 4096;
+
+/// What a smoothed element last showed.
+struct Painted {
+    height: f32,
+    /// How far it had opened toward its content, for fading it in step.
+    opened: f32,
+    at: Instant,
+}
+
 thread_local! {
-    /// The last painted height of every smoothed element by id, and how far it has opened
-    /// toward its content, for fading it in step.
-    static PAINTED: RefCell<HashMap<SharedString, (f32, f32)>> = RefCell::new(HashMap::new());
+    /// The last painted state of every smoothed element by id.
+    static PAINTED: RefCell<HashMap<SharedString, Painted>> = RefCell::new(HashMap::new());
     /// Heights an element starts from the next time it lays out.
     static HANDED: RefCell<HashMap<SharedString, f32>> = RefCell::new(HashMap::new());
+}
+
+/// Records what `id` shows this frame, forgetting the stalest half once `KEPT` is reached.
+fn remember(id: &SharedString, height: f32, opened: f32) {
+    PAINTED.with(|map| {
+        let mut map = map.borrow_mut();
+        if map.len() >= KEPT && !map.contains_key(id) {
+            let mut painted: Vec<Instant> = map.values().map(|painted| painted.at).collect();
+            let (_, median, _) = painted.select_nth_unstable(KEPT / 2);
+            let median = *median;
+            map.retain(|_, painted| painted.at > median);
+        }
+        map.insert(
+            SharedString::clone(id),
+            Painted {
+                height,
+                opened,
+                at: Instant::now(),
+            },
+        );
+    });
 }
 
 /// How far `id` has opened toward its content, from 0 to 1, as last painted; 1 when settled
 /// or never seen. Content fades with it.
 pub fn progress(id: &str) -> f32 {
-    PAINTED.with(|map| map.borrow().get(id).map_or(1., |(_, opened)| *opened))
+    PAINTED.with(|map| map.borrow().get(id).map_or(1., |painted| painted.opened))
 }
 
 /// Whether `id` was ever painted, so a row scrolled back into view does not grow in again.
@@ -40,7 +71,11 @@ fn seen(id: &str) -> bool {
 /// Whether `id` still shows: open, about to start from handed height, or still closing.
 pub fn visible(id: &str) -> bool {
     HANDED.with(|map| map.borrow().contains_key(id))
-        || PAINTED.with(|map| map.borrow().get(id).is_some_and(|(height, _)| *height > 0.))
+        || PAINTED.with(|map| {
+            map.borrow()
+                .get(id)
+                .is_some_and(|painted| painted.height > 0.)
+        })
 }
 
 /// `to` starts at the combined height `from` last had, less `less`, as when a turn's steps
@@ -48,11 +83,11 @@ pub fn visible(id: &str) -> bool {
 pub fn hand_off<'a>(from: impl IntoIterator<Item = &'a str>, to: SharedString, less: f32) {
     let height: f32 = PAINTED.with(|map| {
         from.into_iter()
-            .filter_map(|id| map.borrow().get(id).map(|(height, _)| *height))
+            .filter_map(|id| map.borrow().get(id).map(|painted| painted.height))
             .sum()
     });
     let base = PAINTED
-        .with(|map| map.borrow().get(&to).map(|(height, _)| *height))
+        .with(|map| map.borrow().get(&to).map(|painted| painted.height))
         .unwrap_or(0.);
     if height - less > 0. {
         HANDED.with(|map| map.borrow_mut().insert(to, base + height - less));
@@ -128,7 +163,7 @@ impl gpui::Element for Smooth {
         });
         // A body that closed all the way reopens from nothing.
         let closed = PAINTED
-            .with(|map| map.borrow().get(&self.id).map(|(height, _)| *height))
+            .with(|map| map.borrow().get(&self.id).map(|painted| painted.height))
             .filter(|height| *height == 0.);
         let shown = handed
             .or(held)
@@ -210,10 +245,7 @@ impl gpui::Element for Smooth {
         } else {
             1.
         };
-        PAINTED.with(|map| {
-            map.borrow_mut()
-                .insert(SharedString::clone(&self.id), (height, opened))
-        });
+        remember(&self.id, height, opened);
         shown.is_some_and(|shown| shown != natural)
     }
 
@@ -234,5 +266,20 @@ impl gpui::Element for Smooth {
         } else {
             self.child.paint(window, cx);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn painted_heights_stay_bounded_and_keep_the_rows_painted_last() {
+        for row in 0..KEPT * 3 {
+            remember(&SharedString::from(format!("row:{row}")), 10., 1.);
+        }
+        assert!(PAINTED.with(|map| map.borrow().len()) <= KEPT);
+        assert!(seen(&format!("row:{}", KEPT * 3 - 1)));
+        assert!(!seen("row:0"));
     }
 }

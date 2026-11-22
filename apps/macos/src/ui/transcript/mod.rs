@@ -18,6 +18,6 @@ pub(in crate::ui) use disclosure::BlockLine;
 pub(in crate::ui) use issue::{IssueAction, ProviderIssue};
 pub(in crate::ui) use links::StreamingMarkdown;
 pub(super) use scroll::TranscriptScroll;
-pub(in crate::ui) use scroll::{HISTORY, TurnMotion};
+pub(in crate::ui) use scroll::{GlideTarget, HISTORY, TurnMotion};
 
 pub(in crate::ui) use rows::{row_motion_id, tail_slack_id};

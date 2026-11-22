@@ -174,9 +174,21 @@ pub(super) async fn capture_clicks(
     }
 }
 
+/// Sends `text` from the composer, as the reader would.
+fn send_from_window(text: String, this: &WeakEntity<Workspace>, cx: &mut AsyncWindowContext) {
+    report(
+        "watch send",
+        this.update_in(cx, |this, window, cx| {
+            this.composer
+                .update(cx, |input, cx| input.set_value(text, window, cx));
+            this.send_message(window, cx);
+        }),
+    );
+}
+
 /// Logs every chat list item's painted position each frame for `MOBIUS_SNAPSHOT_WATCH_MS`,
 /// and keeps every `MOBIUS_SNAPSHOT_WATCH_EVERY`th frame as a PNG, so a live turn's motion
-/// can be checked for jumps.
+/// can be checked for jumps. `MOBIUS_SNAPSHOT_WATCH_SEND` sends that text from this window.
 #[expect(
     clippy::future_not_send,
     reason = "it drives the window on GPUI's foreground executor, whose context is not Send"
@@ -209,6 +221,10 @@ async fn watch_live(
         reason = "a wheel step of a few dozen points"
     )]
     let scroll_step = env("MOBIUS_SNAPSHOT_WATCH_SCROLL_STEP", 60) as f32;
+    // A message sent from this window, as the reader would, at `..._SEND_AT` ms.
+    let mut send = std::env::var("MOBIUS_SNAPSHOT_WATCH_SEND")
+        .ok()
+        .map(|text| (env("MOBIUS_SNAPSHOT_WATCH_SEND_AT", 3_000), text));
     let started = std::time::Instant::now();
     let mut frame = 0_u64;
     let mut last = String::new();
@@ -218,6 +234,9 @@ async fn watch_live(
         let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         // A scripted wheel toward the top, for watching earlier history page in.
         let scrolling = scroll_at.is_some_and(|at| elapsed >= at && elapsed < at + scroll_for);
+        if let Some((_, text)) = send.take_if(|(at, _)| elapsed >= *at) {
+            send_from_window(text, this, cx);
+        }
         report(
             "watch draw",
             cx.update(|window, cx| {

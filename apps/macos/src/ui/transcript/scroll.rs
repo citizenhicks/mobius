@@ -32,6 +32,8 @@ pub(in crate::ui) struct TranscriptScroll {
     /// move it. Any newer scroll cancels it, even one that has not moved the list yet.
     settling: Option<(ListOffset, Pixels)>,
     list: Option<ListState>,
+    /// The glide under way; dropping it stops it where it is.
+    glide: Option<gpui::Task<()>>,
     /// The list items in view, for the message rail.
     pub(in crate::ui) visible: Range<usize>,
 }
@@ -138,8 +140,10 @@ impl Workspace {
                     && range.start <= 1;
                 let updated = entity.update(cx, |this, cx| {
                     if let Some(state) = this.transcript_scrolls.get_mut(&scope) {
-                        // The reader moved on from the row a page was going to restore.
+                        // The reader moved on from the row a page was going to restore,
+                        // and from wherever a glide was taking them.
                         state.cancel_history_restore();
+                        state.glide = None;
                         if state.visible != range {
                             state.visible = range;
                             cx.notify();
@@ -234,7 +238,12 @@ impl Workspace {
         } else {
             px(0.)
         };
-        let following = list.is_following_tail() || (chat && self.glide_room() > px(0.));
+        // A message resting at the top with its answer filling in below is at the latest.
+        let following = list.is_following_tail()
+            || (chat
+                && self
+                    .glide_row()
+                    .is_some_and(|row| self.row_rests(scope, row, space::L + header)));
         let has_items = list.item_count() > 0;
         let scope: Rc<str> = scope.into();
         div()
@@ -272,7 +281,9 @@ impl Workspace {
                             .border_1()
                             .border_color(self.palette.separator)
                             .on_click(cx.listener(
-                                move |this, _, _, cx| this.glide_to_latest(Rc::clone(&scope), cx),
+                                move |this, _, _, cx| {
+                                    this.glide_to(Rc::clone(&scope), GlideTarget::Latest, cx);
+                                },
                             )),
                         ),
                 )
@@ -280,104 +291,112 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// Scrolls the chat list on the shared spring until item `index` rests `rest` below the
-    /// top of the view; Reduce Motion goes there at once.
-    pub(in crate::ui) fn glide_item_to_top(
-        &self,
-        scope: Rc<str>,
-        index: usize,
-        rest: Pixels,
-        cx: &Context<Self>,
-    ) {
-        let list = move |this: &Self| {
-            this.transcript_scrolls.get(&*scope).and_then(|state| {
-                let list = state.list.as_ref()?;
-                Some(ListState::clone(list))
+    /// Whether `row` is gliding to, or resting at, `rest` below the top of `scope`'s list.
+    fn row_rests(&self, scope: &str, row: &str, rest: Pixels) -> bool {
+        let Some(state) = self.transcript_scrolls.get(scope) else {
+            return false;
+        };
+        state.glide.is_some()
+            || state.list.as_ref().is_some_and(|list| {
+                state
+                    .rows
+                    .iter()
+                    .position(|id| **id == *row)
+                    .and_then(|index| list.bounds_for_item(index))
+                    .is_some_and(|bounds| {
+                        (bounds.top() - list.viewport_bounds().top() - rest).abs() < px(2.)
+                    })
             })
-        };
-        let Some(start) = list(self) else {
-            return;
-        };
-        start.pause_following_tail();
-        let still = cx.reduce_motion();
-        cx.spawn(async move |this, cx| {
-            let (mut velocity, mut last) = (0., motion::now());
-            // ponytail: two seconds at most; the row is unmeasured for its first frame.
-            for _ in 0..120 {
-                cx.background_executor().timer(motion::FRAME_60).await;
-                let done = this.update(cx, |this, cx| {
-                    let Some(list) = list(this) else {
-                        return true;
-                    };
-                    let Some(row) = list.bounds_for_item(index) else {
-                        cx.notify();
-                        return false;
-                    };
-                    let left = f32::from(row.top() - list.viewport_bounds().top() - rest);
-                    let now = motion::now();
-                    let (next, speed) = if still {
-                        (0., 0.)
-                    } else {
-                        motion::spring::step(left, velocity, 0., now - last)
-                    };
-                    // Most of a screen is a long way for a spring: it is travelled at a
-                    // pace the eye follows, and eases in only over the last stretch.
-                    let reach = TRAVEL * (now - last).as_secs_f32().min(0.05);
-                    let (next, speed) = if (left - next).abs() > reach {
-                        (left - reach.copysign(left), -TRAVEL.copysign(left))
-                    } else {
-                        (next, speed)
-                    };
-                    (velocity, last) = (speed, now);
-                    list.scroll_by(px(left - next));
-                    cx.notify();
-                    next == 0.
-                });
-                if done.unwrap_or(true) {
-                    break;
-                }
-            }
-        })
-        .detach();
     }
 
-    /// Scrolls the chat list down to the latest message on the shared spring, then follows
-    /// the tail again; Reduce Motion goes there at once.
-    fn glide_to_latest(&mut self, scope: Rc<str>, cx: &mut Context<Self>) {
-        if let Some(state) = self.transcript_scrolls.get_mut(&*scope) {
-            state.cancel_history_restore();
+    /// Scrolls `scope`'s list to `target` on the shared spring. One glide runs at a time:
+    /// a new one replaces it, and the reader's own scrolling ends it where it is. Reduce
+    /// Motion goes there at once.
+    pub(in crate::ui) fn glide_to(
+        &mut self,
+        scope: Rc<str>,
+        target: GlideTarget,
+        cx: &mut Context<Self>,
+    ) {
+        if matches!(target, GlideTarget::Latest) {
+            // The end of the list is its last row, not the room a gliding turn kept below.
+            self.release_glide_room();
         }
-        let list = move |this: &Self| {
-            this.transcript_scrolls.get(&*scope).and_then(|state| {
-                let list = state.list.as_ref()?;
-                Some(ListState::clone(list))
-            })
-        };
-        let Some(start) = list(self) else {
+        let Some(state) = self.transcript_scrolls.get_mut(&*scope) else {
             return;
         };
+        state.cancel_history_restore();
+        state.glide = None;
+        let Some(list) = state.list.as_ref() else {
+            return;
+        };
+        let list = ListState::clone(list);
+        if matches!(target, GlideTarget::Row(..)) {
+            list.pause_following_tail();
+        }
         if cx.reduce_motion() {
-            start.set_follow_mode(FollowMode::Tail);
+            match &target {
+                GlideTarget::Latest => list.set_follow_mode(FollowMode::Tail),
+                GlideTarget::Row(id, _) => {
+                    if let Some(item_ix) = state.rows.iter().position(|row| row == id) {
+                        list.scroll_to(ListOffset {
+                            item_ix,
+                            offset_in_item: px(0.),
+                        });
+                    }
+                }
+            }
             cx.notify();
             return;
         }
-        cx.spawn(async move |this, cx| {
+        state.glide = Some(cx.spawn(async move |this, cx| {
+            let key = scope;
             let (mut velocity, mut last) = (0., motion::now());
             loop {
                 cx.background_executor().timer(motion::FRAME_60).await;
                 let done = this.update(cx, |this, cx| {
-                    let Some(list) = list(this) else {
+                    let Some(state) = this.transcript_scrolls.get(&*key) else {
                         return true;
                     };
-                    let left = f32::from(
-                        list.max_offset_for_scrollbar().y + list.scroll_px_offset_for_scrollbar().y,
-                    );
+                    let Some(list) = state.list.as_ref() else {
+                        return true;
+                    };
+                    let left = match &target {
+                        GlideTarget::Latest => f32::from(
+                            list.max_offset_for_scrollbar().y
+                                + list.scroll_px_offset_for_scrollbar().y,
+                        ),
+                        GlideTarget::Row(id, rest) => {
+                            // By id: rows may arrive above it while the glide runs.
+                            let Some(item_ix) = state.rows.iter().position(|row| row == id) else {
+                                return true;
+                            };
+                            let Some(row) = list.bounds_for_item(item_ix) else {
+                                // Too far away to be laid out: the list goes to it, and
+                                // the glide settles the rest once it is measured.
+                                list.scroll_to(ListOffset {
+                                    item_ix,
+                                    offset_in_item: px(0.),
+                                });
+                                cx.notify();
+                                return false;
+                            };
+                            f32::from(row.top() - list.viewport_bounds().top() - *rest)
+                        }
+                    };
                     let now = motion::now();
-                    let (next, speed) = motion::spring::step(left, velocity, 0., now - last);
+                    let (mut next, mut speed) =
+                        motion::spring::step(left, velocity, 0., now - last);
+                    // Most of a screen is a long way for a spring: a row is brought up at
+                    // a pace the eye follows, easing in only over the last stretch.
+                    let reach = TRAVEL * (now - last).as_secs_f32().min(0.05);
+                    if matches!(target, GlideTarget::Row(..)) && (left - next).abs() > reach {
+                        (next, speed) = (left - reach.copysign(left), -TRAVEL.copysign(left));
+                    }
                     (velocity, last) = (speed, now);
                     list.scroll_by(px(left - next));
                     cx.notify();
-                    if next == 0. {
+                    if next == 0. && matches!(target, GlideTarget::Latest) {
                         list.set_follow_mode(FollowMode::Tail);
                     }
                     next == 0.
@@ -386,8 +405,15 @@ impl Workspace {
                     break;
                 }
             }
-        })
-        .detach();
+            if let Err(error) = this.update(cx, |this, cx| {
+                if let Some(state) = this.transcript_scrolls.get_mut(&*key) {
+                    state.glide = None;
+                }
+                cx.notify();
+            }) {
+                tracing::debug!(%error, "the workspace closed before a glide ended");
+            }
+        }));
     }
 
     /// Scrolls the chat list so the first row whose id ends with `suffix` starts `offset`
@@ -428,6 +454,14 @@ impl Workspace {
             });
         }
     }
+}
+
+/// Where a glide of a transcript's list ends.
+pub(in crate::ui) enum GlideTarget {
+    /// The end of the list, which is then followed again.
+    Latest,
+    /// The row with this id, resting this far below the top of the view.
+    Row(Arc<str>, Pixels),
 }
 
 /// How the transcript treats a turn the reader starts (Settings → Appearance).

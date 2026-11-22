@@ -413,6 +413,7 @@ impl Workspace {
         let text = self.composer.read(cx).value().to_string();
         if self.draft_selected() && self.client.link.is_ready() && !text.trim().is_empty() {
             self.stop_dictation();
+            self.note_sent_message();
             self.create_draft(DraftIntent::Message(text), cx);
             return;
         }
@@ -554,6 +555,7 @@ impl Workspace {
         match self.enqueue(gateway::submit(session_id.share(), Op::Message { message })) {
             Ok(()) => {
                 self.take_reply(session_id);
+                self.note_sent_message();
                 cx.notify();
                 true
             }

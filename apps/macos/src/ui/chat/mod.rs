@@ -83,8 +83,9 @@ pub(in crate::ui) struct ChatUi {
     /// The answer row kept back while it may still join the turn's work, until when, and
     /// the timer that shows it.
     answer_hold: Option<(Arc<str>, std::time::Instant, Task<()>)>,
-    /// The reader's latest message in the chat on screen, so a newly sent one is noticed.
-    turn_mark: Option<(Option<SessionId>, SharedString)>,
+    /// A message sent from here whose row has not appeared yet: the chat it was sent in
+    /// (none for a new chat), the latest message at that moment, and when.
+    sent: Option<(Option<SessionId>, Option<SharedString>, std::time::Instant)>,
     /// The message gliding to the top, or resting there while its answer fills the screen.
     glide: Option<(SharedString, Pixels)>,
     /// The history page on its way, so each earlier turn is asked for once.
@@ -645,7 +646,7 @@ impl Workspace {
             return div().into_any_element();
         };
         let list = gpui::ListState::clone(list);
-        self.glide_turn(&scope, &list, cx);
+        self.settle_sent_turn(&scope, &list, cx);
         let rail = self.message_rail(&scope, cx);
         let overlay = div()
             .absolute()
@@ -670,48 +671,76 @@ impl Workspace {
             .map_or(px(0.), |(_, room)| *room)
     }
 
-    /// Gliding (Settings → Appearance), a message the reader sends goes to the top at once
-    /// and the answer fills the screen under it, after which the end is followed as usual.
-    fn glide_turn(&mut self, scope: &str, list: &gpui::ListState, cx: &Context<Self>) {
-        if self.turn_motion != transcript::TurnMotion::Glide {
+    /// The message resting at the top while its answer fills the screen under it.
+    pub(in crate::ui) fn glide_row(&self) -> Option<&str> {
+        self.chat_ui.glide.as_ref().map(|(row, _)| &**row)
+    }
+
+    /// Gives back the room a gliding turn kept below its message.
+    pub(in crate::ui) fn release_glide_room(&mut self) {
+        self.chat_ui.glide = None;
+    }
+
+    /// Remembers that a message was just sent from this window, so its row is the one the
+    /// transcript moves for: not a message arriving from another device.
+    pub(in crate::ui) fn note_sent_message(&mut self) {
+        self.chat_ui.sent = Some((
+            self.client
+                .state
+                .selected_session_id
+                .as_ref()
+                .map(SessionId::share),
+            self.latest_turn_mark().map(|(id, _)| id),
+            std::time::Instant::now(),
+        ));
+    }
+
+    /// Moves the transcript for a message sent from here once its row appears: following
+    /// returns to the end, gliding (Settings → Appearance) takes the message to the top and
+    /// lets the answer fill the screen under it, after which the end is followed as usual.
+    fn settle_sent_turn(&mut self, scope: &str, list: &gpui::ListState, cx: &mut Context<Self>) {
+        // A send the gateway held back, or one that failed, never shows a row.
+        const WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+        let gliding = self.turn_motion == transcript::TurnMotion::Glide;
+        if !gliding && self.chat_ui.glide.take().is_some() {
             // The setting changed under a gliding turn.
-            if self.chat_ui.glide.take().is_some() {
-                list.set_follow_mode(gpui::FollowMode::Tail);
-            }
-            return;
+            list.set_follow_mode(gpui::FollowMode::Tail);
         }
-        // A chat that is still loading changes its latest message without one being sent.
-        if self.client.state.replaying {
-            return;
-        }
-        let Some((id, item)) = self.latest_turn_mark() else {
-            return;
-        };
-        let session = self.client.state.selected_session_id.as_ref();
         let header = if self.active_conversation_bot().is_some() {
             height::BOT_CHAT_HEADER
         } else {
             px(0.)
         };
         let rest = space::L + header;
-        let known = self
-            .chat_ui
-            .turn_mark
-            .as_ref()
-            .filter(|(known, _)| known.as_ref() == session)
-            .map(|(_, known)| known == &id);
-        if known != Some(true) {
-            self.chat_ui.turn_mark =
-                Some((session.map(SessionId::share), SharedString::clone(&id)));
-            if known == Some(false) {
+        let session = self.client.state.selected_session_id.as_ref();
+        let arrived = match &self.chat_ui.sent {
+            Some((_, _, at)) if at.elapsed() > WAIT => {
+                self.chat_ui.sent = None;
+                None
+            }
+            // A chat that is still loading changes its latest message on its own.
+            Some((from, before, _)) if !self.client.state.replaying => self
+                .latest_turn_mark()
+                .filter(|(id, _)| {
+                    (from.is_none() || from.as_ref() == session) && before.as_ref() != Some(id)
+                })
+                .map(|(id, _)| id),
+            _ => None,
+        };
+        if let Some(id) = arrived {
+            self.chat_ui.sent = None;
+            if gliding {
                 let room = list.viewport_bounds().size.height;
-                self.chat_ui.glide = Some((SharedString::clone(&id), room));
-                self.glide_item_to_top(scope.into(), item, rest, cx);
-            } else {
-                // Another chat, or this one just opened: nothing was sent while it was read.
-                self.chat_ui.glide = None;
+                let row = Arc::from(&*id);
+                self.chat_ui.glide = Some((id, room));
+                self.glide_to(scope.into(), transcript::GlideTarget::Row(row, rest), cx);
+            } else if !list.is_following_tail() {
+                self.glide_to(scope.into(), transcript::GlideTarget::Latest, cx);
             }
         }
+        let Some((id, item)) = self.latest_turn_mark() else {
+            return;
+        };
         // The answer reached the foot of the screen: the room below it has been used up,
         // so the end is followed from exactly where it stands.
         if let Some((_, room)) = self.chat_ui.glide.as_ref().filter(|(turn, _)| turn == &id)
@@ -733,9 +762,9 @@ impl Workspace {
         }
     }
 
-    /// Text a working turn writes between its steps arrives as an answer under the Worked
-    /// row and joins that row's work when the next step starts, usually a moment later.
-    /// A fresh one is kept back for `ANSWER_HOLD`, so only text that stays is shown.
+    /// Text a running turn writes before or between its steps arrives as an answer and
+    /// joins the Worked row when the next step starts, usually a moment later. A fresh one
+    /// is kept back for `ANSWER_HOLD`, so only text that stays is shown.
     fn hold_interim_answer(&mut self, cx: &Context<Self>) {
         const ANSWER_HOLD: std::time::Duration = std::time::Duration::from_millis(500);
         let transcript = &self.client.state.transcript;
@@ -746,7 +775,7 @@ impl Workspace {
                 matches!(
                     row.kind,
                     mobius_gateway::wire::TranscriptRowKind::Entry { .. }
-                ) && self.live_worked_row().is_some()
+                ) && self.turn_running()
                     && transcript.row_items(row).all(|entry| {
                         !entry.terminal
                             && matches!(
