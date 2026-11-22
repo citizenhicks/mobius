@@ -9,9 +9,7 @@ use std::time::Duration;
 use mobius::SessionId;
 use mobius::protocol::SessionFileReference;
 
-use mobius_gateway::client::{
-    ConnectOptions, Endpoint, GatewayClient, GatewayEvents, GatewaySender,
-};
+use mobius_gateway::client::{ConnectOptions, Endpoint, GatewayClient};
 use mobius_gateway::config::state_dir;
 use mobius_gateway::gateway_accounts::{
     GatewayAccounts, configured_token, dashboard_gateway_endpoint, missing_local_token,
@@ -21,6 +19,7 @@ use mobius_gateway::{Error, Result};
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
 
+use super::requests::{Link, Usage};
 use crate::numeric::ToFloat;
 
 #[derive(Clone, Default, PartialEq, Eq, Debug)]
@@ -112,6 +111,10 @@ enum Command {
     Connect(Connection),
     Send(Box<ClientMessage>),
     Transfer(super::files::Transfer),
+    Recent {
+        session_id: SessionId,
+        since: Option<i64>,
+    },
     OpenDesktop(tokio::sync::oneshot::Sender<std::result::Result<super::DesktopViewer, String>>),
 }
 
@@ -285,10 +288,7 @@ impl Gateway {
     ///
     /// When the connection's queue is full or the connection has closed.
     pub fn recent_history(&self, session_id: SessionId, since: Option<i64>) -> Result<()> {
-        self.enqueue(Command::Transfer(super::files::Transfer::Recent {
-            session_id,
-            since,
-        }))
+        self.enqueue(Command::Recent { session_id, since })
     }
 
     /// Removes an uploaded attachment the draft no longer carries.
@@ -360,6 +360,7 @@ fn admit(endpoint: Endpoint) -> Result<Endpoint> {
 }
 
 const CLOUD_OPEN_TIMEOUT: Duration = Duration::from_secs(120);
+pub(super) const MAX_BACKGROUND_JOBS: usize = 64;
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
 enum Awaited {
@@ -394,7 +395,7 @@ impl Wait {
 /// The socket side of the gateway: one connection, its transfers, and the retry timer.
 struct Transport {
     updates: mpsc::Sender<Update>,
-    connection: Option<(GatewaySender, GatewayEvents)>,
+    connection: Option<Link>,
     dial: Option<Dial>,
     waiting: Option<Wait>,
     /// File transfers to the connected gateway, on their own connection.
@@ -475,10 +476,10 @@ async fn next_dial(dial: &mut Option<Dial>) -> DialResult {
 }
 
 async fn next_frame(
-    connection: &mut Option<(GatewaySender, GatewayEvents)>,
+    connection: &mut Option<Link>,
 ) -> Result<Option<mobius_gateway::wire::ServerFrame>> {
     match connection {
-        Some((_, events)) => events.next().await,
+        Some(link) => link.next().await,
         None => std::future::pending().await,
     }
 }
@@ -584,6 +585,7 @@ impl Transport {
                 }
                 Ok(())
             }
+            Command::Recent { session_id, since } => self.recent_history(session_id, since).await,
             Command::Transfer(transfer) => {
                 if let Some(error) = transfer.start(
                     self.transfers.as_ref(),
@@ -595,6 +597,47 @@ impl Transport {
                 }
                 Ok(())
             }
+        }
+    }
+
+    async fn recent_history(&mut self, session_id: SessionId, since: Option<i64>) -> Sent {
+        let endpoint = self
+            .transfers
+            .as_ref()
+            .map_or_else(String::new, |transfers| transfers.endpoint().to_string());
+        if let Some(link) = &self.connection
+            && self.tasks.len() < MAX_BACKGROUND_JOBS
+        {
+            let requests = Arc::clone(&link.requests);
+            let slots = Arc::clone(&self.slots);
+            let updates = self.updates.clone(); // rules-allow: the recap task shares the update channel
+            self.tasks.spawn(async move {
+                let Ok(_permit) = slots.acquire_owned().await else {
+                    return;
+                };
+                let result = super::recap::load(&requests, &session_id, since)
+                    .await
+                    .map_err(|error| super::describe(&error));
+                if updates
+                    .send(Update::Recent {
+                        endpoint,
+                        session_id,
+                        result,
+                    })
+                    .await
+                    .is_err()
+                {
+                    tracing::trace!("window closed during recap");
+                }
+            });
+            Ok(())
+        } else {
+            self.emit(Update::Recent {
+                endpoint,
+                session_id,
+                result: Err("Gateway unavailable for this recap.".into()),
+            })
+            .await
         }
     }
 
@@ -630,7 +673,7 @@ impl Transport {
                 {
                     self.transfers = Some(super::files::Transfers::new(address, token));
                 }
-                self.connection = Some(client.into_parts());
+                self.connection = Some(Link::new(client, Usage::Shared));
                 let session_request = self.next.pipelined.last().and_then(correlated_request);
                 self.waiting = Some(Wait::new(Awaited::Ready { session_request }));
                 self.emit(Update::Connected(label)).await?;
@@ -935,9 +978,11 @@ impl Transport {
         let result = match &self.connection {
             // GatewaySender closes its writer when a write is cancelled; never replay a
             // command whose frame may already have reached the gateway.
-            Some((sender, _)) => tokio::time::timeout(RESPONSE_TIMEOUT, sender.send(message))
-                .await
-                .unwrap_or_else(|_| Err(Error::Protocol("Gateway request timed out.".into()))),
+            Some(link) => {
+                tokio::time::timeout(RESPONSE_TIMEOUT, link.requests.sender.send(message))
+                    .await
+                    .unwrap_or_else(|_| Err(Error::Protocol("Gateway request timed out.".into())))
+            }
             None => Err(Error::Protocol(
                 "Connect to a gateway before sending.".into(),
             )),
@@ -1209,6 +1254,100 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn recap_and_foreground_history_share_one_socket_without_stealing_replies() {
+        use mobius_gateway::wire::{
+            ClientFrame, ClientMessage, ServerFrame, ServerMessage, TranscriptPage, read_frame,
+            write_frame,
+        };
+
+        let (listener, endpoint) = crate::fixture::listener().await;
+        let server = tokio::spawn(async move {
+            // This listener accepts exactly one authenticated connection.
+            let (mut reader, mut writer) = crate::fixture::authenticate(listener).await;
+            for _ in 0..2 {
+                let request = read_frame::<ClientFrame>(&mut reader)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let ClientMessage::GetSessionHistory {
+                    request_id,
+                    session_id,
+                    before: None,
+                } = request.message
+                else {
+                    panic!("unexpected request")
+                };
+                let item = crate::fixture::user_message("item", &session_id);
+                let page = TranscriptPage {
+                    items: vec![std::sync::Arc::new(item)],
+                    ..Default::default()
+                };
+                let reply = ServerMessage::SessionHistory {
+                    request_id,
+                    session_id,
+                    page,
+                    next: None,
+                };
+                write_frame(&mut writer, &ServerFrame::new(reply))
+                    .await
+                    .unwrap();
+            }
+            reader
+        });
+        let client = super::GatewayClient::connect(&endpoint, "test", super::APP_CLIENT)
+            .await
+            .unwrap();
+        let (updates, mut output) = tokio::sync::mpsc::channel(8);
+        let mut transport = transport(updates);
+        transport
+            .connected(Ok((endpoint, "test".into(), client)))
+            .await
+            .unwrap();
+        let (commands, incoming) = tokio::sync::mpsc::channel(2);
+        let actor = tokio::spawn(super::run_transport(incoming, transport));
+        commands
+            .send(Command::Recent {
+                session_id: SessionId::new("background").unwrap(),
+                since: None,
+            })
+            .await
+            .unwrap();
+        commands
+            .send(Command::Send(Box::new(ClientMessage::GetSessionHistory {
+                request_id: "visible".into(),
+                session_id: SessionId::new("foreground").unwrap(),
+                before: None,
+            })))
+            .await
+            .unwrap();
+        let read_both = async {
+            let mut foreground = false;
+            let mut recap = false;
+            while !foreground || !recap {
+                match output.recv().await.expect("actor update") {
+                    Update::Message(message) => {
+                        if let ServerMessage::SessionHistory { request_id, .. } = *message {
+                            assert_eq!(&*request_id, "visible");
+                            foreground = true;
+                        }
+                    }
+                    Update::Recent { result, .. } => {
+                        assert_eq!(result.unwrap().last_message.as_deref(), Some("background"));
+                        recap = true;
+                    }
+                    _ => {}
+                }
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(5), read_both)
+            .await
+            .unwrap();
+        drop(commands);
+        actor.await.unwrap().unwrap();
+        drop(server.await.unwrap());
+    }
+
+    #[tokio::test]
     async fn authenticated_socket_that_never_becomes_ready_reconnects() {
         let (transport, mut output, _frames, server) = connected_transport().await;
         let (commands, task) = expire_wait(transport);
@@ -1394,7 +1533,7 @@ mod tests {
             .unwrap();
         let (updates, mut output) = tokio::sync::mpsc::channel(2);
         let mut transport = transport(updates);
-        transport.connection = Some(client.into_parts());
+        transport.connection = Some(super::Link::new(client, super::Usage::Shared));
         // GatewaySender deterministically rejects a second authentication message.
         transport
             .send(super::ClientMessage::Authenticate {

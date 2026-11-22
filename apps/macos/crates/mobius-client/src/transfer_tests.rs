@@ -332,6 +332,7 @@ async fn transfer_answers_arrive_behind_any_number_of_unrelated_frames() {
     let transfers = Transfers::new(endpoint, "test-only".into());
     let link = transfers.link().await.unwrap();
     let response = link
+        .requests
         .request(|request_id| ClientMessage::ListSessionFiles {
             request_id,
             session_id: SessionId::new("chat").unwrap(),
@@ -439,6 +440,7 @@ async fn assert_active_upload_cancelled(transfers: &Arc<Transfers>, session_id: 
     let link = transfers.link().await.unwrap();
     let _selected = link.select(session_id).await.unwrap();
     let response = link
+        .requests
         .request(|request_id| ClientMessage::BeginSessionFileUpload {
             request_id,
             session_id: session_id.share(),
@@ -451,22 +453,24 @@ async fn assert_active_upload_cancelled(transfers: &Arc<Transfers>, session_id: 
     let ServerMessage::SessionFileUploadReady { upload_id, .. } = response else {
         panic!("ready expected")
     };
-    link.request(|request_id| ClientMessage::UploadSessionFileChunk {
-        request_id,
-        session_id: session_id.share(),
-        upload_id: upload_id.as_str().into(),
-        offset: 0,
-        data: vec![b'x'],
-    })
-    .await
-    .unwrap();
+    link.requests
+        .request(|request_id| ClientMessage::UploadSessionFileChunk {
+            request_id,
+            session_id: session_id.share(),
+            upload_id: upload_id.as_str().into(),
+            offset: 0,
+            data: vec![b'x'],
+        })
+        .await
+        .unwrap();
     let cancellation = std::sync::atomic::AtomicBool::new(true);
     assert!(
-        crate::upload::discard_if_requested(&link, session_id, &upload_id, &cancellation)
+        crate::upload::discard_if_requested(&link.requests, session_id, &upload_id, &cancellation)
             .await
             .unwrap()
     );
     let finish = link
+        .requests
         .request(|request_id| ClientMessage::FinishSessionFileUpload {
             request_id,
             session_id: session_id.share(),
@@ -633,6 +637,7 @@ async fn cloud_upload_rejection_preserves_the_free_space_action() {
     let link = transfers.link().await.unwrap();
     let selected = link.select(&session_id).await.unwrap();
     let error = link
+        .requests
         .request(|request_id| ClientMessage::BeginSessionFileUpload {
             request_id,
             session_id: session_id.share(),

@@ -1,21 +1,21 @@
-use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use futures_util::{StreamExt as _, stream};
 use mobius::SessionId;
 use mobius::protocol::SessionFileReference;
-use mobius_gateway::client::{Endpoint, GatewayEvents, GatewaySender};
+use mobius_gateway::client::Endpoint;
 use mobius_gateway::wire::{ClientMessage, MAX_READ_CHUNK_BYTES, ServerMessage};
 use mobius_gateway::{Error, Result};
-use tokio::sync::{RwLock, RwLockReadGuard, oneshot};
+use tokio::sync::{RwLock, RwLockReadGuard};
 use uuid::Uuid;
 
+use super::Update;
 use super::connection::connect_once;
-use super::{Update, recap};
+use super::requests::{Link, Requests};
 
 #[cfg(test)]
 #[path = "transfer_tests.rs"]
@@ -23,7 +23,6 @@ mod transfer_tests;
 
 /// Requests one transfer keeps in flight on the shared connection.
 pub(super) const WINDOW: usize = 4;
-const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 /// A transfer connection unused for a whole interval closes.
 const IDLE_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -62,11 +61,6 @@ pub(super) enum Transfer {
         session_id: SessionId,
         file_id: String,
     },
-    /// What `session_id` said after `since`, for its recap.
-    Recent {
-        session_id: SessionId,
-        since: Option<i64>,
-    },
 }
 
 /// File transfers to one gateway. They share one connection, opened on first use and
@@ -93,7 +87,7 @@ impl Transfers {
     /// The shared connection, opened again when there is none or it closed.
     async fn link(self: &Arc<Self>) -> Result<Arc<TransferLink>> {
         let mut slot = self.link.lock().await;
-        if let Some(link) = slot.as_ref().filter(|link| link.is_open()) {
+        if let Some(link) = slot.as_ref().filter(|link| link.requests.is_open()) {
             return Ok(Arc::clone(link));
         }
         let link = Arc::new(TransferLink::connect(&self.endpoint, &self.token).await?);
@@ -127,13 +121,9 @@ async fn close_when_idle(transfers: Weak<Transfers>, link: Weak<TransferLink>) {
     }
 }
 
-type Waiters = Mutex<Option<HashMap<Uuid, oneshot::Sender<ServerMessage>>>>;
-
 /// One connection with at most one chat selected; transfers of that chat interleave on it.
 pub(super) struct TransferLink {
-    sender: GatewaySender,
-    /// Responses by request, until the connection closes.
-    waiters: Arc<Waiters>,
+    requests: Arc<Requests>,
     selected: RwLock<Option<Selected>>,
     used: AtomicBool,
     reader: tokio::task::JoinHandle<()>,
@@ -153,64 +143,18 @@ impl Drop for TransferLink {
 impl TransferLink {
     async fn connect(endpoint: &Endpoint, token: &str) -> Result<Self> {
         let mut options = super::catalog_free();
-        let (sender, events) = connect_once(endpoint, token, &mut options)
-            .await?
-            .into_parts();
-        let waiters = Arc::new(Mutex::new(Some(HashMap::new())));
-        let reader = tokio::spawn(route(events, Arc::clone(&waiters)));
+        let mut link = Link::new(
+            connect_once(endpoint, token, &mut options).await?,
+            super::requests::Usage::Dedicated,
+        );
+        let requests = Arc::clone(&link.requests);
+        let reader = tokio::spawn(async move { while let Ok(Some(_)) = link.next().await {} });
         Ok(Self {
-            sender,
-            waiters,
+            requests,
             selected: RwLock::new(None),
             used: AtomicBool::new(true),
             reader,
         })
-    }
-
-    fn is_open(&self) -> bool {
-        self.waiters.lock().is_ok_and(|waiters| waiters.is_some())
-    }
-
-    /// Sends the request `build` makes for a fresh request ID and waits for its answer.
-    pub(super) async fn request(
-        &self,
-        build: impl FnOnce(Arc<str>) -> ClientMessage,
-    ) -> Result<ServerMessage> {
-        let id = Uuid::new_v4();
-        let (reply, response) = oneshot::channel();
-        self.used.store(true, Ordering::Relaxed);
-        self.waiters
-            .lock()
-            .map_err(|_poisoned| disconnected())?
-            .as_mut()
-            .ok_or_else(disconnected)?
-            .insert(id, reply);
-        let _waiting = Waiting {
-            waiters: &self.waiters,
-            id,
-        };
-        let request_id: Arc<str> =
-            Arc::from(&*id.hyphenated().encode_lower(&mut Uuid::encode_buffer()));
-        // A connection that failed a write or stopped answering is not reused.
-        if let Err(error) = self.sender.send(build(Arc::clone(&request_id))).await {
-            close(&self.waiters);
-            return Err(error);
-        }
-        let Ok(message) = tokio::time::timeout(RESPONSE_TIMEOUT, response).await else {
-            close(&self.waiters);
-            return Err(Error::Protocol("File transfer timed out.".into()));
-        };
-        let message = message.map_err(|error| {
-            tracing::debug!(%error, "the transfer connection dropped its reply");
-            disconnected()
-        })?;
-        if let Some(error) = message.response_error(Some(&request_id)) {
-            if matches!(&message, ServerMessage::Rejected { code, .. } if code == "storage_full") {
-                return Err(mobius::Error::StorageFull.into());
-            }
-            return Err(Error::Protocol(error.message.into()));
-        }
-        Ok(message)
     }
 
     /// Keeps `session_id` selected on this connection while the returned guard lives.
@@ -234,6 +178,7 @@ impl TransferLink {
         {
             *selected = None;
             let response = self
+                .requests
                 .request(|request_id| ClientMessage::SelectSession {
                     request_id,
                     session_id: session_id.share(),
@@ -258,71 +203,6 @@ impl TransferLink {
     }
 }
 
-/// Forgets a request's waiter when its transfer stops waiting.
-struct Waiting<'a> {
-    waiters: &'a Waiters,
-    id: Uuid,
-}
-
-impl Drop for Waiting<'_> {
-    fn drop(&mut self) {
-        if let Ok(mut waiters) = self.waiters.lock()
-            && let Some(waiters) = waiters.as_mut()
-        {
-            waiters.remove(&self.id);
-        }
-    }
-}
-
-fn disconnected() -> Error {
-    Error::Protocol("Gateway disconnected during file transfer.".into())
-}
-
-/// Hands each response to the transfer waiting for it; the rest, such as a replay or a
-/// broadcast, has no reader on this connection.
-async fn route(mut events: GatewayEvents, waiters: Arc<Waiters>) {
-    while let Ok(Some(frame)) = events.next().await {
-        if matches!(frame.message, ServerMessage::Error { fatal: true, .. }) {
-            break;
-        }
-        let waiter = response_id(&frame.message)
-            .and_then(|id| Uuid::parse_str(id).ok())
-            .and_then(|id| waiters.lock().ok()?.as_mut()?.remove(&id));
-        if let Some(waiter) = waiter
-            && waiter.send(frame.message).is_err()
-        {
-            tracing::debug!("a file transfer stopped waiting before its response arrived");
-        }
-    }
-    close(&waiters);
-}
-
-/// Fails every waiting transfer; the next one opens a new connection.
-fn close(waiters: &Waiters) {
-    if let Ok(mut waiters) = waiters.lock() {
-        *waiters = None;
-    }
-}
-
-fn response_id(message: &ServerMessage) -> Option<&str> {
-    match message {
-        ServerMessage::SessionOpened { request_id, .. }
-        | ServerMessage::SessionFileChunk { request_id, .. }
-        | ServerMessage::SessionFileUploadReady { request_id, .. }
-        | ServerMessage::SessionFileUploadChunkAccepted { request_id, .. }
-        | ServerMessage::SessionFileUploadCompleted { request_id, .. }
-        | ServerMessage::GitDiff { request_id, .. }
-        | ServerMessage::GitDiffTotals { request_id, .. }
-        | ServerMessage::WorkspaceFiles { request_id, .. }
-        | ServerMessage::SessionFiles { request_id, .. }
-        | ServerMessage::WorkspaceFileChunk { request_id, .. }
-        | ServerMessage::SessionHistory { request_id, .. }
-        | ServerMessage::Accepted { request_id }
-        | ServerMessage::Rejected { request_id, .. } => Some(request_id),
-        _ => None,
-    }
-}
-
 impl Transfer {
     pub fn start(
         self,
@@ -337,7 +217,7 @@ impl Transfer {
                 "Connect to a gateway before transferring files.".into(),
             ));
         };
-        if tasks.len() >= 64 {
+        if tasks.len() >= super::connection::MAX_BACKGROUND_JOBS {
             return Some(self.failed(
                 transfers.endpoint().to_string(),
                 "Wait for the current file transfers to finish.".into(),
@@ -364,32 +244,35 @@ impl Transfer {
     /// The transfer's update, or `None` when [`Self::finished`] makes it from the transfer.
     async fn run(&self, transfers: &Arc<Transfers>) -> Result<Option<Update>> {
         let link = transfers.link().await?;
+        link.used.store(true, Ordering::Relaxed);
         let session_id = match self {
             Self::Upload { session_id, .. } | Self::Preview { session_id, .. } => session_id,
-            // Selecting would start a stopped chat. History, stored files and their removal
+            // Selecting would start a stopped chat. Stored files can be accessed directly.
             Self::Delete { .. }
             | Self::Export { .. }
             | Self::Download { .. }
-            | Self::Thumbnail { .. }
-            | Self::Recent { .. } => {
-                return self.transfer(&link, transfers.endpoint(), None).await;
+            | Self::Thumbnail { .. } => {
+                return self
+                    .transfer(&link.requests, transfers.endpoint(), None)
+                    .await;
             }
         };
         let selected = link.select(session_id).await?;
         let workspace = selected
             .as_ref()
-            .ok_or_else(disconnected)?
+            .ok_or_else(super::requests::disconnected)?
             .workspace
             .as_deref();
-        let update = self.transfer(&link, transfers.endpoint(), workspace).await;
+        let update = self
+            .transfer(&link.requests, transfers.endpoint(), workspace)
+            .await;
         drop(selected);
         update
     }
 
-    /// The transfer itself, on a connection whose session is selected unless it is a recap.
     async fn transfer(
         &self,
-        link: &TransferLink,
+        link: &Requests,
         endpoint: &Endpoint,
         workspace: Option<&Path>,
     ) -> Result<Option<Update>> {
@@ -450,7 +333,6 @@ impl Transfer {
                     result,
                 }))
             }
-            Self::Recent { .. } => recap::update(link, endpoint, self).await.map(Some),
             Self::Delete {
                 id,
                 session_id,
@@ -516,11 +398,6 @@ impl Transfer {
                 file_id: file.id,
                 result: Err(message),
             },
-            Self::Recent { session_id, .. } => Update::Recent {
-                endpoint,
-                session_id,
-                result: Err(message),
-            },
             Self::Delete { id, session_id, .. } => Update::AttachmentDeleted {
                 endpoint,
                 session_id,
@@ -543,7 +420,7 @@ impl Transfer {
 
 /// Streams the selected file origins into separate, uniquely named files.
 async fn export(
-    link: &TransferLink,
+    link: &Requests,
     session_id: &SessionId,
     destination: &Path,
     uploads: bool,
@@ -578,11 +455,7 @@ async fn export(
 }
 
 /// Cancels an active upload on this connection or removes a completed file.
-pub(super) async fn delete(
-    link: &TransferLink,
-    session_id: &SessionId,
-    file_id: &str,
-) -> Result<()> {
+pub(super) async fn delete(link: &Requests, session_id: &SessionId, file_id: &str) -> Result<()> {
     let response = link
         .request(|request_id| ClientMessage::DeleteSessions {
             request_id,
@@ -602,7 +475,7 @@ pub(super) async fn delete(
 }
 
 pub(super) fn chunk_reads<'link>(
-    link: &'link TransferLink,
+    link: &'link Requests,
     offset: u64,
     len: u64,
     read: impl Fn(Arc<str>, u64, usize) -> ClientMessage + Copy + 'link,
@@ -616,7 +489,7 @@ pub(super) fn chunk_reads<'link>(
 
 /// Reads the file with a few chunk requests in flight, since each costs a round trip.
 async fn download(
-    link: &TransferLink,
+    link: &Requests,
     session_id: &SessionId,
     file: &SessionFileReference,
     destination: &Path,

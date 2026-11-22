@@ -1,5 +1,5 @@
 //! What a chat said since it was last read, for its on-device "While you were away" recap.
-//! Read only: the history pages come over the transfer connection without selecting the
+//! Read only: the history pages come over the primary connection without selecting the
 //! chat, so reading never starts it.
 
 use mobius::SessionId;
@@ -12,7 +12,7 @@ use mobius_gateway::{Error, Result};
 use std::fmt::Write as _;
 use std::sync::Arc;
 
-use super::files::TransferLink;
+use super::requests::Requests;
 
 /// Pages read back looking for the last-read point before recapping what was found.
 const MAX_PAGES: usize = 4;
@@ -29,7 +29,7 @@ pub struct RecentChat {
 /// Items of `session` recorded after `since` (gateway milliseconds), or its last few turns
 /// when it has not been read. History it inherited from a chat it forked is not its own.
 pub(super) async fn load(
-    link: &TransferLink,
+    link: &Requests,
     session: &SessionId,
     since: Option<i64>,
 ) -> Result<RecentChat> {
@@ -54,7 +54,7 @@ pub(super) async fn load(
 }
 
 async fn page(
-    link: &TransferLink,
+    link: &Requests,
     session: &SessionId,
     before: Option<HistoryCursor>,
 ) -> Result<(TranscriptPage, Option<HistoryCursor>)> {
@@ -76,26 +76,6 @@ async fn page(
             "Gateway returned a different chat's history.".into(),
         )),
     }
-}
-
-/// The `Update` a recent-history transfer answers with.
-pub(super) async fn update(
-    link: &TransferLink,
-    endpoint: &mobius_gateway::client::Endpoint,
-    transfer: &super::files::Transfer,
-) -> Result<super::Update> {
-    let super::files::Transfer::Recent { session_id, since } = transfer else {
-        return Err(mobius_gateway::Error::Protocol(
-            "Expected a recent-history read.".into(),
-        ));
-    };
-    Ok(super::Update::Recent {
-        endpoint: endpoint.to_string(),
-        session_id: session_id.share(),
-        result: load(link, session_id, *since)
-            .await
-            .map_err(|error| super::describe(&error)),
-    })
 }
 
 fn turns(items: &[Arc<TranscriptItem>]) -> usize {

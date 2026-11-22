@@ -8,7 +8,8 @@ use mobius_gateway::wire::{ClientMessage, ServerMessage};
 use mobius_gateway::{Error, Result};
 use tokio::io::AsyncReadExt;
 
-use super::files::{TransferLink, WINDOW};
+use super::files::WINDOW;
+use super::requests::Requests;
 
 #[derive(Debug)]
 pub struct UploadFailure {
@@ -76,7 +77,7 @@ impl UploadInput {
 }
 
 pub(super) async fn upload(
-    link: &TransferLink,
+    link: &Requests,
     session_id: &SessionId,
     path: &Path,
     convert_image: ConvertImage,
@@ -212,7 +213,7 @@ async fn next_chunk(mut reading: Reading<'_>) -> Result<Option<((u64, Vec<u8>), 
 }
 
 pub(super) async fn discard_if_requested(
-    link: &TransferLink,
+    link: &Requests,
     session_id: &SessionId,
     upload_id: &str,
     cancellation: &AtomicBool,
@@ -225,7 +226,7 @@ pub(super) async fn discard_if_requested(
 }
 
 async fn write_chunk(
-    link: &TransferLink,
+    link: &Requests,
     session_id: &SessionId,
     upload_id: &str,
     offset: u64,
