@@ -101,11 +101,7 @@ impl Workspace {
             return item.into_any_element();
         }
         // A gliding turn has a screen of its own below its message, as room at the end.
-        let room = if scope.starts_with("chat:") {
-            self.glide_room()
-        } else {
-            px(0.)
-        };
+        let room = self.glide_room(scope);
         div()
             .w_full()
             .child(item)

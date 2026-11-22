@@ -16,6 +16,8 @@ use std::sync::Arc;
 pub(in crate::ui) const HISTORY: &str = "history";
 /// The fastest a sent message travels to the top of the view, in points a second.
 const TRAVEL: f32 = 2400.;
+/// How long a list goes undrawn before its glide gives up.
+const UNSEEN: std::time::Duration = std::time::Duration::from_millis(250);
 /// What a chat's transcript scope starts with; documents use their tab's id.
 const CHAT_SCOPE: &str = "chat:";
 
@@ -34,6 +36,11 @@ pub(in crate::ui) struct TranscriptScroll {
     list: Option<ListState>,
     /// The glide under way; dropping it stops it where it is.
     glide: Option<gpui::Task<()>>,
+    /// The message a gliding turn rests at the top, and the room kept below the last row
+    /// so it can: a screen of its own for the answer to fill.
+    room: Option<(Arc<str>, Pixels)>,
+    /// When the list was last drawn; a glide ends once it no longer is.
+    seen: std::cell::Cell<Option<std::time::Instant>>,
     /// The list items in view, for the message rail.
     pub(in crate::ui) visible: Range<usize>,
 }
@@ -239,12 +246,11 @@ impl Workspace {
             px(0.)
         };
         // A message resting at the top with its answer filling in below is at the latest.
-        let following = list.is_following_tail()
-            || (chat
-                && self
-                    .glide_row()
-                    .is_some_and(|row| self.row_rests(scope, row, space::L + header)));
+        let following = list.is_following_tail() || self.glide_rests(scope, space::L + header);
         let has_items = list.item_count() > 0;
+        if let Some(state) = self.transcript_scrolls.get(scope) {
+            state.seen.set(Some(motion::now()));
+        }
         let scope: Rc<str> = scope.into();
         div()
             .flex()
@@ -291,22 +297,47 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// Whether `row` is gliding to, or resting at, `rest` below the top of `scope`'s list.
-    fn row_rests(&self, scope: &str, row: &str, rest: Pixels) -> bool {
+    /// The room `scope`'s gliding turn keeps below its last row.
+    pub(in crate::ui) fn glide_room(&self, scope: &str) -> Pixels {
+        self.transcript_scrolls
+            .get(scope)
+            .and_then(|state| state.room.as_ref())
+            .map_or(px(0.), |(_, room)| *room)
+    }
+
+    /// The item `scope`'s gliding turn rests at the top, and the room kept for it.
+    pub(in crate::ui) fn glide_turn(&self, scope: &str) -> Option<(usize, Pixels)> {
+        let state = self.transcript_scrolls.get(scope)?;
+        let (row, room) = state.room.as_ref()?;
+        Some((state.rows.iter().position(|id| id == row)?, *room))
+    }
+
+    /// Keeps `room` below `scope`'s last row so `row` can rest at the top.
+    pub(in crate::ui) fn keep_glide_room(&mut self, scope: &str, row: Arc<str>, room: Pixels) {
+        if let Some(state) = self.transcript_scrolls.get_mut(scope) {
+            state.room = Some((row, room));
+        }
+    }
+
+    /// Gives back the room `scope`'s gliding turn kept; whether there was any.
+    pub(in crate::ui) fn release_glide_room(&mut self, scope: &str) -> bool {
+        self.transcript_scrolls
+            .get_mut(scope)
+            .is_some_and(|state| state.room.take().is_some())
+    }
+
+    /// Whether `scope`'s gliding turn is on its way to the top or resting there.
+    fn glide_rests(&self, scope: &str, rest: Pixels) -> bool {
         let Some(state) = self.transcript_scrolls.get(scope) else {
             return false;
         };
+        let (Some(_), Some(list)) = (&state.room, &state.list) else {
+            return false;
+        };
         state.glide.is_some()
-            || state.list.as_ref().is_some_and(|list| {
-                state
-                    .rows
-                    .iter()
-                    .position(|id| **id == *row)
-                    .and_then(|index| list.bounds_for_item(index))
-                    .is_some_and(|bounds| {
-                        (bounds.top() - list.viewport_bounds().top() - rest).abs() < px(2.)
-                    })
-            })
+            || self
+                .glide_turn(scope)
+                .is_some_and(|(index, _)| rests(list, index, rest))
     }
 
     /// Scrolls `scope`'s list to `target` on the shared spring. One glide runs at a time:
@@ -318,15 +349,15 @@ impl Workspace {
         target: GlideTarget,
         cx: &mut Context<Self>,
     ) {
-        if matches!(target, GlideTarget::Latest) {
-            // The end of the list is its last row, not the room a gliding turn kept below.
-            self.release_glide_room();
-        }
         let Some(state) = self.transcript_scrolls.get_mut(&*scope) else {
             return;
         };
         state.cancel_history_restore();
         state.glide = None;
+        if matches!(target, GlideTarget::Latest) {
+            // The end of the list is its last row, not the room a gliding turn kept below.
+            state.room = None;
+        }
         let Some(list) = state.list.as_ref() else {
             return;
         };
@@ -334,18 +365,11 @@ impl Workspace {
         if matches!(target, GlideTarget::Row(..)) {
             list.pause_following_tail();
         }
-        if cx.reduce_motion() {
-            match &target {
-                GlideTarget::Latest => list.set_follow_mode(FollowMode::Tail),
-                GlideTarget::Row(id, _) => {
-                    if let Some(item_ix) = state.rows.iter().position(|row| row == id) {
-                        list.scroll_to(ListOffset {
-                            item_ix,
-                            offset_in_item: px(0.),
-                        });
-                    }
-                }
-            }
+        // Reduce Motion covers the whole distance in one step of the same glide, so it
+        // lands where the animated one does.
+        let still = cx.reduce_motion();
+        if still && matches!(target, GlideTarget::Latest) {
+            list.set_follow_mode(FollowMode::Tail);
             cx.notify();
             return;
         }
@@ -361,6 +385,14 @@ impl Workspace {
                     let Some(list) = state.list.as_ref() else {
                         return true;
                     };
+                    // Its chat left the screen: a list that is not drawn never arrives.
+                    if state
+                        .seen
+                        .get()
+                        .is_some_and(|seen| motion::now() - seen > UNSEEN)
+                    {
+                        return true;
+                    }
                     let left = match &target {
                         GlideTarget::Latest => f32::from(
                             list.max_offset_for_scrollbar().y
@@ -371,7 +403,7 @@ impl Workspace {
                             let Some(item_ix) = state.rows.iter().position(|row| row == id) else {
                                 return true;
                             };
-                            let Some(row) = list.bounds_for_item(item_ix) else {
+                            let Some(left) = left_to_rest(list, item_ix, *rest) else {
                                 // Too far away to be laid out: the list goes to it, and
                                 // the glide settles the rest once it is measured.
                                 list.scroll_to(ListOffset {
@@ -381,7 +413,7 @@ impl Workspace {
                                 cx.notify();
                                 return false;
                             };
-                            f32::from(row.top() - list.viewport_bounds().top() - *rest)
+                            f32::from(left)
                         }
                     };
                     let now = motion::now();
@@ -392,6 +424,9 @@ impl Workspace {
                     let reach = TRAVEL * (now - last).as_secs_f32().min(0.05);
                     if matches!(target, GlideTarget::Row(..)) && (left - next).abs() > reach {
                         (next, speed) = (left - reach.copysign(left), -TRAVEL.copysign(left));
+                    }
+                    if still {
+                        (next, speed) = (0., 0.);
                     }
                     (velocity, last) = (speed, now);
                     list.scroll_by(px(left - next));
@@ -454,6 +489,21 @@ impl Workspace {
             });
         }
     }
+}
+
+/// How far the list still has to scroll for item `index` to rest `rest` below the top of
+/// the view, kept to what the list can scroll: a row at the head of a short transcript
+/// rests where the list's start leaves it. `None` while the item is not laid out.
+fn left_to_rest(list: &ListState, index: usize, rest: Pixels) -> Option<Pixels> {
+    let row = list.bounds_for_item(index)?;
+    let back = list.scroll_px_offset_for_scrollbar().y;
+    let ahead = list.max_offset_for_scrollbar().y + back;
+    Some((row.top() - list.viewport_bounds().top() - rest).clamp(back, ahead.max(back)))
+}
+
+/// Whether item `index` rests where a glide leaves it.
+pub(in crate::ui) fn rests(list: &ListState, index: usize, rest: Pixels) -> bool {
+    left_to_rest(list, index, rest).is_some_and(|left| left.abs() < px(2.))
 }
 
 /// Where a glide of a transcript's list ends.

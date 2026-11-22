@@ -83,11 +83,9 @@ pub(in crate::ui) struct ChatUi {
     /// The answer row kept back while it may still join the turn's work, until when, and
     /// the timer that shows it.
     answer_hold: Option<(Arc<str>, std::time::Instant, Task<()>)>,
-    /// A message sent from here whose row has not appeared yet: the chat it was sent in
-    /// (none for a new chat), the latest message at that moment, and when.
-    sent: Option<(Option<SessionId>, Option<SharedString>, std::time::Instant)>,
-    /// The message gliding to the top, or resting there while its answer fills the screen.
-    glide: Option<(SharedString, Pixels)>,
+    /// The latest message submitted from this window, by its gateway row id: the transcript
+    /// moves when the row the gateway records for it appears.
+    pub(in crate::ui) sent_row: Option<String>,
     /// The history page on its way, so each earlier turn is asked for once.
     history_request: Option<Arc<str>>,
     /// The message tick under the pointer on the rail.
@@ -303,8 +301,8 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.pending_submission(request_id) {
-            self.restore_rejected(request_id, message, window, cx);
+        if self.restore_rejected(request_id, message, window, cx) {
+            // The composer now holds the refused message.
         } else if self.chat_ui.history_request.as_deref() == Some(request_id) {
             // Keep the cursor so a failed page can be retried.
             self.chat_ui.history_request = None;
@@ -663,48 +661,15 @@ impl Workspace {
         self.chat_list(&scope, list, Some(overlay), render, cx)
     }
 
-    /// The room a gliding turn has below its message: a screen of its own.
-    pub(in crate::ui) fn glide_room(&self) -> Pixels {
-        self.chat_ui
-            .glide
-            .as_ref()
-            .map_or(px(0.), |(_, room)| *room)
-    }
-
-    /// The message resting at the top while its answer fills the screen under it.
-    pub(in crate::ui) fn glide_row(&self) -> Option<&str> {
-        self.chat_ui.glide.as_ref().map(|(row, _)| &**row)
-    }
-
-    /// Gives back the room a gliding turn kept below its message.
-    pub(in crate::ui) fn release_glide_room(&mut self) {
-        self.chat_ui.glide = None;
-    }
-
-    /// Remembers that a message was just sent from this window, so its row is the one the
-    /// transcript moves for: not a message arriving from another device.
-    pub(in crate::ui) fn note_sent_message(&mut self) {
-        self.chat_ui.sent = Some((
-            self.client
-                .state
-                .selected_session_id
-                .as_ref()
-                .map(SessionId::share),
-            self.latest_turn_mark().map(|(id, _)| id),
-            std::time::Instant::now(),
-        ));
-    }
-
-    /// Moves the transcript for a message sent from here once its row appears: following
-    /// returns to the end, gliding (Settings → Appearance) takes the message to the top and
-    /// lets the answer fill the screen under it, after which the end is followed as usual.
+    /// Moves the transcript for a message sent from here once the gateway has recorded it:
+    /// following returns to the end, gliding (Settings → Appearance) takes the message to
+    /// the top and lets the answer fill the screen under it, after which the end is
+    /// followed as usual.
     fn settle_sent_turn(&mut self, scope: &str, list: &gpui::ListState, cx: &mut Context<Self>) {
-        // A send the gateway held back, or one that failed, never shows a row.
-        const WAIT: std::time::Duration = std::time::Duration::from_secs(30);
         let gliding = self.turn_motion == transcript::TurnMotion::Glide;
-        if !gliding && self.chat_ui.glide.take().is_some() {
-            // The setting changed under a gliding turn.
-            list.set_follow_mode(gpui::FollowMode::Tail);
+        if !gliding && self.glide_room(scope) > px(0.) {
+            // A change to Follow replaces the row glide and releases its room.
+            self.glide_to(scope.into(), transcript::GlideTarget::Latest, cx);
         }
         let header = if self.active_conversation_bot().is_some() {
             height::BOT_CHAT_HEADER
@@ -712,49 +677,35 @@ impl Workspace {
             px(0.)
         };
         let rest = space::L + header;
-        let session = self.client.state.selected_session_id.as_ref();
-        let arrived = match &self.chat_ui.sent {
-            Some((_, _, at)) if at.elapsed() > WAIT => {
-                self.chat_ui.sent = None;
-                None
-            }
-            // A chat that is still loading changes its latest message on its own.
-            Some((from, before, _)) if !self.client.state.replaying => self
-                .latest_turn_mark()
-                .filter(|(id, _)| {
-                    (from.is_none() || from.as_ref() == session) && before.as_ref() != Some(id)
-                })
-                .map(|(id, _)| id),
-            _ => None,
-        };
-        if let Some(id) = arrived {
-            self.chat_ui.sent = None;
+        // A recorded message's item is named after its submission. Found by that name, not
+        // as the newest message: one from another device may already stand below it.
+        let arrived = self
+            .chat_ui
+            .sent_row
+            .as_deref()
+            .and_then(|id| self.client.state.transcript.row(id))
+            .map(|row| Arc::clone(&row.id));
+        if let Some(row) = arrived {
+            self.chat_ui.sent_row = None;
             if gliding {
-                let room = list.viewport_bounds().size.height;
-                let row = Arc::from(&*id);
-                self.chat_ui.glide = Some((id, room));
+                self.keep_glide_room(scope, Arc::clone(&row), list.viewport_bounds().size.height);
                 self.glide_to(scope.into(), transcript::GlideTarget::Row(row, rest), cx);
             } else if !list.is_following_tail() {
                 self.glide_to(scope.into(), transcript::GlideTarget::Latest, cx);
             }
         }
-        let Some((id, item)) = self.latest_turn_mark() else {
-            return;
-        };
         // The answer reached the foot of the screen: the room below it has been used up,
         // so the end is followed from exactly where it stands.
-        if let Some((_, room)) = self.chat_ui.glide.as_ref().filter(|(turn, _)| turn == &id)
+        if let Some((item, room)) = self.glide_turn(scope)
             && let Some(last) = list.item_count().checked_sub(1)
             && let Some(end) = list.bounds_for_item(last)
         {
             let view = list.viewport_bounds();
             // The composer floats over the list's foot, so the screen is full above it.
             let foot = view.bottom() - space::L - self.composer_inset();
-            if end.bottom() - *room >= foot {
-                let resting = list
-                    .bounds_for_item(item)
-                    .is_some_and(|row| (row.top() - view.top() - rest).abs() < px(2.));
-                self.chat_ui.glide = None;
+            if end.bottom() - room >= foot {
+                let resting = transcript::rests(list, item, rest);
+                self.release_glide_room(scope);
                 if resting {
                     list.set_follow_mode(gpui::FollowMode::Tail);
                 }

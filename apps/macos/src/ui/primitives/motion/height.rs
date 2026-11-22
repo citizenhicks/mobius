@@ -16,6 +16,11 @@ use super::spring;
 /// text, slow enough that the eye follows the rows it moves.
 const GLIDE: f32 = 2400.;
 
+/// How long a handed height waits for its element to lay out. One that is on screen takes
+/// it within a frame; one that never appears (its row regrouped or removed while out of
+/// view) would otherwise wait forever, and start from a height that no longer means anything.
+const HANDED_FOR: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// The most elements whose last painted height is kept. Past it, the half painted longest
 /// ago is forgotten: such a row is treated as never seen, which only matters if it is
 /// still waiting to grow in.
@@ -32,8 +37,8 @@ struct Painted {
 thread_local! {
     /// The last painted state of every smoothed element by id.
     static PAINTED: RefCell<HashMap<SharedString, Painted>> = RefCell::new(HashMap::new());
-    /// Heights an element starts from the next time it lays out.
-    static HANDED: RefCell<HashMap<SharedString, f32>> = RefCell::new(HashMap::new());
+    /// Heights an element starts from the next time it lays out, and when each was handed.
+    static HANDED: RefCell<HashMap<SharedString, (f32, Instant)>> = RefCell::new(HashMap::new());
 }
 
 /// Records what `id` shows this frame, forgetting the stalest half once `KEPT` is reached.
@@ -70,12 +75,15 @@ fn seen(id: &str) -> bool {
 
 /// Whether `id` still shows: open, about to start from handed height, or still closing.
 pub fn visible(id: &str) -> bool {
-    HANDED.with(|map| map.borrow().contains_key(id))
-        || PAINTED.with(|map| {
-            map.borrow()
-                .get(id)
-                .is_some_and(|painted| painted.height > 0.)
-        })
+    HANDED.with(|map| {
+        map.borrow()
+            .get(id)
+            .is_some_and(|(_, at)| at.elapsed() < HANDED_FOR)
+    }) || PAINTED.with(|map| {
+        map.borrow()
+            .get(id)
+            .is_some_and(|painted| painted.height > 0.)
+    })
 }
 
 /// `to` starts at the combined height `from` last had, less `less`, as when a turn's steps
@@ -90,7 +98,11 @@ pub fn hand_off<'a>(from: impl IntoIterator<Item = &'a str>, to: SharedString, l
         .with(|map| map.borrow().get(&to).map(|painted| painted.height))
         .unwrap_or(0.);
     if height - less > 0. {
-        HANDED.with(|map| map.borrow_mut().insert(to, base + height - less));
+        HANDED.with(|map| {
+            let mut map = map.borrow_mut();
+            map.retain(|_, (_, at)| at.elapsed() < HANDED_FOR);
+            map.insert(to, (base + height - less, Instant::now()));
+        });
     }
 }
 
@@ -154,7 +166,10 @@ impl gpui::Element for Smooth {
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         let child = self.child.request_layout(window, cx);
-        let handed = HANDED.with(|map| map.borrow_mut().remove(&self.id));
+        let handed = HANDED
+            .with(|map| map.borrow_mut().remove(&self.id))
+            .filter(|(_, at)| at.elapsed() < HANDED_FOR)
+            .map(|(height, _)| height);
         let held = id.and_then(|id| {
             window.with_element_state(id, |state: Option<Option<State>>, _| {
                 let state = state.flatten();
@@ -281,5 +296,20 @@ mod tests {
         assert!(PAINTED.with(|map| map.borrow().len()) <= KEPT);
         assert!(seen(&format!("row:{}", KEPT * 3 - 1)));
         assert!(!seen("row:0"));
+    }
+
+    #[test]
+    fn a_handed_height_that_is_never_taken_does_not_outlive_later_hand_offs() {
+        remember(&"from".into(), 40., 1.);
+        hand_off(["from"], "never-laid-out".into(), 0.);
+        HANDED.with(|map| {
+            let mut map = map.borrow_mut();
+            let (_, at) = map.get_mut("never-laid-out").expect("handed");
+            *at -= HANDED_FOR * 2;
+        });
+        assert!(!visible("never-laid-out"));
+        hand_off(["from"], "next".into(), 0.);
+        assert!(HANDED.with(|map| !map.borrow().contains_key("never-laid-out")));
+        assert!(visible("next"));
     }
 }

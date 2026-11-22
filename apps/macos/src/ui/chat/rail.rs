@@ -135,17 +135,6 @@ impl Workspace {
         .into_any_element()
     }
 
-    /// The reader's latest message: its entry and its list item.
-    pub(super) fn latest_turn_mark(&self) -> Option<(SharedString, usize)> {
-        let mark = self
-            .chat_ui
-            .rail_marks
-            .iter()
-            .rev()
-            .find(|mark| !mark.pinned)?;
-        Some((SharedString::clone(&mark.id), mark.item))
-    }
-
     pub(super) fn refresh_rail_marks(&mut self) {
         self.chat_ui.rail_marks = self.rail_marks();
         self.chat_ui.rail_revision = self.client.state.transcript.revision();

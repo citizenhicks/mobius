@@ -413,7 +413,6 @@ impl Workspace {
         let text = self.composer.read(cx).value().to_string();
         if self.draft_selected() && self.client.link.is_ready() && !text.trim().is_empty() {
             self.stop_dictation();
-            self.note_sent_message();
             self.create_draft(DraftIntent::Message(text), cx);
             return;
         }
@@ -506,6 +505,15 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self
+            .chat_ui
+            .sent_row
+            .as_deref()
+            .and_then(|id| id.strip_prefix("message:"))
+            == Some(submission)
+        {
+            self.chat_ui.sent_row = None;
+        }
         // Every caller drops the refused message right after, so it moves out here.
         let Some(PendingMessage {
             draft_key: key,
@@ -552,10 +560,15 @@ impl Workspace {
             requested_delivery,
             target_turn_id: None,
         };
-        match self.enqueue(gateway::submit(session_id.share(), Op::Message { message })) {
+        let submit = gateway::submit(session_id.share(), Op::Message { message });
+        let sent = match &submit {
+            ClientMessage::Submit { submission, .. } => Some(format!("message:{}", submission.id)),
+            _ => None,
+        };
+        match self.enqueue(submit) {
             Ok(()) => {
                 self.take_reply(session_id);
-                self.note_sent_message();
+                self.chat_ui.sent_row = sent;
                 cx.notify();
                 true
             }
