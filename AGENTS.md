@@ -246,10 +246,10 @@ Linux sandbox tests require Bubblewrap.
 
 ## Releases
 
-`mobius`, `mobius-gateway`, `mobius-cli` and the macOS app `mobius-desktop` share one
-version number. The three crates are published separately, each from its own tag, in
-that order because each depends on the previous published crate. The macOS app is not
-on crates.io: its `mobius-desktop-v<version>` tag builds, notarizes and publishes a
+`mobius`, `mobius-gateway`, and `mobius-cli` share one version number. The three
+crates are published separately, each from its own tag, in
+that order because each depends on the previous published crate. The macOS app versions
+independently and bundles the gateway from the same checkout. Its `mobius-desktop-v<version>` tag builds, notarizes and publishes a
 prerelease (`desktop-release.yml`), and `desktop-promote.yml` moves a verified release to
 the update feed. Bump `build-number` in `apps/macos/Cargo.toml` with every app release.
 Release automation belongs in `.github/workflows/`; do not mix it into capability

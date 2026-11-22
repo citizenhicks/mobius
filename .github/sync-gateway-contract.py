@@ -44,8 +44,6 @@ def main():
             replace(swift, r"(let gatewayReadChunkBytes = )[^\n]+()", read_chunk, args.check)
     for fixture in args.python_fixture:
         replace(fixture, r"(?m)^(PROTOCOL_VERSION = )\d+()$", protocol, args.check)
-    desktop = core / "apps/macos/Cargo.toml"
-    replace(desktop, r'(?m)^(version = ")[^"]+(".*)$', core_version, args.check)
     cli = core / "crates/mobius-cli/Cargo.toml"
     replace(cli, r'(?m)^(mobius-gateway = \{ version = ")[^"]+(".*)$', "=" + gateway_version, args.check)
     print(f"Gateway contract: protocol {protocol}, core {core_version}, gateway {gateway_version}")
