@@ -35,6 +35,7 @@ pub(super) struct GatewayState {
     pub(super) session_mutations: Arc<RwLock<()>>,
     pub(super) extension_mutations: Arc<Mutex<()>>,
     pub(super) discovery_gate: Arc<Mutex<()>>,
+    pub(super) decision_route: Option<Arc<crate::harness::mobius::assembly::RouteValue>>,
     pub(super) provider_epoch: Arc<AtomicU64>,
     pub(super) activities: SessionActivities,
     pub(super) provider_login: Arc<StdMutex<providers::ProviderLogins>>,
@@ -84,6 +85,16 @@ impl Drop for SessionStartGuard {
 }
 
 impl GatewayState {
+    pub(super) fn invalidate_decision_credential(&mut self, instance: &str) {
+        if self
+            .decision_route
+            .as_ref()
+            .is_some_and(|route| route.instance == instance)
+        {
+            self.decision_route = None;
+        }
+    }
+
     pub(super) fn catalog_handles(&self) -> (Arc<dyn CheckpointStore>, SessionActivities) {
         (Arc::clone(&self.checkpoints), Arc::clone(&self.activities))
     }

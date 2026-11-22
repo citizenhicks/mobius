@@ -90,7 +90,7 @@ impl GatewayHost {
     ) -> std::result::Result<(), Rejection> {
         let credential_mutation = self.begin_credential_mutation().await;
         let (base_url, publication) = {
-            let state = self.state.lock().await;
+            let mut state = self.state.lock().await;
             let base_url = state
                 .config()?
                 .configured_providers
@@ -106,6 +106,7 @@ impl GatewayHost {
                 state.credentials.remove(instance).map(|_| ()),
             )
             .map_err(invalid_config)?;
+            state.invalidate_decision_credential(instance);
             drop(state);
             (base_url, publication)
         };
@@ -130,7 +131,7 @@ impl GatewayHost {
     ) -> std::result::Result<(), Rejection> {
         let credential_mutation = self.begin_credential_mutation().await;
         let (base_url, configured, publication) = {
-            let state = self.state.lock().await;
+            let mut state = self.state.lock().await;
             let definition = provider(provider_id).map_err(invalid_config)?;
             let base_url = Some(
                 base_url
@@ -166,6 +167,7 @@ impl GatewayHost {
                 expires_at,
             ))
             .map_err(invalid_config)?;
+            state.invalidate_decision_credential(instance);
             drop(state);
             (base_url, configured, publication)
         };
@@ -429,7 +431,7 @@ impl GatewayHost {
         }
         let selection = &registration.selection;
         let _mutation = self.begin_exclusive_mutation().await?;
-        let state = self.state.lock().await;
+        let mut state = self.state.lock().await;
         if if_configured
             && !state
                 .config()?
@@ -488,6 +490,7 @@ impl GatewayHost {
         if !changed {
             return gateway_ready_after_unlock(state).await;
         }
+        state.decision_route = None;
         self.provider_usage.invalidate();
         if let Some(target_epoch) = target_epoch {
             state.provider_epoch.store(target_epoch, Ordering::Release);
@@ -526,7 +529,7 @@ impl GatewayHost {
         instance: String,
     ) -> std::result::Result<Arc<ReadyPayload>, Rejection> {
         let _mutation = self.begin_exclusive_mutation().await?;
-        let state = self.state.lock().await;
+        let mut state = self.state.lock().await;
         let next = {
             let current = state.config()?;
             let next = current
@@ -543,6 +546,7 @@ impl GatewayHost {
         let publication =
             crate::publication::Outcome::applied(commit_provider_removal(&state, &instance, next))
                 .map_err(internal)?;
+        state.decision_route = None;
         state.provider_epoch.store(target_epoch, Ordering::Release);
         self.provider_usage.invalidate();
         let follow_up = self.publish_ready_after_unlock(state).await;

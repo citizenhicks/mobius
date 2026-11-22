@@ -739,10 +739,10 @@ fn build_route(
 }
 
 pub(crate) struct RouteValue {
-    instance: String,
+    pub(crate) instance: String,
     capability: Option<mobius::protocol::ModelCapability>,
     pub(crate) lifetime: ModelCredentialLifetime,
-    choice: ModelChoice,
+    pub(crate) choice: ModelChoice,
     pub(crate) model: Arc<dyn Model>,
 }
 

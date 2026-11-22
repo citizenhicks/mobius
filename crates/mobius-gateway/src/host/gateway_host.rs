@@ -186,6 +186,7 @@ impl GatewayHost {
             desktop: Arc::new(DesktopControl::default()),
             remote_desktop,
             state: Arc::new(Mutex::new(GatewayState {
+                decision_route: None,
                 store,
                 config,
                 usage,

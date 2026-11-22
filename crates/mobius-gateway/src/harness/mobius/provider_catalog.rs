@@ -517,47 +517,10 @@ pub(crate) fn media_routes(
 ) -> Result<MediaRoutes> {
     let mut media = MediaRoutes::default();
     for configured in configured_providers.values() {
-        let instance = configured.selection.instance.as_str();
         if credentialed.is_some_and(|credentialed| !credentialed.contains(&configured.selection)) {
             continue;
         }
         let definition = provider(&configured.selection.provider)?;
-        let media_choice =
-            |model: &str,
-             label: &str,
-             variant: Option<&ReasoningPreset>,
-             capability: Option<ModelCapability>| CatalogRoute {
-                choice: ModelChoice {
-                    route: model_route_id(
-                        instance,
-                        model,
-                        variant.map(|variant| variant.id.as_str()),
-                    )
-                    .into(),
-                    group: format!("{} · {label}", configured.label).into(),
-                    model: model.into(),
-                    reasoning_effort: variant.map(|variant| variant.id.as_str().into()),
-                    variant_label: variant.map(|variant| variant.label.as_str().into()),
-                    context_window: None,
-                    supports_image_input: false,
-                    supports_image_generation: capability == Some(ModelCapability::ImageGeneration),
-                    supports_realtime_voice: capability == Some(ModelCapability::RealtimeVoice),
-                    tool_discovery: definition
-                        .tool_discovery(model, configured.selection.base_url.as_deref()),
-                },
-                provider: ProviderConfig {
-                    instance: instance.into(),
-                    provider: configured.selection.provider.as_str().into(),
-                    model: model.into(),
-                    base_url: configured.selection.base_url.as_ref().map(BaseUrl::share),
-                    endpoint_auth: configured.selection.endpoint_auth,
-                    reasoning_effort: None,
-                    service_tier: None,
-                    web_search: Default::default(),
-                    tool_discovery: None,
-                },
-                capability,
-            };
         if configured.image_model_ids.is_empty()
             && (configured.image_models.is_some()
                 || definition.supports_at(
@@ -571,7 +534,9 @@ pub(crate) fn media_routes(
                 .unwrap_or_else(|| definition.image_models())
             {
                 for quality in with_default(&preset.variants) {
-                    media.images.push(media_choice(
+                    media.images.push(media_route(
+                        configured,
+                        definition,
                         &preset.id,
                         &preset.label,
                         quality,
@@ -582,7 +547,9 @@ pub(crate) fn media_routes(
         }
         // Explicit image IDs opt a compatible endpoint into its image API.
         for id in &configured.image_model_ids {
-            media.images.push(media_choice(
+            media.images.push(media_route(
+                configured,
+                definition,
                 id,
                 id,
                 None,
@@ -590,9 +557,14 @@ pub(crate) fn media_routes(
             ));
         }
         for id in &configured.decision_model_ids {
-            media
-                .decisions
-                .push(media_choice(id, id, None, Some(ModelCapability::Decisions)));
+            media.decisions.push(media_route(
+                configured,
+                definition,
+                id,
+                id,
+                None,
+                Some(ModelCapability::Decisions),
+            ));
         }
         if configured.voice_models.is_some()
             || definition.supports_at(
@@ -606,7 +578,9 @@ pub(crate) fn media_routes(
                 .unwrap_or_else(|| definition.voice_models())
             {
                 for voice in with_default(&preset.variants) {
-                    media.voices.push(media_choice(
+                    media.voices.push(media_route(
+                        configured,
+                        definition,
                         &preset.id,
                         &preset.label,
                         voice,
@@ -617,6 +591,70 @@ pub(crate) fn media_routes(
         }
     }
     Ok(media)
+}
+
+/// Resolves only the configured decision choice, without assembling unrelated media routes.
+pub(crate) fn decision_route(
+    configured_providers: &BTreeMap<String, ConfiguredProvider>,
+    selected: &str,
+) -> Result<Option<CatalogRoute>> {
+    for configured in configured_providers.values() {
+        if let Some(model) = configured
+            .decision_model_ids
+            .iter()
+            .find(|id| model_route_id(&configured.selection.instance, id, None) == selected)
+        {
+            let definition = provider(&configured.selection.provider)?;
+            return Ok(Some(media_route(
+                configured,
+                definition,
+                model,
+                model,
+                None,
+                Some(ModelCapability::Decisions),
+            )));
+        }
+    }
+    Ok(None)
+}
+
+fn media_route(
+    configured: &ConfiguredProvider,
+    definition: &ProviderDefinition,
+    model: &str,
+    label: &str,
+    variant: Option<&ReasoningPreset>,
+    capability: Option<ModelCapability>,
+) -> CatalogRoute {
+    let instance = configured.selection.instance.as_str();
+    CatalogRoute {
+        choice: ModelChoice {
+            route: model_route_id(instance, model, variant.map(|variant| variant.id.as_str()))
+                .into(),
+            group: format!("{} · {label}", configured.label).into(),
+            model: model.into(),
+            reasoning_effort: variant.map(|variant| variant.id.as_str().into()),
+            variant_label: variant.map(|variant| variant.label.as_str().into()),
+            context_window: None,
+            supports_image_input: false,
+            supports_image_generation: capability == Some(ModelCapability::ImageGeneration),
+            supports_realtime_voice: capability == Some(ModelCapability::RealtimeVoice),
+            tool_discovery: definition
+                .tool_discovery(model, configured.selection.base_url.as_deref()),
+        },
+        provider: ProviderConfig {
+            instance: instance.into(),
+            provider: configured.selection.provider.as_str().into(),
+            model: model.into(),
+            base_url: configured.selection.base_url.as_ref().map(BaseUrl::share),
+            endpoint_auth: configured.selection.endpoint_auth,
+            reasoning_effort: None,
+            service_tier: None,
+            web_search: Default::default(),
+            tool_discovery: None,
+        },
+        capability,
+    }
 }
 
 /// Yields each variant, or a single `None` when a model has no variants.

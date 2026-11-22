@@ -12,7 +12,7 @@ use super::rejection::{Rejection, internal, invalid_config};
 use super::{GatewayHost, HostHandle, finish_publication};
 use crate::config::auto_routing::{self, Settings, Values};
 use crate::harness::mobius::assembly::{RouteValue, instantiate_routes};
-use crate::harness::mobius::provider_catalog::{configured_model_choices, media_routes};
+use crate::harness::mobius::provider_catalog::{configured_model_choices, decision_route};
 use crate::wire::{BotRecord, ReadyPayload, RouteTarget, SessionRecord};
 
 /// What a client asks for when it starts a chat.
@@ -36,7 +36,7 @@ type Options = BTreeMap<String, RouteOption>;
 
 /// Everything one decision call needs, taken while the state is locked.
 struct Routing {
-    route: RouteValue,
+    model: String,
     settings: Settings,
     questions: BTreeMap<RouteTarget, Options>,
 }
@@ -71,8 +71,8 @@ impl GatewayHost {
         values: Values,
     ) -> std::result::Result<Arc<ReadyPayload>, Rejection> {
         let _mutation = self.begin_mutation().await?;
-        let state = self.state.lock().await;
-        let publication = {
+        let mut state = self.state.lock().await;
+        let (publication, model_changed) = {
             let mut current = state.config()?;
             let choices = configured_model_choices(&current, &state.store, &state.credentials)
                 .map_err(internal)?;
@@ -82,9 +82,14 @@ impl GatewayHost {
                 .map_err(invalid_config)?;
             let publication =
                 crate::publication::Outcome::applied(state.store.save(&next)).map_err(internal)?;
+            let model_changed = auto_routing::model(&current.auto_routing)
+                != auto_routing::model(&next.auto_routing);
             *current = next.into_inner();
-            publication
+            (publication, model_changed)
         };
+        if model_changed {
+            state.decision_route = None;
+        }
         let follow_up = self.publish_ready_after_unlock(state).await;
         finish_publication(publication.confirm(), follow_up)
     }
@@ -92,6 +97,9 @@ impl GatewayHost {
     /// Returns the value picked for each target the model answered with enough confidence.
     async fn route(&self, chat: &mut NewChat, prompt: &str) -> crate::Result<()> {
         let Some(mut routing) = self.routing(&chat.auto).await? else {
+            return Ok(());
+        };
+        let Some(route) = self.decision_route(&routing.model).await? else {
             return Ok(());
         };
         let questions = routing
@@ -116,7 +124,7 @@ impl GatewayHost {
         };
         let mut answers = tokio::time::timeout(
             routing.settings.timeout,
-            decide(&*routing.route.model, &routing.route.lifetime, request),
+            decide(&*route.model, &route.lifetime, request),
         )
         .await
         .map_err(|_elapsed| crate::Error::Invalid("the decision model timed out".into()))??;
@@ -144,6 +152,38 @@ impl GatewayHost {
         Ok(())
     }
 
+    /// Lazily shares the selected adapter and its HTTP pool until its provider changes.
+    async fn decision_route(&self, model: &str) -> crate::Result<Option<Arc<RouteValue>>> {
+        let mut state = self.state.lock().await;
+        let route = {
+            let config = crate::config::lock(&state.config)?;
+            if auto_routing::model(&config.auto_routing) != Some(model) {
+                return Ok(None);
+            }
+            if let Some(route) = &state.decision_route
+                && route.choice.route.as_ref() == model
+            {
+                return Ok(Some(Arc::clone(route)));
+            }
+            let Some(selected) = decision_route(&config.configured_providers, model)? else {
+                return Ok(None);
+            };
+            let route = instantiate_routes(
+                vec![selected],
+                &state.store,
+                &state.credentials,
+                &config.model_transport,
+            )?
+            .pop()
+            .ok_or_else(|| crate::Error::Internal("decision route was not built".into()))?;
+            drop(config);
+            Arc::new(route)
+        };
+        state.decision_route = Some(Arc::clone(&route));
+        drop(state);
+        Ok(Some(route))
+    }
+
     /// Gathers the questions, or `None` when Auto has no usable decision model or nothing
     /// has more than one option.
     async fn routing(&self, auto: &BTreeSet<RouteTarget>) -> crate::Result<Option<Routing>> {
@@ -154,28 +194,15 @@ impl GatewayHost {
                 let Some(model) = auto_routing::model(&config.auto_routing) else {
                     return Ok(None);
                 };
-                let Some(decision) = media_routes(&config.configured_providers, None)?
-                    .decisions
-                    .into_iter()
-                    .find(|route| *route.choice.route == *model)
-                else {
-                    return Ok(None);
-                };
-                let route = instantiate_routes(
-                    vec![decision],
-                    &state.store,
-                    &state.credentials,
-                    &config.model_transport,
-                )?
-                .pop()
-                .ok_or_else(|| crate::Error::Internal("decision route was not built".into()))?;
                 Routing {
-                    route,
+                    model: model.to_owned(),
                     settings: Settings::read(&config.auto_routing)?,
                     questions: BTreeMap::new(),
                 }
             };
-            let bots = if auto.contains(&RouteTarget::Bot) {
+            let bots = if auto.contains(&RouteTarget::Bot)
+                && routing.settings.questions.contains_key(&RouteTarget::Bot)
+            {
                 state.bots.bots()?
             } else {
                 Vec::new()
@@ -304,6 +331,77 @@ mod tests {
             path,
             title: Some(title),
         }
+    }
+
+    #[tokio::test]
+    async fn decision_connection_is_lazy_and_tracks_provider_and_credential_changes() {
+        use crate::config::{ProviderRegistration, test_provider};
+        use mobius::backend::model::provider::BaseUrl;
+        use mobius::protocol::FrontendSettingValue;
+
+        let crate::host::tests::TestGateway {
+            root,
+            workspace,
+            gateway,
+        } = crate::host::tests::test_gateway().await;
+        let endpoint = BaseUrl::new("http://127.0.0.1:9/v1").unwrap();
+        let register = |ids: &[&str]| ProviderRegistration {
+            selection: crate::wire::ProviderConfig {
+                base_url: Some(endpoint.share()),
+                ..test_provider("test", "openrouter", "test/chat")
+            },
+            label: None,
+            tint: None,
+            models: Vec::new(),
+            image_model_ids: None,
+            decision_model_ids: Some(ids.iter().map(|id| (*id).to_owned()).collect()),
+            operator_managed: false,
+        };
+        let rotate = |key: &str| {
+            gateway.set_credential(
+                "test",
+                "openrouter",
+                key.to_owned(),
+                Some(endpoint.share()),
+                None,
+            )
+        };
+        rotate("fixture-first").await.unwrap();
+        gateway
+            .register_provider(true, register(&["test/decide"]), false, false)
+            .await
+            .unwrap();
+        let model = "test::test/decide::default";
+        gateway
+            .configure_auto_routing(Values::from([(
+                "model".into(),
+                FrontendSettingValue::String(model.into()),
+            )]))
+            .await
+            .unwrap();
+        let mut chat = NewChat {
+            workspace,
+            bot_id: "default".into(),
+            auto: RouteTarget::ALL.into_iter().collect(),
+            prompt: None,
+        };
+        gateway.route(&mut chat, "one choice").await.unwrap();
+        assert!(gateway.state.lock().await.decision_route.is_none());
+        let first = gateway.decision_route(model).await.unwrap().unwrap();
+        assert!(Arc::ptr_eq(
+            &first,
+            &gateway.decision_route(model).await.unwrap().unwrap()
+        ));
+        rotate("fixture-next").await.unwrap();
+        let next = gateway.decision_route(model).await.unwrap().unwrap();
+        assert!(!Arc::ptr_eq(&first, &next));
+        gateway
+            .register_provider(true, register(&[]), false, false)
+            .await
+            .unwrap();
+        assert!(gateway.decision_route(model).await.unwrap().is_none());
+        drop(gateway);
+        drop(root);
     }
 
     #[test]
