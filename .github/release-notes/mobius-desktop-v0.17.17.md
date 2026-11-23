@@ -4,4 +4,4 @@ Click the terminal count in a chat to see its running commands. Click Stop besid
 
 The chat list also shows counts for pending questions and approvals. The green terminal icon pulses while a command runs and respects Reduce Motion.
 
-Requires macOS 26 or later on Apple Silicon. Local chats use the bundled gateway. Remote gateways must use protocol 106.
+Requires macOS 26 or later on Apple Silicon. Local chats use the bundled 0.17.17 gateway. Remote gateways must use protocol 106.
