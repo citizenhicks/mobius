@@ -352,6 +352,33 @@ async fn read_frame_rejects_an_oversized_declared_payload() {
 }
 
 #[test]
+fn session_catalog_accepts_optional_activity_metadata() {
+    let mut frame = serde_json::json!({
+        "version": PROTOCOL_VERSION, "type": "sessions_changed", "revision": "1",
+        "sessions": [{
+            "session_id": "chat", "session_context": {"owner_id": "bot"},
+            "sequence": 1, "execution_stats": mobius::backend::checkpoint::ExecutionStats::default(),
+            "pinned": false, "created_at": 1, "updated_at": 1,
+            "activity": {"attention": 2, "state": "idle", "future_counter": 3}
+        }]
+    });
+    let decoded: ServerFrame = serde_json::from_value(frame.clone()).expect("session catalog");
+    let ServerMessage::SessionsChanged { sessions, .. } = decoded.message else {
+        panic!("expected catalog update");
+    };
+    let [SessionSlot::Changed(chat)] = sessions.as_slice() else {
+        panic!("expected changed chat");
+    };
+    assert_eq!(
+        (chat.activity.attention, chat.activity.running_commands),
+        (2, 0)
+    );
+
+    frame["sessions"][0]["activity"]["running_commands"] = serde_json::json!("invalid");
+    assert!(serde_json::from_value::<ServerFrame>(frame).is_err());
+}
+
+#[test]
 fn validate_version_requires_the_exact_protocol() {
     for version in [PROTOCOL_VERSION - 1, PROTOCOL_VERSION + 1] {
         let error = validate_version(version).expect_err("incompatible version must fail");

@@ -394,7 +394,6 @@ pub struct SessionRecord {
 
 /// Gateway-observed lifecycle state for one session.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct SessionActivity {
     /// Pending capability attention items, independent of turn activity.
     pub attention: u32,

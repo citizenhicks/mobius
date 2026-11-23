@@ -302,6 +302,16 @@ CLI autostart and the dashboard use this same version check.
 
 ## Wire protocol notes for client authors
 
+The frame version identifies a breaking change. An optional catalog field can
+ship at the same version when released readers ignore it and new readers can
+interpret its absence. Check both directions before emitting the field. For
+example, the 0.17.17 Rust clients reject unfamiliar fields inside session
+`activity`, even though they accept extra fields on the enclosing session record.
+
+New operations can use the same version when the gateway advertises them and
+the client sends them only after that advertisement. Renaming a required field
+or sending an unfamiliar message type to every client requires a version bump.
+
 Authenticated clients may send `set_notifications` with a request ID and a `disabled` array
 containing `sessions` and/or `bots` to suppress unsolicited catalog updates. An empty array
 restores them. Preferences last for that connection; initial and recovery `ready` snapshots,
