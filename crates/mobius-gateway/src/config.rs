@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::harness::mobius::DEFAULT_MAX_MODEL_STEPS;
+use crate::harness::mobius::provider_catalog;
 use mobius::backend::model::provider::{
     BaseUrl, ModelPreset, ProviderAuth, ProviderDefinition, default_provider, provider,
 };
@@ -37,15 +38,12 @@ pub use self::store::{
     ConfigStore, CredentialStore, ResolvedCredential, load_secret_file, state_dir, unix_day,
 };
 pub use self::validation::validate_agent_composition;
-pub(crate) use self::validation::{
-    effective_reasoning_effort, model_route_id, validate_bot_compatibility,
-    validate_mobius_settings,
-};
 use self::validation::{
     invalid_cloudflare_hostname, validate_agent_composition_with_ceilings,
     validate_cloudflare_token, validate_configured_provider,
     validate_configured_provider_selection, validate_custom_model_route_count,
 };
+pub(crate) use self::validation::{validate_bot_compatibility, validate_mobius_settings};
 pub(crate) use self::workspace::{
     CanonicalWorkspace, create_workspace_directory, local_user_name, validate_chat_workspace,
     workspace_id,
@@ -444,7 +442,7 @@ impl GatewayConfig {
                     } else if !definition.models().is_empty() {
                         definition.models().to_vec()
                     } else {
-                        crate::harness::mobius::provider_catalog::prepare_configured_models(
+                        provider_catalog::prepare_configured_models(
                             definition,
                             vec![ConfiguredModel {
                                 id: configured.selection.model.clone(), // rules-allow: the catalog entry and the selection each own the model ID
@@ -457,7 +455,7 @@ impl GatewayConfig {
                 |previous| previous.models,
             )
         } else {
-            crate::harness::mobius::provider_catalog::prepare_configured_models(
+            provider_catalog::prepare_configured_models(
                 definition,
                 configured.models,
                 previous.map_or_else(Vec::new, |previous| previous.models),
@@ -512,7 +510,7 @@ impl GatewayConfig {
         let mut next = self.clone(); // rules-allow: staged copy; the caller keeps the current value until the new one is published
         next.configured_providers.remove(instance);
         if let Some(mut default) = next.bot_defaults.take() {
-            if clear_missing_model_routes(&mut default.config, &next)? {
+            if clear_missing_model_routes(&mut default.config, &next.configured_providers)? {
                 default.revision = default
                     .revision
                     .checked_add(1)
@@ -667,8 +665,7 @@ impl GatewayConfig {
                     &default.config.middleware,
                 )
             {
-                if !crate::harness::mobius::provider_catalog::configured_route_exists(self, route)?
-                {
+                if !provider_catalog::configured_route_exists(&self.configured_providers, route)? {
                     return Err(Error::Invalid(format!(
                         "Bot default middleware setting `{middleware}.{setting}` is not a configured model route"
                     )));
@@ -862,7 +859,7 @@ impl ChatSpec {
 
 fn clear_missing_model_routes(
     composition: &mut AgentComposition,
-    gateway: &GatewayConfig,
+    providers: &BTreeMap<String, ConfiguredProvider>,
 ) -> Result<bool> {
     let mut removed = Vec::new();
     for (middleware, setting, route) in
@@ -870,7 +867,7 @@ fn clear_missing_model_routes(
             &composition.middleware,
         )
     {
-        if !crate::harness::mobius::provider_catalog::configured_route_exists(gateway, route)? {
+        if !provider_catalog::configured_route_exists(providers, route)? {
             removed.push((middleware.to_owned(), setting.to_owned()));
         }
     }

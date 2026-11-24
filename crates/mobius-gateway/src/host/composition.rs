@@ -8,7 +8,7 @@ use super::state::GatewayState;
 use crate::config::GatewayConfig;
 use crate::harness::ValidatedSubmission;
 use crate::harness::mobius::extensions::ExtensionStore;
-use crate::harness::mobius::provider_catalog::configured_model_choices;
+use crate::harness::mobius::provider_catalog;
 use crate::wire::{AgentComposition, HarnessConfig};
 use mobius::protocol::Submission;
 use std::path::Path;
@@ -77,7 +77,8 @@ fn with_explicit_effort(gateway: &GatewayConfig, config: &mut AgentComposition) 
         return;
     };
     config.provider.reasoning_effort =
-        crate::config::effective_reasoning_effort(definition, configured, &config.provider)
+        provider_catalog::configured_model(definition, configured, &config.provider.model)
+            .and_then(|model| model.default_reasoning.as_deref())
             .map(str::to_owned);
 }
 
@@ -88,7 +89,8 @@ pub(super) fn check_composition(
     config: &AgentComposition,
 ) -> std::result::Result<crate::harness::mobius::middleware_manifest::MobiusSettings, Rejection> {
     let models =
-        configured_model_choices(gateway, &state.store, &state.credentials).map_err(internal)?;
+        provider_catalog::configured_model_choices(gateway, &state.store, &state.credentials)
+            .map_err(internal)?;
     let settings = crate::config::validate_bot_compatibility(gateway, config, models.catalogs())
         .map_err(invalid_config)?;
     ExtensionStore::new(&state.store)

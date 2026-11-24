@@ -7,6 +7,7 @@ use mobius::protocol::FrontendSettingValue;
 
 use super::gateway_host::GatewayHost;
 use super::rejection::{Rejection, internal, invalid_config};
+use crate::harness::mobius::provider_catalog;
 use crate::wire::{AgentComposition, BotModelSwitch, HarnessConfig};
 
 impl GatewayHost {
@@ -22,7 +23,7 @@ impl GatewayHost {
         if from.contains(to) {
             return Err(invalid_config("the new model is also a retired one"));
         }
-        let (bots, next_defaults, route) = {
+        let (bots, next_defaults, route, retired) = {
             let state = self.state.lock().await;
             let gateway = state.config()?;
             let configured = gateway
@@ -32,26 +33,26 @@ impl GatewayHost {
             let definition =
                 mobius::backend::model::provider::provider(&configured.selection.provider)
                     .map_err(invalid_config)?;
-            let mut selection = configured.selection.clone(); // rules-allow: the target selection is resolved on a copy
-            selection.model = to.into();
-            selection.reasoning_effort = None;
-            let effort =
-                crate::config::effective_reasoning_effort(definition, configured, &selection);
-            let route = crate::config::model_route_id(instance, to, effort);
+            let route = provider_catalog::default_model_route(definition, configured, to);
+            let retired = provider_catalog::retired_model_routes(definition, configured, &from);
             let next_defaults = gateway.bot_defaults.as_ref().and_then(|defaults| {
-                let next = switched(&defaults.config, instance, &from, to, &route)?;
+                let next = switched(&defaults.config, instance, &from, to, &route, &retired)?;
                 Some((defaults.revision, next))
             });
             drop(gateway);
-            (state.bots.bots().map_err(internal)?, next_defaults, route)
+            (
+                state.bots.bots().map_err(internal)?,
+                next_defaults,
+                route,
+                retired,
+            )
         };
-        let switch = |config: &AgentComposition| switched(config, instance, &from, to, &route);
         let mut changed = 0;
         for bot in &bots {
             let HarnessConfig::Mobius(composition) = &bot.config.config else {
                 continue;
             };
-            let Some(next) = switch(composition) else {
+            let Some(next) = switched(composition, instance, &from, to, &route, &retired) else {
                 continue;
             };
             self.update_bot(
@@ -100,20 +101,18 @@ fn switched(
     from: &BTreeSet<&str>,
     to: &str,
     route: &str,
+    retired: &impl Fn(&str) -> bool,
 ) -> Option<AgentComposition> {
-    let retired = |value: &str| {
-        let mut parts = value.split("::");
-        parts.next() == Some(instance) && parts.next().is_some_and(|model| from.contains(model))
-    };
     let primary =
         config.provider.instance == instance && from.contains(config.provider.model.as_str());
-    let middleware = config
-        .middleware
-        .settings
-        .values()
-        .flat_map(|settings| settings.values())
-        .any(|value| matches!(value, FrontendSettingValue::String(text) if retired(text)));
-    if !primary && !middleware {
+    if !primary
+        && !config
+            .middleware
+            .settings
+            .values()
+            .flat_map(|settings| settings.values())
+            .any(|value| matches!(value, FrontendSettingValue::String(text) if retired(text)))
+    {
         return None;
     }
     let mut next = config.clone(); // rules-allow: the switched copy is saved in place of the original
@@ -160,7 +159,16 @@ mod tests {
             FrontendSettingValue::String("own::old::low".into()),
         );
         let from = BTreeSet::from(["old"]);
-        let next = switched(&config, "cloud", &from, "new", "cloud::new::default").unwrap();
+        let retired = |route: &str| route == "cloud::old::low";
+        let next = switched(
+            &config,
+            "cloud",
+            &from,
+            "new",
+            "cloud::new::default",
+            &retired,
+        )
+        .unwrap();
         assert_eq!(
             (
                 next.provider.model.as_str(),
@@ -177,6 +185,16 @@ mod tests {
             settings["kept"],
             FrontendSettingValue::String("own::old::low".into())
         );
-        assert!(switched(&next, "cloud", &from, "new", "cloud::new::default").is_none());
+        assert!(
+            switched(
+                &next,
+                "cloud",
+                &from,
+                "new",
+                "cloud::new::default",
+                &retired
+            )
+            .is_none()
+        );
     }
 }

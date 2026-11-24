@@ -256,11 +256,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.storage.selected.clear();
-        self.storage.kinds = [true; 3];
-        self.client.storage.export_required = false;
-        self.client.storage.export_complete = false;
-        self.client.storage.export_failed = false;
+        if self.client.storage.open_cleanup() {
+            self.storage.selected.clear();
+            self.storage.kinds = [true; 3];
+        }
         self.refresh_storage(cx);
         let body = WorkspaceDialogPart::new(Self::storage_sheet, cx);
         let header = WorkspaceDialogPart::new(Self::storage_header, cx);
@@ -297,7 +296,7 @@ impl Workspace {
                 .disabled(busy || self.storage.selected.is_empty())
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.storage.selected.clear();
-                    this.client.storage.export_complete = false;
+                    this.client.storage.selection_changed();
                     cx.notify();
                 })),
             )
@@ -316,7 +315,7 @@ impl Workspace {
                     }
                     this.storage.by_project = *index == 1;
                     this.storage.selected.clear();
-                    this.client.storage.export_complete = false;
+                    this.client.storage.selection_changed();
                     cx.notify();
                 }),
             )
@@ -383,7 +382,7 @@ impl Workspace {
                             },
                         );
                         this.storage.selected.retain(|id| available.contains(&**id));
-                        this.client.storage.export_complete = false;
+                        this.client.storage.selection_changed();
                         cx.notify();
                     }))
             }),
@@ -392,19 +391,18 @@ impl Workspace {
 
     fn storage_footer(&self, cx: &Context<Self>) -> Div {
         let busy = !self.client.link.is_ready() || self.client.storage.busy();
-        let enabled = !busy
+        let enabled = self.client.link.is_ready()
+            && self.client.storage.can_purge()
             && !self.storage.selected.is_empty()
-            && self.storage.kinds.iter().any(|v| *v)
-            && (!self.client.storage.export_required
-                || self.client.storage.export_complete
-                || self.client.storage.export_failed);
+            && self.storage.kinds.iter().any(|v| *v);
+        let saved = self.client.storage.export_saved();
         button_row()
             .child(
                 button(
                     "storage-export",
                     if self.client.storage.exporting() {
                         "Exporting…"
-                    } else if self.client.storage.export_complete {
+                    } else if saved {
                         "Export saved"
                     } else {
                         "Export first"
@@ -412,14 +410,14 @@ impl Workspace {
                 )
                 .icon(
                     icon(
-                        if self.client.storage.export_complete {
+                        if saved {
                             "hi.checkCircle"
                         } else {
                             "hi.download01"
                         },
                         &self.palette,
                     )
-                    .text_color(if self.client.storage.export_complete {
+                    .text_color(if saved {
                         self.palette.signal
                     } else {
                         self.palette.icon_ink()
@@ -427,9 +425,7 @@ impl Workspace {
                 )
                 .h(height::LARGE)
                 .pill_corners()
-                .when(self.client.storage.export_complete, |button| {
-                    button.text_color(self.palette.signal)
-                })
+                .when(saved, |button| button.text_color(self.palette.signal))
                 .flex_1()
                 .disabled(
                     busy || self.storage.selected.is_empty()
@@ -510,7 +506,7 @@ impl Workspace {
                                 this.storage.selected.insert(id.share());
                             }
                         }
-                        this.client.storage.export_complete = false;
+                        this.client.storage.selection_changed();
                         cx.notify();
                     })),
             );
@@ -594,10 +590,26 @@ impl Workspace {
                     if this.client.epoch != epoch {
                         return;
                     }
-                    this.storage.selected = ids.iter().map(SessionId::share).collect();
-                    this.storage.kinds = kinds;
-                    this.client.storage.begin_export(folder, ids, kinds);
-                    this.start_storage_export();
+                    let restore = this
+                        .storage
+                        .selected
+                        .iter()
+                        .ne(&ids)
+                        .then(|| ids.iter().map(SessionId::share).collect());
+                    match this.client.storage.begin_export(
+                        this.client.gateway.as_ref(),
+                        folder,
+                        ids,
+                        kinds,
+                    ) {
+                        Ok(()) => {
+                            if let Some(selected) = restore {
+                                this.storage.selected = selected;
+                            }
+                            this.storage.kinds = kinds;
+                        }
+                        Err(error) => this.report(error),
+                    }
                     cx.notify();
                 }) {
                     tracing::debug!(%error, "the workspace closed before the export started");
@@ -613,36 +625,20 @@ impl Workspace {
         result: Result<(), String>,
         cx: &mut Context<Self>,
     ) {
-        if !self.client.storage.exported(id, result.is_err()) {
-            return;
-        }
-        if let Err(error) = result {
-            self.report(error);
-        }
-        self.start_storage_export();
-        if let Some(folder) = self.client.storage.finish_export() {
-            self.shell.notices.push((
+        match self
+            .client
+            .storage
+            .exported(self.client.gateway.as_ref(), id, result)
+        {
+            Ok(Some(folder)) => self.shell.notices.push((
                 Tone::Success,
                 "Files exported. Click to show them in Finder.".into(),
-                folder.map(navigation::NoticeAction::Reveal),
-            ));
+                Some(navigation::NoticeAction::Reveal(folder)),
+            )),
+            Ok(None) => return,
+            Err(error) => self.report(error),
         }
         cx.notify();
-    }
-
-    fn start_storage_export(&mut self) {
-        let Some(step) = self.client.storage.next_export() else {
-            return;
-        };
-        let started = self.client.gateway.as_ref().and_then(|gateway| {
-            gateway
-                .export_storage(step.session, step.destination, step.uploads, step.artifacts)
-                .ok()
-        });
-        if started.is_none() {
-            self.report("Export could not start. Try again before purging.");
-        }
-        self.client.storage.export_started(started);
     }
 
     pub(in crate::ui) fn confirm_delete_file(

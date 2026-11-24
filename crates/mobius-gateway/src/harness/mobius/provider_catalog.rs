@@ -11,7 +11,7 @@ use mobius::protocol::{FrontendSettingOption, FrontendTone, ModelCapability, Mod
 
 use crate::config::{
     ConfigStore, ConfiguredModel, ConfiguredProvider, CredentialStore, DEFAULT_CONTEXT_WINDOW,
-    GatewayConfig, model_route_id,
+    GatewayConfig,
 };
 use crate::wire::{
     ProviderAuthKind, ProviderConfig, ProviderEndpointAuth, ProviderInstance, ProviderModel,
@@ -214,14 +214,17 @@ pub(crate) fn configured_model_providers(
     credentialed: &CredentialedInstances<'_>,
 ) -> Result<BTreeMap<Arc<str>, String>> {
     let mut providers = BTreeMap::new();
-    let routes = configured_model_routes(
-        &gateway.configured_providers,
-        default_instance(gateway),
-        credentialed,
-    )?;
+    for configured in gateway.configured_providers.values() {
+        if let Some(definition) = available_chat_provider(configured, credentialed)? {
+            let instance = configured.selection.instance.as_str();
+            for (route, _, _) in chat_variants(definition, configured, &configured.selection) {
+                providers.insert(route.encode().into(), instance.to_owned());
+            }
+        }
+    }
     let media = media_routes(&gateway.configured_providers, Some(credentialed))?;
-    for routes in [routes, media.images, media.voices] {
-        route_choices(routes, &mut providers);
+    for route in media.images.into_iter().chain(media.voices) {
+        providers.insert(route.choice.route, route.provider.instance);
     }
     Ok(providers)
 }
@@ -240,17 +243,26 @@ pub(crate) fn route_choices(
         .collect()
 }
 
-pub(crate) fn configured_route_exists(gateway: &GatewayConfig, route: &str) -> Result<bool> {
-    for configured in gateway.configured_providers.values() {
+pub(crate) fn configured_route_exists(
+    providers: &BTreeMap<String, ConfiguredProvider>,
+    route: &str,
+) -> Result<bool> {
+    for configured in providers.values() {
         let definition = provider(&configured.selection.provider)?;
-        if catalog_routes(definition, configured, &configured.selection)
-            .iter()
-            .any(|candidate| *candidate.choice.route == *route)
-        {
+        if has_chat_route(definition, configured, &configured.selection, route) {
             return Ok(true);
         }
     }
     Ok(false)
+}
+
+pub(crate) fn has_chat_route(
+    definition: &ProviderDefinition,
+    configured: &ConfiguredProvider,
+    selection: &ProviderConfig,
+    route: &str,
+) -> bool {
+    chat_variants(definition, configured, selection).any(|(id, _, _)| id.matches(route))
 }
 
 pub(crate) fn default_instance(gateway: &GatewayConfig) -> Option<&str> {
@@ -270,14 +282,7 @@ pub(crate) fn configured_model_routes(
     configured
         .sort_by_key(|configured| Some(configured.selection.instance.as_str()) != default_instance);
     for configured in configured {
-        let definition = provider(&configured.selection.provider)?;
-        if !definition
-            .web_search()
-            .contains(&configured.selection.web_search)
-        {
-            continue;
-        }
-        if credentialed.contains(&configured.selection) {
+        if let Some(definition) = available_chat_provider(configured, credentialed)? {
             routes.extend(catalog_routes(
                 definition,
                 configured,
@@ -286,6 +291,18 @@ pub(crate) fn configured_model_routes(
         }
     }
     Ok(routes)
+}
+
+fn available_chat_provider(
+    configured: &ConfiguredProvider,
+    credentialed: &CredentialedInstances<'_>,
+) -> Result<Option<&'static ProviderDefinition>> {
+    let definition = provider(&configured.selection.provider)?;
+    Ok((credentialed.contains(&configured.selection)
+        && definition
+            .web_search()
+            .contains(&configured.selection.web_search))
+    .then_some(definition))
 }
 
 #[cfg(test)]
@@ -375,6 +392,79 @@ pub(crate) fn prepare_configured_models(
         .collect()
 }
 
+/// Parts of a wire route ID. Models and efforts may themselves contain the separator.
+pub(crate) struct RouteId<'a>([&'a str; 5]);
+
+impl<'a> RouteId<'a> {
+    fn new(instance: &'a str, model: &'a str, effort: Option<&'a str>) -> Self {
+        Self([instance, "::", model, "::", effort.unwrap_or("default")])
+    }
+
+    pub(crate) fn encode(&self) -> String {
+        self.0.concat()
+    }
+
+    fn starts_with(&self, prefix: &str) -> bool {
+        self.0
+            .into_iter()
+            .flat_map(str::bytes)
+            .take(prefix.len())
+            .eq(prefix.bytes())
+    }
+
+    fn matches(&self, route: &str) -> bool {
+        self.0
+            .into_iter()
+            .try_fold(route, |tail, part| tail.strip_prefix(part))
+            == Some("")
+    }
+}
+
+pub(crate) fn configured_model<'a>(
+    definition: &'a ProviderDefinition,
+    configured: &'a ConfiguredProvider,
+    model: &str,
+) -> Option<&'a ModelPreset> {
+    models(definition, configured)
+        .iter()
+        .find(|preset| preset.id == model)
+}
+
+pub(crate) fn default_model_route(
+    definition: &ProviderDefinition,
+    configured: &ConfiguredProvider,
+    model: &str,
+) -> String {
+    let effort = configured_model(definition, configured, model)
+        .and_then(|model| model.default_reasoning.as_deref());
+    RouteId::new(&configured.selection.instance, model, effort).encode()
+}
+
+/// Recognizes also retired IDs that are no longer advertised. A still-advertised
+/// route belongs to its exact model, even when another model's ID is its prefix.
+pub(crate) fn retired_model_routes(
+    definition: &ProviderDefinition,
+    configured: &ConfiguredProvider,
+    retired: &BTreeSet<&str>,
+) -> impl Fn(&str) -> bool + use<> {
+    let instance = &configured.selection.instance;
+    // An empty effort encodes exactly the instance, model and trailing separator.
+    let prefixes: Vec<_> = retired
+        .iter()
+        .map(|model| RouteId::new(instance, model, Some("")).encode())
+        .collect();
+    let retained: BTreeSet<_> = chat_variants(definition, configured, &configured.selection)
+        .filter(|(route, model, _)| {
+            !retired.contains(model.id.as_str())
+                && prefixes.iter().any(|prefix| route.starts_with(prefix))
+        })
+        .map(|(route, _, _)| route.encode())
+        .collect();
+    move |route| {
+        prefixes.iter().any(|prefix| route.starts_with(prefix)) && !retained.contains(route)
+    }
+}
+
 /// The chat route one provider selection resolves to.
 pub(crate) struct SelectedRoute<'a> {
     pub(crate) route: String,
@@ -391,25 +481,17 @@ pub(crate) fn selected_route<'a>(
     configured: Option<&'a ConfiguredProvider>,
     selection: &'a ProviderConfig,
 ) -> SelectedRoute<'a> {
-    let preset = configured
-        .and_then(|configured| {
-            models(definition, configured)
-                .iter()
-                .find(|model| model.id == selection.model)
-        })
-        .or_else(|| definition.model(&selection.model));
-    let effort = match configured {
-        Some(configured) => {
-            crate::config::effective_reasoning_effort(definition, configured, selection)
-        }
-        None => selection.reasoning_effort.as_deref().or_else(|| {
-            definition
-                .model(&selection.model)
-                .and_then(|preset| preset.default_reasoning.as_deref())
-        }),
+    let selected = match configured {
+        Some(configured) => configured_model(definition, configured, &selection.model),
+        None => definition.model(&selection.model),
     };
+    let effort = selection
+        .reasoning_effort
+        .as_deref()
+        .or_else(|| selected?.default_reasoning.as_deref());
+    let preset = selected.or_else(|| definition.model(&selection.model));
     SelectedRoute {
-        route: model_route_id(&selection.instance, &selection.model, effort),
+        route: RouteId::new(&selection.instance, &selection.model, effort).encode(),
         effort,
         preset,
         context_window: preset.map_or_else(
@@ -430,27 +512,34 @@ pub(crate) fn models<'a>(
     }
 }
 
+fn chat_variants<'a>(
+    definition: &'a ProviderDefinition,
+    configured: &'a ConfiguredProvider,
+    selection: &'a ProviderConfig,
+) -> impl Iterator<Item = (RouteId<'a>, &'a ModelPreset, Option<&'a ReasoningPreset>)> {
+    let models = if selection.model.is_empty() {
+        &[]
+    } else {
+        models(definition, configured)
+    };
+    models
+        .iter()
+        .filter(|model| model.id == selection.model)
+        .chain(models.iter().filter(|model| model.id != selection.model))
+        .flat_map(move |model| {
+            variant_routes(&selection.instance, &model.id, &model.reasoning)
+                .map(move |(route, variant)| (route, model, variant))
+        })
+}
+
 pub(crate) fn catalog_routes(
     definition: &ProviderDefinition,
     configured: &ConfiguredProvider,
     selection: &ProviderConfig,
 ) -> Vec<CatalogRoute> {
-    if selection.model.is_empty() {
-        return Vec::new();
-    }
-    let models = models(definition, configured);
-    let ordered = models
-        .iter()
-        .filter(|model| model.id == selection.model)
-        .chain(models.iter().filter(|model| model.id != selection.model));
-    let mut routes = Vec::new();
-    for model in ordered {
-        let (id, label, context_window) = (
-            model.id.as_str(),
-            model.label.as_str(),
-            model.context_window,
-        );
-        for variant in with_default(&model.reasoning) {
+    chat_variants(definition, configured, selection)
+        .map(|(route, model, variant)| {
+            let id = model.id.as_str();
             let effort = variant.map(|variant| variant.id.as_str());
             let variant_label = variant.map(|variant| variant.label.as_str());
             let provider = ProviderConfig {
@@ -468,15 +557,14 @@ pub(crate) fn catalog_routes(
                 web_search: configured.selection.web_search,
                 tool_discovery: configured.selection.tool_discovery,
             };
-            let route = model_route_id(&selection.instance, id, effort);
-            routes.push(CatalogRoute {
+            CatalogRoute {
                 choice: ModelChoice {
-                    route: route.into(),
-                    group: format!("{} · {}", configured.label, label).into(),
+                    route: route.encode().into(),
+                    group: format!("{} · {}", configured.label, model.label).into(),
                     model: id.into(),
                     reasoning_effort: effort.map(Arc::from),
                     variant_label: variant_label.map(str::to_owned),
-                    context_window: Some(context_window),
+                    context_window: Some(model.context_window),
                     supports_image_input: definition.supports_image_input(),
                     supports_image_generation: definition.supports_at(
                         ModelCapability::ImageGeneration,
@@ -490,10 +578,9 @@ pub(crate) fn catalog_routes(
                 },
                 provider,
                 capability: None,
-            });
-        }
-    }
-    routes
+            }
+        })
+        .collect()
 }
 
 pub(crate) struct CatalogRoute {
@@ -602,7 +689,7 @@ pub(crate) fn decision_route(
         if let Some(model) = configured
             .decision_model_ids
             .iter()
-            .find(|id| model_route_id(&configured.selection.instance, id, None) == selected)
+            .find(|id| RouteId::new(&configured.selection.instance, id, None).matches(selected))
         {
             let definition = provider(&configured.selection.provider)?;
             return Ok(Some(media_route(
@@ -629,7 +716,8 @@ fn media_route(
     let instance = configured.selection.instance.as_str();
     CatalogRoute {
         choice: ModelChoice {
-            route: model_route_id(instance, model, variant.map(|variant| variant.id.as_str()))
+            route: RouteId::new(instance, model, variant.map(|variant| variant.id.as_str()))
+                .encode()
                 .into(),
             group: format!("{} · {label}", configured.label).into(),
             model: model.into(),
@@ -655,6 +743,19 @@ fn media_route(
         },
         capability,
     }
+}
+
+pub(crate) fn variant_routes<'a>(
+    instance: &'a str,
+    model: &'a str,
+    variants: &'a [ReasoningPreset],
+) -> impl Iterator<Item = (RouteId<'a>, Option<&'a ReasoningPreset>)> {
+    with_default(variants).map(move |variant| {
+        (
+            RouteId::new(instance, model, variant.map(|preset| preset.id.as_str())),
+            variant,
+        )
+    })
 }
 
 /// Yields each variant, or a single `None` when a model has no variants.
@@ -838,9 +939,9 @@ mod tests {
                         ..Default::default()
                     },
                     ConfiguredModel {
-                        id: "fast".into(),
-                        reasoning_efforts: Some(vec!["brief".into()]),
-                        default_reasoning: Some("brief".into()),
+                        id: "fast::v2".into(),
+                        reasoning_efforts: Some(vec!["brief::soft".into()]),
+                        default_reasoning: Some("brief::soft".into()),
                         ..Default::default()
                     },
                     ConfiguredModel {
@@ -874,7 +975,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 ("reasoner", vec!["low", "high"], Some("high")),
-                ("fast", vec!["brief"], Some("brief")),
+                ("fast::v2", vec!["brief::soft"], Some("brief::soft")),
                 ("plain", Vec::new(), None),
             ]
         );
@@ -887,9 +988,37 @@ mod tests {
             [
                 "custom::reasoner::low",
                 "custom::reasoner::high",
-                "custom::fast::brief",
+                "custom::fast::v2::brief::soft",
                 "custom::plain::default"
             ]
+        );
+        let target = default_model_route(definition, &configured, "fast::v2");
+        assert_eq!(target, "custom::fast::v2::brief::soft");
+        assert!(
+            has_chat_route(definition, &configured, &configured.selection, &target),
+            "membership accepts separators inside model and effort IDs"
+        );
+        assert!(
+            !has_chat_route(
+                definition,
+                &configured,
+                &configured.selection,
+                "custom::fast::v2::brief"
+            ),
+            "a prefix is not a catalog route"
+        );
+        let retired = retired_model_routes(
+            definition,
+            &configured,
+            &BTreeSet::from(["fast", "gone::v1"]),
+        );
+        assert!(
+            !retired(&target),
+            "retiring a shorter ID keeps the advertised model"
+        );
+        assert!(
+            retired("custom::gone::v1::high"),
+            "a saved route can outlive its catalog entry"
         );
         let builtin = provider("openai_socket").expect("builtin provider");
         configured.selection.provider = "openai_socket".into();

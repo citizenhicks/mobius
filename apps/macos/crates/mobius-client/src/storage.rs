@@ -1,10 +1,13 @@
-//! Gateway storage: measuring it, the purges and deletions in flight, and the export that
-//! must finish before a purge.
+//! Gateway storage measurements, file deletions and sequential chat exports.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::BTreeSet;
+use std::iter::Enumerate;
+use std::mem;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::vec::IntoIter;
 
+use super::Gateway;
 use mobius::SessionId;
 use mobius::backend::session_files::{SessionFileOrigin, SessionFileSelection};
 use mobius_gateway::storage_usage::StorageUsage;
@@ -25,13 +28,24 @@ pub enum StorageEvent {
     MeasureLater,
 }
 
-/// The next chat to export, where it goes and whether uploads and artifacts are included.
+#[derive(Debug, Default)]
+enum Export {
+    #[default]
+    Optional,
+    SelectionChanged,
+    Running {
+        request_id: Arc<str>,
+        batch: ExportBatch,
+    },
+    Saved,
+}
+
 #[derive(Debug)]
-pub struct ExportStep {
-    pub session: SessionId,
-    pub destination: PathBuf,
-    pub uploads: bool,
-    pub artifacts: bool,
+struct ExportBatch {
+    folder: PathBuf,
+    sessions: Enumerate<IntoIter<SessionId>>,
+    uploads: bool,
+    artifacts: bool,
 }
 
 #[derive(Debug, Default)]
@@ -41,13 +55,7 @@ pub struct Storage {
     pub request: Option<Arc<str>>,
     pending: BTreeSet<Arc<str>>,
     before: Option<u64>,
-    export_request: Option<Arc<str>>,
-    export_queue: VecDeque<(SessionId, PathBuf)>,
-    export_kinds: [bool; 3],
-    pub export_failed: bool,
-    pub export_required: bool,
-    pub export_complete: bool,
-    export_folder: Option<PathBuf>,
+    export: Export,
 }
 
 impl Storage {
@@ -57,7 +65,30 @@ impl Storage {
     }
 
     pub fn exporting(&self) -> bool {
-        self.export_request.is_some()
+        matches!(self.export, Export::Running { .. })
+    }
+
+    pub fn export_saved(&self) -> bool {
+        matches!(self.export, Export::Saved)
+    }
+
+    pub fn can_purge(&self) -> bool {
+        self.pending.is_empty() && matches!(self.export, Export::Optional | Export::Saved)
+    }
+
+    /// Keeps an active export and its selection when the dialog reopens.
+    pub fn open_cleanup(&mut self) -> bool {
+        if self.exporting() {
+            return false;
+        }
+        self.export = Export::Optional;
+        true
+    }
+
+    pub fn selection_changed(&mut self) {
+        if self.export_saved() {
+            self.export = Export::SelectionChanged;
+        }
     }
 
     /// The request that measures storage, unless one is already in flight.
@@ -137,69 +168,83 @@ impl Storage {
         self.pending.insert(request_id);
     }
 
-    /// Queues each chat's export into its own folder inside `folder`.
-    pub fn begin_export(&mut self, folder: PathBuf, sessions: Vec<SessionId>, kinds: [bool; 3]) {
-        self.export_required = true;
-        self.export_complete = false;
-        self.export_failed = false;
-        self.export_kinds = kinds;
-        self.export_queue = sessions
-            .into_iter()
-            .enumerate()
-            .map(|(index, session)| (session, folder.join(format!("Chat-{}", index + 1))))
-            .collect();
-        self.export_folder = Some(folder);
+    /// Starts a sequential export of the selected chats.
+    ///
+    /// # Errors
+    ///
+    /// When another export is active or the gateway refuses the first request.
+    pub fn begin_export(
+        &mut self,
+        gateway: Option<&Gateway>,
+        folder: PathBuf,
+        sessions: Vec<SessionId>,
+        kinds: [bool; 3],
+    ) -> Result<(), String> {
+        if self.exporting() {
+            return Err("An export is already running.".into());
+        }
+        let batch = ExportBatch {
+            folder,
+            sessions: sessions.into_iter().enumerate(),
+            uploads: kinds[0],
+            artifacts: kinds[1],
+        };
+        self.advance_export(batch, gateway).map(|_| ())
     }
 
-    pub fn next_export(&mut self) -> Option<ExportStep> {
-        let (session, destination) = self.export_queue.pop_front()?;
-        Some(ExportStep {
-            session,
-            destination,
-            uploads: self.export_kinds[0],
-            artifacts: self.export_kinds[1],
-        })
+    /// Advances only the acknowledged batch and returns its folder once, on completion.
+    ///
+    /// # Errors
+    ///
+    /// When the transfer failed or the gateway refuses the next request.
+    pub fn exported(
+        &mut self,
+        gateway: Option<&Gateway>,
+        request_id: &str,
+        result: Result<(), String>,
+    ) -> Result<Option<PathBuf>, String> {
+        match mem::take(&mut self.export) {
+            Export::Running {
+                request_id: expected,
+                batch,
+            } if expected.as_ref() == request_id => {
+                result?;
+                self.advance_export(batch, gateway)
+            }
+            other => {
+                self.export = other;
+                Ok(None)
+            }
+        }
     }
 
-    /// Records the export request a step started, or that it could not start.
-    pub fn export_started(&mut self, request_id: Option<Arc<str>>) {
-        if request_id.is_none() {
-            self.export_queue.clear();
-            self.export_failed = true;
-        }
-        self.export_request = request_id;
-    }
-
-    /// Takes one chat's export result; `false` when `request_id` is not the running export.
-    pub fn exported(&mut self, request_id: &str, failed: bool) -> bool {
-        if self.export_request.as_deref() != Some(request_id) {
-            return false;
-        }
-        self.export_request = None;
-        self.export_failed |= failed;
-        if self.export_failed {
-            self.export_queue.clear();
-        }
-        true
-    }
-
-    /// The export folder once every chat is exported without a failure.
-    pub fn finish_export(&mut self) -> Option<Option<PathBuf>> {
-        if self.exporting() || self.export_failed {
-            return None;
-        }
-        self.export_complete = true;
-        Some(self.export_folder.take())
+    fn advance_export(
+        &mut self,
+        mut batch: ExportBatch,
+        gateway: Option<&Gateway>,
+    ) -> Result<Option<PathBuf>, String> {
+        let Some((index, session)) = batch.sessions.next() else {
+            self.export = Export::Saved;
+            return Ok(Some(batch.folder));
+        };
+        let destination = batch.folder.join(format!("Chat-{}", index + 1));
+        self.export = Export::Optional;
+        let request_id = gateway
+            .and_then(|gateway| {
+                gateway
+                    .export_storage(session, destination, batch.uploads, batch.artifacts)
+                    .ok()
+            })
+            .ok_or("Export could not start. Try again before purging.")?;
+        self.export = Export::Running { request_id, batch };
+        Ok(None)
     }
 
     pub fn disconnected(&mut self) {
         self.request = None;
         self.pending.clear();
         self.before = None;
-        self.export_queue.clear();
-        self.export_request = None;
-        self.export_failed = true;
-        self.export_complete = false;
+        self.export = Export::Optional;
     }
 
     /// Forgets a request that never reached the gateway.

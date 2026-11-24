@@ -585,17 +585,6 @@ pub struct FrontendPreviewEvent {
     pub event: EventMsg,
 }
 
-impl From<crate::backend::checkpoint::JournalEvent> for FrontendPreviewEvent {
-    fn from(record: crate::backend::checkpoint::JournalEvent) -> Self {
-        Self {
-            sequence: record.sequence,
-            submission_id: record.event.submission_id,
-            recorded_at_ms: record.recorded_at_ms,
-            event: record.event.msg,
-        }
-    }
-}
-
 /// Generic capability UI updates understood by every frontend.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "frontend_type", rename_all = "snake_case")]

@@ -27,7 +27,6 @@ use tokio_tungstenite::tungstenite::error::Error as WebSocketError;
 
 use crate::{Error, Result};
 
-use self::codec::deserialize_frame;
 pub use self::codec::{FrameReader, read_frame, validate_version, write_frame};
 pub(crate) use self::codec::{
     SharedFrame, encode_bounded_frame, read_frame_with_limit, websocket_error, write_encoded,

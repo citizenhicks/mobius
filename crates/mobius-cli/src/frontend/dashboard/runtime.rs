@@ -8,8 +8,7 @@ use mobius::protocol::{
 use mobius::{Error, Result};
 use mobius_gateway::client::{GatewayClient, GatewayEvents, GatewaySender};
 use mobius_gateway::wire::{
-    ClientCapabilities, ClientMessage, ServerMessage, SessionActivityState, SessionRecord,
-    apply_session_changes,
+    ClientCapabilities, ClientMessage, ServerMessage, apply_session_changes,
 };
 use ratatui::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
@@ -18,7 +17,9 @@ use ratatui::layout::Rect;
 use tokio::time::MissedTickBehavior;
 
 use super::REFRESH_INTERVAL;
-use super::state::{ActionInput, CapabilityOverlay, DashboardFocus, DashboardState, Selection};
+use super::state::{
+    ActionInput, CapabilityOverlay, DashboardFocus, DashboardState, RowMove, Selection,
+};
 use super::view::{dashboard_areas, render};
 use crate::frontend::terminal::{
     Screen, input_batch, input_interval, terminal_text, truncate_bytes,
@@ -76,8 +77,8 @@ pub(super) async fn dashboard_loop(
     let mut input = input_interval();
     let mut refresh = tokio::time::interval(REFRESH_INTERVAL);
     refresh.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    sync_chat_selection(state);
-    sync_bot_selection(state);
+    state.sync_selection(DashboardFocus::Chats);
+    state.sync_selection(DashboardFocus::Bots);
     let mut dirty = true;
     loop {
         if dirty {
@@ -175,8 +176,8 @@ pub(super) async fn handle_key(
             Ok(None) => state.error = None,
             Err(error) => state.error = Some(error.to_string()),
         }
-        sync_bot_selection(state);
-        sync_chat_selection(state);
+        state.sync_selection(DashboardFocus::Bots);
+        state.sync_selection(DashboardFocus::Chats);
         terminal.clear()?;
         request_snapshot(sender).await?;
         return Ok(false);
@@ -256,12 +257,11 @@ pub(in crate::frontend) fn overlay_key(
         return handle_action_input_key(overlay, key)
             .map_or(OverlayKey::Handled, |op| OverlayKey::Submit(Box::new(op)));
     }
-    let action_list_open = matches!(
-        overlay
-            .open_widget()
-            .and_then(|widget| widget.content.as_ref()),
-        Some(FrontendWidgetContent::ActionList { .. })
-    );
+    if let Some(movement) = row_move(key.code) {
+        overlay.move_selection(movement);
+        return OverlayKey::Handled;
+    }
+    let action_list_open = overlay.action_items().is_some();
     let op = match key.code {
         KeyCode::Char('q') => return OverlayKey::Close,
         KeyCode::Esc if !overlay.can_go_back() => return OverlayKey::Close,
@@ -270,7 +270,7 @@ pub(in crate::frontend) fn overlay_key(
             None
         }
         KeyCode::Left if action_list_open => {
-            move_overlay_action(overlay, -1);
+            overlay.move_action(-1);
             None
         }
         KeyCode::Left => {
@@ -279,30 +279,14 @@ pub(in crate::frontend) fn overlay_key(
             }
             None
         }
-        KeyCode::Up | KeyCode::Char('k') => {
-            move_overlay_selection(overlay, -1);
-            None
-        }
-        KeyCode::Down | KeyCode::Char('j') => {
-            move_overlay_selection(overlay, 1);
-            None
-        }
-        KeyCode::Home => {
-            select_overlay_edge(overlay, Edge::First);
-            None
-        }
-        KeyCode::End => {
-            select_overlay_edge(overlay, Edge::Last);
-            None
-        }
         KeyCode::Right if action_list_open => {
-            move_overlay_action(overlay, 1);
+            overlay.move_action(1);
             None
         }
         KeyCode::Enter | KeyCode::Right => activate_overlay(overlay),
         KeyCode::Char('a') => overlay
             .open_widget()
-            .or_else(|| overlay.selected_key().and_then(|key| overlay.widget(&key)))
+            .or_else(|| overlay.selected_widget().map(|(_, widget)| widget.as_ref()))
             .and_then(|widget| widget.action.clone()), // rules-allow: the overlay keeps its widget action while the submission owns one
         _ => None,
     };
@@ -310,81 +294,29 @@ pub(in crate::frontend) fn overlay_key(
         .map_or(OverlayKey::Handled, |op| OverlayKey::Submit(Box::new(op)))
 }
 
-pub(in crate::frontend) fn move_overlay_selection(overlay: &mut CapabilityOverlay, delta: isize) {
-    let option_count = overlay
-        .open_widget()
-        .and_then(|widget| widget.content.as_ref())
-        .map(|FrontendWidgetContent::ActionList { items, .. }| items.len());
-    if let Some(option_count) = option_count {
-        overlay.option_list.select(moved_index(
-            overlay.option_list.selected(),
-            option_count,
-            delta,
-        ));
-        overlay.action_index = 0;
-    } else if overlay.open.is_none() {
-        overlay.widget_list.select(moved_index(
-            overlay.widget_list.selected(),
-            overlay.widgets.len(),
-            delta,
-        ));
-    }
-}
-
-pub(in crate::frontend) fn select_overlay_edge(overlay: &mut CapabilityOverlay, edge: Edge) {
-    let option_count = overlay
-        .open_widget()
-        .and_then(|widget| widget.content.as_ref())
-        .map(|FrontendWidgetContent::ActionList { items, .. }| items.len());
-    let (list, length) = if let Some(option_count) = option_count {
-        (&mut overlay.option_list, option_count)
-    } else if overlay.open.is_none() {
-        (&mut overlay.widget_list, overlay.widgets.len())
-    } else {
-        return;
-    };
-    list.select(length.checked_sub(1).map(|last| edge.index(last)));
-    overlay.action_index = 0;
-}
-
 pub(in crate::frontend) fn activate_overlay(overlay: &mut CapabilityOverlay) -> Option<Op> {
     if let Some(widget) = overlay.open_widget() {
         return match widget.content.as_ref() {
-            Some(FrontendWidgetContent::ActionList { items, .. }) => items
-                .get(overlay.option_list.selected().unwrap_or_default())
-                .and_then(|item| item.actions.get(overlay.action_index))
+            Some(FrontendWidgetContent::ActionList { .. }) => overlay
+                .selected_action()
                 .map(mobius::protocol::FrontendAction::operation),
             _ => widget.action.clone(), // rules-allow: the overlay keeps its widget action while the submission owns one
         };
     }
-    let key = overlay.selected_key()?;
-    let widget = overlay.widget(&key)?;
+    let (capability, widget) = overlay.selected_widget()?;
     let action = widget.action.clone(); // rules-allow: the overlay keeps its widget action while the submission owns one
     if widget.content.is_some() {
-        overlay.open = Some(key);
+        overlay.open = Some((Arc::clone(capability), Arc::clone(&widget.id)));
         overlay.sync_selection();
     }
     action
-}
-
-pub(in crate::frontend) fn move_overlay_action(overlay: &mut CapabilityOverlay, delta: isize) {
-    let Some(length) = overlay
-        .selected_action_list_item()
-        .map(|item| item.actions.len())
-    else {
-        return;
-    };
-    overlay.action_index =
-        moved_index(Some(overlay.action_index), length, delta).unwrap_or_default();
 }
 
 pub(in crate::frontend) fn prepare_overlay_operation(
     overlay: &mut CapabilityOverlay,
     op: Op,
 ) -> Option<Op> {
-    let action = overlay
-        .selected_action_list_item()
-        .and_then(|item| item.actions.get(overlay.action_index));
+    let action = overlay.selected_action();
     if action.is_some_and(|action| action.editor.is_none()) {
         return Some(op);
     }
@@ -528,129 +460,65 @@ pub(super) async fn submit_operation(
     crate::frontend::submit(sender, session_id, crate::fresh_id(), op).await
 }
 
-pub(super) fn handle_navigation_key(state: &mut DashboardState, key: KeyEvent, area: Rect) -> bool {
-    let areas = dashboard_areas(area);
-    let page = match state.focus {
-        DashboardFocus::Devices => areas.devices.height.saturating_sub(2),
-        DashboardFocus::Chats => areas.chats.height.saturating_sub(2),
-        DashboardFocus::Bots => areas.bots.height.saturating_sub(2),
+fn row_move(key: KeyCode) -> Option<RowMove> {
+    match key {
+        KeyCode::Up | KeyCode::Char('k') => Some(RowMove::By(-1)),
+        KeyCode::Down | KeyCode::Char('j') => Some(RowMove::By(1)),
+        KeyCode::Home => Some(RowMove::First),
+        KeyCode::End => Some(RowMove::Last),
+        _ => None,
     }
-    .max(1);
-    let page = isize::try_from(page).unwrap_or(isize::MAX);
+}
+
+pub(super) fn handle_navigation_key(state: &mut DashboardState, key: KeyEvent, area: Rect) -> bool {
     match key.code {
         KeyCode::Tab => state.focus = state.focus.next(),
-        KeyCode::Up | KeyCode::Char('k') => move_selection(state, -1),
-        KeyCode::Down | KeyCode::Char('j') => move_selection(state, 1),
-        KeyCode::PageUp => move_selection(state, -page),
-        KeyCode::PageDown => move_selection(state, page),
-        KeyCode::Home => select_edge(state, Edge::First),
-        KeyCode::End => select_edge(state, Edge::Last),
-        _ => return false,
+        KeyCode::PageUp | KeyCode::PageDown => {
+            let areas = dashboard_areas(area);
+            let panel = match state.focus {
+                DashboardFocus::Devices => areas.devices,
+                DashboardFocus::Chats => areas.chats,
+                DashboardFocus::Bots => areas.bots,
+            };
+            let page = isize::try_from(panel.height.saturating_sub(2).max(1)).unwrap_or(isize::MAX);
+            state.move_selection(RowMove::By(if key.code == KeyCode::PageUp {
+                -page
+            } else {
+                page
+            }));
+        }
+        key => match row_move(key) {
+            Some(movement) => state.move_selection(movement),
+            None => return false,
+        },
     }
     true
 }
 
 pub(super) fn handle_mouse(state: &mut DashboardState, mouse: MouseEvent, area: Rect) {
-    let areas = dashboard_areas(area);
-    let (focus, delta) = match mouse.kind {
-        MouseEventKind::ScrollUp if contains(areas.devices, mouse.column, mouse.row) => {
-            (DashboardFocus::Devices, -3)
-        }
-        MouseEventKind::ScrollDown if contains(areas.devices, mouse.column, mouse.row) => {
-            (DashboardFocus::Devices, 3)
-        }
-        MouseEventKind::ScrollUp if contains(areas.chats, mouse.column, mouse.row) => {
-            (DashboardFocus::Chats, -3)
-        }
-        MouseEventKind::ScrollDown if contains(areas.chats, mouse.column, mouse.row) => {
-            (DashboardFocus::Chats, 3)
-        }
-        MouseEventKind::ScrollUp if contains(areas.bots, mouse.column, mouse.row) => {
-            (DashboardFocus::Bots, -3)
-        }
-        MouseEventKind::ScrollDown if contains(areas.bots, mouse.column, mouse.row) => {
-            (DashboardFocus::Bots, 3)
-        }
+    let delta = match mouse.kind {
+        MouseEventKind::ScrollUp => -3,
+        MouseEventKind::ScrollDown => 3,
         _ => return,
     };
+    let areas = dashboard_areas(area);
+    let panels = [
+        (areas.devices, DashboardFocus::Devices),
+        (areas.chats, DashboardFocus::Chats),
+        (areas.bots, DashboardFocus::Bots),
+    ];
+    let Some((_, focus)) = panels
+        .into_iter()
+        .find(|(rect, _)| contains(*rect, mouse.column, mouse.row))
+    else {
+        return;
+    };
     state.focus = focus;
-    move_selection(state, delta);
+    state.move_selection(RowMove::By(delta));
 }
 
 pub(super) fn contains(area: Rect, column: u16, row: u16) -> bool {
     column >= area.x && column < area.right() && row >= area.y && row < area.bottom()
-}
-
-pub(super) fn move_selection(state: &mut DashboardState, delta: isize) {
-    update_selection(state, state.focus, |current, length| {
-        moved_index(current, length, delta)
-    });
-}
-
-pub(super) fn select_edge(state: &mut DashboardState, edge: Edge) {
-    update_selection(state, state.focus, |_, length| {
-        length.checked_sub(1).map(|last| edge.index(last))
-    });
-}
-
-/// Keeps the selected id when it is still listed, and otherwise selects the first row.
-fn sync_selection(state: &mut DashboardState, focus: DashboardFocus) {
-    update_selection(state, focus, |current, length| {
-        current.or_else(|| (length > 0).then_some(0))
-    });
-}
-
-fn update_selection(
-    state: &mut DashboardState,
-    focus: DashboardFocus,
-    pick: impl FnOnce(Option<usize>, usize) -> Option<usize>,
-) {
-    match focus {
-        DashboardFocus::Devices => state.devices.update(
-            state.clients.len(),
-            || state.clients.iter().map(|client| &client.client_id),
-            |id| id.as_str().into(),
-            pick,
-        ),
-        DashboardFocus::Chats => state.chats.update(
-            state.gateway.sessions.len(),
-            || ordered_sessions(&state.gateway.sessions).map(|session| &session.session_id),
-            mobius::SessionId::share,
-            pick,
-        ),
-        DashboardFocus::Bots => state.bots.update(
-            state.gateway.bots.len(),
-            || state.gateway.bots.iter().map(|bot| &bot.id),
-            Arc::clone,
-            pick,
-        ),
-    }
-}
-
-/// The end of a list Home or End selects.
-#[derive(Clone, Copy)]
-pub(in crate::frontend) enum Edge {
-    First,
-    Last,
-}
-
-impl Edge {
-    const fn index(self, last: usize) -> usize {
-        match self {
-            Self::First => 0,
-            Self::Last => last,
-        }
-    }
-}
-
-pub(super) fn moved_index(current: Option<usize>, length: usize, delta: isize) -> Option<usize> {
-    let last = length.checked_sub(1)?;
-    Some(
-        current
-            .unwrap_or_default()
-            .saturating_add_signed(delta)
-            .min(last),
-    )
 }
 
 pub(super) fn begin_unpair(state: &mut DashboardState) {
@@ -709,20 +577,20 @@ pub(super) fn handle_frame(state: &mut DashboardState, message: ServerMessage) -
     match message {
         ServerMessage::Ready { payload } | ServerMessage::GatewayConfigured { payload, .. } => {
             state.gateway.update(payload);
-            sync_chat_selection(state);
-            sync_bot_selection(state);
+            state.sync_selection(DashboardFocus::Chats);
+            state.sync_selection(DashboardFocus::Bots);
         }
         ServerMessage::Sessions { sessions, .. } => {
             state.gateway.sessions = sessions;
-            sync_chat_selection(state);
+            state.sync_selection(DashboardFocus::Chats);
         }
         ServerMessage::SessionsChanged { sessions, .. } => {
             apply_session_changes(&mut state.gateway.sessions, sessions);
-            sync_chat_selection(state);
+            state.sync_selection(DashboardFocus::Chats);
         }
         ServerMessage::Bots { bots, .. } => {
             state.gateway.bots = bots;
-            sync_bot_selection(state);
+            state.sync_selection(DashboardFocus::Bots);
         }
         ServerMessage::Clients {
             current_client_id,
@@ -731,7 +599,7 @@ pub(super) fn handle_frame(state: &mut DashboardState, message: ServerMessage) -
         } => {
             state.current_client_id = Some(current_client_id);
             state.clients = clients;
-            sync_device_selection(state);
+            state.sync_devices();
         }
         ServerMessage::Profile { profile, .. } => state.profile = Some(profile),
         ServerMessage::SessionOpened {
@@ -782,29 +650,4 @@ pub(super) fn handle_frame(state: &mut DashboardState, message: ServerMessage) -
         _ => {}
     }
     Ok(())
-}
-
-pub(super) fn sync_device_selection(state: &mut DashboardState) {
-    state.clients.sort_by(|left, right| {
-        (left.connections == 0)
-            .cmp(&(right.connections == 0))
-            .then_with(|| left.label.cmp(&right.label))
-    });
-    sync_selection(state, DashboardFocus::Devices);
-}
-
-pub(super) fn sync_chat_selection(state: &mut DashboardState) {
-    sync_selection(state, DashboardFocus::Chats);
-}
-
-pub(super) fn sync_bot_selection(state: &mut DashboardState) {
-    sync_selection(state, DashboardFocus::Bots);
-}
-
-pub(super) fn ordered_sessions(sessions: &[SessionRecord]) -> impl Iterator<Item = &SessionRecord> {
-    [false, true].into_iter().flat_map(|idle| {
-        sessions
-            .iter()
-            .filter(move |session| (session.activity.state == SessionActivityState::Idle) == idle)
-    })
 }

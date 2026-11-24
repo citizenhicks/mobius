@@ -201,19 +201,3 @@ fn content_field(item: &Value) -> &'static str {
         "content"
     }
 }
-
-/// Readable durable evidence, including references that can be reopened after compaction.
-pub(crate) fn content_part_text(part: &Value) -> Option<String> {
-    if let Some(text) = part
-        .get("text")
-        .or_else(|| part.get("content"))
-        .and_then(Value::as_str)
-    {
-        return Some(text.to_owned());
-    }
-    match part.get("type").and_then(Value::as_str) {
-        Some("input_image") => part.get("image").map(|image| format!("Image: {image}")),
-        Some("file") => part.get("file").map(|file| format!("Stored file: {file}")),
-        _ => None,
-    }
-}

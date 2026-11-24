@@ -8,7 +8,35 @@ use mobius_gateway::wire::ServerMessage;
 use ratatui::widgets::ListState;
 
 use super::runtime::{handle_frame, insert_overlay_input, prepare_overlay_operation};
-use super::state::{CapabilityOverlay, DashboardFocus};
+use super::state::{CapabilityOverlay, DashboardFocus, RowMove};
+
+#[test]
+fn refreshed_bot_rows_keep_the_selected_id_until_it_disappears() {
+    use crate::frontend::fixtures::bot;
+
+    let mut state = dashboard_state();
+    state.focus = DashboardFocus::Bots;
+    let refresh = |state: &mut super::state::DashboardState, ids: &[&str]| {
+        handle_frame(
+            state,
+            ServerMessage::Bots {
+                request_id: None,
+                bots: ids.iter().map(|id| bot(id)).collect(),
+            },
+        )
+        .unwrap();
+    };
+    refresh(&mut state, &["a", "b"]);
+    state.move_selection(RowMove::By(1));
+    refresh(&mut state, &["b", "a"]);
+    assert_eq!(state.bots.id.as_deref(), Some("b"));
+    assert_eq!(state.bots.list.selected(), Some(0));
+    refresh(&mut state, &["a"]);
+    assert_eq!(state.bots.id.as_deref(), Some("a"));
+    refresh(&mut state, &[]);
+    assert_eq!(state.bots.id, None);
+    assert_eq!(state.bots.list.selected(), None);
+}
 
 #[test]
 fn superseded_profile_rejection_does_not_set_dashboard_error() {

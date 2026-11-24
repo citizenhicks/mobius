@@ -13,6 +13,7 @@ use super::ExecutionStats;
 use crate::Result;
 use crate::protocol::Event;
 use crate::protocol::EventMsg;
+use crate::protocol::FrontendPreviewEvent;
 use crate::protocol::MessageTarget;
 use crate::protocol::ModelStepContentPhase;
 use crate::protocol::SessionContext;
@@ -133,6 +134,17 @@ pub struct JournalEvent {
     pub event: Event,
     /// Compact delivery characteristics retained after progressive deltas are removed.
     pub stream_metrics: Vec<StreamMetrics>,
+}
+
+impl From<JournalEvent> for FrontendPreviewEvent {
+    fn from(record: JournalEvent) -> Self {
+        Self {
+            sequence: record.sequence,
+            submission_id: record.event.submission_id,
+            recorded_at_ms: record.recorded_at_ms,
+            event: record.event.msg,
+        }
+    }
 }
 
 /// One normalized event paired with its framework receipt time.

@@ -1,9 +1,13 @@
 use std::sync::Arc;
 
 use mobius::protocol::{
-    FrontendActionListItem, FrontendEvent, FrontendSlot, FrontendWidget, FrontendWidgetContent, Op,
+    FrontendAction, FrontendActionListItem, FrontendEvent, FrontendSlot, FrontendWidget,
+    FrontendWidgetContent, Op,
 };
-use mobius_gateway::wire::{ClientStatus, ProfileSnapshot, ReadyPayload, SessionReadyPayload};
+use mobius_gateway::wire::{
+    ClientStatus, ProfileSnapshot, ReadyPayload, SessionActivityState, SessionReadyPayload,
+    SessionRecord,
+};
 use ratatui::widgets::ListState;
 
 use crate::frontend::catalog::KeyedWidgets;
@@ -26,6 +30,82 @@ pub(super) struct DashboardState {
     pub(super) error: Option<String>,
 }
 
+impl DashboardState {
+    pub(super) fn move_selection(&mut self, movement: RowMove) {
+        self.update_selection(self.focus, movement);
+    }
+
+    /// Keeps the selected id when it is still listed, and otherwise selects the first row.
+    pub(super) fn sync_selection(&mut self, focus: DashboardFocus) {
+        self.update_selection(focus, RowMove::By(0));
+    }
+
+    fn update_selection(&mut self, focus: DashboardFocus, movement: RowMove) {
+        match focus {
+            DashboardFocus::Devices => self.devices.update(
+                self.clients.len(),
+                || self.clients.iter().map(|client| &client.client_id),
+                |id| id.as_str().into(),
+                movement,
+            ),
+            DashboardFocus::Chats => self.chats.update(
+                self.gateway.sessions.len(),
+                || ordered_sessions(&self.gateway.sessions).map(|session| &session.session_id),
+                mobius::SessionId::share,
+                movement,
+            ),
+            DashboardFocus::Bots => self.bots.update(
+                self.gateway.bots.len(),
+                || self.gateway.bots.iter().map(|bot| &bot.id),
+                Arc::clone,
+                movement,
+            ),
+        }
+    }
+
+    pub(super) fn sync_devices(&mut self) {
+        self.clients.sort_by(|left, right| {
+            (left.connections == 0)
+                .cmp(&(right.connections == 0))
+                .then_with(|| left.label.cmp(&right.label))
+        });
+        self.sync_selection(DashboardFocus::Devices);
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum RowMove {
+    First,
+    Last,
+    By(isize),
+}
+
+impl RowMove {
+    fn apply(self, list: &mut ListState, length: usize) {
+        list.select(self.index(list.selected(), length));
+    }
+
+    pub(super) fn index(self, current: Option<usize>, length: usize) -> Option<usize> {
+        let last = length.checked_sub(1)?;
+        Some(match self {
+            Self::First => 0,
+            Self::Last => last,
+            Self::By(delta) => current
+                .unwrap_or_default()
+                .saturating_add_signed(delta)
+                .min(last),
+        })
+    }
+}
+
+pub(super) fn ordered_sessions(sessions: &[SessionRecord]) -> impl Iterator<Item = &SessionRecord> {
+    [false, true].into_iter().flat_map(|idle| {
+        sessions
+            .iter()
+            .filter(move |session| (session.activity.state == SessionActivityState::Idle) == idle)
+    })
+}
+
 /// One list's selection: the selected record's id, which survives reordering, and its row.
 pub(super) struct Selection<Id> {
     pub(super) id: Option<Id>,
@@ -42,13 +122,13 @@ impl<Id> Default for Selection<Id> {
 }
 
 impl<Id: PartialEq> Selection<Id> {
-    /// Selects the row `pick` chooses from the current row and the list length.
-    pub(super) fn update<'row, I>(
+    /// Tracks the selected id across reordering and only takes ownership when it changes.
+    fn update<'row, I>(
         &mut self,
         len: usize,
         ids: impl Fn() -> I,
         own: fn(&Id) -> Id,
-        pick: impl FnOnce(Option<usize>, usize) -> Option<usize>,
+        movement: RowMove,
     ) where
         Id: 'row,
         I: Iterator<Item = &'row Id>,
@@ -57,15 +137,15 @@ impl<Id: PartialEq> Selection<Id> {
             .id
             .as_ref()
             .and_then(|id| ids().position(|candidate| candidate == id));
-        let selected = pick(current, len);
-        let id = selected.and_then(|index| ids().nth(index));
-        if self.id.as_ref() != id {
-            self.id = id.map(own);
+        let selected = movement.index(current, len);
+        if current.is_none() || current != selected {
+            self.id = selected.and_then(|index| ids().nth(index)).map(own);
         }
         self.list.select(selected);
     }
 }
 
+#[derive(Default)]
 pub(in crate::frontend) struct CapabilityOverlay {
     pub(super) title: String,
     pub(super) session_id: Option<mobius::SessionId>,
@@ -162,11 +242,7 @@ impl CapabilityOverlay {
             session_id: Some(session_id),
             slots: vec![FrontendSlot::Navigation],
             widgets,
-            widget_list: ListState::default(),
-            open: None,
-            option_list: ListState::default(),
-            action_index: 0,
-            input: None,
+            ..Self::default()
         };
         for widget in payload.widgets {
             apply_widget_event(
@@ -183,10 +259,13 @@ impl CapabilityOverlay {
     }
 
     pub(in crate::frontend) fn attention(widgets: KeyedWidgets) -> Self {
-        let mut overlay = Self::from_widgets("Attention".into(), widgets);
-        overlay.title = "Attention".into();
-        overlay.slots = vec![FrontendSlot::Attention];
-        overlay.open = None;
+        let mut overlay = Self {
+            title: "Attention".into(),
+            slots: vec![FrontendSlot::Attention],
+            widgets,
+            ..Self::default()
+        };
+        overlay.sync_selection();
         overlay
     }
 
@@ -206,14 +285,10 @@ impl CapabilityOverlay {
         };
         let mut overlay = Self {
             title,
-            session_id: None,
             slots,
             widgets,
-            widget_list: ListState::default(),
             open,
-            option_list: ListState::default(),
-            action_index: 0,
-            input: None,
+            ..Self::default()
         };
         overlay.sync_selection();
         overlay
@@ -234,12 +309,7 @@ impl CapabilityOverlay {
     }
 
     pub(super) fn sync_selection(&mut self) {
-        let selected = self
-            .widgets
-            .len()
-            .checked_sub(1)
-            .map(|last| self.widget_list.selected().unwrap_or_default().min(last));
-        self.widget_list.select(selected);
+        RowMove::By(0).apply(&mut self.widget_list, self.widgets.len());
         if self
             .open
             .as_ref()
@@ -247,48 +317,56 @@ impl CapabilityOverlay {
         {
             self.open = None;
         }
-        let options = self
-            .open_widget()
-            .and_then(|widget| match widget.content.as_ref() {
-                Some(FrontendWidgetContent::ActionList { items, .. }) => Some(items.len()),
-                _ => None,
-            })
-            .unwrap_or_default();
-        self.option_list.select(
-            options
-                .checked_sub(1)
-                .map(|last| self.option_list.selected().unwrap_or_default().min(last)),
-        );
-        self.action_index = self
-            .selected_action_list_item()
-            .and_then(|item| item.actions.len().checked_sub(1))
-            .map_or(0, |last| self.action_index.min(last));
+        let options = self.action_items().map_or(0, <[_]>::len);
+        RowMove::By(0).apply(&mut self.option_list, options);
+        self.move_action(0);
     }
 
-    pub(super) fn selected_key(&self) -> Option<(Arc<str>, Arc<str>)> {
-        self.widgets
-            .get(self.widget_list.selected()?)
-            .map(|(capability, widget)| (Arc::clone(capability), Arc::clone(&widget.id)))
+    pub(super) fn move_selection(&mut self, movement: RowMove) {
+        let (list, length) = match self.action_items().map(<[_]>::len) {
+            Some(length) => (&mut self.option_list, length),
+            None if self.open.is_none() => (&mut self.widget_list, self.widgets.len()),
+            None => return,
+        };
+        movement.apply(list, length);
+        self.action_index = 0;
+    }
+
+    pub(super) fn selected_widget(&self) -> Option<&(Arc<str>, Arc<FrontendWidget>)> {
+        self.widgets.get(self.widget_list.selected()?)
     }
 
     pub(in crate::frontend) fn open_widget(&self) -> Option<&FrontendWidget> {
         self.widget(self.open.as_ref()?)
     }
 
-    pub(super) fn widget(
-        &self,
-        (capability, id): &(Arc<str>, Arc<str>),
-    ) -> Option<&FrontendWidget> {
+    fn widget(&self, (capability, id): &(Arc<str>, Arc<str>)) -> Option<&FrontendWidget> {
         self.widgets
             .iter()
             .find(|(owner, widget)| owner == capability && widget.id == *id)
             .map(|(_, widget)| &**widget)
     }
 
-    pub(super) fn selected_action_list_item(&self) -> Option<&FrontendActionListItem> {
+    pub(super) fn action_items(&self) -> Option<&[FrontendActionListItem]> {
         let FrontendWidgetContent::ActionList { items, .. } =
             self.open_widget()?.content.as_ref()?;
-        items.get(self.option_list.selected()?)
+        Some(items)
+    }
+
+    fn actions(&self) -> &[FrontendAction] {
+        self.action_items()
+            .and_then(|items| items.get(self.option_list.selected()?))
+            .map_or(&[], |item| item.actions.as_slice())
+    }
+
+    pub(super) fn move_action(&mut self, delta: isize) {
+        self.action_index = RowMove::By(delta)
+            .index(Some(self.action_index), self.actions().len())
+            .unwrap_or_default();
+    }
+
+    pub(super) fn selected_action(&self) -> Option<&FrontendAction> {
+        self.actions().get(self.action_index)
     }
 }
 

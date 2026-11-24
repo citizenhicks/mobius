@@ -11,8 +11,9 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, HighlightSpacing, List, ListState, Paragraph, Wrap};
 
-use super::runtime::ordered_sessions;
-use super::state::{ActionInput, CapabilityOverlay, DashboardFocus, DashboardState};
+use super::state::{
+    ActionInput, CapabilityOverlay, DashboardFocus, DashboardState, ordered_sessions,
+};
 use crate::frontend::terminal::terminal_text;
 use crate::frontend::theme::{Role, current, selectable_list};
 

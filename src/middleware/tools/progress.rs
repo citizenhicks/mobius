@@ -102,14 +102,9 @@ impl HostedObserver {
     }
 }
 
-#[derive(Debug, Default)]
-struct ToolProgress {
-    ledger: Ledger,
-}
-
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Ledger {
+struct ToolProgress {
     records: Vec<Record>,
 }
 
@@ -130,7 +125,7 @@ struct Record {
 
 #[derive(Serialize)]
 struct LedgerView<'a> {
-    records: Vec<&'a Record>,
+    records: &'a [Record],
 }
 
 impl ToolProgress {
@@ -138,31 +133,35 @@ impl ToolProgress {
     fn from_input(input: ModelInput<'_>) -> Result<Self> {
         let mut progress = Self::default();
         for item in input.iter().filter(|item| is_progress(item)) {
-            for record in Self::parse_ledger(item)?.records {
-                progress.merge(record, |_, _| {});
+            for record in Self::parse_message(item)?.records {
+                progress.insert(record);
             }
         }
         progress.trim()?;
         Ok(progress)
     }
 
-    fn merge(&mut self, mut record: Record, combine: impl FnOnce(&mut Record, Record)) {
-        if let Some(identity) = record.identity()
+    fn insert(&mut self, mut record: Record) {
+        if !self.records.is_empty()
+            && let Some(identity) = record.identity()
             && let Some(index) = self
-                .ledger
                 .records
                 .iter()
                 .position(|previous| previous.identity() == Some(identity))
         {
-            combine(&mut record, self.ledger.records.remove(index));
+            let previous = self.records.remove(index);
+            // Restored deltas already contain cumulative counts and sources.
+            if record.touched {
+                record.include_previous(previous);
+            }
         }
-        self.ledger.records.push(record);
-        if self.ledger.records.len() > MAX_RECORDS {
-            self.ledger.records.remove(0);
+        self.records.push(record);
+        if self.records.len() > MAX_RECORDS {
+            self.records.remove(0);
         }
     }
 
-    fn parse_ledger(item: &Value) -> Result<Ledger> {
+    fn parse_message(item: &Value) -> Result<Self> {
         if crate::serialized_len(item)? > MAX_BYTES
             || item
                 .get("type")
@@ -171,72 +170,34 @@ impl ToolProgress {
         {
             return Err(invalid_history());
         }
-        let parts = content_parts(item).ok_or_else(invalid_history)?;
-        let data = parts
-            .get(1)
-            .filter(|part| part.get("type").and_then(Value::as_str) == Some("input_text"))
-            .and_then(|part| part.get("text"))
-            .and_then(Value::as_str)
-            .ok_or_else(invalid_history)?;
-        if parts.len() != 2
-            || parts.first().is_none_or(|part| {
-                part.get("type").and_then(Value::as_str) != Some("input_text")
-                    || part.get("text").and_then(Value::as_str).is_none()
-            })
-        {
+        let [summary, data] = content_parts(item).ok_or_else(invalid_history)?.as_slice() else {
             return Err(invalid_history());
-        }
-        let ledger: Ledger = serde_json::from_str(data).map_err(|_error| invalid_history())?;
+        };
+        input_text(summary).ok_or_else(invalid_history)?;
+        let data = input_text(data).ok_or_else(invalid_history)?;
+        let ledger: Self = serde_json::from_str(data).map_err(|_error| invalid_history())?;
         if ledger.records.len() > MAX_RECORDS {
             return Err(invalid_history());
         }
         for record in &ledger.records {
-            if record.name.trim().is_empty()
-                || record.name.len() > crate::protocol::MAX_HOSTED_TOOL_NAME_BYTES
-                || record.calls == 0
-                || (record.arguments_omitted && record.arguments.is_some())
-                || record.sources.len() > MAX_SOURCES
-                || record
-                    .sources
-                    .iter()
-                    .any(|source| source.is_empty() || source.len() > MAX_SOURCE_BYTES)
-                || record
-                    .arguments
-                    .as_ref()
-                    .map(crate::serialized_len)
-                    .transpose()?
-                    .is_some_and(|bytes| bytes > MAX_ARGUMENT_BYTES)
-            {
-                return Err(invalid_history());
-            }
+            record.validate()?;
         }
         Ok(ledger)
     }
 
     fn record(&mut self, execution: HostedToolExecution) -> Result<()> {
-        let mut record = Record::from_execution(execution)?;
-        record.touched = true;
-        self.merge(record, |record, previous| {
-            record.calls = previous.calls.saturating_add(1);
-            record.sources_omitted |= previous.sources_omitted;
-            record.add_sources(previous.sources);
-        });
+        self.insert(Record::from_execution(execution)?);
         self.trim()
     }
 
     fn trim(&mut self) -> Result<()> {
-        while crate::serialized_len(&self.message(false)?)? > MAX_BYTES {
-            if self.ledger.records.len() > 1 {
-                self.ledger.records.remove(0);
-            } else if let Some(record) = self.ledger.records.last_mut() {
-                if record.sources.pop().is_some() {
-                    record.sources_omitted = true;
-                } else if record.arguments.take().is_some() {
-                    record.arguments_omitted = true;
-                } else {
-                    return Err(Error::Internal(
-                        "tool progress guidance exceeds its byte limit".into(),
-                    ));
+        while !self.records.is_empty()
+            && crate::serialized_len(&progress_message(&self.records)?)? > MAX_BYTES
+        {
+            match self.records.as_mut_slice() {
+                [last] => last.omit_detail()?,
+                _ => {
+                    self.records.remove(0);
                 }
             }
         }
@@ -246,45 +207,35 @@ impl ToolProgress {
     /// Returns an append-only delta of records changed since the last message. Earlier
     /// messages stay in place so the provider's cached request prefix is never rewritten.
     fn take_message(&mut self) -> Result<Option<Value>> {
-        if !self.ledger.records.iter().any(|record| record.touched) {
+        // Insertion puts new or updated records after all the restored records.
+        let Some(first) = self.records.iter().position(|record| record.touched) else {
             return Ok(None);
-        }
-        let message = self.message(true)?;
-        for record in &mut self.ledger.records {
+        };
+        let (_, delta) = self.records.split_at_mut(first);
+        let message = progress_message(delta)?;
+        for record in delta {
             record.touched = false;
         }
         Ok(Some(message))
     }
+}
 
-    fn message(&self, touched_only: bool) -> Result<Value> {
-        let view = LedgerView {
-            records: self
-                .ledger
-                .records
-                .iter()
-                .filter(|record| !touched_only || record.touched)
-                .collect(),
-        };
-        let mut item = internal_user_message(KIND, &super::text::DEFINITION.prompt_tool_progress);
-        content_parts_mut(&mut item)
-            .ok_or_else(invalid_history)?
-            .push(serde_json::json!({
-                "type": "input_text",
-                "text": serde_json::to_string(&view)?
-            }));
-        Ok(item)
-    }
+fn progress_message(records: &[Record]) -> Result<Value> {
+    let mut item = internal_user_message(KIND, &super::text::DEFINITION.prompt_tool_progress);
+    content_parts_mut(&mut item)
+        .ok_or_else(invalid_history)?
+        .push(serde_json::json!({
+            "type": "input_text",
+            "text": serde_json::to_string(&LedgerView { records })?
+        }));
+    Ok(item)
 }
 
 impl Record {
     /// The execution was validated by its provider; only the ledger's budget applies here.
     fn from_execution(execution: HostedToolExecution) -> Result<Self> {
         let mut arguments = execution.arguments;
-        let arguments_omitted = arguments
-            .as_ref()
-            .map(crate::serialized_len)
-            .transpose()?
-            .is_some_and(|bytes| bytes > MAX_ARGUMENT_BYTES);
+        let arguments_omitted = arguments_over_budget(arguments.as_ref())?;
         if arguments_omitted {
             arguments = None;
         }
@@ -293,13 +244,49 @@ impl Record {
             arguments,
             arguments_omitted,
             result_fingerprint: execution.result_fingerprint,
-            sources: Vec::with_capacity(MAX_SOURCES),
+            sources: Vec::with_capacity(execution.sources.len().min(MAX_SOURCES)),
             sources_omitted: false,
             calls: 1,
-            touched: false,
+            touched: true,
         };
         record.add_sources(execution.sources);
         Ok(record)
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self.name.trim().is_empty()
+            || self.name.len() > crate::protocol::MAX_HOSTED_TOOL_NAME_BYTES
+            || self.calls == 0
+            || (self.arguments_omitted && self.arguments.is_some())
+            || self.sources.len() > MAX_SOURCES
+            || self
+                .sources
+                .iter()
+                .any(|source| source.is_empty() || source.len() > MAX_SOURCE_BYTES)
+            || arguments_over_budget(self.arguments.as_ref())?
+        {
+            return Err(invalid_history());
+        }
+        Ok(())
+    }
+
+    fn include_previous(&mut self, previous: Self) {
+        self.calls = previous.calls.saturating_add(1);
+        self.sources_omitted |= previous.sources_omitted;
+        self.add_sources(previous.sources);
+    }
+
+    fn omit_detail(&mut self) -> Result<()> {
+        if self.sources.pop().is_some() {
+            self.sources_omitted = true;
+        } else if self.arguments.take().is_some() {
+            self.arguments_omitted = true;
+        } else {
+            return Err(Error::Internal(
+                "tool progress guidance exceeds its byte limit".into(),
+            ));
+        }
+        Ok(())
     }
 
     fn add_sources(&mut self, sources: Vec<String>) {
@@ -322,6 +309,20 @@ impl Record {
     }
 }
 
+fn arguments_over_budget(arguments: Option<&Value>) -> Result<bool> {
+    let Some(arguments) = arguments else {
+        return Ok(false);
+    };
+    Ok(crate::bounded_json::len_within(arguments, MAX_ARGUMENT_BYTES)?.is_none())
+}
+
+fn input_text(part: &Value) -> Option<&str> {
+    if part.get("type")?.as_str()? != "input_text" {
+        return None;
+    }
+    part.get("text")?.as_str()
+}
+
 fn invalid_history() -> Error {
     Error::Checkpoint("invalid tool progress history".into())
 }
@@ -333,15 +334,11 @@ fn is_progress(item: &Value) -> bool {
 /// Compaction may rewrite history, so it folds every delta into one consolidated message.
 pub(crate) fn preserve(original: ModelInput<'_>, compacted: &mut Vec<Arc<Value>>) -> Result<()> {
     let progress = ToolProgress::from_input(original)?;
-    let message = if progress.ledger.records.is_empty() {
-        None
-    } else {
-        Some(progress.message(false)?)
-    };
+    let message = (!progress.records.is_empty())
+        .then(|| progress_message(&progress.records))
+        .transpose()?;
     compacted.retain(|item| !is_progress(item));
-    if let Some(message) = message {
-        compacted.push(Arc::new(message));
-    }
+    compacted.extend(message.map(Arc::new));
     Ok(())
 }
 
@@ -377,14 +374,14 @@ mod tests {
         assert!(crate::serialized_len(&message).unwrap() <= MAX_BYTES);
         assert!(progress.take_message().unwrap().is_none());
         let restored = ToolProgress::from_input((&[message]).into()).unwrap();
-        assert!(restored.ledger.records.len() <= MAX_RECORDS);
-        let latest = restored.ledger.records.last().unwrap();
+        assert!(restored.records.len() <= MAX_RECORDS);
+        let latest = restored.records.last().unwrap();
         assert!(latest.arguments.is_none());
         assert!(latest.arguments_omitted);
         assert!(latest.result_fingerprint.is_none());
         assert!(latest.sources.is_empty());
         assert!(latest.sources_omitted);
-        assert!(restored.ledger.records.iter().all(|record| {
+        assert!(restored.records.iter().all(|record| {
             record.arguments != Some(serde_json::json!({"query": "question 0"}))
         }));
     }
@@ -409,8 +406,8 @@ mod tests {
             Arc::clone(&delta),
         ];
         let folded = ToolProgress::from_input((&original[..]).into()).unwrap();
-        assert_eq!(folded.ledger.records.len(), 2);
-        let same = folded.ledger.records.last().unwrap();
+        assert_eq!(folded.records.len(), 2);
+        let same = folded.records.last().unwrap();
         assert_eq!((same.calls, same.sources.len()), (2, 2));
 
         let mut compacted = vec![Arc::clone(&ordinary), first];
@@ -421,8 +418,8 @@ mod tests {
         assert_eq!(compacted.len(), 2);
         assert!(Arc::ptr_eq(&compacted[0], &ordinary));
         let restored = ToolProgress::from_input(compacted.as_slice().into()).unwrap();
-        assert_eq!(restored.ledger.records.len(), 2);
-        assert_eq!(restored.ledger.records[1].calls, 2);
+        assert_eq!(restored.records.len(), 2);
+        assert_eq!(restored.records[1].calls, 2);
     }
 
     #[test]
@@ -442,13 +439,19 @@ mod tests {
         assert!(Arc::ptr_eq(&compacted[0], &ordinary));
         let mut progress = ToolProgress::default();
         progress.record(execution("query")).unwrap();
-        let mut invalid_kind = progress.message(false).unwrap();
+        let mut invalid_kind = progress_message(&progress.records).unwrap();
         invalid_kind["type"] = "function_call".into();
         assert!(ToolProgress::from_input((&[invalid_kind]).into()).is_err());
-        progress.ledger.records[0].calls = 0;
-        assert!(ToolProgress::from_input((&[progress.message(false).unwrap()]).into()).is_err());
-        progress.ledger.records[0].calls = 1;
-        progress.ledger.records[0].arguments = Some(Value::String("x".repeat(MAX_BYTES)));
-        assert!(ToolProgress::from_input((&[progress.message(false).unwrap()]).into()).is_err());
+        progress.records[0].calls = 0;
+        assert!(
+            ToolProgress::from_input((&[progress_message(&progress.records).unwrap()]).into())
+                .is_err()
+        );
+        progress.records[0].calls = 1;
+        progress.records[0].arguments = Some(Value::String("x".repeat(MAX_BYTES)));
+        assert!(
+            ToolProgress::from_input((&[progress_message(&progress.records).unwrap()]).into())
+                .is_err()
+        );
     }
 }

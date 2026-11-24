@@ -1,6 +1,7 @@
 //! Converts neutral model history into frontend presentation events.
 
 use crate::SessionId;
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -299,6 +300,101 @@ pub fn events<V: std::borrow::Borrow<Value>>(
 
 pub(crate) fn message_metadata(value: &Value) -> Option<MessageEvent> {
     MessageEvent::deserialize(value.get(MESSAGE_METADATA_FIELD)?).ok()
+}
+
+/// The user-visible text that session search and memory can recover from one history item.
+pub(crate) fn history_text(item: &Value) -> Option<(&'static str, Cow<'_, str>)> {
+    if let Some(message) = message_metadata(item) {
+        return Some(match message.author {
+            super::MessageAuthor::User => {
+                let mut text = message.text;
+                for file in message.attachments {
+                    if !text.is_empty() {
+                        text.push('\n');
+                    }
+                    text.push_str(&stored_file_text(&serde_json::to_value(file).ok()?));
+                }
+                ("user", Cow::Owned(text))
+            }
+            super::MessageAuthor::Source { source, handle, .. } => (
+                "assistant",
+                Cow::Owned(format!("@{handle} ({}): {}", source.id(), message.text)),
+            ),
+        });
+    }
+    if is_internal_message(item) {
+        let attachments = super::content_parts(item)?.iter().filter(|part| {
+            matches!(
+                part.get("type").and_then(Value::as_str),
+                Some("input_image" | "file")
+            )
+        });
+        return Some(("user", joined_text(attachments)?));
+    }
+    match item.get("type").and_then(Value::as_str) {
+        Some("function_call") => {
+            let name = item.get("name")?.as_str()?;
+            let arguments = item.get("arguments")?;
+            let text = match arguments.as_str() {
+                Some(raw) => format!("{name}\n{raw}"),
+                None => format!("{name}\n{arguments}"),
+            };
+            Some(("tool_call", Cow::Owned(text)))
+        }
+        Some("function_call_output") => Some((
+            "tool_result",
+            joined_text(item.get("output")?.as_array()?.iter()).unwrap_or_default(),
+        )),
+        Some("reasoning" | "compaction") => None,
+        _ => {
+            let kind = match item.get("role")?.as_str()? {
+                "user" => "user",
+                "assistant" => "assistant",
+                _ => return None,
+            };
+            let text = match item.get("content")? {
+                Value::String(text) => Cow::Borrowed(text.as_str()),
+                Value::Array(parts) => joined_text(parts.iter()).unwrap_or_default(),
+                Value::Null | Value::Bool(_) | Value::Number(_) | Value::Object(_) => return None,
+            };
+            Some((kind, text))
+        }
+    }
+}
+
+fn joined_text<'a>(parts: impl Iterator<Item = &'a Value>) -> Option<Cow<'a, str>> {
+    let mut parts = parts.filter_map(content_part_text);
+    let mut text = parts.next()?;
+    for part in parts {
+        let text = text.to_mut();
+        text.push('\n');
+        text.push_str(&part);
+    }
+    Some(text)
+}
+
+fn stored_file_text(file: &Value) -> String {
+    format!("Stored file: {file}")
+}
+
+/// Readable durable evidence, including references that can be reopened after compaction.
+fn content_part_text(part: &Value) -> Option<Cow<'_, str>> {
+    if let Some(text) = part
+        .get("text")
+        .or_else(|| part.get("content"))
+        .and_then(Value::as_str)
+    {
+        return Some(Cow::Borrowed(text));
+    }
+    match part.get("type").and_then(Value::as_str) {
+        Some("input_image") => part
+            .get("image")
+            .map(|image| Cow::Owned(format!("Image: {image}"))),
+        Some("file") => part
+            .get("file")
+            .map(|file| Cow::Owned(stored_file_text(file))),
+        _ => None,
+    }
 }
 
 fn replay_id(target: &MessageTarget) -> String {

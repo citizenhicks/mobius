@@ -1,9 +1,7 @@
 use super::{
     AsyncRead, AsyncWrite, DeserializeOwned, Duration, Error, MAX_FRAME_BYTES, PROTOCOL_VERSION,
-    Result, Serialize, ServerFrame, Value, WRITE_TIMEOUT, WebSocketError,
+    Result, Serialize, ServerFrame, WRITE_TIMEOUT, WebSocketError,
 };
-use serde::Deserialize as _;
-use serde::de::Error as _;
 use tokio::io::AsyncReadExt as _;
 use tokio::io::AsyncWriteExt as _;
 
@@ -73,22 +71,6 @@ impl<R> FrameReader<R> {
             buffer: Vec::new(),
         }
     }
-}
-
-pub(super) fn deserialize_frame<'de, D>(
-    deserializer: D,
-) -> std::result::Result<(u16, Value), D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let Value::Object(mut object) = Value::deserialize(deserializer)? else {
-        return Err(D::Error::custom("gateway frame must be a JSON object"));
-    };
-    let version = object
-        .remove("version")
-        .ok_or_else(|| D::Error::missing_field("version"))?;
-    let version = serde_json::from_value(version).map_err(D::Error::custom)?;
-    Ok((version, Value::Object(object)))
 }
 
 /// Reads one length-prefixed JSON value, returning `None` only for a clean EOF.

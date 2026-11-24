@@ -1,7 +1,6 @@
 //! Chat catalog, durable forking, and bounded owner-scoped history retrieval.
 
 use crate::SessionId;
-use std::borrow::Cow;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -35,6 +34,7 @@ use crate::protocol::FrontendTone;
 use crate::protocol::FrontendWidget;
 use crate::protocol::MessageTarget;
 use crate::protocol::Op;
+use crate::protocol::history_text;
 use crate::protocol::replay_events;
 use crate::protocol::strip_attachment_references;
 
@@ -938,91 +938,6 @@ fn scan_history_batch(
     });
     cursor.remaining_items = (remaining > 0).then_some(remaining);
     Ok(())
-}
-
-pub(crate) fn history_text(item: &Value) -> Option<(&'static str, Cow<'_, str>)> {
-    if let Some(message) = crate::protocol::message_metadata(item) {
-        return Some(match message.author {
-            crate::protocol::MessageAuthor::User => {
-                let mut text = message.text;
-                for file in message.attachments {
-                    let reference = crate::protocol::content_part_text(
-                        &serde_json::json!({"type": "file", "file": file}),
-                    )?;
-                    if !text.is_empty() {
-                        text.push('\n');
-                    }
-                    text.push_str(&reference);
-                }
-                ("user", Cow::Owned(text))
-            }
-            crate::protocol::MessageAuthor::Source { source, handle, .. } => (
-                "assistant",
-                Cow::Owned(format!("@{handle} ({}): {}", source.id(), message.text)),
-            ),
-        });
-    }
-    if crate::protocol::is_internal_message(item) {
-        let attachments = crate::protocol::content_parts(item)?
-            .iter()
-            .filter(|part| {
-                matches!(
-                    part.get("type").and_then(Value::as_str),
-                    Some("input_image" | "file")
-                )
-            })
-            .filter_map(crate::protocol::content_part_text)
-            .collect::<Vec<_>>();
-        return (!attachments.is_empty()).then(|| ("user", Cow::Owned(attachments.join("\n"))));
-    }
-    match item.get("type").and_then(Value::as_str) {
-        Some("function_call") => Some((
-            "tool_call",
-            Cow::Owned(format!(
-                "{}\n{}",
-                item.get("name")?.as_str()?,
-                history_value_text(item.get("arguments")?)
-            )),
-        )),
-        Some("function_call_output") => Some((
-            "tool_result",
-            Cow::Owned(
-                item.get("output")?
-                    .as_array()?
-                    .iter()
-                    .filter_map(crate::protocol::content_part_text)
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            ),
-        )),
-        Some("reasoning" | "compaction") => None,
-        _ => {
-            let kind = match item.get("role")?.as_str()? {
-                "user" => "user",
-                "assistant" => "assistant",
-                _ => return None,
-            };
-            let content = item.get("content")?;
-            let text = match content {
-                Value::String(text) => Cow::Borrowed(text.as_str()),
-                Value::Array(parts) => Cow::Owned(
-                    parts
-                        .iter()
-                        .filter_map(crate::protocol::content_part_text)
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                ),
-                _ => return None,
-            };
-            Some((kind, text))
-        }
-    }
-}
-
-fn history_value_text(value: &Value) -> Cow<'_, str> {
-    value
-        .as_str()
-        .map_or_else(|| Cow::Owned(value.to_string()), Cow::Borrowed)
 }
 
 fn history_chunk(text: &str, offset: usize, max_chars: usize) -> Result<(String, Option<usize>)> {

@@ -10,12 +10,25 @@ use super::{
     RecordedEvent, RouteTarget, Routine, RoutineChange, RoutineDefinition, RoutineRun,
     RoutineRunPreview, RunStats, Serialize, SessionFileRecord, SessionFileReference,
     SessionReadyPayload, SessionRecord, SessionSlot, SshIdentityRecord, Submission, TranscriptOp,
-    TranscriptPage, Value, WorkspaceFileRecord, WorkspaceFileScope, base64_bytes,
-    deserialize_frame, desktop_bytes,
+    TranscriptPage, Value, WorkspaceFileRecord, WorkspaceFileScope, base64_bytes, desktop_bytes,
 };
 use serde::de::Error as _;
 
 const MAX_REQUEST_ID_BYTES: usize = 256;
+
+fn deserialize_envelope<'de, D>(deserializer: D) -> std::result::Result<(u16, Value), D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let Value::Object(mut object) = Value::deserialize(deserializer)? else {
+        return Err(D::Error::custom("gateway frame must be a JSON object"));
+    };
+    let version = object
+        .remove("version")
+        .ok_or_else(|| D::Error::missing_field("version"))?;
+    let version = serde_json::from_value(version).map_err(D::Error::custom)?;
+    Ok((version, Value::Object(object)))
+}
 
 /// One client-to-gateway frame.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -32,7 +45,7 @@ impl<'de> Deserialize<'de> for ClientFrame {
     where
         D: serde::Deserializer<'de>,
     {
-        let (version, message) = deserialize_frame(deserializer)?;
+        let (version, message) = deserialize_envelope(deserializer)?;
         if let Some(request_id) = message.get("request_id")
             && !request_id
                 .as_str()
@@ -827,7 +840,7 @@ impl<'de> Deserialize<'de> for ServerFrame {
     where
         D: serde::Deserializer<'de>,
     {
-        let (version, message) = deserialize_frame(deserializer)?;
+        let (version, message) = deserialize_envelope(deserializer)?;
         let message = serde_json::from_value(message).map_err(D::Error::custom)?;
         Ok(Self { version, message })
     }

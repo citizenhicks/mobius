@@ -6,6 +6,7 @@ use super::{
     provider,
 };
 use crate::harness::mobius::middleware_manifest::MobiusSettings;
+use crate::harness::mobius::provider_catalog;
 
 /// Validates one Bot against its exact selected model route and capabilities, returning its
 /// parsed middleware settings.
@@ -23,18 +24,8 @@ pub(crate) fn validate_bot_compatibility(
         .ok_or_else(|| Error::Invalid("active provider is not in the configured catalog".into()))?;
     validate_configured_provider_selection(configured, selection)?;
     let definition = provider(&selection.provider)?;
-    let route = crate::harness::mobius::provider_catalog::selected_route(
-        definition,
-        Some(configured),
-        selection,
-    )
-    .route;
-    let catalog =
-        crate::harness::mobius::provider_catalog::catalog_routes(definition, configured, selection);
-    if !catalog
-        .iter()
-        .any(|candidate| *candidate.choice.route == *route)
-    {
+    let route = provider_catalog::selected_route(definition, Some(configured), selection).route;
+    if !provider_catalog::has_chat_route(definition, configured, selection, &route) {
         return Err(Error::Invalid(
             "active model route is not in the configured catalog".into(),
         ));
@@ -171,13 +162,11 @@ pub(super) fn validate_configured_provider(configured: &ConfiguredProvider) -> R
                 "reasoning effort",
             )?;
         }
-        definition.validate_tool_discovery(
-            crate::harness::mobius::provider_catalog::effective_tool_discovery(
-                definition,
-                &configured.selection,
-                model,
-            ),
-        )?;
+        definition.validate_tool_discovery(provider_catalog::effective_tool_discovery(
+            definition,
+            &configured.selection,
+            model,
+        ))?;
         if model.context_window <= 0 {
             return Err(Error::Invalid(format!(
                 "model `{}` requires a positive context window",
@@ -286,13 +275,10 @@ fn validate_media_catalog(
         validate_image_ids(models.iter().map(|model| model.id.as_str()))?;
     }
     for model in models {
-        for variant in model
-            .variants
-            .iter()
-            .map(|variant| Some(variant.id.as_str()))
-            .chain(model.variants.is_empty().then_some(None))
+        for (route, _) in
+            provider_catalog::variant_routes(definition.id(), &model.id, &model.variants)
         {
-            if !routes.insert(model_route_id(definition.id(), &model.id, variant)) {
+            if !routes.insert(route.encode()) {
                 return Err(Error::Invalid(
                     "media catalog generates an ambiguous route".into(),
                 ));
@@ -366,36 +352,29 @@ pub(super) fn validate_configured_provider_selection(
         definition.auth(),
         mobius::backend::model::provider::ProviderAuth::Browser(_)
     ) && !mobius::backend::model::provider::uses_default_endpoint(
-        Some(
-            crate::harness::mobius::provider_catalog::selected_base_url(
-                definition,
-                &configured.selection,
-            )
-            .as_str(),
-        ),
-        Some(
-            crate::harness::mobius::provider_catalog::selected_base_url(definition, selection)
-                .as_str(),
-        ),
+        Some(provider_catalog::selected_base_url(definition, &configured.selection).as_str()),
+        Some(provider_catalog::selected_base_url(definition, selection).as_str()),
     ) {
         return Err(Error::Invalid(
             "browser-auth provider selection must use its operator-registered endpoint".into(),
         ));
     }
-    let models = crate::harness::mobius::provider_catalog::models(definition, configured);
-    if !models.iter().any(|model| model.id == selection.model) {
-        return Err(Error::Invalid(format!(
-            "provider `{}` selection model is not in its configured model catalog",
-            selection.provider
-        )));
-    }
-    let effort = effective_reasoning_effort(definition, configured, selection);
-    if !effort.is_none_or(|effort| {
-        models
+    let model = provider_catalog::configured_model(definition, configured, &selection.model)
+        .ok_or_else(|| {
+            Error::Invalid(format!(
+                "provider `{}` selection model is not in its configured model catalog",
+                selection.provider
+            ))
+        })?;
+    if let Some(effort) = selection
+        .reasoning_effort
+        .as_ref()
+        .or(model.default_reasoning.as_ref())
+        && !model
+            .reasoning
             .iter()
-            .find(|model| model.id == selection.model)
-            .is_some_and(|model| model.reasoning.iter().any(|item| item.id == effort))
-    }) {
+            .any(|candidate| &candidate.id == effort)
+    {
         return Err(Error::Invalid(format!(
             "provider `{}` selection reasoning effort is not in its configured reasoning catalog",
             selection.provider
@@ -414,17 +393,12 @@ pub(super) fn validate_custom_model_route_count(
             continue;
         }
         for model in &configured.models {
-            let efforts = model
-                .reasoning
-                .iter()
-                .map(|effort| Some(effort.id.as_str()))
-                .chain(model.reasoning.is_empty().then_some(None));
-            for effort in efforts {
-                if !routes.insert(model_route_id(
-                    &configured.selection.instance,
-                    &model.id,
-                    effort,
-                )) {
+            for (route, _) in provider_catalog::variant_routes(
+                &configured.selection.instance,
+                &model.id,
+                &model.reasoning,
+            ) {
+                if !routes.insert(route.encode()) {
                     return Err(Error::Invalid(
                         "custom model and reasoning catalogs generate an ambiguous route".into(),
                     ));
@@ -483,10 +457,6 @@ fn validate_catalog_entries<'a>(
     Ok(())
 }
 
-pub(crate) fn model_route_id(instance: &str, model: &str, effort: Option<&str>) -> String {
-    format!("{instance}::{model}::{}", effort.unwrap_or("default"))
-}
-
 /// An instance ID names one durable provider setup and appears in model route IDs.
 pub(super) fn validate_instance_id(instance: &str) -> Result<()> {
     if instance.is_empty() || instance.len() > 256 {
@@ -518,19 +488,6 @@ pub(super) fn validate_provider_label(label: &str) -> Result<()> {
         ));
     }
     Ok(())
-}
-
-pub(crate) fn effective_reasoning_effort<'a>(
-    definition: &ProviderDefinition,
-    configured: &'a ConfiguredProvider,
-    selection: &'a ProviderConfig,
-) -> Option<&'a str> {
-    selection.reasoning_effort.as_deref().or_else(|| {
-        let model = crate::harness::mobius::provider_catalog::models(definition, configured)
-            .iter()
-            .find(|model| model.id == selection.model);
-        model.and_then(|model| model.default_reasoning.as_deref())
-    })
 }
 
 pub(super) fn invalid_cloudflare_hostname() -> Error {

@@ -11,7 +11,7 @@ use super::{Basis, Memory, Writer, items, publish_widgets, text};
 use crate::backend::checkpoint::{CheckpointStore, TranscriptPageRequest};
 use crate::backend::model::{ModelRequest, internal_user_message};
 use crate::middleware::ModelContext;
-use crate::middleware::sessions::history_text;
+use crate::protocol::history_text;
 use crate::{Error, Result, SessionId};
 
 const STATE_SCOPE: &str = "memory_dream";

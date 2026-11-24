@@ -186,7 +186,7 @@ impl Gateway {
     /// # Errors
     ///
     /// When the connection's queue is full or the connection has closed.
-    pub fn export_storage(
+    pub(super) fn export_storage(
         &self,
         session_id: SessionId,
         destination: PathBuf,
@@ -1192,6 +1192,84 @@ mod tests {
     use crate::fixture::opened;
     use mobius::SessionId;
     use std::time::Duration;
+
+    #[test]
+    fn storage_export_advances_only_the_current_selection_and_request() {
+        use crate::files::Transfer;
+        use crate::storage::Storage;
+        use std::path::Path;
+
+        let (commands, mut receiver) = super::mpsc::channel(1);
+        let gateway = super::Gateway {
+            commands,
+            updates: None,
+            runtime: None,
+        };
+        let gateway = Some(&gateway);
+        let mut storage = Storage::default();
+        let begin = |storage: &mut Storage, folder: &str| {
+            let sessions = ["one", "two"].map(|id| SessionId::new(id).unwrap());
+            storage.begin_export(gateway, folder.into(), sessions.into(), [true, false, true])
+        };
+        let mut take_request = |session: &str, path: &str| {
+            let Command::Transfer(Transfer::Export {
+                id,
+                session_id,
+                destination,
+                uploads,
+                artifacts,
+            }) = receiver.try_recv().unwrap()
+            else {
+                panic!("expected an export request")
+            };
+            assert_eq!(session_id.as_ref(), session);
+            assert_eq!(destination, Path::new(path));
+            assert!(uploads && !artifacts, "only uploads were selected");
+            id
+        };
+        assert!(storage.can_purge(), "an export is optional");
+        begin(&mut storage, "first").unwrap();
+        let first = take_request("one", "first/Chat-1");
+        assert!(
+            begin(&mut storage, "other").is_err(),
+            "a late picker cannot replace the first export"
+        );
+        assert!(!storage.can_purge(), "cannot purge during an export");
+        assert_eq!(
+            storage.exported(gateway, &first, Err("failed".into())),
+            Err("failed".into())
+        );
+        storage.selection_changed();
+        assert!(
+            storage.can_purge(),
+            "a failed export permits a purge or retry"
+        );
+
+        begin(&mut storage, "retry").unwrap();
+        let retried = take_request("one", "retry/Chat-1");
+        assert_eq!(storage.exported(gateway, &first, Ok(())), Ok(None));
+        assert_eq!(storage.exported(gateway, &retried, Ok(())), Ok(None));
+        let last = take_request("two", "retry/Chat-2");
+        assert_eq!(
+            storage.exported(gateway, &last, Ok(())),
+            Ok(Some("retry".into()))
+        );
+        assert_eq!(storage.exported(gateway, &last, Ok(())), Ok(None));
+        assert!(
+            storage.export_saved() && storage.can_purge(),
+            "the current selection was saved"
+        );
+        storage.selection_changed();
+        assert!(
+            !storage.can_purge(),
+            "a different selection requires a fresh export"
+        );
+        storage.open_cleanup();
+        assert!(
+            storage.can_purge(),
+            "a new cleanup starts with an optional export"
+        );
+    }
 
     async fn fake_gateway() -> (
         super::Endpoint,
