@@ -777,6 +777,25 @@ fn failed_credential_publication_preserves_secrets_and_revocation() {
 }
 
 #[test]
+fn saved_off_is_distinct_from_inheriting_the_operator_decision_route() {
+    let root = tempfile::tempdir().unwrap();
+    let state = root.path().join("gateway");
+    let (store, _) =
+        ConfigStore::initialize(state.clone(), "127.0.0.1:8741".parse().unwrap(), None).unwrap();
+    let (_, initial) = ConfigStore::open(state.clone()).unwrap();
+    assert_eq!(initial.auto_routing, None);
+    store
+        .save(
+            &initial
+                .replacing_auto_routing(auto_routing::Values::new())
+                .unwrap(),
+        )
+        .unwrap();
+    let (_, reopened) = ConfigStore::open(state).unwrap();
+    assert_eq!(reopened.auto_routing, Some(auto_routing::Values::new()));
+}
+
+#[test]
 fn persisted_config_and_credentials_reject_fifos_without_a_writer() {
     let directory = tempfile::tempdir().unwrap();
     let state = directory.path().join("gateway");

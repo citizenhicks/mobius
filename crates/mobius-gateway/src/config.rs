@@ -160,9 +160,9 @@ pub struct GatewayConfig {
     pub desktop_enabled: bool,
     /// The möbius composition new möbius Bots start from.
     pub bot_defaults: Option<VersionedAgentConfig<AgentComposition>>,
-    /// Auto routing setting values that differ from their defaults.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub(crate) auto_routing: auto_routing::Values,
+    /// Absence inherits the operator default. An explicit empty table means Off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    auto_routing: Option<auto_routing::Values>,
     pub(crate) configured_providers: BTreeMap<String, ConfiguredProvider>,
     pub(crate) installed_extensions:
         BTreeMap<Arc<str>, crate::harness::mobius::extensions::InstalledExtension>,
@@ -309,7 +309,7 @@ impl GatewayConfig {
             cloudflare,
             desktop_enabled: false,
             bot_defaults: None,
-            auto_routing: Default::default(),
+            auto_routing: None,
             configured_providers: BTreeMap::new(),
             installed_extensions: BTreeMap::new(),
         }
@@ -550,13 +550,19 @@ impl GatewayConfig {
         Ok(ValidatedGatewayConfig(next))
     }
 
+    pub(crate) fn auto_routing(&self) -> &auto_routing::Values {
+        self.auto_routing
+            .as_ref()
+            .unwrap_or_else(|| &auto_routing::OPERATOR_DEFAULT)
+    }
+
     /// Replaces how new chats left on Auto are routed.
     pub(crate) fn replacing_auto_routing(
         &self,
         values: auto_routing::Values,
     ) -> Result<ValidatedGatewayConfig> {
         let mut next = self.clone(); // rules-allow: staged copy; the caller keeps the current value until the new one is published
-        next.auto_routing = values;
+        next.auto_routing = Some(values);
         next.validated()
     }
 
@@ -577,7 +583,7 @@ impl GatewayConfig {
         self.auth.validate()?;
         self.computer.validate()?;
         self.execution.validate()?;
-        auto_routing::validate(&self.auto_routing, None)?;
+        auto_routing::validate(self.auto_routing(), None)?;
         if let Some(ingress) = self.runtime.ingress
             && (ingress == self.listen
                 || ingress.port() == 0

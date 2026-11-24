@@ -82,8 +82,8 @@ impl GatewayHost {
                 .map_err(invalid_config)?;
             let publication =
                 crate::publication::Outcome::applied(state.store.save(&next)).map_err(internal)?;
-            let model_changed = auto_routing::model(&current.auto_routing)
-                != auto_routing::model(&next.auto_routing);
+            let model_changed = auto_routing::model(current.auto_routing())
+                != auto_routing::model(next.auto_routing());
             *current = next.into_inner();
             (publication, model_changed)
         };
@@ -157,7 +157,7 @@ impl GatewayHost {
         let mut state = self.state.lock().await;
         let route = {
             let config = crate::config::lock(&state.config)?;
-            if auto_routing::model(&config.auto_routing) != Some(model) {
+            if auto_routing::model(config.auto_routing()) != Some(model) {
                 return Ok(None);
             }
             if let Some(route) = &state.decision_route
@@ -191,12 +191,12 @@ impl GatewayHost {
             let state = self.state.lock().await;
             let routing = {
                 let config = crate::config::lock(&state.config)?;
-                let Some(model) = auto_routing::model(&config.auto_routing) else {
+                let Some(model) = auto_routing::model(config.auto_routing()) else {
                     return Ok(None);
                 };
                 Routing {
                     model: model.to_owned(),
-                    settings: Settings::read(&config.auto_routing)?,
+                    settings: Settings::read(config.auto_routing())?,
                     questions: BTreeMap::new(),
                 }
             };

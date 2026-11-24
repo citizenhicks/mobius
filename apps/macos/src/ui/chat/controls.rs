@@ -126,19 +126,18 @@ impl Workspace {
         let folder_path = SharedString::clone(&path);
         let view = cx.entity().downgrade();
         let auto_bot = self.draft_auto.contains(&RouteTarget::Bot);
+        let selected_bot = if auto_bot { None } else { self.draft_bot() };
         let bot_name = if auto_bot {
             AUTO
         } else {
-            self.draft_bot()
-                .map_or("Choose Bot", |bot| bot.name.as_ref())
+            selected_bot.map_or("Choose Bot", |bot| bot.name.as_ref())
         };
-        let bot_glyph = match self.draft_bot() {
-            _ if auto_bot => icon(AUTO_GLYPH, &p).size(glyph::INLINE).into_any_element(),
+        let bot_glyph = match selected_bot {
             Some(bot) => BotFace::new(Accent::from(bot.tint).color(), bot.shape, glyph::INLINE)
                 .into_any_element(),
             None => icon("bot.face", &p).size(glyph::INLINE).into_any_element(),
         };
-        let bot = menu_row("draft-bot", bot_glyph, bot_name.to_owned(), &p)
+        let bot = menu_row("draft-bot", bot_glyph, bot_name.to_owned(), auto_bot, &p)
             .accessibility_label(format!("Choose Bot: {bot_name}"));
         #[cfg(feature = "snapshot")]
         let bot = bot.child(crate::ui::snapshot::probe("chat-draft-bot".into()));
@@ -151,6 +150,7 @@ impl Workspace {
             } else {
                 folder_name(&path)
             },
+            auto_folder,
             &p,
         )
         .accessibility_label(if auto_folder {
@@ -512,10 +512,11 @@ impl Workspace {
 }
 
 /// A menu trigger drawn as a list row: glyph, label and a down chevron (MobiusMenuLabel).
-pub(super) fn menu_row(
+fn menu_row(
     id: impl Into<ElementId>,
     glyph: impl IntoElement,
     label: impl Into<SharedString>,
+    auto: bool,
     p: &Palette,
 ) -> Button {
     Button::new(id)
@@ -530,6 +531,9 @@ pub(super) fn menu_row(
                 .typography(Type::Body)
                 .text_color(p.text)
                 .child(glyph)
+                .when(auto, |row| {
+                    row.child(icon(AUTO_GLYPH, p).size(glyph::INLINE))
+                })
                 .child(label.into())
                 .child(chevron(false, p)),
         )
@@ -537,7 +541,7 @@ pub(super) fn menu_row(
 
 /// The label a picker shows while the gateway picks its value.
 const AUTO: &str = "Auto";
-const AUTO_GLYPH: &str = "hi.sparkles";
+const AUTO_GLYPH: &str = "hi.split";
 
 /// Offers Auto first when the gateway routes `target` for new chats.
 fn auto_item(

@@ -228,6 +228,11 @@ created and remains the authoritative owner of its runtime recipe. A conversatio
 only its workspace and Bot identity, so reopening any of that Bot's conversations uses the current
 Bot profile without coupling unrelated Bots or workspaces.
 
+Operators can set `MOBIUS_GATEWAY_DEFAULT_DECISION_ROUTE` on the gateway process
+to the route ID of an advertised decision model. New chats can then use Auto for
+Bot and folder selection. A saved Auto routing choice, including Off, takes
+precedence across restarts.
+
 ## Extensions
 
 The gateway also owns the extension catalog. Clients may install a standalone

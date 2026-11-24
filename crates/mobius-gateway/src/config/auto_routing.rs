@@ -2,6 +2,7 @@
 //! schema, stored as the values a person changed, and read through their defaults.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::env;
 use std::sync::LazyLock;
 
 use mobius::middleware::manifest::{MiddlewareSettingManifest, ModelCatalogs};
@@ -16,6 +17,15 @@ pub(crate) const ID: &str = "auto_routing";
 
 /// Stored values, keyed by setting ID; settings left at their default are absent.
 pub(crate) type Values = BTreeMap<String, FrontendSettingValue>;
+
+pub(super) static OPERATOR_DEFAULT: LazyLock<Values> = LazyLock::new(|| {
+    env::var("MOBIUS_GATEWAY_DEFAULT_DECISION_ROUTE")
+        .ok()
+        .filter(|route| !route.is_empty())
+        .map(|route| ("model".into(), FrontendSettingValue::String(route)))
+        .into_iter()
+        .collect()
+});
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
