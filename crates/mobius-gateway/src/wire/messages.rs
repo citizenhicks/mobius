@@ -800,6 +800,17 @@ pub enum ClientMessage {
         /// Target and action.
         command: super::RoutineCommand,
     },
+    /// Record a named custom event for one Bot, as that Bot's `emit_hook` tool does.
+    EmitHook {
+        /// Request and event identity.
+        request_id: Arc<str>,
+        /// The Bot the event is attributed to.
+        bot_id: Arc<str>,
+        /// The custom event name.
+        name: String,
+        /// JSON evidence carried by the event.
+        data: Value,
+    },
     /// Selects the list routine history case.
     ListRoutineHistory {
         /// The request identifier.

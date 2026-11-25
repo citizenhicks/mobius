@@ -784,6 +784,14 @@ pub(super) async fn handle_message(
                 .await;
             return write_result(writer, request_id, result).await;
         }
+        ClientMessage::EmitHook {
+            request_id,
+            bot_id,
+            name,
+            data,
+        } => {
+            return emit_hook(writer, request_id, &bot_id, &name, data, gateway).await;
+        }
         ClientMessage::ListRoutineHistory { request_id, id } => {
             return list_routine_history(writer, request_id, id, bots).await;
         }
@@ -1726,6 +1734,18 @@ async fn list_directories_response(
         }
     })
     .await
+}
+
+async fn emit_hook(
+    writer: &mut (impl AsyncWrite + Unpin),
+    request_id: Arc<str>,
+    bot_id: &str,
+    name: &str,
+    data: serde_json::Value,
+    gateway: &GatewayHost,
+) -> Result<()> {
+    let emitted = gateway.emit_bot_hook(bot_id, name, data, &request_id).await;
+    write_result(writer, request_id, emitted.map(drop)).await
 }
 
 async fn clear_provider_credential(

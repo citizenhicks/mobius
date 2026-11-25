@@ -47,6 +47,8 @@ async fn runtime_activity_tracks_reservations_and_pending_deliveries() {
                 ),
                 action: BotAction::Report {
                     instruction: "Tell me when this work finishes.".into(),
+                    session_id: None,
+                    delivery: None,
                 },
             },
         })

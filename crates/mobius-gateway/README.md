@@ -365,6 +365,13 @@ by default). `mobius-gateway set-runtime --idle-exit-seconds SECONDS` changes th
 Stopping it manually also stops routine work; cron occurrences are not replayed after
 restart, and intervals catch up at most one overdue occurrence.
 
+An operator process on the gateway machine can record a custom event for a Bot, with JSON
+evidence on standard input; the Bot's subscriptions select it by name:
+
+```sh
+journalctl -n 20 -o json | jq -s . | mobius-gateway emit --bot BOT_ID --name auth-log
+```
+
 Choose one Bot in New Chat. Each chat has one Bot, one Agent checkpoint, and one
 workspace. See [Bots and context](BOTS.md) for history recovery, routine ownership,
 context boundaries, memory, task lists, and subagents.

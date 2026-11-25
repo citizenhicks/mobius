@@ -41,7 +41,7 @@ pub use self::args::{CloudflareInit, FrontendCommand, GatewayCli};
 use self::args::{
     GatewaySubcommand, InitOptions, RegisterProviderArgs, ServeArgs, parse_cli, parse_init,
 };
-use self::connection::{connect, ensure_gateway_stopped, pairing_code};
+use self::connection::{connect, emit, ensure_gateway_stopped, pairing_code};
 use self::init::{
     direct_loopback_endpoint, initialize, initialize_bootstrap, loopback_endpoint,
     provision_cloudflare_local_client, reset_bot_defaults, set_desktop,
@@ -194,6 +194,9 @@ pub async fn run_cli(
         Some(GatewaySubcommand::SetDesktop { enabled }) => set_desktop(state_dir()?, enabled),
         Some(GatewaySubcommand::PairingCode { json: _ }) => {
             pairing_code(state_dir()?, load_local_client).await
+        }
+        Some(GatewaySubcommand::Emit { bot, name }) => {
+            emit(state_dir()?, bot, name, load_local_client).await
         }
         Some(GatewaySubcommand::ClearProviderCredential { instance }) => {
             provider::clear_provider_credential(state_dir()?, instance, load_local_client).await

@@ -693,7 +693,7 @@ pub(crate) fn validate_bot_binding(
     validate_id(&binding.id)?;
     validate_selector(&binding.on)?;
     match &binding.action {
-        BotAction::Report { instruction } => {
+        BotAction::Report { instruction, .. } => {
             if instruction.trim().is_empty()
                 || instruction.len() > 8192
                 || instruction.contains('\0')

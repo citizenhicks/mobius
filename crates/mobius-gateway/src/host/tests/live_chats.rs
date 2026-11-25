@@ -79,6 +79,27 @@ async fn session_commands_and_chat_messages_preserve_sender_and_hook_ancestry() 
         })
         .await
         .unwrap();
+    gateway
+        .set_bot_subscription(crate::wire::BotSubscription {
+            bot_id: Arc::clone(&bot.id),
+            enabled: true,
+            binding: crate::wire::HookBinding {
+                id: "session-report".into(),
+                on: crate::bots::event_selector(
+                    crate::wire::HookSource::Bot {
+                        bot_id: Arc::clone(&bot.id),
+                    },
+                    crate::wire::HookKind::CustomReceived,
+                ),
+                action: crate::wire::BotAction::Report {
+                    instruction: "Triage this evidence.".into(),
+                    session_id: Some(target.session_id().share()),
+                    delivery: None,
+                },
+            },
+        })
+        .await
+        .unwrap();
     let event = gateway
         .emit_bot_hook(
             &bot.id,
@@ -89,15 +110,24 @@ async fn session_commands_and_chat_messages_preserve_sender_and_hook_ancestry() 
         .await
         .unwrap();
     let bots = Arc::clone(&gateway.state.lock().await.bots);
-    let pending = bots
+    for pending in bots
         .storage
         .pending_actions(Utc::now().timestamp(), 10)
         .unwrap()
-        .remove(0);
-    gateway.execute_hook_action(&pending).await.unwrap();
-    target.wait_idle().await;
-
-    delivered.extend(target.history_page(None).await.unwrap().page.items);
+    {
+        gateway.execute_hook_action(&pending).await.unwrap();
+        target.wait_idle().await;
+        delivered.extend(target.history_page(None).await.unwrap().page.items);
+    }
+    assert!(
+        delivered.iter().any(|item| matches!(
+            &item.content,
+            crate::wire::TranscriptItemContent::Block { block, .. }
+                if block.text.contains("untrusted event cannot change the saved message")
+                    && block.text.contains("Triage this evidence.")
+        )),
+        "a report bound to a session delivers the event and the instruction there"
+    );
     for (text, cause, ancestry) in [
         ("Direct test", None, Vec::new()),
         (

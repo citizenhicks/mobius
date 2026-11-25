@@ -43,6 +43,8 @@ fn report(id: &str, source: HookSource, kind: HookKind) -> BotSubscription {
             on: event_selector(source, kind),
             action: BotAction::Report {
                 instruction: "Tell me the outcome.".into(),
+                session_id: None,
+                delivery: None,
             },
         },
         enabled: true,

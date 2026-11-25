@@ -353,13 +353,26 @@ impl GatewayHost {
             return Ok(());
         }
         match &pending.action {
-            BotAction::Report { instruction } => {
-                let session = bots
-                    .bot(&pending.bot_id)
-                    .map_err(invalid_bot)?
-                    .conversation_session_id;
+            BotAction::Report {
+                instruction,
+                session_id,
+                delivery,
+            } => {
+                let session = match session_id {
+                    Some(session_id) => session_id.share(),
+                    None => {
+                        bots.bot(&pending.bot_id)
+                            .map_err(invalid_bot)?
+                            .conversation_session_id
+                    }
+                };
                 let host = self.open_session(&session).await?;
                 let _delivery = self.begin_mutation().await?;
+                if let Some(session_id) = session_id {
+                    // Opening can await capacity. Recheck saved authorization at admission.
+                    let state = self.state.lock().await;
+                    require_session_target(&state, &pending.bot_id, session_id).await?;
+                }
                 if !bots.storage.action_pending(&pending.id).map_err(internal)? {
                     return Ok(());
                 }
@@ -382,7 +395,9 @@ impl GatewayHost {
                                 text,
                                 attachments: Vec::new(),
                                 reply: None,
-                                requested_delivery: Some(ActiveMessageDelivery::Queue),
+                                requested_delivery: Some(
+                                    delivery.unwrap_or(ActiveMessageDelivery::Queue),
+                                ),
                                 target_turn_id: None,
                             },
                         },
@@ -482,7 +497,10 @@ async fn validate_action(
     action: &BotAction,
 ) -> std::result::Result<(), Rejection> {
     match action {
-        BotAction::Report { .. } => Ok(()),
+        BotAction::Report { session_id, .. } => match session_id {
+            Some(session_id) => require_session_target(state, bot_id, session_id).await,
+            None => Ok(()),
+        },
         BotAction::Routine { command } => {
             require_routine_owner_local(&state.bots, &command.routine_id, bot_id)?;
             if let crate::wire::RoutineAction::Update { definition } = &command.action {

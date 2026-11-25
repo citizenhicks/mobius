@@ -65,6 +65,15 @@ pub(super) enum GatewaySubcommand {
         #[arg(long, required = true)]
         json: bool,
     },
+    /// Record a custom Bot event on the running gateway; its JSON evidence is read from standard input.
+    Emit {
+        /// Stable identifier of the Bot the event is attributed to.
+        #[arg(long)]
+        bot: String,
+        /// Custom event name that the Bot's subscriptions select.
+        #[arg(long)]
+        name: String,
+    },
     /// Register a model provider non-interactively.
     RegisterProvider(RegisterProviderArgs),
     /// Revoke a stored credential and cancel operations that use it.

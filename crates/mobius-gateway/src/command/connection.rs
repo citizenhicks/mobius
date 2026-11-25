@@ -235,6 +235,42 @@ pub(super) async fn pairing_code(
     Ok(print_line(format_args!("{}", pairing_code_json(&grant)?))?)
 }
 
+/// Far above any telemetry digest; bounds what is read from stdin.
+const MAX_EMIT_BYTES: u64 = 64 * 1024;
+
+pub(super) async fn emit(
+    state_dir: PathBuf,
+    bot: String,
+    name: String,
+    load_local_client: fn(&Endpoint) -> Result<Option<String>>,
+) -> Result<()> {
+    let bytes = mobius::read_within(std::io::stdin().lock(), MAX_EMIT_BYTES)?
+        .ok_or_else(|| Error::Invalid(format!("event data exceeds {MAX_EMIT_BYTES} bytes")))?;
+    let data = serde_json::from_slice(&bytes)?;
+    let (_, config) = ConfigStore::open(state_dir)?;
+    let endpoint = direct_loopback_endpoint(&config)?;
+    let token = load_local_client(&endpoint)?
+        .ok_or_else(|| Error::Internal("gateway local control credential is unavailable".into()))?;
+    let client = GatewayClient::connect(&endpoint, &token, ClientCapabilities::default()).await?;
+    let (sender, mut events) = client.into_parts();
+    crate::client::request(
+        &sender,
+        &mut events,
+        "emit",
+        |request_id| ClientMessage::EmitHook {
+            request_id,
+            bot_id: bot.into(),
+            name,
+            data,
+        },
+        |request_id, message| {
+            matches!(message, ServerMessage::Accepted { request_id: actual } if *actual == *request_id)
+                .then_some(())
+        },
+    )
+    .await
+}
+
 #[derive(Serialize)]
 struct PairingCodeOutput<'a> {
     code: &'a str,

@@ -163,6 +163,8 @@ fn subscription(bot_id: &str, session_id: &SessionId, kind: HookKind, id: &str) 
             ),
             action: BotAction::Report {
                 instruction: "Tell the user what happened.".into(),
+                session_id: None,
+                delivery: None,
             },
         },
     }
@@ -466,6 +468,8 @@ async fn canonical_chat_queues_sources_and_deduplicates_delivery_after_ack_gap()
                 ),
                 action: BotAction::Report {
                     instruction: "Summarize this evidence.".into(),
+                    session_id: None,
+                    delivery: None,
                 },
             },
         })

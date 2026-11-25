@@ -338,7 +338,7 @@ fn hook_definitions(text: &Definition) -> Value {
         "routine_command":{"type":"object","properties":{"routine_id":{"type":"string"},"action":{"$ref":"#/$defs/routine_action"}},"required":["routine_id","action"],"additionalProperties":false},
         "routine_binding":binding_schema(&json!({"$ref":"#/$defs/routine_action"})),
         "bot_binding":binding_schema(&json!({"oneOf":[
-            {"type":"object","properties":{"type":{"const":"report"},"instruction":{"type":"string"}},"required":["type","instruction"],"additionalProperties":false},
+            {"type":"object","properties":{"type":{"const":"report"},"instruction":{"type":"string"},"session_id":{"type":["string","null"]},"delivery":{"enum":["queue","steer",null]}},"required":["type","instruction"],"additionalProperties":false},
             {"type":"object","properties":{"type":{"const":"routine"},"command":{"$ref":"#/$defs/routine_command"}},"required":["type","command"],"additionalProperties":false},
             {"type":"object","properties":{"type":{"const":"session"},"session_id":{"type":"string"},"op":{"$ref":"#/$defs/session_op"}},"required":["type","session_id","op"],"additionalProperties":false}
         ]})),
