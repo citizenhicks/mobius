@@ -131,6 +131,69 @@ async fn rejected_prompt_aborts_without_persisting_or_wedging_the_next_turn() {
 }
 
 #[tokio::test]
+async fn compaction_asks_once_more_when_the_model_skips_the_checkpoint() {
+    /// Continues the task on its first checkpoint request, as a model at its context limit did.
+    struct StraysOnce(AtomicUsize);
+
+    impl Model for StraysOnce {
+        fn respond<'a>(
+            &'a self,
+            request: ModelRequest<'a>,
+            _: ModelEventSink,
+        ) -> BoxFuture<'a, Result<ModelOutput>> {
+            Box::pin(async move {
+                if request.tools.len() != 1 || request.tools[0].name != "write_handoff" {
+                    return Ok(scripted_message("done"));
+                }
+                assert_eq!(request.required_tool(), Some("write_handoff"));
+                if self.0.fetch_add(1, Ordering::SeqCst) > 0 {
+                    return Ok(scripted_handoff("checkpoint"));
+                }
+                ModelOutput::from_output(
+                    vec![serde_json::json!({
+                        "type": "function_call",
+                        "call_id": "stray",
+                        "name": "bash",
+                        "arguments": "{}"
+                    })],
+                    false,
+                    scripted_usage(),
+                )
+            })
+        }
+    }
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let model = Arc::new(StraysOnce(AtomicUsize::new(0)));
+        let checkpoints = test_checkpoints(workspace.path());
+        seed_compaction_history(&checkpoints, "stray").await;
+        let router_model = Arc::clone(&model) as Arc<dyn Model>;
+        let store = Arc::clone(&checkpoints) as Arc<dyn CheckpointStore>;
+        let mut agent = create_agent(runtime_config(
+            Arc::new(ModelRouter::new("main", router_model)),
+            test_sandbox(workspace.path(), ApprovalPolicy::Ask),
+            store,
+            test_middleware(vec![Arc::new(Compaction::new(1_000).unwrap())]),
+            "stray",
+        ))
+        .await
+        .unwrap();
+        agent.sender().submit(user_op("compact this")).unwrap();
+        loop {
+            match agent.next_event().await.unwrap().msg {
+                EventMsg::TurnComplete(_) => break,
+                EventMsg::TurnAborted(aborted) => panic!("turn aborted: {}", aborted.reason),
+                _ => {}
+            }
+        }
+        assert_eq!(model.0.load(Ordering::SeqCst), 2);
+    })
+    .await
+    .expect("retried compaction finishes");
+}
+
+#[tokio::test]
 async fn compaction_notice_is_live_and_closes_on_success_failure_and_interrupt() {
     use crate::backend::model::{ModelCancellation, ModelCancellationReason};
     use crate::protocol::FrontendBlockState;

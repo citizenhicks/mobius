@@ -337,6 +337,7 @@ fn compatible_responses_are_implicit_while_first_party_breakpoints_are_explicit(
         instructions: "Instructions",
         input: (&input).into(),
         allow_continuation: true,
+
         ..model_request()
     };
 
@@ -692,4 +693,26 @@ fn a_tool_loaded_twice_is_sent_once() {
     let wire = wire_input((&input).into(), true, "catalog-1", &[tool]).expect("wire input");
     assert_eq!(wire.len(), 1, "{wire:?}");
     assert_eq!(wire[0]["type"], "additional_tools");
+}
+
+#[test]
+fn a_required_tool_is_forced_only_where_the_manifest_documents_how() {
+    let ordinary = model_request();
+    let request = ordinary.with_required_tool("write_handoff");
+    let plain = OpenAi::new("test-key", url("https://example.com/v1"), "test-model")
+        .expect("compatible provider");
+    assert_eq!(body_value(&plain, request)["tool_choice"], "auto");
+
+    let forcing = OpenAi::new("test-key", url("https://api.openai.com/v1"), "test-model")
+        .expect("first-party provider")
+        .with_required_tool_choice(
+            super::super::openai_socket::MANIFEST
+                .required_tool_choice
+                .as_ref(),
+        );
+    assert_eq!(
+        body_value(&forcing, request)["tool_choice"],
+        serde_json::json!({"type": "function", "name": "write_handoff"})
+    );
+    assert_eq!(body_value(&forcing, ordinary)["tool_choice"], "auto");
 }

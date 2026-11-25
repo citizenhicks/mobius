@@ -16,6 +16,8 @@ use crate::protocol::{
 };
 use crate::{BoxFuture, Error, Result};
 
+/// Requests for one checkpoint before an unusable response fails the turn.
+const HANDOFF_ATTEMPTS: usize = 2;
 const NOTES: &str = "handoff_notes";
 const REQUEST: &str = "handoff_request";
 
@@ -84,6 +86,23 @@ fn validate_notes(notes: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn checkpoint_note(
+    mut calls: Vec<crate::protocol::ToolCall>,
+) -> Result<(crate::protocol::ToolCall, Value)> {
+    let call = match calls.pop() {
+        Some(call) if calls.is_empty() && &*call.name == "write_handoff" => call,
+        Some(_) | None => {
+            return Err(Error::Provider(
+                text::DEFINITION.message_one_handoff_call.as_str().into(),
+            ));
+        }
+    };
+    let notes = WriteNotes::deserialize(&call.arguments)?.notes;
+    validate_notes(notes)?;
+    let note = note_message(notes);
+    Ok((call, note))
 }
 
 pub(super) fn is_control(item: &Value) -> bool {
@@ -222,49 +241,50 @@ async fn prepare_checkpoint(
         .model_route
         .as_deref()
         .unwrap_or(context.context_provider);
-    let result = if context
-        .model
-        .same_context_model(source, context.context_provider)
-    {
-        prepare_response(context, policy, source, context.input(), pending, tools).await
-    } else {
-        prepare_portable_response(context, policy, source, switching, tools).await
-    };
-    let (output, summarized, route) = match result {
-        Ok((output, summarized)) => (output, summarized, source),
-        Err(error)
-            if policy.model_route.is_none()
-                && switching
-                && matches!(
-                    error,
-                    Error::Provider(_)
-                        | Error::Auth(_)
-                        | Error::Unknown(_)
-                        | Error::Http(_)
-                        | Error::Io(_)
-                ) =>
+    // A model sometimes carries on with the task instead of writing the checkpoint; the
+    // same request usually succeeds, so ask once more before failing the turn.
+    let mut attempts_left = HANDOFF_ATTEMPTS;
+    let (output, call, note, summarized) = loop {
+        let result = if context
+            .model
+            .same_context_model(source, context.context_provider)
         {
-            let (output, summarized) =
-                prepare_portable_response(context, policy, context.provider, switching, tools)
-                    .await?;
-            (output, summarized, context.provider)
+            prepare_response(context, policy, source, context.input(), pending, tools).await
+        } else {
+            prepare_portable_response(context, policy, source, switching, tools).await
+        };
+        let (output, summarized, route) = match result {
+            Ok((output, summarized)) => (output, summarized, source),
+            Err(error)
+                if policy.model_route.is_none()
+                    && switching
+                    && matches!(
+                        error,
+                        Error::Provider(_)
+                            | Error::Auth(_)
+                            | Error::Unknown(_)
+                            | Error::Http(_)
+                            | Error::Io(_)
+                    ) =>
+            {
+                let (output, summarized) =
+                    prepare_portable_response(context, policy, context.provider, switching, tools)
+                        .await?;
+                (output, summarized, context.provider)
+            }
+            Err(error) => return Err(error),
+        };
+        let (output, calls, usage) = output.into_parts();
+        context.record_usage(route, usage);
+        attempts_left -= 1;
+        match checkpoint_note(calls) {
+            Ok((call, note)) => break (output, call, note, summarized),
+            Err(error) if attempts_left == 0 => return Err(error),
+            Err(_) => {}
         }
-        Err(error) => return Err(error),
     };
-    let (output, mut calls, usage) = output.into_parts();
-    context.record_usage(route, usage);
-    let call = match calls.pop() {
-        Some(call) if calls.is_empty() && &*call.name == "write_handoff" => call,
-        Some(_) | None => {
-            return Err(Error::Provider(
-                text::DEFINITION.message_one_handoff_call.as_str().into(),
-            ));
-        }
-    };
-    let notes = WriteNotes::deserialize(&call.arguments)?.notes;
-    validate_notes(notes)?;
     let mut fresh = retained_input_until(context.input(), summarized)?;
-    fresh.insert(0, Arc::new(note_message(notes)));
+    fresh.insert(0, Arc::new(note));
     // Journal the genuine preparation output without retaining the checkpoint tool's duplicate notes.
     for item in output {
         context.record_transcript_item(item);
@@ -421,7 +441,8 @@ async fn prepare_response(
         deferred_tools: &[],
         allow_hosted_tools: false,
         allow_continuation: false,
-    };
+    }
+    .with_required_tool("write_handoff");
     let transport = context.model.transport_settings_for(route)?;
     let retry_limit = usize::try_from(transport.stream_retry_limit).map_err(|error| {
         Error::Internal(format!(

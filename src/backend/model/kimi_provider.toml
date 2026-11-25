@@ -6,3 +6,4 @@ base_url = "https://api.moonshot.ai/v1"
 tool_discovery = "rebuild"
 search = ["off"]
 credential_env = "MOONSHOT_API_KEY"
+# No `required_tool_choice`: a named tool is a 400 with thinking on, and K2 rejects "required".

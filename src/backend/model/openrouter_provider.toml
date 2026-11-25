@@ -14,6 +14,8 @@ web_search_type = "openrouter:web_search"
 # Decision models (fixed-choice questions with probabilities) answer here.
 decisions_path = "systemone"
 
+# No `required_tool_choice`: whether it is honoured, ignored or rejected depends on the upstream.
+
 # App attribution for OpenRouter rankings and analytics.
 [headers]
 HTTP-Referer = "https://github.com/citizenhicks/mobius"

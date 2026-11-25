@@ -7,3 +7,4 @@ native_custom_endpoints = true
 tool_discovery = "native"
 search = ["off", "cached", "live"]
 custom_endpoint_tool_discovery = "native"
+# No `required_tool_choice`: this backend is only known to accept "auto" and "none".

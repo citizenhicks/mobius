@@ -134,6 +134,11 @@ realtime endpoints/voices and model catalogs. Middleware prompts, labels and def
 live beside their owners. Distributors can edit those source defaults without changing
 execution logic; runtime policy uses the fields above. No global provider registry is added.
 
+A provider manifest may set `required_tool_choice`, the documented `tool_choice` value
+that forces one named tool (`"{name}"` stands for the tool). It is sent only on requests
+that must call one tool, such as checkpoint preparation. The Mistral and OpenAI Socket
+adapters use this template. Other requests retain the adapter’s usual tool selection.
+
 Model catalogs (`anthropic.toml`, `openai.toml`, `kimi.toml`, `deepseek.toml`,
 `mistral.toml`) can be
 replaced without a rebuild: a file with the same name in `<state dir>/models/` is read at

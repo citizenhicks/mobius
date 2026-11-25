@@ -5,3 +5,4 @@ base_url = "https://api.deepseek.com"
 tool_discovery = "rebuild"
 search = ["off"]
 credential_env = "DEEPSEEK_API_KEY"
+# No `required_tool_choice`: thinking mode answers a forced tool with a 400.

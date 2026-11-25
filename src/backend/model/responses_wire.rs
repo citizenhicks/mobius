@@ -38,7 +38,7 @@ pub(super) struct RequestMetadata<'a> {
     store: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) stream: Option<bool>,
-    tool_choice: &'static str,
+    pub(super) tool_choice: super::provider::ToolChoice<'a>,
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub(super) kind: Option<&'static str>,
 }
@@ -73,7 +73,7 @@ impl<'a> RequestMetadata<'a> {
             service_tier: None,
             store: false,
             stream: Some(true),
-            tool_choice: "auto",
+            tool_choice: super::provider::ToolChoice::AUTO,
             kind: None,
         }
     }

@@ -275,6 +275,21 @@ pub struct ModelRequest<'a> {
     pub allow_continuation: bool,
 }
 
+impl<'a> ModelRequest<'a> {
+    /// Requests a named tool on providers that support forced tool selection.
+    #[must_use]
+    pub const fn with_required_tool(mut self, name: &'a str) -> Self {
+        self.input.required_tool = Some(name);
+        self
+    }
+
+    /// The tool requested for this model call, if any.
+    #[must_use]
+    pub const fn required_tool(&self) -> Option<&'a str> {
+        self.input.required_tool
+    }
+}
+
 /// Provider-visible identity for one prompt-cache lineage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PromptCacheIdentity<'a> {

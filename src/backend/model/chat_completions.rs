@@ -33,6 +33,11 @@ pub(super) trait Dialect: Send + Sync + 'static {
     /// Accumulates one streamed response.
     type Stream: ChatStream;
 
+    /// The manifest's documented value for forcing a request's required tool, when it has one.
+    fn required_tool_choice() -> Option<&'static Value> {
+        None
+    }
+
     /// Encodes one message payload.
     /// # Errors
     /// Returns content the provider cannot represent.
@@ -111,6 +116,10 @@ pub(super) fn request_body<'a, D: Dialect>(
         D::NAME,
         D::message,
     )?;
+    if let Some(choice) = &mut body.tool_choice {
+        *choice =
+            super::provider::ToolChoice::new(D::required_tool_choice(), request.required_tool());
+    }
     if D::STREAM_USAGE {
         body.stream_options = Some(StreamOptions {
             include_usage: true,
@@ -216,7 +225,7 @@ pub(super) struct RequestBody<'a, C> {
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<WireTools<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    tool_choice: Option<&'static str>,
+    pub(super) tool_choice: Option<super::provider::ToolChoice<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     parallel_tool_calls: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -272,7 +281,7 @@ impl<'a, C: Default> RequestBody<'a, C> {
             stream_options: None,
             messages: wire_messages(request.instructions, request.input, provider, content)?,
             tools: has_tools.then_some(WireTools(request.tools)),
-            tool_choice: has_tools.then_some("auto"),
+            tool_choice: has_tools.then_some(super::provider::ToolChoice::AUTO),
             parallel_tool_calls: has_tools.then_some(true),
             reasoning_effort,
             prompt_cache_key: request.prompt_cache.map(|cache| cache.key),

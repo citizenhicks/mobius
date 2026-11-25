@@ -50,6 +50,7 @@ impl<'a> Source<'a> {
 #[derive(Debug, Clone, Copy)]
 pub struct ModelInput<'a> {
     sources: [Source<'a>; 3],
+    pub(super) required_tool: Option<&'a str>,
 }
 
 impl<'a> ModelInput<'a> {
@@ -57,6 +58,7 @@ impl<'a> ModelInput<'a> {
     #[must_use]
     pub(crate) fn shared_parts(prefix: &'a [Arc<Value>], tail: &'a [Arc<Value>]) -> Self {
         Self {
+            required_tool: None,
             sources: [
                 Source::Shared(prefix),
                 Source::Shared(tail),
@@ -81,7 +83,7 @@ impl<'a> ModelInput<'a> {
             *destination = source;
             count += 1;
         }
-        Ok(Self { sources })
+        Ok(Self { sources, ..self })
     }
 
     /// Number of logical input items.
@@ -154,6 +156,7 @@ impl<'a> ModelInput<'a> {
 impl<'a> From<&'a [Value]> for ModelInput<'a> {
     fn from(items: &'a [Value]) -> Self {
         Self {
+            required_tool: None,
             sources: [
                 Source::Values(items),
                 Source::Values(&[]),

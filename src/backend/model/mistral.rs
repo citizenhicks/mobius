@@ -51,6 +51,10 @@ impl Dialect for MistralDialect {
     type Message<'a> = MistralMessage<'a>;
     type Stream = MistralStream;
 
+    fn required_tool_choice() -> Option<&'static Value> {
+        MANIFEST.required_tool_choice.as_ref()
+    }
+
     fn message(source: MessageSource<'_>) -> Result<MistralMessage<'_>> {
         let content = match source {
             MessageSource::System(text) => MessageContent::Text(Cow::Borrowed(text)),

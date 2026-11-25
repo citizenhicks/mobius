@@ -33,11 +33,58 @@ pub(super) struct ProviderMetadata {
     #[serde(default)]
     pub(super) headers: std::collections::BTreeMap<String, String>,
     pub(super) max_output_tokens: Option<u64>,
+    /// Documented `tool_choice` value that forces one named tool; `"{name}"` is the tool.
+    /// Omitted where the provider rejects forcing, so those requests stay on `auto`.
+    pub(super) required_tool_choice: Option<serde_json::Value>,
     pub(super) tool_search_type: Option<String>,
     pub(super) web_search_type: Option<String>,
     /// Path under the base URL that answers decision-model requests.
     #[serde(default)]
     pub(super) decisions_path: Option<String>,
+}
+
+/// One request's wire `tool_choice`: `auto`, or the manifest value forcing its required tool.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct ToolChoice<'a>(Option<(&'a serde_json::Value, &'a str)>);
+
+impl<'a> ToolChoice<'a> {
+    pub(super) const AUTO: Self = Self(None);
+
+    /// Forces `required` when the provider manifest supplies a `template` for it.
+    pub(super) fn new(template: Option<&'a serde_json::Value>, required: Option<&'a str>) -> Self {
+        Self(template.zip(required))
+    }
+}
+
+impl serde::Serialize for ToolChoice<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::{SerializeMap as _, SerializeSeq as _};
+        use serde_json::Value;
+        let Some((template, name)) = self.0 else {
+            return serializer.serialize_str("auto");
+        };
+        match template {
+            Value::String(text) if text == "{name}" => serializer.serialize_str(name),
+            Value::Array(items) => {
+                let mut sequence = serializer.serialize_seq(Some(items.len()))?;
+                for item in items {
+                    sequence.serialize_element(&Self(Some((item, name))))?;
+                }
+                sequence.end()
+            }
+            Value::Object(fields) => {
+                let mut map = serializer.serialize_map(Some(fields.len()))?;
+                for (key, value) in fields {
+                    map.serialize_entry(key, &Self(Some((value, name))))?;
+                }
+                map.end()
+            }
+            other => other.serialize(serializer),
+        }
+    }
 }
 
 fn default_supported_tool_discovery() -> Vec<ToolDiscoveryMode> {
@@ -1102,6 +1149,37 @@ mod tests {
             ["low", "medium", "high"]
         );
         assert_eq!(large.default_reasoning.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn required_tool_choice_is_each_manifest_s_documented_wire_value() {
+        let choice = |manifest: &'static ProviderMetadata| {
+            serde_json::to_value(ToolChoice::new(
+                manifest.required_tool_choice.as_ref(),
+                Some("write_handoff"),
+            ))
+            .expect("tool choice")
+        };
+        assert_eq!(
+            choice(&super::super::openai_socket::MANIFEST),
+            serde_json::json!({"type": "function", "name": "write_handoff"})
+        );
+        assert_eq!(
+            choice(&super::super::mistral::MANIFEST),
+            serde_json::json!({"type": "function", "function": {"name": "write_handoff"}})
+        );
+        // No documented way to force a tool: the request stays on `auto`.
+        assert_eq!(choice(&super::super::kimi::MANIFEST), "auto");
+        assert_eq!(
+            serde_json::to_value(ToolChoice::new(
+                super::super::mistral::MANIFEST
+                    .required_tool_choice
+                    .as_ref(),
+                None
+            ))
+            .expect("tool choice"),
+            "auto"
+        );
     }
 
     #[test]

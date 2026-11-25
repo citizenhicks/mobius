@@ -159,6 +159,11 @@ impl OpenAiSocket {
         })
     }
 
+    pub(super) fn with_required_tool_choice(mut self, choice: Option<&'static Value>) -> Self {
+        self.http = self.http.with_required_tool_choice(choice);
+        self
+    }
+
     pub(super) fn with_service_tier(mut self, service_tier: Option<String>) -> Self {
         self.http = self.http.with_service_tier(service_tier);
         self
@@ -418,6 +423,7 @@ impl OpenAiSocket {
             self.http.hosted_tools(),
         )?;
         body.metadata.service_tier = self.http.service_tier();
+        body.metadata.tool_choice = self.http.tool_choice(request);
         Ok(body)
     }
 

@@ -239,3 +239,24 @@ async fn generation_error_never_commits_partial_tools_or_text() {
             .is_err()
     );
 }
+
+#[test]
+fn a_required_tool_is_forced_on_the_wire_and_other_requests_stay_auto() {
+    let input = [user_message("Checkpoint.")];
+    let tools = [Arc::new(ToolDefinition {
+        name: "write_handoff".into(),
+        description: "Save the checkpoint".into(),
+        parameters: json!({"type": "object"}),
+    })];
+    let model = model();
+    let choice = |request| {
+        serde_json::to_value(request_body(&model, request).expect("request")).expect("JSON")
+            ["tool_choice"]
+            .take()
+    };
+    assert_eq!(
+        choice(request(&input, &tools).with_required_tool("write_handoff")),
+        json!({"type": "function", "function": {"name": "write_handoff"}})
+    );
+    assert_eq!(choice(request(&input, &tools)), "auto");
+}

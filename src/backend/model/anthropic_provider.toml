@@ -6,6 +6,7 @@ tool_discovery = "rebuild"
 search = ["off", "live"]
 credential_env = "ANTHROPIC_API_KEY"
 max_output_tokens = 64000
+# No `required_tool_choice`: current flagship models answer forced tool use with a 400.
 
 [headers]
 anthropic-version = "2023-06-01"

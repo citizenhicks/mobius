@@ -59,6 +59,7 @@ fn build_provider(
         config.transport,
     )?
     .with_tool_discovery(tool_discovery)
+    .with_required_tool_choice(MANIFEST.required_tool_choice.as_ref())
     .with_service_tier(config.service_tier)
     .with_selection(config.reasoning_effort, config.web_search)?;
     Ok(Arc::new(provider))

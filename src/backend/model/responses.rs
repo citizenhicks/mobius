@@ -81,6 +81,7 @@ pub struct OpenAi {
     image_input: bool,
     image_api: Option<&'static ImageApi>,
     decisions_path: Option<&'static str>,
+    required_tool_choice: Option<&'static Value>,
     tool_discovery: ToolDiscoveryWire,
     web_search_event_type: &'static str,
 }
@@ -180,6 +181,7 @@ impl OpenAi {
             image_input: true,
             image_api,
             decisions_path: None,
+            required_tool_choice: None,
             tool_discovery: ToolDiscoveryWire::Rebuild,
             web_search_event_type: "web_search_call",
         })
@@ -218,6 +220,23 @@ impl OpenAi {
 
     pub(super) fn service_tier(&self) -> Option<&str> {
         self.service_tier.as_deref()
+    }
+
+    /// Sets the manifest's documented value for forcing a request's required tool.
+    #[must_use]
+    pub(super) const fn with_required_tool_choice(
+        mut self,
+        choice: Option<&'static Value>,
+    ) -> Self {
+        self.required_tool_choice = choice;
+        self
+    }
+
+    pub(super) fn tool_choice<'a>(
+        &self,
+        request: &ModelRequest<'a>,
+    ) -> super::provider::ToolChoice<'a> {
+        super::provider::ToolChoice::new(self.required_tool_choice, request.required_tool())
     }
 
     pub(super) const fn with_max_output_tokens(mut self, tokens: Option<u64>) -> Self {
@@ -438,6 +457,7 @@ impl OpenAi {
         );
         metadata.service_tier = self.service_tier();
         metadata.max_output_tokens = self.max_output_tokens;
+        metadata.tool_choice = self.tool_choice(&request);
         Ok(ResponsesBody {
             metadata,
             tools: self.wire_request_tools(&request),

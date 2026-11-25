@@ -6,3 +6,5 @@ base_url = "https://api.mistral.ai/v1"
 tool_discovery = "rebuild"
 search = ["off"]
 credential_env = "MISTRAL_API_KEY"
+# Chat API: a named function object "forces the model to call that tool".
+required_tool_choice = { type = "function", function = { name = "{name}" } }

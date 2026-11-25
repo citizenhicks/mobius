@@ -7,3 +7,5 @@ tool_discovery = "native"
 search = ["off", "cached", "live"]
 credential_env = "OPENAI_API_KEY"
 native_custom_endpoints = true
+# Responses API: "Use this option to force the model to call a specific function."
+required_tool_choice = { type = "function", name = "{name}" }

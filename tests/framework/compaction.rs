@@ -332,7 +332,9 @@ async fn invalid_checkpoint_preserves_original_and_pending_input() {
     let workspace = TempDir::new().expect("workspace");
     let model = Arc::new(ScriptedModel::new(vec![
         text_response_with_usage("first result", usage(2_000)),
+        // Checkpoint preparation asks twice before giving up.
         text_response("I answered instead of saving notes"),
+        text_response("I answered again instead of saving notes"),
     ]));
     let checkpoints: Arc<dyn CheckpointStore> = Arc::new(checkpoint_store(workspace.path()));
     let mut agent = create_agent(config_with_store(
