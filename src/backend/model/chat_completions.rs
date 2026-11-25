@@ -552,7 +552,8 @@ impl ChatStreamState {
                 format!("{provider} stream error: {message}").into(),
             ));
         }
-        if let Some(usage) = chunk.get("usage") {
+        // OpenAI-compatible servers send `"usage": null` on every chunk before the last.
+        if let Some(usage) = chunk.get("usage").filter(|usage| !usage.is_null()) {
             self.usage = decode_usage(Some(usage), provider)?;
         }
         Ok(Some(chunk))

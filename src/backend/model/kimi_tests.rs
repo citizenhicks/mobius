@@ -218,3 +218,21 @@ async fn stream_normalizes_deltas_tools_usage_and_errors() {
         .expect_err("stream error");
     assert!(error.to_string().contains("quota"));
 }
+
+#[tokio::test]
+async fn stream_accepts_null_usage_before_the_final_usage_chunk() {
+    let (events, _seen) = crate::backend::model::test_support::record_events();
+    let mut stream = KimiStream::default();
+    for chunk in [
+        json!({"choices": [{"delta": {"content": "Done."}}], "usage": null}),
+        json!({"choices": [{"delta": {}}], "usage": {"prompt_tokens": 118, "completion_tokens": 53}}),
+    ] {
+        stream
+            .apply_data(&chunk.to_string(), &events)
+            .await
+            .expect("stream chunk");
+    }
+    stream.apply_data("[DONE]", &events).await.expect("done");
+
+    assert_eq!(stream.finish().expect("output").usage().input_tokens, 118);
+}
