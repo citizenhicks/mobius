@@ -565,19 +565,17 @@ impl MiddlewareStack {
     /// Returns an error if validation or an operation required by this function fails.
     pub fn catalog(&self, runtime: &RuntimeContext) -> Result<Catalog> {
         let mut catalog = Catalog::default();
+        let mut validated = BTreeSet::new();
         for entry in &self.entries {
-            let previous = catalog.registered_definitions();
-            let registered = previous
-                .iter()
-                .map(|definition| definition.name.as_str())
-                .collect::<BTreeSet<_>>();
             entry.register(&mut catalog, runtime)?;
-            for definition in catalog
-                .registered_definitions()
-                .iter()
-                .filter(|definition| !registered.contains(definition.name.as_str()))
-            {
-                validate_tool_rendering(entry.as_ref(), &definition.name, &runtime.session_id)?;
+            let added = catalog
+                .tool_names()
+                .filter(|name| !validated.contains(*name))
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            for name in added {
+                validate_tool_rendering(entry.as_ref(), &name, &runtime.session_id)?;
+                validated.insert(name);
             }
         }
         catalog.publish_progress_to(Arc::clone(&runtime.frontend));

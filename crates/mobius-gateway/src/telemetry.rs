@@ -13,6 +13,7 @@ use mobius::SessionId;
 use mobius::backend::model::provider::{HttpClient, HttpRedirectPolicy};
 pub use policy::TelemetryPolicy;
 use serde_json::{Value, json};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
@@ -797,22 +798,7 @@ async fn deliver(
                 error(&format!("bearer environment variable unavailable: {cause}"))
             })?)
         } else if let Some(path) = &sink.bearer_file {
-            let state_dir = tokio::fs::canonicalize(&telemetry.state_dir)
-                .await
-                .map_err(|cause| error(&format!("state directory unavailable: {cause}")))?;
-            let path = state_dir.join(path);
-            let canonical = tokio::fs::canonicalize(&path)
-                .await
-                .map_err(|cause| error(&format!("bearer file unavailable: {cause}")))?;
-            if !canonical.starts_with(&state_dir) {
-                return Err(error("bearer file escapes state directory"));
-            }
-            Some(
-                tokio::task::spawn_blocking(move || crate::config::load_secret_file(&canonical))
-                    .await
-                    .map_err(|cause| error(&format!("bearer file task failed: {cause}")))?
-                    .map_err(|cause| error(&format!("invalid bearer file: {cause}")))?,
-            )
+            Some(load_bearer_file(&telemetry.state_dir, Path::new(path)).await?)
         } else {
             None
         };
@@ -850,6 +836,41 @@ async fn deliver(
         message: format!("telemetry collector returned HTTP {}", status.as_u16()),
         permanent: status.is_client_error() && status.as_u16() != 408 && status.as_u16() != 429,
     })
+}
+
+async fn load_bearer_file(
+    state_dir: &Path,
+    relative: &Path,
+) -> std::result::Result<String, DeliveryError> {
+    let error = |message: &str| DeliveryError {
+        status: None,
+        message: message.into(),
+        permanent: false,
+    };
+    let state_dir = tokio::fs::canonicalize(state_dir)
+        .await
+        .map_err(|cause| error(&format!("state directory unavailable: {cause}")))?;
+    let joined = state_dir.join(relative);
+    let file_name = joined
+        .file_name()
+        .ok_or_else(|| error("bearer file must have a file name"))?
+        .to_os_string();
+    let parent = joined
+        .parent()
+        .ok_or_else(|| error("bearer file parent unavailable"))?;
+    let canonical_parent = tokio::fs::canonicalize(parent)
+        .await
+        .map_err(|cause| error(&format!("bearer file parent unavailable: {cause}")))?;
+    if !canonical_parent.starts_with(&state_dir) {
+        return Err(error("bearer file escapes state directory"));
+    }
+    // Keep the leaf unresolved so load_secret_file's O_NOFOLLOW rejects symlinked bearer files
+    // even when their target also lies inside state_dir.
+    let target = canonical_parent.join(file_name);
+    tokio::task::spawn_blocking(move || crate::config::load_secret_file(&target))
+        .await
+        .map_err(|cause| error(&format!("bearer file task failed: {cause}")))?
+        .map_err(|cause| error(&format!("invalid bearer file: {cause}")))
 }
 
 #[cfg(test)]
@@ -900,5 +921,32 @@ mod context_tests {
         assert_eq!(latest["session_id"], "chat-1");
         assert_eq!(latest["context"]["input_tokens"], 20);
         assert_eq!(latest["context"]["parts"][0]["kind"], "messages");
+    }
+
+    #[tokio::test]
+    async fn bearer_file_rejects_symlinks_inside_state_dir() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let state = tempfile::tempdir().expect("state");
+        let real = state.path().join("real-token");
+        std::fs::write(&real, "secret-token").expect("write real token");
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600))
+            .expect("chmod 0600");
+        let link = state.path().join("link-token");
+        std::os::unix::fs::symlink(&real, &link).expect("create symlink inside state_dir");
+
+        let direct = load_bearer_file(state.path(), Path::new("real-token"))
+            .await
+            .expect("regular bearer file inside state_dir should load");
+        assert_eq!(direct, "secret-token");
+
+        let symlink_err = load_bearer_file(state.path(), Path::new("link-token"))
+            .await
+            .expect_err("symlinked bearer file inside state_dir must be rejected");
+        assert!(
+            symlink_err.message.contains("regular file"),
+            "unexpected error for symlinked bearer file: {}",
+            symlink_err.message
+        );
     }
 }

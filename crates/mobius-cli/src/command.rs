@@ -351,6 +351,21 @@ async fn connect(initial: InitialSession, preferred_bot: Option<&str>) -> Result
         local: local_gateway,
         endpoint,
     } = connect_gateway().await?;
+    let is_reconnect = matches!(
+        &initial,
+        InitialSession::Reconnect {
+            endpoint: previous,
+            ..
+        } if previous == &endpoint
+    );
+    if !is_reconnect
+        && local_gateway
+        && preferred_bot.is_none()
+        && gateway.agent_catalog.bot_defaults.is_none()
+        && !frontend::run_gateway_login(&sender, &mut events, &mut gateway).await?
+    {
+        return Ok(None);
+    }
     let requested_session = match initial {
         InitialSession::Auto => None,
         InitialSession::Resume(session_id) => Some(session_id),
@@ -365,12 +380,6 @@ async fn connect(initial: InitialSession, preferred_bot: Option<&str>) -> Result
             (session, None)
         }
         None if local_gateway => {
-            if preferred_bot.is_none()
-                && gateway.agent_catalog.bot_defaults.is_none()
-                && !frontend::run_gateway_login(&sender, &mut events, &mut gateway).await?
-            {
-                return Ok(None);
-            }
             let bot_id = preferred_bot.map_or_else(
                 || resolve_bot(&gateway.bots, "@mobius"),
                 |preferred| resolve_bot(&gateway.bots, preferred),

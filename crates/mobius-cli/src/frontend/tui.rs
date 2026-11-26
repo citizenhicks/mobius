@@ -684,7 +684,6 @@ impl TuiState {
         let Some(entry) = self.composer_history.get_mut(index) else {
             return;
         };
-        let saved_draft = self.composer_history_draft.take();
         let input = std::mem::take(entry);
         self.composer.text.clear();
         self.composer.pastes.clear();
@@ -693,7 +692,6 @@ impl TuiState {
         if let Some(entry) = self.composer_history.get_mut(index) {
             *entry = input;
         }
-        self.composer_history_draft = saved_draft;
         self.composer_history_index = Some(index);
     }
 

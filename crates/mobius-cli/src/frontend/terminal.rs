@@ -1,6 +1,6 @@
 use std::io;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Once, OnceLock};
+use std::sync::{Arc, Mutex as StdMutex, Once, OnceLock};
+use std::thread::ThreadId;
 
 use mobius::protocol::FrontendWidget;
 use mobius::{Error, Result};
@@ -25,7 +25,7 @@ pub(super) fn exit_key(key: ratatui::crossterm::event::KeyEvent) -> bool {
 
 const MAX_INPUT_BATCH: usize = 64;
 const INPUT_CHANNEL_CAPACITY: usize = 256;
-static ACTIVE_GUARDS: AtomicUsize = AtomicUsize::new(0);
+static ACTIVE_GUARD_OWNER: StdMutex<Option<(ThreadId, usize)>> = StdMutex::new(None);
 static PANIC_HOOK: Once = Once::new();
 /// Terminal input cap for gateway and provider endpoint fields.
 pub(super) const MAX_ENDPOINT_BYTES: usize = 4 * 1024;
@@ -145,11 +145,38 @@ pub(super) async fn next_input_batch() -> Vec<Result<Event>> {
     batch
 }
 
+fn register_guard_owner() {
+    if let Ok(mut slot) = ACTIVE_GUARD_OWNER.lock() {
+        let current = std::thread::current().id();
+        match slot.as_mut() {
+            Some((owner, depth)) if *owner == current => *depth += 1,
+            _ => *slot = Some((current, 1)),
+        }
+    }
+}
+
+fn unregister_guard_owner() {
+    if let Ok(mut slot) = ACTIVE_GUARD_OWNER.lock()
+        && let Some((_, depth)) = slot.as_mut()
+    {
+        *depth = depth.saturating_sub(1);
+        if *depth == 0 {
+            *slot = None;
+        }
+    }
+}
+
+fn should_restore_terminal_on_current_thread() -> bool {
+    ACTIVE_GUARD_OWNER.try_lock().is_ok_and(|slot| {
+        slot.is_some_and(|(owner, depth)| depth > 0 && owner == std::thread::current().id())
+    })
+}
+
 fn install_panic_hook() {
     PANIC_HOOK.call_once(|| {
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            if ACTIVE_GUARDS.load(Ordering::Acquire) > 0 {
+            if should_restore_terminal_on_current_thread() {
                 drop(disable_raw_mode());
                 drop(execute!(
                     io::stdout(),
@@ -172,7 +199,7 @@ impl TerminalGuard {
     pub(super) fn alternate() -> Result<Self> {
         install_panic_hook();
         enable_raw_mode()?;
-        ACTIVE_GUARDS.fetch_add(1, Ordering::Release);
+        register_guard_owner();
         let guard = Self {
             mouse_capture: true,
         };
@@ -206,7 +233,7 @@ impl Drop for TerminalGuard {
         reason = "drop cannot return an error, and stderr is the only place left to report a failed terminal restore"
     )]
     fn drop(&mut self) {
-        ACTIVE_GUARDS.fetch_sub(1, Ordering::AcqRel);
+        unregister_guard_owner();
         if let Err(error) = disable_raw_mode() {
             eprintln!("could not leave terminal raw mode: {error}");
         }
@@ -354,5 +381,26 @@ mod tests {
         assert!(!append_bounded(&mut text, "a\n\t\u{7}", 8, true));
         assert_eq!(text, "a\n\t");
         assert_eq!(masked_credential(&text, 1), "•…");
+    }
+
+    #[test]
+    fn panic_restore_only_applies_to_guard_owning_thread() {
+        register_guard_owner();
+        assert!(
+            should_restore_terminal_on_current_thread(),
+            "owning thread should restore terminal on panic"
+        );
+        let background = std::thread::spawn(should_restore_terminal_on_current_thread)
+            .join()
+            .expect("background thread join");
+        assert!(
+            !background,
+            "background thread panic must not tear down the active TUI terminal"
+        );
+        unregister_guard_owner();
+        assert!(
+            !should_restore_terminal_on_current_thread(),
+            "released guard should no longer trigger panic restore"
+        );
     }
 }

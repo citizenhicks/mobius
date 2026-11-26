@@ -297,4 +297,26 @@ fn composer_navigation_ctrl_c_draft_slash_args_and_mouse_scroll() {
     );
     state.confirm_delete_current_session();
     assert_eq!(state.handle_mouse(scroll_up), (false, UiAction::None));
+
+    // Editing a recalled history entry keeps the stashed draft recoverable via Down.
+    let mut history_state = state_with_history(&["first prompt"]);
+    history_state.composer.text = "in progress".into();
+    history_state.composer.cursor = history_state.composer.text.len();
+    history_state.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), &catalog);
+    assert_eq!(history_state.composer.text, "first prompt");
+    history_state.handle_key(
+        KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE),
+        &catalog,
+    );
+    assert_eq!(history_state.composer.text, "first prompt!");
+    history_state.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &catalog);
+    assert_eq!(history_state.composer.text, "in progress");
+}
+
+fn state_with_history(entries: &[&str]) -> TuiState {
+    let mut tui = state();
+    for entry in entries {
+        tui.composer_history.push_back((*entry).into());
+    }
+    tui
 }

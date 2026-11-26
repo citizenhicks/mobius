@@ -470,6 +470,9 @@ impl BotStore {
             pending_bot_deletion: AtomicBool::new(false),
         };
         let state = store.fresh_state()?;
+        store
+            .pending_bot_deletion
+            .store(state.pending_bot_deletion.is_some(), Ordering::Release);
         if persisted && !state.bots.iter().any(|bot| &*bot.handle == MOBIUS_HANDLE) {
             return Err(Error::Internal(
                 "persisted Bot state has no built-in @mobius Bot".into(),
@@ -799,8 +802,7 @@ impl BotStore {
         let catalog = catalog_json(&state)?;
         self.storage
             .delete_runs_and_save_catalog(&catalog, None, Some(&bot_id), None, None)?;
-        self.pending_bot_deletion
-            .store(state.pending_bot_deletion.is_some(), Ordering::Release);
+        self.record_catalog_write(state.pending_bot_deletion.is_some())?;
         drop(routine_locks);
         drop(state_lock);
         for path in &instructions {
@@ -1538,8 +1540,21 @@ impl BotStore {
 
     fn save(&self, state: &BotState) -> Result<()> {
         self.storage.save_catalog(&catalog_json(state)?)?;
+        self.record_catalog_write(state.pending_bot_deletion.is_some())?;
+        Ok(())
+    }
+
+    /// Invalidates the read cache and updates `pending_bot_deletion` under the cache lock while
+    /// the caller holds the exclusive state lock, preventing stale readers from overwriting it.
+    fn record_catalog_write(&self, has_pending_deletion: bool) -> Result<()> {
+        let mut cache = self
+            .cache
+            .lock()
+            .map_err(crate::poisoned("Bot catalog cache"))?;
         self.pending_bot_deletion
-            .store(state.pending_bot_deletion.is_some(), Ordering::Release);
+            .store(has_pending_deletion, Ordering::Release);
+        *cache = None;
+        drop(cache);
         Ok(())
     }
 
@@ -1562,7 +1577,10 @@ impl BotStore {
             .map_err(crate::poisoned("Bot catalog cache"))?;
         let stamp = cache.as_ref().map(|(stamp, _)| *stamp);
         if let Some((stamp, contents)) = self.storage.catalog_since(stamp)? {
-            *cache = Some((stamp, std::sync::Arc::new(self.parse_state(contents)?)));
+            let state = self.parse_state(contents)?;
+            self.pending_bot_deletion
+                .store(state.pending_bot_deletion.is_some(), Ordering::Release);
+            *cache = Some((stamp, std::sync::Arc::new(state)));
         }
         cache
             .as_ref()
@@ -1576,8 +1594,6 @@ impl BotStore {
             .transpose()?
             .unwrap_or_default();
         validate_records(&state, &self.routines_dir)?;
-        self.pending_bot_deletion
-            .store(state.pending_bot_deletion.is_some(), Ordering::Release);
         Ok(state)
     }
 }

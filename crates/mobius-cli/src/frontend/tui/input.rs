@@ -1030,8 +1030,6 @@ impl TuiState {
         self.slash_menu_dismissed = false;
         self.reference_selection = 0;
         self.reference_menu_dismissed = false;
-        self.composer_history_index = None;
-        self.composer_history_draft = None;
     }
 
     /// Moves the composer cursor up (`direction < 0`) or down (`direction > 0`) one line inside a

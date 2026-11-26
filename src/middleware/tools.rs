@@ -466,7 +466,7 @@ impl std::fmt::Debug for Catalog {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("Catalog")
-            .field("tools", &self.registered_definitions)
+            .field("tools", &self.registered_definitions())
             .field("revision", &self.revision)
             .field("finalized", &self.finalized)
             .finish_non_exhaustive()
@@ -563,7 +563,10 @@ impl Catalog {
         if self.finalized {
             return Err(Error::Internal("tool catalog is already finalized".into()));
         }
-        let has_deferred = !self.deferred_definitions.is_empty();
+        let has_deferred = self
+            .tools
+            .iter()
+            .any(|tool| tool.exposure == ToolExposure::Deferred);
         let has_search = self.tools.contains(TOOLS_SEARCH_NAME);
         if has_deferred && !has_search {
             return Err(Error::Internal(
@@ -580,6 +583,10 @@ impl Catalog {
         Ok(())
     }
 
+    pub(crate) fn tool_names(&self) -> impl Iterator<Item = &str> {
+        self.tools.iter().map(|tool| tool.definition.name.as_str())
+    }
+
     fn insert(&mut self, entry: RegisteredTool) -> Result<()> {
         if let Some(existing) = self.tools.get(entry.definition.name.as_str()) {
             return Err(Error::Duplicate(format!(
@@ -588,56 +595,70 @@ impl Catalog {
             )));
         }
         self.tools.insert(entry);
-        self.refresh_definitions();
         Ok(())
     }
 
     fn refresh_definitions(&mut self) {
         let mut schema_bytes = HashMap::with_capacity(self.tools.len());
+        let mut registered = Vec::with_capacity(self.tools.len());
+        let mut direct = Vec::new();
+        let mut deferred = Vec::new();
         for tool in &self.tools {
             if let Ok(len) = crate::serialized_len(&tool.definition) {
                 schema_bytes.insert(tool.definition.name.clone(), len); // rules-allow: cached schema length map keys by tool name
             }
+            registered.push(Arc::clone(&tool.definition));
+            match tool.exposure {
+                ToolExposure::Direct => direct.push(Arc::clone(&tool.definition)),
+                ToolExposure::Deferred => deferred.push(Arc::clone(&tool.definition)),
+                ToolExposure::Hidden => {}
+            }
         }
         self.schema_bytes = Arc::new(schema_bytes);
-        self.registered_definitions = self
-            .tools
-            .iter()
-            .map(|tool| Arc::clone(&tool.definition))
-            .collect::<Vec<_>>()
-            .into();
-        self.direct_definitions = self
-            .tools
-            .iter()
-            .filter(|tool| tool.exposure == ToolExposure::Direct)
-            .map(|tool| Arc::clone(&tool.definition))
-            .collect::<Vec<_>>()
-            .into();
-        self.deferred_definitions = self
-            .tools
-            .iter()
-            .filter(|tool| tool.exposure == ToolExposure::Deferred)
-            .map(|tool| Arc::clone(&tool.definition))
-            .collect::<Vec<_>>()
-            .into();
+        self.registered_definitions = registered.into();
+        self.direct_definitions = direct.into();
+        self.deferred_definitions = deferred.into();
     }
 
     /// Returns all registered definitions in stable name order.
     #[must_use]
     pub fn registered_definitions(&self) -> Arc<[Arc<ToolDefinition>]> {
-        Arc::clone(&self.registered_definitions)
+        if self.finalized {
+            return Arc::clone(&self.registered_definitions);
+        }
+        self.tools
+            .iter()
+            .map(|tool| Arc::clone(&tool.definition))
+            .collect::<Vec<_>>()
+            .into()
     }
 
     /// Returns definitions included in every model request in stable name order.
     #[must_use]
     pub fn direct_definitions(&self) -> Arc<[Arc<ToolDefinition>]> {
-        Arc::clone(&self.direct_definitions)
+        if self.finalized {
+            return Arc::clone(&self.direct_definitions);
+        }
+        self.tools
+            .iter()
+            .filter(|tool| tool.exposure == ToolExposure::Direct)
+            .map(|tool| Arc::clone(&tool.definition))
+            .collect::<Vec<_>>()
+            .into()
     }
 
     /// Returns discoverable definitions in stable name order.
     #[must_use]
     pub fn deferred_definitions(&self) -> Arc<[Arc<ToolDefinition>]> {
-        Arc::clone(&self.deferred_definitions)
+        if self.finalized {
+            return Arc::clone(&self.deferred_definitions);
+        }
+        self.tools
+            .iter()
+            .filter(|tool| tool.exposure == ToolExposure::Deferred)
+            .map(|tool| Arc::clone(&tool.definition))
+            .collect::<Vec<_>>()
+            .into()
     }
 
     /// Returns the stable schema and exposure fingerprint of this finalized catalog.
@@ -655,10 +676,10 @@ impl Catalog {
     }
 
     pub(crate) fn exposed_names(&self) -> BTreeSet<String> {
-        self.direct_definitions
+        self.tools
             .iter()
-            .chain(self.deferred_definitions.iter())
-            .map(|tool| tool.name.clone()) // rules-allow: callers receive an owned name set
+            .filter(|tool| matches!(tool.exposure, ToolExposure::Direct | ToolExposure::Deferred))
+            .map(|tool| tool.definition.name.clone()) // rules-allow: callers receive an owned name set
             .collect()
     }
 
@@ -752,9 +773,13 @@ impl Catalog {
                 .collect());
         }
         let definitions = self
-            .deferred_definitions
+            .tools
             .iter()
-            .filter(|definition| searchable.contains(&definition.name))
+            .filter(|tool| {
+                tool.exposure == ToolExposure::Deferred
+                    && searchable.contains(&tool.definition.name)
+            })
+            .map(|tool| &tool.definition)
             .collect::<Vec<_>>();
         if definitions.is_empty() {
             return Ok(Vec::new());
