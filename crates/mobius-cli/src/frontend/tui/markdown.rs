@@ -22,16 +22,26 @@ pub(super) fn render(source: &str, base: Style, width: usize) -> Vec<Line<'stati
     writer.finish()
 }
 
-/// Caches finished top-level prose while reparsing the unfinished stream tail.
+/// Optional leading prefix applied to rendered markdown lines (`first` on line 0, `rest` after).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct LinePrefix {
+    pub(super) first: &'static str,
+    pub(super) rest: &'static str,
+    pub(super) style: Style,
+}
+
+/// Caches finished top-level blocks directly inside the caller's line buffer while reparsing only
+/// the unfinished stream tail.
 #[derive(Default)]
 pub(super) struct StreamCache {
     width: usize,
     base: Style,
+    prefix: Option<LinePrefix>,
     source_bytes: usize,
-    dependent_markup: bool,
     prefix_bytes: usize,
     prefix_lines: usize,
-    lines: Vec<Line<'static>>,
+    prefix_has_bracket: bool,
+    prefix_has_html: bool,
 }
 
 impl StreamCache {
@@ -39,77 +49,138 @@ impl StreamCache {
         *self = Self::default();
     }
 
-    pub(super) fn render(&mut self, source: &str, base: Style, width: usize) -> &[Line<'static>] {
-        let changed_layout = self.width != width || self.base != base;
-        if !changed_layout && self.source_bytes == source.len() {
-            return &self.lines;
+    #[cfg(test)]
+    pub(super) fn prefix_bytes(&self) -> usize {
+        self.prefix_bytes
+    }
+
+    /// Incrementally updates `target` for `source` and returns the index of the first modified line.
+    pub(super) fn render_into(
+        &mut self,
+        source: &str,
+        base: Style,
+        width: usize,
+        prefix: Option<LinePrefix>,
+        target: &mut Vec<Line<'static>>,
+    ) -> usize {
+        let changed_layout = self.width != width || self.base != base || self.prefix != prefix;
+        if !changed_layout && self.source_bytes == source.len() && !target.is_empty() {
+            return target.len();
         }
-        let reset = changed_layout || source.len() < self.source_bytes;
+        let reset =
+            changed_layout || source.len() < self.source_bytes || target.len() < self.prefix_lines;
         if reset {
             self.clear();
             self.width = width;
             self.base = base;
+            self.prefix = prefix;
         }
-        self.dependent_markup |= source
-            .get(self.source_bytes..)
-            .is_none_or(|added| added.contains(['[', '<']));
-        let dependent_markup = self.dependent_markup;
-        match source
-            .get(self.prefix_bytes..)
-            .filter(|_| !reset && !dependent_markup)
-        {
+        let tail = source.get(self.prefix_bytes..);
+        // Only a newly arriving link reference definition (`[id]: ...`) or raw HTML can alter an
+        // earlier finished block's inline links or block spacing.
+        let invalidates_prefix = tail.is_none_or(|tail| {
+            (self.prefix_has_bracket && has_link_reference_definition(tail))
+                || (self.prefix_has_html && tail.contains('<'))
+        });
+        let keep = match tail.filter(|_| !reset && !invalidates_prefix) {
             None => {
-                // ponytail: references and HTML can change earlier inline parsing or block spacing.
                 self.prefix_bytes = 0;
                 self.prefix_lines = 0;
-                self.lines = render(source, base, width);
+                self.prefix_has_bracket = false;
+                self.prefix_has_html = false;
+                target.clear();
+                append_prefixed(target, render(source, base, width), prefix);
+                0
             }
             Some(tail) => {
-                self.lines.truncate(self.prefix_lines);
-                let (finished, rest) = tail
-                    .split_at_checked(finished_prose_prefix(tail))
-                    .unwrap_or(("", tail));
+                let keep = self.prefix_lines;
+                target.truncate(keep);
+                let split = if has_link_reference_definition(tail) {
+                    0
+                } else {
+                    finished_block_prefix(tail)
+                };
+                let (finished, rest) = tail.split_at_checked(split).unwrap_or(("", tail));
                 if !finished.is_empty() {
-                    self.append(render(finished, base, width));
+                    append_prefixed(target, render(finished, base, width), prefix);
                     self.prefix_bytes += finished.len();
-                    self.prefix_lines = self.lines.len();
+                    self.prefix_lines = target.len();
+                    self.prefix_has_bracket |= finished.contains('[');
+                    self.prefix_has_html |= finished.contains('<');
                 }
-                self.append(render(rest, base, width));
+                append_prefixed(target, render(rest, base, width), prefix);
+                keep
             }
-        }
+        };
         self.source_bytes = source.len();
-        &self.lines
-    }
-
-    fn append(&mut self, lines: Vec<Line<'static>>) {
-        if !self.lines.is_empty() && !lines.is_empty() {
-            self.lines.push(Line::default());
-        }
-        self.lines.extend(lines);
+        keep
     }
 }
 
-fn finished_prose_prefix(source: &str) -> usize {
+fn append_prefixed(
+    target: &mut Vec<Line<'static>>,
+    lines: Vec<Line<'static>>,
+    prefix: Option<LinePrefix>,
+) {
+    if lines.is_empty() {
+        return;
+    }
+    if !target.is_empty() {
+        let mut blank = Line::default();
+        if let Some(prefix) = prefix {
+            blank
+                .spans
+                .insert(0, Span::styled(prefix.rest, prefix.style));
+        }
+        target.push(blank);
+    }
+    for mut line in lines {
+        if let Some(prefix) = prefix {
+            let marker = if target.is_empty() {
+                prefix.first
+            } else {
+                prefix.rest
+            };
+            line.spans.insert(0, Span::styled(marker, prefix.style));
+        }
+        target.push(line);
+    }
+}
+
+fn has_link_reference_definition(source: &str) -> bool {
+    source.lines().any(|line| {
+        let trimmed = line.trim_start_matches(' ');
+        let leading_spaces = line.len() - trimmed.len();
+        leading_spaces <= 3 && trimmed.starts_with('[') && trimmed.contains("]:")
+    })
+}
+
+fn finished_block_prefix(source: &str) -> usize {
     let mut depth = 0_usize;
-    let mut prose = false;
+    let mut cacheable = false;
     let mut finished = 0;
     for (event, range) in Parser::new_ext(source, options()).into_offset_iter() {
         match event {
             Event::Start(tag) => {
                 if depth == 0 {
-                    prose = matches!(tag, Tag::Paragraph | Tag::Heading { .. });
+                    cacheable = matches!(
+                        tag,
+                        Tag::Paragraph
+                            | Tag::Heading { .. }
+                            | Tag::CodeBlock(CodeBlockKind::Fenced(_))
+                    );
                 }
                 depth += 1;
             }
             Event::End(_) => {
                 depth = depth.saturating_sub(1);
                 if depth == 0
-                    && prose
+                    && cacheable
                     && source
                         .get(range.end..)
                         .is_some_and(|rest| rest.starts_with('\n') || rest.starts_with("\r\n"))
                 {
-                    // Container blocks stay in the tail until following top-level prose closes.
+                    // Container blocks stay in the tail until a following top-level block closes.
                     finished = range.end;
                 }
             }

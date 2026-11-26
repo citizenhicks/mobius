@@ -29,6 +29,7 @@ pub(crate) struct MenuItem {
     pub value: String,
     pub label: String,
     pub description: Arc<str>,
+    pub requires_arguments: bool,
 }
 
 #[derive(Clone)]
@@ -477,6 +478,7 @@ impl UiCommand {
             value: format!("{COMMAND_PREFIX}{}", self.name),
             label: self.label(""),
             description: Arc::clone(&self.description),
+            requires_arguments: self.arguments.starts_with('<'),
         }
     }
 }
@@ -487,6 +489,7 @@ impl UiReference {
             value: self.replacement.clone(), // rules-allow: menu items own their text while the catalog keeps the reference
             label: format!("{}{}", self.trigger, self.value),
             description: Arc::clone(&self.description),
+            requires_arguments: false,
         }
     }
 }

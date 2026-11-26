@@ -12,7 +12,7 @@ use super::render::render;
 use super::state::{BotsState, Page};
 use crate::frontend::response::ScreenEvents;
 use crate::frontend::setup;
-use crate::frontend::terminal::{Screen, input_batch, input_interval};
+use crate::frontend::terminal::{Screen, next_input_batch};
 use crate::gateway_error;
 
 pub(in crate::frontend) async fn run(
@@ -26,7 +26,6 @@ pub(in crate::frontend) async fn run(
     terminal.clear()?;
     let mut state = BotsState::new(gateway, preferred_bot_id, protected_bot_id);
     request_routines(sender, &mut state).await?;
-    let mut tick = input_interval();
     let mut events = ScreenEvents::new(events);
     let mut dirty = true;
 
@@ -47,8 +46,8 @@ pub(in crate::frontend) async fn run(
                 state.clamp(gateway);
                 dirty = true;
             }
-            _ = tick.tick() => {
-                for event in input_batch() {
+            batch = next_input_batch() => {
+                for event in batch {
                     let event = event?;
                     dirty = true;
                     let action = match event {

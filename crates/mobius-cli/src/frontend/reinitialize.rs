@@ -6,7 +6,7 @@ use mobius::Result;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::text::Line;
 
-use super::terminal::{input_batch, input_interval, open_screen};
+use super::terminal::{next_input_batch, open_screen};
 use super::terminal_text;
 use super::theme::{Role, current};
 
@@ -17,12 +17,17 @@ use super::theme::{Role, current};
 pub async fn confirm(state_dir: &Path) -> Result<bool> {
     let (_guard, mut terminal) = open_screen()?;
     terminal.clear()?;
-    let mut tick = input_interval();
+    let mut dirty = true;
     loop {
-        terminal.draw(|frame| render(frame, state_dir))?;
-        tick.tick().await;
-        for event in input_batch() {
+        if dirty {
+            terminal.draw(|frame| render(frame, state_dir))?;
+            dirty = false;
+        }
+        for event in next_input_batch().await {
             let event = event?;
+            if matches!(event, Event::Resize(_, _)) {
+                dirty = true;
+            }
             if let Event::Key(key) = event
                 && let Some(confirm) = decision(key)
             {

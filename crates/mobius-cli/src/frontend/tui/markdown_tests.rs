@@ -49,20 +49,34 @@ fn streaming_cache_matches_full_render_through_containers_references_and_resizin
         "[text][id]\n\nLater\n\n[id]: https://example.com\n",
     ] {
         let mut cache = StreamCache::default();
+        let mut lines = Vec::new();
         for end in 1..=source.len() {
             if let Some(prefix) = source.get(..end) {
-                assert_eq!(
-                    cache.render(prefix, Style::default(), 32),
-                    render(prefix, Style::default(), 32),
-                    "{prefix:?}"
-                );
+                cache.render_into(prefix, Style::default(), 32, None, &mut lines);
+                assert_eq!(lines, render(prefix, Style::default(), 32), "{prefix:?}");
             }
         }
-        assert_eq!(
-            cache.render(source, Style::default(), 12),
-            render(source, Style::default(), 12)
-        );
+        cache.render_into(source, Style::default(), 12, None, &mut lines);
+        assert_eq!(lines, render(source, Style::default(), 12));
         let style = Style::default().fg(ratatui::style::Color::Blue);
-        assert_eq!(cache.render(source, style, 12), render(source, style, 12));
+        cache.render_into(source, style, 12, None, &mut lines);
+        assert_eq!(lines, render(source, style, 12));
     }
+}
+
+#[test]
+fn streaming_cache_keeps_prefix_across_links_generics_and_fenced_code_blocks() {
+    let source = "See [docs](https://example.com) and `Vec<u8>`.\n\n```rust\nfn demo(xs: &[u8]) -> Vec<usize> {\n    xs.iter().map(|&b| usize::from(b)).collect()\n}\n```\n\nClosing paragraph.";
+    let mut cache = StreamCache::default();
+    let mut lines = Vec::new();
+    for end in 1..=source.len() {
+        if let Some(prefix) = source.get(..end) {
+            cache.render_into(prefix, Style::default(), 40, None, &mut lines);
+            assert_eq!(lines, render(prefix, Style::default(), 40), "{prefix:?}");
+        }
+    }
+    assert!(
+        cache.prefix_bytes() > source.find("```rust").unwrap_or_default(),
+        "expected closed fenced code block and link prose to stay incrementally cached"
+    );
 }

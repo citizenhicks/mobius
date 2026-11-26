@@ -193,6 +193,30 @@ fn live_window(
     if !has_content && decorations.is_empty() {
         decorations = welcome_lines(state, width);
     }
+    if !preview && state.pending_prepend_entries > 0 {
+        let count = state.pending_prepend_entries.min(state.transcript.len());
+        state.pending_prepend_entries = 0;
+        let mut added_rows = 0_usize;
+        for (index, (separator, rendered)) in rendered_entries(&mut state.transcript, width)
+            .take(count + 1)
+            .enumerate()
+        {
+            if index < count {
+                if separator != Separator::None {
+                    added_rows = added_rows.saturating_add(1);
+                }
+                added_rows = added_rows.saturating_add(rendered.height);
+            } else if separator != Separator::None {
+                // The first previously visible entry now has a separator separating it from the
+                // prepended history.
+                added_rows = added_rows.saturating_add(1);
+            }
+        }
+        if state.transcript_viewport.scroll != usize::MAX {
+            state.transcript_viewport.scroll =
+                state.transcript_viewport.scroll.saturating_add(added_rows);
+        }
+    }
     let tail = decorations;
     let viewport = match state.preview.as_mut() {
         Some(open) if preview => &mut open.viewport,
@@ -229,10 +253,7 @@ fn append_live_decorations(
         );
         lines.push(Line::from(vec![
             Span::styled("┊ ", current().style(Role::Muted)),
-            Span::styled(
-                heading,
-                current().style(Role::Muted).add_modifier(Modifier::ITALIC),
-            ),
+            Span::styled(heading, current().style(Role::Muted)),
         ]));
         let style = current().style(tone_role(item.tone));
         lines.extend(item.text.split('\n').map(|line| {
@@ -250,7 +271,7 @@ fn append_live_decorations(
     {
         lines.push(Line::styled(
             "┊ /queued to edit queued messages",
-            current().style(Role::Muted).add_modifier(Modifier::ITALIC),
+            current().style(Role::Muted),
         ));
     }
     if let Some(request) = state.approval() {
@@ -404,23 +425,70 @@ fn ensure_rendered(entry: &mut TranscriptEntry, width: u16) {
     if entry
         .rendered
         .as_ref()
-        .is_some_and(|(cached_width, _)| *cached_width == width)
+        .is_some_and(|(cached_width, rendered)| {
+            *cached_width == width && rendered.source_bytes == entry.text.len()
+        })
     {
+        return;
+    }
+    if entry.role.is_none()
+        && is_markdown(entry.tone)
+        && entry.format != FrontendBlockFormat::UnifiedDiff
+        && let Some(cache) = entry.stream.as_deref_mut()
+    {
+        let (first, role) = if matches!(entry.tone, TranscriptTone::Reasoning) {
+            (REASONING_MARKER, Role::Reasoning)
+        } else {
+            (AGENT_MARKER, Role::Accent)
+        };
+        let prefix = markdown::LinePrefix {
+            first,
+            rest: "  ",
+            style: current().style(role),
+        };
+        let (cached_width, rendered) = entry.rendered.get_or_insert_with(|| {
+            (
+                width,
+                RenderedTranscript {
+                    lines: Vec::new(),
+                    wrapped_heights: Vec::new(),
+                    height: 0,
+                    source_bytes: 0,
+                    spinner: false,
+                    appeared: None,
+                },
+            )
+        });
+        if *cached_width != width {
+            *cached_width = width;
+            rendered.lines.clear();
+            rendered.wrapped_heights.clear();
+            rendered.height = 0;
+        }
+        let keep = cache.render_into(
+            &entry.text,
+            tone_style(entry.tone),
+            markdown_width(width),
+            Some(prefix),
+            &mut rendered.lines,
+        );
+        let kept = keep.min(rendered.wrapped_heights.len());
+        let removed_height: usize = rendered.wrapped_heights.drain(kept..).sum();
+        rendered.height = rendered.height.saturating_sub(removed_height);
+        for line in rendered.lines.get(kept..).unwrap_or_default() {
+            let line_height = wrapped_line_height(line, width);
+            rendered.wrapped_heights.push(line_height);
+            rendered.height = rendered.height.saturating_add(line_height);
+        }
+        rendered.source_bytes = entry.text.len();
         return;
     }
     let text = &entry.text;
     let mut lines = Vec::new();
-    match entry.stream.as_deref_mut() {
-        Some(cache)
-            if entry.role.is_none()
-                && is_markdown(entry.tone)
-                && entry.format != FrontendBlockFormat::UnifiedDiff =>
-        {
-            let rendered = cache.render(text, tone_style(entry.tone), markdown_width(width));
-            push_markdown(&mut lines, rendered.iter().cloned(), entry.tone); // rules-allow: the stream cache keeps its lines to extend on the next delta
-        }
-        _ if entry.role.is_some() => push_block_lines(&mut lines, entry, width),
-        _ => push_lines(&mut lines, text, entry.tone, entry.format, width),
+    if entry.role.is_some() {
+        push_block_lines(&mut lines, entry, width);
+    } else {
+        push_lines(&mut lines, text, entry.tone, entry.format, width);
     }
     let heights: Vec<usize> = lines
         .iter()
@@ -438,6 +506,7 @@ fn ensure_rendered(entry: &mut TranscriptEntry, width: u16) {
             lines,
             height: heights.iter().sum(),
             wrapped_heights: heights,
+            source_bytes: entry.text.len(),
             spinner,
             appeared: entry.appeared.filter(|_| spinner),
         },
@@ -461,6 +530,9 @@ fn spinning_marker<'a>(line: &'a Line<'_>, appeared: Option<Instant>) -> Line<'a
 }
 
 fn wrapped_line_height(line: &Line<'_>, width: u16) -> usize {
+    if width == 0 || line.width() <= usize::from(width) {
+        return 1;
+    }
     Paragraph::new(borrow_line(line))
         .wrap(Wrap { trim: false })
         .line_count(width)
@@ -531,7 +603,7 @@ fn snapshot_preview_window(state: &mut TuiState, width: u16, height: u16) -> (Ve
     if !has_transcript {
         tail.push(Line::styled(
             "No transcript events.",
-            current().style(Role::Muted).add_modifier(Modifier::ITALIC),
+            current().style(Role::Muted),
         ));
     }
     render_transcript_window(
@@ -708,11 +780,7 @@ const fn is_markdown(tone: TranscriptTone) -> bool {
 }
 
 fn tone_style(tone: TranscriptTone) -> Style {
-    let style = current().style(transcript_role(tone));
-    match tone {
-        TranscriptTone::Reasoning => style.add_modifier(Modifier::ITALIC),
-        _ => style,
-    }
+    current().style(transcript_role(tone))
 }
 
 /// Markdown wraps two columns narrower to leave room for the agent marker.
@@ -1120,7 +1188,7 @@ fn widget_line(widgets: &[(Arc<str>, Arc<FrontendWidget>)], slot: FrontendSlot) 
     {
         separator(&mut spans);
         let style = if slot == FrontendSlot::ComposerHeader && item.tone == FrontendTone::Neutral {
-            theme.style(Role::Muted).add_modifier(Modifier::ITALIC)
+            theme.style(Role::Muted)
         } else {
             theme.style(tone_role(item.tone))
         };
@@ -1311,6 +1379,7 @@ fn render_picker_menu(frame: &mut Frame<'_>, area: Rect, picker: &super::PickerS
                 value: String::new(),
                 label: terminal_text(&option.label),
                 description: description.into(),
+                requires_arguments: false,
             }
         })
         .collect::<Vec<_>>();
@@ -1355,10 +1424,7 @@ fn render_menu(frame: &mut Frame<'_>, area: Rect, items: &[MenuItem], selected: 
     let theme = current();
     if items.is_empty() {
         frame.render_widget(
-            Paragraph::new(Line::styled(
-                "  no matches",
-                theme.style(Role::Muted).add_modifier(Modifier::ITALIC),
-            )),
+            Paragraph::new(Line::styled("  no matches", theme.style(Role::Muted))),
             area,
         );
         return;

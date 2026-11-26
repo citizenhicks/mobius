@@ -221,3 +221,80 @@ fn a_message_typed_while_disconnected_stays_in_the_composer() {
     assert_eq!(state.submit_input(&default_catalog()), UiAction::None);
     assert_eq!(state.composer.text, "hello again");
 }
+
+#[test]
+fn composer_navigation_ctrl_c_draft_slash_args_and_mouse_scroll() {
+    use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
+
+    let catalog = default_catalog();
+    let mut state = state();
+    state.composer_history.push_back("previous prompt".into());
+
+    // Multiline Up/Down navigates lines before falling back to history.
+    state.composer.text = "alpha beta\ngamma".into();
+    state.composer.cursor = state.composer.text.len();
+    state.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), &catalog);
+    assert_eq!(
+        state.composer.cursor, 5,
+        "Up should move to column 5 on line 1"
+    );
+    state.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &catalog);
+    assert_eq!(state.composer.cursor, state.composer.text.len());
+
+    // Word motion and Ctrl-K kill to end of line.
+    state.composer.cursor = 0;
+    state.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT), &catalog);
+    assert_eq!(state.composer.cursor, 5);
+    state.handle_key(
+        KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL),
+        &catalog,
+    );
+    assert_eq!(state.composer.text, "alpha\ngamma");
+
+    // First Ctrl-C clears a non-empty idle draft; second Ctrl-C exits.
+    assert_eq!(
+        state.handle_key(
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            &catalog
+        ),
+        UiAction::None
+    );
+    assert!(
+        state.composer.text.is_empty(),
+        "Ctrl-C should clear draft before exiting"
+    );
+    assert_eq!(
+        state.handle_key(
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            &catalog
+        ),
+        UiAction::Exit
+    );
+
+    // Enter on a slash command that requires arguments completes with a trailing space.
+    state.composer.text = "/ren".into();
+    state.composer.cursor = state.composer.text.len();
+    assert_eq!(
+        state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &catalog),
+        UiAction::None
+    );
+    assert_eq!(state.composer.text, "/rename ");
+
+    // Mouse wheel triggers earlier-history load at scroll top, and is ignored while a picker is open.
+    state.history_cursor = Some(mobius_gateway::wire::HistoryCursor {
+        session_id: mobius::SessionId::new("session-1").expect("valid session id"),
+        before_sequence: 10,
+    });
+    let scroll_up = MouseEvent {
+        kind: MouseEventKind::ScrollUp,
+        column: 0,
+        row: 0,
+        modifiers: KeyModifiers::NONE,
+    };
+    assert_eq!(
+        state.handle_mouse(scroll_up).1,
+        UiAction::LoadEarlierHistory
+    );
+    state.confirm_delete_current_session();
+    assert_eq!(state.handle_mouse(scroll_up), (false, UiAction::None));
+}

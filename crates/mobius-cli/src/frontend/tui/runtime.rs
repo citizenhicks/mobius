@@ -23,7 +23,7 @@ use super::{Evict, InputDraft, TranscriptTone, TuiState};
 use crate::frontend::catalog::{GatewayAction, UiCatalog};
 use crate::frontend::dashboard::render_capability_overlay;
 use crate::frontend::gateway_actions::{ResponseSeverity, prepare, render_response};
-use crate::frontend::terminal::{Screen, TerminalGuard, input_batch, input_interval};
+use crate::frontend::terminal::{Screen, TerminalGuard, next_input_batch};
 use crate::frontend::{FrontendExit, bots, extensions, gateway, setup};
 use mobius::backend::checkpoint::ExecutionOutcome;
 use mobius::protocol::{
@@ -67,6 +67,14 @@ pub(in crate::frontend) async fn run(
     gateway_endpoint: String,
     opening: crate::frontend::Opening,
 ) -> Result<(FrontendExit, GatewaySender, GatewayEvents)> {
+    static HIGHLIGHT_WARM: std::sync::Once = std::sync::Once::new();
+    HIGHLIGHT_WARM.call_once(|| {
+        drop(
+            std::thread::Builder::new()
+                .name("mobius-highlight-warm".into())
+                .spawn(super::highlight::warm),
+        );
+    });
     let mut guard = TerminalGuard::alternate()?;
     let mut terminal = Screen::new(CrosstermBackend::new(io::stdout()))?;
     terminal.clear()?;
@@ -93,7 +101,6 @@ pub(in crate::frontend) async fn run(
         );
     }
     let mut uploads = ClipboardUploads::default();
-    let mut tick = input_interval();
     let mut animation = tokio::time::interval(ANIMATION_INTERVAL);
     animation.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut events_open = true;
@@ -166,8 +173,9 @@ pub(in crate::frontend) async fn run(
                 }
                 dirty = true;
             }
-            _ = tick.tick() => {
+            batch = next_input_batch() => {
                 if let Some(next_exit) = handle_terminal_input(
+                    batch,
                     &mut terminal,
                     &sender,
                     &mut events,
@@ -353,6 +361,7 @@ fn refresh_workspace_inventory(
     reason = "terminal input dispatch keeps the active frontend state explicit"
 )]
 async fn handle_terminal_input(
+    batch: Vec<Result<TerminalEvent>>,
     terminal: &mut Screen,
     sender: &GatewaySender,
     events: &mut GatewayEvents,
@@ -366,7 +375,7 @@ async fn handle_terminal_input(
     clipboard_preparation: &mut Option<ClipboardPreparation>,
     dirty: &mut bool,
 ) -> Result<Option<FrontendExit>> {
-    for event in input_batch() {
+    for event in batch {
         let event = event?;
         let draft = matches!(
             &event,
@@ -922,8 +931,9 @@ fn terminal_action(
             UiAction::None
         }
         TerminalEvent::Mouse(mouse) => {
-            *dirty |= state.handle_mouse(mouse);
-            UiAction::None
+            let (changed, action) = state.handle_mouse(mouse);
+            *dirty |= changed;
+            action
         }
         TerminalEvent::FocusGained | TerminalEvent::FocusLost => UiAction::None,
     }

@@ -13,7 +13,7 @@ use ratatui::crossterm::event::{Event, KeyCode, KeyEventKind};
 use super::SetupMode;
 use super::state::{Authentication, Flow, SetupState};
 use super::view::draw;
-use crate::frontend::terminal::{INPUT_POLL, Screen, input_batch, input_interval};
+use crate::frontend::terminal::{Screen, next_input_batch};
 use crate::gateway_error;
 
 pub(super) async fn edit(
@@ -23,15 +23,13 @@ pub(super) async fn edit(
     events: &mut GatewayEvents,
     gateway: &mut ReadyPayload,
 ) -> Result<bool> {
-    let mut tick = input_interval();
     let mut dirty = true;
     loop {
         if dirty {
             draw(terminal, state)?;
             dirty = false;
         }
-        tick.tick().await;
-        for event in input_batch() {
+        for event in next_input_batch().await {
             let event = event?;
             dirty = true;
             let flow = match event {
@@ -482,8 +480,8 @@ async fn next_frame(
                     .map(Some)
                     .ok_or_else(|| Error::Stopped("gateway disconnected during setup".into()));
             }
-            () = tokio::time::sleep(INPUT_POLL) => {
-                for event in input_batch() {
+            batch = next_input_batch() => {
+                for event in batch {
                     let event = event?;
                     match event {
                         Event::Key(key)

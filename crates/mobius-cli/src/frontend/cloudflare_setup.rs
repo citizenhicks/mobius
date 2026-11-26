@@ -9,7 +9,7 @@ use mobius_gateway::config::{
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::text::{Line, Span};
 
-use super::terminal::{input_batch, input_interval, open_screen};
+use super::terminal::{next_input_batch, open_screen};
 use super::terminal_text;
 use super::theme::{Role, current};
 
@@ -105,15 +105,13 @@ pub async fn run() -> Result<Option<CloudflareInit>> {
     let (_guard, mut terminal) = open_screen()?;
     let mut state = State::new();
     terminal.clear()?;
-    let mut tick = input_interval();
     let mut dirty = true;
     loop {
         if dirty {
             terminal.draw(|frame| render(frame, &state))?;
             dirty = false;
         }
-        tick.tick().await;
-        for event in input_batch() {
+        for event in next_input_batch().await {
             let event = event?;
             dirty = true;
             match event {

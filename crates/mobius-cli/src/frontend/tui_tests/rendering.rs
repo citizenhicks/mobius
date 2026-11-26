@@ -79,7 +79,6 @@ fn widget_updates_share_bounded_text_and_follow_overlay_slots() {
 #[test]
 fn transcript_viewport_matches_full_paragraph_for_unicode_scroll_and_resize() {
     use ratatui::layout::Rect;
-    use ratatui::style::Modifier;
     use ratatui::text::Text;
     use ratatui::widgets::{Block, Paragraph, Wrap};
 
@@ -202,7 +201,7 @@ fn transcript_viewport_matches_full_paragraph_for_unicode_scroll_and_resize() {
         if lines.is_empty() {
             lines.push(Line::styled(
                 "No transcript events.",
-                current().style(Role::Muted).add_modifier(Modifier::ITALIC),
+                current().style(Role::Muted),
             ));
         }
         let paragraph = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });

@@ -84,13 +84,19 @@ impl TuiState {
                     .unwrap_or_else(|| self.submit_input_with_delivery(catalog, delivery))
             }
             KeyCode::Up => {
-                if !self.move_menu(catalog, -1) && self.approval().is_none() {
+                if !self.move_menu(catalog, -1)
+                    && self.approval().is_none()
+                    && !self.move_composer_line(-1)
+                {
                     self.composer_history_up();
                 }
                 UiAction::None
             }
             KeyCode::Down => {
-                if !self.move_menu(catalog, 1) && self.approval().is_none() {
+                if !self.move_menu(catalog, 1)
+                    && self.approval().is_none()
+                    && !self.move_composer_line(1)
+                {
                     self.composer_history_down();
                 }
                 UiAction::None
@@ -142,11 +148,19 @@ impl TuiState {
                 UiAction::None
             }
             KeyCode::Left => {
-                self.composer.cursor = previous_boundary(&self.composer.text, self.composer.cursor);
+                self.composer.cursor = if key.modifiers.contains(KeyModifiers::ALT) {
+                    previous_word_boundary(&self.composer.text, self.composer.cursor)
+                } else {
+                    previous_boundary(&self.composer.text, self.composer.cursor)
+                };
                 UiAction::None
             }
             KeyCode::Right => {
-                self.composer.cursor = next_boundary(&self.composer.text, self.composer.cursor);
+                self.composer.cursor = if key.modifiers.contains(KeyModifiers::ALT) {
+                    next_word_boundary(&self.composer.text, self.composer.cursor)
+                } else {
+                    next_boundary(&self.composer.text, self.composer.cursor)
+                };
                 UiAction::None
             }
             KeyCode::Home => {
@@ -179,10 +193,20 @@ impl TuiState {
         self.approval()?;
         let last = APPROVAL_CHOICES.len() - 1;
         match code {
-            KeyCode::Up | KeyCode::Left => {
+            KeyCode::Up => {
                 self.approval_selection = self.approval_selection.checked_sub(1).unwrap_or(last);
             }
-            KeyCode::Down | KeyCode::Right => {
+            KeyCode::Left if self.composer.text.is_empty() => {
+                self.approval_selection = self.approval_selection.checked_sub(1).unwrap_or(last);
+            }
+            KeyCode::Down => {
+                self.approval_selection = if self.approval_selection >= last {
+                    0
+                } else {
+                    self.approval_selection + 1
+                };
+            }
+            KeyCode::Right if self.composer.text.is_empty() => {
                 self.approval_selection = if self.approval_selection >= last {
                     0
                 } else {
@@ -255,13 +279,24 @@ impl TuiState {
                 decision: ReviewDecision::Abort,
             });
         }
-        self.active_turn()
-            .filter(|_| self.is_working())
-            .map_or(UiAction::Exit, |turn_id| {
-                UiAction::submit(Op::Interrupt {
-                    turn_id: Arc::clone(turn_id),
-                })
-            })
+        if let Some(turn_id) = self.active_turn().filter(|_| self.is_working()) {
+            return UiAction::submit(Op::Interrupt {
+                turn_id: Arc::clone(turn_id),
+            });
+        }
+        if !self.composer.text.is_empty()
+            || !self.composer.attachments.is_empty()
+            || self.question_answer.is_some()
+        {
+            self.composer.text.clear();
+            self.composer.cursor = 0;
+            self.composer.pastes.clear();
+            self.composer.attachments.clear();
+            self.question_answer = None;
+            self.slash_input_changed();
+            return UiAction::None;
+        }
+        UiAction::Exit
     }
 
     fn handle_control_key(&mut self, code: KeyCode, catalog: &UiCatalog) -> UiAction {
@@ -318,14 +353,48 @@ impl TuiState {
                 self.slash_input_changed();
                 UiAction::None
             }
+            KeyCode::Char('k') => {
+                let tail = self
+                    .composer
+                    .text
+                    .get(self.composer.cursor..)
+                    .unwrap_or_default();
+                let end = match tail.find('\n') {
+                    Some(0) => self.composer.cursor + 1,
+                    Some(index) => self.composer.cursor + index,
+                    None => self.composer.text.len(),
+                };
+                if end > self.composer.cursor {
+                    self.composer.text.drain(self.composer.cursor..end);
+                    self.prune_pastes();
+                    self.slash_input_changed();
+                }
+                UiAction::None
+            }
+            KeyCode::Left => {
+                self.composer.cursor =
+                    previous_word_boundary(&self.composer.text, self.composer.cursor);
+                UiAction::None
+            }
+            KeyCode::Right => {
+                self.composer.cursor =
+                    next_word_boundary(&self.composer.text, self.composer.cursor);
+                UiAction::None
+            }
             KeyCode::Char('p') => {
-                if !self.move_menu(catalog, -1) && self.approval().is_none() {
+                if !self.move_menu(catalog, -1)
+                    && self.approval().is_none()
+                    && !self.move_composer_line(-1)
+                {
                     self.composer_history_up();
                 }
                 UiAction::None
             }
             KeyCode::Char('n') => {
-                if !self.move_menu(catalog, 1) && self.approval().is_none() {
+                if !self.move_menu(catalog, 1)
+                    && self.approval().is_none()
+                    && !self.move_composer_line(1)
+                {
                     self.composer_history_down();
                 }
                 UiAction::None
@@ -421,14 +490,18 @@ impl TuiState {
         UiAction::None
     }
 
-    pub(super) fn handle_mouse(&mut self, mouse: MouseEvent) -> bool {
+    pub(super) fn handle_mouse(&mut self, mouse: MouseEvent) -> (bool, UiAction) {
+        if self.picker.is_some() || self.capability_overlay.is_some() {
+            return (false, UiAction::None);
+        }
         if let Some(PreviewState {
             content: PreviewContent::Diff(browser),
             ..
         }) = self.preview.as_mut()
         {
-            return browser.handle_mouse(mouse);
+            return (browser.handle_mouse(mouse), UiAction::None);
         }
+        let scrolling_live_transcript = self.preview.is_none();
         let viewport = self
             .preview
             .as_mut()
@@ -441,7 +514,18 @@ impl TuiState {
             MouseEventKind::ScrollDown => viewport.scroll_down(SCROLL_ROWS),
             _ => {}
         }
-        viewport.effective_scroll() != before
+        let changed = viewport.effective_scroll() != before;
+        let action = if scrolling_live_transcript
+            && matches!(mouse.kind, MouseEventKind::ScrollUp)
+            && viewport.effective_scroll() == 0
+            && self.history_cursor.is_some()
+            && self.history_request_id.is_none()
+        {
+            UiAction::LoadEarlierHistory
+        } else {
+            UiAction::None
+        };
+        (changed, action)
     }
 
     fn handle_picker_key(&mut self, key: KeyEvent) -> UiAction {
@@ -816,9 +900,10 @@ impl TuiState {
     }
 
     fn complete_slash(&mut self, catalog: &UiCatalog) {
-        let Some(command) = self.selected_slash_command(catalog) else {
+        let Some(item) = self.selected_slash_item(catalog) else {
             return;
         };
+        let command = item.value;
         let token_end = self
             .composer
             .text
@@ -842,25 +927,28 @@ impl TuiState {
         catalog: &UiCatalog,
         delivery: Option<ActiveMessageDelivery>,
     ) -> Option<UiAction> {
-        let command = self.selected_slash_command(catalog)?;
+        let item = self.selected_slash_item(catalog)?;
         let token_end = self
             .composer
             .text
             .find(char::is_whitespace)
             .unwrap_or(self.composer.text.len());
-        if !self.accepts_input(command.len(), token_end) {
+        if item.requires_arguments && token_end == self.composer.text.len() {
+            self.complete_slash(catalog);
             return Some(UiAction::None);
         }
-        self.composer.text.replace_range(..token_end, &command);
+        if !self.accepts_input(item.value.len(), token_end) {
+            return Some(UiAction::None);
+        }
+        self.composer.text.replace_range(..token_end, &item.value);
         self.composer.cursor = self.composer.text.len();
         Some(self.submit_input_with_delivery(catalog, delivery))
     }
 
-    fn selected_slash_command(&self, catalog: &UiCatalog) -> Option<String> {
+    fn selected_slash_item(&self, catalog: &UiCatalog) -> Option<MenuItem> {
         self.slash_suggestions(catalog)?
             .into_iter()
             .nth(self.slash_selection)
-            .map(|item| item.value)
     }
 
     pub(super) fn slash_suggestions(&self, catalog: &UiCatalog) -> Option<Vec<MenuItem>> {
@@ -942,6 +1030,53 @@ impl TuiState {
         self.slash_menu_dismissed = false;
         self.reference_selection = 0;
         self.reference_menu_dismissed = false;
+        self.composer_history_index = None;
+        self.composer_history_draft = None;
+    }
+
+    /// Moves the composer cursor up (`direction < 0`) or down (`direction > 0`) one line inside a
+    /// multiline draft. Returns `false` when already on the boundary line so callers can fall back
+    /// to composer history recall.
+    fn move_composer_line(&mut self, direction: isize) -> bool {
+        let text = &self.composer.text;
+        let cursor = self.composer.cursor.min(text.len());
+        let before = text.get(..cursor).unwrap_or_default();
+        let line_start = before.rfind('\n').map_or(0, |index| index + 1);
+        let column = before.get(line_start..).unwrap_or_default().chars().count();
+        if direction < 0 {
+            if line_start == 0 {
+                return false;
+            }
+            let prev_end = line_start - 1;
+            let prev_start = text
+                .get(..prev_end)
+                .unwrap_or_default()
+                .rfind('\n')
+                .map_or(0, |index| index + 1);
+            let prev_line = text.get(prev_start..prev_end).unwrap_or_default();
+            let offset = prev_line
+                .char_indices()
+                .nth(column)
+                .map_or(prev_line.len(), |(index, _)| index);
+            self.composer.cursor = prev_start + offset;
+        } else {
+            let after = text.get(cursor..).unwrap_or_default();
+            let Some(newline) = after.find('\n') else {
+                return false;
+            };
+            let next_start = cursor + newline + 1;
+            let next_tail = text.get(next_start..).unwrap_or_default();
+            let next_end = next_tail
+                .find('\n')
+                .map_or(text.len(), |index| next_start + index);
+            let next_line = text.get(next_start..next_end).unwrap_or_default();
+            let offset = next_line
+                .char_indices()
+                .nth(column)
+                .map_or(next_line.len(), |(index, _)| index);
+            self.composer.cursor = next_start + offset;
+        }
+        true
     }
 
     #[cfg(test)]
@@ -1023,11 +1158,17 @@ impl TuiState {
                     UiAction::None
                 }
                 CommandAction::Print(message) => {
-                    if line.split_whitespace().next() != Some("/status") {
+                    let is_status = line.split_whitespace().next() == Some("/status");
+                    if !is_status {
                         self.composer.text = submitted_input;
                         self.composer.cursor = submitted_cursor;
                     }
-                    self.push(message, TranscriptTone::Warning);
+                    let tone = if is_status {
+                        TranscriptTone::Neutral
+                    } else {
+                        TranscriptTone::Warning
+                    };
+                    self.push(message, tone);
                     UiAction::None
                 }
                 CommandAction::Attention => {
@@ -1227,4 +1368,27 @@ fn next_boundary(value: &str, cursor: usize) -> usize {
         .char_indices()
         .nth(1)
         .map_or(value.len(), |(index, _)| cursor + index)
+}
+
+fn next_word_boundary(value: &str, cursor: usize) -> usize {
+    let tail = value.get(cursor..).unwrap_or_default();
+    let mut characters = tail.char_indices();
+    let Some((first_offset, first)) =
+        characters.find(|(_, character)| character.is_control() || !character.is_whitespace())
+    else {
+        return value.len();
+    };
+    if first.is_control() {
+        return cursor + first_offset + first.len_utf8();
+    }
+    let separator = is_word_separator(first);
+    for (index, character) in characters {
+        if character.is_whitespace()
+            || character.is_control()
+            || is_word_separator(character) != separator
+        {
+            return cursor + index;
+        }
+    }
+    value.len()
 }

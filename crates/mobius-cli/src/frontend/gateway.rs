@@ -10,7 +10,7 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 
-use super::terminal::{MAX_ENDPOINT_BYTES, Screen, TextForm, input_batch, input_interval};
+use super::terminal::{MAX_ENDPOINT_BYTES, Screen, TextForm, next_input_batch};
 use super::terminal_text;
 use super::theme::{Role, brand_header, current};
 use crate::gateway_error;
@@ -21,14 +21,17 @@ const MAX_PAIRING_CODE_BYTES: usize = 512;
 pub(crate) async fn run(terminal: &mut Screen, connected: &str) -> Result<bool> {
     let accounts = GatewayAccounts::load().map_err(gateway_error)?;
     let mut state = State::new(accounts, connected);
-    let mut tick = input_interval();
     terminal.clear()?;
+    let mut dirty = true;
 
     loop {
-        draw(terminal, &state)?;
-        tick.tick().await;
-        for event in input_batch() {
+        if dirty {
+            draw(terminal, &state)?;
+            dirty = false;
+        }
+        for event in next_input_batch().await {
             let event = event?;
+            dirty = true;
             let action = match event {
                 Event::Key(key) => state.handle_key(key),
                 Event::Paste(value) => {

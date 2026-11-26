@@ -7,9 +7,9 @@ use super::{
 use crate::frontend::terminal::terminal_text;
 use crate::frontend::terminal::{bounded_terminal_text, truncate_display_text};
 use mobius::protocol::{
-    ErrorKind, EventMsg, FrontendEvent, FrontendPreviewUpdate, FrontendTone, MessageAuthor,
-    MessageEvent, ModelStepCompletedEvent, ModelStepContentPhase, ModelStepOutcome, RenderedBlock,
-    TokenUsageInfo,
+    ErrorKind, EventMsg, FrontendBlockFormat, FrontendEvent, FrontendPreviewUpdate, FrontendTone,
+    MessageAuthor, MessageEvent, ModelStepCompletedEvent, ModelStepContentPhase, ModelStepOutcome,
+    RenderedBlock, TokenUsageInfo,
 };
 use mobius_gateway::wire::{
     RecordedEvent, RenderedPreview, TranscriptItem, TranscriptItemContent, TranscriptOp,
@@ -329,13 +329,26 @@ pub(super) fn handle_gateway_event(
                     if let Some(entry) = state
                         .transcript
                         .iter_mut()
+                        .rev()
                         .find(|entry| entry.id.as_ref().is_some_and(|key| key.value == *id))
                     {
+                        if entry.text.len() > MAX_ENTRY_BYTES {
+                            continue;
+                        }
                         entry.text.push_str(&terminal_text(&text));
                         truncate_display_text(&mut entry.text, MAX_ENTRY_BYTES);
-                        // Appends only extend the text, so the stream cache reparses just its tail.
+                        // Appends only extend the text, so the stream cache reparses just its tail
+                        // directly into the existing rendered buffer.
                         entry.stream.get_or_insert_with(Box::default);
-                        entry.rendered = None;
+                        if entry.role.is_some()
+                            || !matches!(
+                                entry.tone,
+                                TranscriptTone::Assistant | TranscriptTone::Reasoning
+                            )
+                            || entry.format == FrontendBlockFormat::UnifiedDiff
+                        {
+                            entry.rendered = None;
+                        }
                         if matches!(entry.tone, TranscriptTone::Reasoning) {
                             state.reasoning_title = super::latest_summary_line(&entry.text);
                         }
@@ -455,8 +468,17 @@ pub(super) fn handle_gateway_history(state: &mut TuiState, page: TranscriptPage,
     let reasoning_title = state.reasoning_title.take();
     let mut current = std::mem::take(&mut state.transcript);
     state.apply_page(page);
+    let prepended = state.transcript.len();
     state.transcript.append(&mut current);
     state.trim_transcript(evict);
+    if matches!(evict, Evict::Newest)
+        && prepended > 0
+        && state.transcript_viewport.scroll != usize::MAX
+    {
+        state.pending_prepend_entries = state
+            .pending_prepend_entries
+            .saturating_add(prepended.min(state.transcript.len()));
+    }
     state.reasoning_title = reasoning_title;
 }
 

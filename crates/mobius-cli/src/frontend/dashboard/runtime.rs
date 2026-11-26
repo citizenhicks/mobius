@@ -21,9 +21,7 @@ use super::state::{
     ActionInput, CapabilityOverlay, DashboardFocus, DashboardState, RowMove, Selection,
 };
 use super::view::{dashboard_areas, render};
-use crate::frontend::terminal::{
-    Screen, input_batch, input_interval, terminal_text, truncate_bytes,
-};
+use crate::frontend::terminal::{Screen, next_input_batch, terminal_text, truncate_bytes};
 use crate::frontend::{bots, setup};
 use crate::gateway_error;
 use mobius_gateway::gateway_accounts::{configured_token, dashboard_gateway_endpoint};
@@ -74,7 +72,7 @@ pub(super) async fn dashboard_loop(
     events: &mut GatewayEvents,
     state: &mut DashboardState,
 ) -> Result<()> {
-    let mut input = input_interval();
+    // Event-driven terminal input eliminates idle timer wakeups.
     let mut refresh = tokio::time::interval(REFRESH_INTERVAL);
     refresh.set_missed_tick_behavior(MissedTickBehavior::Skip);
     state.sync_selection(DashboardFocus::Chats);
@@ -89,8 +87,8 @@ pub(super) async fn dashboard_loop(
             _ = refresh.tick() => {
                 request_snapshot(&sender).await?;
             }
-            _ = input.tick() => {
-                for event in input_batch() {
+            batch = next_input_batch() => {
+                for event in batch {
                     let event = event?;
                     dirty = true;
                     match event {

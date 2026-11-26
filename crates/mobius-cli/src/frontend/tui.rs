@@ -92,6 +92,8 @@ struct RenderedTranscript {
     wrapped_heights: Vec<usize>,
     /// The sum of `wrapped_heights`: the rows this entry fills.
     height: usize,
+    /// Byte length of `TranscriptEntry::text` when this cache was last updated.
+    source_bytes: usize,
     /// A running tool whose first line leads with a marker the frame replaces with a spinner.
     spinner: bool,
     /// When that tool row appeared; its title scrambles for a moment after.
@@ -409,6 +411,8 @@ struct TuiState {
     background_approval_count: usize,
     history_cursor: Option<mobius_gateway::wire::HistoryCursor>,
     history_request_id: Option<Arc<str>>,
+    /// Newly prepended history entries whose rendered rows should shift a scrolled-up viewport.
+    pending_prepend_entries: usize,
     deletion_request_id: Option<Arc<str>>,
     file_download: Option<PendingFileDownload>,
     /// Each block item still shown, for the gateway's block appends.
@@ -680,6 +684,7 @@ impl TuiState {
         let Some(entry) = self.composer_history.get_mut(index) else {
             return;
         };
+        let saved_draft = self.composer_history_draft.take();
         let input = std::mem::take(entry);
         self.composer.text.clear();
         self.composer.pastes.clear();
@@ -688,6 +693,7 @@ impl TuiState {
         if let Some(entry) = self.composer_history.get_mut(index) {
             *entry = input;
         }
+        self.composer_history_draft = saved_draft;
         self.composer_history_index = Some(index);
     }
 

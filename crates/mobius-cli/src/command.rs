@@ -104,27 +104,10 @@ impl Cli {
 }
 
 async fn run_interactive(resume: Option<mobius::SessionId>) -> Result<()> {
-    let Some(mut chat) = connect(None, None).await? else {
+    let initial = resume.map_or(InitialSession::Auto, InitialSession::Resume);
+    let Some(mut chat) = connect(initial, None).await? else {
         return Ok(());
     };
-    if let Some(session_id) = resume {
-        let bootstrap = chat.session.session.session_id.share();
-        chat.session = open_session(
-            &chat.sender,
-            &mut chat.events,
-            &mut chat.gateway,
-            session_id,
-        )
-        .await?;
-        discard_pristine_session(
-            &chat.sender,
-            &mut chat.events,
-            &mut chat.gateway,
-            &bootstrap,
-        )
-        .await?;
-        chat.disposable_session = None;
-    }
     let mut draft = None;
     loop {
         let session_id = &chat.session.session.session_id;
@@ -193,14 +176,17 @@ async fn run_interactive(resume: Option<mobius::SessionId>) -> Result<()> {
             }
             FrontendExit::Reconnect { draft: unsent } => {
                 draft = unsent;
-                let selected = Some((chat.endpoint, chat.session.session.session_id.share()));
+                let selected = InitialSession::Reconnect {
+                    endpoint: chat.endpoint,
+                    session_id: chat.session.session.session_id.share(),
+                };
                 let Some(connection) = connect(selected, None).await? else {
                     return Ok(());
                 };
                 chat = connection;
             }
             FrontendExit::Fresh => {
-                let Some(connection) = connect(None, None).await? else {
+                let Some(connection) = connect(InitialSession::Auto, None).await? else {
                     return Ok(());
                 };
                 chat = connection;
@@ -218,7 +204,7 @@ async fn run_task(bot_handle: &str, task_file: &Path) -> Result<()> {
         session,
         disposable_session,
         ..
-    }) = connect(None, Some(bot_handle)).await?
+    }) = connect(InitialSession::Auto, Some(bot_handle)).await?
     else {
         return Ok(());
     };
@@ -239,18 +225,34 @@ async fn run_task(bot_handle: &str, task_file: &Path) -> Result<()> {
 }
 
 async fn read_task_file(path: &Path) -> Result<String> {
-    let file = tokio::fs::File::open(path).await?;
+    let file = tokio::fs::File::open(path).await.map_err(|error| {
+        std::io::Error::new(
+            error.kind(),
+            format!("could not open task file {}: {error}", path.display()),
+        )
+    })?;
     let mut bytes = Vec::new();
     file.take((MAX_MESSAGE_BYTES + 1) as u64)
         .read_to_end(&mut bytes)
-        .await?;
+        .await
+        .map_err(|error| {
+            std::io::Error::new(
+                error.kind(),
+                format!("could not read task file {}: {error}", path.display()),
+            )
+        })?;
     if bytes.len() > MAX_MESSAGE_BYTES {
-        return Err(Error::Invalid(
-            "task file exceeds message size limit".into(),
-        ));
+        return Err(Error::Invalid(format!(
+            "task file {} exceeds message size limit",
+            path.display()
+        )));
     }
-    String::from_utf8(bytes)
-        .map_err(|error| Error::Invalid(format!("task file must contain valid UTF-8: {error}")))
+    String::from_utf8(bytes).map_err(|error| {
+        Error::Invalid(format!(
+            "task file {} must contain valid UTF-8: {error}",
+            path.display()
+        ))
+    })
 }
 
 #[expect(
@@ -332,10 +334,16 @@ struct Connected {
     endpoint: Endpoint,
 }
 
-async fn connect(
-    selected: Option<(Endpoint, mobius::SessionId)>,
-    preferred_bot: Option<&str>,
-) -> Result<Option<Chat>> {
+enum InitialSession {
+    Auto,
+    Resume(mobius::SessionId),
+    Reconnect {
+        endpoint: Endpoint,
+        session_id: mobius::SessionId,
+    },
+}
+
+async fn connect(initial: InitialSession, preferred_bot: Option<&str>) -> Result<Option<Chat>> {
     let Connected {
         sender,
         mut events,
@@ -343,9 +351,16 @@ async fn connect(
         local: local_gateway,
         endpoint,
     } = connect_gateway().await?;
-    let (session, disposable_session) = match selected.filter(|(previous, _)| previous == &endpoint)
-    {
-        Some((_, session_id)) => {
+    let requested_session = match initial {
+        InitialSession::Auto => None,
+        InitialSession::Resume(session_id) => Some(session_id),
+        InitialSession::Reconnect {
+            endpoint: previous,
+            session_id,
+        } => (previous == endpoint).then_some(session_id),
+    };
+    let (session, disposable_session) = match requested_session {
+        Some(session_id) => {
             let session = open_session(&sender, &mut events, &mut gateway, session_id).await?;
             (session, None)
         }

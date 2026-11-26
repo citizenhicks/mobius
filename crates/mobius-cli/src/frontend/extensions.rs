@@ -14,9 +14,7 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, ListState, Paragraph, Wrap};
 
-use super::terminal::{
-    MAX_ENDPOINT_BYTES, Screen, append_text, input_batch, input_interval, open_screen,
-};
+use super::terminal::{MAX_ENDPOINT_BYTES, Screen, append_text, next_input_batch, open_screen};
 use super::terminal_text;
 use super::theme::{Role, brand_header, current, selectable_list};
 use crate::frontend::response::ScreenEvents;
@@ -364,7 +362,6 @@ pub(in crate::frontend) async fn run(
 ) -> Result<()> {
     terminal.clear()?;
     let mut state = ExtensionsState::new(gateway);
-    let mut tick = input_interval();
     let mut events = ScreenEvents::new(events);
     let mut dirty = true;
 
@@ -413,8 +410,8 @@ pub(in crate::frontend) async fn run(
                 }
                 dirty = true;
             }
-            _ = tick.tick() => {
-                for event in input_batch() {
+            batch = next_input_batch() => {
+                for event in batch {
                     let event = event?;
                     dirty = true;
                     let action = match event {

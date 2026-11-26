@@ -23,6 +23,13 @@ fn theme() -> &'static Theme {
         .get(EmbeddedThemeName::CatppuccinMocha)
 }
 
+/// Preloads syntax definitions and the color theme off the UI thread so the first code block
+/// renders without stalling frame draw.
+pub(super) fn warm() {
+    let _: &SyntaxSet = syntaxes();
+    let _: &Theme = theme();
+}
+
 pub(super) fn lines(code: &str, path: &str) -> Option<Vec<Vec<Span<'static>>>> {
     if code.lines().any(|line| line.len() > MAX_LINE_BYTES) {
         return None;

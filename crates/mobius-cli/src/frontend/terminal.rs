@@ -1,9 +1,9 @@
 use std::io;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Once, OnceLock};
 
-use mobius::Result;
 use mobius::protocol::FrontendWidget;
+use mobius::{Error, Result};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::cursor::{Hide, Show};
@@ -16,21 +16,17 @@ use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use ratatui::text::{Line, Span};
-
-pub(super) const INPUT_POLL: Duration = Duration::from_millis(16);
+use tokio::sync::{Mutex, mpsc};
 
 pub(super) fn exit_key(key: ratatui::crossterm::event::KeyEvent) -> bool {
     use ratatui::crossterm::event::{KeyCode, KeyModifiers};
     key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c' | 'd'))
 }
 
-pub(super) fn input_interval() -> tokio::time::Interval {
-    let mut input = tokio::time::interval(INPUT_POLL);
-    input.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    input
-}
-
 const MAX_INPUT_BATCH: usize = 64;
+const INPUT_CHANNEL_CAPACITY: usize = 256;
+static ACTIVE_GUARDS: AtomicUsize = AtomicUsize::new(0);
+static PANIC_HOOK: Once = Once::new();
 /// Terminal input cap for gateway and provider endpoint fields.
 pub(super) const MAX_ENDPOINT_BYTES: usize = 4 * 1024;
 
@@ -110,16 +106,62 @@ pub(super) fn open_screen() -> Result<(TerminalGuard, Screen)> {
     Ok((guard, Terminal::new(CrosstermBackend::new(io::stdout()))?))
 }
 
-fn poll_event() -> Result<Option<Event>> {
-    event::poll(Duration::ZERO)?
-        .then(event::read)
-        .transpose()
-        .map_err(Into::into)
+fn input_receiver() -> &'static Mutex<mpsc::Receiver<Result<Event>>> {
+    static RECEIVER: OnceLock<Mutex<mpsc::Receiver<Result<Event>>>> = OnceLock::new();
+    RECEIVER.get_or_init(|| {
+        let (sender, receiver) = mpsc::channel(INPUT_CHANNEL_CAPACITY);
+        if let Err(error) = std::thread::Builder::new()
+            .name("mobius-tty-input".into())
+            .spawn(move || {
+                loop {
+                    let next = event::read().map_err(Error::from);
+                    if sender.blocking_send(next).is_err() {
+                        break;
+                    }
+                }
+            })
+        {
+            drop(error);
+        }
+        Mutex::new(receiver)
+    })
 }
 
-/// The terminal events already waiting, at most one bounded batch per call.
-pub(super) fn input_batch() -> impl Iterator<Item = Result<Event>> {
-    (0..MAX_INPUT_BATCH).map_while(|_| poll_event().transpose())
+/// Waits for the next terminal event and drains any immediately queued burst, up to one bounded
+/// batch. Cancel-safe for use inside `tokio::select!`.
+pub(super) async fn next_input_batch() -> Vec<Result<Event>> {
+    let mut receiver = input_receiver().lock().await;
+    let Some(first) = receiver.recv().await else {
+        return vec![Err(Error::Stopped("terminal input closed".into()))];
+    };
+    let mut batch = Vec::with_capacity(1);
+    batch.push(first);
+    while batch.len() < MAX_INPUT_BATCH {
+        match receiver.try_recv() {
+            Ok(event) => batch.push(event),
+            Err(_) => break,
+        }
+    }
+    batch
+}
+
+fn install_panic_hook() {
+    PANIC_HOOK.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if ACTIVE_GUARDS.load(Ordering::Acquire) > 0 {
+                drop(disable_raw_mode());
+                drop(execute!(
+                    io::stdout(),
+                    Show,
+                    DisableMouseCapture,
+                    DisableBracketedPaste,
+                    LeaveAlternateScreen
+                ));
+            }
+            previous(info);
+        }));
+    });
 }
 
 pub(super) struct TerminalGuard {
@@ -128,7 +170,9 @@ pub(super) struct TerminalGuard {
 
 impl TerminalGuard {
     pub(super) fn alternate() -> Result<Self> {
+        install_panic_hook();
         enable_raw_mode()?;
+        ACTIVE_GUARDS.fetch_add(1, Ordering::Release);
         let guard = Self {
             mouse_capture: true,
         };
@@ -162,6 +206,7 @@ impl Drop for TerminalGuard {
         reason = "drop cannot return an error, and stderr is the only place left to report a failed terminal restore"
     )]
     fn drop(&mut self) {
+        ACTIVE_GUARDS.fetch_sub(1, Ordering::AcqRel);
         if let Err(error) = disable_raw_mode() {
             eprintln!("could not leave terminal raw mode: {error}");
         }
