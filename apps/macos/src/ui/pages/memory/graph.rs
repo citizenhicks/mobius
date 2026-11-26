@@ -3,10 +3,11 @@
 //! cooling `alpha` scales every force, so the graph springs into place, and a dragged page
 //! reheats it and pulls its neighbours after it.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::numeric::ToFloat;
-use mobius_gateway::wire::{MemoryLink, MemoryRecord};
+use mobius_gateway::wire::{HarnessKind, MemoryLink, MemoryRecord};
 
 /// The simulated world is this wide and one unit tall; the canvas maps it onto its bounds.
 pub(super) const WIDTH: f32 = 1.8;
@@ -63,16 +64,36 @@ pub(super) fn resolve(
         .position(|record| record.harness == from.harness && &record.id == target)
 }
 
+fn record_index(records: &[MemoryRecord]) -> HashMap<(HarnessKind, &str), usize> {
+    let mut index = HashMap::with_capacity(records.len());
+    for (position, record) in records.iter().enumerate() {
+        index
+            .entry((record.harness, record.id.as_ref()))
+            .or_insert(position);
+    }
+    index
+}
+
 /// Every page that links to `records[target]`.
 pub(super) fn backlinks(records: &[MemoryRecord], target: usize) -> Vec<usize> {
+    let Some(target_record) = records.get(target) else {
+        return Vec::new();
+    };
+    let first_match = records.iter().position(|record| {
+        record.harness == target_record.harness && record.id == target_record.id
+    });
+    if first_match != Some(target) {
+        return Vec::new();
+    }
     records
         .iter()
         .enumerate()
         .filter(|(_, record)| {
-            record
-                .links
-                .iter()
-                .any(|link| resolve(records, record, link) == Some(target))
+            record.harness == target_record.harness
+                && record
+                    .links
+                    .iter()
+                    .any(|link| link.target.as_deref() == Some(target_record.id.as_ref()))
         })
         .map(|(index, _)| index)
         .collect()
@@ -80,10 +101,16 @@ pub(super) fn backlinks(records: &[MemoryRecord], target: usize) -> Vec<usize> {
 
 /// How many pages neither link to a page nor are linked from one, without a layout.
 pub(super) fn unlinked(records: &[MemoryRecord]) -> usize {
+    let index = record_index(records);
     let mut linked = vec![false; records.len()];
     for (from, record) in records.iter().enumerate() {
         for link in &record.links {
-            if let Some(to) = resolve(records, record, link).filter(|to| *to != from) {
+            let Some(target) = link.target.as_deref() else {
+                continue;
+            };
+            if let Some(&to) = index.get(&(record.harness, target))
+                && to != from
+            {
                 for index in [from, to] {
                     if let Some(flag) = linked.get_mut(index) {
                         *flag = true;
@@ -99,29 +126,50 @@ impl Graph {
     /// The graph for `records`, starting where `previous` left pages that are still listed,
     /// or on a sunflower spiral, so a new listing springs out from the middle.
     pub(super) fn new(records: &[MemoryRecord], previous: Option<&Self>) -> Self {
+        let index = record_index(records);
         let mut edges = Vec::new();
+        let mut seen_edges = HashSet::new();
+        let mut outgoing_counts = vec![0usize; records.len()];
+        let mut backlink_counts = vec![0usize; records.len()];
         for (from, record) in records.iter().enumerate() {
             for link in &record.links {
-                if let Some(to) = resolve(records, record, link)
+                let Some(target) = link.target.as_deref() else {
+                    continue;
+                };
+                if let Some(&to) = index.get(&(record.harness, target))
                     && to != from
-                    && !edges.contains(&(from, to))
+                    && seen_edges.insert((from, to))
                 {
                     edges.push((from, to));
+                    if let Some(count) = outgoing_counts.get_mut(from) {
+                        *count += 1;
+                    }
+                    if let Some(count) = backlink_counts.get_mut(to) {
+                        *count += 1;
+                    }
                 }
             }
         }
+        let previous_positions: HashMap<&str, (f32, f32)> = previous.map_or_default(|graph| {
+            graph
+                .nodes
+                .iter()
+                .map(|node| (node.id.as_ref(), (node.x, node.y)))
+                .collect()
+        });
         let total = records.len().max(1).to_f32();
         let mut kept = 0;
         let nodes = records
             .iter()
             .enumerate()
             .map(|(record, page)| {
-                let outgoing = edges.iter().filter(|edge| edge.0 == record).count();
-                let backlinks = edges.iter().filter(|edge| edge.1 == record).count();
+                let outgoing = outgoing_counts.get(record).copied().unwrap_or(0);
+                let backlinks = backlink_counts.get(record).copied().unwrap_or(0);
                 let radius = ((record.to_f32() + 0.5) / total).sqrt() * 0.3;
                 let angle = record.to_f32() * 2.399_963;
-                let (x, y) = previous
-                    .and_then(|graph| graph.nodes.iter().find(|node| node.id == page.id))
+                let (x, y) = previous_positions
+                    .get(page.id.as_ref())
+                    .copied()
                     .map_or_else(
                         || {
                             (
@@ -129,9 +177,9 @@ impl Graph {
                                 0.5 + radius * angle.sin(),
                             )
                         },
-                        |node| {
+                        |position| {
                             kept += 1;
-                            (node.x, node.y)
+                            position
                         },
                     );
                 Node {

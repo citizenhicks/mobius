@@ -106,7 +106,7 @@ impl Workspace {
             return;
         }
         let title = self.computer_title();
-        if let Some(tab) = self.content.tabs.get_mut(TAB) {
+        if let Some(tab) = self.content.tabs.get_mut(TAB).map(std::rc::Rc::make_mut) {
             tab.title = title.into();
         }
     }

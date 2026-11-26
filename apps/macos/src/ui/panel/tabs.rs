@@ -50,7 +50,11 @@ impl Workspace {
             .iter()
             .enumerate()
             .filter_map(|(index, page)| match page {
-                PageTab::Content(id) => self.content.tabs.get(id).map(|tab| (index, tab)),
+                PageTab::Content(id) => self
+                    .content
+                    .tabs
+                    .get(id)
+                    .map(|tab| (index, std::rc::Rc::as_ref(tab))),
                 _ => None,
             })
             .map(|(index, tab)| {

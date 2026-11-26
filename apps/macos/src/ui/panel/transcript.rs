@@ -52,8 +52,10 @@ impl Workspace {
         let Some(PageTab::Content(id)) = self.page_tabs.get(self.active_page) else {
             return;
         };
-        if let Some(tab) = self.content.tabs.get_mut(id) {
-            tab.refresh_preview(&self.client.state);
+        if let Some(tab) = self.content.tabs.get_mut(id)
+            && matches!(tab.content, TabContent::Preview { .. })
+        {
+            std::rc::Rc::make_mut(tab).refresh_preview(&self.client.state);
         }
     }
 
@@ -63,7 +65,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let id: Arc<str> = format!("routine:{}", preview.run.id).into();
-        let previous = match self.content.tabs.get(&id) {
+        let previous = match self.content.tabs.get(&id).map(std::rc::Rc::as_ref) {
             Some(ContentTab {
                 content: TabContent::Routine(previous),
                 ..
@@ -125,7 +127,7 @@ impl Workspace {
         if let Some(ContentTab {
             content: TabContent::Preview { .. },
             ..
-        }) = self.content.tabs.get(&id)
+        }) = self.content.tabs.get(&id).map(std::rc::Rc::as_ref)
         {
             self.activate_tab(PageTab::Content(id));
             cx.notify();
@@ -165,6 +167,7 @@ impl Workspace {
         let Some(tab) = existing else {
             return self.open_preview_tab(session, preview, cx);
         };
+        let tab = std::rc::Rc::make_mut(tab);
         let waiting = matches!(tab.content, TabContent::Loading { .. });
         tab.title = Arc::clone(&preview.source.title).into();
         tab.content = TabContent::Preview {

@@ -26,9 +26,6 @@ pub const SWAP_SETTLE: Duration = Duration::from_millis(175);
 pub const MORPH: Duration = Duration::from_millis(375);
 /// At most 30 frames per second.
 pub const FRAME: Duration = Duration::from_millis(33);
-/// A display frame, for motion driven from a task rather than the renderer.
-pub const FRAME_60: Duration = Duration::from_millis(16);
-
 /// GPU motion that should read as smooth movement: glides, sweeps, spins and reveals.
 pub const SMOOTH_FPS: f32 = 60.;
 /// GPU motion in the background of a scene: pulses, ticking cogs and drifting z's.

@@ -270,7 +270,7 @@ impl Workspace {
     }
 
     fn files_doc_mut(&mut self, id: &str) -> Option<&mut FilesDoc> {
-        match &mut self.content.tabs.get_mut(id)?.content {
+        match &mut std::rc::Rc::make_mut(self.content.tabs.get_mut(id)?).content {
             TabContent::Files(doc) => Some(doc),
             TabContent::Diff(doc) => Some(&mut doc.explorer),
             _ => None,
@@ -341,8 +341,11 @@ impl Workspace {
 
     /// Selects a file in its viewer, or reveals that file's changes in the diff.
     fn select_workspace_file(&mut self, id: &str, path: &str, cx: &mut Context<Self>) {
-        if let Some(TabContent::Diff(doc)) =
-            self.content.tabs.get_mut(id).map(|tab| &mut tab.content)
+        if let Some(TabContent::Diff(doc)) = self
+            .content
+            .tabs
+            .get_mut(id)
+            .map(|tab| &mut std::rc::Rc::make_mut(tab).content)
         {
             doc.select_path(path);
             cx.notify();
@@ -387,7 +390,7 @@ impl Workspace {
     }
 
     fn show_selection(&mut self, id: &str, path: String, view: FileView) {
-        let Some(tab) = self.content.tabs.get_mut(id) else {
+        let Some(tab) = self.content.tabs.get_mut(id).map(std::rc::Rc::make_mut) else {
             return;
         };
         let TabContent::Files(doc) = &mut tab.content else {
@@ -581,7 +584,12 @@ impl Workspace {
             Ok(PreviewData::ChatFiles(_)) => return,
             Err(error) => TabContent::Failed(error),
         };
-        if let Some(tab) = self.content.tabs.get_mut(&tab_id) {
+        if let Some(tab) = self
+            .content
+            .tabs
+            .get_mut(&tab_id)
+            .map(std::rc::Rc::make_mut)
+        {
             tab.content = content;
         }
         self.unify_file_tab(&tab_id, cx);
@@ -658,7 +666,12 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let Some(directory) = self.downloads.as_ref().map(|dir| dir.path().to_path_buf()) else {
-            if let Some(tab) = self.content.tabs.get_mut(&tab_id) {
+            if let Some(tab) = self
+                .content
+                .tabs
+                .get_mut(&tab_id)
+                .map(std::rc::Rc::make_mut)
+            {
                 tab.content =
                     TabContent::Failed("Unable to create a private preview directory.".into());
             }
@@ -680,7 +693,7 @@ impl Workspace {
                     return;
                 }
                 let content = finish_stored_preview(prepared);
-                if let Some(tab) = this.content.tabs.get_mut(&tab_id) {
+                if let Some(tab) = this.content.tabs.get_mut(&tab_id).map(std::rc::Rc::make_mut) {
                     tab.content = content;
                 }
                 this.unify_file_tab(&tab_id, cx);
@@ -739,7 +752,7 @@ impl Workspace {
 
     /// Both local previews and gateway files use the same viewer and right-hand tree.
     pub(super) fn unify_file_tab(&mut self, id: &str, cx: &mut Context<Self>) {
-        let Some(tab) = self.content.tabs.get_mut(id) else {
+        let Some(tab) = self.content.tabs.get_mut(id).map(std::rc::Rc::make_mut) else {
             return;
         };
         let local = match &tab.content {
@@ -905,7 +918,7 @@ impl Workspace {
                 Err(error) => TabContent::Failed(error),
             };
             let updated = this.update(cx,|this,cx| {
-                if let Some(tab)=this.content.tabs.get_mut(&id)
+                if let Some(tab) = this.content.tabs.get_mut(&id).map(std::rc::Rc::make_mut)
                     && matches!(&tab.content, TabContent::Loading { request: pending, .. } if pending == &request) {
                     tab.content = content;
                     this.unify_file_tab(&id, cx);
@@ -1013,7 +1026,8 @@ impl Workspace {
             .content
             .tabs
             .get_mut(id)
-            .and_then(|tab| match &mut tab.content {
+            .filter(|tab| matches!(tab.content, TabContent::Files(_) | TabContent::Diff(_)))
+            .and_then(|tab| match &mut std::rc::Rc::make_mut(tab).content {
                 TabContent::Files(doc) => Some(doc.as_mut()),
                 TabContent::Diff(doc) => Some(doc.explorer.as_mut()),
                 _ => None,

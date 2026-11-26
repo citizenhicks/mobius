@@ -789,6 +789,7 @@ impl Workspace {
         if key.session != self.decision_session() {
             return;
         }
+        let submit_key = Rc::clone(&key);
         let draft = self
             .chat_ui
             .decision_drafts
@@ -805,8 +806,18 @@ impl Workspace {
                     TextareaState::new(window, cx)
                         .placeholder(prompt)
                         .auto_grow(2, 5)
+                        .submit_on_enter(true)
                 });
-                let subscription = cx.subscribe(&input, |_, _, _: &InputEvent, cx| cx.notify());
+                let subscription = cx.subscribe_in(
+                    &input,
+                    window,
+                    move |this, _, event: &InputEvent, window, cx| {
+                        if matches!(event, InputEvent::PressEnter { shift: false, .. }) {
+                            this.send_decision(&submit_key, window, cx);
+                        }
+                        cx.notify();
+                    },
+                );
                 DecisionEditor {
                     placement,
                     input,

@@ -247,7 +247,7 @@ impl Workspace {
                 }
             }
             PageEvent::Title(title) => {
-                if let Some(content) = self.content.tabs.get_mut(id) {
+                if let Some(content) = self.content.tabs.get_mut(id).map(std::rc::Rc::make_mut) {
                     content.title = if title.is_empty() {
                         "Untitled".into()
                     } else {

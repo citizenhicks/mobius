@@ -34,6 +34,7 @@ final class DesktopRuntime {
             defaults.set(enabled, forKey: Self.enabledKey)
             rejection = nil
             if enabled { requestMissingPermission() } else { pause() }
+            syncPermissionMonitor()
             publishAvailability()
         }
     }
@@ -71,6 +72,7 @@ final class DesktopRuntime {
     private let present: @MainActor (DesktopPermission, _ firstTime: Bool) -> Void
     private var cursorOverlay: DesktopCursorOverlay?
     private var sessionObservers: [NSObjectProtocol] = []
+    private var appActiveObserver: NSObjectProtocol?
     var elements: [String: Element] = [:]
     var screenshots: [String: Screenshot] = [:]
     var lastActionTarget: (app: NSRunningApplication, displayID: CGDirectDisplayID?)?
@@ -125,13 +127,15 @@ final class DesktopRuntime {
                     MainActor.assumeIsolated { self?.setSessionActive(active) }
                 })
         }
-        refreshPermissions()
-        permissionMonitor = Task { [weak self] in
-            while !Task.isCancelled {
-                do { try await Task.sleep(for: .seconds(1)) } catch { return }
-                self?.refreshPermissions()
+        appActiveObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.enabled else { return }
+                self.refreshPermissions()
             }
         }
+        refreshPermissions()
     }
 
     isolated deinit {
@@ -139,6 +143,25 @@ final class DesktopRuntime {
         cursorOverlay?.hide()
         for observer in sessionObservers {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
+        }
+        if let appActiveObserver {
+            NotificationCenter.default.removeObserver(appActiveObserver)
+        }
+    }
+
+    /// Only poll TCC permissions while enabled and still waiting for user approval in System Settings.
+    private func syncPermissionMonitor() {
+        guard enabled && !hasPermissions else {
+            permissionMonitor?.cancel()
+            permissionMonitor = nil
+            return
+        }
+        guard permissionMonitor == nil else { return }
+        permissionMonitor = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                self?.refreshPermissions()
+            }
         }
     }
 
@@ -219,6 +242,7 @@ final class DesktopRuntime {
         hasScreenRecording = permissions.screenRecording
         if !hasPermissions { pause() }
         if enabled && gainedAccessibility { requestMissingPermission() }
+        syncPermissionMonitor()
         publishAvailability()
         notifyIfChanged()
     }

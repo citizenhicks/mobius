@@ -156,7 +156,7 @@ impl Workspace {
             }
             BrowserEvent::Page { url, title } => {
                 view.url = url;
-                if let Some(tab) = self.content.tabs.get_mut(id) {
+                if let Some(tab) = self.content.tabs.get_mut(id).map(std::rc::Rc::make_mut) {
                     tab.title = if title.is_empty() {
                         computer_title.into()
                     } else {

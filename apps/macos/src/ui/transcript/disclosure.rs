@@ -353,10 +353,14 @@ impl Workspace {
         let (entry, toggle_scope) = (entry_id.to_owned(), scope.to_owned());
         let line_height = Type::Body.line_height();
         let text = if expanded {
-            // Scoped under the line's own id, so a fixed name stays unique.
-            self.transcript_markdown("reasoning-text".into(), text.to_owned(), session_id, cx)
-                .text_color(p.muted)
-                .into_any_element()
+            self.transcript_markdown(
+                SharedString::from(format!("{id}:body")),
+                text.to_owned(),
+                session_id,
+                cx,
+            )
+            .text_color(p.muted)
+            .into_any_element()
         } else {
             let (summary, strong) = summary_line(text);
             let bold = HighlightStyle {
@@ -466,13 +470,13 @@ impl Workspace {
         let id = format!("{scope}:{}:block", line.key);
         let expanded = self.expanded.contains(&id);
         let diff = shows_diff(block);
-        let detail = event_detail(block);
+        let has_detail = has_event_detail(block);
         let headline_color = if block.tone == FrontendTone::Neutral {
             p.text
         } else {
             p.tone(block.tone)
         };
-        let trailing = if diff || !detail.is_empty() {
+        let trailing = if diff || has_detail {
             chevron(expanded, &p).into_any_element()
         } else {
             div().into_any_element()
@@ -500,7 +504,7 @@ impl Workspace {
                     .child(div().text_color(p.muted).child("·"))
                     .child(headline)
             });
-        let interactive = !detail.is_empty() || diff;
+        let interactive = has_detail || diff;
         let heading = if interactive {
             self.disclosure_button(
                 format!("{id}:heading").into(),
@@ -539,14 +543,14 @@ impl Workspace {
                     ),
                 )
             });
-        if detail.is_empty() && !diff {
+        if !has_detail && !diff {
             return line.into_any_element();
         }
         let body = self.disclosure_shows(&id).then(|| {
             if diff {
                 self.inline_diff(&id, &block.text, scope, cx)
             } else {
-                output_body(detail, &p)
+                output_body(&id, event_detail(block), &p)
             }
         });
         self.disclosure(&id, line, body, space::XS, cx)
@@ -627,6 +631,16 @@ pub(in crate::ui) struct BlockLine<'a> {
 }
 
 /// What the line hides: the block text and any observations, never markdown.
+fn has_event_detail(block: &FrontendBlock) -> bool {
+    !block.text.is_empty()
+        || block.content.0.iter().any(|part| {
+            matches!(
+                part,
+                mobius::protocol::ContentPart::Text { text } if !text.is_empty()
+            )
+        })
+}
+
 fn event_detail(block: &FrontendBlock) -> String {
     let mut text = block.text.clone(); // rules-allow: the detail grows into its own text while the block keeps its own
     let observations = block.content.text();
@@ -711,9 +725,9 @@ fn event_glyph(block: &FrontendBlock) -> &'static str {
 }
 
 /// Tool output: code type in a control card, scrolling past 320 points.
-fn output_body(text: String, p: &Palette) -> AnyElement {
+fn output_body(id: &str, text: String, p: &Palette) -> AnyElement {
     div()
-        .id("event-output")
+        .id(SharedString::from(format!("{id}:output")))
         .max_h(height::LIST_MAX)
         .overflow_y_scroll()
         .px(space::S)

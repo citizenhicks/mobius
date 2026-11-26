@@ -33,6 +33,8 @@ pub(in crate::ui) enum NoticeAction {
     Issue(crate::ui::transcript::IssueAction),
     /// Settings → Security, where computer control is set up.
     ComputerSetup,
+    /// Opens a background chat that finished or asked for approval.
+    OpenChat(SessionId),
 }
 
 /// Package-owned UI state; new fields belong here rather than on `Workspace`.

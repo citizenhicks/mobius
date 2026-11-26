@@ -152,8 +152,8 @@ impl Workspace {
                     .children(self.session_card_button(cx))
             })
             .when(!actions.is_empty(), |bar| {
-                // Fades in again whenever the page, and so its actions, change.
-                let key = SharedString::from(format!("page-actions:{title}"));
+                // Fades in again whenever the route, and so its actions, change.
+                let key = SharedString::from(format!("page-actions:{primary:?}"));
                 bar.child(appear(
                     key,
                     div().flex().items_center().gap(space::XS).children(actions),

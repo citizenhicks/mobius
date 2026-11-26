@@ -8,12 +8,22 @@ use crate::ui::primitives::{
 };
 
 use gpui::{
-    AnyElement, Context, InteractiveElement as _, IntoElement as _, ParentElement as _,
+    AnyElement, Context, Div, InteractiveElement as _, IntoElement as _, ParentElement as _,
     SharedString, StatefulInteractiveElement as _, Styled as _, div,
 };
+use std::rc::Rc;
 
 /// Files shown before "View more" (TurnDiffCard's `prefix(3)`).
 const LISTED_FILES: usize = 3;
+
+fn diff_row() -> Div {
+    div()
+        .min_h(height::REGULAR)
+        .px(space::L)
+        .flex()
+        .items_center()
+        .gap(space::S)
+}
 
 impl Workspace {
     /// The card under a turn's answer; one click lists its first files, the last row
@@ -40,77 +50,23 @@ impl Workspace {
         let expanded = self.expanded.contains(id.as_ref());
         let (added, removed) = (changes.totals.additions, changes.totals.deletions);
         let count = format!("{} changed", counted(files.len(), "file", "files"));
-        let totals = |added: &dyn std::fmt::Display, removed: &dyn std::fmt::Display| {
-            div().flex().flex_shrink_0().gap(space::S).children(
-                crate::ui::primitives::diff_count_labels(added, removed, "", &p),
-            )
-        };
-        let row = || {
-            div()
-                .min_h(height::REGULAR)
-                .px(space::L)
-                .flex()
-                .items_center()
-                .gap(space::S)
-        };
         let (toggle, toggle_scope) = (SharedString::clone(&id), scope.to_owned());
-        let header = row()
+        let header = diff_row()
             .id(SharedString::clone(&id))
             .cursor_pointer()
             .role(gpui::accesskit::Role::Button)
             .aria_label(format!("{count}, {added} additions, {removed} removals"))
             .typography(Type::Label)
             .child(div().text_color(p.text).child(count))
-            .child(totals(&added, &removed))
+            .child(div().flex().flex_shrink_0().gap(space::S).children(
+                crate::ui::primitives::diff_count_labels(added, removed, "", &p),
+            ))
             .child(div().flex_1())
             .child(chevron(expanded, &self.palette))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.toggle_disclosure(&toggle, &toggle_scope, cx);
             }));
-        let details = match files.len().saturating_sub(LISTED_FILES) {
-            0 => "View all changes".to_owned(),
-            more => format!("View {}", counted(more, "more file", "more files")),
-        };
-        // The Changes tab reads the turn as one patch.
-        let diff = diffs
-            .iter()
-            .filter_map(|entry| entry.block())
-            .map(|block| block.text.as_str())
-            .collect::<Vec<_>>()
-            .join("\n");
-        let body = expanded.then(|| {
-            div()
-                .flex()
-                .flex_col()
-                .children(files.iter().take(LISTED_FILES).map(|file| {
-                    row()
-                        .typography(Type::Mono)
-                        .text_color(p.muted)
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .child(file.path().to_string()),
-                        )
-                        .child(totals(&file.additions(), &file.deletions()))
-                }))
-                .child(
-                    row()
-                        .id(SharedString::from(format!("{id}:open")))
-                        .cursor_pointer()
-                        .role(gpui::accesskit::Role::Button)
-                        .aria_label("Opens the full diff")
-                        .typography(Type::Label)
-                        .text_color(p.muted)
-                        .hover(move |row| row.text_color(p.text))
-                        .child(div().flex_1().child(details))
-                        .child(icon("hi.caretRight", &palette(cx)).size(glyph::INLINE))
-                        .on_click(
-                            cx.listener(move |this, _, _, cx| this.open_turn_changes(&diff, cx)),
-                        ),
-                )
-        });
+        let body = expanded.then(|| self.turn_diff_body(&id, &diffs, &files, cx));
         Some(
             div()
                 .mt(space::S)
@@ -123,5 +79,74 @@ impl Workspace {
                 .children(body)
                 .into_any_element(),
         )
+    }
+
+    fn turn_diff_body(
+        &self,
+        id: &SharedString,
+        diffs: &[&crate::gateway::TranscriptEntry],
+        files: &[&gpui_component::diff::DiffFile],
+        cx: &Context<Self>,
+    ) -> Div {
+        let p = self.palette;
+        let details = match files.len().saturating_sub(LISTED_FILES) {
+            0 => "View all changes".to_owned(),
+            more => format!("View {}", counted(more, "more file", "more files")),
+        };
+        // The Changes tab reads the turn as one patch; join only while expanded.
+        let diff: Rc<str> = Rc::from(
+            diffs
+                .iter()
+                .filter_map(|entry| entry.block())
+                .map(|block| block.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        div()
+            .flex()
+            .flex_col()
+            .children(
+                files
+                    .iter()
+                    .take(LISTED_FILES)
+                    .enumerate()
+                    .map(|(index, file)| {
+                        let file_diff = Rc::clone(&diff);
+                        let path = file.path().to_owned();
+                        diff_row()
+                            .id(SharedString::from(format!("{id}:file:{index}")))
+                            .cursor_pointer()
+                            .role(gpui::accesskit::Role::Button)
+                            .aria_label(format!("Open diff for {path}"))
+                            .typography(Type::Mono)
+                            .text_color(p.muted)
+                            .hover(move |row| row.text_color(p.text))
+                            .child(div().flex_1().min_w_0().truncate().child(path))
+                            .child(div().flex().flex_shrink_0().gap(space::S).children(
+                                crate::ui::primitives::diff_count_labels(
+                                    file.additions(),
+                                    file.deletions(),
+                                    "",
+                                    &p,
+                                ),
+                            ))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.open_turn_changes(&file_diff, cx);
+                            }))
+                    }),
+            )
+            .child(
+                diff_row()
+                    .id(SharedString::from(format!("{id}:open")))
+                    .cursor_pointer()
+                    .role(gpui::accesskit::Role::Button)
+                    .aria_label("Opens the full diff")
+                    .typography(Type::Label)
+                    .text_color(p.muted)
+                    .hover(move |row| row.text_color(p.text))
+                    .child(div().flex_1().child(details))
+                    .child(icon("hi.caretRight", &palette(cx)).size(glyph::INLINE))
+                    .on_click(cx.listener(move |this, _, _, cx| this.open_turn_changes(&diff, cx))),
+            )
     }
 }

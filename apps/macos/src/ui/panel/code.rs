@@ -117,7 +117,7 @@ fn resolve_link(base: &str, href: &str) -> String {
 impl Workspace {
     /// The code document tab `id` shows: its own, or the file selected in a Files tab.
     pub(super) fn code_doc_mut(&mut self, id: &str) -> Option<&mut CodeDoc> {
-        match &mut self.content.tabs.get_mut(id)?.content {
+        match &mut std::rc::Rc::make_mut(self.content.tabs.get_mut(id)?).content {
             TabContent::Code(doc) => Some(doc),
             TabContent::Files(files) => files.code_mut(),
             _ => None,
@@ -315,11 +315,14 @@ impl Workspace {
             _ => return,
         }
         // The reload opens a new tab under the same id, so the old one is taken apart.
-        let Some(ContentTab {
+        let Some(tab) = self.content.tabs.remove(id) else {
+            return;
+        };
+        let ContentTab {
             title,
             content: TabContent::Code(doc),
             ..
-        }) = self.content.tabs.remove(id)
+        } = std::rc::Rc::unwrap_or_clone(tab)
         else {
             return;
         };

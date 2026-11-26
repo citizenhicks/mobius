@@ -520,7 +520,7 @@ impl Workspace {
         catalog.tracking = !self.client.state.sessions.is_empty();
         for (id, message) in news {
             if active {
-                self.announce(Tone::Info, message);
+                self.announce_with_action(Tone::Info, message, Some(NoticeAction::OpenChat(id)));
             } else if let Err(error) = self.native.notify(&id, "Möbius", &message) {
                 tracing::warn!(%error, "system notification not shown");
             }

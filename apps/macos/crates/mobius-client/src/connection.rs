@@ -1033,7 +1033,7 @@ async fn connect(
         }
         Connection::Pair { endpoint, code } => {
             let endpoint: Endpoint = endpoint.parse()?;
-            let authenticated = admit(endpoint.clone())?; // rules-allow: admission takes the endpoint by value and the plain one is saved below
+            let authenticated = admit_async(endpoint.clone()).await?; // rules-allow: admission takes the endpoint by value and the plain one is saved below
             let accounts = GatewayAccounts::load()?;
             accounts.prepare()?;
             let (client, paired) = tokio::time::timeout(
@@ -1125,7 +1125,7 @@ pub(super) async fn connect_as(
     client: ClientCapabilities,
     options: &mut ConnectOptions,
 ) -> Result<GatewayClient> {
-    let authenticated = admit(endpoint.clone())?; // rules-allow: admission takes the endpoint by value and the caller keeps the plain one
+    let authenticated = admit_async(endpoint.clone()).await?; // rules-allow: admission takes the endpoint by value and the caller keeps the plain one
     tokio::time::timeout(
         opening_timeout(authenticated != *endpoint, false),
         GatewayClient::connect_with(&authenticated, token, client, options),
@@ -1135,6 +1135,12 @@ pub(super) async fn connect_as(
         tracing::debug!(%elapsed, "gateway connection timed out");
         Error::Protocol("Gateway connection timed out.".into())
     })?
+}
+
+async fn admit_async(endpoint: Endpoint) -> Result<Endpoint> {
+    tokio::task::spawn_blocking(move || admit(endpoint))
+        .await
+        .map_err(|error| Error::Protocol(format!("Gateway admission failed: {error}")))?
 }
 
 fn opening_timeout(remote_admission: bool, pairing: bool) -> Duration {

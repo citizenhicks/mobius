@@ -35,7 +35,7 @@ use toolbar::{GIVE_WAY, document, line_count, meta, path_label, spacer, toolbar,
 /// Package-owned UI state; new fields belong here rather than on `Workspace`.
 #[derive(Default)]
 pub(in crate::ui) struct ContentState {
-    pub(in crate::ui) tabs: BTreeMap<Arc<str>, ContentTab>,
+    pub(in crate::ui) tabs: BTreeMap<Arc<str>, std::rc::Rc<ContentTab>>,
     agent_browsers: BTreeMap<String, agent_browser::AgentBrowserView>,
     browsers: BTreeMap<String, browser::BrowserTab>,
     desktop: Option<desktop::DesktopTab>,
@@ -79,7 +79,7 @@ impl ContentState {
     fn insert_tab(&mut self, owner: TabOwner, tab: ContentTab) -> Arc<str> {
         let id = Arc::clone(&tab.id);
         self.navigation.insert(owner, Arc::clone(&id));
-        self.tabs.insert(Arc::clone(&id), tab);
+        self.tabs.insert(Arc::clone(&id), std::rc::Rc::new(tab));
         id
     }
 
@@ -149,7 +149,7 @@ impl Workspace {
         for tab in self.content.tabs.values_mut() {
             if matches!(&tab.content, TabContent::Loading { request: pending, .. } if **pending == *request)
             {
-                tab.content = TabContent::Failed(message.to_owned());
+                std::rc::Rc::make_mut(tab).content = TabContent::Failed(message.to_owned());
                 cx.notify();
             }
         }
@@ -169,6 +169,10 @@ impl TabContent {
 
 impl Workspace {
     pub(super) fn active_content(&self) -> Option<&ContentTab> {
+        self.active_content_rc().map(std::rc::Rc::as_ref)
+    }
+
+    fn active_content_rc(&self) -> Option<&std::rc::Rc<ContentTab>> {
         let PageTab::Content(id) = self.page_tabs.get(self.active_page)? else {
             return None;
         };
@@ -204,7 +208,7 @@ impl Workspace {
 
     pub(in crate::ui) fn visible_content(&self) -> impl Iterator<Item = &ContentTab> {
         self.page_tabs.iter().filter_map(|page| match page {
-            PageTab::Content(id) => self.content.tabs.get(id),
+            PageTab::Content(id) => self.content.tabs.get(id).map(std::rc::Rc::as_ref),
             _ => None,
         })
     }
@@ -310,8 +314,7 @@ impl Workspace {
         let Some((id, full, shown)) = self.pane_closing() else {
             return chat;
         };
-        let tab = self.content.tabs.get(id).cloned(); // rules-allow: rendering borrows the workspace mutably, so it draws a copy of the tab
-        let Some(tab) = tab else {
+        let Some(tab) = self.content.tabs.get(id).map(std::rc::Rc::clone) else {
             return chat;
         };
         let pane = self.render_tab(&tab, window, cx);
@@ -325,8 +328,7 @@ impl Workspace {
     ) -> AnyElement {
         self.track_files_motion(window, cx);
         self.refresh_active_preview();
-        let tab = self.active_content().cloned(); // rules-allow: rendering borrows the workspace mutably, so it draws a copy of the tab
-        let Some(tab) = tab else {
+        let Some(tab) = self.active_content_rc().map(std::rc::Rc::clone) else {
             return EmptyState::new("hi.folderOpen", "Open a file, terminal or transcript")
                 .detail("Your work stays beside the conversation.")
                 .into_any_element();

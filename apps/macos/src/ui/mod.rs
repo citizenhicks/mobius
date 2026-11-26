@@ -319,12 +319,14 @@ impl Workspace {
         cx: &Context<Self>,
     ) -> Task<()> {
         cx.spawn_in(window, async move |this, cx| {
-            if let Err(error) = this.update_in(cx, Self::poll) {
+            if let Err(error) =
+                this.update_in(cx, |this, window, cx| this.poll(true, true, window, cx))
+            {
                 tracing::debug!(%error, "the workspace closed before its first poll");
             }
             loop {
-                let update = tokio::select! {
-                    _ = native.changed() => None,
+                let (native_woke, update) = tokio::select! {
+                    _ = native.changed() => (true, None),
                     update = async {
                         match &mut updates {
                             Some(updates) => updates.recv().await,
@@ -332,7 +334,7 @@ impl Workspace {
                         }
                     } => {
                         if update.is_none() { updates = None; }
-                        update
+                        (false, update)
                     }
                 };
                 let mut batch = Vec::new();
@@ -347,13 +349,14 @@ impl Workspace {
                         batch.push(update);
                     }
                 }
+                let usage_changed = native_woke || batch.iter().any(runtime::update_affects_usage);
                 if this
                     .update_in(cx, |this, window, cx| {
                         let changed = !batch.is_empty();
                         for update in batch {
                             this.gateway_update(update, window, cx);
                         }
-                        this.poll(window, cx);
+                        this.poll(native_woke, usage_changed, window, cx);
                         if changed {
                             cx.notify();
                         }
@@ -370,7 +373,7 @@ impl Workspace {
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.refresh_removable_files();
-        if !self.shell.notices.is_empty() {
+        if !self.shell.notices.is_empty() && self.shell.toast.is_none() {
             crate::host::platform::wake();
         }
         self.chat_ui.visible = window.is_window_active();
@@ -415,6 +418,16 @@ impl Render for Workspace {
             .track_focus(&self.focus)
             .map(|root| Self::shell_actions(root, cx))
             .map(|root| Self::update_actions(root, cx))
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape"
+                    && !event.keystroke.modifiers.modified()
+                    && !window.has_active_dialog(cx)
+                    && let Some(id) = this.active_toast_id()
+                {
+                    this.dismiss_toast(id, cx);
+                    cx.stop_propagation();
+                }
+            }))
             .flex()
             .flex_col()
             .font_family(FontSet::current().regular())

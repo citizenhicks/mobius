@@ -325,7 +325,9 @@ impl Workspace {
 
     pub(super) fn preserve_previews(&mut self) {
         for tab in self.content.tabs.values_mut() {
-            tab.refresh_preview(&self.client.state);
+            if matches!(tab.content, TabContent::Preview { .. }) {
+                std::rc::Rc::make_mut(tab).refresh_preview(&self.client.state);
+            }
         }
     }
 

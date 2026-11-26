@@ -60,7 +60,15 @@ impl Workspace {
         cx.notify();
     }
 
-    fn dismiss_toast(&mut self, id: u64, cx: &mut Context<Self>) {
+    pub(in crate::ui) fn active_toast_id(&self) -> Option<u64> {
+        self.shell
+            .toast
+            .as_ref()
+            .filter(|toast| toast.settle.is_none())
+            .map(|toast| toast.id)
+    }
+
+    pub(in crate::ui) fn dismiss_toast(&mut self, id: u64, cx: &mut Context<Self>) {
         let still = cx.reduce_motion();
         if let Some(toast) = self.shell.toast.as_mut().filter(|toast| toast.id == id) {
             if toast.settle.is_some() {
@@ -73,7 +81,18 @@ impl Workspace {
                 cx.background_executor()
                     .timer(end.saturating_duration_since(motion::now()))
                     .await;
-                if let Err(error) = this.update(cx, |_, cx| cx.notify()) {
+                if let Err(error) = this.update(cx, |this, cx| {
+                    if this
+                        .shell
+                        .toast
+                        .as_ref()
+                        .is_some_and(|toast| toast.id == id)
+                    {
+                        this.shell.toast = None;
+                    }
+                    this.next_toast(cx);
+                    cx.notify();
+                }) {
                     tracing::debug!(%error, "the window closed while its toast hid");
                 }
             }));
@@ -97,6 +116,9 @@ impl Workspace {
             }
             Some(navigation::NoticeAction::Issue(action)) => {
                 self.perform_issue_action(action, window, cx);
+            }
+            Some(navigation::NoticeAction::OpenChat(session_id)) => {
+                self.open_page(PageTab::Chat(session_id), window, cx);
             }
             None => {}
         }
@@ -162,6 +184,24 @@ impl Workspace {
                             .flex_1()
                             .min_w_0()
                             .child(SharedString::clone(&toast.message)),
+                    )
+                    .child(
+                        div()
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .child(
+                                mini_button(
+                                    ElementId::NamedInteger("toast-close".into(), id),
+                                    "Dismiss notification",
+                                    "hi.x",
+                                    cx,
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        cx.stop_propagation();
+                                        this.dismiss_toast(id, cx);
+                                    },
+                                )),
+                            ),
                     )
                     .on_scroll(cx.listener(move |this, event: &ScrollEvent, window, cx| {
                         if event.delta.pixel_delta(window.line_height()).y < -RISE / 3. {

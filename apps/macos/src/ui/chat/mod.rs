@@ -644,7 +644,7 @@ impl Workspace {
             return div().into_any_element();
         };
         let list = gpui::ListState::clone(list);
-        self.settle_sent_turn(&scope, &list, cx);
+        self.settle_sent_turn(&scope, &list, window, cx);
         let rail = self.message_rail(&scope, cx);
         let overlay = div()
             .absolute()
@@ -665,11 +665,17 @@ impl Workspace {
     /// following returns to the end, gliding (Settings → Appearance) takes the message to
     /// the top and lets the answer fill the screen under it, after which the end is
     /// followed as usual.
-    fn settle_sent_turn(&mut self, scope: &str, list: &gpui::ListState, cx: &mut Context<Self>) {
+    fn settle_sent_turn(
+        &mut self,
+        scope: &str,
+        list: &gpui::ListState,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
         let gliding = self.turn_motion == transcript::TurnMotion::Glide;
         if !gliding && self.glide_room(scope) > px(0.) {
             // A change to Follow replaces the row glide and releases its room.
-            self.glide_to(scope.into(), transcript::GlideTarget::Latest, cx);
+            self.glide_to(scope.into(), transcript::GlideTarget::Latest, window, cx);
         }
         let header = if self.active_conversation_bot().is_some() {
             height::BOT_CHAT_HEADER
@@ -689,9 +695,14 @@ impl Workspace {
             self.chat_ui.sent_row = None;
             if gliding {
                 self.keep_glide_room(scope, Arc::clone(&row), list.viewport_bounds().size.height);
-                self.glide_to(scope.into(), transcript::GlideTarget::Row(row, rest), cx);
+                self.glide_to(
+                    scope.into(),
+                    transcript::GlideTarget::Row(row, rest),
+                    window,
+                    cx,
+                );
             } else if !list.is_following_tail() {
-                self.glide_to(scope.into(), transcript::GlideTarget::Latest, cx);
+                self.glide_to(scope.into(), transcript::GlideTarget::Latest, window, cx);
             }
         }
         // The answer reached the foot of the screen: the room below it has been used up,

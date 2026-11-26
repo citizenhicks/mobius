@@ -96,7 +96,8 @@ impl Workspace {
     /// Records a tab's shell exit so its toolbar offers Restart.
     pub(in crate::ui) fn terminal_exited(&mut self, tab_id: &str, status: Option<i32>) {
         if let Some(tab) = self.content.tabs.get_mut(tab_id)
-            && let TabContent::Terminal(doc) = &mut tab.content
+            && matches!(tab.content, TabContent::Terminal(_))
+            && let TabContent::Terminal(doc) = &mut std::rc::Rc::make_mut(tab).content
         {
             doc.exited = Some(status);
         }
@@ -105,7 +106,8 @@ impl Workspace {
     /// Starts a fresh shell: the native view closes and the next paint creates another.
     fn restart_terminal(&mut self, tab_id: &str, cx: &mut Context<Self>) {
         if let Some(tab) = self.content.tabs.get_mut(tab_id)
-            && let TabContent::Terminal(doc) = &mut tab.content
+            && matches!(tab.content, TabContent::Terminal(_))
+            && let TabContent::Terminal(doc) = &mut std::rc::Rc::make_mut(tab).content
         {
             doc.exited = None;
             self.native.close_panel(tab_id);

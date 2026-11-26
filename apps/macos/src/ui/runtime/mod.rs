@@ -154,21 +154,31 @@ impl Workspace {
         }
     }
 
-    pub(super) fn poll(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.native.poll() {
-            Ok(events) => {
-                for event in events {
-                    self.native_event(event, window, cx);
+    pub(super) fn poll(
+        &mut self,
+        native_woke: bool,
+        usage_changed: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if native_woke {
+            match self.native.poll() {
+                Ok(events) => {
+                    for event in events {
+                        self.native_event(event, window, cx);
+                    }
                 }
+                Err(error) => self.report(format!("{error:#}")),
             }
-            Err(error) => self.report(format!("{error:#}")),
         }
         self.request_thumbnails();
         self.reap_thumbnails(window, cx);
-        let usage = self.menu_bar_usage();
-        if usage != self.shell.menu_bar_usage {
-            crate::host::platform::set_status_usage(&usage);
-            self.shell.menu_bar_usage = usage;
+        if usage_changed {
+            let usage = self.menu_bar_usage();
+            if usage != self.shell.menu_bar_usage {
+                crate::host::platform::set_status_usage(&usage);
+                self.shell.menu_bar_usage = usage;
+            }
         }
         self.next_toast(cx);
     }
@@ -481,13 +491,23 @@ mod tests;
 impl Workspace {
     /// Queues a toast of `tone`, such as a success or a background chat finishing.
     pub(in crate::ui) fn announce(&mut self, tone: Tone, message: String) {
+        self.announce_with_action(tone, message, None);
+    }
+
+    /// Queues a toast of `tone` with an optional click action.
+    pub(in crate::ui) fn announce_with_action(
+        &mut self,
+        tone: Tone,
+        message: String,
+        action: Option<navigation::NoticeAction>,
+    ) {
         if !self
             .shell
             .notices
             .iter()
             .any(|(_, queued, _)| *queued == message)
         {
-            self.shell.notices.push((tone, message, None));
+            self.shell.notices.push((tone, message, action));
             crate::host::platform::wake();
         }
     }
@@ -549,5 +569,19 @@ impl Workspace {
     pub(in crate::ui) fn report(&mut self, message: impl AsRef<str>) {
         let message = message.as_ref();
         self.announce(Tone::Error, crate::gateway::friendly(message));
+    }
+}
+
+/// Whether a gateway update can change the menu bar usage summary.
+pub(in crate::ui) fn update_affects_usage(update: &Update) -> bool {
+    match update {
+        Update::Connected(_) | Update::Reconnecting { .. } | Update::Error(_) => true,
+        Update::Message(message) => matches!(
+            message.as_ref(),
+            ServerMessage::Ready { .. }
+                | ServerMessage::Profile { .. }
+                | ServerMessage::GatewayConfigured { .. }
+        ),
+        _ => false,
     }
 }
