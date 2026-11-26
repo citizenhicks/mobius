@@ -1012,9 +1012,13 @@ impl TranscriptReducer {
         previous: Vec<Arc<str>>,
         rows: Vec<TranscriptRow>,
     ) -> Vec<Arc<str>> {
-        for id in previous {
-            if !rows.iter().any(|row| row.id == id) && self.rows.remove(&id).is_some() {
-                ops.push(TranscriptOp::RemoveRow { id });
+        if !previous.is_empty() {
+            let next_ids: std::collections::HashSet<&str> =
+                rows.iter().map(|row| &*row.id).collect();
+            for id in previous {
+                if !next_ids.contains(&*id) && self.rows.remove(&id).is_some() {
+                    ops.push(TranscriptOp::RemoveRow { id });
+                }
             }
         }
         rows.into_iter()

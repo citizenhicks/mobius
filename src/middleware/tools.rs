@@ -1,12 +1,12 @@
 //! Tool registry, dispatch, and minimal filesystem tools.
 
 use std::borrow::Cow;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 
 use bm25::Document;
 use bm25::Language;
-use bm25::SearchEngineBuilder;
+use bm25::{SearchEngine, SearchEngineBuilder};
 use futures_util::future::join_all;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -369,6 +369,8 @@ pub struct Catalog {
     registered_definitions: Arc<[Arc<ToolDefinition>]>,
     direct_definitions: Arc<[Arc<ToolDefinition>]>,
     deferred_definitions: Arc<[Arc<ToolDefinition>]>,
+    schema_bytes: Arc<HashMap<String, usize>>,
+    deferred_search: Option<SearchEngine<usize>>,
     revision: String,
     finalized: bool,
     repeats: Arc<repeats::RepeatGuard>,
@@ -381,6 +383,7 @@ pub struct Catalog {
 pub(crate) struct PreparedToolSet<'a> {
     direct: Arc<[Arc<ToolDefinition>]>,
     deferred: Arc<[Arc<ToolDefinition>]>,
+    schema_bytes: Arc<HashMap<String, usize>>,
     available: Cow<'a, BTreeSet<String>>,
     searchable: BTreeSet<String>,
     materialized: BTreeSet<String>,
@@ -420,23 +423,22 @@ impl PreparedToolSet<'_> {
     }
 
     pub(crate) fn serialized_schema_bytes(&self) -> Result<usize> {
-        struct Visible<'a, 'b>(&'a PreparedToolSet<'b>);
-        impl serde::Serialize for Visible<'_, '_> {
-            fn serialize<S: serde::Serializer>(
-                &self,
-                serializer: S,
-            ) -> std::result::Result<S::Ok, S::Error> {
-                serializer.collect_seq(
-                    self.0.direct.iter().chain(
-                        self.0
-                            .deferred
-                            .iter()
-                            .filter(|tool| self.0.materialized.contains(&tool.name)),
-                    ),
-                )
-            }
+        let mut count = 0_usize;
+        let mut total = 2_usize; // JSON array brackets `[]`
+        let visible = self.direct.iter().chain(
+            self.deferred
+                .iter()
+                .filter(|tool| self.materialized.contains(&tool.name)),
+        );
+        for tool in visible {
+            let bytes = match self.schema_bytes.get(&tool.name) {
+                Some(&cached) => cached,
+                None => crate::serialized_len(tool)?,
+            };
+            total = total.saturating_add(bytes);
+            count += 1;
         }
-        crate::serialized_len(&Visible(self))
+        Ok(total.saturating_add(count.saturating_sub(1)))
     }
 
     pub(crate) fn accept_materialized(
@@ -570,8 +572,9 @@ impl Catalog {
         }
         if !has_deferred && has_search {
             self.tools.remove(TOOLS_SEARCH_NAME);
-            self.refresh_definitions();
         }
+        self.refresh_definitions();
+        self.deferred_search = build_deferred_search(&self.deferred_definitions);
         self.revision = catalog_revision(&self.tools);
         self.finalized = true;
         Ok(())
@@ -590,6 +593,13 @@ impl Catalog {
     }
 
     fn refresh_definitions(&mut self) {
+        let mut schema_bytes = HashMap::with_capacity(self.tools.len());
+        for tool in &self.tools {
+            if let Ok(len) = crate::serialized_len(&tool.definition) {
+                schema_bytes.insert(tool.definition.name.clone(), len); // rules-allow: cached schema length map keys by tool name
+            }
+        }
+        self.schema_bytes = Arc::new(schema_bytes);
         self.registered_definitions = self
             .tools
             .iter()
@@ -671,6 +681,7 @@ impl Catalog {
         Ok(PreparedToolSet {
             direct,
             deferred,
+            schema_bytes: Arc::clone(&self.schema_bytes),
             available,
             searchable,
             materialized,
@@ -724,14 +735,26 @@ impl Catalog {
     ) -> Result<Vec<Arc<ToolDefinition>>> {
         let query = query.trim();
         validate_tool_text("tools_search query", query, MAX_TOOL_SEARCH_QUERY_BYTES)?;
+        if let Some(engine) = &self.deferred_search
+            && self
+                .deferred_definitions
+                .iter()
+                .all(|definition| searchable.contains(&definition.name))
+        {
+            return Ok(engine
+                .search(query, MAX_TOOL_SEARCH_RESULTS)
+                .into_iter()
+                .filter_map(|result| {
+                    self.deferred_definitions
+                        .get(result.document.id)
+                        .map(Arc::clone)
+                })
+                .collect());
+        }
         let definitions = self
-            .tools
+            .deferred_definitions
             .iter()
-            .filter(|tool| {
-                tool.exposure == ToolExposure::Deferred
-                    && searchable.contains(&tool.definition.name)
-            })
-            .map(|tool| &tool.definition)
+            .filter(|definition| searchable.contains(&definition.name))
             .collect::<Vec<_>>();
         if definitions.is_empty() {
             return Ok(Vec::new());
@@ -928,6 +951,18 @@ fn available_definitions(
         .filter(|tool| available.contains(&tool.name))
         .map(Arc::clone)
         .collect()
+}
+
+fn build_deferred_search(definitions: &[Arc<ToolDefinition>]) -> Option<SearchEngine<usize>> {
+    if definitions.is_empty() {
+        return None;
+    }
+    let documents = definitions
+        .iter()
+        .enumerate()
+        .map(|(index, definition)| Document::new(index, tool_search_text(definition)))
+        .collect::<Vec<_>>();
+    Some(SearchEngineBuilder::<usize>::with_documents(Language::English, documents).build())
 }
 
 /// Ranks text with the same BM25 setup used by deferred tool discovery.

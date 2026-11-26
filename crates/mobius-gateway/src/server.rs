@@ -330,8 +330,16 @@ impl GatewayServer {
                         // admission gate; future schedules alone do not keep it open.
                         let Ok(_admission) = self.host.begin_mutation().await else { continue; };
                         let now = Utc::now().timestamp();
-                        let poll = self.bots.poll_due(now)?;
-                        let routines_active = poll.active || self.bots.storage.has_pending_deliveries()? || self.bots.storage.has_monitored_sessions()?;
+                        let bots = Arc::clone(&self.bots);
+                        let (poll, routines_active) = tokio::task::spawn_blocking(move || -> Result<_> {
+                            let poll = bots.poll_due(now)?;
+                            let active = poll.active
+                                || bots.storage.has_pending_deliveries()?
+                                || bots.storage.has_monitored_sessions()?;
+                            Ok((poll, active))
+                        })
+                        .await
+                        .map_err(|error| Error::Internal(format!("routine poll task failed: {error}")))??;
                         if has_active_routines && !routines_active && connections.is_empty() {
                             inactivity.as_mut().reset(tokio::time::Instant::now() + inactivity_timeout);
                         }

@@ -75,18 +75,10 @@ impl GatewayHost {
     pub(crate) async fn reconcile_pending_bot_deletion(
         &self,
     ) -> std::result::Result<(), Rejection> {
-        if !self
-            .state
-            .lock()
-            .await
-            .bots
-            .has_pending_bot_deletion()
-            .map_err(internal)?
-        {
+        if !self.bots.has_pending_bot_deletion() {
             return Ok(());
         }
-        let mutation_gate = Arc::clone(&self.state.lock().await.session_mutations);
-        let _mutation = mutation_gate.write_owned().await;
+        let _mutation = Arc::clone(&self.session_mutations).write_owned().await;
         let state = self.state.lock().await;
         let Some(intent) = state.bots.pending_bot_deletion().map_err(internal)? else {
             return Ok(());

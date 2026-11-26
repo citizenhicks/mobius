@@ -41,3 +41,11 @@ pub fn open(path: &Path) -> io::Result<File> {
 pub fn dir() -> Permissions {
     Permissions::from_mode(0o700)
 }
+
+/// Reports whether two metadata records refer to the same underlying file.
+#[cfg(unix)]
+pub(crate) fn same_file(left: &cap_std::fs::Metadata, right: &cap_std::fs::Metadata) -> bool {
+    use cap_std::fs::MetadataExt as _;
+
+    left.dev() == right.dev() && left.ino() == right.ino()
+}

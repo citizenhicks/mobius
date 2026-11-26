@@ -427,7 +427,7 @@ impl GatewayHost {
                     .ok_or_else(|| Error::Internal("telemetry event is not a JSON object".into()))?
                     .insert("session".into(), Value::Object(enrichment));
             }
-            let size = serde_json::to_vec(&value)?.len();
+            let size = mobius::bounded_json::serialized_len(&value)?;
             if !events.is_empty() && bytes.saturating_add(size) > 48 * 1024 {
                 break;
             }

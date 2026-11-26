@@ -25,6 +25,10 @@ const TRASH_DIR: &str = ".trash";
 const SCOPE_FILE: &str = "_scope.json";
 const LOG_FILE: &str = "_log.md";
 const TRASH_DAYS: u64 = 30;
+/// Maximum size of one memory page file on disk (frontmatter + body + margin).
+const MAX_PAGE_FILE_BYTES: u64 = (MAX_BODY_BYTES + MAX_DESCRIPTION_BYTES + 4096) as u64;
+/// Maximum retained size of one scope's `_log.md` audit file.
+const MAX_LOG_BYTES: u64 = 128 * 1024;
 /// Scopes whose parsed pages stay in memory; a gateway sees one per Bot and project.
 const MAX_CACHED_SCOPES: usize = 64;
 
@@ -284,12 +288,30 @@ impl Pages {
         let missing = super::missing;
         let (dir, name) = id.split_once('/').ok_or_else(missing)?;
         let name = validate_name(name).map_err(Error::Tool)?;
-        let scope = self
-            .all()
-            .await?
-            .into_iter()
-            .find(|scope| scope.dir_name().is_ok_and(|candidate| candidate == dir))
-            .ok_or_else(missing)?;
+        if dir == GLOBAL_DIR {
+            return Ok((self.load(None).await?, name));
+        }
+        if dir.is_empty() || dir == "." || dir == ".." || dir.contains(['/', '\\']) {
+            return Err(missing());
+        }
+        let scope_dir = self.root.join(dir);
+        let bytes = match tokio::fs::read(scope_dir.join(SCOPE_FILE)).await {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err(missing()),
+            Err(error) => return Err(error.into()),
+        };
+        let owner: MemoryOwner = serde_json::from_slice(&bytes)
+            .map_err(|error| invalid(&scope_dir, &error.to_string()))?;
+        if dir != dir_name(Some(&owner))? {
+            return Err(invalid(
+                &scope_dir,
+                "scope owner does not match its directory",
+            ));
+        }
+        let scope = Scope {
+            owner: Some(Arc::new(owner)),
+            pages: self.scope_pages(&scope_dir).await?,
+        };
         Ok((scope, name))
     }
 
@@ -323,12 +345,35 @@ impl Pages {
     pub(super) async fn log(&self, owner: Option<&Arc<MemoryOwner>>, line: &str) -> Result<()> {
         use tokio::io::AsyncWriteExt;
         let dir = self.scope_dir(owner).await?;
+        let path = dir.join(LOG_FILE);
+        let entry = format!("- {line}\n");
+        if tokio::fs::metadata(&path)
+            .await
+            .is_ok_and(|metadata| metadata.len().saturating_add(entry.len() as u64) > MAX_LOG_BYTES)
+        {
+            let existing = tokio::fs::read(&path).await.unwrap_or_default();
+            let keep_target = usize::try_from(MAX_LOG_BYTES / 2).unwrap_or(usize::MAX);
+            let start = existing.len().saturating_sub(keep_target);
+            let slice = existing.get(start..).unwrap_or_default();
+            let trimmed = slice
+                .iter()
+                .position(|&byte| byte == b'\n')
+                .and_then(|offset| slice.get(offset + 1..))
+                .unwrap_or(slice);
+            let mut next = Vec::with_capacity(trimmed.len().saturating_add(entry.len()));
+            next.extend_from_slice(trimmed);
+            next.extend_from_slice(entry.as_bytes());
+            let temporary = dir.join("._log.md.tmp");
+            tokio::fs::write(&temporary, next).await?;
+            tokio::fs::rename(&temporary, &path).await?;
+            return Ok(());
+        }
         let mut file = tokio::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(dir.join(LOG_FILE))
+            .open(&path)
             .await?;
-        file.write_all(format!("- {line}\n").as_bytes()).await?;
+        file.write_all(entry.as_bytes()).await?;
         Ok(())
     }
 
@@ -336,10 +381,17 @@ impl Pages {
         let dir = self.root.join(dir_name(owner.map(AsRef::as_ref))?);
         tokio::fs::create_dir_all(dir.join(TRASH_DIR)).await?;
         if let Some(owner) = owner {
-            // Rewritten each time so a renamed project's label stays current.
-            let temporary = dir.join("._scope.json.tmp");
-            tokio::fs::write(&temporary, serde_json::to_vec(&**owner)?).await?;
-            tokio::fs::rename(temporary, dir.join(SCOPE_FILE)).await?;
+            let scope_path = dir.join(SCOPE_FILE);
+            let encoded = serde_json::to_vec(&**owner)?;
+            let unchanged = matches!(
+                tokio::fs::read(&scope_path).await,
+                Ok(existing) if existing == encoded
+            );
+            if !unchanged {
+                let temporary = dir.join("._scope.json.tmp");
+                tokio::fs::write(&temporary, encoded).await?;
+                tokio::fs::rename(temporary, scope_path).await?;
+            }
         }
         Ok(dir)
     }
@@ -412,6 +464,14 @@ async fn page_files(dir: &Path) -> Result<Vec<PageFile>> {
 async fn read_pages(files: &[PageFile]) -> Result<Vec<Page>> {
     let mut pages = Vec::new();
     for file in files {
+        if file.len > MAX_PAGE_FILE_BYTES {
+            tracing::warn!(
+                path = %file.path.display(),
+                len = file.len,
+                "skipping oversized memory page"
+            );
+            continue;
+        }
         let text = tokio::fs::read_to_string(&file.path).await?;
         // Pages are plain files a person may edit; one unreadable page must not hide the rest.
         match Page::parse(&file.name, &text) {

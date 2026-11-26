@@ -4,7 +4,6 @@ use std::path::Path;
 
 use cap_std::ambient_authority;
 use cap_std::fs::Dir;
-use cap_std::fs::MetadataExt as _;
 
 use super::Middleware;
 use super::PromptSection;
@@ -101,8 +100,8 @@ fn read_optional(directory: &Dir, name: &str) -> Result<Option<String>> {
     let current = directory.symlink_metadata(name)?;
     if !opened.is_file()
         || current.is_symlink()
-        || !same_file(&metadata, &opened)
-        || !same_file(&opened, &current)
+        || !crate::owner_only::same_file(&metadata, &opened)
+        || !crate::owner_only::same_file(&opened, &current)
     {
         return Err(Error::Internal(format!(
             "workspace instruction `{name}` changed while opening"
@@ -118,10 +117,6 @@ fn read_optional(directory: &Dir, name: &str) -> Result<Option<String>> {
             "workspace instruction `{name}` is not valid UTF-8: {error}"
         ))
     })
-}
-
-fn same_file(left: &cap_std::fs::Metadata, right: &cap_std::fs::Metadata) -> bool {
-    left.dev() == right.dev() && left.ino() == right.ino()
 }
 
 #[cfg(test)]

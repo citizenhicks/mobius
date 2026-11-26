@@ -404,18 +404,12 @@ fn open_or_create_dir(parent: &Dir, name: &str) -> Result<Dir> {
         ));
     }
     let directory = parent.open_dir(name)?;
-    if !same_file(&before, &directory.dir_metadata()?) {
+    if !crate::owner_only::same_file(&before, &directory.dir_metadata()?) {
         return Err(Error::Tool(
             text::DEFINITION.error_directory_changed.as_str().into(),
         ));
     }
     Ok(directory)
-}
-
-fn same_file(left: &cap_std::fs::Metadata, right: &cap_std::fs::Metadata) -> bool {
-    use cap_std::fs::MetadataExt as _;
-
-    left.dev() == right.dev() && left.ino() == right.ino()
 }
 
 fn replace_with_copy(source: &Path, destination: &Dir, name: &str) -> Result<()> {
@@ -432,7 +426,7 @@ fn replace_with_copy(source: &Path, destination: &Dir, name: &str) -> Result<()>
         && existing.is_file()
         && !existing.is_symlink()
         && let Ok(source) = source_dir.metadata(source_name)
-        && !same_file(&source, &existing)
+        && !crate::owner_only::same_file(&source, &existing)
     {
         return Ok(());
     }

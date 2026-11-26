@@ -112,7 +112,9 @@ impl BotStorage {
                 record_event(tx, event, None)?;
             }
             Ok(())
-        })
+        })?;
+        self.bump_catalog_generation();
+        Ok(())
     }
 
     pub(crate) fn record_hook(&self, event: &HookEvent) -> Result<bool> {
@@ -282,7 +284,9 @@ impl BotStorage {
                 tx.execute("DELETE FROM bot_session_cursors WHERE session_id=?1", [session_id])?;
             }
             save_catalog_row(tx, state_json)
-        })
+        })?;
+        self.bump_catalog_generation();
+        Ok(())
     }
 }
 

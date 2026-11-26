@@ -89,7 +89,8 @@ pub(super) async fn load_replay(
         for journal in page.events {
             latest_sequence = latest_sequence.max(journal.sequence);
             // Frames also carry the event's transcript ops; the window evicts them below.
-            loaded_bytes = loaded_bytes.saturating_add(serde_json::to_vec(&journal)?.len());
+            loaded_bytes =
+                loaded_bytes.saturating_add(mobius::bounded_json::serialized_len(&journal)?);
             if loaded_bytes > MAX_REPLAY_BYTES {
                 has_earlier = true;
                 break 'pages;

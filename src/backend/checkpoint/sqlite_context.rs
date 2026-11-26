@@ -5,8 +5,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Weak};
 
 use rusqlite::{OptionalExtension, Transaction, params};
+use serde::de::IgnoredAny;
 use serde::ser::SerializeStruct;
-use serde::{Serialize, Serializer};
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
 
 use super::super::{Checkpoint, QueuedMessage};
@@ -128,6 +129,66 @@ impl Serialize for Header<'_> {
         header.serialize_field("pending_tools", pending_tools)?;
         header.serialize_field("pending_approval", pending_approval)?;
         header.end()
+    }
+}
+
+/// Single-pass deserialization target for a stored checkpoint header without DOM round-tripping.
+#[derive(Deserialize)]
+pub(super) struct DecodedHeader {
+    version: u32,
+    session_id: SessionId,
+    session_context: Arc<crate::protocol::SessionContext>,
+    metadata: std::collections::BTreeMap<String, Value>,
+    catalog_visible: bool,
+    first_user_message: Option<String>,
+    model_route: Option<Arc<str>>,
+    context_model_route: Option<Arc<str>>,
+    sequence: u64,
+    #[serde(default)]
+    context: Option<IgnoredAny>,
+    delivered_once: Arc<std::collections::BTreeMap<String, std::collections::BTreeSet<String>>>,
+    context_epoch: u64,
+    last_context_rewrite: Option<crate::backend::checkpoint::ContextRewrite>,
+    total_usage: crate::protocol::TokenUsage,
+    last_usage: Option<crate::protocol::TokenUsage>,
+    pending_messages: Vec<crate::backend::checkpoint::QueuedMessage>,
+    active_execution: Option<crate::backend::checkpoint::ActiveExecution>,
+    active_model_step: Option<crate::backend::checkpoint::ActiveModelStep>,
+    execution_stats: crate::backend::checkpoint::ExecutionStats,
+    pending_tools: Vec<crate::protocol::ToolCall>,
+    pending_approval: Option<Arc<crate::backend::checkpoint::PendingApproval>>,
+}
+
+impl DecodedHeader {
+    pub(super) fn into_checkpoint(self) -> Result<Checkpoint> {
+        if self.context.is_some() {
+            return Err(Error::Checkpoint(
+                "checkpoint header contains an inline context".into(),
+            ));
+        }
+        Ok(Checkpoint {
+            version: self.version,
+            session_id: self.session_id,
+            session_context: self.session_context,
+            metadata: self.metadata,
+            catalog_visible: self.catalog_visible,
+            first_user_message: self.first_user_message,
+            model_route: self.model_route,
+            context_model_route: self.context_model_route,
+            sequence: self.sequence,
+            context: Arc::default(),
+            delivered_once: self.delivered_once,
+            context_epoch: self.context_epoch,
+            last_context_rewrite: self.last_context_rewrite,
+            total_usage: self.total_usage,
+            last_usage: self.last_usage,
+            pending_messages: self.pending_messages,
+            active_execution: self.active_execution,
+            active_model_step: self.active_model_step,
+            execution_stats: self.execution_stats,
+            pending_tools: self.pending_tools,
+            pending_approval: self.pending_approval,
+        })
     }
 }
 

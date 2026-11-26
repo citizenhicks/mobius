@@ -2,7 +2,7 @@
 
 use super::rejection::{Rejection, internal};
 
-use crate::wire::{ServerFrame, ServerMessage, SessionRecord};
+use crate::wire::{ServerFrame, ServerMessage, SessionRecord, SharedFrame};
 
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -10,7 +10,7 @@ use tokio::sync::broadcast;
 /// connection, which writes each as the frame its client needs.
 #[derive(Clone)]
 pub(crate) enum GatewayUpdate {
-    Frame(Arc<ServerFrame>),
+    Frame(SharedFrame),
     Ready(Arc<crate::wire::ReadyPayload>),
     /// The whole session catalog.
     Sessions(SessionCatalogUpdate),
@@ -33,7 +33,7 @@ impl GatewayUpdate {
             Self::Ready(payload) => ServerMessage::Ready {
                 payload: Arc::unwrap_or_clone(payload),
             },
-            Self::Frame(frame) => Arc::unwrap_or_clone(frame).message,
+            Self::Frame(frame) => frame.message.clone(),
             Self::Sessions(catalog) => ServerMessage::Sessions {
                 request_id: None,
                 sessions: catalog.sessions.to_vec(),
@@ -53,10 +53,15 @@ pub(super) fn broadcast(events: &broadcast::Sender<GatewayUpdate>, update: Gatew
 }
 
 pub(super) fn send_event(events: &broadcast::Sender<GatewayUpdate>, message: ServerMessage) {
-    broadcast(
-        events,
-        GatewayUpdate::Frame(Arc::new(ServerFrame::new(message))),
-    );
+    let frame = ServerFrame::new(message);
+    let shared = match SharedFrame::encoded(frame) {
+        Ok(shared) => shared,
+        Err(error) => {
+            tracing::warn!(%error, "failed to pre-encode gateway broadcast frame");
+            return;
+        }
+    };
+    broadcast(events, GatewayUpdate::Frame(shared));
 }
 
 /// Publishes the session list and the background approvals it carries.

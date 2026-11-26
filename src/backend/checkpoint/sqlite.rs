@@ -51,8 +51,8 @@ use self::event_journal::store_event;
 mod context_store;
 
 use context_store::{
-    ContextCache, Header, append_context, context_count, load_context, prepare_append,
-    sqlite_integer,
+    ContextCache, DecodedHeader, Header, append_context, context_count, load_context,
+    prepare_append, sqlite_integer,
 };
 
 const SCHEMA_VERSION: i64 = 15;
@@ -141,8 +141,19 @@ CREATE INDEX IF NOT EXISTS execution_journal_recent_idx
     ON execution_journal(started_at_ms DESC, session_id DESC, sequence DESC);
 CREATE INDEX IF NOT EXISTS event_journal_step_idx
     ON event_journal(session_id, model_step_id, event_kind);
+CREATE INDEX IF NOT EXISTS sessions_parent_idx
+    ON sessions(parent_session_id);
+CREATE INDEX IF NOT EXISTS event_journal_kind_idx
+    ON event_journal(session_id, event_kind, sequence);
 PRAGMA user_version = 15;
 COMMIT;
+";
+
+const OPTIONAL_INDEXES: &str = "
+CREATE INDEX IF NOT EXISTS sessions_parent_idx
+    ON sessions(parent_session_id);
+CREATE INDEX IF NOT EXISTS event_journal_kind_idx
+    ON event_journal(session_id, event_kind, sequence);
 ";
 
 /// Returns the database's declared schema version, or `None` for an empty new database.
@@ -189,16 +200,25 @@ struct CachedConnection {
     context: HashMap<SessionId, ContextCache>,
 }
 
-/// Locks the warm connection, or returns `None` when a reader must not wait for it or a
-/// panic poisoned it. A poisoned connection is never reused; callers open a fresh one.
+/// Locks the warm connection, returning `Ok(None)` only when a non-waiting reader observes
+/// contention. A poisoned lock fails the operation rather than silently bypassing it.
 fn warm_connection(
     connection: &Mutex<CachedConnection>,
     wait: bool,
-) -> Option<MutexGuard<'_, CachedConnection>> {
+) -> Result<Option<MutexGuard<'_, CachedConnection>>> {
     if wait {
-        connection.lock().ok()
+        connection
+            .lock()
+            .map(Some)
+            .map_err(|_poisoned| Error::Poisoned("SQLite checkpoint connection"))
     } else {
-        connection.try_lock().ok()
+        match connection.try_lock() {
+            Ok(guard) => Ok(Some(guard)),
+            Err(std::sync::TryLockError::WouldBlock) => Ok(None),
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                Err(Error::Poisoned("SQLite checkpoint connection"))
+            }
+        }
     }
 }
 
@@ -239,6 +259,8 @@ impl SqliteCheckpoint {
         if version.is_none() {
             // auto_vacuum must be chosen before WAL initializes a new database header.
             connection.execute_batch(SCHEMA)?;
+        } else {
+            connection.execute_batch(OPTIONAL_INDEXES)?;
         }
         let journal_mode: String =
             connection.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0))?;
@@ -295,7 +317,7 @@ impl SqliteCheckpoint {
     {
         let path = Arc::clone(&self.path);
         let connection = Arc::clone(&self.connection);
-        tokio::task::spawn_blocking(move || match warm_connection(&connection, wait) {
+        tokio::task::spawn_blocking(move || match warm_connection(&connection, wait)? {
             Some(mut cached) => {
                 let CachedConnection {
                     connection,
@@ -311,6 +333,26 @@ impl SqliteCheckpoint {
 }
 
 impl CheckpointStore for SqliteCheckpoint {
+    fn context_epoch<'a>(
+        &'a self,
+        session_id: &'a SessionId,
+    ) -> BoxFuture<'a, Result<Option<u64>>> {
+        let session_id = session_id.share();
+        Box::pin(self.run(move |connection, _cache| {
+            let epoch: Option<i64> = connection
+                .prepare_cached("SELECT context_epoch FROM sessions WHERE session_id = ?1")?
+                .query_row([session_id], |row| row.get(0))
+                .optional()?;
+            epoch
+                .map(|value| {
+                    u64::try_from(value).map_err(|error| {
+                        Error::Checkpoint(format!("session context_epoch is negative: {error}"))
+                    })
+                })
+                .transpose()
+        }))
+    }
+
     fn message_accepted<'a>(
         &'a self,
         session_id: &'a SessionId,
@@ -920,13 +962,13 @@ fn open_existing_connection(path: &Path) -> Result<Connection> {
 fn configure_connection(connection: &Connection) -> Result<()> {
     connection.busy_timeout(BUSY_TIMEOUT)?;
     connection.pragma_update(None, "foreign_keys", "ON")?;
-    connection.pragma_update(None, "synchronous", "FULL")?;
+    connection.pragma_update(None, "synchronous", "NORMAL")?;
     connection.pragma_update(None, "journal_size_limit", 64 * 1024 * 1024)?;
     Ok(())
 }
 
 fn reclaim_pages(transaction: &Transaction<'_>) -> Result<()> {
-    let mut statement = transaction.prepare_cached("PRAGMA incremental_vacuum")?;
+    let mut statement = transaction.prepare_cached("PRAGMA incremental_vacuum(64)")?;
     let mut rows = statement.query([])?;
     // SQLite returns one row per reclaimed page; execute_batch stops after the first.
     while rows.next()?.is_some() {}
@@ -1130,17 +1172,7 @@ fn session_cursor(session: &SessionSummary) -> SessionCursor {
 }
 
 fn decode_checkpoint(session_id: &SessionId, sequence: i64, json: &str) -> Result<Checkpoint> {
-    let mut header: Value = serde_json::from_str(json)?;
-    let fields = header
-        .as_object_mut()
-        .ok_or_else(|| Error::Checkpoint("checkpoint header is not an object".into()))?;
-    if fields.contains_key("context") {
-        return Err(Error::Checkpoint(
-            "checkpoint header contains an inline context".into(),
-        ));
-    }
-    fields.insert("context".into(), Value::Array(Vec::new()));
-    let checkpoint: Checkpoint = serde_json::from_value(header)?;
+    let checkpoint = serde_json::from_str::<DecodedHeader>(json)?.into_checkpoint()?;
     let sequence = u64::try_from(sequence).map_err(|error| {
         Error::Checkpoint(format!("checkpoint row has a negative sequence: {error}"))
     })?;

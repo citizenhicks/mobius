@@ -643,11 +643,7 @@ impl Drop for CallCleanup {
 }
 
 fn client(settings: super::ModelTransportSettings) -> Result<Client> {
-    // Voice credentials must never follow a provider redirect.
-    Ok(crate::backend::model::provider::http_client_builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_millis(settings.voice_start_timeout_ms))
-        .build()?)
+    super::transport::cached_no_redirect_client(Some(settings.voice_start_timeout_ms), None, None)
 }
 
 fn validate_call_id(id: &str) -> Result<()> {

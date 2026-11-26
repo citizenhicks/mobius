@@ -45,7 +45,11 @@ pub fn write_within<W: Write, T: Serialize + ?Sized>(
 }
 
 /// The serialized JSON length of `value`, or `None` when it exceeds `limit`.
-pub(crate) fn len_within<T: Serialize + ?Sized>(
+///
+/// # Errors
+///
+/// Returns the serializer's error if `value` fails to serialize.
+pub fn len_within<T: Serialize + ?Sized>(
     value: &T,
     limit: usize,
 ) -> serde_json::Result<Option<usize>> {
@@ -53,7 +57,11 @@ pub(crate) fn len_within<T: Serialize + ?Sized>(
 }
 
 /// The serialized JSON length of `value`.
-pub(crate) fn serialized_len<T: Serialize + ?Sized>(value: &T) -> crate::Result<usize> {
+///
+/// # Errors
+///
+/// Returns an error if `value` fails to serialize or its length overflows `usize`.
+pub fn serialized_len<T: Serialize + ?Sized>(value: &T) -> crate::Result<usize> {
     len_within(value, usize::MAX)?
         .ok_or_else(|| crate::Error::Internal("serialized size overflow".into()))
 }

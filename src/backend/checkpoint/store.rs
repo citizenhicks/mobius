@@ -321,6 +321,19 @@ pub trait CheckpointStore: Send + Sync {
     /// Loads the latest checkpoint for a session.
     fn load<'a>(&'a self, session_id: &'a SessionId) -> BoxFuture<'a, Result<Option<Checkpoint>>>;
 
+    /// Loads only the current `context_epoch` of a session when present.
+    fn context_epoch<'a>(
+        &'a self,
+        session_id: &'a SessionId,
+    ) -> BoxFuture<'a, Result<Option<u64>>> {
+        Box::pin(async move {
+            Ok(self
+                .load(session_id)
+                .await?
+                .map(|checkpoint| checkpoint.context_epoch))
+        })
+    }
+
     /// Returns whether this session durably admitted a message with the submission ID.
     ///
     /// Receipts survive queue consumption and must be written in the same transaction

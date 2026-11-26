@@ -16,6 +16,7 @@ use std::os::unix::fs::MetadataExt as _;
 use std::path::{Component, Path, PathBuf};
 use std::str::FromStr as _;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use chrono::{TimeZone as _, Timelike as _, Utc};
 use chrono_tz::Tz;
@@ -86,6 +87,8 @@ pub(crate) struct BotStore {
     cache: std::sync::Mutex<Option<(CatalogStamp, Arc<BotState>)>>,
     /// The gateway's current voice routes, which Bot records resolve their voice against.
     voices: std::sync::RwLock<Arc<crate::harness::mobius::provider_catalog::VoiceRoutes>>,
+    voices_generation: AtomicU64,
+    pending_bot_deletion: AtomicBool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -463,6 +466,8 @@ impl BotStore {
             prepared: crate::harness::mobius::assembly::PreparedBots::default(),
             cache: std::sync::Mutex::default(),
             voices: std::sync::RwLock::default(),
+            voices_generation: AtomicU64::new(0),
+            pending_bot_deletion: AtomicBool::new(false),
         };
         let state = store.fresh_state()?;
         if persisted && !state.bots.iter().any(|bot| &*bot.handle == MOBIUS_HANDLE) {
@@ -488,7 +493,15 @@ impl BotStore {
             .voices
             .write()
             .map_err(crate::poisoned("Bot voice routes"))? = Arc::new(voices);
+        self.voices_generation.fetch_add(1, Ordering::Release);
         Ok(())
+    }
+
+    pub(crate) fn broadcast_stamp(&self) -> (u64, u64) {
+        (
+            self.storage.catalog_generation(),
+            self.voices_generation.load(Ordering::Acquire),
+        )
     }
 
     fn voice_routes(&self) -> Result<Arc<crate::harness::mobius::provider_catalog::VoiceRoutes>> {
@@ -691,8 +704,8 @@ impl BotStore {
         Ok(self.fresh_state()?.pending_bot_deletion)
     }
 
-    pub(crate) fn has_pending_bot_deletion(&self) -> Result<bool> {
-        Ok(self.current_state()?.pending_bot_deletion.is_some())
+    pub(crate) fn has_pending_bot_deletion(&self) -> bool {
+        self.pending_bot_deletion.load(Ordering::Acquire)
     }
 
     pub(crate) fn clear_bot_deletion(&self, bot_id: &str) -> Result<()> {
@@ -786,6 +799,8 @@ impl BotStore {
         let catalog = catalog_json(&state)?;
         self.storage
             .delete_runs_and_save_catalog(&catalog, None, Some(&bot_id), None, None)?;
+        self.pending_bot_deletion
+            .store(state.pending_bot_deletion.is_some(), Ordering::Release);
         drop(routine_locks);
         drop(state_lock);
         for path in &instructions {
@@ -1522,7 +1537,10 @@ impl BotStore {
     }
 
     fn save(&self, state: &BotState) -> Result<()> {
-        self.storage.save_catalog(&catalog_json(state)?)
+        self.storage.save_catalog(&catalog_json(state)?)?;
+        self.pending_bot_deletion
+            .store(state.pending_bot_deletion.is_some(), Ordering::Release);
+        Ok(())
     }
 
     /// Holds the cross-process Bot state lock until the returned file drops.
@@ -1558,6 +1576,8 @@ impl BotStore {
             .transpose()?
             .unwrap_or_default();
         validate_records(&state, &self.routines_dir)?;
+        self.pending_bot_deletion
+            .store(state.pending_bot_deletion.is_some(), Ordering::Release);
         Ok(state)
     }
 }

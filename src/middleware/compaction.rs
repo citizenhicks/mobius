@@ -1,7 +1,7 @@
 //! Portable plaintext checkpoints and context resets.
 
 use crate::SessionId;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -68,6 +68,32 @@ super::manifest::middleware_manifest! {
 }
 
 const STATE_KEY: &str = "compaction.v1";
+const MAX_UNLOADED_COUNTS: usize = 512;
+
+#[derive(Default)]
+struct UnloadedCounts {
+    counts: BTreeMap<SessionId, u64>,
+    order: VecDeque<SessionId>,
+}
+
+impl UnloadedCounts {
+    fn get(&self, session_id: &str) -> Option<u64> {
+        self.counts.get(session_id).copied()
+    }
+
+    fn insert(&mut self, session_id: SessionId, count: u64) {
+        if self.counts.insert(session_id.share(), count).is_some() {
+            return;
+        }
+        self.order.push_back(session_id);
+        while self.counts.len() > MAX_UNLOADED_COUNTS {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            self.counts.remove(&oldest);
+        }
+    }
+}
 
 #[derive(Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -96,9 +122,8 @@ pub struct Compaction {
     idle_after: Option<Duration>,
     idle_min_tokens: i64,
     counts: Mutex<BTreeMap<SessionId, SessionCount>>,
-    /// The last count of each session that unloaded, so an idle chat still reports it.
-    // ponytail: one integer per chat this gateway run has unloaded; prune if that ever matters.
-    unloaded: Mutex<BTreeMap<SessionId, u64>>,
+    /// Bounded cache of unloaded session counts so idle chats still report their count.
+    unloaded: Mutex<UnloadedCounts>,
 }
 
 impl std::fmt::Debug for Compaction {
@@ -338,9 +363,9 @@ impl Compaction {
             return Ok(());
         };
         let accepted = checkpoints
-            .load(session_id)
+            .context_epoch(session_id)
             .await?
-            .is_some_and(|checkpoint| checkpoint.context_epoch >= pending_epoch);
+            .is_some_and(|epoch| epoch >= pending_epoch);
         let count = if accepted {
             let count = count
                 .checked_add(1)
@@ -384,7 +409,7 @@ impl Middleware for Compaction {
             .and_then(|counts| counts.get(session_id).map(|session| session.count))
             .or_else(|| {
                 let unloaded = self.unloaded.lock().ok()?;
-                unloaded.get(session_id).copied()
+                unloaded.get(session_id)
             });
         FrontendContribution {
             capability: MANIFEST.id.into(),
@@ -465,10 +490,12 @@ impl Middleware for Compaction {
     fn session_end<'a>(&'a self, runtime: &'a RuntimeContext) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             let settled = self.settle(&runtime.session_id).await;
-            if let Some(session) = self.counts()?.remove(&runtime.session_id)
-                && let Ok(mut unloaded) = self.unloaded.lock()
-            {
-                unloaded.insert(runtime.session_id.share(), session.count);
+            let removed = self.counts()?.remove(&runtime.session_id);
+            if let Some(session) = removed {
+                self.unloaded
+                    .lock()
+                    .map_err(|_poisoned| Error::Poisoned("compaction unloaded counts"))?
+                    .insert(runtime.session_id.share(), session.count);
             }
             settled
         })
@@ -759,23 +786,19 @@ mod tests {
             );
             policy.stage(&checkpoint.session_id, 1).expect("stage");
             let database = rusqlite::Connection::open(path).expect("database");
-            let header: String = database
-                .query_row(
-                    "SELECT latest_checkpoint_json FROM sessions WHERE session_id = 'session'",
-                    [],
-                    |row| row.get(0),
-                )
-                .expect("header");
             database
                 .execute_batch(if fail_load {
-                    "UPDATE sessions SET latest_checkpoint_json = '{}' WHERE session_id = 'session'"
+                    "UPDATE sessions SET context_epoch = 'corrupt' WHERE session_id = 'session'"
                 } else {
                     "CREATE TRIGGER fail_count BEFORE INSERT ON middleware_state
                      BEGIN SELECT RAISE(ABORT, 'forced state save failure'); END;"
                 })
                 .expect("inject failure");
 
-            assert!(policy.settle(&checkpoint.session_id).await.is_err());
+            assert!(
+                policy.settle(&checkpoint.session_id).await.is_err(),
+                "storage failure must surface as an error from settle"
+            );
             {
                 let counts = policy.counts().expect("counts");
                 assert_eq!(counts["session"].count, 3);
@@ -784,10 +807,10 @@ mod tests {
             if fail_load {
                 database
                     .execute(
-                        "UPDATE sessions SET latest_checkpoint_json = ?1 WHERE session_id = 'session'",
-                        [&header],
+                        "UPDATE sessions SET context_epoch = 1 WHERE session_id = 'session'",
+                        [],
                     )
-                    .expect("restore header");
+                    .expect("restore context_epoch");
             } else {
                 database
                     .execute_batch("DROP TRIGGER fail_count")

@@ -131,7 +131,7 @@ impl TelemetryConfig {
                     "keys must be 1–64 bytes and values at most 1024 bytes",
                 ));
             }
-            if serde_json::to_vec(&sink.fields)?.len() > 8192 {
+            if mobius::bounded_json::len_within(&sink.fields, 8192)?.is_none() {
                 return Err(invalid("fields", "encoded labels must fit within 8 KiB"));
             }
             if let Some(name) = &sink.bearer_env

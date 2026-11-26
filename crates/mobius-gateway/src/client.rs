@@ -5,7 +5,7 @@ use std::env;
 use std::fmt;
 use std::net::IpAddr;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use rustls::ClientConfig;
 use rustls::RootCertStore;
@@ -193,6 +193,7 @@ impl Endpoint {
     }
 
     async fn secure_tcp(&self, stream: TcpStream) -> Result<BoxedTransport> {
+        static TLS_CLIENT_CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
         stream.set_nodelay(true)?;
         if self.security == Security::Plaintext {
             let peer = stream.peer_addr()?;
@@ -203,17 +204,20 @@ impl Endpoint {
             }
             return Ok(Box::new(stream));
         }
-
-        let mut roots = RootCertStore::empty();
-        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned()); // rules-allow: the root store owns its trust anchors
-        let config = ClientConfig::builder()
-            .with_root_certificates(roots)
-            .with_no_client_auth();
+        let config = Arc::clone(TLS_CLIENT_CONFIG.get_or_init(|| {
+            let mut roots = RootCertStore::empty();
+            roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned()); // rules-allow: the root store owns its trust anchors
+            Arc::new(
+                ClientConfig::builder()
+                    .with_root_certificates(roots)
+                    .with_no_client_auth(),
+            )
+        }));
         let name = ServerName::try_from(self.host.clone()) // rules-allow: the TLS session owns its server name
             .map_err(|error| {
                 Error::Invalid(format!("TLS endpoint has an invalid server name: {error}"))
             })?;
-        let stream = TlsConnector::from(Arc::new(config))
+        let stream = TlsConnector::from(config)
             .connect(name, stream)
             .await
             .map_err(|error| {

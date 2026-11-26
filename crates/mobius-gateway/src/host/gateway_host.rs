@@ -28,8 +28,8 @@ use crate::config::{
 use crate::harness::mobius::extensions::ExtensionStore;
 use crate::harness::mobius::provider_catalog::configured_model_catalog;
 use crate::wire::{
-    HarnessConfig, ProfileParts, ProfileSnapshot, ReadyPayload, RunStats, SessionRecord,
-    VersionedAgentConfig,
+    HarnessConfig, ProfileParts, ProfileSnapshot, ReadyPayload, RunStats, ServerFrame,
+    ServerMessage, SessionRecord, SharedFrame, VersionedAgentConfig, content_revision,
 };
 use crate::{Error, Result};
 use futures_util::future::OptionFuture;
@@ -44,11 +44,20 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::{Mutex, RwLock, broadcast};
+struct CachedBotsBroadcast {
+    stamp: (u64, u64),
+    revision: Option<u128>,
+    frame: SharedFrame,
+}
+
 /// Machine-wide chat registry. A session has at most one resident agent owner.
 #[derive(Clone)]
 pub(crate) struct GatewayHost {
     pub(crate) desktop: Arc<DesktopControl>,
     pub(crate) remote_desktop: Arc<RemoteDesktop>,
+    pub(super) bots: Arc<BotStore>,
+    pub(super) session_mutations: Arc<RwLock<()>>,
+    bots_broadcast_cache: Arc<StdMutex<Option<CachedBotsBroadcast>>>,
     pub(super) state: Arc<Mutex<GatewayState>>,
     pub(super) capacity_gate: Arc<Mutex<()>>,
     pub(super) storage_reads: Arc<telemetry::StorageMeasurements>,
@@ -98,6 +107,9 @@ impl GatewayHost {
         let state = Arc::downgrade(&self.state);
         let desktop = Arc::clone(&self.desktop);
         let remote_desktop = Arc::clone(&self.remote_desktop);
+        let bots = Arc::clone(&self.bots);
+        let session_mutations = Arc::clone(&self.session_mutations);
+        let bots_broadcast_cache = Arc::clone(&self.bots_broadcast_cache);
         let capacity_gate = Arc::clone(&self.capacity_gate);
         let events = self.events.clone(); // rules-allow: the access closure owns an event sender
         let work_activity = Arc::clone(&self.work_activity);
@@ -111,6 +123,9 @@ impl GatewayHost {
                     .ok_or_else(|| Error::Internal("gateway stopped".into()))?,
                 desktop: Arc::clone(&desktop),
                 remote_desktop: Arc::clone(&remote_desktop),
+                bots: Arc::clone(&bots),
+                session_mutations: Arc::clone(&session_mutations),
+                bots_broadcast_cache: Arc::clone(&bots_broadcast_cache),
                 capacity_gate: Arc::clone(&capacity_gate),
                 events: events.clone(), // rules-allow: each upgraded host owns an event sender
                 work_activity: Arc::clone(&work_activity),
@@ -182,9 +197,13 @@ impl GatewayHost {
         let (events, _) = broadcast::channel(BROADCAST_CAPACITY);
         let activities = Arc::new(Mutex::new(catalog::SessionCatalog::default()));
         restore_pending_approval_activities(&checkpoints, &activities).await?;
+        let session_mutations = Arc::new(RwLock::new(()));
         let host = Self {
             desktop: Arc::new(DesktopControl::default()),
             remote_desktop,
+            bots: Arc::clone(&bots),
+            session_mutations: Arc::clone(&session_mutations),
+            bots_broadcast_cache: Arc::new(StdMutex::new(None)),
             state: Arc::new(Mutex::new(GatewayState {
                 decision_route: None,
                 store,
@@ -198,7 +217,7 @@ impl GatewayHost {
                 contributions,
                 catalog_lock: Arc::new(Mutex::new(())),
                 credential_catalog_gate: Arc::new(Mutex::new(())),
-                session_mutations: Arc::new(RwLock::new(())),
+                session_mutations,
                 extension_mutations: Arc::new(Mutex::new(())),
                 discovery_gate,
                 provider_epoch: Arc::new(AtomicU64::new(0)),
@@ -264,22 +283,13 @@ impl GatewayHost {
         Ok(access)
     }
 
-    async fn mutation_handles(&self) -> (Arc<RwLock<()>>, Arc<BotStore>) {
-        let state = self.state.lock().await;
-        (
-            Arc::clone(&state.session_mutations),
-            Arc::clone(&state.bots),
-        )
-    }
-
     // Observers still obey idle shutdown and deletion admission while execution is held.
     pub(crate) async fn begin_access(
         &self,
     ) -> std::result::Result<tokio::sync::OwnedRwLockReadGuard<()>, Rejection> {
-        let (gate, bots) = self.mutation_handles().await;
         // Admission serializes with exclusive session mutations.
-        let mutation = gate.read_owned().await;
-        reject_pending_bot_deletion(&bots)?;
+        let mutation = Arc::clone(&self.session_mutations).read_owned().await;
+        reject_pending_bot_deletion(&self.bots)?;
         Ok(mutation)
     }
 
@@ -292,9 +302,8 @@ impl GatewayHost {
     pub(super) async fn begin_exclusive_mutation(
         &self,
     ) -> std::result::Result<tokio::sync::OwnedRwLockWriteGuard<()>, Rejection> {
-        let (gate, bots) = self.mutation_handles().await;
-        let mutation = gate.write_owned().await;
-        reject_pending_bot_deletion(&bots)?;
+        let mutation = Arc::clone(&self.session_mutations).write_owned().await;
+        reject_pending_bot_deletion(&self.bots)?;
         Ok(mutation)
     }
 
@@ -349,7 +358,47 @@ impl GatewayHost {
 
     pub(crate) async fn bots(&self) -> std::result::Result<Vec<crate::wire::BotRecord>, Rejection> {
         let _access = self.begin_mutation().await?;
-        self.state.lock().await.bots.bots().map_err(internal)
+        self.bots.bots().map_err(internal)
+    }
+
+    /// Returns a pre-encoded broadcast frame for the current Bot catalog, reused across subscribers.
+    pub(crate) async fn bots_broadcast(
+        &self,
+    ) -> std::result::Result<(Option<u128>, SharedFrame), Rejection> {
+        let _access = self.begin_mutation().await?;
+        let stamp = self.bots.broadcast_stamp();
+        {
+            let cache = self
+                .bots_broadcast_cache
+                .lock()
+                .map_err(|error| internal(format!("Bot broadcast cache is poisoned: {error}")))?;
+            if let Some(cached) = cache.as_ref()
+                && cached.stamp == stamp
+            {
+                return Ok((
+                    cached.revision,
+                    cached.frame.clone(), // rules-allow: SharedFrame wraps Arc payloads
+                ));
+            }
+        }
+        let bots = self.bots.bots().map_err(internal)?;
+        let revision = u128::from_str_radix(&content_revision(&bots), 16).ok();
+        let frame = SharedFrame::encoded(ServerFrame::new(ServerMessage::Bots {
+            request_id: None,
+            bots,
+        }))
+        .map_err(internal)?;
+        let mut cache = self
+            .bots_broadcast_cache
+            .lock()
+            .map_err(|error| internal(format!("Bot broadcast cache is poisoned: {error}")))?;
+        *cache = Some(CachedBotsBroadcast {
+            stamp,
+            revision,
+            frame: frame.clone(), // rules-allow: SharedFrame wraps Arc payloads
+        });
+        drop(cache);
+        Ok((revision, frame))
     }
 
     pub(crate) async fn create_bot(
@@ -1037,7 +1086,7 @@ impl GatewayHost {
 }
 
 pub(super) fn reject_pending_bot_deletion(bots: &BotStore) -> std::result::Result<(), Rejection> {
-    if bots.has_pending_bot_deletion().map_err(internal)? {
+    if bots.has_pending_bot_deletion() {
         return Err(Rejection::new(
             "bot_deletion_recovery",
             "finish Bot deletion recovery before changing gateway state",

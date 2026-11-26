@@ -157,6 +157,22 @@ impl ClientView {
         .await
     }
 
+    /// Writes a pre-encoded Bot catalog broadcast unless this client already holds it.
+    pub(super) async fn write_bots_broadcast(
+        &mut self,
+        writer: &mut (impl AsyncWrite + Unpin),
+        revision: Option<u128>,
+        frame: &crate::wire::SharedFrame,
+    ) -> Result<()> {
+        if revision.is_some() && self.held.get(&ReadySection::Bots) == revision.as_ref() {
+            return Ok(());
+        }
+        if let Some(revision) = revision {
+            self.held.insert(ReadySection::Bots, revision);
+        }
+        frame.write(writer).await
+    }
+
     /// Writes a broadcast session catalog as the changes this client has not seen.
     pub(super) async fn write_session_changes(
         &mut self,

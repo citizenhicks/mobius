@@ -999,14 +999,17 @@ pub(crate) struct ModelEventTracker {
 
 impl ModelEventTracker {
     pub(crate) fn observe(&self, event: &ModelEvent) -> crate::Result<()> {
-        let mut pending = self.pending_web_searches.lock().map_err(|error| {
-            crate::Error::Stopped(format!("model event tracker is unavailable: {error}"))
-        })?;
         match event {
             ModelEvent::WebSearchStarted { call_id } => {
+                let mut pending = self.pending_web_searches.lock().map_err(|error| {
+                    crate::Error::Stopped(format!("model event tracker is unavailable: {error}"))
+                })?;
                 pending.insert(Arc::clone(call_id));
             }
             ModelEvent::WebSearchCompleted { call_id, .. } => {
+                let mut pending = self.pending_web_searches.lock().map_err(|error| {
+                    crate::Error::Stopped(format!("model event tracker is unavailable: {error}"))
+                })?;
                 pending.remove(call_id);
             }
             ModelEvent::HostedToolStarted { .. } | ModelEvent::HostedToolCompleted(_) => {
@@ -1018,7 +1021,6 @@ impl ModelEventTracker {
             | ModelEvent::ReasoningDelta(_)
             | ModelEvent::ToolCallReady(_) => {}
         }
-        drop(pending);
         Ok(())
     }
 

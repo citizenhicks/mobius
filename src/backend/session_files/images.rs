@@ -112,29 +112,15 @@ impl SessionFileStore {
         {
             return Ok(rendition);
         }
-        // ponytail: legacy references scan session records under one preparation lock; add a bounded
-        // in-memory key-to-reference cache if repeated legacy replay scans become a bottleneck.
-        let _preparation = self.state.renditions.lock().await;
-        // Session-file records are the cache: authorization, restart recovery and cleanup share one owner.
-        if let Some(record) = super::list_completed(&self.session_dir(session_id), &self.blob_dir())
-            .await?
-            .into_iter()
-            .map(|completed| completed.record)
-            .find(|record| {
-                record.origin == SessionFileOrigin::Observation
-                    && record.image_rendition_key.as_deref() == Some(key.as_str())
-            })
+        // Check cached renditions briefly under the lock, then release it during CPU decode/resize.
         {
-            if model_dimensions(&record) != Some((width, height)) {
-                return Err(Error::Tool(
-                    "invalid cached image rendition dimensions".into(),
-                ));
+            let _preparation = self.state.renditions.lock().await;
+            if let Some(cached) = self
+                .cached_rendition(session_id, &key, width, height)
+                .await?
+            {
+                return Ok(cached);
             }
-            return Ok(ImageRendition {
-                file: record.file,
-                width,
-                height,
-            });
         }
         // Blocking image work retains its semaphore permit even when the async caller is cancelled.
         let permit = Arc::clone(&self.state.image_work)
@@ -148,6 +134,13 @@ impl SessionFileStore {
         })
         .await
         .map_err(|error| Error::Tool(format!("image preparation failed: {error}")))??;
+        let _preparation = self.state.renditions.lock().await;
+        if let Some(cached) = self
+            .cached_rendition(session_id, &key, width, height)
+            .await?
+        {
+            return Ok(cached);
+        }
         let Some((bytes, media_type)) = prepared else {
             self.remember_image_preparation(
                 session_id,
@@ -184,6 +177,36 @@ impl SessionFileStore {
             width,
             height,
         })
+    }
+
+    async fn cached_rendition(
+        &self,
+        session_id: &SessionId,
+        key: &str,
+        width: u32,
+        height: u32,
+    ) -> Result<Option<ImageRendition>> {
+        let Some(record) = super::list_completed(&self.session_dir(session_id), &self.blob_dir())
+            .await?
+            .into_iter()
+            .map(|completed| completed.record)
+            .find(|record| {
+                record.origin == SessionFileOrigin::Observation
+                    && record.image_rendition_key.as_deref() == Some(key)
+            })
+        else {
+            return Ok(None);
+        };
+        if model_dimensions(&record) != Some((width, height)) {
+            return Err(Error::Tool(
+                "invalid cached image rendition dimensions".into(),
+            ));
+        }
+        Ok(Some(ImageRendition {
+            file: record.file,
+            width,
+            height,
+        }))
     }
 
     async fn resolve_image(
@@ -748,46 +771,75 @@ pub(super) fn validate_image_media_type(media_type: &str) -> Result<()> {
     }
 }
 
+fn decode_png(bytes: &[u8]) -> Result<(image::DynamicImage, Orientation)> {
+    let mut decoder =
+        image::codecs::png::PngDecoder::with_limits(Cursor::new(bytes), decode_limits())
+            .map_err(image_error)?;
+    let (width, height) = decoder.dimensions();
+    validate_dimensions(width, height)?;
+    if decoder.is_apng().map_err(image_error)? {
+        return Err(Error::Tool("animated PNG images are not supported".into()));
+    }
+    let orientation = decoder.orientation().map_err(image_error)?;
+    let decoded = image::DynamicImage::from_decoder(decoder).map_err(image_error)?;
+    Ok((decoded, orientation))
+}
+
+fn decode_gif(bytes: &[u8]) -> Result<(image::DynamicImage, Orientation)> {
+    let mut decoder =
+        image::codecs::gif::GifDecoder::new(Cursor::new(bytes)).map_err(image_error)?;
+    decoder.set_limits(decode_limits()).map_err(image_error)?;
+    let (width, height) = decoder.dimensions();
+    validate_dimensions(width, height)?;
+    let orientation = decoder.orientation().map_err(image_error)?;
+    let mut frames = decoder.into_frames();
+    let first = frames
+        .next()
+        .transpose()
+        .map_err(image_error)?
+        .ok_or_else(|| Error::Tool("GIF image contains no frames".into()))?;
+    if frames.next().transpose().map_err(image_error)?.is_some() {
+        return Err(Error::Tool("animated GIF images are not supported".into()));
+    }
+    Ok((
+        image::DynamicImage::ImageRgba8(first.into_buffer()),
+        orientation,
+    ))
+}
+
+fn decode_webp(bytes: &[u8]) -> Result<(image::DynamicImage, Orientation)> {
+    let mut decoder =
+        image::codecs::webp::WebPDecoder::new(Cursor::new(bytes)).map_err(image_error)?;
+    decoder.set_limits(decode_limits()).map_err(image_error)?;
+    let (width, height) = decoder.dimensions();
+    validate_dimensions(width, height)?;
+    if decoder.has_animation() {
+        return Err(Error::Tool("animated WebP images are not supported".into()));
+    }
+    let orientation = decoder.orientation().map_err(image_error)?;
+    let decoded = image::DynamicImage::from_decoder(decoder).map_err(image_error)?;
+    Ok((decoded, orientation))
+}
+
 fn decode_image(bytes: &[u8]) -> Result<(&'static str, image::DynamicImage, Orientation)> {
     let format = image::guess_format(bytes).map_err(image_error)?;
     let media_type = format.to_mime_type();
     validate_image_media_type(media_type)?;
-    let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
-    reader.limits(decode_limits());
-    let mut decoder = reader.into_decoder().map_err(image_error)?;
-    let (width, height) = decoder.dimensions();
-    validate_dimensions(width, height)?;
-    let orientation = decoder.orientation().map_err(image_error)?;
-    let decoded = image::DynamicImage::from_decoder(decoder).map_err(image_error)?;
-    match format {
-        ImageFormat::Png => {
-            if image::codecs::png::PngDecoder::new(Cursor::new(bytes))
-                .map_err(image_error)?
-                .is_apng()
-                .map_err(image_error)?
-            {
-                return Err(Error::Tool("animated PNG images are not supported".into()));
-            }
+    let (decoded, orientation) = match format {
+        ImageFormat::Png => decode_png(bytes)?,
+        ImageFormat::Gif => decode_gif(bytes)?,
+        ImageFormat::WebP => decode_webp(bytes)?,
+        _ => {
+            let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
+            reader.limits(decode_limits());
+            let mut decoder = reader.into_decoder().map_err(image_error)?;
+            let (width, height) = decoder.dimensions();
+            validate_dimensions(width, height)?;
+            let orientation = decoder.orientation().map_err(image_error)?;
+            let decoded = image::DynamicImage::from_decoder(decoder).map_err(image_error)?;
+            (decoded, orientation)
         }
-        ImageFormat::Gif => {
-            let mut decoder =
-                image::codecs::gif::GifDecoder::new(Cursor::new(bytes)).map_err(image_error)?;
-            decoder.set_limits(decode_limits()).map_err(image_error)?;
-            let mut frames = decoder.into_frames();
-            frames.next().transpose().map_err(image_error)?;
-            if frames.next().transpose().map_err(image_error)?.is_some() {
-                return Err(Error::Tool("animated GIF images are not supported".into()));
-            }
-        }
-        ImageFormat::WebP => {
-            let decoder =
-                image::codecs::webp::WebPDecoder::new(Cursor::new(bytes)).map_err(image_error)?;
-            if decoder.has_animation() {
-                return Err(Error::Tool("animated WebP images are not supported".into()));
-            }
-        }
-        _ => {}
-    }
+    };
     Ok((media_type, decoded, orientation))
 }
 

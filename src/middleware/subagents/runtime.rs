@@ -560,7 +560,7 @@ impl Shared {
                 event: EventMsg::Frontend(subagent_error_notice(message.to_string())),
             });
         }
-        if serde_json::to_vec(&events)?.len() > MAX_PREVIEW_PAGE_BYTES {
+        if crate::bounded_json::len_within(&events, MAX_PREVIEW_PAGE_BYTES)?.is_none() {
             return Err(Error::Checkpoint(format!(
                 "one subagent turn exceeds the {MAX_PREVIEW_PAGE_BYTES}-byte preview limit"
             )));

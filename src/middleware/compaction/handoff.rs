@@ -397,7 +397,7 @@ async fn prepare_response(
             context
                 .instructions
                 .len()
-                .saturating_add(serde_json::to_vec(&tools)?.len()),
+                .saturating_add(crate::serialized_len(&tools)?),
         )
         .saturating_add(context.token_estimate.item_tokens(&guidance));
     let budget = usize::try_from(

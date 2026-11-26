@@ -183,17 +183,71 @@ impl TryFrom<RawModelTransportSettings> for ModelTransportSettings {
     }
 }
 
+#[derive(Clone, Copy, Hash, PartialEq, Eq)]
+struct HttpClientKey {
+    connect_timeout_ms: Option<u64>,
+    read_timeout_ms: Option<u64>,
+    request_timeout_ms: Option<u64>,
+}
+
+const MAX_CACHED_HTTP_CLIENTS: usize = 16;
+
+pub(super) fn cached_no_redirect_client(
+    connect_timeout_ms: Option<u64>,
+    read_timeout_ms: Option<u64>,
+    request_timeout_ms: Option<u64>,
+) -> Result<Client> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+
+    static CACHE: OnceLock<Mutex<HashMap<HttpClientKey, Client>>> = OnceLock::new();
+    let key = HttpClientKey {
+        connect_timeout_ms,
+        read_timeout_ms,
+        request_timeout_ms,
+    };
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(client) = cache
+        .lock()
+        .map_err(|_poisoned| Error::Poisoned("model HTTP client cache"))?
+        .get(&key)
+    {
+        return Ok(Client::clone(client)); // rules-allow: reqwest::Client shares its pooled transport via Arc
+    }
+    // Provider credentials and account headers must never follow redirects.
+    let mut builder = crate::backend::model::provider::http_client_builder()
+        .redirect(reqwest::redirect::Policy::none());
+    if let Some(ms) = connect_timeout_ms {
+        builder = builder.connect_timeout(Duration::from_millis(ms));
+    }
+    if let Some(ms) = read_timeout_ms {
+        builder = builder.read_timeout(Duration::from_millis(ms));
+    }
+    if let Some(ms) = request_timeout_ms {
+        builder = builder.timeout(Duration::from_millis(ms));
+    }
+    let client = builder.build()?;
+    let mut guard = cache
+        .lock()
+        .map_err(|_poisoned| Error::Poisoned("model HTTP client cache"))?;
+    if guard.len() >= MAX_CACHED_HTTP_CLIENTS {
+        guard.clear();
+    }
+    guard.insert(key, Client::clone(&client)); // rules-allow: reqwest::Client shares its pooled transport via Arc
+    drop(guard);
+    Ok(client)
+}
+
 impl ModelTransportSettings {
-    /// Builds an HTTP streaming pool from this validated policy.
+    /// Builds or reuses a cached HTTP streaming pool for this validated policy.
     /// # Errors
     /// Returns HTTP client construction errors.
     pub fn streaming_client(&self) -> Result<Client> {
-        Ok(crate::backend::model::provider::http_client_builder()
-            // Provider credentials and account headers must never follow redirects.
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(Duration::from_millis(self.http_connect_timeout_ms))
-            .read_timeout(Duration::from_millis(self.http_idle_timeout_ms))
-            .build()?)
+        cached_no_redirect_client(
+            Some(self.http_connect_timeout_ms),
+            Some(self.http_idle_timeout_ms),
+            None,
+        )
     }
 }
 

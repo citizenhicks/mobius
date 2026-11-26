@@ -639,13 +639,12 @@ impl ProviderHealth {
         let seconds = until.duration_since(now).as_secs().max(1);
         // Not retryable: local retries would only spend the turn's retry budget against the
         // open breaker before failing anyway.
-        Err(crate::ProviderError {
-            retryable: false,
-            retry_after: Some(seconds.to_string()),
-            ..crate::ProviderError::retryable(format!(
+        Err(crate::ProviderError::circuit_open(
+            format!(
                 "model provider is unavailable after repeated failures; try again in {seconds}s"
-            ))
-        }
+            ),
+            seconds.to_string(),
+        )
         .into())
     }
 

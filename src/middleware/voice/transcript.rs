@@ -533,10 +533,9 @@ async fn history_page(
             },
         )
         .await?;
-    let mut bytes = serde_json::to_vec(&page.events)?.len();
-    if bytes > MAX_PREVIEW_BYTES {
+    let Some(mut bytes) = crate::bounded_json::len_within(&page.events, MAX_PREVIEW_BYTES)? else {
         return Err(Error::Tool("voice preview exceeds its size limit".into()));
-    }
+    };
     // A page may end amid unfinished speech. Keep its whole delta prefix so replay
     // never displays a truncated live utterance; final snapshots already prune deltas.
     while page.events.last().is_some_and(is_delta) {
@@ -555,10 +554,11 @@ async fn history_page(
         page.next_before_sequence = older.next_before_sequence;
         let older_count = older.events.len();
         for (index, event) in older.events.into_iter().enumerate() {
-            bytes += serde_json::to_vec(&event)?.len();
-            if bytes > MAX_PREVIEW_BYTES {
+            let remaining = MAX_PREVIEW_BYTES.saturating_sub(bytes);
+            let Some(event_bytes) = crate::bounded_json::len_within(&event, remaining)? else {
                 return Err(Error::Tool("voice preview exceeds its size limit".into()));
-            }
+            };
+            bytes = bytes.saturating_add(event_bytes);
             let complete = !is_delta(&event);
             if complete && index + 1 < older_count {
                 page.next_before_sequence = Some(event.sequence);
@@ -586,7 +586,7 @@ async fn preview(
         .into_iter()
         .map(FrontendPreviewEvent::from)
         .collect();
-    if serde_json::to_vec(&events)?.len() > MAX_PREVIEW_BYTES {
+    if crate::bounded_json::len_within(&events, MAX_PREVIEW_BYTES)?.is_none() {
         return Err(Error::Tool("voice preview exceeds its size limit".into()));
     }
     let summary = call_summary(checkpoints, session_id).await?;

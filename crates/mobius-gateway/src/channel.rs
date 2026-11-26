@@ -284,7 +284,6 @@ where
     let state = Mutex::new(state);
     let sending = async {
         let mut plaintext = vec![0; MAX_PLAINTEXT];
-        let mut ciphertext = vec![0; MAX_RECORD];
         loop {
             let length = if let Ok(read) =
                 tokio::time::timeout(KEEPALIVE, reader.read(&mut plaintext)).await
@@ -307,15 +306,16 @@ where
                     .map_err(websocket_error);
             }
             let plaintext = plaintext.get(..length).ok_or(Error::Unauthorized)?;
-            let length = state
+            let mut ciphertext = vec![0; length.saturating_add(TAG_BYTES)];
+            let written = state
                 .lock()
                 .map_err(rejected("gateway channel state lock is poisoned"))?
                 .write_message(plaintext, &mut ciphertext)
                 .map_err(crypto_error)?;
-            let ciphertext = ciphertext.get(..length).ok_or(Error::Unauthorized)?;
+            ciphertext.truncate(written);
             tokio::time::timeout(
                 WRITE_TIMEOUT,
-                outgoing.send(Message::Binary(ciphertext.to_vec().into())),
+                outgoing.send(Message::Binary(ciphertext.into())),
             )
             .await
             .map_err(rejected("gateway channel write timed out"))?

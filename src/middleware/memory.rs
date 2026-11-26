@@ -640,8 +640,8 @@ impl Memory {
     ///
     /// Returns an error if the saved pages cannot be loaded.
     pub async fn global_contribution(&self) -> Result<FrontendContribution> {
-        let access = self.store.access.write().await;
-        self.global_contribution_locked(&access).await
+        let _access = self.store.access.read().await;
+        self.global_contribution_unlocked().await
     }
 
     /// Runs a host management operation through the command dispatcher and
@@ -668,13 +668,10 @@ impl Memory {
         let parsed = parse_command(command, arguments, input.as_deref())?.ok_or_else(invalid)?;
         let access = self.store.access.write().await;
         self.execute_locked(parsed, None, &access).await?;
-        self.global_contribution_locked(&access).await
+        self.global_contribution_unlocked().await
     }
 
-    async fn global_contribution_locked(
-        &self,
-        _access: &Access<'_>,
-    ) -> Result<FrontendContribution> {
+    async fn global_contribution_unlocked(&self) -> Result<FrontendContribution> {
         let all = items(&self.store.pages.all().await?)?;
         Ok(FrontendContribution {
             capability: MANIFEST.id.into(),

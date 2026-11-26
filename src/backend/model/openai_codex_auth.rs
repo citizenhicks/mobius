@@ -359,10 +359,11 @@ async fn save_login_credential(path: PathBuf, credential: OAuthCredential) -> Re
 }
 
 fn http_client_with_settings(settings: &super::super::ModelTransportSettings) -> Result<Client> {
-    Ok(crate::backend::model::provider::http_client_builder()
-        .timeout(Duration::from_millis(settings.oauth_request_timeout_ms))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()?)
+    crate::backend::model::transport::cached_no_redirect_client(
+        None,
+        None,
+        Some(settings.oauth_request_timeout_ms),
+    )
 }
 
 fn parse_usage_limits(payload: &Value) -> Result<Vec<UsageLimit>> {

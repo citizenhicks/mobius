@@ -2,6 +2,7 @@ use mobius::SessionId;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::Duration;
 
@@ -101,10 +102,15 @@ CREATE TABLE IF NOT EXISTS hook_journal_sequences (
     event_id TEXT PRIMARY KEY REFERENCES hook_events(id) ON DELETE CASCADE,
     sequence INTEGER NOT NULL CHECK (sequence > 0)
 );
+CREATE INDEX IF NOT EXISTS hook_events_unpublished
+    ON hook_events(occurred_at) WHERE published = 0;
+CREATE INDEX IF NOT EXISTS hook_outbox_event
+    ON hook_outbox(event_id);
 ";
 
 pub(crate) struct BotStorage {
     pub(super) connection: Mutex<Connection>,
+    catalog_generation: AtomicU64,
     telemetry_notify: OnceLock<(Weak<tokio::sync::Notify>, Weak<crate::host::WorkActivity>)>,
 }
 
@@ -148,6 +154,7 @@ impl BotStorage {
         Ok((
             Self {
                 connection: Mutex::new(connection),
+                catalog_generation: AtomicU64::new(0),
                 telemetry_notify: OnceLock::new(),
             },
             persisted,
@@ -178,16 +185,24 @@ impl BotStorage {
         }
     }
 
+    pub(super) fn catalog_generation(&self) -> u64 {
+        self.catalog_generation.load(Ordering::Acquire)
+    }
+
+    pub(super) fn bump_catalog_generation(&self) {
+        self.catalog_generation.fetch_add(1, Ordering::Release);
+    }
+
     /// The catalog with the stamp it was read at, unless nothing committed since `stamp`.
     pub(super) fn catalog_since(
         &self,
         stamp: Option<CatalogStamp>,
     ) -> Result<Option<(CatalogStamp, Option<String>)>> {
         let connection = self.lock()?;
-        // data_version moves on commits by other connections, total_changes on our own.
+        // data_version moves on commits by other connections; catalog_generation moves on our catalog writes.
         let current = CatalogStamp {
             data_version: connection.query_row("PRAGMA data_version", [], |row| row.get(0))?,
-            own_changes: connection.total_changes(),
+            catalog_generation: self.catalog_generation(),
         };
         if stamp == Some(current) {
             return Ok(None);
@@ -198,7 +213,9 @@ impl BotStorage {
     }
 
     pub(super) fn save_catalog(&self, state_json: &str) -> Result<()> {
-        self.transaction(|transaction| save_catalog_row(transaction, state_json))
+        self.transaction(|transaction| save_catalog_row(transaction, state_json))?;
+        self.bump_catalog_generation();
+        Ok(())
     }
 
     pub(super) fn delete_runs_and_save_catalog(
@@ -244,7 +261,9 @@ impl BotStorage {
             save_catalog_row(transaction, state_json)?;
             if let Some(event) = event {super::events::record_event(transaction,event,None)?;}
             Ok(())
-        })
+        })?;
+        self.bump_catalog_generation();
+        Ok(())
     }
 
     pub(super) fn command_run(&self, command_id: &str) -> Result<Option<RoutineRun>> {
@@ -508,7 +527,7 @@ impl BotStorage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct CatalogStamp {
     data_version: i64,
-    own_changes: u64,
+    catalog_generation: u64,
 }
 
 fn read_catalog(connection: &Connection) -> Result<Option<String>> {
@@ -529,7 +548,7 @@ fn read_catalog(connection: &Connection) -> Result<Option<String>> {
 
 fn configure_connection(connection: &Connection) -> Result<()> {
     connection.pragma_update(None, "foreign_keys", "ON")?;
-    connection.pragma_update(None, "synchronous", "FULL")?;
+    connection.pragma_update(None, "synchronous", "NORMAL")?;
     Ok(())
 }
 

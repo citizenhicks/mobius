@@ -186,13 +186,16 @@ impl AsyncRead for PreAuthWebSocket {
                 buffer.put_slice(&[byte]);
                 return Poll::Ready(Ok(()));
             }
-            // The encrypted record limit increases after authentication; do not strand
-            // bytes from the next message in the old decoder while crossing that boundary.
-            let mut byte = [0_u8; 1];
-            let mut staged = ReadBuf::new(&mut byte);
+            // Buffer one socket read in `pending`, then feed a single byte at a time so
+            // post-authentication bytes never strand inside the pre-auth WebSocket decoder.
+            let mut chunk = [0_u8; 4096];
+            let mut staged = ReadBuf::new(&mut chunk);
             return match Pin::new(&mut this.stream).poll_read(context, &mut staged) {
                 Poll::Ready(Ok(())) => {
-                    buffer.put_slice(staged.filled());
+                    if let Some((&first, rest)) = staged.filled().split_first() {
+                        this.pending.extend(rest);
+                        buffer.put_slice(&[first]);
+                    }
                     Poll::Ready(Ok(()))
                 }
                 result => result,
@@ -312,6 +315,7 @@ pub(super) fn websocket_rejection(status: StatusCode) -> ErrorResponse {
 #[derive(Default)]
 pub(super) struct ClientConnections {
     presence: Mutex<BTreeMap<String, usize>>,
+    presence_persist: Mutex<()>,
 }
 
 pub(super) struct ClientConnectionGuard {
@@ -372,15 +376,22 @@ impl ClientConnections {
         bots: Arc<BotStore>,
     ) -> Result<ClientConnectionGuard> {
         if presence {
-            let mut entries = self
-                .presence
+            let _persist = self
+                .presence_persist
                 .lock()
-                .map_err(crate::poisoned("client-connection"))?;
-            let first = !entries.contains_key(&client_id);
-            let connections = entries.entry(client_id.clone()).or_default(); // rules-allow: the registry and the guard each keep the client ID
-            *connections = connections
-                .checked_add(1)
-                .ok_or_else(|| Error::Internal("client connection count overflow".into()))?;
+                .map_err(crate::poisoned("client-connection persistence"))?;
+            let first = {
+                let mut entries = self
+                    .presence
+                    .lock()
+                    .map_err(crate::poisoned("client-connection"))?;
+                let first = !entries.contains_key(&client_id);
+                let connections = entries.entry(client_id.clone()).or_default(); // rules-allow: the registry and the guard each keep the client ID
+                *connections = connections
+                    .checked_add(1)
+                    .ok_or_else(|| Error::Internal("client connection count overflow".into()))?;
+                first
+            };
             if first && let Err(error) = record_client_presence(&bots, &client_id, true) {
                 tracing::warn!(
                     error = %connection_diagnostic(&error), "client lifecycle persistence failed"
@@ -416,24 +427,32 @@ impl Drop for ClientConnectionGuard {
     fn drop(&mut self) {
         let close = || {
             if self.presence {
-                let Ok(mut entries) = self.connections.presence.lock() else {
+                let Ok(_persist) = self.connections.presence_persist.lock() else {
                     return;
                 };
-                let Some(connections) = entries.get_mut(&self.client_id) else {
-                    return;
-                };
-                if *connections > 1 {
-                    *connections -= 1;
-                } else {
-                    entries.remove(&self.client_id);
-                    if let Err(error) = record_client_presence(&self.bots, &self.client_id, false) {
-                        tracing::warn!(
-                            error = %connection_diagnostic(&error),
-                            "client lifecycle persistence failed"
-                        );
+                let last = {
+                    let Ok(mut entries) = self.connections.presence.lock() else {
+                        return;
+                    };
+                    let Some(connections) = entries.get_mut(&self.client_id) else {
+                        return;
+                    };
+                    if *connections > 1 {
+                        *connections -= 1;
+                        false
+                    } else {
+                        entries.remove(&self.client_id);
+                        true
                     }
+                };
+                if last
+                    && let Err(error) = record_client_presence(&self.bots, &self.client_id, false)
+                {
+                    tracing::warn!(
+                        error = %connection_diagnostic(&error),
+                        "client lifecycle persistence failed"
+                    );
                 }
-                drop(entries);
             }
             if let Some(host) = &self.activity {
                 host.mark_runtime_activity();
@@ -1057,7 +1076,7 @@ async fn handle_gateway_broadcast(
     writer: &mut (impl AsyncWrite + Unpin),
 ) -> Result<()> {
     match outgoing {
-        Ok(GatewayUpdate::Frame(frame)) => write_frame(writer, &*frame).await,
+        Ok(GatewayUpdate::Frame(frame)) => frame.write(writer).await,
         Ok(GatewayUpdate::Ready(payload)) => view.write_catalog(writer, None, payload).await,
         Ok(GatewayUpdate::Sessions(_)) if disabled.contains(&GatewayNotification::Sessions) => {
             Ok(())
@@ -1066,11 +1085,11 @@ async fn handle_gateway_broadcast(
         Ok(GatewayUpdate::BotsChanged) if disabled.contains(&GatewayNotification::Bots) => Ok(()),
         Ok(GatewayUpdate::BotsChanged) => {
             // Read when written: a queued change can predate a mutation response here.
-            let bots = host
-                .bots()
+            let (revision, frame) = host
+                .bots_broadcast()
                 .await
                 .map_err(|rejection| Error::Protocol(rejection.message.to_string()))?;
-            view.write_bots(writer, None, bots).await
+            view.write_bots_broadcast(writer, revision, &frame).await
         }
         Err(broadcast::error::RecvError::Lagged(_)) => {
             let ready = host

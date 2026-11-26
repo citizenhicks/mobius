@@ -208,14 +208,26 @@ impl SessionCatalog {
                 snapshot
                     .sessions
                     .push(session_record(summary, metadata, activity));
-                snapshot.sessions.sort_by(|left, right| {
-                    right
-                        .updated_at
-                        .cmp(&left.updated_at)
-                        .then_with(|| right.sequence.cmp(&left.sequence))
-                        .then_with(|| right.session_id.cmp(&left.session_id))
-                });
-                retain_catalog_page(&mut snapshot.sessions);
+                let ordinary_count = snapshot
+                    .sessions
+                    .iter()
+                    .filter(|session| {
+                        !crate::bots::is_persistent(
+                            &session.session_id,
+                            &session.session_context.owner_id,
+                        )
+                    })
+                    .count();
+                if ordinary_count > SESSION_PAGE_SIZE {
+                    snapshot.sessions.sort_by(|left, right| {
+                        right
+                            .updated_at
+                            .cmp(&left.updated_at)
+                            .then_with(|| right.sequence.cmp(&left.sequence))
+                            .then_with(|| right.session_id.cmp(&left.session_id))
+                    });
+                    retain_catalog_page(&mut snapshot.sessions);
+                }
                 sort_sessions(&mut snapshot.sessions);
             }
         }

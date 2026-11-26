@@ -170,8 +170,11 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// A model-provider failure with retry metadata preserved for callers.
 #[derive(Debug, thiserror::Error)]
-#[error("{message}")]
-pub struct ProviderError {
+#[error("{}", .0.message)]
+pub struct ProviderError(Box<ProviderErrorInner>);
+
+#[derive(Debug)]
+struct ProviderErrorInner {
     message: String,
     status: Option<u16>,
     retryable: bool,
@@ -211,35 +214,47 @@ impl ProviderError {
     /// Creates a non-retryable provider failure without an HTTP response.
     #[must_use]
     pub fn new(message: impl Into<String>) -> Self {
-        Self {
+        Self(Box::new(ProviderErrorInner {
             message: message.into(),
             status: None,
             retryable: false,
             retry_after: None,
             class: FailureClass::Other,
-        }
+        }))
     }
 
     /// Creates a retryable provider failure without an HTTP response.
     #[must_use]
     pub fn retryable(message: impl Into<String>) -> Self {
-        Self {
+        Self(Box::new(ProviderErrorInner {
+            message: message.into(),
+            status: None,
             retryable: true,
+            retry_after: None,
             class: FailureClass::Transient,
-            ..Self::new(message)
-        }
+        }))
+    }
+
+    pub(crate) fn circuit_open(message: impl Into<String>, retry_after: String) -> Self {
+        Self(Box::new(ProviderErrorInner {
+            message: message.into(),
+            status: None,
+            retryable: false,
+            retry_after: Some(retry_after),
+            class: FailureClass::Transient,
+        }))
     }
 
     /// Creates a retryable response-stream interruption without exposing transport details.
     #[must_use]
     pub fn stream_interrupted(retry_after: Option<String>) -> Self {
-        Self {
+        Self(Box::new(ProviderErrorInner {
             message: "model response stream was interrupted".into(),
             status: None,
             retryable: true,
             retry_after,
             class: FailureClass::StreamInterrupted,
-        }
+        }))
     }
 
     pub(crate) fn http(
@@ -263,13 +278,13 @@ impl ProviderError {
             400..=499 => FailureClass::InvalidRequest,
             _ => FailureClass::Other,
         };
-        Self {
+        Self(Box::new(ProviderErrorInner {
             message,
             status: Some(status),
             retryable: status == 408 || status == 429 || (500..=599).contains(&status),
             retry_after,
             class,
-        }
+        }))
     }
 
     fn mentions_context_length(message: &str) -> bool {
@@ -291,25 +306,25 @@ impl ProviderError {
             return self;
         };
         if Self::is_quota_code(code) {
-            self.retryable = false;
-            self.class = FailureClass::OutOfCredits;
+            self.0.retryable = false;
+            self.0.class = FailureClass::OutOfCredits;
             return self;
         }
         match code {
-            "context_length_exceeded" => self.class = FailureClass::ContextLengthExceeded,
+            "context_length_exceeded" => self.0.class = FailureClass::ContextLengthExceeded,
             "content_policy_violation" | "content_filter" => {
-                self.class = FailureClass::ContentPolicy;
+                self.0.class = FailureClass::ContentPolicy;
             }
             "authentication_error" | "permission_error" | "invalid_api_key" => {
-                self.class = FailureClass::Authentication;
+                self.0.class = FailureClass::Authentication;
             }
             "rate_limit_error" | "rate_limit_exceeded" => {
-                self.class = FailureClass::RateLimited;
-                self.retryable = true;
+                self.0.class = FailureClass::RateLimited;
+                self.0.retryable = true;
             }
             "overloaded_error" | "server_error" => {
-                self.class = FailureClass::Transient;
-                self.retryable = true;
+                self.0.class = FailureClass::Transient;
+                self.0.retryable = true;
             }
             _ => {}
         }
@@ -331,7 +346,7 @@ impl ProviderError {
     /// Returns the provider's HTTP status code, when one was received.
     #[must_use]
     pub fn status(&self) -> Option<u16> {
-        self.status
+        self.0.status
     }
 
     /// Reports whether the failure is classified as retryable.
@@ -340,25 +355,25 @@ impl ProviderError {
     /// replaying, account for partial output and possible remote side effects.
     #[must_use]
     pub fn is_retryable(&self) -> bool {
-        self.retryable
+        self.0.retryable
     }
 
     /// Reports whether a response ended before its completion record arrived.
     #[must_use]
     pub fn is_stream_interrupted(&self) -> bool {
-        self.class == FailureClass::StreamInterrupted
+        self.0.class == FailureClass::StreamInterrupted
     }
 
     /// Returns why the call failed.
     #[must_use]
     pub fn class(&self) -> FailureClass {
-        self.class
+        self.0.class
     }
 
     /// Returns the provider's raw `Retry-After` header value.
     #[must_use]
     pub fn retry_after(&self) -> Option<&str> {
-        self.retry_after.as_deref()
+        self.0.retry_after.as_deref()
     }
 }
 

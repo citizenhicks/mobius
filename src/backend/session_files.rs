@@ -903,7 +903,10 @@ impl SessionFileDeletion {
                 Err(error) => return Err(error.into()),
             }
         }
-        std::fs::File::open(&self.store.state.root)?.sync_all()?;
+        tokio::fs::File::open(&self.store.state.root)
+            .await?
+            .sync_all()
+            .await?;
         self.commit.take();
         Ok(())
     }
@@ -1083,6 +1086,14 @@ impl PendingSessionFileWrite {
         file.sync_all().await?;
         drop(file);
 
+        let source_path = self
+            .path
+            .as_ref()
+            .ok_or_else(|| Error::Tool("session file temporary file is missing".into()))?
+            .to_path_buf();
+        let content_hash = hash_file(&source_path).await?;
+        validate_content_hash(&content_hash)?;
+
         let _guard = self.store.state.commits.lock().await;
         let session_dir = self.store.session_dir(&self.session_id);
         let existing = list_completed(&session_dir, &self.store.blob_dir()).await?;
@@ -1098,8 +1109,6 @@ impl PendingSessionFileWrite {
             .take()
             .ok_or_else(|| Error::Tool("session file temporary file is missing".into()))?;
         let source_path = source.to_path_buf();
-        let content_hash = hash_file(&source_path).await?;
-        validate_content_hash(&content_hash)?;
 
         let blob_dir = self.store.blob_dir();
         ensure_private_dir(&blob_dir).await?;
