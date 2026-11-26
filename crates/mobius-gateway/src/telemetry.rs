@@ -797,16 +797,18 @@ async fn deliver(
                 error(&format!("bearer environment variable unavailable: {cause}"))
             })?)
         } else if let Some(path) = &sink.bearer_file {
-            let path = telemetry.state_dir.join(path);
-            let state_dir = &telemetry.state_dir;
+            let state_dir = tokio::fs::canonicalize(&telemetry.state_dir)
+                .await
+                .map_err(|cause| error(&format!("state directory unavailable: {cause}")))?;
+            let path = state_dir.join(path);
             let canonical = tokio::fs::canonicalize(&path)
                 .await
                 .map_err(|cause| error(&format!("bearer file unavailable: {cause}")))?;
-            if !canonical.starts_with(state_dir) {
+            if !canonical.starts_with(&state_dir) {
                 return Err(error("bearer file escapes state directory"));
             }
             Some(
-                tokio::task::spawn_blocking(move || crate::config::load_secret_file(&path))
+                tokio::task::spawn_blocking(move || crate::config::load_secret_file(&canonical))
                     .await
                     .map_err(|cause| error(&format!("bearer file task failed: {cause}")))?
                     .map_err(|cause| error(&format!("invalid bearer file: {cause}")))?,

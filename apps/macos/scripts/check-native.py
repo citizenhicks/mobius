@@ -25,7 +25,7 @@ with tempfile.TemporaryDirectory(prefix='mobius-native-check-') as temporary:
     native.mobius_native_poll.restype = ctypes.c_void_p
     native.mobius_native_free.argtypes = [ctypes.c_void_p]
     native.mobius_native_connected.argtypes = [ctypes.c_bool]
-    native.mobius_native_desktop.argtypes = [ctypes.c_bool, ctypes.c_bool]
+    native.mobius_native_desktop.argtypes = [ctypes.c_bool]
     native.mobius_native_gateway.argtypes = [ctypes.c_char_p]
     native.mobius_native_desktop_status.restype = ctypes.c_uint8
     native.mobius_native_voice_mute.argtypes = [ctypes.c_bool]
@@ -51,7 +51,7 @@ with tempfile.TemporaryDirectory(prefix='mobius-native-check-') as temporary:
     native.mobius_native_voice_mute(False)
     assert events() == [{'type': 'voice_state', 'active': False, 'connected': False, 'muted': False}]
     native.mobius_native_connected(True)
-    native.mobius_native_desktop(False, False)
+    native.mobius_native_desktop(False)
     assert not native.mobius_native_desktop_status() & 1
     before_wakes = len(wake_calls)
     native.mobius_native_gateway(b'{"version":0,"type":"accepted"}')

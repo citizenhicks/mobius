@@ -39,9 +39,12 @@ pub(crate) fn protected_full_access_command(
          (deny mach-task-name (require-not (target same-sandbox)))\n",
     );
     append_denied_read_rules(&mut policy, sandbox, "file-read* file-write*")?;
+    let ancestors = denied_read_ancestors(sandbox);
+    append_denied_ancestor_rules(&mut policy, ancestors.len())?;
     let mut command = sandbox_exec()?;
     command.arg("-p").arg(policy);
     append_denied_read_parameters(&mut command, sandbox)?;
+    append_denied_ancestor_parameters(&mut command, &ancestors)?;
     append_isolated_invocation(&mut command, invocation, sandbox.isolated_home);
     Ok(command)
 }
@@ -133,6 +136,41 @@ fn path_parameter(command: &mut Command, name: impl std::fmt::Display, path: &Pa
         .to_str()
         .ok_or_else(|| Error::Sandbox("sandbox path is not UTF-8".into()))?;
     command.arg(format!("-D{name}={path}"));
+    Ok(())
+}
+
+fn denied_read_ancestors(sandbox: &LocalSandbox) -> Vec<&Path> {
+    let mut ancestors = Vec::new();
+    for denied in &sandbox.policy.denied_reads {
+        let mut current = denied.path.parent();
+        while let Some(parent) = current {
+            if parent.parent().is_none() {
+                break;
+            }
+            if !ancestors.contains(&parent) {
+                ancestors.push(parent);
+            }
+            current = parent.parent();
+        }
+    }
+    ancestors
+}
+
+fn append_denied_ancestor_rules(policy: &mut String, count: usize) -> Result<()> {
+    for index in 0..count {
+        write!(
+            policy,
+            "\n(deny file-write-unlink\n  (literal (param \"DENIED_ANCESTOR_{index}\")))"
+        )
+        .map_err(|error| Error::Sandbox(error.to_string()))?;
+    }
+    Ok(())
+}
+
+fn append_denied_ancestor_parameters(command: &mut Command, ancestors: &[&Path]) -> Result<()> {
+    for (index, ancestor) in ancestors.iter().enumerate() {
+        path_parameter(command, format_args!("DENIED_ANCESTOR_{index}"), ancestor)?;
+    }
     Ok(())
 }
 

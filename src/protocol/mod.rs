@@ -550,21 +550,30 @@ pub(crate) fn validate_message_content(
                 message_id,
                 crate::MAX_IDENTIFIER_BYTES,
             )?;
-            if let MessageSource::External {
-                source_id,
-                event_id,
-            } = source
-            {
-                crate::validate_identifier(
-                    "message source ID",
+            match source {
+                MessageSource::External {
                     source_id,
-                    crate::MAX_IDENTIFIER_BYTES,
-                )?;
-                crate::validate_identifier(
-                    "source event ID",
                     event_id,
-                    crate::MAX_IDENTIFIER_BYTES,
-                )?;
+                } => {
+                    crate::validate_identifier(
+                        "message source ID",
+                        source_id,
+                        crate::MAX_IDENTIFIER_BYTES,
+                    )?;
+                    crate::validate_identifier(
+                        "source event ID",
+                        event_id,
+                        crate::MAX_IDENTIFIER_BYTES,
+                    )?;
+                }
+                MessageSource::Tool { call_id } => {
+                    crate::validate_identifier(
+                        "source tool call ID",
+                        call_id,
+                        crate::MAX_IDENTIFIER_BYTES,
+                    )?;
+                }
+                MessageSource::Session { .. } | MessageSource::Call { .. } => {}
             }
             crate::validate_identifier("source handle", handle, MAX_HANDLE_BYTES)?;
             if let Some(symbol) = symbol {

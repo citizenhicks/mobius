@@ -125,7 +125,23 @@ pub type Speech = std::process::Child;
 
 /// Starts reading `text` aloud with the system voice.
 pub fn speak(text: &str) -> std::io::Result<Speech> {
-    std::process::Command::new("/usr/bin/say").arg(text).spawn()
+    use std::io::Write as _;
+    use std::process::Stdio;
+    let mut child = std::process::Command::new("/usr/bin/say")
+        .args(["-f", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let bytes = text.as_bytes().to_vec();
+        std::thread::spawn(move || {
+            if let Err(error) = stdin.write_all(&bytes) {
+                tracing::debug!(%error, "could not finish writing text to read-aloud process");
+            }
+        });
+    }
+    Ok(child)
 }
 
 /// Encodes a single still image for upload and returns its filename extension.

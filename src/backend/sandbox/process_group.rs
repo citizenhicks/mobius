@@ -52,6 +52,24 @@ impl ProcessGroupGuard {
         Ok(Self { id, armed: true })
     }
 
+    /// Kills the process group once without blocking a Tokio worker thread.
+    pub async fn kill_async(&mut self) {
+        if self.armed {
+            self.armed = false;
+            // A group that already exited makes kill fail; only a kill that cannot run is reported.
+            if let Err(error) = tokio::process::Command::new("/bin/kill")
+                .args(["-KILL", "--", &format!("-{}", self.id)])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .await
+            {
+                tracing::warn!(%error, "process group kill could not run");
+            }
+        }
+    }
+
     /// Kills the process group once.
     pub fn kill(&mut self) {
         if self.armed {

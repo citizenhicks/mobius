@@ -290,7 +290,7 @@ pub(super) async fn read_limited(
     limit: usize,
     provider: &str,
 ) -> Result<Vec<u8>> {
-    read_bounded(response, limit, || {
+    read_bounded(response, limit, provider, || {
         Error::Provider(format!("{provider} response body exceeded size limit").into())
     })
     .await
@@ -299,10 +299,15 @@ pub(super) async fn read_limited(
 pub(super) async fn read_bounded(
     mut response: Response,
     limit: usize,
+    provider: &str,
     too_large: impl FnOnce() -> Error,
 ) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await? {
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| request_error(error, provider))?
+    {
         if bytes.len().saturating_add(chunk.len()) > limit {
             return Err(too_large());
         }
@@ -376,13 +381,10 @@ pub(super) fn http_provider_error(
     body: &[u8],
     retry_after: Option<String>,
 ) -> ProviderError {
-    let event = serde_json::from_slice(body).ok();
-    ProviderError::http(
-        http_error_message(provider, status, body),
-        status.as_u16(),
-        retry_after,
-    )
-    .with_code(event.as_ref().and_then(response_error_code))
+    let event = serde_json::from_slice::<serde_json::Value>(body).ok();
+    let message = http_error_message_from_json(provider, status, event.as_ref(), body);
+    ProviderError::http(message, status.as_u16(), retry_after)
+        .with_code(event.as_ref().and_then(response_error_code))
 }
 
 /// Maps a rejected WebSocket handshake to the provider's HTTP error.
@@ -428,12 +430,13 @@ pub(super) fn response_error_code(event: &serde_json::Value) -> Option<&str> {
 
 /// `{prefix} HTTP {status}`, followed by the human part of the body when it has one, so
 /// frontends show the provider's message rather than its raw JSON.
-pub(super) fn http_error_message(
+fn http_error_message_from_json(
     prefix: &str,
     status: impl std::fmt::Display,
+    json: Option<&serde_json::Value>,
     body: &[u8],
 ) -> String {
-    let detail = error_detail(body);
+    let detail = error_detail(json, body);
     if detail.is_empty() {
         format!("{prefix} HTTP {status}")
     } else {
@@ -443,9 +446,8 @@ pub(super) fn http_error_message(
 
 /// A JSON error's `message` (nested under `error` or top-level, or `error` itself when it is
 /// a string), else the trimmed text.
-fn error_detail(body: &[u8]) -> String {
-    let json = serde_json::from_slice::<serde_json::Value>(body).ok();
-    let message = json.as_ref().and_then(|value| {
+fn error_detail(json: Option<&serde_json::Value>, body: &[u8]) -> String {
+    let message = json.and_then(|value| {
         let error = value.get("error").unwrap_or(value);
         error
             .get("message")
@@ -553,7 +555,11 @@ pub(super) async fn read_sse(
     handler: &mut impl SseHandler,
 ) -> Result<()> {
     let mut decoder = SseDecoder::default();
-    while let Some(chunk) = response.chunk().await? {
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| request_error(error, provider))?
+    {
         decoder.push(&chunk, provider)?;
         while let Some(event) = decoder.next_frame()? {
             if let Some(data) = frame_data(event) {

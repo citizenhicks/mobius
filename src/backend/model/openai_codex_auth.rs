@@ -337,7 +337,7 @@ async fn bounded_json<T>(response: reqwest::Response, operation: &str) -> Result
 where
     T: for<'de> Deserialize<'de>,
 {
-    let body = read_bounded(response, TOKEN_LIMIT, || {
+    let body = read_bounded(response, TOKEN_LIMIT, "ChatGPT", || {
         Error::Auth(format!("ChatGPT {operation} response was too large"))
     })
     .await?;
@@ -525,7 +525,7 @@ async fn token_request(
         .send()
         .await?;
     let status = response.status();
-    let body = read_bounded(response, TOKEN_LIMIT, || {
+    let body = read_bounded(response, TOKEN_LIMIT, "ChatGPT", || {
         Error::Auth(format!("ChatGPT token {operation} response was too large"))
     })
     .await?;

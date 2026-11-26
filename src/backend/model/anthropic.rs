@@ -30,7 +30,6 @@ use super::provider::ProviderDefinition;
 use super::transport::status_error;
 use super::usage_i64;
 use crate::BoxFuture;
-use crate::Error;
 use crate::Result;
 use crate::protocol::ModelEvent;
 use crate::protocol::ModelInfo;
@@ -42,6 +41,7 @@ use crate::protocol::ToolDiscoveryMode;
 use crate::protocol::ToolLoad;
 use crate::protocol::WebSearchAction;
 use crate::protocol::{HostedCallId, HostedToolExecution};
+use crate::{Error, ProviderError};
 
 pub(super) static MANIFEST: std::sync::LazyLock<super::provider::ProviderMetadata> =
     std::sync::LazyLock::new(|| crate::config::embedded(include_str!("anthropic_provider.toml")));
@@ -151,9 +151,7 @@ impl Anthropic {
         let mut stream = StreamState::new(request.input);
         super::transport::read_sse(response, "Anthropic", &events, &mut stream).await?;
         if !stream.stopped {
-            return Err(Error::Provider(
-                "Anthropic stream ended before message_stop".into(),
-            ));
+            return Err(Error::Provider(ProviderError::stream_interrupted(None)));
         }
         stream.finish()
     }
@@ -333,7 +331,10 @@ impl<'a> StreamState<'a> {
                     .pointer("/error/message")
                     .and_then(Value::as_str)
                     .unwrap_or("Anthropic stream error");
-                return Err(Error::Provider(message.to_owned().into()));
+                return Err(Error::Provider(
+                    ProviderError::new(message)
+                        .with_code(super::transport::response_error_code(&event)),
+                ));
             }
             Some("ping" | _) | None => {}
         }
@@ -418,15 +419,18 @@ impl<'a> StreamState<'a> {
                 }
             }
             Some("signature_delta") => {
-                block["signature"] = Value::String(required_string(delta, "signature")?.to_owned());
+                append_string(block, "signature", required_string(delta, "signature")?)?;
             }
             Some("input_json_delta") => {
                 let partial = string_field(delta, "partial_json")?;
                 if !partial.is_empty() {
-                    self.partial_json
-                        .entry(index)
-                        .or_default()
-                        .push_str(partial);
+                    let buffer = self.partial_json.entry(index).or_default();
+                    if buffer.len().saturating_add(partial.len()) > super::MAX_TOOL_ARGUMENT_BYTES {
+                        return Err(Error::Provider(
+                            "Anthropic tool call arguments exceeded size limit".into(),
+                        ));
+                    }
+                    buffer.push_str(partial);
                 }
             }
             Some("citations_delta") => {

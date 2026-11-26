@@ -10,6 +10,7 @@ use serde_json::Value;
 use crate::{Error, Result};
 
 const MAX_HOSTED_EXECUTIONS_PER_TURN: usize = 1_024;
+const MAX_TRACKED_TURNS: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RepeatDecision {
@@ -23,12 +24,11 @@ pub(crate) enum RepeatDecision {
 pub(super) struct RepeatGuard {
     warning_at: usize,
     stop_at: usize,
-    turn: Mutex<TurnRepeats>,
+    turns: Mutex<HashMap<String, TurnRepeats>>,
 }
 
 #[derive(Default)]
 struct TurnRepeats {
-    turn_id: String,
     counts: HashMap<u64, usize>,
     hosted: HashSet<(String, String)>,
     stop: bool,
@@ -60,7 +60,7 @@ impl RepeatGuard {
         Self {
             warning_at,
             stop_at,
-            turn: Mutex::default(),
+            turns: Mutex::default(),
         }
     }
 
@@ -109,13 +109,11 @@ impl RepeatGuard {
             result_fingerprint.hash(&mut call);
             call.finish()
         });
-        let mut turn = self.lock()?;
-        if turn.turn_id != turn_id {
-            *turn = TurnRepeats {
-                turn_id: turn_id.to_owned(),
-                ..TurnRepeats::default()
-            };
+        let mut turns = self.lock()?;
+        if !turns.contains_key(turn_id) && turns.len() >= MAX_TRACKED_TURNS {
+            turns.clear();
         }
+        let turn = turns.entry(turn_id.to_owned()).or_default();
         let duplicate = hosted.is_some_and(|(model_step_id, call_id)| {
             !turn
                 .hosted
@@ -143,26 +141,24 @@ impl RepeatGuard {
         } else {
             RepeatDecision::Continue
         };
-        drop(turn);
+        drop(turns);
         Ok(decision)
     }
 
     pub(super) fn should_stop(&self, turn_id: &str) -> Result<bool> {
-        let turn = self.lock()?;
-        Ok(turn.stop && turn.turn_id == turn_id)
+        let turns = self.lock()?;
+        Ok(turns.get(turn_id).is_some_and(|turn| turn.stop))
     }
 
     pub(super) fn finish_turn(&self, turn_id: &str) -> Result<()> {
-        let mut turn = self.lock()?;
-        if turn.turn_id == turn_id {
-            *turn = TurnRepeats::default();
-        }
-        drop(turn);
+        let mut turns = self.lock()?;
+        turns.remove(turn_id);
+        drop(turns);
         Ok(())
     }
 
-    fn lock(&self) -> Result<MutexGuard<'_, TurnRepeats>> {
-        self.turn
+    fn lock(&self) -> Result<MutexGuard<'_, HashMap<String, TurnRepeats>>> {
+        self.turns
             .lock()
             .map_err(|error| Error::Tool(format!("repeat guard lock is poisoned: {error}")))
     }
@@ -438,5 +434,39 @@ mod tests {
             RepeatDecision::Warn
         );
         assert!(!guard.should_stop("a").unwrap());
+    }
+
+    #[test]
+    fn concurrent_turns_do_not_clobber_each_other() {
+        let guard = RepeatGuard::new(2, 3);
+        let args = json!({"command": "pwd"});
+        assert_eq!(
+            guard
+                .observe("turn-a", Some(identity("bash", &args)), Some(1), None)
+                .unwrap(),
+            RepeatDecision::Continue
+        );
+        assert_eq!(
+            guard
+                .observe("turn-b", Some(identity("bash", &args)), Some(1), None)
+                .unwrap(),
+            RepeatDecision::Continue
+        );
+        assert_eq!(
+            guard
+                .observe("turn-a", Some(identity("bash", &args)), Some(1), None)
+                .unwrap(),
+            RepeatDecision::Warn
+        );
+        assert_eq!(
+            guard
+                .observe("turn-a", Some(identity("bash", &args)), Some(1), None)
+                .unwrap(),
+            RepeatDecision::Stop
+        );
+        assert!(guard.should_stop("turn-a").unwrap());
+        assert!(!guard.should_stop("turn-b").unwrap());
+        guard.finish_turn("turn-a").unwrap();
+        assert!(!guard.should_stop("turn-a").unwrap());
     }
 }

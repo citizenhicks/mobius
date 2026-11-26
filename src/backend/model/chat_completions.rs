@@ -558,7 +558,8 @@ impl ChatStreamState {
         let chunk: Value = serde_json::from_str(data)?;
         if let Some(message) = chunk.pointer("/error/message").and_then(Value::as_str) {
             return Err(Error::Provider(
-                format!("{provider} stream error: {message}").into(),
+                crate::ProviderError::new(format!("{provider} stream error: {message}"))
+                    .with_code(super::transport::response_error_code(&chunk)),
             ));
         }
         // OpenAI-compatible servers send `"usage": null` on every chunk before the last.
@@ -596,6 +597,13 @@ impl ChatStreamState {
                 provider,
             )?;
             if let Some(arguments) = call.pointer("/function/arguments").and_then(Value::as_str) {
+                if pending.arguments.len().saturating_add(arguments.len())
+                    > super::MAX_TOOL_ARGUMENT_BYTES
+                {
+                    return Err(Error::Provider(
+                        format!("{provider} tool call arguments exceeded size limit").into(),
+                    ));
+                }
                 pending.arguments.push_str(arguments);
             }
         }
@@ -604,9 +612,9 @@ impl ChatStreamState {
 
     pub(super) fn finish(self, provider: &str) -> Result<(Vec<Value>, TokenUsage)> {
         if !self.done {
-            return Err(Error::Provider(
-                format!("{provider} stream ended before the [DONE] event").into(),
-            ));
+            return Err(Error::Provider(crate::ProviderError::stream_interrupted(
+                None,
+            )));
         }
         let calls = self
             .tools

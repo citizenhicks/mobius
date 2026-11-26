@@ -91,11 +91,9 @@ enum SkyLight {
         else { return }
         // `__CGEvent` is {CFRuntimeBase, uint32_t, SLSEventRecord *}; the record sits at 24.
         let base = Unmanaged.passUnretained(event).toOpaque()
-        guard
-            let record = [24, 32, 16].lazy.compactMap({
-                base.load(fromByteOffset: $0, as: UnsafeMutableRawPointer?.self)
-            }).first
-        else { return }
+        guard let record = base.load(fromByteOffset: 24, as: UnsafeMutableRawPointer?.self) else {
+            return
+        }
         let make = unsafeBitCast(method_getImplementation(method), to: MakeAuthentication.self)
         if let message = make(messageClass, selector, record, pid, 0) {
             setAuthentication(event, message)

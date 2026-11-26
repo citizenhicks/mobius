@@ -12,14 +12,19 @@ use crate::{Error, Result};
 pub struct SessionId(Arc<str>);
 
 impl SessionId {
+    fn validate_str(value: &str) -> Result<()> {
+        if value.trim().is_empty() || value.len() > crate::MAX_IDENTIFIER_BYTES {
+            return Err(Error::Invalid("session ID must be 1–4096 bytes".into()));
+        }
+        Ok(())
+    }
+
     /// Checks an identity received from a caller or persisted data.
     /// # Errors
     /// Returns an error when the identity is blank or exceeds 4096 bytes.
     pub fn new(value: impl Into<Arc<str>>) -> Result<Self> {
         let value = value.into();
-        if value.trim().is_empty() || value.len() > 4_096 {
-            return Err(Error::Invalid("session ID must be 1–4096 bytes".into()));
-        }
+        Self::validate_str(&value)?;
         Ok(Self(value))
     }
 
@@ -46,7 +51,8 @@ impl std::str::FromStr for SessionId {
     type Err = Error;
 
     fn from_str(value: &str) -> Result<Self> {
-        Self::new(value)
+        Self::validate_str(value)?;
+        Ok(Self(Arc::from(value)))
     }
 }
 
@@ -86,7 +92,33 @@ impl std::fmt::Display for SessionId {
 
 impl<'de> Deserialize<'de> for SessionId {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
-        Self::new(Arc::<str>::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+        struct SessionIdVisitor;
+
+        impl serde::de::Visitor<'_> for SessionIdVisitor {
+            type Value = SessionId;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a nonblank session ID of at most 4096 UTF-8 bytes")
+            }
+
+            fn visit_str<E: serde::de::Error>(
+                self,
+                value: &str,
+            ) -> std::result::Result<SessionId, E> {
+                SessionId::validate_str(value).map_err(E::custom)?;
+                Ok(SessionId(Arc::from(value)))
+            }
+
+            fn visit_string<E: serde::de::Error>(
+                self,
+                value: String,
+            ) -> std::result::Result<SessionId, E> {
+                SessionId::validate_str(&value).map_err(E::custom)?;
+                Ok(SessionId(Arc::from(value)))
+            }
+        }
+
+        deserializer.deserialize_str(SessionIdVisitor)
     }
 }
 

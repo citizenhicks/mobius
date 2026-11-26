@@ -997,7 +997,7 @@ printf '%s/usr/bin/git\n' "$developer"
                     } else {
                         #[cfg(any(target_os = "linux", target_os = "macos"))]
                         if let Some(process_group) = &mut process_group {
-                            process_group.kill();
+                            process_group.kill_async().await;
                         }
                         if tokio::time::timeout(Duration::from_secs(1), child.wait())
                             .await
@@ -1015,7 +1015,7 @@ printf '%s/usr/bin/git\n' "$developer"
             };
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             if let Some(process_group) = &mut process_group {
-                process_group.kill();
+                process_group.kill_async().await;
             }
             let output = output?;
             #[cfg(target_os = "linux")]
@@ -1039,20 +1039,11 @@ impl SandboxBackend for LocalSandbox {
         network_access: NetworkAccess,
     ) -> Result<super::WorkerProcess> {
         self.validate_workspace_roots()?;
-        let executable = std::fs::canonicalize(&spec.executable)?;
-        if !spec.executable.is_absolute()
-            || !executable.is_file()
-            || executable.starts_with(&self.root)
-            || self
-                .policy
-                .denied_reads
-                .iter()
-                .any(|denied| executable.starts_with(&denied.path))
-        {
-            return Err(Error::Sandbox(
-                "worker executable must be a trusted absolute runtime path".into(),
-            ));
-        }
+        let executable = self.trusted_executable(&spec.executable).map_err(|error| {
+            Error::Sandbox(format!(
+                "worker executable must be a trusted absolute runtime path: {error}"
+            ))
+        })?;
         let arguments = spec
             .arguments
             .iter()

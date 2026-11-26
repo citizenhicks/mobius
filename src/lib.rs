@@ -295,16 +295,24 @@ impl ProviderError {
             self.class = FailureClass::OutOfCredits;
             return self;
         }
-        self.class = match code {
-            "context_length_exceeded" => FailureClass::ContextLengthExceeded,
-            "content_policy_violation" | "content_filter" => FailureClass::ContentPolicy,
-            "authentication_error" | "permission_error" | "invalid_api_key" => {
-                FailureClass::Authentication
+        match code {
+            "context_length_exceeded" => self.class = FailureClass::ContextLengthExceeded,
+            "content_policy_violation" | "content_filter" => {
+                self.class = FailureClass::ContentPolicy;
             }
-            "rate_limit_error" | "rate_limit_exceeded" => FailureClass::RateLimited,
-            "overloaded_error" | "server_error" => FailureClass::Transient,
-            _ => self.class,
-        };
+            "authentication_error" | "permission_error" | "invalid_api_key" => {
+                self.class = FailureClass::Authentication;
+            }
+            "rate_limit_error" | "rate_limit_exceeded" => {
+                self.class = FailureClass::RateLimited;
+                self.retryable = true;
+            }
+            "overloaded_error" | "server_error" => {
+                self.class = FailureClass::Transient;
+                self.retryable = true;
+            }
+            _ => {}
+        }
         self
     }
 
@@ -496,4 +504,30 @@ pub(crate) fn preview_json(value: &serde_json::Value) -> String {
 
 pub(crate) fn truncate_utf8(value: &str, max_bytes: usize) -> &str {
     value.split_at(value.floor_char_boundary(max_bytes)).0
+}
+
+#[cfg(test)]
+mod provider_error_tests {
+    use super::*;
+
+    #[test]
+    fn provider_error_with_code_marks_transient_and_rate_limited_retryable() {
+        let rate = ProviderError::new("slow down").with_code(Some("rate_limit_error"));
+        assert!(rate.is_retryable(), "rate_limit_error should be retryable");
+        assert_eq!(rate.class(), FailureClass::RateLimited);
+
+        let overloaded = ProviderError::new("busy").with_code(Some("overloaded_error"));
+        assert!(
+            overloaded.is_retryable(),
+            "overloaded_error should be retryable"
+        );
+        assert_eq!(overloaded.class(), FailureClass::Transient);
+
+        let quota = ProviderError::retryable("quota").with_code(Some("insufficient_quota"));
+        assert!(
+            !quota.is_retryable(),
+            "insufficient_quota must not be retryable"
+        );
+        assert_eq!(quota.class(), FailureClass::OutOfCredits);
+    }
 }

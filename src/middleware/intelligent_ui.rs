@@ -75,7 +75,11 @@ impl Middleware for IntelligentUi {
                     return DEFINITION.show_ui.render(event);
                 };
                 Some(FrontendBlock {
-                    id: Some(format!("{}/{}", call.turn_id, call.call_id)),
+                    id: Some(super::tools::tool_block_id(
+                        &call.turn_id,
+                        call.model_step_id.as_deref(),
+                        &call.call_id,
+                    )),
                     update: FrontendBlockUpdate::Replace,
                     role: FrontendBlockRole::Artifact,
                     format: FrontendBlockFormat::Ui,
@@ -90,7 +94,11 @@ impl Middleware for IntelligentUi {
                 if *result.name == *DEFINITION.show_ui.tool.name && !result.is_error =>
             {
                 Some(FrontendBlock {
-                    id: Some(format!("{}/{}", result.turn_id, result.call_id)),
+                    id: Some(super::tools::tool_block_id(
+                        &result.turn_id,
+                        result.model_step_id.as_deref(),
+                        &result.call_id,
+                    )),
                     update: FrontendBlockUpdate::Append,
                     role: FrontendBlockRole::Artifact,
                     format: FrontendBlockFormat::Ui,

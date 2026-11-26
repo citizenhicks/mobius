@@ -450,7 +450,6 @@ fn replace_with_copy(source: &Path, destination: &Dir, name: &str) -> Result<()>
         remove_temporary_copy(destination, &temporary);
         return Err(error.into());
     }
-    remove_temporary_copy(destination, &temporary);
     Ok(())
 }
 

@@ -1016,3 +1016,47 @@ async fn temporary_files_survive_calls_and_are_isolated_from_child_execution() {
     drop(sandbox);
     assert!(!physical.exists());
 }
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn full_access_seatbelt_blocks_renaming_ancestor_of_denied_read() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let outer = tempfile::tempdir().expect("outer");
+    let parent = outer.path().join("parent");
+    let secret = parent.join("secret");
+    std::fs::create_dir_all(&secret).expect("secret dir");
+    std::fs::write(secret.join("token.txt"), "top-secret").expect("secret file");
+    let sandbox = LocalSandbox::new(workspace.path())
+        .expect("sandbox")
+        .deny_read(&secret)
+        .expect("deny read");
+    let moved = outer.path().join("moved");
+    let output = run(
+        &sandbox,
+        &format!("mv '{}' '{}'", parent.display(), moved.display()),
+        SandboxMode::DangerFullAccess,
+        NetworkAccess::Denied,
+    )
+    .await
+    .expect("run mv");
+    assert_ne!(
+        output.exit_code, 0,
+        "Seatbelt full-access must deny renaming ancestor of denied_reads"
+    );
+    assert!(parent.exists(), "ancestor directory must remain unmoved");
+
+    let sibling = parent.join("sibling.txt");
+    let write_sibling = run(
+        &sandbox,
+        &format!("printf ok > '{}'", sibling.display()),
+        SandboxMode::DangerFullAccess,
+        NetworkAccess::Denied,
+    )
+    .await
+    .expect("write sibling");
+    assert_eq!(
+        write_sibling.exit_code, 0,
+        "writing a sibling inside the ancestor must still succeed: {}",
+        write_sibling.stderr
+    );
+}

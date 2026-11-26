@@ -4,12 +4,16 @@
 //! retain their existing descriptor, synchronous path, or asynchronous path operation.
 //! [`open`] is the one opener, for lock and record files shared across processes.
 
-use std::fs::{File, OpenOptions, Permissions};
+#[cfg(unix)]
+use std::fs::Permissions;
+use std::fs::{File, OpenOptions};
 use std::io;
+#[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::Path;
 
 /// Allows only the owner to read and write a file.
+#[cfg(unix)]
 #[must_use]
 pub fn file() -> Permissions {
     Permissions::from_mode(0o600)
@@ -21,18 +25,18 @@ pub fn file() -> Permissions {
 /// # Errors
 /// Returns the I/O error from opening the file or changing its permissions.
 pub fn open(path: &Path) -> io::Result<File> {
-    let opened = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(file().mode())
-        .open(path)?;
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    options.mode(file().mode());
+    let opened = options.open(path)?;
+    #[cfg(unix)]
     opened.set_permissions(file())?;
     Ok(opened)
 }
 
 /// Allows only the owner to read, write, and traverse a directory.
+#[cfg(unix)]
 #[must_use]
 pub fn dir() -> Permissions {
     Permissions::from_mode(0o700)

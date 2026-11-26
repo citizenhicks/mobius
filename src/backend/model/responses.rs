@@ -378,7 +378,11 @@ impl OpenAi {
 
         let mut sse = SseDecoder::default();
         let mut stream = ResponsesStream::new(self.web_search_event_type);
-        while let Some(chunk) = response.chunk().await? {
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|error| super::transport::request_error(error, "Responses"))?
+        {
             sse.push(&chunk, "Responses")?;
             while let Some(frame) = sse.next_frame()? {
                 let Some(data) = frame_data(frame) else {

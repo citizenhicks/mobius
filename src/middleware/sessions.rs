@@ -1220,7 +1220,7 @@ async fn resume(
 }
 
 fn compact_id(id: &str) -> &str {
-    id.get(..8).unwrap_or(id)
+    crate::truncate_utf8(id, 8)
 }
 
 async fn resume_options(

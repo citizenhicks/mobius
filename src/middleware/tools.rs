@@ -1688,7 +1688,7 @@ impl Middleware for Tools {
     }
 }
 
-fn tool_block_id(turn: &str, step: Option<&str>, call: &str) -> String {
+pub(super) fn tool_block_id(turn: &str, step: Option<&str>, call: &str) -> String {
     match step {
         Some(step) => format!("{turn}/{}", crate::protocol::scoped_call_id(step, call)),
         None => format!("{turn}/{call}"),
@@ -1839,7 +1839,9 @@ fn file_link(path: &str) -> Option<crate::protocol::FrontendLink> {
         reqwest::Url::from_file_path(file).ok()?.to_string()
     } else {
         let mut url = reqwest::Url::parse("file:///").ok()?;
-        url.path_segments_mut().ok()?.push(path);
+        url.path_segments_mut()
+            .ok()?
+            .extend(path.split('/').filter(|segment| !segment.is_empty()));
         url.path().strip_prefix('/')?.to_owned()
     };
     Some(crate::protocol::FrontendLink { label, href })

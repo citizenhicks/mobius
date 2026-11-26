@@ -114,11 +114,18 @@ private struct DesktopCursorView: View {
     @State private var isBreathing = false
 
     /// Hugeicons' MousePointer01, filled (resources/hi.mousePointer01.svg).
+    @ViewBuilder
     private var pointer: some View {
-        Image(nsImage: NSImage(named: "hi.mousePointer01")!)
-            .renderingMode(.template)
-            .resizable()
-            .aspectRatio(contentMode: .fit)
+        if let image = NSImage(named: "hi.mousePointer01") {
+            Image(nsImage: image)
+                .renderingMode(.template)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+        } else {
+            Image(systemName: "cursorarrow")
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+        }
     }
 
     var body: some View {

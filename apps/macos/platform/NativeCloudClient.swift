@@ -394,19 +394,66 @@ final class CloudClient {
         return liveTransport(session: URLSession(configuration: configuration))
     }
 
+    private final class BoundedDataDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+        let limit: Int
+        private let lock = NSLock()
+        private var received = 0
+        private var overflowed = false
+
+        init(limit: Int) { self.limit = limit }
+
+        var didOverflow: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return overflowed
+        }
+
+        func urlSession(
+            _ session: URLSession,
+            dataTask: URLSessionDataTask,
+            didReceive response: URLResponse,
+            completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
+        ) {
+            if response.expectedContentLength > Int64(limit) {
+                lock.lock()
+                overflowed = true
+                lock.unlock()
+                completionHandler(.cancel)
+                return
+            }
+            completionHandler(.allow)
+        }
+
+        func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+            lock.lock()
+            received += data.count
+            let exceeded = received > limit
+            if exceeded { overflowed = true }
+            lock.unlock()
+            if exceeded {
+                dataTask.cancel()
+            }
+        }
+    }
+
     static func liveTransport(session: URLSession) -> Transport {
         { request in
-            let (bytes, response) = try await session.bytes(for: request)
-            guard let response = response as? HTTPURLResponse else {
-                throw CloudFailure.unavailable
-            }
-            var data = Data()
-            data.reserveCapacity(Self.maximumResponseBytes)
-            for try await byte in bytes {
-                data.append(byte)
-                guard data.count <= Self.maximumResponseBytes else {
+            let delegate = BoundedDataDelegate(limit: Self.maximumResponseBytes)
+            let data: Data
+            let response: URLResponse
+            do {
+                (data, response) = try await session.data(for: request, delegate: delegate)
+            } catch {
+                if delegate.didOverflow {
                     throw CloudFailure("möbius Cloud returned too much data.")
                 }
+                throw error
+            }
+            if delegate.didOverflow || data.count > Self.maximumResponseBytes {
+                throw CloudFailure("möbius Cloud returned too much data.")
+            }
+            guard let response = response as? HTTPURLResponse else {
+                throw CloudFailure.unavailable
             }
             return (data, response)
         }
