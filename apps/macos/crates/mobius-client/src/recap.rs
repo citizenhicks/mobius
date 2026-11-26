@@ -4,6 +4,7 @@
 
 use mobius::SessionId;
 use mobius::protocol::MessageAuthor;
+use mobius_gateway::client::GatewayRequests;
 use mobius_gateway::wire::{
     ClientMessage, HistoryCursor, ServerMessage, TranscriptItem, TranscriptItemContent,
     TranscriptPage,
@@ -11,8 +12,6 @@ use mobius_gateway::wire::{
 use mobius_gateway::{Error, Result};
 use std::fmt::Write as _;
 use std::sync::Arc;
-
-use super::requests::Requests;
 
 /// Pages read back looking for the last-read point before recapping what was found.
 const MAX_PAGES: usize = 4;
@@ -29,7 +28,7 @@ pub struct RecentChat {
 /// Items of `session` recorded after `since` (gateway milliseconds), or its last few turns
 /// when it has not been read. History it inherited from a chat it forked is not its own.
 pub(super) async fn load(
-    link: &Requests,
+    link: &GatewayRequests,
     session: &SessionId,
     since: Option<i64>,
 ) -> Result<RecentChat> {
@@ -54,7 +53,7 @@ pub(super) async fn load(
 }
 
 async fn page(
-    link: &Requests,
+    link: &GatewayRequests,
     session: &SessionId,
     before: Option<HistoryCursor>,
 ) -> Result<(TranscriptPage, Option<HistoryCursor>)> {

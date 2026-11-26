@@ -1,12 +1,11 @@
 use mobius::SessionId;
 use mobius::protocol::SessionFileRecord;
+use mobius_gateway::client::GatewayRequests;
 use mobius_gateway::wire::{
     ClientMessage, GitDiffScope, MAX_READ_CHUNK_BYTES, ServerMessage, WorkspaceFileRecord,
     WorkspaceFileScope,
 };
 use mobius_gateway::{Error, Result};
-
-use super::requests::Requests;
 
 const MAX_PREVIEW_BYTES: usize = 16 * 1024 * 1024;
 
@@ -38,7 +37,7 @@ pub enum PreviewData {
 }
 
 pub(super) async fn load(
-    link: &Requests,
+    link: &GatewayRequests,
     session_id: &SessionId,
     workspace: Option<&std::path::Path>,
     request: &PreviewRequest,
@@ -103,7 +102,11 @@ pub(super) async fn load(
     }
 }
 
-async fn read_file(link: &Requests, session_id: &SessionId, path: &str) -> Result<PreviewData> {
+async fn read_file(
+    link: &GatewayRequests,
+    session_id: &SessionId,
+    path: &str,
+) -> Result<PreviewData> {
     use futures_util::StreamExt as _;
     // The size is unknown until the last chunk; one read past the limit tells an
     // oversized file from one that ends exactly at it.

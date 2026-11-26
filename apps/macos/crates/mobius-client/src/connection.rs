@@ -9,7 +9,7 @@ use std::time::Duration;
 use mobius::SessionId;
 use mobius::protocol::SessionFileReference;
 
-use mobius_gateway::client::{ConnectOptions, Endpoint, GatewayClient};
+use mobius_gateway::client::{ConnectOptions, Endpoint, GatewayClient, GatewayLink, RequestUsage};
 use mobius_gateway::config::state_dir;
 use mobius_gateway::gateway_accounts::{
     GatewayAccounts, configured_token, dashboard_gateway_endpoint, missing_local_token,
@@ -18,7 +18,6 @@ use mobius_gateway::wire::{ClientCapabilities, ClientMessage, ReadySection, Serv
 use mobius_gateway::{Error, Result};
 use tokio::sync::mpsc;
 
-use super::requests::{Link, Usage};
 use crate::numeric::ToFloat;
 
 #[derive(Clone, Default, PartialEq, Eq, Debug)]
@@ -391,7 +390,7 @@ impl Wait {
 /// The socket side of the gateway: one connection, its transfers, and the retry timer.
 struct Transport {
     updates: mpsc::Sender<Update>,
-    connection: Option<Link>,
+    connection: Option<GatewayLink>,
     dial: Option<Dial>,
     waiting: Option<Wait>,
     /// File transfers to the connected gateway, on their own connection.
@@ -472,7 +471,7 @@ async fn next_dial(dial: &mut Option<Dial>) -> DialResult {
 }
 
 async fn next_frame(
-    connection: &mut Option<Link>,
+    connection: &mut Option<GatewayLink>,
 ) -> Result<Option<mobius_gateway::wire::ServerFrame>> {
     match connection {
         Some(link) => link.next().await,
@@ -669,7 +668,7 @@ impl Transport {
                 {
                     self.transfers = Some(super::files::Transfers::new(address, token));
                 }
-                self.connection = Some(Link::new(client, Usage::Shared));
+                self.connection = Some(GatewayLink::new(client, RequestUsage::Shared));
                 let session_request = self.next.pipelined.last().and_then(correlated_request);
                 self.waiting = Some(Wait::new(Awaited::Ready { session_request }));
                 self.emit(Update::Connected(label)).await?;
@@ -1613,7 +1612,7 @@ mod tests {
             .unwrap();
         let (updates, mut output) = tokio::sync::mpsc::channel(2);
         let mut transport = transport(updates);
-        transport.connection = Some(super::Link::new(client, super::Usage::Shared));
+        transport.connection = Some(super::GatewayLink::new(client, super::RequestUsage::Shared));
         // GatewaySender deterministically rejects a second authentication message.
         transport
             .send(super::ClientMessage::Authenticate {

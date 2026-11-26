@@ -47,6 +47,8 @@ fn streaming_cache_matches_full_render_through_containers_references_and_resizin
         "界 **λ**\r\n\r\n    indented code\r\n\r\nAfter\r\n\r\nTail",
         "Before\n\n<div>\n\nraw HTML\n</div>\n\nAfter\n\nTail",
         "[text][id]\n\nLater\n\n[id]: https://example.com\n",
+        "[id]\n\nLater\n\n[id]:\nhttps://example.com\n",
+        "See [docs](https://example.com).\n\n[x]: listening on :8080\n\n```text\n[x]: https://example.com\n```\n\nTail",
     ] {
         let mut cache = StreamCache::default();
         let mut lines = Vec::new();
@@ -66,17 +68,23 @@ fn streaming_cache_matches_full_render_through_containers_references_and_resizin
 
 #[test]
 fn streaming_cache_keeps_prefix_across_links_generics_and_fenced_code_blocks() {
-    let source = "See [docs](https://example.com) and `Vec<u8>`.\n\n```rust\nfn demo(xs: &[u8]) -> Vec<usize> {\n    xs.iter().map(|&b| usize::from(b)).collect()\n}\n```\n\nClosing paragraph.";
+    let source = "See [docs](https://example.com) and `Vec<u8>`.\n\n```rust\n// [x]: https://example.com\nfn demo(xs: &[u8]) -> Vec<usize> {\n    xs.iter().map(|&b| usize::from(b)).collect()\n}\n```\n\n[x]: listening on :8080\n\nClosing paragraph.";
     let mut cache = StreamCache::default();
     let mut lines = Vec::new();
+    let mut peak_prefix = 0;
     for end in 1..=source.len() {
         if let Some(prefix) = source.get(..end) {
             cache.render_into(prefix, Style::default(), 40, None, &mut lines);
             assert_eq!(lines, render(prefix, Style::default(), 40), "{prefix:?}");
+            assert!(
+                cache.prefix_bytes() >= peak_prefix,
+                "prefix cache unexpectedly reset at {prefix:?}"
+            );
+            peak_prefix = cache.prefix_bytes();
         }
     }
     assert!(
-        cache.prefix_bytes() > source.find("```rust").unwrap_or_default(),
-        "expected closed fenced code block and link prose to stay incrementally cached"
+        cache.prefix_bytes() > source.find("[x]: listening").unwrap_or_default(),
+        "expected closed code blocks and `[x]:` lines to stay incrementally cached"
     );
 }

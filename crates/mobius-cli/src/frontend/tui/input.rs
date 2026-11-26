@@ -293,6 +293,8 @@ impl TuiState {
             self.composer.pastes.clear();
             self.composer.attachments.clear();
             self.question_answer = None;
+            self.composer_history_index = None;
+            self.composer_history_draft = None;
             self.slash_input_changed();
             return UiAction::None;
         }

@@ -7,7 +7,7 @@ use std::time::Duration;
 use futures_util::{StreamExt as _, stream};
 use mobius::SessionId;
 use mobius::protocol::SessionFileReference;
-use mobius_gateway::client::Endpoint;
+use mobius_gateway::client::{Endpoint, GatewayLink, GatewayRequests, RequestUsage};
 use mobius_gateway::wire::{ClientMessage, MAX_READ_CHUNK_BYTES, ServerMessage};
 use mobius_gateway::{Error, Result};
 use tokio::sync::{RwLock, RwLockReadGuard};
@@ -15,7 +15,6 @@ use uuid::Uuid;
 
 use super::Update;
 use super::connection::connect_once;
-use super::requests::{Link, Requests};
 
 #[cfg(test)]
 #[path = "transfer_tests.rs"]
@@ -123,7 +122,7 @@ async fn close_when_idle(transfers: Weak<Transfers>, link: Weak<TransferLink>) {
 
 /// One connection with at most one chat selected; transfers of that chat interleave on it.
 pub(super) struct TransferLink {
-    requests: Arc<Requests>,
+    requests: Arc<GatewayRequests>,
     selected: RwLock<Option<Selected>>,
     used: AtomicBool,
     reader: tokio::task::JoinHandle<()>,
@@ -143,9 +142,9 @@ impl Drop for TransferLink {
 impl TransferLink {
     async fn connect(endpoint: &Endpoint, token: &str) -> Result<Self> {
         let mut options = super::catalog_free();
-        let mut link = Link::new(
+        let mut link = GatewayLink::new(
             connect_once(endpoint, token, &mut options).await?,
-            super::requests::Usage::Dedicated,
+            RequestUsage::Dedicated,
         );
         let requests = Arc::clone(&link.requests);
         let reader = tokio::spawn(async move { while let Ok(Some(_)) = link.next().await {} });
@@ -260,7 +259,7 @@ impl Transfer {
         let selected = link.select(session_id).await?;
         let workspace = selected
             .as_ref()
-            .ok_or_else(super::requests::disconnected)?
+            .ok_or_else(mobius_gateway::client::request_disconnected)?
             .workspace
             .as_deref();
         let update = self
@@ -272,7 +271,7 @@ impl Transfer {
 
     async fn transfer(
         &self,
-        link: &Requests,
+        link: &GatewayRequests,
         endpoint: &Endpoint,
         workspace: Option<&Path>,
     ) -> Result<Option<Update>> {
@@ -420,7 +419,7 @@ impl Transfer {
 
 /// Streams the selected file origins into separate, uniquely named files.
 async fn export(
-    link: &Requests,
+    link: &GatewayRequests,
     session_id: &SessionId,
     destination: &Path,
     uploads: bool,
@@ -455,7 +454,11 @@ async fn export(
 }
 
 /// Cancels an active upload on this connection or removes a completed file.
-pub(super) async fn delete(link: &Requests, session_id: &SessionId, file_id: &str) -> Result<()> {
+pub(super) async fn delete(
+    link: &GatewayRequests,
+    session_id: &SessionId,
+    file_id: &str,
+) -> Result<()> {
     let response = link
         .request(|request_id| ClientMessage::DeleteSessions {
             request_id,
@@ -475,7 +478,7 @@ pub(super) async fn delete(link: &Requests, session_id: &SessionId, file_id: &st
 }
 
 pub(super) fn chunk_reads<'link>(
-    link: &'link Requests,
+    link: &'link GatewayRequests,
     offset: u64,
     len: u64,
     read: impl Fn(Arc<str>, u64, usize) -> ClientMessage + Copy + 'link,
@@ -489,7 +492,7 @@ pub(super) fn chunk_reads<'link>(
 
 /// Reads the file with a few chunk requests in flight, since each costs a round trip.
 async fn download(
-    link: &Requests,
+    link: &GatewayRequests,
     session_id: &SessionId,
     file: &SessionFileReference,
     destination: &Path,

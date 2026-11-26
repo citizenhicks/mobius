@@ -149,13 +149,6 @@ PRAGMA user_version = 15;
 COMMIT;
 ";
 
-const OPTIONAL_INDEXES: &str = "
-CREATE INDEX IF NOT EXISTS sessions_parent_idx
-    ON sessions(parent_session_id);
-CREATE INDEX IF NOT EXISTS event_journal_kind_idx
-    ON event_journal(session_id, event_kind, sequence);
-";
-
 /// Returns the database's declared schema version, or `None` for an empty new database.
 ///
 /// An existing unversioned schema reports `Some(0)`, so callers can reject it
@@ -259,8 +252,6 @@ impl SqliteCheckpoint {
         if version.is_none() {
             // auto_vacuum must be chosen before WAL initializes a new database header.
             connection.execute_batch(SCHEMA)?;
-        } else {
-            connection.execute_batch(OPTIONAL_INDEXES)?;
         }
         let journal_mode: String =
             connection.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0))?;

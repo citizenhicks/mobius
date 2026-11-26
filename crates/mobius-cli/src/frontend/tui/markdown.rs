@@ -1,6 +1,8 @@
 //! Small Markdown-to-ratatui renderer for assistant transcript messages.
 
-use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{
+    Alignment, BrokenLink, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd,
+};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -40,7 +42,7 @@ pub(super) struct StreamCache {
     source_bytes: usize,
     prefix_bytes: usize,
     prefix_lines: usize,
-    prefix_has_bracket: bool,
+    prefix_has_unresolved_ref: bool,
     prefix_has_html: bool,
 }
 
@@ -76,17 +78,21 @@ impl StreamCache {
             self.prefix = prefix;
         }
         let tail = source.get(self.prefix_bytes..);
-        // Only a newly arriving link reference definition (`[id]: ...`) or raw HTML can alter an
+        let (tail_has_ref_defs, split) = match tail.filter(|_| !reset) {
+            Some(tail) => inspect_tail(tail),
+            None => (false, 0),
+        };
+        // Only a newly parsed CommonMark link reference definition or raw HTML can alter an
         // earlier finished block's inline links or block spacing.
         let invalidates_prefix = tail.is_none_or(|tail| {
-            (self.prefix_has_bracket && has_link_reference_definition(tail))
+            (self.prefix_has_unresolved_ref && tail_has_ref_defs)
                 || (self.prefix_has_html && tail.contains('<'))
         });
         let keep = match tail.filter(|_| !reset && !invalidates_prefix) {
             None => {
                 self.prefix_bytes = 0;
                 self.prefix_lines = 0;
-                self.prefix_has_bracket = false;
+                self.prefix_has_unresolved_ref = false;
                 self.prefix_has_html = false;
                 target.clear();
                 append_prefixed(target, render(source, base, width), prefix);
@@ -95,18 +101,15 @@ impl StreamCache {
             Some(tail) => {
                 let keep = self.prefix_lines;
                 target.truncate(keep);
-                let split = if has_link_reference_definition(tail) {
-                    0
-                } else {
-                    finished_block_prefix(tail)
-                };
                 let (finished, rest) = tail.split_at_checked(split).unwrap_or(("", tail));
                 if !finished.is_empty() {
-                    append_prefixed(target, render(finished, base, width), prefix);
+                    let (rendered, unresolved_ref, has_html) =
+                        render_prefix_chunk(finished, base, width);
+                    append_prefixed(target, rendered, prefix);
                     self.prefix_bytes += finished.len();
                     self.prefix_lines = target.len();
-                    self.prefix_has_bracket |= finished.contains('[');
-                    self.prefix_has_html |= finished.contains('<');
+                    self.prefix_has_unresolved_ref |= unresolved_ref;
+                    self.prefix_has_html |= has_html;
                 }
                 append_prefixed(target, render(rest, base, width), prefix);
                 keep
@@ -147,19 +150,36 @@ fn append_prefixed(
     }
 }
 
-fn has_link_reference_definition(source: &str) -> bool {
-    source.lines().any(|line| {
-        let trimmed = line.trim_start_matches(' ');
-        let leading_spaces = line.len() - trimmed.len();
-        leading_spaces <= 3 && trimmed.starts_with('[') && trimmed.contains("]:")
-    })
+fn render_prefix_chunk(
+    source: &str,
+    base: Style,
+    width: usize,
+) -> (Vec<Line<'static>>, bool, bool) {
+    let mut has_unresolved_ref = false;
+    let mut has_html = false;
+    let mut callback = |_: BrokenLink<'_>| {
+        has_unresolved_ref = true;
+        None
+    };
+    let mut writer = Writer::new(base, width);
+    for event in Parser::new_with_broken_link_callback(source, options(), Some(&mut callback)) {
+        if matches!(event, Event::Html(_) | Event::InlineHtml(_)) {
+            has_html = true;
+        }
+        writer.event(event);
+    }
+    (writer.finish(), has_unresolved_ref, has_html)
 }
 
-fn finished_block_prefix(source: &str) -> usize {
+fn inspect_tail(source: &str) -> (bool, usize) {
+    let parser = Parser::new_ext(source, options());
+    if parser.reference_definitions().iter().next().is_some() {
+        return (true, 0);
+    }
     let mut depth = 0_usize;
     let mut cacheable = false;
     let mut finished = 0;
-    for (event, range) in Parser::new_ext(source, options()).into_offset_iter() {
+    for (event, range) in parser.into_offset_iter() {
         match event {
             Event::Start(tag) => {
                 if depth == 0 {
@@ -187,7 +207,7 @@ fn finished_block_prefix(source: &str) -> usize {
             _ => {}
         }
     }
-    finished
+    (false, finished)
 }
 
 struct Item {

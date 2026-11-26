@@ -73,6 +73,10 @@ CREATE TABLE IF NOT EXISTS hook_outbox (
     last_error TEXT
 );
 CREATE INDEX IF NOT EXISTS hook_outbox_due ON hook_outbox(retry_at) WHERE accepted = 0;
+CREATE INDEX IF NOT EXISTS hook_events_unpublished
+    ON hook_events(occurred_at) WHERE published = 0;
+CREATE INDEX IF NOT EXISTS hook_outbox_event
+    ON hook_outbox(event_id);
 CREATE TABLE IF NOT EXISTS routine_commands (
     command_id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL REFERENCES routine_runs(id) ON DELETE CASCADE,
@@ -102,10 +106,6 @@ CREATE TABLE IF NOT EXISTS hook_journal_sequences (
     event_id TEXT PRIMARY KEY REFERENCES hook_events(id) ON DELETE CASCADE,
     sequence INTEGER NOT NULL CHECK (sequence > 0)
 );
-CREATE INDEX IF NOT EXISTS hook_events_unpublished
-    ON hook_events(occurred_at) WHERE published = 0;
-CREATE INDEX IF NOT EXISTS hook_outbox_event
-    ON hook_outbox(event_id);
 ";
 
 pub(crate) struct BotStorage {

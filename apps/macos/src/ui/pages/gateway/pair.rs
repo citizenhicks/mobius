@@ -1,4 +1,4 @@
-//! Pair gateway dialog (PairingView.swift); progress and errors arrive as toasts.
+//! Pair gateway dialog (PairingView.swift); missing fields validate inline while pairing progress and gateway errors arrive as toasts.
 
 use super::*;
 use gpui_component::WindowExt;

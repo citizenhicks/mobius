@@ -597,14 +597,6 @@ fn connection_error(code: &str, message: &str) -> Error {
 }
 
 impl GatewaySender {
-    /// Shares this command writer handle across tasks.
-    #[must_use]
-    pub fn share(&self) -> Self {
-        Self {
-            writer: Arc::clone(&self.writer),
-        }
-    }
-
     /// Sends one authenticated operation.
     /// # Errors
     ///

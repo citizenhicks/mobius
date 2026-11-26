@@ -311,6 +311,23 @@ fn composer_navigation_ctrl_c_draft_slash_args_and_mouse_scroll() {
     assert_eq!(history_state.composer.text, "first prompt!");
     history_state.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &catalog);
     assert_eq!(history_state.composer.text, "in progress");
+
+    // Ctrl-C clearing a recalled entry resets history navigation so new text is stashed on Up.
+    history_state.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), &catalog);
+    assert_eq!(history_state.composer.text, "first prompt");
+    history_state.handle_key(
+        KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        &catalog,
+    );
+    assert!(
+        history_state.composer.text.is_empty(),
+        "Ctrl-C should clear recalled history entry"
+    );
+    history_state.insert_text("fresh draft");
+    history_state.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), &catalog);
+    assert_eq!(history_state.composer.text, "first prompt");
+    history_state.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &catalog);
+    assert_eq!(history_state.composer.text, "fresh draft");
 }
 
 fn state_with_history(entries: &[&str]) -> TuiState {
