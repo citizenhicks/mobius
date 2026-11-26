@@ -442,6 +442,98 @@ pub(super) fn http_provider_error(
 }
 
 /// Maps a rejected WebSocket handshake to the provider's HTTP error.
+pub(super) type ModelWebSocket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+pub(super) enum WebSocketConnectError {
+    TimedOut,
+    Unauthorized(Box<tokio_tungstenite::tungstenite::http::Response<Option<Vec<u8>>>>),
+    Http(Box<tokio_tungstenite::tungstenite::http::Response<Option<Vec<u8>>>>),
+    Transport(tokio_tungstenite::tungstenite::Error),
+    Request(tokio_tungstenite::tungstenite::Error),
+    InvalidHeader(String),
+    Other(Error),
+}
+
+pub(super) async fn connect_authorized_websocket<'a, F, Fut>(
+    auth: &'a dyn super::authorization::OpenAiAuthorization,
+    url: &str,
+    max_message_bytes: usize,
+    connect_timeout: Option<Duration>,
+    mut authorize: F,
+    extra_headers: &[(&'a str, &'a str)],
+) -> std::result::Result<ModelWebSocket, WebSocketConnectError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<super::authorization::ResolvedAuthorization<'a>>>,
+{
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
+    use tokio_tungstenite::tungstenite::http::header::{AUTHORIZATION, HeaderName, HeaderValue};
+    use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
+
+    let mut retry = super::authorization::UnauthorizedRetry::default();
+    loop {
+        let authorization = authorize().await.map_err(WebSocketConnectError::Other)?;
+        let mut request = url
+            .into_client_request()
+            .map_err(WebSocketConnectError::Request)?;
+        let bearer =
+            HeaderValue::from_str(&format!("Bearer {}", authorization.token)).map_err(|error| {
+                WebSocketConnectError::InvalidHeader(format!(
+                    "access token is not a valid header value: {error}"
+                ))
+            })?;
+        request.headers_mut().insert(AUTHORIZATION, bearer);
+        for (name, value) in authorization
+            .headers
+            .iter()
+            .map(|(k, v)| (*k, v.as_ref()))
+            .chain(extra_headers.iter().copied())
+        {
+            let header_name = HeaderName::from_bytes(name.as_bytes()).map_err(|error| {
+                WebSocketConnectError::InvalidHeader(format!(
+                    "{name} is not a valid header name: {error}"
+                ))
+            })?;
+            let header_value = HeaderValue::from_str(value).map_err(|error| {
+                WebSocketConnectError::InvalidHeader(format!(
+                    "authorization header value is invalid: {error}"
+                ))
+            })?;
+            request.headers_mut().insert(header_name, header_value);
+        }
+        let config = WebSocketConfig::default()
+            .max_message_size(Some(max_message_bytes))
+            .max_frame_size(Some(max_message_bytes));
+        let attempt = tokio_tungstenite::connect_async_with_config(request, Some(config), false);
+        let result = if let Some(limit) = connect_timeout {
+            let Ok(result) = tokio::time::timeout(limit, attempt).await else {
+                return Err(WebSocketConnectError::TimedOut);
+            };
+            result
+        } else {
+            attempt.await
+        };
+        match result {
+            Ok((socket, _)) => return Ok(socket),
+            Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+                if response.status().as_u16() == 401 {
+                    if retry
+                        .retry_unauthorized(auth, &authorization.token)
+                        .await
+                        .map_err(WebSocketConnectError::Other)?
+                    {
+                        continue;
+                    }
+                    return Err(WebSocketConnectError::Unauthorized(response));
+                }
+                return Err(WebSocketConnectError::Http(response));
+            }
+            Err(error) => return Err(WebSocketConnectError::Transport(error)),
+        }
+    }
+}
+
 pub(super) fn handshake_error(
     provider: &str,
     response: &tokio_tungstenite::tungstenite::http::Response<Option<Vec<u8>>>,

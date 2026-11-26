@@ -472,7 +472,7 @@ impl GatewayHost {
         match accepted {
             Ok(()) => {
                 let broadcast = self.broadcast_sessions().await;
-                let gateway = self.clone(); // rules-allow: the spawned cleanup task owns a gateway handle
+                let gateway = self.share();
                 let cleanup = tokio::spawn(async move {
                     host.wait_idle().await;
                     gateway

@@ -1,6 +1,7 @@
 //! Versioned, bounded JSON frames shared by gateway clients and the server.
 
 mod codec;
+pub(crate) use codec::{read_raw_frame, write_raw_frame};
 mod harness;
 mod memory;
 mod messages;

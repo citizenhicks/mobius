@@ -267,7 +267,7 @@ impl GatewayHost {
     pub(crate) async fn dispatch_bot_events(&self) -> std::result::Result<(), Rejection> {
         // BotStorage is synchronous. Keep its SQLite waits off the runtime workers,
         // and retain admission guards inside the task if its caller is cancelled.
-        let host = self.clone(); // rules-allow: the blocking task owns a gateway handle
+        let host = self.share();
         let runtime = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || runtime.block_on(host.dispatch_stored_bot_events()))
             .await

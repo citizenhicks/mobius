@@ -85,29 +85,35 @@ pub fn watch(origin: String) -> (mpsc::Sender<BrowserInput>, mpsc::Receiver<Brow
     let (input, inputs) = mpsc::channel(64);
     // Keep frame memory bounded when the UI stalls, without reordering page events.
     let (events, received) = mpsc::channel(2);
-    std::thread::spawn(move || {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build();
-        let reason = match runtime {
-            Ok(runtime) => runtime
-                .block_on(async {
-                    tokio::select! {
-                        result = stream(&origin, inputs, &events) => result,
-                        () = events.closed() => Ok(()),
-                    }
-                })
+    match mobius_client::shared_runtime() {
+        Ok(runtime) => {
+            runtime.spawn(async move {
+                let reason = tokio::select! {
+                    result = stream(&origin, inputs, &events) => result,
+                    () = events.closed() => Ok(()),
+                }
                 .err()
                 .map_or_else(
                     || "The agent's browser closed.".into(),
                     |error| error.to_string(),
-                ),
-            Err(error) => error.to_string(),
-        };
-        if let Err(error) = events.blocking_send(BrowserEvent::Closed(reason)) {
-            tracing::debug!(%error, "The browser tab closed before hearing why its agent's browser ended");
+                );
+                if let Err(error) = events.send(BrowserEvent::Closed(reason)).await {
+                    tracing::debug!(
+                        %error,
+                        "The browser tab closed before hearing why its agent's browser ended"
+                    );
+                }
+            });
         }
-    });
+        Err(error) => {
+            if let Err(send_error) = events.try_send(BrowserEvent::Closed(error.to_string())) {
+                tracing::debug!(
+                    %send_error,
+                    "The browser tab closed before hearing about the runtime initialization error"
+                );
+            }
+        }
+    }
     (input, received)
 }
 

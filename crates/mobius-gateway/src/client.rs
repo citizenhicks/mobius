@@ -1,11 +1,11 @@
 //! Reusable async client for CLI and native frontends.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::fmt;
 use std::net::IpAddr;
 use std::str::FromStr;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
 use rustls::ClientConfig;
 use rustls::RootCertStore;
@@ -597,6 +597,14 @@ fn connection_error(code: &str, message: &str) -> Error {
 }
 
 impl GatewaySender {
+    /// Shares this command writer handle across tasks.
+    #[must_use]
+    pub fn share(&self) -> Self {
+        Self {
+            writer: Arc::clone(&self.writer),
+        }
+    }
+
     /// Sends one authenticated operation.
     /// # Errors
     ///
@@ -738,6 +746,194 @@ pub(crate) async fn request<T>(
     Err(Error::Protocol(format!(
         "gateway sent {MAX_PENDING_FRAMES} unrelated frames before the {what} response"
     )))
+}
+
+/// Whether a multiplexed request connection is shared with the foreground or dedicated to jobs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestUsage {
+    /// Shared with foreground event streaming; a single request timeout does not close the link.
+    Shared,
+    /// Dedicated background transfer connection; a request timeout closes the link.
+    Dedicated,
+}
+
+/// Request/reply multiplexer over one authenticated [`GatewayClient`].
+///
+/// Dropping the reader closes every waiting background request even when a job still holds
+/// an `Arc<GatewayRequests>`.
+#[derive(Debug)]
+pub struct GatewayLink {
+    /// Shared request/reply handle for concurrent background jobs.
+    pub requests: Arc<GatewayRequests>,
+    events: GatewayEvents,
+}
+
+impl GatewayLink {
+    /// Wraps an authenticated client in a foreground reader and shared background requester.
+    #[must_use]
+    pub fn new(client: GatewayClient, usage: RequestUsage) -> Self {
+        let (sender, events) = client.into_parts();
+        Self {
+            requests: Arc::new(GatewayRequests {
+                sender,
+                usage,
+                waiting: StdMutex::new(Some(HashMap::new())),
+            }),
+            events,
+        }
+    }
+
+    /// Reads the next foreground frame while routing `~`-prefixed background replies to waiters.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if reading or decoding the next frame fails.
+    pub async fn next(&mut self) -> Result<Option<ServerFrame>> {
+        while let Some(frame) = self.events.next().await? {
+            if matches!(
+                &frame.message,
+                ServerMessage::Error { fatal: true, .. }
+                    | ServerMessage::Rejected { fatal: true, .. }
+            ) {
+                self.requests.close();
+                return Ok(Some(frame));
+            }
+            // The prefix also keeps a late reply to a cancelled job out of the foreground.
+            let Some(id) = response_request_id(&frame.message).and_then(|s| s.strip_prefix('~'))
+            else {
+                return Ok(Some(frame));
+            };
+            let reply = uuid::Uuid::parse_str(id)
+                .ok()
+                .and_then(|id| self.requests.waiting.lock().ok()?.as_mut()?.remove(&id));
+            if let Some(reply) = reply
+                && reply.send(frame.message).is_err()
+            {
+                tracing::trace!("background request cancelled before delivery");
+            }
+        }
+        Ok(None)
+    }
+}
+
+impl Drop for GatewayLink {
+    fn drop(&mut self) {
+        self.requests.close();
+    }
+}
+
+/// Shared sender and pending-reply registry for one [`GatewayLink`].
+#[derive(Debug)]
+pub struct GatewayRequests {
+    sender: GatewaySender,
+    waiting: StdMutex<Option<HashMap<uuid::Uuid, tokio::sync::oneshot::Sender<ServerMessage>>>>,
+    usage: RequestUsage,
+}
+
+impl GatewayRequests {
+    /// Borrows the underlying authenticated command writer.
+    #[must_use]
+    pub const fn sender(&self) -> &GatewaySender {
+        &self.sender
+    }
+
+    /// Returns whether the foreground reader is still routing replies.
+    #[must_use]
+    pub fn is_open(&self) -> bool {
+        self.waiting.lock().is_ok_and(|waiting| waiting.is_some())
+    }
+
+    fn close(&self) {
+        if let Ok(mut waiting) = self.waiting.lock() {
+            *waiting = None;
+        }
+    }
+
+    /// Sends one request correlated with a `~`-prefixed request ID and waits for its reply.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the link closes, times out, or the gateway rejects the request.
+    pub async fn request(
+        &self,
+        build: impl FnOnce(Arc<str>) -> ClientMessage,
+    ) -> Result<ServerMessage> {
+        let id = uuid::Uuid::new_v4();
+        let (reply, response) = tokio::sync::oneshot::channel();
+        self.waiting
+            .lock()
+            .map_err(|_poisoned| request_disconnected())?
+            .as_mut()
+            .ok_or_else(request_disconnected)?
+            .insert(id, reply);
+        let _waiting = PendingRequestGuard { requests: self, id };
+        // 33 ASCII bytes, including the background marker. No second identifier on the wire.
+        let mut bytes = [b'~'; 33];
+        if let Some(tail) = bytes.get_mut(1..) {
+            id.simple().encode_lower(tail);
+        }
+        let request_id =
+            std::str::from_utf8(&bytes).map_err(|error| Error::Internal(error.to_string()))?;
+        if let Err(error) = self.sender.send(build(request_id.into())).await {
+            self.close();
+            return Err(error);
+        }
+        let Ok(result) = tokio::time::timeout(std::time::Duration::from_secs(30), response).await
+        else {
+            if matches!(self.usage, RequestUsage::Dedicated) {
+                self.close();
+            }
+            return Err(Error::Protocol("Gateway request timed out.".into()));
+        };
+        let message = result.map_err(|_closed| request_disconnected())?;
+        if let Some(error) = message.response_error(Some(request_id)) {
+            if matches!(&message, ServerMessage::Rejected { code, .. } if code == "storage_full") {
+                return Err(mobius::Error::StorageFull.into());
+            }
+            return Err(Error::Protocol(error.message.into()));
+        }
+        Ok(message)
+    }
+}
+
+struct PendingRequestGuard<'a> {
+    requests: &'a GatewayRequests,
+    id: uuid::Uuid,
+}
+
+impl Drop for PendingRequestGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut waiting) = self.requests.waiting.lock()
+            && let Some(waiting) = waiting.as_mut()
+        {
+            waiting.remove(&self.id);
+        }
+    }
+}
+
+/// Error reported when the gateway disconnects before answering a pending request.
+#[must_use]
+pub fn request_disconnected() -> Error {
+    Error::Protocol("Gateway disconnected during the request.".into())
+}
+
+fn response_request_id(message: &ServerMessage) -> Option<&str> {
+    match message {
+        ServerMessage::SessionOpened { request_id, .. }
+        | ServerMessage::SessionFileChunk { request_id, .. }
+        | ServerMessage::SessionFileUploadReady { request_id, .. }
+        | ServerMessage::SessionFileUploadChunkAccepted { request_id, .. }
+        | ServerMessage::SessionFileUploadCompleted { request_id, .. }
+        | ServerMessage::GitDiff { request_id, .. }
+        | ServerMessage::GitDiffTotals { request_id, .. }
+        | ServerMessage::WorkspaceFiles { request_id, .. }
+        | ServerMessage::SessionFiles { request_id, .. }
+        | ServerMessage::WorkspaceFileChunk { request_id, .. }
+        | ServerMessage::SessionHistory { request_id, .. }
+        | ServerMessage::Accepted { request_id }
+        | ServerMessage::Rejected { request_id, .. } => Some(request_id),
+        _ => None,
+    }
 }
 
 /// Resolves the bearer token expected by the reusable CLI client.

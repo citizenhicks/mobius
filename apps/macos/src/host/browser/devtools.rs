@@ -108,14 +108,11 @@ impl Server {
         listener.set_nonblocking(true)?;
         let pages = Pages::default();
         let served = Arc::clone(&pages);
-        std::thread::Builder::new()
-            .name("browser-agents".into())
-            .spawn(move || {
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()?;
-                runtime.block_on(accept(listener, served))
-            })?;
+        mobius_client::shared_runtime()?.spawn(async move {
+            if let Err(error) = accept(listener, served).await {
+                tracing::debug!(%error, "browser agent socket listener stopped");
+            }
+        });
         Ok(Self { socket, pages })
     }
 

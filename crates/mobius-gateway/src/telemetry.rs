@@ -422,7 +422,7 @@ impl Telemetry {
         if !config.sinks.iter().any(|sink| sink.enabled) {
             return;
         }
-        let host = host.clone(); // rules-allow: the telemetry worker owns its host handle
+        let host = host.share();
         tasks.spawn(async move {
             let mut deliveries = tokio::task::JoinSet::new();
             if let Err(error) = Self::tick_at(
@@ -656,7 +656,7 @@ impl Telemetry {
             }
             drop(statuses);
         }
-        let host = host.clone(); // rules-allow: the delivery task owns its host handle
+        let host = host.share();
         tasks.spawn(async move {
             let Some(sink) = config.sinks.get(index) else {
                 return;

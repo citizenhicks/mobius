@@ -88,6 +88,25 @@ pub(super) enum AuthorizedChat {
 pub(crate) type HostAccess = Arc<dyn Fn() -> Result<GatewayHost> + Send + Sync>;
 
 impl GatewayHost {
+    /// Shares this gateway host handle across tasks without cloning payload data.
+    #[must_use]
+    pub(crate) fn share(&self) -> Self {
+        Self {
+            desktop: Arc::clone(&self.desktop),
+            remote_desktop: Arc::clone(&self.remote_desktop),
+            bots: Arc::clone(&self.bots),
+            session_mutations: Arc::clone(&self.session_mutations),
+            bots_broadcast_cache: Arc::clone(&self.bots_broadcast_cache),
+            state: Arc::clone(&self.state),
+            capacity_gate: Arc::clone(&self.capacity_gate),
+            storage_reads: Arc::clone(&self.storage_reads),
+            provider_usage: Arc::clone(&self.provider_usage),
+            events: self.events.clone(), // rules-allow: shared broadcast handle
+            work_activity: Arc::clone(&self.work_activity),
+            telemetry: Arc::clone(&self.telemetry),
+        }
+    }
+
     pub(super) async fn publish_ready_after_unlock(
         &self,
         state: tokio::sync::MutexGuard<'_, GatewayState>,

@@ -14,22 +14,15 @@ use tokio::sync::oneshot;
 use tokio::time::timeout;
 use tokio_tungstenite::MaybeTlsStream;
 use tokio_tungstenite::WebSocketStream;
-use tokio_tungstenite::connect_async_with_config;
 use tokio_tungstenite::tungstenite::Error as WebSocketError;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::http::HeaderValue;
-use tokio_tungstenite::tungstenite::http::header::AUTHORIZATION;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
-use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 
 use super::super::ModelCancellation;
 use super::super::ModelCancellationReason;
 use super::super::ModelEventSink;
 use super::super::authorization::OpenAiAuthorization;
-use super::super::authorization::ResolvedAuthorization;
-use super::super::authorization::UnauthorizedRetry;
 use super::super::responses::CompletedResponse;
 use super::super::responses::ResponsesStream;
 use super::super::responses::StreamStep;
@@ -350,81 +343,37 @@ pub(super) async fn connect(
     session_id: &str,
     settings: &super::super::ModelTransportSettings,
 ) -> Result<OpenAiWsConnection> {
-    let mut retry = UnauthorizedRetry::default();
-    loop {
-        let authorization = auth.authorize_websocket(session_id).await?;
-        let request = connection_request(socket_url, &authorization)?;
-        let config = WebSocketConfig::default()
-            .max_message_size(Some(MAX_SOCKET_MESSAGE_BYTES))
-            .max_frame_size(Some(MAX_SOCKET_MESSAGE_BYTES));
-        let Ok(result) = timeout(
-            Duration::from_millis(settings.socket_connect_timeout_ms),
-            connect_async_with_config(request, Some(config), false),
-        )
-        .await
-        else {
-            log_interruption("connect", "timed out");
-            return Err(Error::Provider(ProviderError::stream_interrupted(None)));
-        };
-        match result {
-            Ok((socket, _)) => return Ok(OpenAiWsConnection::with_settings(socket, settings)),
-            Err(error) if unauthorized(&error) => {
-                if retry.retry_unauthorized(auth, &authorization.token).await? {
-                    continue;
-                }
-                return Err(Error::Auth("WebSocket authorization was rejected".into()));
-            }
-            Err(error) => {
-                log_websocket_error("connect", &error);
-                return Err(websocket_connect_error(error));
-            }
-        }
-    }
-}
-
-fn websocket_connect_error(error: WebSocketError) -> Error {
-    if let WebSocketError::Http(response) = error {
-        return Error::Provider(super::super::transport::handshake_error(
-            "WebSocket",
-            &response,
-        ));
-    }
-    Error::Provider(ProviderError::stream_interrupted(None))
-}
-
-fn connection_request(
-    socket_url: &str,
-    authorization: &ResolvedAuthorization<'_>,
-) -> Result<tokio_tungstenite::tungstenite::http::Request<()>> {
-    let mut request = socket_url
-        .into_client_request()
-        .map_err(|error| socket_error(&error))?;
-    request.headers_mut().insert(
-        AUTHORIZATION,
-        HeaderValue::from_str(&format!("Bearer {}", authorization.token)).map_err(|error| {
-            Error::Auth(format!("access token is not a valid header value: {error}"))
-        })?,
-    );
-    for (name, value) in &authorization.headers {
-        let name = tokio_tungstenite::tungstenite::http::HeaderName::from_bytes(name.as_bytes())
-            .map_err(|error| Error::Auth(format!("{name} is not a valid header name: {error}")))?;
-        request.headers_mut().insert(
-            name,
-            HeaderValue::from_str(value.as_ref()).map_err(|error| {
-                Error::Auth(format!("authorization header value is invalid: {error}"))
-            })?,
-        );
-    }
-    Ok(request)
-}
-
-fn unauthorized(error: &tokio_tungstenite::tungstenite::Error) -> bool {
-    matches!(
-        error,
-        tokio_tungstenite::tungstenite::Error::Http(response)
-            if response.status()
-                == tokio_tungstenite::tungstenite::http::StatusCode::UNAUTHORIZED
+    let socket = super::super::transport::connect_authorized_websocket(
+        auth,
+        socket_url,
+        MAX_SOCKET_MESSAGE_BYTES,
+        Some(Duration::from_millis(settings.socket_connect_timeout_ms)),
+        || auth.authorize_websocket(session_id),
+        &[],
     )
+    .await
+    .map_err(|error| match error {
+        super::super::transport::WebSocketConnectError::TimedOut => {
+            log_interruption("connect", "timed out");
+            Error::Provider(ProviderError::stream_interrupted(None))
+        }
+        super::super::transport::WebSocketConnectError::Unauthorized(_) => {
+            Error::Auth("WebSocket authorization was rejected".into())
+        }
+        super::super::transport::WebSocketConnectError::Http(response) => Error::Provider(
+            super::super::transport::handshake_error("WebSocket", &response),
+        ),
+        super::super::transport::WebSocketConnectError::Request(error) => socket_error(&error),
+        super::super::transport::WebSocketConnectError::Transport(error) => {
+            log_websocket_error("connect", &error);
+            Error::Provider(ProviderError::stream_interrupted(None))
+        }
+        super::super::transport::WebSocketConnectError::InvalidHeader(message) => {
+            Error::Auth(message)
+        }
+        super::super::transport::WebSocketConnectError::Other(error) => error,
+    })?;
+    Ok(OpenAiWsConnection::with_settings(socket, settings))
 }
 
 pub(super) async fn exchange(

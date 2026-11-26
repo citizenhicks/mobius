@@ -4,7 +4,7 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use mobius::{Error, Result};
-use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -165,13 +165,7 @@ pub(crate) async fn read_frame(
     channel: &mut (impl AsyncRead + Unpin),
     max: usize,
 ) -> std::io::Result<Option<Vec<u8>>> {
-    let size = channel.read_u32().await? as usize;
-    if size == 0 || size > max {
-        return Ok(None);
-    }
-    let mut bytes = vec![0; size];
-    channel.read_exact(&mut bytes).await?;
-    Ok(Some(bytes))
+    crate::wire::read_raw_frame(channel, max).await
 }
 
 /// Writes one length-prefixed worker frame.
@@ -179,10 +173,10 @@ pub(crate) async fn write_frame(
     channel: &mut (impl AsyncWrite + Unpin),
     bytes: &[u8],
 ) -> Result<()> {
-    let size = u32::try_from(bytes.len())
-        .map_err(|error| Error::Sandbox(format!("worker frame is too large: {error}")))?;
-    channel.write_u32(size).await?;
-    channel.write_all(bytes).await?;
-    channel.flush().await?;
-    Ok(())
+    crate::wire::write_raw_frame(channel, bytes)
+        .await
+        .map_err(|error| match error {
+            crate::Error::Io(io) => Error::Io(io),
+            other => Error::Sandbox(format!("worker frame write failed: {other}")),
+        })
 }

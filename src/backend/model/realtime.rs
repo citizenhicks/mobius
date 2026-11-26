@@ -11,8 +11,6 @@ use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 
 use super::authorization::OpenAiAuthorization;
 use super::authorization::UnauthorizedRetry;
@@ -559,52 +557,31 @@ impl RealtimeTransport {
         } else {
             url.set_path(&format!("{}/{call_id}/attach", url.path()));
         }
-        let mut retry = UnauthorizedRetry::default();
-        loop {
-            // Reuse the call-create identity, including the signed-in ChatGPT account header.
-            let auth = self.auth.authorize_http(false, Some(session_id)).await?;
-            let mut request = url.as_str().into_client_request().map_err(socket_error)?;
-            for (name, value) in
-                std::iter::once(("authorization", format!("Bearer {}", auth.token).into()))
-                    .chain(auth.headers)
-                    .chain(
-                        self.codex_headers(session_id)
-                            .map(|(name, value)| (name, Cow::Borrowed(value))),
-                    )
-            {
-                request.headers_mut().insert(
-                    tokio_tungstenite::tungstenite::http::HeaderName::from_bytes(name.as_bytes())
-                        .map_err(|error| {
-                            invalid(&format!("invalid voice authorization header: {error}"))
-                        })?,
-                    value.parse().map_err(
-                        |error: tokio_tungstenite::tungstenite::http::header::InvalidHeaderValue| {
-                            invalid(&format!("invalid voice authorization value: {error}"))
-                        },
-                    )?,
-                );
+        let extra_headers: Vec<(&str, &str)> = self.codex_headers(session_id).collect();
+        super::transport::connect_authorized_websocket(
+            self.auth.as_ref(),
+            url.as_str(),
+            MAX_EVENT_BYTES,
+            None,
+            || self.auth.authorize_http(false, Some(session_id)),
+            &extra_headers,
+        )
+        .await
+        .map_err(|error| match error {
+            super::transport::WebSocketConnectError::Unauthorized(response)
+            | super::transport::WebSocketConnectError::Http(response) => Error::Provider(
+                super::transport::handshake_error("Realtime sideband", &response),
+            ),
+            super::transport::WebSocketConnectError::Request(error)
+            | super::transport::WebSocketConnectError::Transport(error) => socket_error(error),
+            super::transport::WebSocketConnectError::InvalidHeader(message) => {
+                invalid(&format!("invalid voice authorization header: {message}"))
             }
-            let config = WebSocketConfig::default()
-                .max_message_size(Some(MAX_EVENT_BYTES))
-                .max_frame_size(Some(MAX_EVENT_BYTES));
-            match tokio_tungstenite::connect_async_with_config(request, Some(config), false).await {
-                Ok((socket, _)) => return Ok(socket),
-                Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
-                    if response.status().as_u16() == 401
-                        && retry
-                            .retry_unauthorized(self.auth.as_ref(), &auth.token)
-                            .await?
-                    {
-                        continue;
-                    }
-                    return Err(Error::Provider(super::transport::handshake_error(
-                        "Realtime sideband",
-                        &response,
-                    )));
-                }
-                Err(error) => return Err(socket_error(error)),
+            super::transport::WebSocketConnectError::TimedOut => {
+                Error::Provider(ProviderError::stream_interrupted(None))
             }
-        }
+            super::transport::WebSocketConnectError::Other(error) => error,
+        })
     }
 }
 

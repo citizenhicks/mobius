@@ -16,7 +16,6 @@ use mobius_gateway::gateway_accounts::{
 };
 use mobius_gateway::wire::{ClientCapabilities, ClientMessage, ReadySection, ServerMessage};
 use mobius_gateway::{Error, Result};
-use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
 
 use super::requests::{Link, Usage};
@@ -123,7 +122,7 @@ enum Command {
 pub struct Gateway {
     commands: mpsc::Sender<Command>,
     updates: Option<mpsc::Receiver<Update>>,
-    runtime: Option<Runtime>,
+    task: Option<tokio::task::AbortHandle>,
 }
 
 impl Gateway {
@@ -133,17 +132,14 @@ impl Gateway {
     ///
     /// When the async runtime cannot start or the first connect cannot be queued.
     pub fn start() -> Result<Self> {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()?;
+        let runtime = crate::shared_runtime()?;
         let (commands, receiver) = mpsc::channel(64);
         let (updates, output) = mpsc::channel(256);
-        runtime.spawn(run(receiver, updates));
+        let task = runtime.spawn(run(receiver, updates)).abort_handle();
         let gateway = Self {
             commands,
             updates: Some(output),
-            runtime: Some(runtime),
+            task: Some(task),
         };
         gateway.connect(Connection::Local)?;
         Ok(gateway)
@@ -329,8 +325,8 @@ impl Gateway {
 
 impl Drop for Gateway {
     fn drop(&mut self) {
-        if let Some(runtime) = self.runtime.take() {
-            runtime.shutdown_background();
+        if let Some(task) = self.task.take() {
+            task.abort();
         }
     }
 }
@@ -979,7 +975,7 @@ impl Transport {
             // GatewaySender closes its writer when a write is cancelled; never replay a
             // command whose frame may already have reached the gateway.
             Some(link) => {
-                tokio::time::timeout(RESPONSE_TIMEOUT, link.requests.sender.send(message))
+                tokio::time::timeout(RESPONSE_TIMEOUT, link.requests.sender().send(message))
                     .await
                     .unwrap_or_else(|_| Err(Error::Protocol("Gateway request timed out.".into())))
             }
@@ -1203,7 +1199,7 @@ mod tests {
         let gateway = super::Gateway {
             commands,
             updates: None,
-            runtime: None,
+            task: None,
         };
         let gateway = Some(&gateway);
         let mut storage = Storage::default();

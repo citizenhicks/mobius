@@ -27,11 +27,36 @@ pub use state::{GatewayState, Preview};
 pub use transcript::{RowChild, TranscriptEntry, TranscriptStore};
 pub use upload::UploadFailure;
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use mobius::SessionId;
 use mobius::protocol::{Op, Submission};
 use mobius_gateway::wire::ClientMessage;
+
+static SHARED_RUNTIME: OnceLock<std::result::Result<tokio::runtime::Runtime, String>> =
+    OnceLock::new();
+
+/// Returns the process-wide Tokio runtime handle shared by the gateway client and desktop host.
+///
+/// # Errors
+///
+/// Returns an error if the shared Tokio runtime could not be initialized.
+pub fn shared_runtime() -> mobius_gateway::Result<&'static tokio::runtime::Handle> {
+    let runtime = SHARED_RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .thread_name("mobius-async")
+            .enable_all()
+            .build()
+            .map_err(|error| error.to_string())
+    });
+    match runtime {
+        Ok(runtime) => Ok(runtime.handle()),
+        Err(error) => Err(mobius_gateway::Error::Internal(format!(
+            "failed to initialize shared async runtime: {error}"
+        ))),
+    }
+}
 
 pub fn request_id() -> Arc<str> {
     Arc::from(

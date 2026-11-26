@@ -30,6 +30,16 @@ pub struct AgentSender {
     pub(super) ingress: Arc<SubmissionIngress>,
 }
 
+impl AgentSender {
+    /// Shares this command handle by incrementing its internal reference count.
+    #[must_use]
+    pub fn share(&self) -> Self {
+        Self {
+            ingress: Arc::clone(&self.ingress),
+        }
+    }
+}
+
 impl std::fmt::Debug for AgentSender {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -72,6 +82,16 @@ pub(super) type AdmissionReply = oneshot::Sender<Result<MessageAcceptance>>;
 #[derive(Clone)]
 pub struct WeakAgentSender {
     ingress: Weak<SubmissionIngress>,
+}
+
+impl WeakAgentSender {
+    /// Shares this weak handle by incrementing its weak reference count.
+    #[must_use]
+    pub fn share(&self) -> Self {
+        Self {
+            ingress: Weak::clone(&self.ingress),
+        }
+    }
 }
 
 impl std::fmt::Debug for WeakAgentSender {

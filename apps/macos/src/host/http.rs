@@ -10,12 +10,12 @@ use gpui::http_client::{
 };
 use hyper::header::HeaderValue;
 use reqwest::Client;
-use tokio::runtime::{Builder, Runtime};
+use tokio::runtime::Handle;
 use tokio_util::task::AbortOnDropHandle;
 
 pub(crate) struct ImageClient {
     client: Client,
-    runtime: Runtime,
+    runtime: &'static Handle,
     user_agent: HeaderValue,
 }
 
@@ -29,10 +29,7 @@ impl ImageClient {
             .pool_idle_timeout(Duration::from_secs(30))
             .redirect(reqwest::redirect::Policy::limited(100))
             .build()?;
-        let runtime = Builder::new_multi_thread()
-            .worker_threads(1)
-            .enable_all()
-            .build()?;
+        let runtime = mobius_client::shared_runtime()?;
         Ok(Self {
             client,
             runtime,

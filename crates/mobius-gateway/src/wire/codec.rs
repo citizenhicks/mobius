@@ -135,6 +135,35 @@ where
     }
 }
 
+/// Reads one raw length-prefixed binary frame, returning `None` when the declared
+/// length is zero or exceeds `max_bytes`.
+pub(crate) async fn read_raw_frame(
+    reader: &mut (impl AsyncRead + Unpin),
+    max_bytes: usize,
+) -> std::io::Result<Option<Vec<u8>>> {
+    let size = usize::try_from(reader.read_u32().await?).unwrap_or(usize::MAX);
+    if size == 0 || size > max_bytes {
+        return Ok(None);
+    }
+    let mut bytes = vec![0; size];
+    reader.read_exact(&mut bytes).await?;
+    Ok(Some(bytes))
+}
+
+/// Writes one raw 4-byte length-prefixed binary frame and flushes the writer.
+pub(crate) async fn write_raw_frame(
+    writer: &mut (impl AsyncWrite + Unpin),
+    bytes: &[u8],
+) -> Result<()> {
+    let size = u32::try_from(bytes.len()).map_err(|error| {
+        Error::Protocol(format!("encoded frame length is unsupported: {error}"))
+    })?;
+    writer.write_u32(size).await?;
+    writer.write_all(bytes).await?;
+    writer.flush().await?;
+    Ok(())
+}
+
 /// Writes one bounded length-prefixed JSON value.
 /// Discard the connection after a write error: the frame may be partially written.
 /// # Errors

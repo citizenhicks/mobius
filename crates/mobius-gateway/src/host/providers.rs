@@ -248,7 +248,7 @@ impl GatewayHost {
         provider: String,
         start: BoxFuture<'static, mobius::Result<DeviceLogin>>,
     ) {
-        let gateway = self.clone(); // rules-allow: the spawned login task owns a gateway handle
+        let gateway = self.share();
         // Code acquisition and polling both belong to the gateway. No connection
         // future can be cancelled after reserving the slot but before launching it.
         tokio::spawn(async move {

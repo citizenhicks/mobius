@@ -87,7 +87,7 @@ impl GatewayHost {
         self.remote_desktop
             .begin_takeover()
             .map_err(invalid_config)?;
-        let gateway = self.clone(); // rules-allow: the spawned drain task owns a gateway handle
+        let gateway = self.share();
         let mut takeover = Takeover {
             remote: Some(Arc::clone(&self.remote_desktop)),
             granted: false,
