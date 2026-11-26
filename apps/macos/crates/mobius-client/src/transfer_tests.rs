@@ -615,7 +615,7 @@ async fn cloud_upload_rejection_preserves_the_free_space_action() {
                 (
                     200,
                     serde_json::json!({"request_id":body["upload"]["request_id"],
-                    "allowed":false,"code":"storage_full","message":"Cloud storage is full."})
+                    "allowed":false,"code":"storage_full","message":"Remote storage is full."})
                     .to_string(),
                 )
             } else {

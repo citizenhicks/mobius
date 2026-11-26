@@ -773,7 +773,7 @@ mod tests {
         let endpoint = "wss://gateway.example"
             .parse::<Endpoint>()
             .expect("endpoint")
-            .with_websocket_bearer("cloud-secret")
+            .with_websocket_bearer("remote-secret")
             .expect("bearer");
         let (client, mut server) = tokio::io::duplex(2048);
         let response = tokio::spawn(async move {
@@ -784,9 +784,9 @@ mod tests {
             assert!(
                 String::from_utf8(headers)
                     .expect("headers")
-                    .contains("Bearer cloud-secret")
+                    .contains("Bearer remote-secret")
             );
-            server.write_all(b"HTTP/1.1 302 Found\r\nLocation: https://evil.example\r\nContent-Length: 12\r\n\r\ncloud-secret")
+            server.write_all(b"HTTP/1.1 302 Found\r\nLocation: https://evil.example\r\nContent-Length: 13\r\n\r\nremote-secret")
                 .await.expect("redirect response");
         });
         let error =
@@ -795,7 +795,7 @@ mod tests {
                 .expect_err("a redirect must not follow the bearer");
         let error = websocket_error(error).to_string();
         assert!(error.contains("HTTP 302"));
-        assert!(!error.contains("cloud-secret"));
+        assert!(!error.contains("remote-secret"));
         response.await.expect("server");
     }
 

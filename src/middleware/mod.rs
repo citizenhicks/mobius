@@ -457,6 +457,7 @@ pub trait Middleware: Send + Sync {
 pub struct PromptSection {
     title: Option<&'static str>,
     body: String,
+    context_kind: crate::protocol::ContextPartKind,
 }
 
 impl PromptSection {
@@ -466,6 +467,7 @@ impl PromptSection {
         Self {
             title: None,
             body: body.into(),
+            context_kind: crate::protocol::ContextPartKind::Capabilities,
         }
     }
 
@@ -475,7 +477,15 @@ impl PromptSection {
         Self {
             title: Some(title),
             body: body.into(),
+            context_kind: crate::protocol::ContextPartKind::Capabilities,
         }
+    }
+
+    /// Declares which context-breakdown bucket this section's bytes belong to.
+    #[must_use]
+    pub fn with_context_kind(mut self, kind: crate::protocol::ContextPartKind) -> Self {
+        self.context_kind = kind;
+        self
     }
 }
 
@@ -585,14 +595,14 @@ impl MiddlewareStack {
     }
 
     /// The assembled prompt and the bytes each middleware contributed to it; the base prompt
-    /// counts as `instructions`.
+    /// counts as [`ContextPartKind::Instructions`].
     pub(crate) fn system_prompt(
         &self,
         base: &str,
         runtime: &RuntimeContext,
-    ) -> Result<(String, Vec<(&'static str, usize)>)> {
+    ) -> Result<(String, Vec<(crate::protocol::ContextPartKind, usize)>)> {
         let mut prompt = format!("**instructions**\n\n{}", base.trim());
-        let mut sizes = vec![("instructions", prompt.len())];
+        let mut sizes = vec![(crate::protocol::ContextPartKind::Instructions, prompt.len())];
         for entry in &self.entries {
             let Some(section) = entry.prompt_section(runtime)? else {
                 continue;
@@ -616,7 +626,7 @@ impl MiddlewareStack {
             prompt.push_str(title);
             prompt.push_str("**\n\n");
             prompt.push_str(body);
-            sizes.push((entry.name(), prompt.len() - start));
+            sizes.push((section.context_kind, prompt.len() - start));
         }
         Ok((prompt, sizes))
     }

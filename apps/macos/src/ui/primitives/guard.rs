@@ -109,6 +109,9 @@ const IO_RULES: &[(&str, &[(&str, &str)])] = &[
     ("Path::is_file", &[]),
     ("Path::exists", &[]),
     ("Path::try_exists", &[]),
+    ("unsafe ", &[]),
+    ("unsafe{", &[]),
+    ("objc2", &[]),
 ];
 
 fn sources(dir: &Path, files: &mut Vec<PathBuf>) {

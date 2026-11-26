@@ -63,7 +63,7 @@ async fn upload_admission_requires_a_valid_correlated_collector_decision() {
             let request_id = &body["upload"]["request_id"];
             let (status, reply) = match mode {
                 "allow" => (200, serde_json::json!({"request_id":request_id,"allowed":true}).to_string()),
-                "full" => (200, serde_json::json!({"request_id":request_id,"allowed":false,"code":"storage_full","message":"Cloud storage is full."}).to_string()),
+                "full" => (200, serde_json::json!({"request_id":request_id,"allowed":false,"code":"storage_full","message":"Remote storage is full."}).to_string()),
                 "mismatched" => (200, serde_json::json!({"request_id":"wrong","allowed":true}).to_string()),
                 "empty" => (202, String::new()),
                 "oversized" => (200, " ".repeat(4097)),

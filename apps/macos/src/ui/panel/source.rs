@@ -574,7 +574,10 @@ impl Workspace {
                 text,
                 truncated,
             }) => TabContent::Diff(DiffDoc::new(session.share(), scope, &text, truncated, cx)),
-            Ok(PreviewData::File { path, bytes }) => self.preview_bytes(session, &path, &bytes),
+            Ok(PreviewData::File { path, bytes }) => {
+                self.save_tab_preview(tab_id, request, session, path, bytes, cx);
+                return;
+            }
             Ok(PreviewData::ChatFiles(_)) => return,
             Err(error) => TabContent::Failed(error),
         };
@@ -617,9 +620,10 @@ impl Workspace {
                 }
                 None
             }
-            Ok(PreviewData::File { path, bytes }) => Some(FileView::from_content(
-                self.preview_bytes(session, &path, &bytes),
-            )),
+            Ok(PreviewData::File { path, bytes }) => {
+                self.save_selection_preview(id, request, session, path, bytes, cx);
+                return;
+            }
             Ok(PreviewData::Diff { .. } | PreviewData::ChatFiles(_)) => None,
             Err(error) => {
                 let Some(doc) = self.files_doc_mut(&id) else {
@@ -644,11 +648,93 @@ impl Workspace {
         cx.notify();
     }
 
-    fn preview_bytes(&self, session: &SessionId, name: &str, bytes: &[u8]) -> TabContent {
-        let Some(directory) = &self.downloads else {
-            return TabContent::Failed("Unable to create a private preview directory.".into());
+    fn save_tab_preview(
+        &mut self,
+        tab_id: Arc<str>,
+        request: &str,
+        session: &SessionId,
+        name: String,
+        bytes: Vec<u8>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(directory) = self.downloads.as_ref().map(|dir| dir.path().to_path_buf()) else {
+            if let Some(tab) = self.content.tabs.get_mut(&tab_id) {
+                tab.content =
+                    TabContent::Failed("Unable to create a private preview directory.".into());
+            }
+            cx.notify();
+            return;
         };
-        stored_preview(session, name, bytes, directory.path())
+        let request: Arc<str> = request.into();
+        let session = session.share();
+        let save = cx
+            .background_executor()
+            .spawn(async move { prepare_stored_preview(&session, &name, &bytes, &directory) });
+        cx.spawn(async move |this, cx| {
+            let prepared = save.await;
+            let updated = this.update(cx, |this, cx| {
+                let waiting = this.content.tabs.get(&tab_id).is_some_and(
+                    |tab| matches!(&tab.content, TabContent::Loading { request: id, .. } if *id == request),
+                );
+                if !waiting {
+                    return;
+                }
+                let content = finish_stored_preview(prepared);
+                if let Some(tab) = this.content.tabs.get_mut(&tab_id) {
+                    tab.content = content;
+                }
+                this.unify_file_tab(&tab_id, cx);
+                cx.notify();
+            });
+            if let Err(error) = updated {
+                tracing::debug!(%error, "workspace closed before preview finished saving");
+            }
+        })
+        .detach();
+    }
+
+    fn save_selection_preview(
+        &mut self,
+        id: Arc<str>,
+        request: &str,
+        session: &SessionId,
+        name: String,
+        bytes: Vec<u8>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(directory) = self.downloads.as_ref().map(|dir| dir.path().to_path_buf()) else {
+            if let Some(selection) = self
+                .files_doc_mut(&id)
+                .and_then(|doc| doc.selected.as_mut())
+            {
+                selection.view =
+                    FileView::Failed("Unable to create a private preview directory.".into());
+            }
+            cx.notify();
+            return;
+        };
+        let request: Arc<str> = request.into();
+        let session = session.share();
+        let save = cx
+            .background_executor()
+            .spawn(async move { prepare_stored_preview(&session, &name, &bytes, &directory) });
+        cx.spawn(async move |this, cx| {
+            let prepared = save.await;
+            let updated = this.update(cx, |this, cx| {
+                if let Some(selection) = this
+                    .files_doc_mut(&id)
+                    .and_then(|doc| doc.selected.as_mut())
+                    .filter(|selection| matches!(&selection.view, FileView::Loading(pending) if *pending == request))
+                {
+                    selection.view = FileView::from_content(finish_stored_preview(prepared));
+                    cx.notify();
+                }
+            });
+            if let Err(error) = updated {
+                tracing::debug!(%error, "workspace closed before file preview finished saving");
+            }
+        })
+        .detach();
     }
 
     /// Both local previews and gateway files use the same viewer and right-hand tree.
@@ -733,17 +819,18 @@ impl Workspace {
         let local = root.join(&path);
         self.show_selection(id, path, FileView::Loading(Arc::clone(&request)));
         let id = id.to_owned();
-        let load = cx.background_executor().spawn(async move {
-            read_local_preview(local).map(|preview| match preview {
-                LocalPreview::Text(doc) => FileView::Code(*doc),
-                LocalPreview::Native(path) => FileView::File(FileDoc::local(path)),
-            })
-        });
+        let load = cx
+            .background_executor()
+            .spawn(async move { read_local_preview(local) });
         cx.spawn(async move |this, cx| {
-            let view = load
-                .await
-                .unwrap_or_else(|message| FileView::Failed(message.into()));
+            let loaded = load.await;
             let updated = this.update(cx, |this, cx| {
+                // Resolve AppKit file metadata strictly on the main thread.
+                let view = match loaded {
+                    Ok(LocalPreview::Text(doc)) => FileView::Code(*doc),
+                    Ok(LocalPreview::Native(path)) => FileView::File(FileDoc::local(path)),
+                    Err(message) => FileView::Failed(message.into()),
+                };
                 // The selection still waits on this request, so only its view changes.
                 if let Some(selection) = this
                     .files_doc_mut(&id)
@@ -1226,19 +1313,63 @@ impl Workspace {
     }
 }
 
-/// Retains the gateway path while preparing an independent local copy for native apps.
-fn stored_preview(session: &SessionId, name: &str, bytes: &[u8], directory: &Path) -> TabContent {
+enum PreparedStoredPreview {
+    Code {
+        doc: Box<CodeDoc>,
+        path: PathBuf,
+        name: String,
+    },
+    File {
+        path: PathBuf,
+        name: String,
+    },
+    Failed(String),
+}
+
+/// Runs file persistence and text decoding off the UI thread.
+fn prepare_stored_preview(
+    session: &SessionId,
+    name: &str,
+    bytes: &[u8],
+    directory: &Path,
+) -> PreparedStoredPreview {
     let path = crate::ui::runtime::private_path(directory, name);
     match gateway::local::save(path, bytes) {
         Ok(path) => match text_preview(name, bytes, Origin::Workspace(session.share())) {
-            Some(mut doc) => {
-                doc.external_file = Some(FileDoc::new(path, name.to_owned()));
-                TabContent::Code(doc)
-            }
-            None => TabContent::File(FileDoc::new(path, name.to_owned())),
+            Some(doc) => PreparedStoredPreview::Code {
+                doc: Box::new(doc),
+                path,
+                name: name.to_owned(),
+            },
+            None => PreparedStoredPreview::File {
+                path,
+                name: name.to_owned(),
+            },
         },
-        Err(error) => TabContent::Failed(gateway::describe_io(&error)),
+        Err(error) => PreparedStoredPreview::Failed(gateway::describe_io(&error)),
     }
+}
+
+/// Attaches AppKit file-handler metadata strictly on the main thread.
+fn finish_stored_preview(prepared: PreparedStoredPreview) -> TabContent {
+    match prepared {
+        PreparedStoredPreview::Code {
+            mut doc,
+            path,
+            name,
+        } => {
+            doc.external_file = Some(FileDoc::new(path, name));
+            TabContent::Code(*doc)
+        }
+        PreparedStoredPreview::File { path, name } => TabContent::File(FileDoc::new(path, name)),
+        PreparedStoredPreview::Failed(message) => TabContent::Failed(message),
+    }
+}
+
+/// Retains the gateway path while preparing an independent local copy for native apps.
+#[cfg(test)]
+fn stored_preview(session: &SessionId, name: &str, bytes: &[u8], directory: &Path) -> TabContent {
+    finish_stored_preview(prepare_stored_preview(session, name, bytes, directory))
 }
 
 #[cfg(test)]

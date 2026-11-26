@@ -123,6 +123,59 @@ use serde_json::Value;
 /// The system voice reading a text aloud.
 pub type Speech = std::process::Child;
 
+/// macOS Accessibility → Display → Reduce transparency (main thread only).
+pub fn reduce_transparency() -> bool {
+    let workspace = objc2_app_kit::NSWorkspace::sharedWorkspace();
+    // SAFETY: a BOOL property of NSWorkspace (NSWorkspaceAccessibilityDisplay), read on the
+    // main thread.
+    unsafe { objc2::msg_send![&*workspace, accessibilityDisplayShouldReduceTransparency] }
+}
+
+/// Resolves the default macOS application bundle for `path` (main thread only).
+pub fn default_application(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let url = objc2_foundation::NSURL::from_file_path(path)?;
+    let app = objc2_app_kit::NSWorkspace::sharedWorkspace().URLForApplicationToOpenURL(&url)?;
+    app.to_file_path()
+}
+
+/// Resolves and caches a macOS application bundle icon as PNG bytes (main thread only).
+pub fn application_icon(application: &std::path::Path) -> Option<std::sync::Arc<gpui::Image>> {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex, OnceLock};
+
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, Option<Arc<gpui::Image>>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(guard) = cache.lock()
+        && let Some(cached) = guard.get(application)
+    {
+        return cached.as_ref().map(Arc::clone);
+    }
+    let resolved = resolve_application_icon(application);
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(application.to_path_buf(), resolved.as_ref().map(Arc::clone));
+    }
+    resolved
+}
+
+fn resolve_application_icon(application: &std::path::Path) -> Option<std::sync::Arc<gpui::Image>> {
+    use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSWorkspace};
+    use objc2_foundation::{NSDictionary, NSString};
+
+    let path = NSString::from_str(application.to_str()?);
+    let image = NSWorkspace::sharedWorkspace().iconForFile(&path);
+    let data = image.TIFFRepresentation()?;
+    let bitmap = NSBitmapImageRep::imageRepWithData(&data)?;
+    // SAFETY: An empty dictionary contains no incorrectly typed property values.
+    let png = unsafe {
+        bitmap.representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new())
+    }?;
+    Some(std::sync::Arc::new(gpui::Image::from_bytes(
+        gpui::ImageFormat::Png,
+        png.to_vec(),
+    )))
+}
+
 /// Starts reading `text` aloud with the system voice.
 pub fn speak(text: &str) -> std::io::Result<Speech> {
     use std::io::Write as _;

@@ -68,7 +68,10 @@ impl Instructions {
     fn section(&self) -> Option<PromptSection> {
         self.body
             .clone() // rules-allow: prompt_section borrows the middleware and PromptSection owns its body
-            .map(|body| PromptSection::titled(text::DEFINITION.prompt_title.as_str(), body))
+            .map(|body| {
+                PromptSection::titled(text::DEFINITION.prompt_title.as_str(), body)
+                    .with_context_kind(crate::protocol::ContextPartKind::Instructions)
+            })
     }
 }
 

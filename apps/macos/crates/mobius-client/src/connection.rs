@@ -339,19 +339,19 @@ type Sent = std::result::Result<(), Box<mpsc::error::SendError<Update>>>;
 type DialResult = Result<(Endpoint, String, GatewayClient)>;
 type Dial = Pin<Box<dyn Future<Output = DialResult> + Send>>;
 
-/// Adds the host's Cloud admission to an endpoint; self-hosted endpoints pass through.
+/// Adds the host's remote admission to an endpoint; direct endpoints pass through.
 pub type Admission = fn(Endpoint) -> Result<Endpoint>;
 
 static ADMISSION: std::sync::OnceLock<Admission> = std::sync::OnceLock::new();
 
-/// Installs the host's Cloud admission, once, before the first connection.
+/// Installs the host's remote admission, once, before the first connection.
 pub fn set_admission(admission: Admission) {
     if ADMISSION.set(admission).is_err() {
-        tracing::warn!("Cloud admission was already installed; keeping the first");
+        tracing::warn!("Remote admission was already installed; keeping the first");
     }
 }
 
-/// `endpoint` with the host's Cloud admission; without a host, unchanged.
+/// `endpoint` with the host's remote admission; without a host, unchanged.
 fn admit(endpoint: Endpoint) -> Result<Endpoint> {
     match ADMISSION.get() {
         Some(admit) => admit(endpoint),
@@ -359,7 +359,7 @@ fn admit(endpoint: Endpoint) -> Result<Endpoint> {
     }
 }
 
-const CLOUD_OPEN_TIMEOUT: Duration = Duration::from_secs(120);
+const REMOTE_OPEN_TIMEOUT: Duration = Duration::from_secs(120);
 pub(super) const MAX_BACKGROUND_JOBS: usize = 64;
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -1141,9 +1141,9 @@ pub(super) async fn connect_as(
     })?
 }
 
-fn opening_timeout(cloud_admission: bool, pairing: bool) -> Duration {
-    if cloud_admission {
-        CLOUD_OPEN_TIMEOUT
+fn opening_timeout(remote_admission: bool, pairing: bool) -> Duration {
+    if remote_admission {
+        REMOTE_OPEN_TIMEOUT
     } else {
         Duration::from_secs(if pairing { 30 } else { 15 })
     }

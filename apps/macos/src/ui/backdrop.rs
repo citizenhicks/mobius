@@ -89,7 +89,7 @@ impl Source {
 
 /// The texture over the picture or desktop: none, a fine dot matrix, or scanlines over the
 /// page that fade down the window.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Texture {
     Off,
@@ -107,27 +107,6 @@ impl Texture {
             Self::Dots => "Dots",
             Self::Lines => "Lines",
         }
-    }
-}
-
-/// Reads a texture, or the earlier `pixel` switch: on was the dot matrix.
-impl<'de> Deserialize<'de> for Texture {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Saved {
-            Pixel(bool),
-            Texture(String),
-        }
-        Ok(match Saved::deserialize(deserializer)? {
-            Saved::Pixel(true) => Self::Dots,
-            Saved::Pixel(false) => Self::Off,
-            Saved::Texture(name) => match name.as_str() {
-                "off" => Self::Off,
-                "dots" => Self::Dots,
-                _ => Self::Lines,
-            },
-        })
     }
 }
 
@@ -194,7 +173,6 @@ pub struct Background {
     pub picture_opacity: Opacity,
     /// Cards and the composer blur the picture behind them.
     pub frosted: bool,
-    #[serde(alias = "pixel")]
     pub texture: Texture,
 }
 
@@ -397,10 +375,7 @@ fn release(pictures: &Pictures, cx: &mut App) {
 
 /// macOS Accessibility → Display → Reduce transparency.
 fn reduce_transparency() -> bool {
-    let workspace = objc2_app_kit::NSWorkspace::sharedWorkspace();
-    // SAFETY: a BOOL property of NSWorkspace (NSWorkspaceAccessibilityDisplay), read on the
-    // main thread.
-    unsafe { objc2::msg_send![&*workspace, accessibilityDisplayShouldReduceTransparency] }
+    crate::host::platform::reduce_transparency()
 }
 
 /// What surfaces paint behind themselves.
@@ -836,10 +811,10 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn the_earlier_pixel_switch_loads_as_a_texture() {
+    fn texture_deserializes_known_variants_and_defaults() {
         let texture = |json: &str| serde_json::from_str::<Background>(json).unwrap().texture;
-        assert_eq!(texture(r#"{"pixel":true}"#), Texture::Dots);
-        assert_eq!(texture(r#"{"pixel":false}"#), Texture::Off);
+        assert_eq!(texture(r#"{"texture":"dots"}"#), Texture::Dots);
+        assert_eq!(texture(r#"{"texture":"off"}"#), Texture::Off);
         assert_eq!(texture(r#"{"texture":"lines"}"#), Texture::Lines);
         assert_eq!(texture("{}"), Texture::Lines);
     }

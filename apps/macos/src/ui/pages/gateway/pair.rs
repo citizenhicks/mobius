@@ -51,7 +51,7 @@ impl Workspace {
                             div()
                                 .typography(Type::Caption)
                                 .text_color(muted)
-                                .child("Enter the address and one-time code from the gateway you want to use. For möbius Cloud, create the code in the iPhone or iPad app. Bots are AI agents. They can make mistakes. Review important answers and actions."),
+                                .child("Enter the address and one-time code from the remote gateway you want to use. Bots are AI agents. They can make mistakes. Review important answers and actions."),
                         )
                         .child(labelled("Gateway address", text_field(&endpoint).aria_label("Gateway address"), muted))
                         .child(labelled("One-time code", text_field(&code).aria_label("One-time code"), muted))

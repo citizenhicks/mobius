@@ -1,9 +1,8 @@
 //! Native macOS opening and path actions shared by every file viewer.
 use super::*;
 use gpui_component::button::{ButtonCustomVariant, ButtonVariant};
-use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSWorkspace};
-use objc2_foundation::{NSDictionary, NSString, NSURL};
-use std::path::{Path, PathBuf};
+
+use std::path::PathBuf;
 use std::sync::Arc;
 
 /// A native preview's local backing file and its original, user-facing path.
@@ -24,10 +23,10 @@ impl FileDoc {
     }
 
     pub(super) fn new(path: PathBuf, display_path: String) -> Self {
-        let default_application = NSURL::from_file_path(&path)
-            .and_then(|url| NSWorkspace::sharedWorkspace().URLForApplicationToOpenURL(&url))
-            .and_then(|url| url.to_file_path());
-        let application_icon = default_application.as_deref().and_then(application_icon);
+        let default_application = crate::host::platform::default_application(&path);
+        let application_icon = default_application
+            .as_deref()
+            .and_then(crate::host::platform::application_icon);
         Self {
             path,
             display_path,
@@ -108,20 +107,4 @@ impl Workspace {
                     .on_click(move |_, _, cx| cx.reveal_path(&reveal)),
             )
     }
-}
-
-/// AppKit resolves bundle icons, including custom and system application icons.
-fn application_icon(application: &Path) -> Option<Arc<gpui::Image>> {
-    let path = NSString::from_str(application.to_str()?);
-    let image = NSWorkspace::sharedWorkspace().iconForFile(&path);
-    let data = image.TIFFRepresentation()?;
-    let bitmap = NSBitmapImageRep::imageRepWithData(&data)?;
-    // SAFETY: An empty dictionary contains no incorrectly typed property values.
-    let png = unsafe {
-        bitmap.representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new())
-    }?;
-    Some(Arc::new(gpui::Image::from_bytes(
-        gpui::ImageFormat::Png,
-        png.to_vec(),
-    )))
 }

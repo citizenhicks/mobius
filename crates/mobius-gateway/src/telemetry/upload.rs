@@ -46,8 +46,8 @@ impl Telemetry {
                     "upload".into(),
                     json!({"request_id": request_id, "bytes": bytes}),
                 );
-                // ponytail: Cloud admits from a fresh snapshot; concurrent writes can exceed
-                // the soft allowance. Add Cloud reservations only if an exact cap is required.
+                // ponytail: remote admission checks a fresh snapshot; concurrent writes can exceed
+                // the soft allowance. Add reservations only if an exact cap is required.
                 let (status, body) = deliver(&host.telemetry, sink, &envelope, 4096)
                     .await
                     .map_err(unavailable_after("upload admission delivery failed"))?;
@@ -93,6 +93,6 @@ fn unavailable_after<E: std::fmt::Display>(context: &'static str) -> impl FnOnce
 fn unavailable() -> Rejection {
     Rejection::new(
         "upload_admission_unavailable",
-        "Cloud storage could not be checked. Try uploading again.",
+        "Remote storage could not be checked. Try uploading again.",
     )
 }

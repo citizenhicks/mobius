@@ -11,7 +11,6 @@ pub enum Appearance {
     #[default]
     System,
     Light,
-    #[serde(alias = "lights_out")]
     Dark,
 }
 

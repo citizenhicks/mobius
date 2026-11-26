@@ -396,7 +396,9 @@ impl Extensions {
                 location.as_ref(),
             ])?);
         }
-        Ok(Some(PromptSection::new(body)))
+        Ok(Some(PromptSection::new(body).with_context_kind(
+            crate::protocol::ContextPartKind::Skills,
+        )))
     }
 
     async fn run_hooks(

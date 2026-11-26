@@ -32,15 +32,10 @@ pub(crate) struct ContextEstimate {
 
 impl ContextEstimate {
     /// The system prompt's sections, from the bytes each middleware contributed.
-    pub(crate) fn prompt(sizes: &[(&str, usize)], estimate: TokenEstimate) -> Self {
+    pub(crate) fn prompt(sizes: &[(ContextPartKind, usize)], estimate: TokenEstimate) -> Self {
         let mut prompt = Self::default();
-        for (owner, bytes) in sizes {
-            let kind = match *owner {
-                "instructions" => ContextPartKind::Instructions,
-                "extensions" => ContextPartKind::Skills,
-                _ => ContextPartKind::Capabilities,
-            };
-            prompt.add(kind, estimate.tokens(*bytes));
+        for &(kind, bytes) in sizes {
+            prompt.add(kind, estimate.tokens(bytes));
         }
         prompt
     }
