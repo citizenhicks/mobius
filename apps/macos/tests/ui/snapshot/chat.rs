@@ -358,7 +358,7 @@ pub(super) const SCENARIOS: &[Scenario] = &[
                 _ => None,
             });
             if let Some(diff) = diff {
-                this.open_turn_changes(&diff, cx);
+                this.open_turn_changes(&diff, None, cx);
             }
         });
     }),

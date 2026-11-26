@@ -288,26 +288,45 @@ impl Session {
 
     async fn screencast_frame(
         &mut self,
-        message: &Value,
+        mut message: Value,
         watched: Option<&str>,
         events: &mpsc::Sender<BrowserEvent>,
     ) -> anyhow::Result<()> {
-        let Some(page) = message["sessionId"].as_str() else {
+        let Some(Value::String(page)) = message.get_mut("sessionId").map(Value::take) else {
             return Ok(());
         };
-        let params = &message["params"];
+        let is_watched = watched == Some(page.as_str());
+        let ack_session = message
+            .pointer_mut("/params/sessionId")
+            .map_or(Value::Null, Value::take);
         // ACKs and decoded frames stop advancing when the tab's event queue fills.
         self.send(
             "Page.screencastFrameAck",
-            json!({"sessionId": params["sessionId"]}),
-            Some(page),
+            json!({"sessionId": ack_session}),
+            Some(&page),
         )
         .await?;
-        if watched == Some(page)
-            && let Some(image) = params["data"].as_str().and_then(decode)
-        {
-            let metadata = &params["metadata"];
-            let size = |key: &str| metadata[key].as_f64().unwrap_or_default().to_f32();
+        if !is_watched {
+            return Ok(());
+        }
+        let Some(Value::String(data)) = message.pointer_mut("/params/data").map(Value::take) else {
+            return Ok(());
+        };
+        // Offload CPU-bound base64/JPEG decoding so screencast frames never stall shared
+        // async I/O workers handling gateway traffic.
+        let image = tokio::task::spawn_blocking(move || decode(&data))
+            .await
+            .ok()
+            .flatten();
+        if let Some(image) = image {
+            let metadata = message.pointer("/params/metadata");
+            let size = |key: &str| {
+                metadata
+                    .and_then(|meta| meta.get(key))
+                    .and_then(Value::as_f64)
+                    .unwrap_or_default()
+                    .to_f32()
+            };
             events
                 .send(BrowserEvent::Frame {
                     image,
@@ -397,7 +416,7 @@ async fn stream(
                         }
                     }
                     Some("Page.screencastFrame") => {
-                        session.screencast_frame(&message, watched.as_ref().filter(|_| visible).map(|(_, page)| page.as_str()), events).await?;
+                        session.screencast_frame(message, watched.as_ref().filter(|_| visible).map(|(_, page)| page.as_str()), events).await?;
                     }
                     _ => {}
                 }

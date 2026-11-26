@@ -2,6 +2,8 @@
 
 use super::*;
 use gpui_component::WindowExt;
+use std::cell::Cell;
+use std::rc::Rc;
 
 impl Workspace {
     /// Asks for another gateway's address and one-time code, then pairs and connects.
@@ -19,25 +21,23 @@ impl Workspace {
             input.set_masked(true, window, cx);
         });
         let view = cx.entity().downgrade();
-        let muted = self.palette.muted;
+        let (muted, danger) = (self.palette.muted, self.palette.danger);
+        let missing = Rc::new(Cell::new(false));
         let focus = Entity::clone(&endpoint);
         window.open_dialog(cx, move |dialog, _, _| {
             let submit = {
-                let (endpoint, code, view) = (
+                let (endpoint, code, view, missing) = (
                     Entity::clone(&endpoint),
                     Entity::clone(&code),
                     WeakEntity::clone(&view),
+                    Rc::clone(&missing),
                 );
-                move |_: &mut Window, cx: &mut App| {
+                move |window: &mut Window, cx: &mut App| {
                     let address = endpoint.read(cx).value().trim().to_owned();
                     let secret = code.read(cx).value().trim().to_owned();
                     if address.is_empty() || secret.is_empty() {
-                        if let Err(error) = view.update(cx, |this, cx| {
-                            this.report("Enter the gateway address and its one-time code.");
-                            cx.notify();
-                        }) {
-                            tracing::debug!(%error, "the workspace closed before pairing validation");
-                        }
+                        missing.set(true);
+                        window.refresh();
                         return false;
                     }
                     view.update(cx, |this, cx| this.pair_gateway(address, secret, cx))
@@ -56,10 +56,18 @@ impl Workspace {
                             div()
                                 .typography(Type::Caption)
                                 .text_color(muted)
-                                .child("Enter the address and one-time code from the remote gateway you want to use. Bots are AI agents. They can make mistakes. Review important answers and actions."),
+                                .child("Enter the address and one-time code from the gateway you want to use. For möbius Cloud, create the code in the iPhone or iPad app. Bots are AI agents. They can make mistakes. Review important answers and actions."),
                         )
                         .child(labelled("Gateway address", text_field(&endpoint).aria_label("Gateway address"), muted))
-                        .child(labelled("One-time code", text_field(&code).aria_label("One-time code"), muted)),
+                        .child(labelled("One-time code", text_field(&code).aria_label("One-time code"), muted))
+                        .when(missing.get(), |body| {
+                            body.child(
+                                div()
+                                    .typography(Type::Caption)
+                                    .text_color(danger)
+                                    .child("Enter the gateway address and its one-time code."),
+                            )
+                        }),
                 )
                 .map(|dialog| dialog_actions(dialog, "Pair", true, submit))
         });

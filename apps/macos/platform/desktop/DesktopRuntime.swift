@@ -149,9 +149,10 @@ final class DesktopRuntime {
         }
     }
 
-    /// Only poll TCC permissions while enabled and still waiting for user approval in System Settings.
+    /// Poll TCC permissions while desktop control is enabled so grants and background revocations
+    /// are detected promptly, while stopping completely when disabled.
     private func syncPermissionMonitor() {
-        guard enabled && !hasPermissions else {
+        guard enabled else {
             permissionMonitor?.cancel()
             permissionMonitor = nil
             return

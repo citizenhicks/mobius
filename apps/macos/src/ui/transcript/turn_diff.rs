@@ -112,7 +112,8 @@ impl Workspace {
                     .enumerate()
                     .map(|(index, file)| {
                         let file_diff = Rc::clone(&diff);
-                        let path = file.path().to_owned();
+                        let path = SharedString::clone(file.path());
+                        let selected = SharedString::clone(&path);
                         diff_row()
                             .id(SharedString::from(format!("{id}:file:{index}")))
                             .cursor_pointer()
@@ -131,7 +132,7 @@ impl Workspace {
                                 ),
                             ))
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                this.open_turn_changes(&file_diff, cx);
+                                this.open_turn_changes(&file_diff, Some(selected.as_ref()), cx);
                             }))
                     }),
             )
@@ -146,7 +147,9 @@ impl Workspace {
                     .hover(move |row| row.text_color(p.text))
                     .child(div().flex_1().child(details))
                     .child(icon("hi.caretRight", &palette(cx)).size(glyph::INLINE))
-                    .on_click(cx.listener(move |this, _, _, cx| this.open_turn_changes(&diff, cx))),
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.open_turn_changes(&diff, None, cx);
+                    })),
             )
     }
 }

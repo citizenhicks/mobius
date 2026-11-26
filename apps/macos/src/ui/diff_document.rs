@@ -105,7 +105,11 @@ fn relative_paths(source: &str, root: &str) -> String {
     out
 }
 
-fn relative<'p>(root: &str, path: &'p str) -> &'p str {
+pub(in crate::ui) fn relative<'p>(root: &str, path: &'p str) -> &'p str {
+    let root = root.trim_end_matches('/');
+    if root.is_empty() {
+        return path;
+    }
     path.strip_prefix(root)
         .and_then(|path| path.strip_prefix('/'))
         .unwrap_or(path)

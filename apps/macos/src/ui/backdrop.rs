@@ -8,9 +8,8 @@ use crate::numeric::{Saturating, ToFloat};
 use anyhow::Context as _;
 use image::{ImageReader, RgbaImage, imageops};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::cell::RefCell;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use theme::Veil;
 
 /// What fills the window behind the interface.
@@ -647,138 +646,35 @@ pub(super) fn layer(p: &Palette, cx: &App) -> Div {
         .child(div().absolute().inset_0().bg(p.chrome))
 }
 
-/// Tile side for the cached desktop dot-matrix gutter texture (a multiple of `DOT_CELL`).
-const DOT_TILE_SIDE: u32 = 512;
-
-fn desktop_dot_tile() -> &'static Arc<RenderImage> {
-    static TILE: OnceLock<Arc<RenderImage>> = OnceLock::new();
-    TILE.get_or_init(|| {
-        let mut image = RgbaImage::new(DOT_TILE_SIDE, DOT_TILE_SIDE);
-        let alpha = ((1. - DOT_GUTTER) * 255.).round().saturating_u8();
-        let gutter = image::Rgba([0, 0, 0, alpha]);
-        for y in 0..DOT_TILE_SIDE {
-            let row_edge = y % DOT_CELL == DOT_CELL - 1;
-            for x in 0..DOT_TILE_SIDE {
-                if row_edge || x % DOT_CELL == DOT_CELL - 1 {
-                    image.put_pixel(x, y, gutter);
-                }
-            }
-        }
-        texture(image)
-    })
-}
-
-#[derive(Clone, Copy, Eq, PartialEq)]
-struct ScanlineKey {
-    alpha_bits: u32,
-    window_height_px: u32,
-    scale_bits: u32,
-}
-
-struct ScanlineCache {
-    key: ScanlineKey,
-    fade_height: f32,
-    image: Arc<RenderImage>,
-}
-
-thread_local! {
-    static SCANLINE_CACHE: RefCell<Option<ScanlineCache>> = const { RefCell::new(None) };
-}
-
-fn scanline_strip(
-    base_alpha: f32,
-    window_height: f32,
-    scale: f32,
-    window: &mut Window,
-    cx: &mut App,
-) -> Option<(f32, Arc<RenderImage>)> {
-    let fade_height = (window_height * LINE_FADE).max(0.);
-    let strip_px = (fade_height * scale).ceil().saturating_u32();
-    if strip_px == 0 {
-        return None;
-    }
-    let key = ScanlineKey {
-        alpha_bits: base_alpha.to_bits(),
-        window_height_px: strip_px,
-        scale_bits: scale.to_bits(),
-    };
-    let mut dropped = None;
-    let result = SCANLINE_CACHE.with(|cache| {
-        let mut slot = cache.borrow_mut();
-        if let Some(entry) = slot.as_ref()
-            && entry.key == key
-        {
-            return (entry.fade_height, Arc::clone(&entry.image));
-        }
-        let mut image = RgbaImage::new(1, strip_px);
-        for py in 0..strip_px {
-            let row_start = py.to_f32() / scale;
-            let row_end = (py + 1).to_f32() / scale;
-            let line_start = (row_start / LINE_PITCH).floor() * LINE_PITCH;
-            let line_end = line_start + LINE_WIDTH;
-            let overlap =
-                ((row_end.min(line_end) - row_start.max(line_start)).max(0.) * scale).clamp(0., 1.);
-            if overlap > 0. {
-                let fade = 1. - smoothstep(0., LINE_FADE, line_start / window_height);
-                let alpha = (base_alpha * fade * overlap * 255.).round().saturating_u8();
-                if alpha > 0 {
-                    image.put_pixel(0, py, image::Rgba([0, 0, 0, alpha]));
-                }
-            }
-        }
-        let baked = texture(image);
-        if let Some(old) = slot.replace(ScanlineCache {
-            key,
-            fade_height,
-            image: Arc::clone(&baked),
-        }) {
-            dropped = Some(old.image);
-        }
-        (fade_height, baked)
-    });
-    if let Some(old) = dropped {
-        cx.drop_image(old, Some(window));
-    }
-    Some(result)
-}
-
 /// Native desktop blur stays live; only its dot-matrix gutters are painted here.
 fn desktop_texture(cx: &App) -> Option<Div> {
     let scenery = cx.try_global::<Scenery>()?;
     if !scenery.desktop || scenery.texture != Texture::Dots {
         return None;
     }
-    let tile = Arc::clone(desktop_dot_tile());
     Some(
         div().absolute().inset_0().child(
             canvas(
                 |_, _, _| {},
-                move |bounds, (), window, _| {
-                    let step = DOT_TILE_SIDE.to_f32();
-                    let width = f32::from(bounds.size.width);
-                    let height = f32::from(bounds.size.height);
-                    let mut y = 0.;
-                    while y < height {
-                        let mut x = 0.;
-                        while x < width {
-                            let dest = Bounds::new(
-                                bounds.origin + point(px(x), px(y)),
-                                size(px(step), px(step)),
-                            );
-                            if let Err(error) = window.paint_image(
-                                bounds,
-                                dest,
-                                Corners::default(),
-                                Arc::clone(&tile),
-                                0,
-                                false,
-                            ) {
-                                tracing::debug!(%error, "the dot-matrix tile did not upload");
-                                return;
-                            }
-                            x += step;
-                        }
-                        y += step;
+                |bounds, (), window, _| {
+                    let gutter = gpui::black().alpha(1. - DOT_GUTTER);
+                    for x in (DOT_CELL - 1..f32::from(bounds.size.width).ceil().saturating_u32())
+                        .step_by(DOT_CELL as usize)
+                    {
+                        let stripe = Bounds::new(
+                            bounds.origin + point(px(x.to_f32()), px(0.)),
+                            size(px(1.), bounds.size.height),
+                        );
+                        window.paint_quad(fill(stripe, gutter));
+                    }
+                    for y in (DOT_CELL - 1..f32::from(bounds.size.height).ceil().saturating_u32())
+                        .step_by(DOT_CELL as usize)
+                    {
+                        let stripe = Bounds::new(
+                            bounds.origin + point(px(0.), px(y.to_f32())),
+                            size(bounds.size.width, px(1.)),
+                        );
+                        window.paint_quad(fill(stripe, gutter));
                     }
                 },
             )
@@ -794,30 +690,27 @@ pub(super) fn scanlines(cx: &App) -> Option<Div> {
     if scenery.texture != Texture::Lines || !(scenery.desktop || scenery.pictures.is_some()) {
         return None;
     }
-    let base_alpha = scenery.lines.a;
+    let lines = scenery.lines;
     Some(
         div().absolute().inset_0().child(
             canvas(
                 |_, _, _| {},
-                move |bounds, (), window, cx| {
+                move |bounds, (), window, _| {
                     let window_height = f32::from(window.viewport_size().height).max(1.);
-                    let scale = window.scale_factor().max(1.);
-                    let Some((fade_height, strip)) =
-                        scanline_strip(base_alpha, window_height, scale, window, cx)
-                    else {
-                        return;
-                    };
-                    if f32::from(bounds.origin.y) >= fade_height {
-                        return;
-                    }
-                    let dest = Bounds::new(
-                        point(bounds.origin.x, px(0.)),
-                        size(bounds.size.width, px(fade_height)),
-                    );
-                    if let Err(error) =
-                        window.paint_image(bounds, dest, Corners::default(), strip, 0, false)
-                    {
-                        tracing::debug!(%error, "the scanline strip did not upload");
+                    let top = f32::from(bounds.origin.y);
+                    let bottom =
+                        (top + f32::from(bounds.size.height)).min(window_height * LINE_FADE);
+                    let mut y = (top / LINE_PITCH).ceil() * LINE_PITCH;
+                    // Rendered as instanced quads so sub-pixel hairlines stay crisp without
+                    // unpadded texture-atlas linear filtering bleed.
+                    while y < bottom {
+                        let fade = 1. - smoothstep(0., LINE_FADE, y / window_height);
+                        let line = Bounds::new(
+                            point(bounds.origin.x, px(y)),
+                            size(bounds.size.width, px(LINE_WIDTH)),
+                        );
+                        window.paint_quad(fill(line, lines.alpha(lines.a * fade)));
+                        y += LINE_PITCH;
                     }
                 },
             )

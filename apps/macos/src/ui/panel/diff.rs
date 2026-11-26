@@ -188,7 +188,9 @@ impl Workspace {
             MenuChoice::new(
                 TURN,
                 doc.scope.is_none(),
-                cx.listener(move |this, _, _, cx| this.show_turn_changes(session.share(), cx)),
+                cx.listener(move |this, _, _, cx| {
+                    this.show_turn_changes(session.share(), None, cx);
+                }),
             )
         });
         let git = SCOPES.iter().map(|(label, scope)| {
@@ -347,7 +349,12 @@ impl Workspace {
 
 impl Workspace {
     /// Shows the chat's last opened turn changes in its Changes tab, as "This turn".
-    pub(in crate::ui) fn show_turn_changes(&mut self, session: SessionId, cx: &mut Context<Self>) {
+    pub(in crate::ui) fn show_turn_changes(
+        &mut self,
+        session: SessionId,
+        selected_path: Option<&str>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(text) = self.turn_changes(&session) else {
             return;
         };
@@ -359,12 +366,17 @@ impl Workspace {
             .filter(|open| *open.session.session_id == *session)
             .and_then(|open| open.workspace.as_ref())
             .map_or_default(|workspace| workspace.path.to_string_lossy().into_owned());
+        let mut doc = DiffDoc::turn(session.share(), &text, &root, cx);
+        if let Some(path) = selected_path {
+            doc.select_path(crate::ui::diff_document::relative(&root, path));
+        }
+        let id: Arc<str> = format!("{session}:diff").into();
         self.open_content_for(
-            TabOwner::Chat(session.share()),
+            TabOwner::Chat(session),
             ContentTab {
-                id: format!("{session}:diff").into(),
+                id,
                 title: "Changes".into(),
-                content: TabContent::Diff(DiffDoc::turn(session, &text, &root, cx)),
+                content: TabContent::Diff(doc),
             },
             cx,
         );

@@ -43,8 +43,10 @@ static SHARED_RUNTIME: OnceLock<std::result::Result<tokio::runtime::Runtime, Str
 /// Returns an error if the shared Tokio runtime could not be initialized.
 pub fn shared_runtime() -> mobius_gateway::Result<&'static tokio::runtime::Handle> {
     let runtime = SHARED_RUNTIME.get_or_init(|| {
+        let workers =
+            std::thread::available_parallelism().map_or(4, |count| count.get().clamp(2, 4));
         tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
+            .worker_threads(workers)
             .thread_name("mobius-async")
             .enable_all()
             .build()

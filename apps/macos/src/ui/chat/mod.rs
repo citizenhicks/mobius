@@ -231,8 +231,13 @@ impl Workspace {
 }
 
 impl Workspace {
-    /// Opens a turn's changes (its card's "View all changes") in the chat's Changes tab.
-    pub(in crate::ui) fn open_turn_changes(&mut self, diff: &str, cx: &mut Context<Self>) {
+    /// Opens a turn's changes (optionally focused on `selected_path`) in the chat's Changes tab.
+    pub(in crate::ui) fn open_turn_changes(
+        &mut self,
+        diff: &str,
+        selected_path: Option<&str>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(session) = self
             .client
             .state
@@ -243,7 +248,7 @@ impl Workspace {
             return;
         };
         self.chat_ui.turn_changes = Some((session.share(), diff.into()));
-        self.show_turn_changes(session, cx);
+        self.show_turn_changes(session, selected_path, cx);
     }
 
     /// The room the floating composer takes at the foot of the chat's transcript.
