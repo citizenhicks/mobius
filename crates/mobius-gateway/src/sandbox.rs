@@ -662,6 +662,7 @@ mod tests {
             provider_credential_environment().collect::<BTreeSet<_>>(),
             BTreeSet::from([
                 "A2AGENT_API_KEY",
+                "AIMLAPI_API_KEY",
                 "ANTHROPIC_API_KEY",
                 "DEEPSEEK_API_KEY",
                 "MISTRAL_API_KEY",

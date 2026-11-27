@@ -22,6 +22,7 @@ use crate::protocol::{
 
 pub mod a2agent;
 mod admission;
+pub mod aimlapi;
 pub mod anthropic;
 mod authorization;
 mod cancellation;

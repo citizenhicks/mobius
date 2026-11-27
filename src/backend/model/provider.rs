@@ -1071,7 +1071,7 @@ impl std::fmt::Display for BaseUrl {
     }
 }
 
-static PROVIDERS: std::sync::LazyLock<[ProviderDefinition; 9]> = std::sync::LazyLock::new(|| {
+static PROVIDERS: std::sync::LazyLock<[ProviderDefinition; 10]> = std::sync::LazyLock::new(|| {
     [
         super::openai_socket::provider(),
         super::openai_codex::provider(),
@@ -1079,6 +1079,7 @@ static PROVIDERS: std::sync::LazyLock<[ProviderDefinition; 9]> = std::sync::Lazy
         super::kimi::provider(),
         super::mistral::provider(),
         super::openrouter::provider(),
+        super::aimlapi::provider(),
         super::a2agent::provider(),
         super::anthropic::provider(),
         super::openai::generic_provider(),
@@ -1188,6 +1189,7 @@ mod tests {
             "openai_socket",
             "responses",
             "openrouter",
+            "aimlapi",
             "a2agent",
             "anthropic",
             "deepseek",
