@@ -8,6 +8,7 @@ final class NativeStatusItem: NSObject {
     static let shared = NativeStatusItem()
     private var item: NSStatusItem?
     private var usage: [NSMenuItem] = []
+    private var termination: DispatchSourceSignal?
 
     /// Installs the item once, drawing `icon` (SVG) as a template image.
     func install(icon: Data) {
@@ -26,6 +27,14 @@ final class NativeStatusItem: NSObject {
         menu.addItem(entry("Quit möbius", #selector(quit), key: "q"))
         item.menu = menu
         self.item = item
+        // `kill` quits like the menu item does, so GPUI's quit observers run.
+        // The source fires whatever handler Chromium installs later; ignoring the signal only
+        // stops the default action from killing the process before the source runs.
+        signal(SIGTERM, SIG_IGN)
+        let termination = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        termination.setEventHandler { NSApp.terminate(nil) }
+        termination.resume()
+        self.termination = termination
     }
 
     private func entry(_ title: String, _ action: Selector, key: String = "") -> NSMenuItem {
