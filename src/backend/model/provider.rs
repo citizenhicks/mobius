@@ -1073,13 +1073,13 @@ impl std::fmt::Display for BaseUrl {
 
 static PROVIDERS: std::sync::LazyLock<[ProviderDefinition; 10]> = std::sync::LazyLock::new(|| {
     [
+        super::aimlapi::provider(),
         super::openai_socket::provider(),
         super::openai_codex::provider(),
         super::deepseek::provider(),
         super::kimi::provider(),
         super::mistral::provider(),
         super::openrouter::provider(),
-        super::aimlapi::provider(),
         super::a2agent::provider(),
         super::anthropic::provider(),
         super::openai::generic_provider(),

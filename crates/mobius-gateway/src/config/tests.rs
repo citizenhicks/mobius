@@ -822,3 +822,40 @@ fn persisted_config_and_credentials_reject_fifos_without_a_writer() {
     };
     assert!(error.to_string().contains("regular file"));
 }
+
+#[test]
+fn aimlapi_default_leaves_saved_provider_defaults_unchanged() {
+    let fresh = AgentComposition::default().provider;
+    assert_eq!(fresh.provider, "aimlapi");
+    assert_eq!(fresh.model, "openai/gpt-6.1-sol");
+
+    let root = tempfile::tempdir().expect("temporary directory");
+    let state = root.path().join("state");
+    ConfigStore::initialize(state.clone(), DEFAULT_LISTEN, None).expect("initialize gateway");
+    let (store, config) = ConfigStore::open(state.clone()).expect("open gateway");
+    let openai = crate::config::test_provider("openai", "openai_socket", "gpt-6.1-sol");
+    let saved = config
+        .registering_provider(
+            openai.clone(),
+            "Test".into(),
+            Default::default(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("register OpenAI")
+        .validated()
+        .expect("valid gateway");
+    store.save(&saved).expect("save gateway");
+
+    let (_, reopened) = ConfigStore::open(state).expect("reopen gateway");
+    assert_eq!(reopened.configured_providers["openai"].selection, openai);
+    assert_eq!(
+        reopened
+            .bot_defaults
+            .as_ref()
+            .expect("saved Bot defaults")
+            .config
+            .provider,
+        openai
+    );
+}
