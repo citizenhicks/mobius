@@ -1,6 +1,6 @@
 [package]
 name = "mobius-desktop"
-version = "0.17.20"
+version = "0.17.22"
 edition.workspace = true
 rust-version.workspace = true
 publish = false
@@ -8,7 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [package.metadata.bundle]
-build-number = 68
+build-number = 69
 
 [[bin]]
 name = "mobius-desktop"

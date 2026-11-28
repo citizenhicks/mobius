@@ -53,9 +53,9 @@ clap = { version = "4.6.7", features = ["derive"] }
 diffy = "0.4.2"
 futures-util = { version = "0.3", features = ["sink"] }
 gpui = { package = "gpui-fast", version = "=0.1.17" }
-mobius = { version = "=0.17.21", path = "crates/mobius" }
+mobius = { version = "=0.17.22", path = "crates/mobius" }
 mobius-client = { path = "crates/mobius-client" }
-mobius-gateway = { version = "=0.17.21", path = "crates/mobius-gateway" }
+mobius-gateway = { version = "=0.17.22", path = "crates/mobius-gateway" }
 rusqlite = { version = "0.43", default-features = false, features = ["bundled", "cache"] }
 serde = { version = "1", features = ["derive", "rc"] }
 # Use the same JSON object ordering in standalone and desktop builds.
