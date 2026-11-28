@@ -102,7 +102,7 @@ enum Outcome {
 impl Outcome {
     fn tool_output(&self) -> Value {
         match self {
-            Self::Answered { text, .. } => serde_json::json!({"status":"answered", "answer":text}),
+            Self::Answered { text, .. } => serde_json::json!({"answer":text, "status":"answered"}),
             Self::Skipped { .. } => serde_json::json!({"status":"no_answer"}),
         }
     }
