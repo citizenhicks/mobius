@@ -25,7 +25,7 @@ gpui = { package = "gpui-fast", version = "=0.1.17" }
 # Chromium, embedded: one pinned CEF build shared by the app and its helper processes.
 cef = { version = "=156.7.0", default-features = false, features = ["sandbox"] }
 # The framework and gateway this app speaks to, from the same repository.
-mobius = { path = "../.." }
+mobius = { path = "../../crates/mobius" }
 mobius-gateway = { path = "../../crates/mobius-gateway" }
 mobius-client = { path = "crates/mobius-client" }
 

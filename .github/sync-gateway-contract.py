@@ -31,12 +31,12 @@ def main():
     protocol = re.search(r"PROTOCOL_VERSION: u16 = (\d+);", wire)[1]
     gateway = (core / "crates/mobius-gateway/Cargo.toml").read_text()
     gateway_version = re.search(r'^version = "([^"]+)"', gateway, re.M)[1]
-    core_manifest = (core / "Cargo.toml").read_text()
+    core_manifest = (core / "crates/mobius/Cargo.toml").read_text()
     core_version = re.search(r'^version = "([^"]+)"', core_manifest, re.M)[1]
     frame_bytes = re.search(r"pub const MAX_FRAME_BYTES: usize = ([^;]+);", wire)[1]
-    session_files = (core / "src/backend/session_files.rs").read_text()
+    session_files = (core / "crates/mobius/src/backend/session_files.rs").read_text()
     read_chunk = re.search(r"pub const MAX_READ_CHUNK_BYTES: usize = ([^;]+);", session_files)[1]
-    dictation_input = (core / "src/backend/model/dictation/input.rs").read_text()
+    dictation_input = (core / "crates/mobius/src/backend/model/dictation/input.rs").read_text()
     dictation_chunk = re.search(r"pub const MAX_CHUNK_BYTES: usize = ([^;]+);", dictation_input)[1]
     for swift in args.swift:
         replace(swift, r"(let gatewayProtocolVersion = )\d+()", protocol, args.check)

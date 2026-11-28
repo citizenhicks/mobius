@@ -27,7 +27,7 @@
 
 | Crate | Path | What it is | Use it when |
 | --- | --- | --- | --- |
-| [`mobius`](https://crates.io/crates/mobius) | `src/` | The agent framework: one session and its model and tool loop, with pluggable models, sandboxes, storage, and capabilities | You are building your own agent or frontend in Rust |
+| [`mobius`](https://crates.io/crates/mobius) | `crates/mobius/` | The agent framework: one session and its model and tool loop, with pluggable models, sandboxes, storage, and capabilities | You are building your own agent or frontend in Rust |
 | [`mobius-gateway`](https://crates.io/crates/mobius-gateway) | `crates/mobius-gateway/` | The headless server that runs the agents: pairing, Bots, chats, and scheduled routines | You are hosting agents for one or more clients |
 | [`mobius-cli`](https://crates.io/crates/mobius-cli) | `crates/mobius-cli/` | The `mobius` terminal client, packaged with the `mobius-gateway` executable | You want to use möbius in a terminal |
 | `mobius-desktop` | [`apps/macos/`](apps/macos/) | The native macOS app (Rust and GPUI), shipped as a signed app, not on crates.io | You want to use möbius on a Mac |
@@ -161,14 +161,14 @@ builds independent crates in parallel. Linux sandbox tests need Bubblewrap.
 
 | Path | Owns |
 | --- | --- |
-| `src/agent/` | The session and the model and tool loop |
-| `src/backend/` | Model providers, the sandbox, checkpoint storage, and session files |
-| `src/middleware/` | Optional capabilities, one module each |
-| `src/protocol/` | Frontend-neutral operations, events, and presentation records |
+| `crates/mobius/src/agent/` | The session and the model and tool loop |
+| `crates/mobius/src/backend/` | Model providers, the sandbox, checkpoint storage, and session files |
+| `crates/mobius/src/middleware/` | Optional capabilities, one module each |
+| `crates/mobius/src/protocol/` | Frontend-neutral operations, events, and presentation records |
 | `crates/mobius-gateway/` | Composition, authentication, Bots, sessions, routines, and the wire protocol |
 | `crates/mobius-cli/` | The terminal client and its rendering |
 | `apps/macos/` | The macOS app, its own Cargo workspace; see [its README](apps/macos/README.md) |
-| `tests/` | Framework integration tests |
+| `crates/mobius/tests/` | Framework integration tests |
 
 Read [AGENTS.md](https://github.com/citizenhicks/mobius/blob/main/AGENTS.md) before you
 change anything: it holds the design rules, the Rust style rules, the checks to run

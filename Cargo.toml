@@ -1,34 +1,8 @@
-[package]
-name = "mobius"
-version = "0.17.21"
-edition.workspace = true
-rust-version.workspace = true
-description = "A small, modular Rust framework for building coding agents"
-license.workspace = true
-repository.workspace = true
-documentation = "https://docs.rs/mobius"
-readme = "README.md"
-publish.workspace = true
-keywords = ["agent", "ai", "llm", "openai", "tools"]
-categories = ["asynchronous", "development-tools"]
-include = [
-    "/src/**",
-    "!/src/middleware/tools/tests/apply_patch_scenarios/**",
-    "/tests/**",
-    "/Cargo.toml",
-    "/README.md",
-    "/LICENSE",
-    "/NOTICE",
-]
-
-[lints]
-workspace = true
-
 [workspace]
-members = ["crates/mobius-cli", "crates/mobius-gateway"]
+members = ["crates/mobius", "crates/mobius-gateway", "crates/mobius-cli"]
 # The macOS app is its own workspace: CEF and the native Swift build are macOS-only.
 exclude = ["apps/macos"]
-default-members = ["crates/mobius-cli"]
+default-members = ["crates/mobius", "crates/mobius-gateway", "crates/mobius-cli"]
 resolver = "3"
 
 [profile.release]
@@ -49,7 +23,7 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.6.7", features = ["derive"] }
 diffy = "0.4.2"
 futures-util = { version = "0.3", features = ["sink"] }
-mobius = { version = "=0.17.21", path = "." }
+mobius = { version = "=0.17.21", path = "crates/mobius" }
 rusqlite = { version = "0.43", default-features = false, features = ["bundled", "cache"] }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
@@ -60,39 +34,6 @@ tokio = "1"
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 uuid = { version = "1", features = ["v4"] }
-
-[dependencies]
-base64.workspace = true
-bm25 = "2.3.2"
-cap-std = "4"
-chrono.workspace = true
-diffy.workspace = true
-futures-util.workspace = true
-reqwest = { version = "0.13", default-features = false, features = ["form", "json", "multipart", "rustls-no-provider", "stream"] }
-rustls = { version = "0.23.46", default-features = false, features = ["ring"] }
-regex = "1"
-rusqlite.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-sha2.workspace = true
-tempfile.workspace = true
-thiserror.workspace = true
-tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "process", "rt", "sync", "time"] }
-tokio-tungstenite.workspace = true
-tracing.workspace = true
-uuid.workspace = true
-toml = "1"
-image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
-
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
-
-[target.'cfg(target_os = "macos")'.dependencies]
-whichdisk = { version = "0.6", default-features = false }
-
-[dev-dependencies]
-rusqlite = { workspace = true, features = ["hooks"] }
-tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
 
 [workspace.lints.rust]
 missing_docs = "warn"

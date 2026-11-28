@@ -1,0 +1,69 @@
+möbius
+
+This product includes software derived from OpenAI Codex:
+
+OpenAI Codex
+Copyright 2025 OpenAI
+
+OpenAI Codex includes code derived from Ratatui
+(https://github.com/ratatui/ratatui), licensed under the MIT License.
+Copyright (c) 2016-2022 Florian Dehau
+Copyright (c) 2023-2025 The Ratatui Developers
+
+The möbius color palettes use Nord
+(https://github.com/nordtheme/nord), licensed under the MIT License.
+Copyright (c) 2016-present Sven Greb
+
+The gateway uses x11rb and x11rb-protocol
+(https://github.com/psychon/x11rb), licensed under the MIT License reproduced below.
+Copyright 2019 x11rb Contributers
+
+The MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without
+limitation the rights to use, copy, modify, merge, publish, distribute,
+sublicense, and/or sell copies of the Software, and to permit persons to whom
+the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+--------------------------------------------------------------------------------
+
+The separately maintained native Apple clients bundle icon artwork from HugeIcons
+(the free set), redrawn as hi.* SVG assets.
+
+  Hugeicons Core Free Icons — https://hugeicons.com
+  Copyright (c) Hugeicons
+  Licensed under the MIT License, reproduced above.
+
+The möbius logo is original first-party möbius artwork.
+
+The gateway's private desktop launcher icons for Terminal and Files are
+rasterized from GNOME Adwaita's utilities-terminal-symbolic.svg and folder.svg.
+Credit: GNOME Project (https://www.gnome.org). Adwaita offers the artwork under
+LGPL-3.0 or CC-BY-SA-3.0, and CC-BY-SA-4.0. Source and license information:
+https://gitlab.gnome.org/GNOME/adwaita-icon-theme and
+https://www.gnu.org/licenses/lgpl-3.0.html.
+
+Provider marks (ChatGPT, Claude, DeepSeek, Kimi) identify the provider a route belongs
+to. They are used nominatively to refer to those services; the underlying
+trademarks remain with their respective owners.
+
+--------------------------------------------------------------------------------
+
+The macOS app in apps/macos includes third-party fonts, icon artwork and the noVNC
+viewer, listed with their licenses in apps/macos/assets/NOTICE, and the LiveKit WebRTC
+SDK, licensed as in apps/macos/platform/resources/WebRTC-LICENSE.txt. Its builds also
+download Chromium through CEF (BSD-style licenses) and Sparkle (MIT License), which
+ship under their own license terms.

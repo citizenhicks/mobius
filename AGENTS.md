@@ -8,12 +8,12 @@ layers, parallel registries, or speculative extension points.
 
 | Path | Owns |
 | --- | --- |
-| `src/agent/` | The linear session, model, and tool loop |
-| `src/backend/model/` | Model transports, provider manifests, and routing |
-| `src/backend/sandbox/` | File and command execution boundaries and approval policy |
-| `src/backend/checkpoint/` | Durable checkpoints, journals, and session catalog |
-| `src/middleware/` | Optional capabilities and their tools, hooks, state, and UI contributions |
-| `src/protocol/` | Frontend-neutral operations, events, and presentation records |
+| `crates/mobius/src/agent/` | The linear session, model, and tool loop |
+| `crates/mobius/src/backend/model/` | Model transports, provider manifests, and routing |
+| `crates/mobius/src/backend/sandbox/` | File and command execution boundaries and approval policy |
+| `crates/mobius/src/backend/checkpoint/` | Durable checkpoints, journals, and session catalog |
+| `crates/mobius/src/middleware/` | Optional capabilities and their tools, hooks, state, and UI contributions |
+| `crates/mobius/src/protocol/` | Frontend-neutral operations, events, and presentation records |
 | `crates/mobius-gateway/` | Headless composition, auth, Bots, sessions, routines, artifacts, and usage |
 | `crates/mobius-cli/src/frontend/` | Thin terminal gateway client and rendering |
 | `apps/macos/` | The macOS app, a separate Cargo workspace; see [its AGENTS.md](apps/macos/AGENTS.md) |
@@ -81,7 +81,7 @@ module.
 ## Rust style
 
 Follow the [Google Rust style guide](https://google.github.io/styleguide/rustguide.html).
-`mobius` (`src/`) is library code, so the guide's API rules bind there. `mobius-gateway`
+`mobius` (`crates/mobius/`) is library code, so the guide's API rules bind there. `mobius-gateway`
 and `mobius-cli` are application code: prefer the direct solution over a general one.
 The rules below are the ones that apply here; the lints in `Cargo.toml` already enforce
 some of them. Where another section of this file is stricter, that section wins.
@@ -108,7 +108,7 @@ Ownership and failure:
 
 Signatures and types:
 
-- In the public API of `src/`, return `impl Iterator` when callers only iterate and accept
+- In the public API of `crates/mobius/`, return `impl Iterator` when callers only iterate and accept
   `impl IntoIterator` when the function only iterates. Use `impl Into<T>` parameters only
   there, and only where call sites clearly benefit. Application code takes concrete types.
 - A `bool` parameter whose meaning is not obvious at the call site becomes a two-variant enum.
@@ -119,7 +119,7 @@ Signatures and types:
 - Implement the standard trait rather than a look-alike method (`FromStr`, `Display`,
   `Default`, `From`), and derive rather than hand-write. Options structs with public
   fields implement `Default`.
-- In `src/`, mark public enums and public-field structs that can grow `#[non_exhaustive]`,
+- In `crates/mobius/`, mark public enums and public-field structs that can grow `#[non_exhaustive]`,
   and mark a function `#[must_use]` when dropping its result is a bug.
 
 Naming:
@@ -143,7 +143,7 @@ Inside functions:
 
 Comments and docs:
 
-- Document every public item in `src/` with `///`, including when it panics. Use `//!`
+- Document every public item in `crates/mobius/` with `///`, including when it panics. Use `//!`
   for module and crate docs.
 - A comment states what the code cannot: a reason, an invariant, or a constraint. Delete
   comments that restate the code.
@@ -157,8 +157,8 @@ frameworks, and import macro) and its unstable rustfmt options.
 ### Model provider
 
 Implement `backend::model::Model`. A built-in provider also supplies a
-`ProviderDefinition`, is exported from `src/backend/model/mod.rs`, and is added
-once to the provider list in `src/backend/model/provider.rs`. Setup and model
+`ProviderDefinition`, is exported from `crates/mobius/src/backend/model/mod.rs`, and is added
+once to the provider list in `crates/mobius/src/backend/model/provider.rs`. Setup and model
 pickers consume that manifest; do not add a provider-specific TUI menu.
 
 Test request mapping, streamed events, usage, errors, and compaction in the

@@ -8,7 +8,7 @@ cd "$(dirname "$0")/.."
 
 # Production Rust sources, without test files.
 sources() {
-    find src crates examples -name '*.rs' \
+    find crates -name '*.rs' \
         ! -name '*_tests.rs' ! -name 'tests.rs' ! -path '*/tests/*' ! -path '*_tests/*' \
         ! -path '*/target/*'
 }
@@ -61,12 +61,12 @@ report "No compatibility code: no serde aliases." \
 
 report "Provider IDs are matched only in provider code." \
     "$(production_matches '"(anthropic|claude|kimi|deepseek|mistral|openai|openai_codex|openrouter|chat_gpt|open_router)"' \
-        '^src/backend/model/|^crates/mobius-gateway/src/harness/mobius/assembly[.]rs$')"
+        '^crates/mobius/src/backend/model/|^crates/mobius-gateway/src/harness/mobius/assembly[.]rs$')"
 
 middleware='"(artifacts|attachments|compaction|computer_control|extensions|image_generation|instructions|intelligent_ui|memory|questions|subagents|tasks)"'
 report "The terminal frontend renders the catalog and never branches on middleware names." \
     "$(production_matches "$middleware" \
-        '^(src|examples|crates/mobius-gateway)/|^crates/mobius-cli/src/[^f]|/frontend/catalog[.]rs$')"
+        '^(crates/mobius|crates/mobius-gateway)/|^crates/mobius-cli/src/[^f]|/frontend/catalog[.]rs$')"
 
 dependencies=$(cargo tree -p mobius -e normal --prefix none --locked)
 report "The mobius crate never depends on terminal UI crates." \
