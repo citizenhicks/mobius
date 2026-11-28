@@ -310,3 +310,10 @@ public func nativeDictation(_ enabled: Bool, _ route: UnsafePointer<CChar>?) {
 public func nativeDictationFinish() {
     MainActor.assumeIsolated { NativeBridge.shared.finishDictation() }
 }
+
+@_cdecl("mobius_native_dictation_delivered")
+public func nativeDictationDelivered() {
+    MainActor.assumeIsolated {
+        NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
+    }
+}

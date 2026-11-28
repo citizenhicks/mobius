@@ -93,6 +93,16 @@ impl Workspace {
         }
     }
 
+    fn finish_dictation_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.dictating = false;
+        if !self.dictation_draft.transcript().is_empty() {
+            self.native.dictation_delivered();
+        }
+        if std::mem::take(&mut self.dictation_draft.send_on_final) {
+            self.send_message(window, cx);
+        }
+    }
+
     pub(super) fn native_event(
         &mut self,
         event: NativeEvent,
@@ -134,10 +144,7 @@ impl Workspace {
                 self.composer
                     .update(cx, |input, cx| input.set_value(text, window, cx));
                 if is_final {
-                    self.dictating = false;
-                    if std::mem::take(&mut self.dictation_draft.send_on_final) {
-                        self.send_message(window, cx);
-                    }
+                    self.finish_dictation_draft(window, cx);
                 }
             }
             NativeEvent::DictationState { active: false } => self.dictating = false,

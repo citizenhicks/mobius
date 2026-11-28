@@ -779,6 +779,11 @@ impl Native {
         unsafe { mobius_native_dictation_finish() }
     }
 
+    pub fn dictation_delivered(&self) {
+        // SAFETY: Called after the UI thread applies the final transcript.
+        unsafe { mobius_native_dictation_delivered() }
+    }
+
     pub fn audio_status(&self) -> AudioStatus {
         // SAFETY: Reads native permission and recognizer status on the main thread without prompting.
         let status = unsafe { mobius_native_audio_status() };
@@ -1052,6 +1057,7 @@ unsafe extern "C" {
     fn mobius_native_relaunch();
     fn mobius_native_dictation(enabled: bool, route: *const c_char);
     fn mobius_native_dictation_finish();
+    fn mobius_native_dictation_delivered();
     fn mobius_native_status_item(icon: *const u8, length: usize);
     fn mobius_native_status_usage(json: *const c_char);
     fn mobius_native_background();

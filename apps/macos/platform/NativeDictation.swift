@@ -124,7 +124,7 @@ final class NativeDictation {
         let sequence = try capture(format, generation: generation)
         try await analyzer.start(inputSequence: sequence)
         guard self.generation == generation else { return }
-        Cue.play("DictationStart")
+        recordingStarted()
         endAfterSilence(seconds: 10, generation: generation)
         transcription = Task { [weak self] in
             var finalized = ""
@@ -151,6 +151,11 @@ final class NativeDictation {
                 fail(error.localizedDescription)
             }
         }
+    }
+
+    private func recordingStarted() {
+        NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+        Cue.play("DictationStart")
     }
 
     static func refreshModel() {
@@ -214,7 +219,7 @@ final class NativeDictation {
         samples = try capture(format, generation: generation)
         #endif
         remote.start()
-        Cue.play("DictationStart")
+        recordingStarted()
         transcription = Task { [weak self] in
             for await sample in samples {
                 guard self?.generation == generation else { return }
