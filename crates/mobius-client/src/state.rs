@@ -396,7 +396,6 @@ fn finish_turn(session: &mut SessionReadyPayload, turn_id: &str) {
 }
 
 #[cfg(test)]
-#[path = "tests.rs"]
 pub(super) mod tests;
 
 fn upsert<T: Clone>(held: &mut Vec<T>, record: &mut T, id: impl Fn(&T) -> &Arc<str>) {

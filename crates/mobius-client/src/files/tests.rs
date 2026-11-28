@@ -11,7 +11,6 @@ use mobius_gateway::wire::{
 use super::{Transfer, Transfers};
 use crate::Update;
 
-#[path = "preview_tests.rs"]
 mod previews;
 
 /// Serves `server` until the returned sender fires.

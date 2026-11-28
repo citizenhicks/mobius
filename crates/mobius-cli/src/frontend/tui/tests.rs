@@ -15,15 +15,9 @@ use mobius_gateway::wire::{
     TranscriptPage,
 };
 
-#[path = "tui_tests/composer.rs"]
 mod composer;
-#[path = "tui_tests/layout.rs"]
 mod layout;
-#[path = "tui_tests/preview.rs"]
 mod preview;
-#[path = "tui_tests/rendering.rs"]
 mod rendering;
-#[path = "tui_tests/support.rs"]
 mod support;
-#[path = "tui_tests/transcript.rs"]
 mod transcript;

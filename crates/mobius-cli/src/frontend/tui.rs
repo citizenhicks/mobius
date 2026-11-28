@@ -954,5 +954,4 @@ fn bounded_title(value: &str) -> String {
 }
 
 #[cfg(test)]
-#[path = "tui_tests.rs"]
 mod tests;

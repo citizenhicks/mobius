@@ -11,7 +11,7 @@ use crate::config::{ConfigStore, CredentialStore};
 use crate::host::session::HostInner;
 use crate::host::tests::create_test_session;
 
-use super::*;
+use super::super::*;
 
 async fn provider_removal_gateway(
     root: &tempfile::TempDir,

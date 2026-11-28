@@ -14,8 +14,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 #[cfg(all(test, feature = "snapshot"))]
-#[path = "diff_tests.rs"]
-mod interaction_tests;
+mod tests;
 
 /// The scope of a turn's own changes, which the transcript's turn card opens.
 const TURN: &str = "This turn";

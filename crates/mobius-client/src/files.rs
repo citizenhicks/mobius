@@ -17,8 +17,7 @@ use super::Update;
 use super::connection::connect_once;
 
 #[cfg(test)]
-#[path = "transfer_tests.rs"]
-mod transfer_tests;
+mod tests;
 
 /// Requests one transfer keeps in flight on the shared connection.
 pub(super) const WINDOW: usize = 4;

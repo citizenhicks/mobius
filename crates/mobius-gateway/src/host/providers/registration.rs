@@ -759,9 +759,4 @@ fn reserve_provider_login(
 }
 
 #[cfg(test)]
-#[path = "tests.rs"]
 mod tests;
-
-#[cfg(test)]
-#[path = "coverage_tests.rs"]
-mod coverage_tests;

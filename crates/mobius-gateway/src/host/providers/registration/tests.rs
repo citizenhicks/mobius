@@ -7,6 +7,8 @@ use crate::wire::{DictationTarget, ProviderEndpointAuth, ProviderTint};
 
 use super::*;
 
+mod coverage;
+
 fn selection(instance: &str, provider: &str, model: &str) -> ProviderConfig {
     ProviderConfig {
         base_url: Some(BaseUrl::new("https://gateway.example/v1").unwrap()),
