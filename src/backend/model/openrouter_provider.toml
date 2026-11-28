@@ -20,7 +20,7 @@ decisions_path = "systemone"
 
 # App attribution for OpenRouter rankings and analytics.
 [headers]
-HTTP-Referer = "https://github.com/citizenhicks/mobius"
+HTTP-Referer = "https://mobius.thinkingsand.dev"
 X-OpenRouter-Title = "möbius"
 X-OpenRouter-Categories = "personal-agent"
 

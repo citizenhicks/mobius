@@ -670,7 +670,7 @@ async fn eof_without_response_completed_is_a_retryable_interruption() {
         .expect_err("missing completion");
     assert!(matches!(error, Error::Provider(error) if error.is_stream_interrupted()));
     let request = server.await.expect("HTTP server").to_lowercase();
-    assert!(request.contains("http-referer: https://github.com/citizenhicks/mobius\r\n"));
+    assert!(request.contains("http-referer: https://mobius.thinkingsand.dev\r\n"));
     assert!(request.contains("x-openrouter-title: möbius\r\n"));
     assert!(request.contains("x-openrouter-categories: personal-agent\r\n"));
 }

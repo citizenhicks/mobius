@@ -70,7 +70,7 @@ async fn submits_recording_with_model_attribution_and_language() {
         assert!(
             request
                 .to_ascii_lowercase()
-                .contains("http-referer: https://github.com/citizenhicks/mobius")
+                .contains("http-referer: https://mobius.thinkingsand.dev\r\n")
         );
         for field in [
             "name=\"language\"\r\n\r\nfr",
