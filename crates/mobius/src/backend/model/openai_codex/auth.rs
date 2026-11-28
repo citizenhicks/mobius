@@ -54,7 +54,7 @@ struct AuthManifest {
 }
 
 static MANIFEST: std::sync::LazyLock<AuthManifest> =
-    std::sync::LazyLock::new(|| crate::config::embedded(include_str!("openai_codex_auth.toml")));
+    std::sync::LazyLock::new(|| crate::config::embedded(include_str!("auth.toml")));
 const REFRESH_LEEWAY: Duration = Duration::from_secs(60);
 const TOKEN_LIMIT: usize = 64 * 1024;
 const MAX_USAGE_LABEL_BYTES: usize = 128;
@@ -861,5 +861,4 @@ impl BrowserAuth {
 }
 
 #[cfg(test)]
-#[path = "openai_codex_tests.rs"]
 mod tests;

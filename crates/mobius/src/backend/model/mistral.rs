@@ -324,5 +324,4 @@ pub(super) fn provider() -> ProviderDefinition {
 }
 
 #[cfg(test)]
-#[path = "mistral_tests.rs"]
 mod tests;

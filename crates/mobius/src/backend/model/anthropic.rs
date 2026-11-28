@@ -1352,5 +1352,4 @@ fn build_provider(
 }
 
 #[cfg(test)]
-#[path = "anthropic_tests.rs"]
 mod tests;

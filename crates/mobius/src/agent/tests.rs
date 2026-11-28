@@ -558,27 +558,15 @@ fn config_with_model(
     )
 }
 
-#[path = "runtime_tests/admission.rs"]
 mod admission;
-#[path = "runtime_tests/chat_transport.rs"]
 mod chat_transport;
-#[path = "runtime_tests/configuration.rs"]
 mod configuration;
-#[path = "runtime_tests/hosted_tools.rs"]
 mod hosted_tools;
-#[path = "runtime_tests/input_validation.rs"]
 mod input_validation;
-#[path = "runtime_tests/message_delivery.rs"]
 mod message_delivery;
-#[path = "runtime_tests/model_steps.rs"]
 mod model_steps;
-#[path = "runtime_tests/peer_messages.rs"]
 mod peer_messages;
-#[path = "runtime_tests/recorder.rs"]
 mod recorder;
-#[path = "runtime_tests/resume_and_recovery.rs"]
 mod resume_and_recovery;
-#[path = "runtime_tests/streaming_tools.rs"]
 mod streaming_tools;
-#[path = "runtime_tests/usage_and_approval.rs"]
 mod usage_and_approval;

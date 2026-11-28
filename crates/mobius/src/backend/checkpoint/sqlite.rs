@@ -42,12 +42,10 @@ use crate::Result;
 use crate::protocol::Event;
 use crate::protocol::SessionContext;
 
-#[path = "sqlite_event.rs"]
 mod event_journal;
 
 use self::event_journal::store_event;
 
-#[path = "sqlite_context.rs"]
 mod context_store;
 
 use context_store::{
@@ -1252,5 +1250,4 @@ fn decode_journal_event(
 }
 
 #[cfg(test)]
-#[path = "sqlite_tests.rs"]
 mod tests;

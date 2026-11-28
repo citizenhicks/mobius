@@ -753,5 +753,4 @@ impl Write for HasherWriter<'_> {
 }
 
 #[cfg(test)]
-#[path = "responses_socket_tests.rs"]
 mod tests;

@@ -1248,7 +1248,6 @@ fn decode_usage(usage: Option<&Value>) -> Result<TokenUsage> {
 }
 
 #[cfg(test)]
-#[path = "responses_tests.rs"]
 mod tests;
 
 pub(super) fn response_error(event: &Value) -> String {

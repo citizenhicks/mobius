@@ -1,5 +1,7 @@
 //! Provider-neutral model and routing tests.
 
+pub(crate) mod support;
+
 use super::*;
 use crate::protocol::ModelChoice;
 

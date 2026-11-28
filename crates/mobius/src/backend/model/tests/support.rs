@@ -2,7 +2,7 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use super::ModelEventSink;
+use super::super::ModelEventSink;
 use crate::protocol::ModelEvent;
 use serde_json::Value;
 use std::sync::Arc;
@@ -12,7 +12,7 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 
-use super::authorization::{OpenAiAuthorization, ResolvedAuthorization};
+use super::super::authorization::{OpenAiAuthorization, ResolvedAuthorization};
 use crate::BoxFuture;
 use crate::Result;
 
@@ -42,11 +42,11 @@ pub(crate) async fn loopback_listener() -> (tokio::net::TcpListener, std::net::S
     (listener, address)
 }
 
-pub(super) fn model_request() -> super::ModelRequest<'static> {
-    super::ModelRequest {
+pub(crate) fn model_request() -> super::super::ModelRequest<'static> {
+    super::super::ModelRequest {
         session_id: None,
         cancellation: None,
-        prompt_cache: Some(super::PromptCacheIdentity {
+        prompt_cache: Some(super::super::PromptCacheIdentity {
             key: "hashed-cache-key",
             context_epoch: 3,
         }),
@@ -110,8 +110,8 @@ pub(crate) async fn read_http_json(stream: &mut TcpStream) -> Value {
 }
 
 /// Accepts one request, answers `200 {}`, and returns the captured request text.
-pub(super) async fn capture_http_request() -> (std::net::SocketAddr, tokio::task::JoinHandle<String>)
-{
+pub(in crate::backend::model) async fn capture_http_request()
+-> (std::net::SocketAddr, tokio::task::JoinHandle<String>) {
     let (listener, address) = loopback_listener().await;
     let server = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.expect("HTTP connection");
@@ -126,14 +126,14 @@ pub(super) async fn capture_http_request() -> (std::net::SocketAddr, tokio::task
 }
 
 /// Starts with `rejected-token` and recovers it once to `fresh-token`.
-pub(super) struct RefreshingAuthorization {
+pub(in crate::backend::model) struct RefreshingAuthorization {
     token: Mutex<String>,
-    pub(super) authorizations: Mutex<Vec<String>>,
-    pub(super) refreshes: AtomicUsize,
+    pub(in crate::backend::model) authorizations: Mutex<Vec<String>>,
+    pub(in crate::backend::model) refreshes: AtomicUsize,
 }
 
 impl RefreshingAuthorization {
-    pub(super) fn new() -> Self {
+    pub(in crate::backend::model) fn new() -> Self {
         Self {
             token: Mutex::new("rejected-token".into()),
             authorizations: Mutex::new(Vec::new()),
@@ -141,7 +141,7 @@ impl RefreshingAuthorization {
         }
     }
 
-    pub(super) fn refreshes(&self) -> usize {
+    pub(in crate::backend::model) fn refreshes(&self) -> usize {
         self.refreshes.load(Ordering::Relaxed)
     }
 

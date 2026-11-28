@@ -1,3 +1,6 @@
+//! Public API integration tests for `mobius`.
+#![cfg(test)]
+
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::sync::Arc;

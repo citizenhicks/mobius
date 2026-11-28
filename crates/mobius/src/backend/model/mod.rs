@@ -1257,9 +1257,7 @@ pub fn tool_output(call_id: &str, output: &crate::protocol::ToolContent, is_erro
 }
 
 #[cfg(test)]
-#[path = "model_tests.rs"]
-mod tests;
+pub(crate) mod tests;
 
 #[cfg(test)]
-#[path = "support_tests.rs"]
-pub(crate) mod test_support;
+pub(crate) use tests::support as test_support;

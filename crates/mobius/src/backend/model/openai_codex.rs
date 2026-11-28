@@ -13,7 +13,6 @@ use super::responses_socket::OpenAiSocket;
 use crate::Result;
 use crate::protocol::ToolDiscoveryMode;
 
-#[path = "openai_codex_auth.rs"]
 mod auth;
 
 pub use self::auth::BrowserAuth;

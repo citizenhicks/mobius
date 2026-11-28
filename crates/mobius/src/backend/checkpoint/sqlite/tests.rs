@@ -137,15 +137,9 @@ fn execution(session_id: &str, turn: u64) -> ExecutionRecord {
     }
 }
 
-#[path = "sqlite_tests/context.rs"]
 mod context;
-#[path = "sqlite_tests/event_journal.rs"]
 mod event_journal;
-#[path = "sqlite_tests/journals.rs"]
 mod journals;
-#[path = "sqlite_tests/model_steps.rs"]
 mod model_steps;
-#[path = "sqlite_tests/sessions.rs"]
 mod sessions;
-#[path = "sqlite_tests/strict.rs"]
 mod strict;

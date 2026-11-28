@@ -22,5 +22,4 @@ pub use self::startup::create_agent;
 use self::recorder::EventRecorder;
 
 #[cfg(test)]
-#[path = "runtime_tests.rs"]
 mod tests;

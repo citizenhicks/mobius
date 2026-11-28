@@ -75,5 +75,4 @@ pub(super) fn provider() -> ProviderDefinition {
 }
 
 #[cfg(test)]
-#[path = "kimi_tests.rs"]
 mod tests;

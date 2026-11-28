@@ -32,7 +32,6 @@ use crate::BoxFuture;
 use crate::Error;
 use crate::Result;
 
-#[path = "local_files.rs"]
 mod files;
 mod platform;
 
@@ -1447,5 +1446,4 @@ fn validated_executable(executable: &Path) -> Result<PathBuf> {
 }
 
 #[cfg(test)]
-#[path = "local_tests.rs"]
 mod tests;

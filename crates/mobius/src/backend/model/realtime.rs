@@ -1148,5 +1148,4 @@ fn transcript_field<'a>(value: &'a Value, key: &str) -> Result<&'a str> {
 }
 
 #[cfg(test)]
-#[path = "realtime_tests.rs"]
 mod tests;

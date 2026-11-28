@@ -56,5 +56,4 @@ fn sends_key_to_api_host(base_url: &BaseUrl) -> bool {
 }
 
 #[cfg(test)]
-#[path = "aimlapi_tests.rs"]
 mod tests;
