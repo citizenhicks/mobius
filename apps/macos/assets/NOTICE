@@ -42,11 +42,12 @@ package/dist/esm/ArrowTurnBackwardIcon.js:
 https://registry.npmjs.org/@hugeicons/core-free-icons/-/core-free-icons-4.3.5.tgz
 Copyright (c) 2025 Hugeicons
 
-OpenRouter artwork — https://lobehub.com/icons/openrouter
+OpenRouter and AI/ML API artwork — https://github.com/lobehub/lobe-icons
 Copyright (c) 2023 LobeHub
 Licensed under the MIT License reproduced above.
 Source: https://github.com/lobehub/lobe-icons/blob/c385b2b8d1f9e19aa86e628d4e23c91ee1111a47/packages/static-svg/icons/openrouter.svg
-The SVG keeps the official path; web-only sizing and style attributes are omitted.
+Source: https://github.com/lobehub/lobe-icons/blob/05260484d9f4de68f90cc87a634ae68fa4043efd/packages/static-svg/icons/aimlapi.svg
+The SVGs retain the upstream paths and omit web-only sizing and style attributes.
 
 A2Agent artwork — https://a2agent.me/
 Source: https://a2agent.me/logo.png, supplied by A2Agent in
