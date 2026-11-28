@@ -150,6 +150,10 @@
 //! - In `mobius-gateway`, signal shutdown through `GatewayServer::serve_until` and await it;
 //!   dropping the serving future does not perform graceful shutdown.
 
+#![forbid(unsafe_code)]
+#![warn(missing_docs)]
+#![deny(unreachable_pub)]
+
 use std::future::Future;
 use std::pin::Pin;
 

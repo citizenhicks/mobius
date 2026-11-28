@@ -1,3 +1,6 @@
+#![deny(clippy::cognitive_complexity)]
+#![warn(clippy::too_many_lines)]
+
 mod assets;
 mod host;
 mod ui;

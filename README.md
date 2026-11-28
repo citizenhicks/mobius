@@ -167,7 +167,8 @@ builds independent crates in parallel. Linux sandbox tests need Bubblewrap.
 | `crates/mobius/src/protocol/` | Frontend-neutral operations, events, and presentation records |
 | `crates/mobius-gateway/` | Composition, authentication, Bots, sessions, routines, and the wire protocol |
 | `crates/mobius-cli/` | The terminal client and its rendering |
-| `apps/macos/` | The macOS app, its own Cargo workspace; see [its README](apps/macos/README.md) |
+| `crates/mobius-client/` | Shared gateway client used by the desktop app |
+| `apps/macos/` | The macOS app (workspace member, built on macOS); see [its README](apps/macos/README.md) |
 | `crates/mobius/tests/` | Framework integration tests |
 
 Read [AGENTS.md](https://github.com/citizenhicks/mobius/blob/main/AGENTS.md) before you

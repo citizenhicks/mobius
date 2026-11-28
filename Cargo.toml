@@ -1,14 +1,41 @@
 [workspace]
-members = ["crates/mobius", "crates/mobius-gateway", "crates/mobius-cli"]
-# The macOS app is its own workspace: CEF and the native Swift build are macOS-only.
-exclude = ["apps/macos"]
-default-members = ["crates/mobius", "crates/mobius-gateway", "crates/mobius-cli"]
+members = [
+    "crates/mobius",
+    "crates/mobius-gateway",
+    "crates/mobius-cli",
+    "crates/mobius-client",
+    "apps/macos",
+    "apps/macos/browser-helper",
+]
+# Bare Cargo commands target the cross-platform crates so Linux builds skip the macOS-only app.
+# Desktop builds target `-p mobius-desktop -p mobius-browser-helper -p mobius-client` on macOS.
+default-members = [
+    "crates/mobius",
+    "crates/mobius-gateway",
+    "crates/mobius-cli",
+    "crates/mobius-client",
+]
 resolver = "3"
+
+# Layout and rendering dominate each desktop frame; unoptimized they make debug builds stutter.
+[profile.dev.package.taffy]
+opt-level = 3
+
+[profile.dev.package.gpui-fast]
+opt-level = 3
+
+[profile.dev.package.mobius-desktop]
+debug = 0
 
 [profile.release]
 lto = "thin"
 codegen-units = 1
 strip = true
+
+[profile.desktop-release]
+inherits = "release"
+codegen-units = 16
+strip = "debuginfo"
 
 [workspace.package]
 edition = "2024"
@@ -19,11 +46,16 @@ publish = ["crates-io"]
 
 [workspace.dependencies]
 base64 = "0.22"
+# Chromium, embedded: one pinned CEF build shared by the macOS app and its helper processes.
+cef = { version = "=156.7.0", default-features = false, features = ["sandbox"] }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.6.7", features = ["derive"] }
 diffy = "0.4.2"
 futures-util = { version = "0.3", features = ["sink"] }
+gpui = { package = "gpui-fast", version = "=0.1.17" }
 mobius = { version = "=0.17.21", path = "crates/mobius" }
+mobius-client = { path = "crates/mobius-client" }
+mobius-gateway = { version = "=0.17.21", path = "crates/mobius-gateway" }
 rusqlite = { version = "0.43", default-features = false, features = ["bundled", "cache"] }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
@@ -36,10 +68,7 @@ tracing = { version = "0.1", default-features = false, features = ["std"] }
 uuid = { version = "1", features = ["v4"] }
 
 [workspace.lints.rust]
-missing_docs = "warn"
-unsafe_code = "forbid"
 # Tier 1: hygiene that costs nothing to keep.
-unreachable_pub = "deny"
 unused_lifetimes = "deny"
 single_use_lifetimes = "deny"
 trivial_numeric_casts = "deny"
@@ -52,6 +81,8 @@ missing_debug_implementations = "deny"
 all = { level = "warn", priority = -1 }
 cognitive_complexity = "warn"
 missing_errors_doc = "warn"
+# FFI into AppKit, CEF and the Objective-C runtime: every unsafe block states its SAFETY.
+undocumented_unsafe_blocks = "deny"
 # Tier 1: no stubs or leftovers; every exception says why; share handles explicitly.
 todo = "deny"
 unimplemented = "deny"
@@ -136,3 +167,15 @@ unreadable_literal = "deny"
 manual_midpoint = "deny"
 case_sensitive_file_extension_comparisons = "deny"
 cast_precision_loss = "deny"
+
+# gpui-component needs this upstream release, which is not yet in our registry mirror.
+[patch.crates-io]
+tree-sitter = { git = "https://github.com/tree-sitter/tree-sitter", rev = "d97971e24500218865c05ed1febdee2acf41bae1" }
+tree-sitter-language = { git = "https://github.com/tree-sitter/tree-sitter", rev = "d97971e24500218865c05ed1febdee2acf41bae1" }
+
+# Kit selects Fast but still declares this unused backend; the empty crate has no renderer.
+gpui-pre = { path = "vendor/gpui-pre" }
+
+# GPU-presented motion: implementation and proposed API exception are in vendor/README.md.
+gpui-fast = { path = "vendor/gpui-fast" }
+gpui-fast-apple = { path = "vendor/gpui-fast-apple" }

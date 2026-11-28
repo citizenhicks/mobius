@@ -1,10 +1,11 @@
 [package]
 name = "mobius-browser-helper"
 version = "0.2.1"
-edition = "2024"
+edition.workspace = true
 rust-version.workspace = true
 publish = false
-license = "Apache-2.0"
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 cef.workspace = true

@@ -1,4 +1,9 @@
 //! Command-line entry point for the möbius gateway.
+
+#![forbid(unsafe_code)]
+#![warn(missing_docs)]
+#![deny(unreachable_pub)]
+
 use std::path::PathBuf;
 
 use clap::Parser as _;

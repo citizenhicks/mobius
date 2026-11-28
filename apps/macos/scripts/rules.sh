@@ -8,7 +8,7 @@ cd "$(dirname "$0")/.."
 
 # Production Rust sources, without test files.
 sources() {
-    find src browser-helper/src crates/*/src -name '*.rs' \
+    find src browser-helper/src -name '*.rs' \
         ! -name '*_tests.rs' ! -name 'tests.rs' ! -path '*/tests/*' ! -path '*_tests/*' \
         ! -path '*/target/*'
 }
@@ -58,7 +58,7 @@ report "No clones in production code (.clone(), .cloned(), Type::clone): borrow,
 report "No serde aliases in production code (no legacy compatibility contract)." \
     "$(production_matches 'serde[(][^)]*alias[[:space:]]*=')"
 
-dependencies=$(cargo tree --all-features --locked -e normal --prefix none)
+dependencies=$(cargo tree -p mobius-desktop -p mobius-browser-helper --all-features --locked -e normal --prefix none)
 report "The app uses ring: a second TLS crypto backend makes automatic provider selection panic." \
     "$(printf '%s\n' "$dependencies" | grep -E '^aws-lc-(rs|sys) ' || true)"
 

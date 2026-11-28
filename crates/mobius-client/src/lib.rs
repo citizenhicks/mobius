@@ -1,6 +1,10 @@
 //! The desktop app's gateway client: transport, the state the gateway reports, the requests
 //! a window waits on, and this Mac's files. No interface code; `mobius-desktop` draws it.
 
+#![forbid(unsafe_code)]
+#![deny(clippy::cognitive_complexity)]
+#![warn(clippy::too_many_lines)]
+
 mod client;
 mod connection;
 mod desktop;

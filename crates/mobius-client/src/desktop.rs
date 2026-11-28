@@ -31,7 +31,7 @@ const CHUNK: usize = mobius_gateway::wire::MAX_DESKTOP_CHUNK_BYTES;
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(RustEmbed)]
-#[folder = "../../assets/desktop-viewer/"]
+#[folder = "assets/desktop-viewer/"]
 struct ViewerAssets;
 
 #[derive(Debug)]

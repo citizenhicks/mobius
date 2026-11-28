@@ -26,7 +26,7 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$dist"
 
-MOBIUS_BUILD_PROFILE=release "$app_dir/scripts/bundle.sh" "$work/bundle"
+MOBIUS_BUILD_PROFILE=desktop-release "$app_dir/scripts/bundle.sh" "$work/bundle"
 app="$(readlink "$work/bundle/möbius.app")"
 info="$app/Contents/Info.plist"
 sign_update="$("$app_dir/scripts/swiftpm-cache.sh")/artifacts/sparkle/Sparkle/bin/sign_update"

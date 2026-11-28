@@ -34,8 +34,8 @@ because credentials are now isolated by the complete service URL.
 ## Build and run
 
 Requires Apple Silicon, macOS 26+, Xcode command-line tools, Rust 1.100.0, CMake and
-Ninja (`brew install cmake ninja`). The app is its own Cargo workspace and builds
-against the framework and gateway in this repository (`../..`). Swift Package Manager
+Ninja (`brew install cmake ninja`). The app is a member of the root Cargo workspace and shares
+`Cargo.lock`, `target/`, and `crates/*` with the framework, gateway, and CLI. Swift Package Manager
 fetches the pinned, namespaced LiveKitWebRTC framework for native voice, and the first
 build downloads the pinned Chromium (CEF) into `target/cef`.
 
@@ -44,9 +44,8 @@ frontend from the repository root, using the shared `.cargo/config.toml` and
 `RUSTC_BOOTSTRAP`.
 
 ```sh
-cd apps/macos
-cargo run --locked
-MOBIUS_BUILD_PROFILE=dev scripts/bundle.sh
+cargo run --locked -p mobius-desktop
+MOBIUS_BUILD_PROFILE=dev apps/macos/scripts/bundle.sh
 open target/bundle/möbius.app
 ```
 
@@ -76,14 +75,14 @@ screenshots; full-display capture is an explicit `desktop.screenshot(displayId)`
 
 ```sh
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-cargo test --workspace --all-targets --all-features --locked
-RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --locked --no-deps
-sh scripts/rules.sh
-python3 scripts/check-native.py
+cargo clippy -p mobius-desktop -p mobius-browser-helper -p mobius-client --all-targets --all-features --locked -- -D warnings
+cargo test -p mobius-desktop -p mobius-browser-helper -p mobius-client --all-targets --all-features --locked
+RUSTDOCFLAGS="-D warnings" cargo doc -p mobius-desktop -p mobius-browser-helper -p mobius-client --all-features --locked --no-deps
+sh apps/macos/scripts/rules.sh
+python3 apps/macos/scripts/check-native.py
 ```
 
-`MOBIUS_SNAPSHOT=<dir> cargo run --features snapshot` renders the app's visual
+`MOBIUS_SNAPSHOT=<dir> cargo run -p mobius-desktop --features snapshot` renders the app's visual
 scenarios to PNGs; `MOBIUS_SNAPSHOT_ONLY=readme-hero` renders the picture above from
 fixture data only. Read the repository's [AGENTS.md](../../AGENTS.md) and this app's
 [AGENTS.md](AGENTS.md) before changing anything.

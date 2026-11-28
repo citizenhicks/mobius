@@ -15,7 +15,7 @@ const document = {
     getElementById() { return {}; },
     documentElement: { classList: { toggle() {} }, style: { setProperty() {} } },
 };
-const source = readFileSync(new URL('../assets/desktop-viewer/viewer.js', import.meta.url), 'utf8')
+const source = readFileSync(new URL('../../../crates/mobius-client/assets/desktop-viewer/viewer.js', import.meta.url), 'utf8')
     .replace(/^import .*;\n/gm, '');
 vm.runInNewContext(source, { RFB, window, document, location: { protocol: 'file:' } });
 window.desktop.connect('ws://viewer/rfb');

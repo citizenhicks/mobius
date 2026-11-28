@@ -16,7 +16,8 @@ layers, parallel registries, or speculative extension points.
 | `crates/mobius/src/protocol/` | Frontend-neutral operations, events, and presentation records |
 | `crates/mobius-gateway/` | Headless composition, auth, Bots, sessions, routines, artifacts, and usage |
 | `crates/mobius-cli/src/frontend/` | Thin terminal gateway client and rendering |
-| `apps/macos/` | The macOS app, a separate Cargo workspace; see [its AGENTS.md](apps/macos/AGENTS.md) |
+| `crates/mobius-client/` | Cross-platform desktop gateway client: transport, wire state, uploads/downloads, preferences |
+| `apps/macos/` | The macOS app (workspace member, built on macOS); see [its AGENTS.md](apps/macos/AGENTS.md) |
 
 `mobius-gateway` is the only shipped owner of an `Agent`. The CLI sends gateway
 operations and renders gateway events; capability behavior remains in its framework
@@ -218,11 +219,12 @@ Rustup. Before handing off a change, run:
 
 ```sh
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --locked --no-deps
-cargo test --workspace --all-targets --all-features --locked
-RUSTDOCFLAGS="-D warnings" cargo test --workspace --doc --all-features --locked
+cargo clippy --all-targets --all-features --locked -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --all-features --locked --no-deps
+cargo test --all-targets --all-features --locked
+RUSTDOCFLAGS="-D warnings" cargo test --doc --all-features --locked
 sh .github/rules.sh
+sh apps/macos/scripts/rules.sh
 python3 .github/sync-gateway-contract.py --check
 ```
 
@@ -230,7 +232,7 @@ python3 .github/sync-gateway-contract.py --check
 no hosted-service names, no serde aliases, provider and middleware names only in their
 owners). Pull requests and manually dispatched qualification run all of the above, check
 the minimum toolchain with
-`RUSTC_BOOTSTRAP=-1 CARGO_ENCODED_RUSTFLAGS="" cargo +1.100.0 check --workspace --all-targets --all-features --locked`
+`RUSTC_BOOTSTRAP=-1 CARGO_ENCODED_RUSTFLAGS="" cargo +1.100.0 check --all-targets --all-features --locked`
 so published crates retain stable support, and lint the generated manual pages.
 Relevant main pushes run formatting, rules and contract
 checks only. Before tagging, manually dispatch `ci.yml` and `desktop-ci.yml` on

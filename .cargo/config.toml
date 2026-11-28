@@ -1,6 +1,9 @@
 # The pinned stable toolchain's parallel frontend is still experimental.
+# The pinned CEF (Chromium) download is kept once per checkout instead of once per
+# build profile. An exported CEF_PATH takes precedence.
 [env]
 RUSTC_BOOTSTRAP = "1"
+CEF_PATH = { value = "target/cef", relative = true }
 
 [build]
 rustflags = ["-Zunstable-options", "--jobs-frontend=8"]

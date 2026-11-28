@@ -1,11 +1,12 @@
 test *args:
-    cargo test --workspace --all-targets --all-features --locked {{args}}
+    cargo test --all-targets --all-features --locked {{args}}
 
 fmt:
     cargo fmt
 
 complexity:
-    cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+    cargo clippy --all-targets --all-features --locked -- -D warnings
 
 rules:
     sh .github/rules.sh
+    sh apps/macos/scripts/rules.sh

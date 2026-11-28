@@ -2,16 +2,16 @@
 set -euo pipefail
 app_dir="$(cd "$(dirname "$0")/.." && pwd)"
 core_dir="${MOBIUS_CORE_DIR:-$app_dir/../..}"
-output_dir="${1:-$app_dir/target/bundle}"
-profile="${MOBIUS_BUILD_PROFILE:-release}"
+output_dir="${1:-$core_dir/target/bundle}"
+profile="${MOBIUS_BUILD_PROFILE:-desktop-release}"
 identity="${MOBIUS_SIGNING_IDENTITY:--}"
-cd "$app_dir"
+cd "$core_dir"
 if [[ -n "${MOBIUS_PROVISIONING_PROFILE:-}" ]]; then
     [[ "$identity" != - ]] || { echo 'A provisioning profile requires Developer ID signing, not ad-hoc signing' >&2; exit 1; }
     python3 "$app_dir/scripts/provision-profile.py" "$MOBIUS_PROVISIONING_PROFILE" "$app_dir/platform/Info.plist"
 fi
 # MOBIUS_FEATURES builds development variants, such as the snapshot harness.
-cargo build --locked --profile "$profile" --workspace ${MOBIUS_FEATURES:+--features "$MOBIUS_FEATURES"}
+cargo build --locked --profile "$profile" -p mobius-desktop -p mobius-browser-helper ${MOBIUS_FEATURES:+--features "$MOBIUS_FEATURES"}
 { read -r target_dir; read -r version; read -r build_number; read -r cef_version; } < <(cargo metadata --locked --format-version 1 |
     python3 -c 'import json,sys; m=json.load(sys.stdin); p={p["name"]: p for p in m["packages"]}; app=p["mobius-desktop"]; print(m["target_directory"]); print(app["version"]); print(app["metadata"]["bundle"]["build-number"]); print(p["cef-dll-sys"]["version"].split("+")[1])')
 # Sparkle orders independent build numbers while users see Cargo.toml's version.
@@ -44,7 +44,7 @@ cp "$cloudflared_dir/cloudflared" "$app/Contents/MacOS/"
 # Chromium: its framework, and a helper bundle per process kind, each running the small helper.
 cef_arch="$(uname -m)"
 [[ "$cef_arch" == arm64 ]] && cef_arch=aarch64
-cef_framework="${CEF_PATH:-$app_dir/target/cef}/$cef_version/cef_macos_$cef_arch/Chromium Embedded Framework.framework"
+cef_framework="${CEF_PATH:-$target_dir/cef}/$cef_version/cef_macos_$cef_arch/Chromium Embedded Framework.framework"
 [[ -d "$cef_framework" ]] || { echo "Chromium is missing at $cef_framework" >&2; exit 1; }
 ditto "$cef_framework" "$app/Contents/Frameworks/Chromium Embedded Framework.framework"
 cp "$(dirname "$cef_framework")/CREDITS.html" "$app/Contents/Resources/Chromium-CREDITS.html"
@@ -86,8 +86,8 @@ cp "$cloudflared_dir/LICENSE" "$app/Contents/Resources/cloudflared-LICENSE"
 cp "$app_dir/platform/resources/hi.mousePointer01.svg" "$app/Contents/Resources/icons/"
 cp "$app_dir/platform/resources/"*.wav "$app/Contents/Resources/"
 cp "$app_dir/assets/NOTICE" "$app/Contents/Resources/ASSETS_NOTICE"
-cp "$app_dir/assets/desktop-viewer/novnc/LICENSE.txt" "$app/Contents/Resources/noVNC-LICENSE.txt"
-cp "$app_dir/assets/desktop-viewer/novnc/vendor/pako/LICENSE" "$app/Contents/Resources/pako-LICENSE.txt"
+cp "$core_dir/crates/mobius-client/assets/desktop-viewer/novnc/LICENSE.txt" "$app/Contents/Resources/noVNC-LICENSE.txt"
+cp "$core_dir/crates/mobius-client/assets/desktop-viewer/novnc/vendor/pako/LICENSE" "$app/Contents/Resources/pako-LICENSE.txt"
 ditto "$app_dir/assets/fonts" "$app/Contents/Resources/fonts"
 xattr -cr "$app"
 signing=(--force --sign "$identity")

@@ -1,5 +1,9 @@
 //! Authenticated, frontend-neutral access to independent möbius chats.
 
+#![forbid(unsafe_code)]
+#![warn(missing_docs)]
+#![deny(unreachable_pub)]
+
 pub mod auth;
 pub mod bots;
 mod channel;

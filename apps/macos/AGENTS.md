@@ -10,7 +10,7 @@ only what is specific to the app.
 | --- | --- |
 | `src/ui/` | GPUI presentation: pages, chat, transcript, panels, navigation, primitives |
 | `src/host/` | Native integration: the embedded browser, the agent's browser broker, platform bridges |
-| `crates/mobius-client/` | Gateway connection, wire state, uploads and downloads, preferences |
+| `../../crates/mobius-client/` | Gateway connection, wire state, uploads and downloads, preferences |
 | `browser-helper/` | Chromium's helper processes |
 | `platform/` | The Swift package: native bridge, voice, dictation, updates, Cloud sign-in, desktop control |
 | `scripts/` | Bundling, release, native checks and the app's rules |
@@ -21,8 +21,9 @@ than branching on middleware names.
 
 ## App-specific rules
 
-- The app is its own Cargo workspace (CEF and the Swift build are macOS-only) and uses
-  the framework and gateway by path from this repository.
+- The app is a member of the root Cargo workspace (excluded from `default-members`
+  because CEF and the Swift build are macOS-only). Run desktop Cargo commands from
+  the repository root with `-p mobius-desktop -p mobius-browser-helper -p mobius-client`.
 - `unsafe` is allowed only for AppKit, CEF and Objective-C FFI, and every block carries
   a `SAFETY:` comment (`undocumented_unsafe_blocks` is denied).
 - The möbius Cloud sign-in lives here, in `platform/NativeCloud*.swift` and
@@ -41,11 +42,11 @@ than branching on middleware names.
 - Form and application errors use the shared toast. Inline errors belong only to
   transcript records retained in chat history.
 - Visual changes attach before and after captures from the snapshot harness
-  (`MOBIUS_SNAPSHOT=<dir> cargo run --features snapshot`).
+  (`MOBIUS_SNAPSHOT=<dir> cargo run -p mobius-desktop --features snapshot`).
 
 ## Checks
 
-Run the commands in [README.md](README.md#checks) from `apps/macos`. Releases are tagged
+Run the commands in [README.md](README.md#checks) from the repository root. Releases are tagged
 `mobius-desktop-v<version>` and built by `.github/workflows/desktop-release.yml`;
 promotion to the update feed is the separate `desktop-promote.yml` workflow. Neither
 runs without explicit authorization.

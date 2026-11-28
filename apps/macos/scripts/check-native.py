@@ -124,7 +124,7 @@ with tempfile.TemporaryDirectory(prefix='mobius-native-check-') as temporary:
     cef_version = next(package['version'].split('+')[1] for package in metadata['packages']
                        if package['name'] == 'cef-dll-sys')
     architecture = 'aarch64' if platform.machine() == 'arm64' else platform.machine()
-    cef = (pathlib.Path(os.environ.get('CEF_PATH', root / 'target/cef')) / cef_version
+    cef = (pathlib.Path(os.environ.get('CEF_PATH', pathlib.Path(metadata['target_directory']) / 'cef')) / cef_version
            / f'cef_macos_{architecture}' / 'Chromium Embedded Framework.framework'
            / 'Chromium Embedded Framework')
     assert cef.is_file(), f'Build the pinned Chromium SDK first: {cef}'

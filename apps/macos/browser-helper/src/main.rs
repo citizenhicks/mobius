@@ -2,6 +2,9 @@
 //! utility processes from copies of this executable, each in its own helper bundle under
 //! the app's Contents/Frameworks, so none of them loads the app itself.
 
+#![deny(clippy::cognitive_complexity)]
+#![warn(clippy::too_many_lines)]
+
 use std::process::ExitCode;
 
 use cef::args::Args;
