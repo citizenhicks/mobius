@@ -7,33 +7,36 @@ use gpui_component::input::Textarea;
 use gpui_component::menu::ContextMenuExt;
 use mobius::protocol::ActiveMessageDelivery;
 
-/// DictationWaveform: the recording's recent loudness as 4 wide bars every 7 points,
-/// newest on the right, older bars fading out to the left. The tape rolls left by
-/// `rolled` of a step between samples, so a live recording visibly moves.
-fn dictation_wave((levels, rolled): (Vec<f32>, f32), ink: Hsla) -> impl IntoElement {
-    const STEP: f32 = 7.;
-    const BAR: f32 = 4.;
+/// DictationWaveform: the recording as a tape of dot columns, one per 100 ms entering at
+/// the trailing edge and rolling toward the leading one by `rolled` of a pitch between
+/// samples. Silence is a single dot, speech a column as tall as it was loud.
+fn dictation_wave((levels, rolled): (Vec<f32>, f32), quiet: Hsla, loud: Hsla) -> impl IntoElement {
+    const PITCH: f32 = 5.;
+    const DOT: f32 = 3.;
     canvas(
         |_, _, _| {},
         move |bounds, (), window, _| {
             let (width, height) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
-            let count = (width / STEP).saturating_usize().max(1);
-            let leading = (width - (count - 1).to_f32() * STEP - BAR) / 2.;
-            for index in 0..count {
-                let level = (levels.len() + index)
-                    .checked_sub(count)
+            let middle = height / 2.;
+            let rows = ((middle - DOT / 2.) / PITCH).floor().max(1.);
+            for index in 0..(width / PITCH).saturating_usize() + 2 {
+                // The newest column slides in from one pitch beyond the trailing edge.
+                let x = width + PITCH / 2. - (index.to_f32() + rolled) * PITCH;
+                let level = levels
+                    .len()
+                    .checked_sub(index + 1)
                     .and_then(|sample| levels.get(sample).copied())
                     .unwrap_or(0.);
-                let bar = 4. + level * (height - 4.);
-                let origin = point(
-                    bounds.origin.x + px(leading + (index.to_f32() - rolled) * STEP),
-                    bounds.origin.y + px((height - bar) / 2.),
-                );
-                let alpha = ((index.to_f32() + 1. - rolled) / (count.to_f32() * 0.4)).clamp(0., 1.);
-                window.paint_quad(pill_quad(
-                    Bounds::new(origin, size(px(BAR), px(bar))),
-                    ink.opacity(alpha),
-                ));
+                let lit = (level * rows).round().saturating_i32();
+                let edge = (x / 24.).min((width - x) / PITCH).clamp(0., 1.);
+                let ink = if lit == 0 { quiet } else { loud }.opacity(edge);
+                for row in -lit..=lit {
+                    let origin = point(
+                        bounds.origin.x + px(x - DOT / 2.),
+                        bounds.origin.y + px(middle + row.to_f32() * PITCH - DOT / 2.),
+                    );
+                    window.paint_quad(pill_quad(Bounds::new(origin, size(px(DOT), px(DOT))), ink));
+                }
             }
         },
     )
@@ -78,8 +81,6 @@ impl Workspace {
                 .text_color(self.palette.muted)
                 .child(format!("{reason}."))
                 .into_any_element()
-        } else if self.dictating {
-            self.dictation_bar(cx)
         } else if self.voice_active {
             self.voice_composer(window, cx)
         } else {
@@ -166,7 +167,7 @@ impl Workspace {
     }
 
     fn composer_controls(&self, cx: &Context<Self>) -> AnyElement {
-        div()
+        let row = div()
             .absolute()
             .left(inset::COMPOSER)
             .right(inset::COMPOSER)
@@ -174,23 +175,36 @@ impl Workspace {
             .h(height::LARGE)
             .flex()
             .items_center()
-            .gap(space::XXS)
-            .child(self.attach_button(cx))
+            .gap(space::XXS);
+        if self.dictating {
+            return self.dictation_controls(row, cx);
+        }
+        row.child(self.attach_button(cx))
             .child(div().flex_1())
-            .child(self.model_selector(cx))
+            .child(motion::fade_in(
+                self.model_selector(cx),
+                "composer-model",
+                motion::STANDARD,
+                cx,
+            ))
             .child(self.dictate_button(cx))
             .child(self.composer_primary(cx))
             .into_any_element()
     }
 
     fn attach_button(&self, cx: &Context<Self>) -> AnyElement {
-        let button = composer_button("attach", "Add attachment", "hi.plus", cx);
-        if !self.can_attach_files() {
+        let button =
+            crate::ui::primitives::quiet_button("attach", "Add attachment", height::LARGE, cx)
+                .pill_corners();
+        let control = if self.can_attach_files() {
+            button
+                .on_click(cx.listener(|this, _, window, cx| this.choose_attachments(window, cx)))
+                .into_any_element()
+        } else {
             let reason = "Connect to a gateway and select a Bot that accepts files.";
-            return unavailable("attach-unavailable", button, reason, cx);
-        }
-        button
-            .on_click(cx.listener(|this, _, window, cx| this.choose_attachments(window, cx)))
+            unavailable("attach-unavailable", button, reason, cx)
+        };
+        self.morph_control("composer-lead-mark", control, "hi.plus")
             .into_any_element()
     }
 
@@ -204,14 +218,17 @@ impl Workspace {
     }
 
     fn dictate_button(&self, cx: &Context<Self>) -> AnyElement {
-        let button = composer_button("dictate", "Dictate", "hi.mic01", cx);
+        let button = crate::ui::primitives::quiet_button("dictate", "Dictate", height::LARGE, cx)
+            .pill_corners();
         #[cfg(feature = "snapshot")]
         let button = button.child(crate::ui::snapshot::probe("composer-dictate".into()));
-        if let Some(reason) = self.dictation_unavailable_reason() {
-            return unavailable("dictate-unavailable", button, reason, cx);
-        }
-        button
-            .on_click(cx.listener(|this, _, _, cx| this.toggle_dictation(cx)))
+        let control = match self.dictation_unavailable_reason() {
+            Some(reason) => unavailable("dictate-unavailable", button, reason, cx),
+            None => button
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_dictation(cx)))
+                .into_any_element(),
+        };
+        self.morph_control("composer-mic-mark", control, "hi.mic01")
             .into_any_element()
     }
 
@@ -344,45 +361,65 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// ComposerView.swift DictationComposerBar: cancel, listening, stop, send.
-    fn dictation_bar(&self, cx: &Context<Self>) -> AnyElement {
-        let transcript = self.dictation_draft.transcript();
-        let stop = composer_button("stop-dictation", "Stop dictation", "hi.stopFill", cx);
-        #[cfg(feature = "snapshot")]
-        let stop = stop.child(crate::ui::snapshot::probe("composer-dictation-stop".into()));
-        composer_card(&self.palette, cx)
-            .h(height::COMPOSER_IDLE)
-            .px(inset::COMPOSER)
+    /// A composer control whose glyph morphs in place as its action changes.
+    fn morph_control(&self, slot: &'static str, control: AnyElement, glyph: &'static str) -> Div {
+        div()
+            .relative()
+            .size(height::LARGE)
             .flex()
             .items_center()
-            .gap(space::S)
-            .child(
-                composer_button("cancel-dictation", "Cancel dictation", "hi.x", cx)
-                    .on_click(cx.listener(|this, _, window, cx| this.cancel_dictation(window, cx))),
-            )
+            .justify_center()
+            .child(control)
+            .child(div().absolute().child(crate::ui::primitives::morph_icon(
+                slot,
+                glyph,
+                glyph::LEAD,
+                self.palette.muted,
+            )))
+    }
+
+    /// ComposerView.swift DictationComposerBar on the card's foot: cancel, the tape, stop
+    /// and send stand where attach, the model, dictate and send do.
+    fn dictation_controls(&self, row: Div, cx: &Context<Self>) -> AnyElement {
+        use crate::ui::primitives::quiet_button;
+        let finishing = self.dictation_draft.finishing;
+        let cancel = quiet_button("cancel-dictation", "Cancel dictation", height::LARGE, cx)
+            .pill_corners()
+            .on_click(cx.listener(|this, _, window, cx| this.cancel_dictation(window, cx)));
+        let stop = quiet_button("stop-dictation", "Stop dictation", height::LARGE, cx)
+            .pill_corners()
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_dictation(cx)));
+        #[cfg(feature = "snapshot")]
+        let stop = stop.child(crate::ui::snapshot::probe("composer-dictation-stop".into()));
+        let wave = dictation_wave(
+            self.dictation_tape(),
+            self.palette.muted,
+            self.palette.accent,
+        );
+        row.child(self.morph_control("composer-lead-mark", cancel.into_any_element(), "hi.x"))
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
-                    .h(height::LARGE)
+                    .h_full()
+                    .px(space::S)
+                    .child(motion::fade_in(
+                        wave,
+                        "dictation-wave",
+                        motion::STANDARD,
+                        cx,
+                    )),
+            )
+            .child(if finishing {
+                div()
+                    .size(height::LARGE)
                     .flex()
                     .items_center()
-                    .child(if transcript.is_empty() {
-                        div()
-                            .size_full()
-                            .child(dictation_wave(self.dictation_tape(), self.palette.muted))
-                            .into_any_element()
-                    } else {
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .typography(Type::Body)
-                            .child(transcript.to_owned())
-                            .into_any_element()
-                    }),
-            )
-            .child(stop.on_click(cx.listener(|this, _, _, cx| this.toggle_dictation(cx))))
+                    .justify_center()
+                    .child(Spinner::new(glyph::LEAD).color(self.palette.muted))
+            } else {
+                self.morph_control("composer-mic-mark", stop.into_any_element(), "hi.stopFill")
+            })
             .child(
                 div()
                     .size(height::LARGE)
@@ -390,9 +427,11 @@ impl Workspace {
                     .items_center()
                     .justify_center()
                     .child(primary_button("send", "Send", "hi.arrowUp02", cx).on_click(
-                        cx.listener(|this, _, _, _| {
+                        cx.listener(|this, _, _, cx| {
                             this.dictation_draft.send_on_final = true;
+                            this.dictation_draft.finishing = true;
                             this.native.finish_dictation();
+                            cx.notify();
                         }),
                     )),
             )

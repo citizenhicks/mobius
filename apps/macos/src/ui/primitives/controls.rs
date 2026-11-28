@@ -67,7 +67,7 @@ pub(in crate::ui) fn quiet(cx: &App) -> ButtonVariant {
 }
 
 /// A square quiet button labelled by its tooltip, for a glyph, face or mark child.
-fn quiet_button(
+pub(crate) fn quiet_button(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
     box_size: Pixels,

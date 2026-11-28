@@ -36,6 +36,8 @@ impl<'a> NativeFrame<'a> {
 pub(in crate::ui) struct DictationDraft {
     original: SharedString,
     pub(in crate::ui) send_on_final: bool,
+    /// Stop was pressed: the tape freezes while the last words arrive.
+    pub(in crate::ui) finishing: bool,
     applied: SharedString,
 }
 
@@ -45,6 +47,7 @@ impl DictationDraft {
         Self {
             applied: SharedString::clone(&original),
             send_on_final: false,
+            finishing: false,
             original,
         }
     }
@@ -237,6 +240,8 @@ impl Workspace {
         if self.dictating {
             // Text keeps landing until the inactive state arrives with the last words.
             self.native.finish_dictation();
+            self.dictation_draft.finishing = true;
+            cx.notify();
             return;
         }
         self.dictation_draft = DictationDraft::new(self.composer.read(cx).value());
@@ -292,7 +297,8 @@ impl Workspace {
             }
         };
         let rolled = (since.elapsed().as_secs_f32() / 0.1).min(1.);
-        (levels, if recorded == 0 { 0. } else { rolled })
+        let still = recorded == 0 || self.dictation_draft.finishing;
+        (levels, if still { 1. } else { rolled })
     }
 }
 

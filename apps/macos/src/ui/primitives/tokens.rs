@@ -119,7 +119,6 @@ pub mod height {
     pub const TITLEBAR: Pixels = px(44.);
     /// Face, name pill and insets for the transparent persistent-chat header.
     pub const BOT_CHAT_HEADER: Pixels = px(48. + 26. + 2. + 4. + 8.);
-    pub const COMPOSER_IDLE: Pixels = px(48.);
     /// Send and stop surfaces.
     pub const PRIMARY: Pixels = px(32.);
     /// A sidebar group label: 8 above a BodyMedium line.
