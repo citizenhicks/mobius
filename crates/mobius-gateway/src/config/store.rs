@@ -576,7 +576,7 @@ fn validate_private_state_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn validate_credential(
+pub(crate) fn validate_credential(
     instance: &str,
     provider_id: &str,
     api_key: &str,

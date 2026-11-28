@@ -7,6 +7,7 @@ use super::{
 };
 use crate::harness::mobius::middleware_manifest::MobiusSettings;
 use crate::harness::mobius::provider_catalog;
+use mobius::protocol::ModelCapability;
 
 /// Validates one Bot against its exact selected model route and capabilities, returning its
 /// parsed middleware settings.
@@ -140,8 +141,49 @@ pub(super) fn validate_configured_provider(configured: &ConfiguredProvider) -> R
     } else {
         validate_provider_config(&configured.selection)?
     };
+    let at = configured.selection.base_url.as_deref();
+    super::provider_catalog::validate_endpoints(definition, configured)?;
     validate_provider_label(&configured.label)?;
-    if definition.locked_models() && !configured.models.is_empty() {
+    for (id, defaults) in &configured.image_defaults {
+        let preset = configured
+            .image_models
+            .as_deref()
+            .unwrap_or_else(|| definition.media_presets_at(ModelCapability::ImageGeneration, at))
+            .iter()
+            .find(|model| &model.id == id);
+        if configured.image_model_ids.is_empty() {
+            let Some(preset) = preset else {
+                return Err(Error::Invalid(format!("Unknown image model: {id}")));
+            };
+            if let Some(quality) = &defaults.quality
+                && !preset.variants.is_empty()
+                && !preset.variants.iter().any(|variant| &variant.id == quality)
+            {
+                return Err(Error::Invalid(format!(
+                    "Unsupported image quality for {id}"
+                )));
+            }
+        } else if !configured.image_model_ids.contains(id) {
+            return Err(Error::Invalid(format!("Unknown image model: {id}")));
+        }
+        defaults.validate()?;
+    }
+    if definition.locked_models()
+        && !configured.models.is_empty()
+        && (configured.models.len() != definition.models().len()
+            || configured
+                .models
+                .iter()
+                .zip(definition.models())
+                .any(|(m, p)| {
+                    m.id != p.id
+                        || m.label != p.label
+                        || m.description != p.description
+                        || m.reasoning != p.reasoning
+                        || m.default_reasoning != p.default_reasoning
+                        || m.tool_discovery != p.tool_discovery
+                }))
+    {
         return Err(Error::Invalid(format!(
             "provider `{}` uses its advertised model and reasoning catalogs",
             configured.selection.provider
@@ -162,8 +204,9 @@ pub(super) fn validate_configured_provider(configured: &ConfiguredProvider) -> R
                 "reasoning effort",
             )?;
         }
-        definition.validate_tool_discovery(provider_catalog::effective_tool_discovery(
+        definition.validate_tool_discovery(provider_catalog::catalog_tool_discovery(
             definition,
+            configured,
             &configured.selection,
             model,
         ))?;
@@ -190,7 +233,7 @@ pub(super) fn validate_configured_provider(configured: &ConfiguredProvider) -> R
         }
     }
     if !configured.image_model_ids.is_empty() {
-        if !definition.supports(mobius::protocol::ModelCapability::ImageGeneration) {
+        if !definition.can_configure_at(ModelCapability::ImageGeneration, at) {
             return Err(Error::Invalid(format!(
                 "provider `{}` does not accept listed image model IDs",
                 configured.selection.provider
@@ -203,8 +246,21 @@ pub(super) fn validate_configured_provider(configured: &ConfiguredProvider) -> R
         )?;
         validate_image_ids(configured.image_model_ids.iter().map(String::as_str))?;
     }
+    if !configured.dictation_model_ids.is_empty() {
+        validate_catalog_entries(
+            configured.dictation_model_ids.iter().map(String::as_str),
+            "dictation model IDs",
+            "dictation model ID",
+        )?;
+        if !definition.can_configure_dictation(configured.selection.base_url.as_deref()) {
+            return Err(Error::Invalid(format!(
+                "provider {} cannot transcribe with these dictation models",
+                definition.label()
+            )));
+        }
+    }
     if !configured.decision_model_ids.is_empty() {
-        if !definition.supports(mobius::protocol::ModelCapability::Decisions) {
+        if !definition.supports_at(ModelCapability::Decisions, at) {
             return Err(Error::Invalid(format!(
                 "provider `{}` does not serve decision models",
                 configured.selection.provider
@@ -218,13 +274,15 @@ pub(super) fn validate_configured_provider(configured: &ConfiguredProvider) -> R
     }
     validate_media_catalog(
         definition,
+        at,
         configured.image_models.as_deref(),
-        mobius::protocol::ModelCapability::ImageGeneration,
+        ModelCapability::ImageGeneration,
     )?;
     validate_media_catalog(
         definition,
+        at,
         configured.voice_models.as_deref(),
-        mobius::protocol::ModelCapability::RealtimeVoice,
+        ModelCapability::RealtimeVoice,
     )?;
     if configured.image_models.is_some() && !configured.image_model_ids.is_empty() {
         return Err(Error::Invalid(
@@ -240,16 +298,26 @@ pub(super) fn validate_configured_provider(configured: &ConfiguredProvider) -> R
 
 fn validate_media_catalog(
     definition: &ProviderDefinition,
+    at: Option<&str>,
     models: Option<&[mobius::backend::model::provider::MediaModelPreset]>,
-    capability: mobius::protocol::ModelCapability,
+    capability: ModelCapability,
 ) -> Result<()> {
     let Some(models) = models else {
         return Ok(());
     };
+    if definition.locked_models()
+        && capability == ModelCapability::RealtimeVoice
+        && models != definition.media_presets_at(capability, at)
+    {
+        return Err(Error::Invalid(format!(
+            "provider {} uses its advertised voice catalog",
+            definition.id()
+        )));
+    }
     if models.is_empty() {
         return Ok(());
     }
-    if !definition.supports(capability) {
+    if !definition.can_configure_at(capability, at) {
         return Err(Error::Invalid(format!(
             "provider `{}` does not support {capability:?}",
             definition.id()
@@ -262,7 +330,7 @@ fn validate_media_catalog(
     )?;
     if models
         .iter()
-        .map(|model| model.variants.len().max(1))
+        .map(|model| provider_catalog::media_variants(capability, &model.variants).count())
         .sum::<usize>()
         > MAX_CUSTOM_MODEL_ROUTES
     {
@@ -271,13 +339,16 @@ fn validate_media_catalog(
         )));
     }
     let mut routes = BTreeSet::new();
-    if capability == mobius::protocol::ModelCapability::ImageGeneration {
+    if capability == ModelCapability::ImageGeneration {
         validate_image_ids(models.iter().map(|model| model.id.as_str()))?;
     }
     for model in models {
-        for (route, _) in
-            provider_catalog::variant_routes(definition.id(), &model.id, &model.variants)
-        {
+        for variant in provider_catalog::media_variants(capability, &model.variants) {
+            let route = provider_catalog::RouteId::new(
+                definition.id(),
+                &model.id,
+                variant.map(|v| v.id.as_str()),
+            );
             if !routes.insert(route.encode()) {
                 return Err(Error::Invalid(
                     "media catalog generates an ambiguous route".into(),
@@ -285,9 +356,7 @@ fn validate_media_catalog(
             }
         }
         validate_display(&model.label, &model.description)?;
-        if model.variants.is_empty()
-            && capability == mobius::protocol::ModelCapability::RealtimeVoice
-        {
+        if model.variants.is_empty() && capability == ModelCapability::RealtimeVoice {
             return Err(Error::Invalid(
                 "a live model requires at least one voice".into(),
             ));
@@ -300,16 +369,14 @@ fn validate_media_catalog(
             )?;
         }
         for variant in &model.variants {
-            if capability == mobius::protocol::ModelCapability::ImageGeneration
-                && variant.id.len() > 64
+            if capability == ModelCapability::ImageGeneration
+                && variant.id.len() > mobius::backend::model::ImageDefaults::MAX_QUALITY_BYTES
             {
                 return Err(Error::Invalid(
                     "image quality IDs must be at most 64 bytes".into(),
                 ));
             }
-            if capability == mobius::protocol::ModelCapability::RealtimeVoice
-                && variant.id.len() > 256
-            {
+            if capability == ModelCapability::RealtimeVoice && variant.id.len() > 256 {
                 return Err(Error::Invalid("voice IDs must be at most 256 bytes".into()));
             }
             validate_display(&variant.label, &variant.description)?;

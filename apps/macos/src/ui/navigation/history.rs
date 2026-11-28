@@ -157,7 +157,7 @@ impl Workspace {
             PageTab::Bot(id) | PageTab::BotSettings(id, _) => {
                 gateway.is_some_and(|g| g.bots.iter().any(|bot| &bot.id == id))
             }
-            PageTab::Provider(id) => gateway.is_some_and(|g| {
+            PageTab::Provider(id) | PageTab::ProviderPart(id, _) => gateway.is_some_and(|g| {
                 g.provider_instances
                     .iter()
                     .any(|provider| &provider.selection.instance == id)

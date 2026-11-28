@@ -1,3 +1,5 @@
+language_apis = ["responses", "chat_completions"]
+image_endpoint = "openrouter"
 symbol = "open_router"
 label = "OpenRouter"
 description = "Responses API across multiple model vendors"
@@ -21,3 +23,6 @@ decisions_path = "systemone"
 HTTP-Referer = "https://github.com/citizenhicks/mobius"
 X-OpenRouter-Title = "möbius"
 X-OpenRouter-Categories = "personal-agent"
+
+[dictation]
+recording = "audio/transcriptions"

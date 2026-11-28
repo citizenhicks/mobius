@@ -85,7 +85,7 @@ pub mod glyph {
     pub const ICON: Pixels = px(22.);
     /// The leading column every row centres its glyph in, so row text shares one x.
     pub const GUTTER: Pixels = px(18.);
-    /// Empty states only.
+    /// Empty states and section cards.
     pub const HERO: Pixels = px(32.);
     /// A status dot, centred in an INLINE frame (MobiusStatusIndicator).
     pub const DOT: Pixels = px(8.);

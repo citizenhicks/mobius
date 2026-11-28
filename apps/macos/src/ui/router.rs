@@ -5,7 +5,7 @@ use super::{
     div, navigation, pages,
 };
 use mobius::SessionId;
-use mobius_gateway::wire::HarnessKind;
+use mobius_gateway::wire::{HarnessKind, ProviderModelKind};
 use navigation::Section;
 
 /// One page of the workspace: the primary route, or a companion document.
@@ -20,6 +20,8 @@ pub(super) enum PageTab {
     AgentDefaults(AgentSection),
     Providers,
     Provider(String),
+    /// One card of the provider setup with this instance id, saved or not.
+    ProviderPart(String, ProviderPart),
     ProviderDraft(String),
     Gateway(GatewayPage),
     Extensions,
@@ -39,19 +41,28 @@ impl PageTab {
             Self::AgentDefaults(_)
             | Self::Providers
             | Self::Provider(_)
+            | Self::ProviderPart(..)
             | Self::ProviderDraft(_)
             | Self::Extensions
             | Self::Extension(_) => Some(Section::Mobius),
-            Self::Gateway(_) => Some(Section::Gateway),
-            Self::Settings(_) => Some(Section::Settings),
+            Self::Gateway(_) | Self::Settings(_) => Some(Section::Settings),
             Self::Event(_) => Some(Section::Events),
             Self::Content(_) | Self::Contribution(_) => None,
         }
     }
 }
 
+/// A provider setup's cards: its shared settings, and one per model group.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum ProviderPart {
+    General,
+    Models(ProviderModelKind),
+}
+
+/// The connected gateway's pages, under Settings.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(super) enum GatewayPage {
+    Routing,
     Machine(GatewayRef),
     Devices,
     GitHub,
@@ -118,8 +129,8 @@ impl SettingsPage {
         Self::Appearance,
         Self::Security,
         Self::Data,
-        Self::Shortcuts,
         Self::Usage,
+        Self::Shortcuts,
         Self::WhatsNew,
     ];
 
@@ -252,6 +263,15 @@ impl Workspace {
         let Some(page) = page else {
             return self.render_chat(window, cx);
         };
+        self.render_route(page, window, cx)
+    }
+
+    pub(super) fn render_route(
+        &mut self,
+        page: PageTab,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         match page {
             PageTab::Chat(_) if self.active_session_ready() => {
                 let chat = self.chat_page(window, cx);
@@ -268,6 +288,7 @@ impl Workspace {
             PageTab::Providers => self.render_providers(cx),
             PageTab::Extensions => self.render_extensions(cx),
             PageTab::Empty(Section::Events) => self.render_events(cx),
+            PageTab::Empty(Section::Settings) => self.render_settings_grid(cx),
             PageTab::Bot(id) => self.render_bot(&id, window, cx),
             PageTab::BotSettings(id, section) => {
                 self.render_agent_page(pages::bots::AgentScope::Bot(id), section, window, cx)
@@ -277,8 +298,9 @@ impl Workspace {
             }
             PageTab::Extension(id) => self.render_extension(&id),
             PageTab::Provider(id) => self.render_provider(&id, window, cx),
+            PageTab::ProviderPart(id, part) => self.render_provider_part(&id, part, window, cx),
             PageTab::ProviderDraft(service) => self.render_provider_draft(&service, window, cx),
-            PageTab::Gateway(page) => self.render_gateway(&page, cx),
+            PageTab::Gateway(page) => self.render_gateway(&page, window, cx),
             PageTab::Settings(page) => self.render_settings(page, window, cx),
             PageTab::Event(id) => self.render_event(&id),
             PageTab::Empty(_) => not_yet_available(),

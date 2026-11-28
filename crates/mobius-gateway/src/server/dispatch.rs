@@ -7,6 +7,7 @@ use super::{
     uploads_disabled_rejection, write_client_inventory, write_frame, write_gateway_result,
     write_rejection, write_result, write_server_error, write_session_history,
 };
+use crate::auth::ProviderAccess;
 use crate::host::{event_sequence, internal, invalid_routine};
 use mobius::SessionId;
 use mobius::backend::session_files::session_file_limits;
@@ -36,6 +37,16 @@ pub(super) struct AuthenticatedClient<'a> {
     pub(super) revocations: &'a broadcast::Sender<String>,
 }
 
+impl AuthenticatedClient<'_> {
+    fn provider_access(&self) -> ProviderAccess {
+        if self.local && crate::auth::is_local_operator(self.id) {
+            ProviderAccess::LocalOperator
+        } else {
+            ProviderAccess::Paired
+        }
+    }
+}
+
 pub(super) const MAX_PENDING_REQUESTS: usize = 4;
 
 pub(super) struct ConnectionSessionState<'a> {
@@ -47,6 +58,7 @@ pub(super) struct ConnectionSessionState<'a> {
     pub(super) session_files: &'a SessionFileStore,
     pub(super) bots: &'a BotStore,
     pub(super) uploads: &'a mut BTreeMap<(SessionId, String), PendingSessionFileWrite>,
+    pub(super) dictation: &'a mut Option<super::dictation::Recording>,
     pub(super) voice: &'a mut Option<super::voice::ConnectionVoice>,
     pub(super) browser: &'a mut Option<crate::computer_runtime::browser::BrowserConnection>,
     pub(super) desktop: &'a mut Option<crate::computer_runtime::desktop::DesktopConnection>,
@@ -97,6 +109,10 @@ const fn answers_before_recovery(message: &ClientMessage) -> bool {
     matches!(
         message,
         ClientMessage::GetStorageUsage { .. }
+            | ClientMessage::StartDictation { .. }
+            | ClientMessage::DictationAudio { .. }
+            | ClientMessage::FinishDictation { .. }
+            | ClientMessage::CancelDictation { .. }
             | ClientMessage::GetTelemetry { .. }
             | ClientMessage::ConfigureTelemetry { .. }
             | ClientMessage::GetProfile { .. }
@@ -114,6 +130,18 @@ fn memories(request_id: Arc<str>, memories: Vec<crate::wire::MemoryRecord>) -> S
     }
 }
 
+async fn prepare_request(
+    gateway: &GatewayHost,
+    message: &ClientMessage,
+    connection: &mut ConnectionSessionState<'_>,
+) -> std::result::Result<(), Rejection> {
+    if !answers_before_recovery(message) {
+        gateway.reconcile_pending_bot_deletion().await?;
+        super::voice::end_on_switch(message, connection.voice).await;
+    }
+    Ok(())
+}
+
 pub(super) async fn handle_message(
     message: ClientMessage,
     auth: &AuthStore,
@@ -123,13 +151,9 @@ pub(super) async fn handle_message(
     mut connection: ConnectionSessionState<'_>,
     writer: &mut (impl AsyncWrite + Unpin),
 ) -> Result<()> {
-    let operator = client.local && crate::auth::is_local_operator(client.id);
-    if !answers_before_recovery(&message) {
-        if let Err(rejection) = gateway.reconcile_pending_bot_deletion().await {
-            return write_server_error(writer, "bot_deletion_recovery", rejection.message, false)
-                .await;
-        }
-        super::voice::end_on_switch(&message, connection.voice).await;
+    let access = client.provider_access();
+    if let Err(rejection) = prepare_request(gateway, &message, &mut connection).await {
+        return write_server_error(writer, "bot_deletion_recovery", rejection.message, false).await;
     }
     match message {
         ClientMessage::InvalidRequest {
@@ -160,7 +184,14 @@ pub(super) async fn handle_message(
                 sinks,
                 preserve_auth,
             };
-            return configure_telemetry(writer, request_id, update, operator, gateway).await;
+            return configure_telemetry(
+                writer,
+                request_id,
+                update,
+                access == ProviderAccess::LocalOperator,
+                gateway,
+            )
+            .await;
         }
         ClientMessage::GetProfile { request_id, parts } => {
             return super::transport::request_profile(
@@ -434,7 +465,14 @@ pub(super) async fn handle_message(
             request_id,
             session_id,
         } => {
-            return list_session_files(writer, &mut connection, request_id, session_id).await;
+            // File enumeration must not enlarge the future of every dispatch on the runtime worker stack.
+            return Box::pin(list_session_files(
+                writer,
+                &mut connection,
+                request_id,
+                session_id,
+            ))
+            .await;
         }
         ClientMessage::ReadSessionFile {
             request_id,
@@ -509,6 +547,36 @@ pub(super) async fn handle_message(
                 .configure_bot_defaults(expected_revision, config)
                 .await;
             return write_gateway_result(writer, connection.view, request_id, configured).await;
+        }
+        ClientMessage::ConfigureDictation { request_id, target } => {
+            let result = gateway.configure_dictation(target).await;
+            return write_gateway_result(writer, connection.view, request_id, result).await;
+        }
+        ClientMessage::StartDictation {
+            request_id,
+            route,
+            language,
+        } => {
+            let result = super::dictation::start(
+                connection.dictation,
+                &request_id,
+                gateway,
+                route,
+                language,
+            );
+            return super::dictation::write_error(writer, request_id, result).await;
+        }
+        ClientMessage::DictationAudio { request_id, audio } => {
+            let result = super::dictation::audio(connection.dictation, &request_id, &audio);
+            return super::dictation::write_error(writer, request_id, result).await;
+        }
+        ClientMessage::FinishDictation { request_id } => {
+            let result = super::dictation::finish(connection.dictation, &request_id);
+            return super::dictation::write_error(writer, request_id, result).await;
+        }
+        ClientMessage::CancelDictation { request_id } => {
+            let result = super::dictation::cancel(connection.dictation, &request_id);
+            return write_result(writer, request_id, result).await;
         }
         ClientMessage::ConfigureAutoRouting { request_id, values } => {
             return configure_auto_routing(writer, connection.view, request_id, values, gateway)
@@ -710,6 +778,27 @@ pub(super) async fn handle_message(
             )
             .await;
         }
+        ClientMessage::SaveProviderForm { request_id, form } => {
+            let saved = Box::pin(gateway.save_provider_form(access, form)).await;
+            return write_gateway_result(writer, connection.view, request_id, saved).await;
+        }
+        ClientMessage::TestProviderGroup {
+            request_id,
+            form,
+            group,
+            api_key,
+        } => {
+            return test_provider_group(
+                writer,
+                &mut connection,
+                access,
+                request_id,
+                form,
+                group,
+                api_key,
+            )
+            .await;
+        }
         ClientMessage::RegisterProvider {
             request_id,
             config,
@@ -719,18 +808,25 @@ pub(super) async fn handle_message(
             tint,
             models,
             image_model_ids,
+            voice_models,
+            group_endpoints,
+            dictation_model_ids,
             decision_model_ids,
             operator_managed,
         } => {
             let registered = gateway
                 .register_provider(
-                    operator,
+                    access,
                     crate::config::ProviderRegistration {
+                        image_defaults: None,
                         selection: config,
                         label,
                         tint,
                         models,
                         image_model_ids,
+                        voice_models,
+                        group_endpoints,
+                        dictation_model_ids,
                         decision_model_ids,
                         operator_managed,
                     },
@@ -1589,6 +1685,36 @@ async fn list_ssh_identities(
         }
     })
     .await
+}
+
+async fn test_provider_group(
+    writer: &mut (impl AsyncWrite + Unpin),
+    connection: &mut ConnectionSessionState<'_>,
+    access: ProviderAccess,
+    request_id: Arc<str>,
+    form: crate::wire::ProviderForm,
+    group: crate::wire::ProviderModelKind,
+    api_key: Option<String>,
+) -> Result<()> {
+    if connection.requests.len() >= MAX_PENDING_REQUESTS {
+        return write_rejection(
+            writer,
+            request_id,
+            Rejection::new("gateway_busy", "Too many requests are in progress"),
+        )
+        .await;
+    }
+    let gateway = Arc::clone(connection.gateway);
+    connection.requests.spawn(async move {
+        match gateway
+            .test_provider_group(access, form, group, api_key)
+            .await
+        {
+            Ok(()) => ServerMessage::ProviderGroupTested { request_id },
+            Err(error) => error.for_request(request_id),
+        }
+    });
+    Ok(())
 }
 
 /// Answers with line totals when `totals` is set, otherwise with the diff text.

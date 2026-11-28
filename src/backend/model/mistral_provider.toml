@@ -1,3 +1,4 @@
+language_apis = ["chat_completions"]
 supported_tool_discovery = ["rebuild"]
 symbol = "mistral"
 label = "Mistral"
@@ -8,3 +9,6 @@ search = ["off"]
 credential_env = "MISTRAL_API_KEY"
 # Chat API: a named function object "forces the model to call that tool".
 required_tool_choice = { type = "function", function = { name = "{name}" } }
+
+[dictation]
+recording = "audio/transcriptions"

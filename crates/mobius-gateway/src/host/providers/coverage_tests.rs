@@ -108,32 +108,31 @@ async fn browser_proxy_registration_requires_operator_and_allows_trusted_root_re
         ..crate::config::test_provider("trusted-codex", "openai_codex", "gpt-6-luna")
     };
     let error = gateway
-        .register_provider(
-            false,
-            crate::config::ProviderRegistration {
-                selection: selection.clone(),
+        .save_provider_form(
+            crate::auth::ProviderAccess::Paired,
+            crate::wire::ProviderForm {
+                config: selection.clone(),
                 label: Some("Proxy".into()),
                 tint: Some(Default::default()),
-                models: Vec::new(),
-                image_model_ids: Some(Vec::new()),
-                decision_model_ids: None,
-                operator_managed: false,
+                groups: Default::default(),
             },
-            false,
-            false,
         )
         .await
         .expect_err("paired clients cannot introduce an authentication destination");
     assert_eq!(error.code, "operator_required");
     gateway
         .register_provider(
-            true,
+            crate::auth::ProviderAccess::LocalOperator,
             crate::config::ProviderRegistration {
+                image_defaults: None,
                 selection: selection.clone(),
                 label: Some("Proxy".into()),
                 tint: Some(Default::default()),
                 models: Vec::new(),
                 image_model_ids: Some(Vec::new()),
+                voice_models: None,
+                group_endpoints: None,
+                dictation_model_ids: None,
                 decision_model_ids: None,
                 operator_managed: false,
             },
@@ -145,37 +144,27 @@ async fn browser_proxy_registration_requires_operator_and_allows_trusted_root_re
     selection.instance = "reused-codex".into();
     selection.base_url = Some(BaseUrl::new("https://operator-proxy.example/native/").unwrap());
     gateway
-        .register_provider(
-            false,
-            crate::config::ProviderRegistration {
-                selection: selection.clone(),
+        .save_provider_form(
+            crate::auth::ProviderAccess::Paired,
+            crate::wire::ProviderForm {
+                config: selection.clone(),
                 label: Some("Reused".into()),
                 tint: Some(Default::default()),
-                models: Vec::new(),
-                image_model_ids: Some(Vec::new()),
-                decision_model_ids: None,
-                operator_managed: false,
+                groups: Default::default(),
             },
-            false,
-            false,
         )
         .await
         .expect("paired client can reuse an operator-approved root");
     selection.base_url = Some(BaseUrl::new("https://client-controlled.example/native").unwrap());
     let error = gateway
-        .register_provider(
-            false,
-            crate::config::ProviderRegistration {
-                selection,
+        .save_provider_form(
+            crate::auth::ProviderAccess::Paired,
+            crate::wire::ProviderForm {
+                config: selection,
                 label: Some("Retargeted".into()),
                 tint: Some(Default::default()),
-                models: Vec::new(),
-                image_model_ids: Some(Vec::new()),
-                decision_model_ids: None,
-                operator_managed: false,
+                groups: Default::default(),
             },
-            false,
-            false,
         )
         .await
         .expect_err("paired client cannot retarget an approved instance");
@@ -318,7 +307,7 @@ async fn stale_provider_login_success_does_not_refresh_sessions_or_release_anoth
     let (events, _) = broadcast::channel(1);
     gateway.state.lock().await.sessions.insert(
         SessionId::new("observer").unwrap(),
-        super::super::HostHandle {
+        crate::host::HostHandle {
             inner: Arc::new(HostInner {
                 session_id: SessionId::new("observer").unwrap(),
                 commands,

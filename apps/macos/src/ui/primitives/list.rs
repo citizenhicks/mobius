@@ -147,7 +147,6 @@ impl RenderOnce for PageHeader {
 #[derive(IntoElement)]
 pub struct Section {
     title: SharedString,
-    info: Option<SharedString>,
     description: Option<SharedString>,
     children: Vec<AnyElement>,
 }
@@ -156,7 +155,6 @@ impl Section {
     pub fn new(title: impl Into<SharedString>) -> Self {
         Self {
             title: title.into(),
-            info: None,
             description: None,
             children: Vec::new(),
         }
@@ -164,12 +162,6 @@ impl Section {
 
     pub fn description(mut self, description: impl Into<SharedString>) -> Self {
         self.description = Some(description.into());
-        self
-    }
-
-    /// An info glyph after the title whose tooltip explains the whole section.
-    pub fn info(mut self, info: impl Into<SharedString>) -> Self {
-        self.info = Some(info.into());
         self
     }
 }
@@ -183,7 +175,6 @@ impl ParentElement for Section {
 impl RenderOnce for Section {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let p = palette(cx);
-        let info = self.info.map(|info| info_tip(&self.title, info, cx));
         div()
             .flex()
             .flex_col()
@@ -206,8 +197,7 @@ impl RenderOnce for Section {
                                     .flex()
                                     .items_center()
                                     .gap(space::XS)
-                                    .child(heading(self.title))
-                                    .children(info),
+                                    .child(heading(self.title)),
                             )
                             .children(self.description.map(|description| {
                                 div()
@@ -348,6 +338,7 @@ pub struct Row {
     subtitle: Option<SharedString>,
     status: Option<(Hsla, SharedString)>,
     leading: Option<Leading>,
+    title_style: Type,
     value: Option<(SharedString, Type)>,
     controls: Vec<AnyElement>,
     disclosure: bool,
@@ -367,6 +358,7 @@ impl Row {
             subtitle: None,
             status: None,
             leading: None,
+            title_style: Type::Body,
             value: None,
             controls: Vec::new(),
             disclosure: false,
@@ -422,6 +414,12 @@ impl Row {
 
     pub fn mono(mut self, value: impl Into<SharedString>) -> Self {
         self.value = Some((value.into(), Type::Mono));
+        self
+    }
+
+    /// The title is an id, such as a model's, rather than a label.
+    pub fn mono_title(mut self) -> Self {
+        self.title_style = Type::Mono;
         self
     }
 
@@ -489,7 +487,7 @@ impl RenderOnce for Row {
             .gap(space::XXS)
             .child(
                 div()
-                    .typography(Type::Body)
+                    .typography(self.title_style)
                     .when_some(title_color, gpui::Styled::text_color)
                     .when(self.truncate, gpui::Styled::truncate)
                     .when(self.placeholder, bar)
@@ -661,7 +659,7 @@ impl RenderOnce for StackedField {
                     .flex()
                     .items_center()
                     .gap(space::XS)
-                    .typography(Type::Body)
+                    .typography(Type::Subhead)
                     .child(self.title)
                     .children(self.info.map(|info| info_tip(&title, info, cx))),
             )

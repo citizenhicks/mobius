@@ -27,50 +27,50 @@ impl Workspace {
             let forget = SharedString::from(endpoint);
             let repair = SharedString::clone(&forget);
             actions.push(
-                toolbar_button("forget-gateway", "Forget gateway…", "hi.trash", cx)
-                    .on_click(cx.listener(move |_, _, window, cx| {
-                        Self::forget_gateway_dialog(&forget, window, cx);
-                    }))
-                    .into_any_element(),
+                PageAction::new(
+                    "forget-gateway",
+                    "Forget gateway…",
+                    "hi.trash",
+                    move |_, window, cx| Self::forget_gateway_dialog(&forget, window, cx),
+                )
+                .tone(ActionTone::Destructive),
             );
-            actions.push(
-                toolbar_button("repair-gateway", "Re-pair…", "hi.link", cx)
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.repair_gateway_dialog(&repair, window, cx);
-                    }))
-                    .into_any_element(),
-            );
+            actions.push(PageAction::new(
+                "repair-gateway",
+                "Re-pair…",
+                "hi.link",
+                move |this, window, cx| this.repair_gateway_dialog(&repair, window, cx),
+            ));
         }
         let rename = Rc::new(gateway.clone()); // rules-allow: the 'static listeners share one copy of the page's gateway
         let target = Rc::clone(&rename);
-        actions.push(
-            toolbar_button("rename-gateway", "Rename gateway…", "hi.pencilSimple", cx)
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.rename_gateway_dialog(Rc::clone(&rename), window, cx);
-                }))
-                .into_any_element(),
-        );
-        let connect =
-            cx.listener(move |this, _, _, cx| this.connect(Self::connection(&target), cx));
+        actions.push(PageAction::new(
+            "rename-gateway",
+            "Rename gateway…",
+            "hi.pencilSimple",
+            move |this, window, cx| this.rename_gateway_dialog(Rc::clone(&rename), window, cx),
+        ));
+        let connect = move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
+            this.connect(Self::connection(&target), cx);
+        };
         actions.push(if active {
-            toolbar_button("reconnect-gateway", "Reconnect", "hi.refresh03", cx)
-                .on_click(connect)
-                .into_any_element()
+            PageAction::new("reconnect-gateway", "Reconnect", "hi.refresh03", connect)
         } else {
-            toolbar_button("connect-gateway", "Connect", "hi.plugsConnected", cx)
-                .text_color(self.palette.accent)
-                .on_click(connect)
-                .into_any_element()
+            PageAction::new("connect-gateway", "Connect", "hi.plugsConnected", connect)
+                .tone(ActionTone::Primary)
         });
         if active && self.client.link.is_ready() && !self.pairing_code_valid() {
             actions.push(
-                toolbar_button("create-pairing-code", "Create one-time code", "hi.key", cx)
-                    .text_color(self.palette.accent)
-                    .on_click(cx.listener(|this, _, _, cx| this.create_pairing_code(cx)))
-                    .into_any_element(),
+                PageAction::new(
+                    "create-pairing-code",
+                    "Create one-time code",
+                    "hi.key",
+                    |this, _, cx| this.create_pairing_code(cx),
+                )
+                .tone(ActionTone::Primary),
             );
         }
-        actions
+        self.titlebar_actions(actions, cx)
     }
 
     pub(super) fn create_pairing_code(&mut self, cx: &mut Context<Self>) {

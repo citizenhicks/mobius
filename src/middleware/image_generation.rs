@@ -164,7 +164,7 @@ impl Middleware for ImageGeneration {
 struct GenerateImageArgs {
     prompt: String,
     #[serde(default)]
-    image_aspect: ImageAspect,
+    image_aspect: Option<ImageAspect>,
     #[serde(default)]
     reference_file_ids: Vec<String>,
 }
@@ -207,10 +207,11 @@ impl Tool for GenerateImage {
                 .generate_image(
                     image.route,
                     ImageGenerationRequest {
+                        size: image.size,
                         model: image.model,
                         quality: image.quality,
                         prompt: &arguments.prompt,
-                        image_aspect: arguments.image_aspect,
+                        image_aspect: arguments.image_aspect.unwrap_or(image.aspect),
                         references: &references,
                     },
                 )
@@ -283,6 +284,8 @@ mod tests {
         ) -> BoxFuture<'a, Result<GeneratedImage>> {
             assert_eq!(request.model, "gpt-image-2.5-sunburst");
             assert_eq!(request.image_aspect, ImageAspect::Landscape);
+            assert_eq!(request.size, Some("2K"));
+            assert_eq!(request.quality, Some("high"));
             let bytes = self.0.clone();
             Box::pin(async move {
                 Ok(GeneratedImage {
@@ -334,6 +337,14 @@ mod tests {
                 Default::default(),
             )
             .expect("image route");
+        router.set_image_defaults(
+            "openai::gpt-image-2.5-sunburst".into(),
+            crate::backend::model::ImageDefaults {
+                aspect: ImageAspect::Landscape,
+                size: Some("2K".into()),
+                quality: Some("high".into()),
+            },
+        );
         router
             .register_image(
                 Arc::new(ImageModel(png.clone(), true)),
@@ -418,7 +429,7 @@ mod tests {
             crate::protocol::ToolCall {
                 call_id: "image-call".into(),
                 name: "generate_image".into(),
-                arguments: serde_json::json!({"prompt":"a red landscape", "image_aspect":"landscape", "reference_file_ids":[source.id]}),
+                arguments: serde_json::json!({"prompt":"a red landscape", "reference_file_ids":[source.id]}),
             },
             &visible,
             &visible,
@@ -525,7 +536,7 @@ mod tests {
 
         let default: GenerateImageArgs =
             serde_json::from_value(serde_json::json!({"prompt": "x"})).expect("default shape");
-        assert_eq!(default.image_aspect, ImageAspect::Square);
+        assert_eq!(default.image_aspect, None);
         assert!(
             serde_json::from_value::<GenerateImageArgs>(
                 serde_json::json!({"prompt": "x", "image_aspect": "auto"})

@@ -1,3 +1,4 @@
+language_apis = ["responses"]
 symbol = "deepseek"
 label = "DeepSeek"
 description = "DeepSeek Responses API"

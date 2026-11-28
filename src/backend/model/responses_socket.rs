@@ -1,5 +1,6 @@
 //! Shared Responses WebSocket continuation and HTTP fallback transport.
 
+use crate::backend::model::endpoints::EndpointApi;
 use std::collections::BTreeMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::Hasher;
@@ -44,8 +45,10 @@ mod connection;
 
 pub(super) fn responses_socket_url(base_url: &BaseUrl) -> Result<reqwest::Url> {
     super::transport::socket_url(
-        reqwest::Url::parse(&format!("{}/responses", base_url.root()))
-            .map_err(|error| Error::Invalid(format!("invalid Responses endpoint: {error}")))?,
+        reqwest::Url::parse(
+            &base_url.operation_url(super::endpoints::default_path(EndpointApi::Responses)?),
+        )
+        .map_err(|error| Error::Invalid(format!("invalid Responses endpoint: {error}")))?,
     )
 }
 

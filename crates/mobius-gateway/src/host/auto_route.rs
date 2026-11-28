@@ -346,6 +346,7 @@ mod tests {
         } = crate::host::tests::test_gateway().await;
         let endpoint = BaseUrl::new("http://127.0.0.1:9/v1").unwrap();
         let register = |ids: &[&str]| ProviderRegistration {
+            image_defaults: None,
             selection: crate::wire::ProviderConfig {
                 base_url: Some(endpoint.share()),
                 ..test_provider("test", "openrouter", "test/chat")
@@ -354,6 +355,9 @@ mod tests {
             tint: None,
             models: Vec::new(),
             image_model_ids: None,
+            voice_models: None,
+            group_endpoints: None,
+            dictation_model_ids: None,
             decision_model_ids: Some(ids.iter().map(|id| (*id).to_owned()).collect()),
             operator_managed: false,
         };
@@ -368,7 +372,12 @@ mod tests {
         };
         rotate("fixture-first").await.unwrap();
         gateway
-            .register_provider(true, register(&["test/decide"]), false, false)
+            .register_provider(
+                crate::auth::ProviderAccess::LocalOperator,
+                register(&["test/decide"]),
+                false,
+                false,
+            )
             .await
             .unwrap();
         let model = "test::test/decide::default";
@@ -396,7 +405,12 @@ mod tests {
         let next = gateway.decision_route(model).await.unwrap().unwrap();
         assert!(!Arc::ptr_eq(&first, &next));
         gateway
-            .register_provider(true, register(&[]), false, false)
+            .register_provider(
+                crate::auth::ProviderAccess::LocalOperator,
+                register(&[]),
+                false,
+                false,
+            )
             .await
             .unwrap();
         assert!(gateway.decision_route(model).await.unwrap().is_none());

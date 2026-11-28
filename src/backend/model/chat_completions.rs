@@ -1,5 +1,6 @@
 //! Shared Chat Completions model and wire primitives for native providers.
 
+use crate::backend::model::endpoints::EndpointApi;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
@@ -15,7 +16,7 @@ use super::{
     ImageDataUrl, MAX_TOOL_CALLS, MediaPreparation, Model, ModelEventSink, ModelOutput,
     ModelRequest, PromptCacheMode, ToolDefinition, image_input, usage_i64,
 };
-use crate::protocol::{ModelInfo, TokenUsage, ToolDiscoveryMode};
+use crate::protocol::{ModelEvent, ModelInfo, TokenUsage, ToolDiscoveryMode};
 use crate::{BoxFuture, Error, Result};
 
 /// Provider-specific wire behavior of a native Chat Completions model.
@@ -57,6 +58,10 @@ pub(super) trait ChatStream: SseHandler + Default {
 pub struct ChatCompletions<D> {
     pub(super) config: ApiKeyModel,
     dialect: PhantomData<D>,
+    headers: Option<&'static BTreeMap<String, String>>,
+    service_tier: Option<String>,
+    max_tokens: Option<u64>,
+    search_tool: Option<&'static str>,
 }
 
 impl<D> ChatCompletions<D> {
@@ -93,6 +98,10 @@ impl<D> ChatCompletions<D> {
         Self {
             config,
             dialect: PhantomData,
+            headers: None,
+            service_tier: None,
+            max_tokens: None,
+            search_tool: None,
         }
     }
 
@@ -125,6 +134,16 @@ pub(super) fn request_body<'a, D: Dialect>(
             include_usage: true,
         });
     }
+    body.service_tier = model.service_tier.as_deref();
+    body.max_completion_tokens = model.max_tokens;
+    if request.allow_hosted_tools
+        && let Some(search) = model.search_tool
+    {
+        body.tools = Some(WireTools {
+            functions: request.tools,
+            search: Some(search),
+        });
+    }
     Ok(body)
 }
 
@@ -144,10 +163,11 @@ async fn send_response<D: Dialect>(
     .await?;
     let response = post(
         &model.config.client,
-        model.config.base_url.root(),
+        &model.config.base_url,
         model.config.api_key.as_deref(),
         body,
         D::NAME,
+        model.headers,
     )
     .await?;
     let mut stream = D::Stream::default();
@@ -220,6 +240,10 @@ pub(super) struct RequestBody<'a, C> {
     model: &'a str,
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    service_tier: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_completion_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) stream_options: Option<StreamOptions>,
     messages: Vec<WireMessage<'a, C>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -278,9 +302,14 @@ impl<'a, C: Default> RequestBody<'a, C> {
         Ok(Self {
             model,
             stream: true,
+            service_tier: None,
+            max_completion_tokens: None,
             stream_options: None,
             messages: wire_messages(request.instructions, request.input, provider, content)?,
-            tools: has_tools.then_some(WireTools(request.tools)),
+            tools: has_tools.then_some(WireTools {
+                functions: request.tools,
+                search: None,
+            }),
             tool_choice: has_tools.then_some(super::provider::ToolChoice::AUTO),
             parallel_tool_calls: has_tools.then_some(true),
             reasoning_effort,
@@ -379,7 +408,10 @@ fn wire_messages<'a, C: Default>(
     Ok(messages)
 }
 
-pub(super) struct WireTools<'a>(pub(super) &'a [Arc<ToolDefinition>]);
+pub(super) struct WireTools<'a> {
+    functions: &'a [Arc<ToolDefinition>],
+    search: Option<&'static str>,
+}
 
 impl Serialize for WireTools<'_> {
     fn serialize<S: serde::Serializer>(
@@ -398,8 +430,13 @@ impl Serialize for WireTools<'_> {
             #[serde(rename = "type")]
             kind: &'static str,
         }
-        let mut sequence = serializer.serialize_seq(Some(self.0.len()))?;
-        for tool in self.0 {
+        let mut sequence = serializer.serialize_seq(Some(
+            self.functions.len() + usize::from(self.search.is_some()),
+        ))?;
+        if let Some(search) = self.search {
+            sequence.serialize_element(&serde_json::json!({"type":search}))?;
+        }
+        for tool in self.functions {
             sequence.serialize_element(&Tool {
                 function: Function {
                     description: &tool.description,
@@ -698,25 +735,23 @@ fn decode_usage(usage: Option<&Value>, provider: &str) -> Result<TokenUsage> {
 
 pub(super) async fn post(
     client: &reqwest::Client,
-    base_url: &str,
+    base_url: &BaseUrl,
     api_key: Option<&str>,
     body: Vec<u8>,
     provider: &str,
+    headers: Option<&BTreeMap<String, String>>,
 ) -> Result<reqwest::Response> {
-    let mut request = client.post(format!("{base_url}/chat/completions"));
-    if let Some(key) = api_key {
-        request = request.bearer_auth(key);
-    }
-    let response = request
+    let request = client
+        .post(base_url.operation_url(super::endpoints::default_path(
+            EndpointApi::ChatCompletions,
+        )?))
         .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .body(body)
-        .send()
-        .await
-        .map_err(|error| super::transport::request_error(error, provider))?;
-    if !response.status().is_success() {
-        return Err(super::transport::status_error(response, provider).await);
-    }
-    Ok(response)
+        .body(body);
+    super::transport::send_checked(
+        super::transport::provider_request(request, headers, api_key),
+        provider,
+    )
+    .await
 }
 
 pub(super) fn tool_text(output: &Value) -> Result<Cow<'_, str>> {
@@ -730,4 +765,115 @@ pub(super) fn tool_text(output: &Value) -> Result<Cow<'_, str>> {
         ));
     }
     Ok(Cow::Owned(super::media::output_text(output)?))
+}
+/// Accumulates standard text and tool deltas, including optional reasoning content.
+#[derive(Default)]
+pub(super) struct TextStream {
+    text: String,
+    reasoning: String,
+    stream: ChatStreamState,
+}
+
+impl SseHandler for TextStream {
+    async fn apply_data(&mut self, data: &str, events: &ModelEventSink) -> Result<()> {
+        let Some(chunk) = self.stream.read_chunk(data, "Chat Completions")? else {
+            return Ok(());
+        };
+        let Some(delta) = chunk.pointer("/choices/0/delta") else {
+            return Ok(());
+        };
+        if let Some(reasoning) = delta.get("reasoning_content").and_then(Value::as_str) {
+            self.reasoning.push_str(reasoning);
+            if !reasoning.is_empty() {
+                events(ModelEvent::ReasoningDelta(reasoning.to_owned())).await?;
+            }
+        }
+        if let Some(text) = delta.get("content").and_then(Value::as_str) {
+            self.text.push_str(text);
+            if !text.is_empty() {
+                events(ModelEvent::TextDelta(text.to_owned())).await?;
+            }
+        }
+        self.stream.append_tools(delta, "Chat Completions")?;
+        Ok(())
+    }
+}
+
+impl ChatStream for TextStream {
+    fn finish(self) -> Result<ModelOutput> {
+        let (calls, usage) = self.stream.finish("Chat Completions")?;
+        let has_tools = !calls.is_empty();
+        if self.text.is_empty() && self.reasoning.is_empty() && calls.is_empty() {
+            return Err(Error::Provider(
+                "Chat Completions returned no output".into(),
+            ));
+        }
+        let mut output = Vec::new();
+        if !self.text.is_empty() || !self.reasoning.is_empty() {
+            output.push(serde_json::json!({
+                "type": "message",
+                "role": "assistant",
+                "content": [{
+                    "type": "output_text",
+                    "text": self.text
+                }],
+                (super::REPLAY_REASONING_FIELD): self.reasoning
+            }));
+        }
+        output.extend(calls);
+        ModelOutput::from_output(output, !has_tools, usage)
+    }
+}
+
+struct Compatible;
+
+#[derive(Default, Serialize)]
+struct CompatibleMessage<'a> {
+    content: Option<WireContent<'a>>,
+}
+
+impl Dialect for Compatible {
+    const NAME: &'static str = "Chat Completions";
+    const ID: &'static str = "chat_completions";
+    const STREAM_USAGE: bool = true;
+    const TOOL_IMAGES: bool = false;
+    type Message<'a> = CompatibleMessage<'a>;
+    type Stream = TextStream;
+
+    fn message(source: MessageSource<'_>) -> Result<CompatibleMessage<'_>> {
+        let content = match source {
+            MessageSource::System(text) => WireContent::Text(text.into()),
+            MessageSource::Tool(output) => WireContent::Text(tool_text(output)?),
+            MessageSource::History { item, .. } => {
+                WireContent::new(item.get("content"), Self::NAME)?
+            }
+        };
+        Ok(CompatibleMessage {
+            content: Some(content),
+        })
+    }
+}
+
+pub(super) fn build_compatible(
+    definition: &super::provider::ProviderDefinition,
+    config: ProviderBuildConfig,
+    base: BaseUrl,
+) -> Result<Arc<dyn Model>> {
+    let mut model = ChatCompletions::<Compatible>::from_config(ApiKeyModel::new(
+        config.credential.into_optional_api_key(definition.id())?,
+        base,
+        config.model,
+        config.http,
+        config.transport,
+    )?);
+    if let Some(effort) = config.reasoning_effort {
+        model = model.with_reasoning_effort(effort)?;
+    }
+    model.headers = Some(definition.headers);
+    model.max_tokens = definition.max_output_tokens;
+    model.service_tier = config.service_tier;
+    if config.web_search != super::provider::HostedWebSearch::Off {
+        model.search_tool = definition.web_search_type;
+    }
+    Ok(Arc::new(model))
 }

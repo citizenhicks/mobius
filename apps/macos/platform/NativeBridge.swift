@@ -78,14 +78,14 @@ final class NativeBridge: NSObject, UNUserNotificationCenterDelegate {
     /// Unlike stopping, finishing keeps queued text: the last words are still arriving.
     func finishDictation() { dictation.finish() }
 
-    func setDictation(_ enabled: Bool) {
+    func setDictation(_ enabled: Bool, route: String? = nil) {
         // A new draft must never consume queued text or a stop from the previous recording.
         events.removeAll {
             ["dictation", "dictation_state"].contains($0["type"]?.stringValue ?? "")
         }
         if enabled {
             voice.stop()
-            dictation.start()
+            dictation.start(route: route)
         } else {
             dictation.stop()
         }
@@ -201,6 +201,7 @@ public func nativeGateway(_ json: UnsafePointer<CChar>) {
             let decoder = JSONDecoder()
             decoder.keyDecodingStrategy = .convertFromSnakeCase
             let message = try decoder.decode(GatewayEnvelope.self, from: data)
+            if NativeBridge.shared.dictation.receive(message) { return }
             if message.type.hasPrefix("realtime_voice_") {
                 try NativeBridge.shared.voice.receive(message)
             } else {
@@ -300,8 +301,9 @@ public func nativeNotificationStatus() -> UInt8 {
 }
 
 @_cdecl("mobius_native_dictation")
-public func nativeDictation(_ enabled: Bool) {
-    MainActor.assumeIsolated { NativeBridge.shared.setDictation(enabled) }
+public func nativeDictation(_ enabled: Bool, _ route: UnsafePointer<CChar>?) {
+    let value = route.map { String(cString: $0) }
+    MainActor.assumeIsolated { NativeBridge.shared.setDictation(enabled, route: value) }
 }
 
 @_cdecl("mobius_native_dictation_finish")

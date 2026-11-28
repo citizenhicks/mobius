@@ -45,7 +45,7 @@ class Model(BaseHTTPRequestHandler):
         self.wfile.write(response)
 
 
-def main(root, binaries, clients):
+def bootstrap(root, binaries):
     root.mkdir(mode=0o700, exist_ok=True)
     state = root / "gateway"
     if state.exists():
@@ -64,23 +64,32 @@ def main(root, binaries, clients):
     config.write_text(config.read_text().replace('listen = "127.0.0.1:8741"', f'listen = "127.0.0.1:{port}"'))
     accounts.write_text(accounts.read_text().replace("tcp://127.0.0.1:8741", endpoint))
     env["MOBIUS_GATEWAY_ENDPOINT"] = endpoint
+    return state, gw, env, endpoint, port
+
+
+def wait_for_listener(gateway, port):
+    deadline = time.monotonic() + 20
+    while True:
+        if gateway.poll() is not None:
+            raise RuntimeError("gateway exited, see gateway.log")
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=.2):
+                return
+        except OSError:
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(.1)
+
+
+def main(root, binaries, clients):
+    state, gw, env, endpoint, port = bootstrap(root, binaries)
     with ThreadingHTTPServer(("127.0.0.1", 0), Model) as model, (root / "gateway.log").open("w") as log:
         model.lock = threading.Lock()
         model.started = set()
         threading.Thread(target=model.serve_forever, daemon=True).start()
         gateway = subprocess.Popen([gw, "serve"], env=env, cwd=root, stdout=log, stderr=log)
         try:
-            deadline = time.monotonic() + 20
-            while True:
-                if gateway.poll() is not None:
-                    raise RuntimeError("gateway exited, see gateway.log")
-                try:
-                    with socket.create_connection(("127.0.0.1", port), timeout=.2):
-                        break
-                except OSError:
-                    if time.monotonic() > deadline:
-                        raise
-                    time.sleep(.1)
+            wait_for_listener(gateway, port)
             subprocess.run([gw, "register-provider", "--provider", "mistral", "--model", "mistral-large-4-0",
                             "--base-url", f"http://127.0.0.1:{model.server_port}/v1", "--credential-stdin"],
                            input=b"loopback-test", env=env, check=True, stdout=subprocess.DEVNULL)

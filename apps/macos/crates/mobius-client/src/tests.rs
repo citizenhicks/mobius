@@ -551,7 +551,7 @@ pub(crate) mod catalog {
             "agent_catalog": {"limits": {"min_model_steps": 1, "default_model_steps": 2042, "model_steps_step": 100, "max_system_prompt_bytes": 65536, "min_routine_interval_seconds": 60}, "bot_defaults": null, "default_capabilities": null,
                 "middleware_features": [], "extensions": [], "contributions": [],
                 "models": [], "model_providers": {}, "image_models": [], "voice_models": [],
-                "decision_models": [], "auto_routing": mobius_gateway::wire::AutoRoutingCatalog::default()},
+                "decision_models": [], "dictation": {"choices": [], "resolved": {"on_device": {}}}, "auto_routing": mobius_gateway::wire::AutoRoutingCatalog::default()},
             "harnesses": [], "max_active_sessions": 1,
             "revisions": {}, "omitted": [],
             "provider_instances": [], "providers": [],

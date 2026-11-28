@@ -51,7 +51,7 @@ pub(super) fn render(frame: &mut ratatui::Frame<'_>, state: &mut DashboardState)
         (" opening chat capabilities… ".into(), Role::Muted)
     } else {
         (
-            " tab devices/chats/Bots · ↑↓ scroll · enter open · u unpair · p provider · r refresh · q quit ".into(),
+            " tab devices/chats/Bots · ↑↓ scroll · enter open · u unpair · p provider · n new chats · i dictation · r refresh · q quit ".into(),
             Role::Muted,
         )
     };

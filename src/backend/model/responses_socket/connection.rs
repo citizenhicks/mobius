@@ -344,11 +344,11 @@ pub(super) async fn connect(
     settings: &super::super::ModelTransportSettings,
 ) -> Result<OpenAiWsConnection> {
     let socket = super::super::transport::connect_authorized_websocket(
-        auth,
+        Some(auth),
         socket_url,
         MAX_SOCKET_MESSAGE_BYTES,
         Some(Duration::from_millis(settings.socket_connect_timeout_ms)),
-        || auth.authorize_websocket(session_id),
+        |auth| auth.authorize_websocket(session_id),
         &[],
     )
     .await

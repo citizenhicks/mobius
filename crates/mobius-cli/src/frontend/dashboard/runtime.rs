@@ -181,6 +181,20 @@ pub(super) async fn handle_key(
         return Ok(false);
     }
     match key.code {
+        KeyCode::Char('n') => {
+            state.error =
+                crate::frontend::gateway::new_chats(terminal, sender, events, &mut state.gateway)
+                    .await
+                    .err()
+                    .map(|error| error.to_string());
+        }
+        KeyCode::Char('i') => {
+            state.error =
+                crate::frontend::gateway::dictation(terminal, sender, events, &mut state.gateway)
+                    .await
+                    .err()
+                    .map(|error| error.to_string());
+        }
         KeyCode::Char('p') => {
             state.error = setup::run_gateway(terminal, sender, events, &mut state.gateway)
                 .await

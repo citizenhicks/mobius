@@ -1,5 +1,6 @@
 //! Shared Responses HTTP transport and event normalization.
 
+use crate::backend::model::endpoints::EndpointApi;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -30,6 +31,7 @@ use super::usage_i64;
 use super::{RealtimeVoiceCall, RealtimeVoiceRequest};
 use crate::BoxFuture;
 use crate::Error;
+use crate::FailureClass;
 use crate::ProviderError;
 use crate::Result;
 use crate::protocol::ModelEvent;
@@ -361,7 +363,10 @@ impl OpenAi {
         .await?;
         let template = self
             .client
-            .post(format!("{}/responses", self.base_url.root()))
+            .post(
+                self.base_url
+                    .operation_url(super::endpoints::default_path(EndpointApi::Responses)?),
+            )
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(body);
         let mut response = self
@@ -417,7 +422,7 @@ impl OpenAi {
             self.send_authorized_with(false, None, || {
                 Ok(self
                     .client
-                    .post(format!("{}/{}", self.base_url.root(), api.edit_path))
+                    .post(self.base_url.operation_url(&api.edit_path))
                     .multipart(request.edit_form()?))
             })
             .await?
@@ -527,7 +532,7 @@ impl OpenAi {
         self.send_authorized_with(streaming, session_id, || {
             Ok(self
                 .client
-                .post(format!("{}/{endpoint}", self.base_url.root()))
+                .post(self.base_url.operation_url(endpoint))
                 .json(body))
         })
         .await
@@ -541,18 +546,19 @@ impl OpenAi {
     ) -> Result<reqwest::Response> {
         let mut retry = UnauthorizedRetry::default();
         loop {
-            let mut request = body()?;
-            for (name, value) in self.headers.into_iter().flatten() {
-                request = request.header(name.as_str(), value.as_bytes());
-            }
+            let request = body()?;
             let Some(auth) = &self.auth else {
-                return request
+                return super::transport::provider_request(request, self.headers, None)
                     .send()
                     .await
                     .map_err(|error| super::transport::request_error(error, "OpenAI"));
             };
             let authorization = auth.authorize_http(streaming, session_id).await?;
-            request = request.bearer_auth(&authorization.token);
+            let mut request = super::transport::provider_request(
+                request,
+                self.headers,
+                Some(&authorization.token),
+            );
             for (name, value) in authorization.headers {
                 request = request.header(name, value.as_ref());
             }
@@ -1266,5 +1272,13 @@ pub(super) fn response_provider_error(event: &Value, retry_after: Option<String>
         Some(status) => ProviderError::http(message, status, retry_after),
         None => ProviderError::new(message),
     };
-    error.with_code(super::transport::response_error_code(event))
+    let error = error.with_code(super::transport::response_error_code(event));
+    if error.class() != FailureClass::Other {
+        return error;
+    }
+    let error_type = event
+        .pointer("/error/type")
+        .or_else(|| event.pointer("/response/error/type"))
+        .and_then(Value::as_str);
+    error.with_code(error_type)
 }

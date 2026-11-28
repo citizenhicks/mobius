@@ -3,6 +3,7 @@
 use crate::host::session_file_rejection;
 
 mod desktop;
+mod dictation;
 mod policy;
 pub use policy::ConnectionPolicy;
 mod dispatch;

@@ -205,6 +205,8 @@ impl Workspace {
 
     fn dictate_button(&self, cx: &Context<Self>) -> AnyElement {
         let button = composer_button("dictate", "Dictate", "hi.mic01", cx);
+        #[cfg(feature = "snapshot")]
+        let button = button.child(crate::ui::snapshot::probe("composer-dictate".into()));
         if let Some(reason) = self.dictation_unavailable_reason() {
             return unavailable("dictate-unavailable", button, reason, cx);
         }
@@ -344,6 +346,10 @@ impl Workspace {
 
     /// ComposerView.swift DictationComposerBar: cancel, listening, stop, send.
     fn dictation_bar(&self, cx: &Context<Self>) -> AnyElement {
+        let transcript = self.dictation_draft.transcript();
+        let stop = composer_button("stop-dictation", "Stop dictation", "hi.stopFill", cx);
+        #[cfg(feature = "snapshot")]
+        let stop = stop.child(crate::ui::snapshot::probe("composer-dictation-stop".into()));
         composer_card(&self.palette, cx)
             .h(height::COMPOSER_IDLE)
             .px(inset::COMPOSER)
@@ -359,12 +365,24 @@ impl Workspace {
                     .flex_1()
                     .min_w_0()
                     .h(height::LARGE)
-                    .child(dictation_wave(self.dictation_tape(), self.palette.muted)),
+                    .flex()
+                    .items_center()
+                    .child(if transcript.is_empty() {
+                        div()
+                            .size_full()
+                            .child(dictation_wave(self.dictation_tape(), self.palette.muted))
+                            .into_any_element()
+                    } else {
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .typography(Type::Body)
+                            .child(transcript.to_owned())
+                            .into_any_element()
+                    }),
             )
-            .child(
-                composer_button("stop-dictation", "Stop dictation", "hi.stopFill", cx)
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle_dictation(cx))),
-            )
+            .child(stop.on_click(cx.listener(|this, _, _, cx| this.toggle_dictation(cx))))
             .child(
                 div()
                     .size(height::LARGE)
@@ -372,9 +390,9 @@ impl Workspace {
                     .items_center()
                     .justify_center()
                     .child(primary_button("send", "Send", "hi.arrowUp02", cx).on_click(
-                        cx.listener(|this, _, window, cx| {
-                            this.stop_dictation();
-                            this.send_message(window, cx);
+                        cx.listener(|this, _, _, _| {
+                            this.dictation_draft.send_on_final = true;
+                            this.native.finish_dictation();
                         }),
                     )),
             )

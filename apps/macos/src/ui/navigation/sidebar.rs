@@ -5,21 +5,12 @@ use super::*;
 use crate::numeric::ToFloat;
 use std::time::Instant;
 
-/// The key of the connected gateway's rows (`disclosed_item`).
-pub(in crate::ui) const GATEWAY_ITEM: &str = "gateway";
-
 impl Workspace {
-    /// The list item whose rows show beneath it: the selected Bot, or the connected
-    /// gateway while it or one of its pages is open.
+    /// The list item whose rows show beneath it: the selected Bot, or a möbius group
+    /// while one of its pages is open.
     pub(in crate::ui) fn disclosed_item(&self) -> Option<&str> {
         match self.primary_page()? {
             PageTab::Bot(id) | PageTab::BotSettings(id, _) => Some(id),
-            PageTab::Gateway(GatewayPage::Machine(gateway)) if self.is_current(gateway) => {
-                Some(GATEWAY_ITEM)
-            }
-            PageTab::Gateway(GatewayPage::Devices | GatewayPage::GitHub | GatewayPage::Ssh) => {
-                Some(GATEWAY_ITEM)
-            }
             page => pages::harness::MobiusGroup::of(page).map(pages::harness::MobiusGroup::key),
         }
     }
@@ -80,7 +71,6 @@ impl Workspace {
         match self.navigation_section {
             Section::Chats => div().into_any_element(),
             Section::Bots => self.bots_list(cx),
-            Section::Gateway => self.gateway_list(cx),
             Section::Mobius => self.mobius_list(cx),
             Section::Settings => self.settings_list(cx),
             Section::Events => self.events_list(cx),

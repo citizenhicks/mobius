@@ -137,13 +137,10 @@ pub(in crate::ui) fn configured_model<'a>(
         .providers
         .iter()
         .find(|status| status.provider == provider.provider);
-    let models = if let Some(status) =
-        status.filter(|status| !status.model_ids_configurable || instance.is_none())
-    {
-        status.models.as_slice()
-    } else {
-        instance.map_or(&[][..], |instance| instance.models.as_slice())
-    };
+    let models = instance
+        .map(|i| i.models.as_slice())
+        .or_else(|| status.map(|s| s.models.as_slice()))
+        .unwrap_or_default();
     let effort = provider.reasoning_effort.as_deref().or_else(|| {
         models
             .iter()

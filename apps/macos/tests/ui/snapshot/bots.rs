@@ -79,11 +79,29 @@ fn identity_fixture(this: &mut Workspace, window: &mut Window, cx: &mut Context<
 }
 
 /// A provider status: a fixed catalog, or one whose setups list their own model ids.
+pub(super) fn model_groups(editable: bool, models: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    use serde_json::json;
+    let rows:Vec<_>=models.iter().map(|m| {
+        let efforts=m["reasoning"].as_array().into_iter().flatten().filter_map(|e|e["id"].as_str()).collect::<Vec<_>>().join(", ");
+        json!({"id":m["id"],"fields":[
+            {"id":"context","label":"Context window","description":"","composer":false,"type":"integer","min":1,"step":1,"value":m["context_window"],"editable":false},
+            {"id":"efforts","label":"Reasoning efforts","description":"","composer":false,"type":"text","max_bytes":256,"value":efforts,"editable":editable}
+        ]})
+    }).collect();
+    [("language","Language models","ai_search_lines",true),("dictation","Dictation models","ai_mic",true),
+    ("image","Image models","ai_image_01",true),("voice","Voice models","ai_speech",!editable),
+    ("decision","Decision models","split",editable)].map(|(kind,label,symbol,supported)|json!({
+        "kind":kind,"label":label,"symbol":symbol,"test_description":supported.then_some("Test configured models"),"supported":supported,"editable":supported && editable,
+        "fields":[],"model_presets":[],"new_model_fields":[],"models":if kind=="language"{rows.as_slice()}else{&[]}
+    })).into()
+}
+
 fn media_provider(id: &str, label: &str, symbol: &str, configurable: bool) -> serde_json::Value {
     use serde_json::json;
     json!({
         "provider": id, "label": label, "symbol": symbol, "description": "",
-        "model_ids_configurable": configurable, "auth": "api_key",
+        "model_groups": model_groups(configurable,&[]),
+        "general_section":{"label":"General","symbol":"settings_01"},"auth": "api_key",
         "default_base_url": "https://api.example",
         "web_search": [], "tool_discovery": "native",
         "supported_tool_discovery": ["native"],
@@ -95,20 +113,7 @@ fn media_provider(id: &str, label: &str, symbol: &str, configurable: bool) -> se
                 {"id": "high", "label": "High", "description": ""}
             ], "default_reasoning": null, "tool_discovery": "native"
         }]) },
-        "image_models": if configurable { json!([]) } else {
-            json!([
-                {"id": "gpt-image-2.5-sunburst", "label": "GPT Image 2.5 Sunburst", "description": ""},
-                {"id": "gpt-image-2.5-flare", "label": "GPT Image 2.5 Flare", "description": ""}
-            ])
-        },
-        "image_model_ids_configurable": configurable,
-        "voice_models": if configurable { json!([]) } else {
-            json!([{"id": "gpt-live-1", "label": "GPT Live 1", "description": "", "variants": [
-                {"id": "alloy", "label": "Alloy", "description": ""},
-                {"id": "marin", "label": "Marin", "description": ""},
-                {"id": "cedar", "label": "Cedar", "description": ""}
-            ]}])
-        }
+
     })
 }
 
@@ -121,15 +126,32 @@ fn media_instance(
     model: &str,
 ) -> serde_json::Value {
     use serde_json::json;
+    let mut groups = model_groups(provider == "lab", &[]);
+    for group in &mut groups {
+        let models: &[(&str, &str)] = match (provider == "lab", group["kind"].as_str()) {
+            (false, Some("image")) => &[
+                ("gpt-image-2.5-sunburst", "GPT Image 2.5 Sunburst"),
+                ("gpt-image-2.5-flare", "GPT Image 2.5 Flare"),
+            ],
+            (false, Some("voice")) => &[("gpt-live-1", "GPT Live 1")],
+            (true, Some("image")) => &[("flux-2", "flux-2")],
+            _ => continue,
+        };
+        group["models"] = json!(
+            models
+                .iter()
+                .map(|(id, label)| json!({"id":id,"label":label,"fields":[]}))
+                .collect::<Vec<_>>()
+        );
+    }
     json!({
-        "label": label, "tint": tint, "tool_discovery": "native", "configured": true,
+        "label": label, "tint": tint, "tool_discovery": "native", "configured": true, "model_groups": groups,
         "models": if provider == "lab" {
             json!([{"id": model, "label": model, "description": "", "context_window": 100,
                 "reasoning": [], "default_reasoning": null, "tool_discovery": "native"}])
         } else {
             json!([])
         },
-        "image_model_ids": if provider == "lab" { json!(["flux-2"]) } else { json!([]) },
         "selection": {"instance": id, "provider": provider, "model": model,
             "base_url": null, "endpoint_auth": "provider_default",
             "reasoning_effort": null, "web_search": "off"}

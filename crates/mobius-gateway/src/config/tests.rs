@@ -822,3 +822,181 @@ fn persisted_config_and_credentials_reject_fifos_without_a_writer() {
     };
     assert!(error.to_string().contains("regular file"));
 }
+
+#[test]
+fn a_group_endpoint_applies_to_models_added_after_the_endpoint_is_saved() {
+    use crate::wire::{GroupEndpointOverride, ProviderModelKind};
+
+    let config = GatewayConfig::new(DEFAULT_LISTEN, None).unwrap();
+    let endpoint = GroupEndpointOverride {
+        kind: ProviderModelKind::Dictation,
+        api: "transcriptions".into(),
+        path: "custom/transcriptions".into(),
+    };
+    let register = |endpoints, ids| ProviderRegistration {
+        image_defaults: None,
+        selection: test_provider("fixture", "responses", "chat"),
+        label: None,
+        tint: None,
+        models: vec![],
+        image_model_ids: None,
+        dictation_model_ids: Some(ids),
+        voice_models: None,
+        group_endpoints: endpoints,
+        decision_model_ids: None,
+        operator_managed: false,
+    };
+    let empty = config
+        .registering_configured(register(Some(vec![endpoint.clone()]), vec![]), false)
+        .unwrap()
+        .into_inner();
+    let ids = vec!["transcriber-a".into(), "transcriber-b".into()];
+    let populated = empty
+        .registering_configured(register(None, ids.clone()), false)
+        .unwrap()
+        .into_inner();
+    let routes = provider_catalog::media_routes(&populated.configured_providers, None).unwrap();
+    assert_eq!(routes.dictations.len(), 2);
+    assert!(
+        routes
+            .dictations
+            .iter()
+            .all(|route| route.endpoint.as_ref() == Some(&endpoint))
+    );
+    let cleared = populated
+        .registering_configured(register(Some(vec![]), ids), false)
+        .unwrap()
+        .into_inner();
+    let routes = provider_catalog::media_routes(&cleared.configured_providers, None).unwrap();
+    assert!(
+        routes
+            .dictations
+            .iter()
+            .all(|route| route.endpoint.is_none())
+    );
+}
+
+#[test]
+fn compatible_chat_api_rejects_unencodable_search_before_configuration_is_saved() {
+    use crate::wire::{GroupEndpointOverride, ProviderModelKind};
+    use mobius::backend::model::provider::HostedWebSearch;
+    let definition = provider("openai_socket").unwrap();
+    let mut selection = test_provider(
+        "instance",
+        definition.id(),
+        definition.default_model().unwrap(),
+    );
+    selection.web_search = HostedWebSearch::Live;
+    let mut config = GatewayConfig::new(DEFAULT_LISTEN, None)
+        .unwrap()
+        .registering_provider(selection, "Test".into(), Default::default(), vec![], vec![])
+        .unwrap();
+    let instance = config.configured_providers.get_mut("instance").unwrap();
+    instance.group_endpoints = vec![GroupEndpointOverride {
+        kind: ProviderModelKind::Language,
+        api: "chat_completions".into(),
+        path: "chat/completions".into(),
+    }];
+    for search in [HostedWebSearch::Live, HostedWebSearch::Cached] {
+        let instance = config.configured_providers.get_mut("instance").unwrap();
+        instance.selection.web_search = search;
+        assert!(
+            config
+                .clone()
+                .validated()
+                .unwrap_err()
+                .to_string()
+                .contains("requires hosted search to be off")
+        );
+    }
+    config
+        .configured_providers
+        .get_mut("instance")
+        .unwrap()
+        .selection
+        .web_search = HostedWebSearch::Off;
+    config.validated().unwrap();
+}
+
+#[test]
+fn locked_voice_catalog_cannot_be_relabelled_or_cleared_by_registration() {
+    for id in ["openai_socket", "openai_codex"] {
+        let definition = provider(id).unwrap();
+        let selection = test_provider("instance", id, definition.default_model().unwrap());
+        let mut config = GatewayConfig::new(DEFAULT_LISTEN, None)
+            .unwrap()
+            .registering_provider(
+                selection,
+                "Fixture".into(),
+                Default::default(),
+                vec![],
+                vec![],
+            )
+            .unwrap();
+        let instance = config.configured_providers.get_mut("instance").unwrap();
+        let mut voices = definition.voice_models().to_vec();
+        voices[0].label = "Replacement".into();
+        for changed in [voices, vec![]] {
+            instance.voice_models = Some(changed);
+            assert!(
+                validation::validate_configured_provider(instance)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("advertised voice catalog")
+            );
+        }
+    }
+}
+
+#[test]
+fn custom_compatible_origin_only_offers_explicit_voice_models() {
+    use crate::wire::ProviderModelKind;
+    let definition = provider("responses").unwrap();
+    let mut selection = test_provider("fixture", definition.id(), "chat");
+    selection.base_url = Some(BaseUrl::new("https://compatible.example/v1").unwrap());
+    let mut config = GatewayConfig::new(DEFAULT_LISTEN, None)
+        .unwrap()
+        .registering_provider(
+            selection,
+            "Fixture".into(),
+            Default::default(),
+            vec![],
+            vec![],
+        )
+        .unwrap();
+    let instance = config.configured_providers.get_mut("fixture").unwrap();
+    let base = instance.selection.base_url.as_ref().unwrap();
+    let groups = provider_catalog::model_groups(definition, base, Some(instance));
+    let voice = groups
+        .iter()
+        .find(|g| g.kind == ProviderModelKind::Voice)
+        .unwrap();
+    assert!(voice.supported && voice.editable && voice.models.is_empty());
+    assert!(
+        provider_catalog::media_routes(&config.configured_providers, None)
+            .unwrap()
+            .voices
+            .is_empty()
+    );
+    let instance = config.configured_providers.get_mut("fixture").unwrap();
+    instance.voice_models = Some(vec![definition.voice_models()[0].clone()]);
+    validation::validate_configured_provider(instance).unwrap();
+    let groups = provider_catalog::model_groups(
+        definition,
+        instance.selection.base_url.as_ref().unwrap(),
+        Some(instance),
+    );
+    let voice = groups
+        .iter()
+        .find(|g| g.kind == ProviderModelKind::Voice)
+        .unwrap();
+    assert_eq!(voice.models.len(), 1);
+    let routes = provider_catalog::media_routes(&config.configured_providers, None).unwrap();
+    assert!(
+        routes
+            .voices
+            .iter()
+            .all(|r| r.choice.model.as_ref() == voice.models[0].id)
+    );
+    assert!(!routes.voices.is_empty());
+}

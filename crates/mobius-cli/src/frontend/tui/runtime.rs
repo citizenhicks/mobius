@@ -8,6 +8,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::Event as TerminalEvent;
 use ratatui::crossterm::event::{KeyCode, KeyEventKind};
 use ratatui::crossterm::style::Print;
+use ratatui::crossterm::terminal::{Clear, ClearType};
 use ratatui::crossterm::{SynchronizedUpdate, execute};
 use tempfile::{NamedTempFile, TempPath};
 use tokio::io::AsyncWriteExt as _;
@@ -77,7 +78,9 @@ pub(in crate::frontend) async fn run(
     });
     let mut guard = TerminalGuard::alternate()?;
     let mut terminal = Screen::new(CrosstermBackend::new(io::stdout()))?;
-    terminal.clear()?;
+    // The input reader already owns terminal replies when entering from a draft.
+    // Clearing this fresh fullscreen buffer needs no cursor-position query.
+    execute!(io::stdout(), Clear(ClearType::All))?;
     let mut state = TuiState::new(
         &catalog,
         catalog.workspace().map(std::path::Path::to_path_buf),
@@ -87,6 +90,21 @@ pub(in crate::frontend) async fn run(
     );
     sync_session(&mut state, session, gateway)?;
     state.restore_unsent(opening.draft);
+    if let Some(message) = opening.first_message {
+        let draft = InputDraft {
+            cursor: message.text.len(),
+            text: message.text.clone(), // rules-allow: keep the first draft recoverable until the submission is acknowledged
+            ..Default::default()
+        };
+        send_and_report(
+            &sender,
+            &session.session.session_id,
+            Op::Message { message },
+            &mut state,
+            Some(draft),
+        )
+        .await;
+    }
     let mut reconnect_attempt = 0_usize;
     if opening.choose_bot && gateway.bots.len() > 1 {
         choose_bot(
@@ -238,6 +256,139 @@ pub(in crate::frontend) async fn run(
         execute!(io::stdout(), Print(CLEAR_SCREEN_AND_SCROLLBACK))?;
     }
     Ok((exit, sender, events))
+}
+
+/// Uses the regular composer and Bot picker while the first message has no session yet.
+pub(crate) async fn compose_new_chat(
+    sender: &GatewaySender,
+    events: &mut GatewayEvents,
+    gateway: &mut ReadyPayload,
+    endpoint: &str,
+    mut workspace: PathBuf,
+    mut bot_id: Arc<str>,
+    mut explicit_workspace: bool,
+) -> Result<Option<(SessionReadyPayload, mobius::protocol::MessageSubmission)>> {
+    use mobius_gateway::wire::RouteTarget;
+    let (_guard, mut terminal) = crate::frontend::terminal::open_screen()?;
+    let mut catalog = UiCatalog::for_new_chat(&workspace)?;
+    let mut state = TuiState::default();
+    let mut explicit_bot = false;
+    if !gateway
+        .agent_catalog
+        .auto_routing
+        .targets
+        .contains(&RouteTarget::Bot)
+        && gateway.bots.len() > 1
+    {
+        state.open_bot_picker(&gateway.bots, Some(&workspace), &bot_id, false);
+    }
+    loop {
+        let targets = &gateway.agent_catalog.auto_routing.targets;
+        state.cwd = if !explicit_workspace && targets.contains(&RouteTarget::Workspace) {
+            "Auto workspace".into()
+        } else {
+            crate::frontend::terminal_text(&workspace.display().to_string())
+        };
+        state.agent_summary = if !explicit_bot && targets.contains(&RouteTarget::Bot) {
+            "Auto Bot".into()
+        } else {
+            gateway.bots.iter().find(|b| b.id == bot_id).map_or_else(
+                || "Bot".into(),
+                |b| format!("@{}", crate::frontend::terminal_text(&b.handle)),
+            )
+        };
+        draw(&mut terminal, &mut state, &catalog)?;
+        let batch = tokio::select! {
+            batch = next_input_batch() => batch,
+            event = events.next() => {
+                let frame = event.map_err(crate::gateway_error)?.ok_or_else(|| Error::Stopped("gateway disconnected while composing".into()))?;
+                match frame.message {
+                    ServerMessage::Ready { payload } => gateway.update(payload),
+                    ServerMessage::SessionsChanged { sessions, .. } => apply_session_changes(&mut gateway.sessions,sessions),
+                    _ => {}
+                }
+                continue;
+            }
+        };
+        for event in batch {
+            let mut dirty = false;
+            match terminal_action(event?, &mut state, &catalog, &mut dirty) {
+                UiAction::Exit => return Ok(None),
+                UiAction::GatewaySettings => {
+                    if open_gateway_settings(
+                        &mut terminal,
+                        endpoint,
+                        &mut state,
+                        sender,
+                        events,
+                        gateway,
+                    )
+                    .await
+                    {
+                        return Err(Error::Stopped(
+                            "gateway changed while composing a new chat".into(),
+                        ));
+                    }
+                }
+                UiAction::Bots => {
+                    state.open_bot_picker(&gateway.bots, Some(&workspace), &bot_id, false);
+                }
+                UiAction::ChooseBot {
+                    workspace: Some(path),
+                    ..
+                } => {
+                    workspace = path;
+                    explicit_workspace = true;
+                    catalog = UiCatalog::for_new_chat(&workspace)?;
+                }
+                UiAction::CreateSession { bot_id: chosen, .. } => {
+                    bot_id = chosen;
+                    explicit_bot = true;
+                }
+                UiAction::Submit(op) => {
+                    if let Op::Message { message } = *op {
+                        let auto = gateway
+                            .agent_catalog
+                            .auto_routing
+                            .targets
+                            .iter()
+                            .copied()
+                            .filter(|t| match t {
+                                RouteTarget::Bot => !explicit_bot,
+                                RouteTarget::Workspace => !explicit_workspace,
+                            })
+                            .collect();
+                        let response = crate::frontend::request(
+                            sender,
+                            events,
+                            Some(gateway),
+                            |request_id| ClientMessage::CreateSession {
+                                request_id,
+                                workspace: workspace.clone(), // rules-allow: the draft retains its selection if the gateway rejects creation
+                                bot_id: Arc::clone(&bot_id),
+                                auto,
+                                prompt: Some(message.text.clone()), // rules-allow: routing sees the text before the actual submission
+                            },
+                            crate::command::session_opened,
+                        )
+                        .await;
+                        match response {
+                            Ok(opened) => return Ok(Some((opened, message))),
+                            Err(error) => {
+                                state.restore_unsent(Some(message.text));
+                                state.push(error.to_string(), TranscriptTone::Error);
+                            }
+                        }
+                    }
+                }
+                UiAction::PasteClipboard => state.push(
+                    "Use terminal paste for text. Attach files once the chat opens.",
+                    TranscriptTone::Neutral,
+                ),
+                _ => {}
+            }
+        }
+    }
 }
 
 async fn request_open_reference_inventory(
@@ -395,7 +546,17 @@ async fn handle_terminal_input(
                 interrupt_active_turn(sender, &session.session.session_id, state).await;
                 return Ok(Some(FrontendExit::Exit));
             }
-            UiAction::ChooseBot { workspace, clear } => {
+            UiAction::ChooseBot {
+                workspace,
+                explicit_workspace,
+                clear,
+            } => {
+                if !gateway.agent_catalog.auto_routing.targets.is_empty() {
+                    return Ok(Some(FrontendExit::NewChat {
+                        workspace,
+                        explicit_workspace,
+                    }));
+                }
                 choose_bot(gateway, session, workspace.as_deref(), clear, state);
                 *dirty = true;
             }
@@ -437,7 +598,9 @@ async fn handle_terminal_input(
                 request_earlier_history(sender, &session.session.session_id, state).await;
             }
             UiAction::GatewaySettings => {
-                if open_gateway_settings(terminal, gateway_endpoint, state).await {
+                if open_gateway_settings(terminal, gateway_endpoint, state, sender, events, gateway)
+                    .await
+                {
                     return Ok(Some(FrontendExit::Reconnect {
                         draft: Some(std::mem::take(&mut state.composer.text))
                             .filter(|draft| !draft.is_empty()),
@@ -1289,8 +1452,11 @@ async fn open_gateway_settings(
     terminal: &mut Screen,
     gateway_endpoint: &str,
     state: &mut TuiState,
+    sender: &GatewaySender,
+    events: &mut GatewayEvents,
+    gateway: &mut ReadyPayload,
 ) -> bool {
-    match gateway::run(terminal, gateway_endpoint).await {
+    match gateway::run(terminal, gateway_endpoint, sender, events, gateway).await {
         Ok(reconnect) => reconnect,
         Err(error) => {
             state.push(error.to_string(), TranscriptTone::Error);

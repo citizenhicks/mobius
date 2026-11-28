@@ -717,6 +717,17 @@ where
     .await
 }
 
+async fn initial_desktop_control(
+    host: &GatewayHost,
+    client: &AuthenticatedClient<'_>,
+    writer: &mut (impl AsyncWrite + Unpin),
+) -> Result<()> {
+    if client.desktop_transport && host.remote_desktop.available() {
+        super::desktop::write_control_state(host, client.connection_id, None, writer).await?;
+    }
+    Ok(())
+}
+
 #[expect(
     clippy::significant_drop_tightening,
     reason = "the remote desktop session serves the whole connection loop; the lint misreads its use inside tokio::select!"
@@ -742,11 +753,10 @@ async fn serve_authenticated_connection(
         .map_err(|rejection| Error::Protocol(rejection.message.to_string()))?;
     view.write_catalog(&mut writer, None, Arc::new(ready))
         .await?;
-    if client.desktop_transport && host.remote_desktop.available() {
-        super::desktop::write_control_state(host, client.connection_id, None, &mut writer).await?;
-    }
+    initial_desktop_control(host, &client, &mut writer).await?;
     let mut selected: Option<SelectedChat> = None;
     let mut voice = None;
+    let mut dictation = None;
     let mut desktop = None;
     let mut desktop_host_requests =
         (client.local && client.client.desktop_host).then(|| host.desktop.host_requests());
@@ -780,6 +790,10 @@ async fn serve_authenticated_connection(
             }
             outgoing = super::desktop::next_update(&mut remote_desktop, &mut desktop_changes, &mut pending_desktop_control) => {
                 super::desktop::write_update(outgoing, host, &client, &mut pending_requests, &mut writer).await?;
+                None
+            }
+            outgoing = super::dictation::next(&mut dictation) => {
+                write_frame(&mut writer,&ServerFrame::new(outgoing)).await?;
                 None
             }
             outgoing = super::voice::next_update(&mut voice) => {
@@ -829,6 +843,7 @@ async fn serve_authenticated_connection(
                 session_files: &session_files,
                 bots,
                 uploads: &mut uploads,
+                dictation: &mut dictation,
                 voice: &mut voice,
                 desktop: &mut desktop,
                 browser: &mut browser,

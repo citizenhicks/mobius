@@ -336,6 +336,28 @@ impl TextForm {
         }
     }
 
+    /// Edit one bounded field; Enter accepts it and Escape cancels.
+    pub(super) fn input(&mut self, event: Event) -> Option<bool> {
+        use ratatui::crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
+        match event {
+            Event::Paste(text) => self.push(&text),
+            Event::Key(key) if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) => {
+                match key.code {
+                    KeyCode::Esc => return Some(false),
+                    KeyCode::Enter => return Some(true),
+                    KeyCode::Backspace => self.backspace(),
+                    KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        self.value.clear();
+                    }
+                    KeyCode::Char(c) => self.push(&c.to_string()),
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+        None
+    }
+
     pub(super) fn push(&mut self, value: &str) {
         self.error = append_bounded(&mut self.value, value, self.limit, self.multiline)
             .then(|| format!("input is limited to {} bytes", self.limit));
@@ -365,6 +387,40 @@ pub(super) fn chat_indicators(activity: &mobius_gateway::wire::SessionActivity) 
         }
     }
     text
+}
+
+pub(super) fn choice_row(
+    lines: &mut Vec<Line<'static>>,
+    index: usize,
+    label: &str,
+    description: &str,
+    selected: bool,
+) {
+    use super::terminal_text;
+    use super::theme::{Role, current};
+    let theme = current();
+    let role = if selected {
+        Role::Selection
+    } else {
+        Role::Text
+    };
+    lines.push(Line::styled(
+        format!(
+            "{} {}. {}",
+            if selected { "›" } else { " " },
+            index + 1,
+            terminal_text(label)
+        ),
+        theme.style(role),
+    ));
+    lines.push(Line::styled(
+        format!("     {}", terminal_text(description)),
+        theme.style(if selected {
+            Role::Selection
+        } else {
+            Role::Muted
+        }),
+    ));
 }
 
 #[cfg(test)]

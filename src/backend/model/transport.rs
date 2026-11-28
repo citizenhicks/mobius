@@ -1,4 +1,6 @@
+use reqwest::RequestBuilder;
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::error::Error as _;
 use std::time::Duration;
 
@@ -10,6 +12,33 @@ use super::provider::BaseUrl;
 use crate::Error;
 use crate::ProviderError;
 use crate::Result;
+
+/// Applies the provider headers and scoped bearer credential to one outbound HTTP request.
+pub(super) fn provider_request(
+    mut request: RequestBuilder,
+    headers: Option<&BTreeMap<String, String>>,
+    token: Option<&str>,
+) -> RequestBuilder {
+    for (name, value) in headers.into_iter().flatten() {
+        request = request.header(name, value);
+    }
+    if let Some(token) = token {
+        request = request.bearer_auth(token);
+    }
+    request
+}
+
+/// Sends an HTTP request whose adapter expects a successful status.
+pub(super) async fn send_checked(request: RequestBuilder, provider: &str) -> Result<Response> {
+    let response = request
+        .send()
+        .await
+        .map_err(|error| request_error(error, provider))?;
+    if !response.status().is_success() {
+        return Err(status_error(response, provider).await);
+    }
+    Ok(response)
+}
 
 pub(crate) fn retry_delay(
     error: &crate::ProviderError,
@@ -456,7 +485,7 @@ pub(super) enum WebSocketConnectError {
 }
 
 pub(super) async fn connect_authorized_websocket<'a, F, Fut>(
-    auth: &'a dyn super::authorization::OpenAiAuthorization,
+    auth: Option<&'a dyn super::authorization::OpenAiAuthorization>,
     url: &str,
     max_message_bytes: usize,
     connect_timeout: Option<Duration>,
@@ -464,7 +493,7 @@ pub(super) async fn connect_authorized_websocket<'a, F, Fut>(
     extra_headers: &[(&'a str, &'a str)],
 ) -> std::result::Result<ModelWebSocket, WebSocketConnectError>
 where
-    F: FnMut() -> Fut,
+    F: FnMut(&'a dyn super::authorization::OpenAiAuthorization) -> Fut,
     Fut: std::future::Future<Output = Result<super::authorization::ResolvedAuthorization<'a>>>,
 {
     use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
@@ -473,20 +502,29 @@ where
 
     let mut retry = super::authorization::UnauthorizedRetry::default();
     loop {
-        let authorization = authorize().await.map_err(WebSocketConnectError::Other)?;
+        let authorization = match auth {
+            Some(auth) => Some(
+                authorize(auth)
+                    .await
+                    .map_err(WebSocketConnectError::Other)?,
+            ),
+            None => None,
+        };
         let mut request = url
             .into_client_request()
             .map_err(WebSocketConnectError::Request)?;
-        let bearer =
-            HeaderValue::from_str(&format!("Bearer {}", authorization.token)).map_err(|error| {
-                WebSocketConnectError::InvalidHeader(format!(
-                    "access token is not a valid header value: {error}"
-                ))
-            })?;
-        request.headers_mut().insert(AUTHORIZATION, bearer);
+        if let Some(authorization) = &authorization {
+            let bearer = HeaderValue::from_str(&format!("Bearer {}", authorization.token))
+                .map_err(|error| {
+                    WebSocketConnectError::InvalidHeader(format!(
+                        "access token is not a valid header value: {error}"
+                    ))
+                })?;
+            request.headers_mut().insert(AUTHORIZATION, bearer);
+        }
         for (name, value) in authorization
-            .headers
             .iter()
+            .flat_map(|a| &a.headers)
             .map(|(k, v)| (*k, v.as_ref()))
             .chain(extra_headers.iter().copied())
         {
@@ -518,10 +556,11 @@ where
             Ok((socket, _)) => return Ok(socket),
             Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
                 if response.status().as_u16() == 401 {
-                    if retry
-                        .retry_unauthorized(auth, &authorization.token)
-                        .await
-                        .map_err(WebSocketConnectError::Other)?
+                    if let (Some(auth), Some(authorization)) = (auth, &authorization)
+                        && retry
+                            .retry_unauthorized(auth, &authorization.token)
+                            .await
+                            .map_err(WebSocketConnectError::Other)?
                     {
                         continue;
                     }

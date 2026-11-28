@@ -9,24 +9,22 @@ impl Workspace {
             GatewayRef::Local => self.local_endpoint(),
             GatewayRef::Saved(endpoint) => Some(endpoint.as_str()),
         };
-        let title = self.gateway_display_name(gateway).into_owned();
-        let status = if active {
-            self.link_label()
+        let subtitle = if active {
+            self.gateway_summary().1
         } else {
-            "Not connected".to_owned()
+            format!("{} · Not connected", self.gateway_display_name(gateway))
         };
-        let subtitle = [Some(status), endpoint.map(transport).map(str::to_owned)]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join(" · ");
-        let header = PageHeader::new(title).subtitle(subtitle);
         let mut body = page(
             SharedString::from(format!("gateway:{}", gateway.label())),
-            header,
-        )
-        .child(Section::new("Connection").child(self.connection_group(endpoint, active, cx)));
-        if active && self.client.link.is_ready() {
+            PageHeader::new("Gateway").subtitle(subtitle),
+        );
+        let ready = active && self.client.link.is_ready();
+        if ready {
+            body = body.children(self.defaults_section(cx));
+        }
+        body = body
+            .child(Section::new("Connection").child(self.connection_group(endpoint, active, cx)));
+        if ready {
             // Another device reaches the local gateway over its tunnel, not loopback.
             let address = match gateway {
                 GatewayRef::Local => crate::gateway::local::public_endpoint()
@@ -34,9 +32,76 @@ impl Workspace {
                     .or_else(|| endpoint.map(Cow::Borrowed)),
                 GatewayRef::Saved(endpoint) => Some(Cow::Borrowed(endpoint.as_str())),
             };
-            body = body.child(self.pairing_section(address.as_deref(), cx));
+            body = body
+                .child(self.pairing_section(address.as_deref(), cx))
+                .child(Section::new("Devices").child(Group::new().child(self.devices_row(cx))))
+                .child(
+                    Section::new("Host credentials")
+                        .child(Group::new().children(self.credential_rows(cx))),
+                );
         }
         body.into_any_element()
+    }
+
+    /// A row that opens one of the connected gateway's pages.
+    pub(super) fn gateway_row(
+        id: &'static str,
+        title: &'static str,
+        glyph: &'static str,
+        page: GatewayPage,
+        cx: &Context<Self>,
+    ) -> Row {
+        Row::new(id, title)
+            .leading(Leading::glyph(glyph))
+            .disclosure()
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.open_page(PageTab::Gateway(page.clone()), window, cx); // rules-allow: the click handler is Fn and each open owns its page
+            }))
+    }
+
+    /// What new chats start from: routing and the dictation model, both on one page.
+    fn defaults_section(&self, cx: &Context<Self>) -> Option<Section> {
+        let catalog = &self.client.state.gateway.as_ref()?.agent_catalog;
+        let dictation = &catalog.dictation;
+        let model = dictation
+            .choices
+            .iter()
+            .find(|choice| choice.target == dictation.selection)
+            .map(mobius_gateway::wire::DictationChoice::display);
+        let routing = Self::gateway_row(
+            "gateway-routing",
+            "New chats",
+            "hi.slidersHorizontal",
+            GatewayPage::Routing,
+            cx,
+        )
+        .subtitle("Auto routing");
+        let dictation = Self::gateway_row(
+            "gateway-dictation",
+            "Default dictation model",
+            "hi.mic01",
+            GatewayPage::Routing,
+            cx,
+        );
+        let dictation = match model {
+            Some(model) => dictation.subtitle(model),
+            None => dictation,
+        };
+        Some(Section::new("Defaults").child(Group::new().child(routing).child(dictation)))
+    }
+
+    fn devices_row(&self, cx: &Context<Self>) -> Row {
+        let row = Self::gateway_row(
+            "gateway-devices",
+            "Paired devices",
+            "hi.smartPhone01",
+            GatewayPage::Devices,
+            cx,
+        );
+        match &self.client.state.clients {
+            Some((_, clients)) => row.value(clients.len().to_string()),
+            None => row,
+        }
     }
 
     fn connection_group(&self, endpoint: Option<&str>, active: bool, cx: &Context<Self>) -> Group {
@@ -48,11 +113,17 @@ impl Workspace {
                 runtime::Link::Failed(_) => p.danger,
                 runtime::Link::Connecting(_) | runtime::Link::Reconnecting { .. } => p.warning,
             };
-            group = group.child(Row::new("gateway-status", "Status").control(status_label(
+            let status = Row::new("gateway-status", "Status").control(status_label(
                 color,
-                self.link_label(),
+                self.link_word(),
                 cx,
-            )));
+            ));
+            // A failure's reason is long; it reads under the title instead of beside it.
+            group = group.child(if self.client.link.is_ready() {
+                status
+            } else {
+                status.subtitle(self.link_label())
+            });
         }
         if let Some(endpoint) = endpoint {
             group = group

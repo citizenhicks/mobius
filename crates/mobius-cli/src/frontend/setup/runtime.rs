@@ -44,6 +44,44 @@ pub(super) async fn edit(
             };
             match flow {
                 Flow::Continue => {}
+                Flow::EditGroup => super::form::edit(terminal, state).await?,
+                Flow::TestGroup => {
+                    if let Some(group) = state.active_group() {
+                        let kind = group.kind;
+                        let label = group.label.clone(); // rules-allow: progress owns the group label while the editor can redraw
+                        let config = state.agent_composition(&state.original)?.provider;
+                        let form = state.provider_form(config);
+                        state.set_progress("Testing provider", label);
+                        draw(terminal, state)?;
+                        let result = exchange(
+                            terminal,
+                            state,
+                            sender,
+                            events,
+                            Failure::Configuration,
+                            |request_id| ClientMessage::TestProviderGroup {
+                                request_id,
+                                form,
+                                group: kind,
+                                api_key: None,
+                            },
+                            |id, message| match message {
+                                ServerMessage::ProviderGroupTested { request_id }
+                                    if request_id.as_ref() == id =>
+                                {
+                                    ControlFlow::Break(())
+                                }
+                                message => ControlFlow::Continue(message),
+                            },
+                        )
+                        .await;
+                        state.progress = None;
+                        match result {
+                            Ok(()) => state.test_result = Some("Provider test passed".into()),
+                            Err(e) => state.recover_error(e)?,
+                        }
+                    }
+                }
                 Flow::Authenticate => {
                     let result = authenticate(terminal, state, sender, events).await;
                     if !state.authentication_finished(result)? {
@@ -109,16 +147,15 @@ pub(super) async fn apply(
         .iter()
         .find(|bot| *bot.id == *bot_id)
         .ok_or_else(|| Error::Invalid("this chat's Bot is not in the gateway catalog".into()))?;
-    let config = state.agent_composition(mobius_composition(bot)?)?;
+    let mut config = state.agent_composition(mobius_composition(bot)?)?;
     let expected_revision = bot.config.revision;
     if state.mode == SetupMode::Login {
-        state.set_progress(
-            "Registering provider",
-            "Updating the gateway model catalog…",
-        );
-        draw(terminal, state)?;
-        let provider = config.provider.clone(); // rules-allow: the registration message owns one, and `config` still needs its provider
-        gateway.update(register_provider(terminal, state, sender, events, provider).await?);
+        let Some(selection) =
+            save_provider(terminal, state, sender, events, gateway, config.provider).await?
+        else {
+            return Ok(());
+        };
+        config.provider = selection;
     }
     let bot = gateway
         .bots
@@ -162,15 +199,14 @@ pub(super) async fn apply_gateway(
         .bot_defaults
         .as_ref()
         .map(|default| default.revision);
-    let config = state.agent_composition(&state.original)?;
+    let mut config = state.agent_composition(&state.original)?;
     if state.mode == SetupMode::Login {
-        state.set_progress(
-            "Registering provider",
-            "Updating the gateway model catalog…",
-        );
-        draw(terminal, state)?;
-        let provider = config.provider.clone(); // rules-allow: the registration message owns one, and `config` still needs its provider
-        gateway.update(register_provider(terminal, state, sender, events, provider).await?);
+        let Some(selection) =
+            save_provider(terminal, state, sender, events, gateway, config.provider).await?
+        else {
+            return Ok(());
+        };
+        config.provider = selection;
     }
     let default = gateway
         .agent_catalog
@@ -199,31 +235,29 @@ pub(super) async fn apply_gateway(
     Ok(())
 }
 
-pub(super) async fn register_provider(
+async fn save_provider(
     terminal: &mut Screen,
-    state: &SetupState,
+    state: &mut SetupState,
     sender: &GatewaySender,
     events: &mut GatewayEvents,
+    gateway: &mut ReadyPayload,
     config: ProviderConfig,
-) -> Result<ReadyPayload> {
-    let models = state.configured_models();
-    let decision_model_ids = state.configured_decision_models();
-    let label = state.effective_label().into();
-    configure(terminal, state, sender, events, |request_id| {
-        ClientMessage::RegisterProvider {
-            preserve_selection: false,
-            if_configured: false,
-            request_id,
-            config,
-            label: Some(label),
-            tint: None,
-            models,
-            image_model_ids: None,
-            decision_model_ids,
-            operator_managed: false,
-        }
-    })
-    .await
+) -> Result<Option<ProviderConfig>> {
+    state.set_progress("Saving provider", "Updating the gateway model catalog…");
+    draw(terminal, state)?;
+    let form = state.provider_form(config);
+    gateway.update(
+        configure(terminal, state, sender, events, |request_id| {
+            ClientMessage::SaveProviderForm { request_id, form }
+        })
+        .await?,
+    );
+    let saved = gateway
+        .provider_instances
+        .iter()
+        .find(|p| p.selection.instance == state.target_instance())
+        .ok_or_else(|| Error::Internal("Saved provider missing from gateway catalog".into()))?;
+    Ok((!saved.selection.model.is_empty()).then(|| saved.selection.clone())) // rules-allow: the Bot update owns its copy of the gateway's resolved selection
 }
 
 pub(super) async fn configure_bot_defaults(

@@ -1,649 +1,562 @@
-//! One provider setup's editor: Setup, Model and Credential (ProvidersView.swift).
-
+//! A provider's shared settings and its gateway-defined form.
+use super::fields::{GroupTest, ModelGroup, input};
 use super::*;
-use gpui_component::input::InputEvent;
-use mobius::backend::model::provider::{BaseUrl, HostedWebSearch};
-use mobius::protocol::ToolDiscoveryMode;
-
-const IMAGE_MODEL_IDS_INFO: &str = "Enter the exact provider image model IDs separated by commas. Whitespace, empty entries, and duplicates are ignored. Choose one in a Bot's Image generation capability.";
-const DECISION_MODEL_IDS_INFO: &str = "Enter the exact provider decision model IDs separated by commas. Whitespace, empty entries, and duplicates are ignored. Choose one in Agent defaults under Auto routing.";
-const WEB_SEARCH: [HostedWebSearch; 3] = [
-    HostedWebSearch::Off,
-    HostedWebSearch::Cached,
-    HostedWebSearch::Live,
-];
-
-const MODEL_FILES_NOTE: &str = "Context windows and other model details come from the model files in the gateway's models folder. Edit them there; the app and CLI cannot change them.";
-const TOOL_DISCOVERY_INFO: &str = "How tools found mid-turn reach the model.";
-
-/// A custom model ID and the reasoning efforts the gateway serves for it.
-pub(super) type SavedModel = (String, Vec<String>, Option<String>);
-
-/// One custom model ID with its own comma-separated reasoning efforts.
-struct ModelEntry {
-    id: SharedString,
-    efforts: Entity<InputState>,
-    /// The stored default, kept while it stays in the typed list.
-    default: Option<String>,
-}
+use mobius::backend::model::provider::BaseUrl;
+use mobius_gateway::wire::{ProviderForm, ProviderModelKind};
 
 pub(super) struct ProviderDraft {
-    pub record: ProviderInstance,
+    pub selection: ProviderConfig,
+    tint: ProviderTint,
+    operator_managed: bool,
     pub definition: ProviderStatus,
-    /// Not yet registered on the gateway.
     pub is_new: bool,
     name: Entity<InputState>,
-    /// Custom model IDs in order; the wire takes the first as the selected model.
-    models: Vec<ModelEntry>,
-    /// The same list as the gateway serves it, to tell edits apart.
-    saved_models: Vec<SavedModel>,
-    /// The model row whose reasoning efforts are open.
-    expanded: Option<usize>,
-    new_model: Entity<InputState>,
-    image_models: Entity<InputState>,
-    decision_models: Entity<InputState>,
     base_url: Entity<InputState>,
     pub api_key: Entity<InputState>,
-    changes: Vec<Subscription>,
+    pub groups: Vec<ModelGroup>,
+    pub saving: Option<(Arc<str>, ProviderForm)>,
+    _subscriptions: [Subscription; 3],
 }
 
 impl ProviderDraft {
-    pub(super) fn new(
-        record: ProviderInstance,
+    pub fn new(
+        record: &ProviderInstance,
         definition: ProviderStatus,
         is_new: bool,
-        saved_models: Vec<SavedModel>,
         window: &mut Window,
         cx: &mut Context<Workspace>,
     ) -> Self {
-        let mut input = |value: &str, placeholder: &str, masked: bool| {
-            cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder(placeholder.to_owned())
-                    .masked(masked)
-                    .default_value(value.to_owned())
-            })
-        };
-        let name = input(&record.label, &definition.label, false);
-        let new_model = input("", "Model ID, then Return", false);
-        let models: Vec<ModelEntry> = saved_models
-            .iter()
-            .map(|(id, efforts, default)| ModelEntry {
-                id: id.to_owned().into(),
-                efforts: input(&efforts.join(", "), "low, medium, high", false),
-                default: default.to_owned(),
-            })
-            .collect();
-        let image_models = input(
-            &record.image_model_ids.join(", "),
-            "image-model-a, image-model-b",
+        let (name, n) = input(&record.label, None, false, window, cx);
+        let (base_url, b) = input(
+            record
+                .selection
+                .base_url
+                .as_deref()
+                .unwrap_or(&definition.default_base_url),
+            None,
             false,
-        );
-        let decision_models = input(
-            &record.decision_model_ids.join(", "),
-            "decision-model-a, decision-model-b",
-            false,
-        );
-        let base_url = input(
-            record.selection.base_url.as_deref().unwrap_or_default(),
-            "Provider endpoint",
-            false,
-        );
-        let key_placeholder = if is_new {
-            "API key"
-        } else {
-            "Paste a new key to replace it"
-        };
-        let api_key = input("", key_placeholder, true);
-        let mut changes: Vec<Subscription> =
-            [&name, &image_models, &decision_models, &base_url, &api_key]
-                .into_iter()
-                .chain(models.iter().map(|model| &model.efforts))
-                .map(|field| {
-                    cx.subscribe(field, |_, _, event: &InputEvent, cx| {
-                        if matches!(event, InputEvent::Change) {
-                            cx.notify();
-                        }
-                    })
-                })
-                .collect();
-        changes.push(cx.subscribe_in(
-            &new_model,
             window,
-            |this, _, event: &InputEvent, window, cx| {
-                if matches!(event, InputEvent::PressEnter { .. }) {
-                    this.add_provider_model(window, cx);
-                }
-            },
-        ));
+            cx,
+        );
+        let (api_key, a) = input("", None, true, window, cx);
+        let groups = record
+            .model_groups
+            .iter()
+            .map(|g| ModelGroup::new(g, window, cx))
+            .collect();
         Self {
-            record,
+            selection: record.selection.clone(), // rules-allow: the editable connection outlives the gateway view
+            tint: record.tint,
+            operator_managed: record.operator_managed,
             definition,
             is_new,
             name,
-            models,
-            saved_models,
-            expanded: None,
-            new_model,
-            image_models,
-            decision_models,
             base_url,
             api_key,
-            changes,
+            groups,
+            saving: None,
+            _subscriptions: [n, b, a],
         }
     }
-
-    #[cfg(feature = "snapshot")]
-    pub(super) fn expand(&mut self, index: Option<usize>) {
-        self.expanded = index;
-    }
-
-    pub(super) fn registration(&self, cx: &App) -> mobius::Result<Option<ClientMessage>> {
-        let mut config = self.record.selection.clone(); // rules-allow: the registration owns its config while the editor keeps editing
-        let label = self.name.read(cx).value().trim().to_owned();
-        let entries = |field: &Entity<InputState>| -> Vec<String> {
-            split_entries(&field.read(cx).value())
-                .into_iter()
-                .map(str::to_owned)
-                .collect()
-        };
-        let image_model_ids = entries(&self.image_models);
-        let decision_model_ids = entries(&self.decision_models);
-        let values = self.effort_values(cx);
-        // Each row as (id, efforts, default); the first is the setup's selected model.
-        let rows: Vec<(String, Vec<String>, Option<String>)> =
-            if self.definition.model_ids_configurable {
-                self.models
-                    .iter()
-                    .zip(&values)
-                    .map(|(model, value)| {
-                        let efforts: Vec<String> = split_entries(value)
-                            .into_iter()
-                            .map(str::to_owned)
-                            .collect();
-                        let default = kept_effort(&efforts, model.default.as_deref());
-                        (model.id.to_string(), efforts, default)
-                    })
-                    .collect()
-            } else {
-                Vec::new()
-            };
-        if let Some((id, efforts, default)) = rows.first() {
-            id.clone_into(&mut config.model);
-            config.reasoning_effort = kept_effort(efforts, config.reasoning_effort.as_deref())
-                .or_else(|| default.to_owned());
-        }
-        // An unchanged list is omitted, so the gateway keeps whatever another client saved.
-        let models: Vec<ConfiguredModel> = rows
-            .into_iter()
-            .map(|(id, efforts, default)| {
-                let unchanged = self
-                    .saved_models
-                    .iter()
-                    .any(|(saved, saved_efforts, _)| *saved == id && *saved_efforts == efforts);
-                if unchanged {
-                    ConfiguredModel {
-                        id,
-                        ..ConfiguredModel::default()
-                    }
-                } else {
-                    ConfiguredModel {
-                        id,
-                        reasoning_efforts: Some(efforts),
-                        default_reasoning: default,
-                        ..ConfiguredModel::default()
+    pub fn reload(
+        &mut self,
+        record: &ProviderInstance,
+        submitted: ProviderConfig,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) {
+        let groups = record
+            .model_groups
+            .iter()
+            .map(|schema| {
+                let mut group = ModelGroup::new(schema, window, cx);
+                if let Some(old) = self
+                    .groups
+                    .iter_mut()
+                    .find(|g| g.schema.kind == schema.kind)
+                {
+                    group.test = std::mem::replace(&mut old.test, GroupTest::Idle);
+                    for (model, previous) in group.models.iter_mut().zip(&old.models) {
+                        model.open = previous.open;
                     }
                 }
+                group
             })
             .collect();
+        self.groups = groups;
+        self.selection = if submitted == record.selection {
+            submitted
+        } else {
+            record.selection.clone() // rules-allow: retain the gateway-normalized model selection when it differs from the submitted draft
+        };
+        self.tint = record.tint;
+        self.operator_managed = record.operator_managed;
+        self.saving = None;
+    }
+    pub(super) fn form(
+        &self,
+        cx: &App,
+        include: impl Fn(&ModelGroup) -> bool,
+    ) -> Result<ProviderForm, String> {
+        let mut config = self.selection.clone(); // rules-allow: each form submission owns its copy of the draft identity
+        let url = self.base_url.read(cx).value();
+        if !self.operator_managed {
+            config.base_url = (!url.trim().is_empty())
+                .then(|| BaseUrl::new(url.trim()))
+                .transpose()
+                .map_err(|e| e.to_string())?;
+        }
+        let groups = self
+            .groups
+            .iter()
+            .filter(|g| g.schema.supported && include(g))
+            .map(|g| Ok((g.schema.kind, g.draft(cx)?)))
+            .collect::<Result<_, String>>()?;
+        Ok(ProviderForm {
+            config,
+            label: Some(self.name.read(cx).value().trim().to_owned()),
+            tint: Some(self.tint),
+            groups,
+        })
+    }
+    pub fn can_register(&self, cx: &App) -> bool {
+        !self.name.read(cx).value().trim().is_empty()
+    }
+    pub fn registration(&self, cx: &App) -> Result<Option<ClientMessage>, String> {
         if !self.can_register(cx) {
             return Ok(None);
         }
-        let base_url = self.base_url.read(cx).value().trim().to_owned();
-        config.base_url = (!base_url.is_empty())
-            .then(|| BaseUrl::new(base_url))
-            .transpose()?;
-        Ok(Some(ClientMessage::RegisterProvider {
+        Ok(Some(ClientMessage::SaveProviderForm {
             request_id: crate::gateway::request_id(),
-            config,
-            label: Some(label),
-            tint: Some(self.record.tint),
-            models,
-            image_model_ids: self
-                .definition
-                .image_model_ids_configurable
-                .then_some(image_model_ids),
-            decision_model_ids: self
-                .definition
-                .decision_model_ids_configurable
-                .then_some(decision_model_ids),
-            operator_managed: false,
-            preserve_selection: false,
-            if_configured: false,
+            form: self.form(cx, |g| g.dirty(cx))?,
         }))
     }
-
-    /// Each model's typed efforts field, in model order.
-    fn effort_values(&self, cx: &App) -> Vec<SharedString> {
-        self.models
-            .iter()
-            .map(|model| model.efforts.read(cx).value())
-            .collect()
-    }
-
-    pub(super) fn can_register(&self, cx: &App) -> bool {
-        !self.name.read(cx).value().trim().is_empty()
-            && if !self.is_new && self.record.selection.model.is_empty() {
-                true
-            } else if self.definition.model_ids_configurable {
-                !self.models.is_empty()
-            } else {
-                !self.record.selection.model.is_empty()
-            }
-    }
-
-    /// Compare borrowed form values; a request ID and owned config are only made when saving.
     fn is_dirty(&self, live: &ProviderInstance, cx: &App) -> bool {
-        if !self.can_register(cx) {
-            return true;
-        }
-        let image_models = self.image_models.read(cx).value();
-        let image_model_ids = split_entries(&image_models);
-        let decision_models = self.decision_models.read(cx).value();
-        let decision_model_ids = split_entries(&decision_models);
-        let model = match self.models.first() {
-            Some(first) if self.definition.model_ids_configurable => first.id.as_ref(),
-            _ => &self.record.selection.model,
-        };
-        let base_url = self.base_url.read(cx).value();
-        let base_url = base_url.trim();
         self.name.read(cx).value().trim() != live.label
-            || self.record.tint != live.tint
-            || self.models.len() != self.saved_models.len()
-            || self
-                .models
-                .iter()
-                .zip(&self.saved_models)
-                .any(|(model, (id, efforts, _))| {
-                    model.id.as_ref() != id
-                        || !split_entries(&model.efforts.read(cx).value())
-                            .into_iter()
-                            .eq(efforts.iter().map(String::as_str))
-                })
-            || !image_model_ids
-                .iter()
-                .copied()
-                .eq(live.image_model_ids.iter().map(String::as_str))
-            || !decision_model_ids
-                .iter()
-                .copied()
-                .eq(live.decision_model_ids.iter().map(String::as_str))
-            || model != live.selection.model
-            || (!base_url.is_empty()).then_some(base_url) != live.selection.base_url.as_deref()
-            || self.record.selection.web_search != live.selection.web_search
+            || self.tint != live.tint
+            || self.base_url.read(cx).value().trim()
+                != live
+                    .selection
+                    .base_url
+                    .as_deref()
+                    .unwrap_or(&self.definition.default_base_url)
+            || self.groups.iter().any(|group| group.dirty(cx))
+    }
+    /// The card and page header line: the service and how its credential stands.
+    fn summary(&self, live: Option<&ProviderInstance>) -> String {
+        let credential = match live {
+            None => "New setup".to_owned(),
+            Some(live) => match &live.credential_hint {
+                Some(hint) => format!("Key ••••{hint}"),
+                None if live.configured => "Configured on gateway".to_owned(),
+                None => "Not configured".to_owned(),
+            },
+        };
+        format!("{} · {credential}", self.definition.label)
+    }
+    fn group(&self, kind: ProviderModelKind) -> Option<&ModelGroup> {
+        self.groups.iter().find(|group| group.schema.kind == kind)
+    }
+    pub fn test_response(&mut self, msg: &ServerMessage) {
+        let (id, result) = match msg {
+            ServerMessage::ProviderGroupTested { request_id } => (request_id, GroupTest::Passed),
+            ServerMessage::Rejected {
+                request_id,
+                message,
+                ..
+            } => (request_id, GroupTest::Failed(Arc::clone(message))),
+            _ => return,
+        };
+        if let Some(group) = self
+            .groups
+            .iter_mut()
+            .find(|g| matches!(&g.test,GroupTest::Pending(pending) if pending==id))
+        {
+            group.test = result;
+        }
     }
 }
-
 impl Workspace {
+    pub(super) fn provider_group_mut(
+        &mut self,
+        kind: ProviderModelKind,
+    ) -> Option<&mut ModelGroup> {
+        self.provider_setup
+            .editor
+            .as_mut()?
+            .groups
+            .iter_mut()
+            .find(|group| group.schema.kind == kind)
+    }
+    #[cfg(feature = "snapshot")]
+    pub(in crate::ui) fn snapshot_provider_test(&self, kind: ProviderModelKind) -> &str {
+        match self
+            .provider_setup
+            .editor
+            .as_ref()
+            .and_then(|e| e.group(kind))
+            .map(|g| &g.test)
+        {
+            Some(GroupTest::Failed(_)) => "failed",
+            Some(GroupTest::Passed) => "passed",
+            Some(GroupTest::Pending(_)) => "pending",
+            _ => "idle",
+        }
+    }
+    /// Shows `kind`'s test as finished, without asking the gateway.
+    #[cfg(feature = "snapshot")]
+    pub(in crate::ui) fn snapshot_group_tested(
+        &mut self,
+        kind: ProviderModelKind,
+        error: Option<&str>,
+    ) {
+        if let Some(group) = self.provider_group_mut(kind) {
+            group.test = error.map_or(GroupTest::Passed, |error| GroupTest::Failed(error.into()));
+        }
+    }
+    #[cfg(feature = "snapshot")]
+    pub(in crate::ui) fn snapshot_provider_draft(&self, cx: &App) -> Option<ProviderForm> {
+        self.provider_setup.editor.as_ref()?.form(cx, |_| true).ok()
+    }
+    /// Tests the group's unsaved form. The result shows in the titlebar and on the
+    /// group's card; a failure's detail is a toast, so the page never moves.
+    fn test_provider_group(&mut self, kind: ProviderModelKind, cx: &mut Context<Self>) {
+        let Some(editor) = self.provider_setup.editor.as_ref() else {
+            return;
+        };
+        let api_key = editor.api_key.read(cx).value();
+        let api_key = (!api_key.trim().is_empty()).then(|| api_key.trim().to_owned());
+        let form = editor.form(cx, |g| g.schema.kind == kind);
+        let Some(group) = self.provider_group_mut(kind) else {
+            return;
+        };
+        let form = match form {
+            Ok(form) => form,
+            Err(error) => {
+                group.test = GroupTest::Failed(error.as_str().into());
+                self.report(error);
+                cx.notify();
+                return;
+            }
+        };
+        let request_id = crate::gateway::request_id();
+        group.test = GroupTest::Pending(Arc::clone(&request_id));
+        self.provider_setup
+            .group_tests
+            .insert(Arc::clone(&request_id));
+        self.send(
+            ClientMessage::TestProviderGroup {
+                request_id,
+                form,
+                group: kind,
+                api_key,
+            },
+            cx,
+        );
+    }
+    /// The grid `id`'s cards open from: the saved setup's page, or the new one's.
+    pub(in crate::ui) fn provider_grid(&self, id: &str) -> Option<PageTab> {
+        let editor = self.provider_setup.editor.as_ref()?;
+        (editor.selection.instance == id).then(|| {
+            if editor.is_new {
+                PageTab::ProviderDraft(editor.definition.provider.clone()) // rules-allow: the page tab owns its id
+            } else {
+                PageTab::Provider(editor.selection.instance.clone()) // rules-allow: the page tab owns its id
+            }
+        })
+    }
+    /// The setup's page: General and one card per model group.
     pub(super) fn provider_editor(&self, cx: &Context<Self>) -> AnyElement {
         let Some(editor) = &self.provider_setup.editor else {
             return self.provider_unavailable();
         };
-        let id = &editor.record.selection.instance;
+        let id = &editor.selection.instance;
         let live = self.provider_record(id).filter(|_| !editor.is_new);
-        let status = match live {
-            None => "New setup",
-            Some(live) if live.configured => "Configured on gateway",
-            Some(_) => "Not configured",
+        let title = live.map_or(editor.definition.label.as_str(), |r| r.label.as_str());
+        let status = live.map_or("New setup", |r| {
+            if r.configured {
+                "Configured on gateway"
+            } else {
+                "Not configured"
+            }
+        });
+        let card = |part: ProviderPart, title: &str, glyph: &'static str, summary: String| {
+            let page = PageTab::ProviderPart(id.clone(), part); // rules-allow: the page tab owns its id
+            Card::new(page_key(&page), title.to_owned(), glyph, summary)
+                .rects(&self.config.card_rects)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.open_page(page.clone(), window, cx); // rules-allow: the click handler is Fn and each open owns its page
+                }))
         };
-        let title = live.map_or(editor.definition.label.as_str(), |live| live.label.as_str());
-        let header =
-            PageHeader::new(title).subtitle(format!("{} · {status}", editor.definition.label));
-        page(SharedString::from(format!("provider:{id}")), header)
-            .child(Section::new("Setup").child(Self::provider_setup_group(editor, cx)))
-            .child(
-                Section::new("Models")
-                    .info(MODEL_FILES_NOTE)
-                    .child(self.model_rows(editor, cx)),
-            )
-            .child(Section::new("Options").child(self.provider_model_group(editor, cx)))
-            .child(self.provider_credential(editor, live, cx))
-            .into_any_element()
+        let general = &editor.definition.general_section;
+        let mut grid = CardGrid::new().card(card(
+            ProviderPart::General,
+            &general.label,
+            symbol_icon_or(Some(&general.symbol), "hi.slidersHorizontal"),
+            editor.summary(live),
+        ));
+        for group in &editor.groups {
+            let schema = &group.schema;
+            let mark = match group.test {
+                GroupTest::Passed => Some(CardMark::Tested { passed: true }),
+                GroupTest::Failed(_) => Some(CardMark::Tested { passed: false }),
+                GroupTest::Idle | GroupTest::Pending(_) => None,
+            };
+            grid = grid.card(
+                card(
+                    ProviderPart::Models(schema.kind),
+                    &schema.label,
+                    symbol_icon_or(Some(&schema.symbol), "hi.slidersHorizontal"),
+                    group.summary(),
+                )
+                .mark(mark)
+                .disabled(!schema.supported),
+            );
+        }
+        page(
+            SharedString::from(format!("provider:{id}")),
+            PageHeader::new(title).subtitle(format!("{} · {status}", editor.definition.label)),
+        )
+        .child(grid)
+        .into_any_element()
     }
-
-    /// Remove provider… for a setup on the gateway, then Save.
-    pub(super) fn provider_page_actions(&self, cx: &Context<Self>) -> Vec<AnyElement> {
+    /// One card's page of the setup `id`, its editor built from the live record on
+    /// first sight.
+    pub(in crate::ui) fn render_provider_part(
+        &mut self,
+        id: &str,
+        part: ProviderPart,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if self.provider_grid(id).is_none() && !self.open_provider_editor(id, window, cx) {
+            return self.provider_unavailable();
+        }
         let Some(editor) = &self.provider_setup.editor else {
+            return self.provider_unavailable();
+        };
+        let live = self.provider_record(id).filter(|_| !editor.is_new);
+        match part {
+            ProviderPart::General => {
+                let general = Self::provider_setup_group(editor, cx);
+                let general = self
+                    .provider_credential(general, editor, live, cx)
+                    .child(Self::provider_colour_row(editor, cx));
+                page(
+                    SharedString::from(format!("provider:{id}:general")),
+                    PageHeader::new(editor.definition.general_section.label.as_str())
+                        .subtitle(editor.summary(live)),
+                )
+                .children(self.device_code_group())
+                .child(general)
+                .into_any_element()
+            }
+            ProviderPart::Models(kind) => {
+                let Some(group) = editor.group(kind) else {
+                    return self.provider_unavailable();
+                };
+                let schema = &group.schema;
+                let mut page = page(
+                    SharedString::from(format!("provider:{id}:{kind:?}")),
+                    PageHeader::new(schema.label.as_str()).subtitle(group.summary()),
+                );
+                let fields = group.field_rows(cx);
+                if !fields.is_empty() {
+                    page =
+                        page.child(Section::new("Endpoint").child(Group::new().children(fields)));
+                }
+                let mut models = Group::new().children(group.model_rows(cx));
+                if !schema.supported {
+                    models = models.child(Row::empty(
+                        "provider-models-unsupported",
+                        "Not supported by this provider",
+                    ));
+                } else if group.models.is_empty() && schema.editable {
+                    models = models.child(Row::empty(
+                        "provider-models-empty",
+                        "No models yet. Add one from the titlebar.",
+                    ));
+                } else if group.models.is_empty() {
+                    models = models.child(Row::empty("provider-models-empty", "No models"));
+                }
+                let mut section = Section::new("Models");
+                if let Some(scope) = &schema.test_description {
+                    section = section.description(scope.to_string());
+                }
+                page.child(section.child(models)).into_any_element()
+            }
+        }
+    }
+    /// A card page's titlebar: a group's test status, then Add model and Test, or Remove
+    /// provider on General; Save last on both.
+    pub(in crate::ui::pages) fn provider_part_actions(
+        &self,
+        id: &str,
+        part: ProviderPart,
+        cx: &Context<Self>,
+    ) -> Vec<AnyElement> {
+        let Some(editor) = self
+            .provider_setup
+            .editor
+            .as_ref()
+            .filter(|editor| editor.selection.instance == id)
+        else {
             return Vec::new();
         };
-        let id = &editor.record.selection.instance;
+        let ready = self.client.link.is_ready();
         let live = self.provider_record(id).filter(|_| !editor.is_new);
         let key_entered = !editor.api_key.read(cx).value().trim().is_empty();
         let dirty = live.is_none_or(|live| editor.is_dirty(live, cx));
-        let can_save =
-            self.client.link.is_ready() && editor.can_register(cx) && (dirty || key_entered);
+        let can_save = ready && editor.can_register(cx) && (dirty || key_entered);
+        let mut status = None;
         let mut actions = Vec::new();
-        if live.is_some() {
-            actions.push(
-                toolbar_button("remove-provider", "Remove provider…", "hi.trash", cx)
-                    .disabled(!self.client.link.is_ready())
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.remove_provider_dialog(window, cx)),
-                    )
-                    .into_any_element(),
-            );
+        match part {
+            ProviderPart::General if live.is_some() => actions.push(
+                PageAction::new(
+                    "remove-provider",
+                    "Remove provider…",
+                    "hi.trash",
+                    |this, window, cx| this.remove_provider_dialog(window, cx),
+                )
+                .tone(ActionTone::Destructive)
+                .disabled(!ready),
+            ),
+            ProviderPart::General => {}
+            ProviderPart::Models(kind) => {
+                let Some(group) = editor.group(kind).filter(|group| group.schema.supported) else {
+                    return Vec::new();
+                };
+                status = self.test_status(&group.test, cx);
+                if group.schema.editable {
+                    actions.push(PageAction::new(
+                        format!("provider:{kind:?}:add-model"),
+                        "Add model",
+                        "hi.plus",
+                        move |this, window, cx| {
+                            if let Some(group) = this.provider_group_mut(kind) {
+                                group.add("", window, cx);
+                                cx.notify();
+                            }
+                        },
+                    ));
+                }
+                if group.schema.test_description.is_some() {
+                    actions.push(
+                        PageAction::new(
+                            format!("test:{kind:?}"),
+                            "Test",
+                            "hi.playFill",
+                            move |this, _, cx| this.test_provider_group(kind, cx),
+                        )
+                        .disabled(!ready || matches!(group.test, GroupTest::Pending(_))),
+                    );
+                }
+            }
         }
         actions.push(
-            toolbar_button("save-provider", "Save", "hi.check", cx)
-                .disabled(!can_save)
-                .when(can_save, |button| button.text_color(self.palette.accent))
-                .on_click(cx.listener(|this, _, window, cx| this.save_provider(window, cx)))
-                .into_any_element(),
+            PageAction::new("provider-save", "Save", "hi.check", |this, window, cx| {
+                this.save_provider(window, cx);
+            })
+            .tone(ActionTone::Primary)
+            .disabled(!can_save),
         );
-        actions
+        let mut bar: Vec<AnyElement> = status.into_iter().collect();
+        bar.extend(self.titlebar_actions(actions, cx));
+        bar
+    }
+    /// A test's state to the left of the page's actions: a spinner while it runs, then a
+    /// dot and a word, the failure's detail in its tooltip.
+    fn test_status(&self, test: &GroupTest, cx: &Context<Self>) -> Option<AnyElement> {
+        let p = self.palette;
+        let (mark, word, detail) = match test {
+            GroupTest::Idle => return None,
+            GroupTest::Pending(_) => (
+                Spinner::new(glyph::INLINE)
+                    .color(p.muted)
+                    .into_any_element(),
+                "Testing",
+                None,
+            ),
+            GroupTest::Passed => (status_dot(p.signal).into_any_element(), "Passed", None),
+            GroupTest::Failed(error) => (
+                status_dot(p.danger).into_any_element(),
+                "Failed",
+                Some(SharedString::from(Arc::clone(error))),
+            ),
+        };
+        let status = div()
+            .id("provider-test-status")
+            .flex()
+            .items_center()
+            .flex_shrink_0()
+            .gap(space::XS)
+            .mr(space::XS)
+            .typography(Type::Caption)
+            .text_color(p.muted)
+            .whitespace_nowrap()
+            .child(mark)
+            .child(word)
+            .when_some(detail, |status, detail| {
+                status.tooltip(text_tooltip(detail))
+            });
+        Some(motion::fade_in(status, word, motion::QUICK, cx))
     }
 
+    /// Name and service side by side, then the endpoint.
     fn provider_setup_group(editor: &ProviderDraft, cx: &Context<Self>) -> Group {
         let glyph = symbol_icon_or(Some(&editor.definition.symbol), "hi.hardDrives");
         let service = div()
+            .h(height::REGULAR)
             .flex()
             .items_center()
             .gap(space::S)
             .typography(Type::Body)
             .child(icon(glyph, &palette(cx)).size(glyph::LEAD))
             .child(SharedString::from(editor.definition.label.as_str()));
+        let name = text_field(&editor.name);
+        let base = text_field(&editor.base_url).disabled(editor.operator_managed);
+        #[cfg(feature = "snapshot")]
+        let name = div()
+            .relative()
+            .child(name)
+            .child(crate::ui::snapshot::probe("provider-name".into()));
+        #[cfg(feature = "snapshot")]
+        let base = div()
+            .relative()
+            .child(base)
+            .child(crate::ui::snapshot::probe("provider-base".into()));
+        let half = || div().flex_1().min_w_0();
         Group::new()
             .child(
-                Row::new("provider-name", "Name")
-                    .subtitle("Shown in model pickers and usage.")
-                    .control(text_field(&editor.name).w(width::FIELD)),
+                div()
+                    .flex()
+                    .child(
+                        half().child(
+                            StackedField::new("Name")
+                                .help("Shown in model pickers and usage.")
+                                .control(name),
+                        ),
+                    )
+                    // The two fields' own insets meet here; this leaves one gap between them.
+                    .child(
+                        half()
+                            .ml(-(space::L + space::S))
+                            .child(StackedField::new("Provider").control(service)),
+                    ),
             )
-            .child(Row::new("provider-service", "Provider").control(service))
-            .child(Row::new("provider-colour", "Colour").control(swatch_picker(
-                "provider-tint",
-                Accent::from(editor.record.tint),
-                cx.listener(|this, accent: &Accent, _, cx| {
-                    if let Some(editor) = &mut this.provider_setup.editor {
-                        editor.record.tint = (*accent).into();
-                        cx.notify();
-                    }
-                }),
-            )))
+            .child(StackedField::new("Base URL").control(base))
     }
 
-    fn provider_model_group(&self, editor: &ProviderDraft, cx: &Context<Self>) -> Group {
-        let muted = |text: String| {
-            div()
-                .typography(Type::Body)
-                .text_color(self.palette.muted)
-                .child(text)
-        };
-        let definition = &editor.definition;
-        let group = Group::new();
-        let image_models = if definition.image_model_ids_configurable {
-            Some(
-                StackedField::new("Image model ID(s)")
-                    .info(IMAGE_MODEL_IDS_INFO)
-                    .control(text_field(&editor.image_models)),
-            )
-        } else {
-            let ids = definition
-                .image_models
-                .iter()
-                .map(|model| model.id.as_str());
-            (!definition.image_models.is_empty()).then(|| {
-                StackedField::new("Image model ID(s)")
-                    .info("Every image model listed is available to Image generation.")
-                    .control(muted(ids.collect::<Vec<_>>().join(", ")))
-            })
-        };
-        let decision_models = definition.decision_model_ids_configurable.then(|| {
-            StackedField::new("Decision model ID(s)")
-                .info(DECISION_MODEL_IDS_INFO)
-                .control(text_field(&editor.decision_models))
-        });
-        let voices = definition
-            .voice_models
-            .iter()
-            .map(|model| model.label.as_str());
-        let voice_models = (!definition.voice_models.is_empty()).then(|| {
-            StackedField::new("Voice model(s)")
-                .info("Every voice model listed is available to assign to Bots.")
-                .control(muted(voices.collect::<Vec<_>>().join(", ")))
-        });
-        let base_url = StackedField::new("Base URL").control(text_field(&editor.base_url));
-        let discovery = match editor.record.tool_discovery {
-            ToolDiscoveryMode::Native => "Native dynamic tools",
-            ToolDiscoveryMode::Rebuild => "Rebuilds context · cache miss",
-        };
-        group
-            .children(decision_models)
-            .children(image_models)
-            .children(voice_models)
-            .child(base_url)
-            .child(
-                Row::new("provider-tool-discovery", "Tool discovery")
-                    .subtitle(TOOL_DISCOVERY_INFO)
-                    .value(discovery),
-            )
-            .children(Self::web_search_row(editor, cx))
-    }
-
-    /// One row per model: typed IDs get Remove and an efforts field that drops down;
-    /// a fixed catalog shows its efforts read-only.
-    fn model_rows(&self, editor: &ProviderDraft, cx: &Context<Self>) -> Group {
-        let mut group = Group::new();
-        if !editor.definition.model_ids_configurable {
-            if editor.record.selection.model.is_empty() {
-                return group;
-            }
-            for (index, model) in editor.definition.models.iter().enumerate() {
-                let open = editor.expanded == Some(index);
-                group = group.child(
-                    Row::new(("provider-preset-model", index), model.label.as_str())
-                        .truncate()
-                        .control(self.model_caret(index, open, cx)),
-                );
-                if open {
-                    let efforts: Vec<&str> = model
-                        .reasoning
-                        .iter()
-                        .map(|level| level.id.as_str())
-                        .collect();
-                    let efforts = if efforts.is_empty() {
-                        "Provider default".to_owned()
-                    } else {
-                        efforts.join(", ")
-                    };
-                    let field = Row::new(("provider-preset-efforts", index), "Reasoning effort(s)")
-                        .value(efforts);
-                    group = group.child(Self::dropped(field, index, cx));
-                }
-            }
-            return group;
-        }
-        for (index, model) in editor.models.iter().enumerate() {
-            let open = editor.expanded == Some(index);
-            group = group.child(
-                Row::new(("provider-model", index), SharedString::clone(&model.id))
-                    .truncate()
-                    .control(Self::remove_model_button(editor, index, cx))
-                    .control(self.model_caret(index, open, cx)),
-            );
-            if open {
-                let field = Row::new(("provider-model-efforts", index), "Reasoning effort(s)")
-                    .control(text_field(&model.efforts).w(width::FIELD));
-                group = group.child(Self::dropped(field, index, cx));
-            }
-        }
-        group = group.child(
-            Row::new("provider-add-model", "Add model")
-                .control(text_field(&editor.new_model).w(width::FIELD)),
-        );
-        group
-    }
-
-    /// Fades a model's dropped-down field in under its row.
-    fn dropped(field: Row, index: usize, cx: &App) -> AnyElement {
-        motion::fade_in(
-            div().child(field),
-            ("provider-model-efforts", index),
-            motion::STANDARD,
-            cx,
-        )
-    }
-
-    /// The icon-only chevron that drops a model's efforts down.
-    fn model_caret(&self, index: usize, open: bool, cx: &Context<Self>) -> AnyElement {
-        let caret = chevron(open, &self.palette);
-        let label = if open { "Hide efforts" } else { "Show efforts" };
-        inline_button(("model-caret", index), label, caret, cx)
-            .on_click(cx.listener(move |this, _, _, cx| {
+    fn provider_colour_row(editor: &ProviderDraft, cx: &Context<Self>) -> Row {
+        Row::new("provider-colour", "Colour").control(swatch_picker(
+            "provider-tint",
+            Accent::from(editor.tint),
+            cx.listener(|this, accent: &Accent, _, cx| {
                 if let Some(editor) = &mut this.provider_setup.editor {
-                    editor.expanded = (editor.expanded != Some(index)).then_some(index);
+                    editor.tint = (*accent).into();
                     cx.notify();
                 }
-            }))
-            .into_any_element()
+            }),
+        ))
     }
-
-    fn remove_model_button(editor: &ProviderDraft, index: usize, cx: &Context<Self>) -> AnyElement {
-        inline_button(("remove-model", index), "Remove model", "hi.trash", cx)
-            .disabled(editor.models.len() == 1)
-            .on_click(cx.listener(move |this, _, _, cx| {
-                if let Some(editor) = &mut this.provider_setup.editor {
-                    editor.models.remove(index);
-                    editor.expanded = None;
-                    cx.notify();
-                }
-            }))
-            .into_any_element()
-    }
-
-    /// Adds the typed model ID with the efforts of the last model.
-    fn add_provider_model(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(editor) = &self.provider_setup.editor else {
-            return;
-        };
-        let value = editor.new_model.read(cx).value();
-        let efforts = editor
-            .models
-            .last()
-            .map_or_default(|model| model.efforts.read(cx).value());
-        if self.push_provider_model(value.trim(), &efforts, window, cx)
-            && let Some(editor) = &self.provider_setup.editor
-        {
-            editor
-                .new_model
-                .update(cx, |input, cx| input.set_value("", window, cx));
-        }
-    }
-
-    /// Appends model `id` with `efforts` unless it is empty or already listed.
-    pub(super) fn push_provider_model(
-        &mut self,
-        id: &str,
-        efforts: &str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let listed = self
-            .provider_setup
-            .editor
-            .as_ref()
-            .is_none_or(|editor| editor.models.iter().any(|model| model.id.as_ref() == id));
-        if id.is_empty() || listed {
-            return false;
-        }
-        let input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("low, medium, high")
-                .default_value(efforts.to_owned())
-        });
-        let changes = cx.subscribe(&input, |_, _, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::Change) {
-                cx.notify();
-            }
-        });
-        input.update(cx, |input, cx| input.focus(window, cx));
-        if let Some(editor) = &mut self.provider_setup.editor {
-            editor.changes.push(changes);
-            editor.expanded = Some(editor.models.len());
-            editor.models.push(ModelEntry {
-                id: id.to_owned().into(),
-                efforts: input,
-                default: None,
-            });
-        }
-        cx.notify();
-        true
-    }
-
-    /// Off and one mode is a switch; more modes pick from a segmented control.
-    fn web_search_row(editor: &ProviderDraft, cx: &Context<Self>) -> Option<Row> {
-        let options = &editor.definition.web_search;
-        let current = editor.record.selection.web_search.id();
-        let selected = options.iter().position(|option| *option.value == *current);
-        let mut row = Row::new("provider-web-search", "Hosted web search");
-        if let Some(option) = selected.and_then(|index| options.get(index)) {
-            row = row.subtitle(Arc::clone(&option.description));
-        }
-        Some(match options.as_slice() {
-            [] => return None,
-            [only] => row.value(Arc::clone(&only.label)),
-            [a, b] if &*a.value == "off" || &*b.value == "off" => {
-                let on = if &*a.value == "off" { b } else { a };
-                let (on_value, enabled) = (Arc::clone(&on.value), current != "off");
-                let pick = cx.listener(move |this, checked: &bool, _, cx| {
-                    let value = if *checked { on_value.as_ref() } else { "off" };
-                    this.set_web_search(value, cx);
-                });
-                row.control(toggle("web-search", "Hosted web search", enabled, cx).on_click(pick))
-            }
-            _ => {
-                let values: Vec<Arc<str>> = options.iter().map(|o| Arc::clone(&o.value)).collect();
-                row.control(segmented(
-                    "web-search",
-                    options.iter().map(|option| Arc::clone(&option.label)),
-                    selected,
-                    cx.listener(move |this, index: &usize, _, cx| {
-                        if let Some(value) = values.get(*index) {
-                            this.set_web_search(value, cx);
-                        }
-                    }),
-                ))
-            }
-        })
-    }
-
-    fn set_web_search(&mut self, value: &str, cx: &mut Context<Self>) {
-        if let Some(editor) = &mut self.provider_setup.editor
-            && let Some(mode) = WEB_SEARCH.into_iter().find(|mode| mode.id() == value)
-        {
-            editor.record.selection.web_search = mode;
-            cx.notify();
-        }
-    }
-}
-
-/// `current` while it is still offered, else the first effort; `None` without efforts.
-fn kept_effort(efforts: &[String], current: Option<&str>) -> Option<String> {
-    current
-        .filter(|current| efforts.iter().any(|effort| effort == current))
-        .or_else(|| efforts.first().map(String::as_str))
-        .map(str::to_owned)
-}
-
-fn split_entries(input: &str) -> Vec<&str> {
-    let mut entries = Vec::new();
-    for value in input
-        .split(',')
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        if !entries.contains(&value) {
-            entries.push(value);
-        }
-    }
-    entries
 }

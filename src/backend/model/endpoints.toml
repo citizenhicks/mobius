@@ -1,0 +1,45 @@
+[[groups]]
+kind = "language"
+symbol = "ai_search_lines"
+label = "Language models"
+
+[[groups]]
+kind = "dictation"
+symbol = "ai_mic"
+label = "Dictation models"
+
+[[groups]]
+kind = "image"
+symbol = "ai_image_01"
+label = "Image models"
+
+[[groups]]
+kind = "voice"
+symbol = "ai_speech"
+label = "Voice models"
+
+[[groups]]
+kind = "decision"
+symbol = "split"
+label = "Decision models"
+
+[apis.responses]
+label = "Responses"
+path = "responses"
+[apis.chat_completions]
+label = "Chat Completions"
+path = "chat/completions"
+[apis.messages]
+label = "Messages"
+path = "messages"
+[apis.transcriptions]
+label = "Audio transcriptions"
+path = "audio/transcriptions"
+[apis.realtime_transcription]
+label = "Realtime transcription"
+[apis.images]
+label = "Image generation"
+[apis.voice_calls]
+label = "Voice calls"
+[apis.decisions]
+label = "Decisions"

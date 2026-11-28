@@ -27,16 +27,16 @@ pub(crate) use crate::wire::ConfiguredModel;
 #[cfg(test)]
 use crate::wire::RoutineInteractionPolicy;
 use crate::wire::{
-    AgentComposition, DailyUsage, ProviderConfig, ProviderEndpointAuth, ProviderTint,
-    VersionedAgentConfig, WorkspaceInfo,
+    AgentComposition, DailyUsage, DictationTarget, ProviderConfig, ProviderEndpointAuth,
+    ProviderTint, VersionedAgentConfig, WorkspaceInfo,
 };
 use crate::{Error, Result};
 
 pub use self::runtime::RuntimeConfig;
-pub(crate) use self::store::UsageStore;
 pub use self::store::{
     ConfigStore, CredentialStore, ResolvedCredential, load_secret_file, state_dir, unix_day,
 };
+pub(crate) use self::store::{UsageStore, validate_credential};
 pub use self::validation::validate_agent_composition;
 use self::validation::{
     invalid_cloudflare_hostname, validate_agent_composition_with_ceilings,
@@ -163,6 +163,8 @@ pub struct GatewayConfig {
     /// Absence inherits the operator default. An explicit empty table means Off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     auto_routing: Option<auto_routing::Values>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) default_dictation: Option<DictationTarget>,
     pub(crate) configured_providers: BTreeMap<String, ConfiguredProvider>,
     pub(crate) installed_extensions:
         BTreeMap<Arc<str>, crate::harness::mobius::extensions::InstalledExtension>,
@@ -172,6 +174,8 @@ pub struct GatewayConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ConfiguredProvider {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) image_defaults: BTreeMap<String, mobius::backend::model::ImageDefaults>,
     pub(crate) selection: ProviderConfig,
     pub(crate) label: String,
     pub(crate) tint: ProviderTint,
@@ -186,6 +190,12 @@ pub(crate) struct ConfiguredProvider {
     /// Omission uses the provider catalog; an empty list disables live voice.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) voice_models: Option<Vec<mobius::backend::model::provider::MediaModelPreset>>,
+    /// Each model group shares its API operation under the provider origin.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) group_endpoints: Vec<crate::wire::GroupEndpointOverride>,
+    /// Dictation models this setup serves, on providers with a dictations endpoint.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) dictation_model_ids: Vec<String>,
     /// Decision models this setup serves, on providers with a decisions endpoint.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) decision_model_ids: Vec<String>,
@@ -194,12 +204,32 @@ pub(crate) struct ConfiguredProvider {
     pub(crate) operator_managed: bool,
 }
 
+impl ConfiguredProvider {
+    /// Checks settings that affect inference, independent of the display name and tint.
+    pub(crate) fn same_routes(&self, other: &Self) -> bool {
+        self.selection == other.selection
+            && self.models == other.models
+            && self.image_model_ids == other.image_model_ids
+            && self.image_models == other.image_models
+            && self.image_defaults == other.image_defaults
+            && self.voice_models == other.voice_models
+            && self.group_endpoints == other.group_endpoints
+            && self.dictation_model_ids == other.dictation_model_ids
+            && self.decision_model_ids == other.decision_model_ids
+    }
+}
+
+#[derive(Clone)]
 pub(crate) struct ProviderRegistration {
+    pub(crate) image_defaults: Option<BTreeMap<String, mobius::backend::model::ImageDefaults>>,
     pub(crate) selection: ProviderConfig,
     pub(crate) label: Option<String>,
     pub(crate) tint: Option<ProviderTint>,
     pub(crate) models: Vec<ConfiguredModel>,
     pub(crate) image_model_ids: Option<Vec<String>>,
+    pub(crate) dictation_model_ids: Option<Vec<String>>,
+    pub(crate) voice_models: Option<Vec<mobius::backend::model::provider::MediaModelPreset>>,
+    pub(crate) group_endpoints: Option<Vec<crate::wire::GroupEndpointOverride>>,
     pub(crate) decision_model_ids: Option<Vec<String>>,
     pub(crate) operator_managed: bool,
 }
@@ -310,6 +340,7 @@ impl GatewayConfig {
             desktop_enabled: false,
             bot_defaults: None,
             auto_routing: None,
+            default_dictation: None,
             configured_providers: BTreeMap::new(),
             installed_extensions: BTreeMap::new(),
         }
@@ -336,11 +367,15 @@ impl GatewayConfig {
     ) -> Result<Self> {
         self.registering_configured(
             ProviderRegistration {
+                image_defaults: None,
                 selection,
                 label: Some(label),
                 tint: Some(tint),
                 models,
                 image_model_ids: Some(image_model_ids),
+                dictation_model_ids: None,
+                voice_models: None,
+                group_endpoints: None,
                 decision_model_ids: None,
                 operator_managed: false,
             },
@@ -379,6 +414,10 @@ impl GatewayConfig {
                 configured.tint = None;
                 configured.models.clear();
                 configured.image_model_ids = None;
+                configured.dictation_model_ids = None;
+                configured.voice_models = None;
+                configured.group_endpoints = None;
+                configured.image_defaults = None;
                 configured.decision_model_ids = None;
             }
             if configured.selection.tool_discovery.is_none() {
@@ -405,6 +444,14 @@ impl GatewayConfig {
                     .map(|previous| std::mem::take(&mut previous.image_model_ids))
             })
             .unwrap_or_default();
+        let dictation_model_ids = configured
+            .dictation_model_ids
+            .or_else(|| {
+                previous
+                    .as_mut()
+                    .map(|previous| std::mem::take(&mut previous.dictation_model_ids))
+            })
+            .unwrap_or_default();
         let decision_model_ids = configured
             .decision_model_ids
             .or_else(|| {
@@ -413,17 +460,35 @@ impl GatewayConfig {
                     .map(|previous| std::mem::take(&mut previous.decision_model_ids))
             })
             .unwrap_or_default();
+        let image_defaults = configured
+            .image_defaults
+            .take()
+            .or_else(|| {
+                previous
+                    .as_mut()
+                    .map(|p| std::mem::take(&mut p.image_defaults))
+            })
+            .unwrap_or_default();
         let image_models = previous
             .as_mut()
             .and_then(|previous| previous.image_models.take());
-        let voice_models = previous
-            .as_mut()
-            .and_then(|previous| previous.voice_models.take());
+        let group_endpoints = configured
+            .group_endpoints
+            .or_else(|| {
+                previous
+                    .as_mut()
+                    .map(|stored| std::mem::take(&mut stored.group_endpoints))
+            })
+            .unwrap_or_default();
+        let voice_models = configured.voice_models.or_else(|| {
+            previous
+                .as_mut()
+                .and_then(|stored| stored.voice_models.take())
+        });
         let operator_managed = configured.operator_managed
-            || (preserve_selection
-                && previous
-                    .as_ref()
-                    .is_some_and(|previous| previous.operator_managed));
+            || previous
+                .as_ref()
+                .is_some_and(|previous| previous.operator_managed);
         let selection = &configured.selection;
         if !selection.model.is_empty() {
             definition.build_config_is_valid(
@@ -434,7 +499,9 @@ impl GatewayConfig {
         }
         let default_selection = (self.bot_defaults.is_none() && !selection.model.is_empty())
             .then(|| configured.selection.clone()); // rules-allow: Bot defaults hold their own copy of the first selection
-        let models = if configured.models.is_empty() {
+        let models = if configured.selection.model.is_empty() && configured.models.is_empty() {
+            Vec::new()
+        } else if configured.models.is_empty() {
             previous.map_or_else(
                 || {
                     if definition.locked_models() || configured.selection.model.is_empty() {
@@ -462,6 +529,7 @@ impl GatewayConfig {
             )
         };
         let entry = ConfiguredProvider {
+            image_defaults,
             selection: configured.selection,
             label,
             tint,
@@ -469,6 +537,8 @@ impl GatewayConfig {
             image_model_ids,
             image_models,
             voice_models,
+            group_endpoints,
+            dictation_model_ids,
             decision_model_ids,
             operator_managed,
         };
@@ -554,6 +624,15 @@ impl GatewayConfig {
         self.auto_routing
             .as_ref()
             .unwrap_or_else(|| &auto_routing::OPERATOR_DEFAULT)
+    }
+
+    pub(crate) fn replacing_dictation(
+        &self,
+        route: Option<DictationTarget>,
+    ) -> ValidatedGatewayConfig {
+        let mut next = self.clone(); // rules-allow: stage the setting until durable publication succeeds
+        next.default_dictation = route;
+        ValidatedGatewayConfig(next)
     }
 
     /// Replaces how new chats left on Auto are routed.

@@ -1,0 +1,33 @@
+test_description = "Tests each configured model and variant. Provider charges may apply."
+
+[general]
+label = "General"
+symbol = "settings_01"
+
+[fields.api]
+label = "API format"
+[fields.endpoint]
+label = "Endpoint path"
+[fields.web_search]
+label = "Hosted web search"
+[fields.tool_discovery]
+label = "Tool discovery"
+choices = { native = "Native", rebuild = "Rebuild" }
+[fields.context_window]
+label = "Context window"
+[fields.reasoning]
+label = "Reasoning efforts"
+[fields.dictation_mode]
+label = "Transcription"
+choices = { live = "Live", after_stop = "After Stop" }
+[fields.voice_ids]
+label = "Voice IDs"
+[fields.image_size]
+label = "Image size"
+choices = { "" = "Provider default", pixels = "Default ({size})" }
+[fields.image_aspect]
+label = "Aspect ratio"
+choices = { square = "Square", landscape = "Landscape", portrait = "Portrait" }
+[fields.image_quality]
+label = "Quality"
+description = "Leave empty to use the provider default."

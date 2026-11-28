@@ -362,6 +362,12 @@ pub(super) const SCENARIOS: &[Scenario] = &[
             }
         });
     }),
+    ("live-composer-dictation", |this, window, cx| {
+        this.shell.toast = None;
+        this.new_chat(window, cx);
+        this.composer
+            .update(cx, |input, cx| input.set_value("Draft:", window, cx));
+    }),
     ("chat-dictation", |this, window, cx| {
         fixture(this, window, cx, |this, _, cx| {
             this.apply_fixture(Scene::Dictation, cx);

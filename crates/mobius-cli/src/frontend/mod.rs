@@ -28,6 +28,7 @@ mod tui;
 
 pub use headless::run as run_headless;
 pub use terminal::terminal_text;
+pub(crate) use tui::runtime::compose_new_chat;
 
 pub use cloudflare_setup::{CloudflareInit, run as run_cloudflare_setup};
 pub use dashboard::{run as run_gateway_dashboard, run_provider as run_gateway_provider};
@@ -155,6 +156,8 @@ pub async fn run(
 pub struct Opening {
     /// Offer the Bot picker before the first message.
     pub choose_bot: bool,
+    /// The submitted first message of a draft the gateway has just routed.
+    pub first_message: Option<mobius::protocol::MessageSubmission>,
     /// Composer text carried over from a previous connection.
     pub draft: Option<String>,
 }
@@ -172,6 +175,13 @@ pub enum FrontendExit {
     Reconnect {
         /// The unsent composer text.
         draft: Option<String>,
+    },
+    /// Draft a first message before the gateway creates and routes the session.
+    NewChat {
+        /// Default workspace, or a folder the user chose.
+        workspace: Option<std::path::PathBuf>,
+        /// Whether the workspace must bypass Auto.
+        explicit_workspace: bool,
     },
     /// Selects the fresh-session case after deleting the open chat.
     Fresh,

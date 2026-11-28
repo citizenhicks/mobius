@@ -22,27 +22,27 @@ impl Workspace {
         );
     }
 
-    pub(super) fn credential_rows(&self, cx: &Context<Self>) -> [SidebarRow; 2] {
-        let mut github = self.page_row(
+    /// The Gateway page's rows for GitHub and SSH, each opening its page.
+    pub(super) fn credential_rows(&self, cx: &Context<Self>) -> [Row; 2] {
+        let github = Self::gateway_row(
             "credential:github",
             "GitHub",
-            Leading::Gutter,
-            PageTab::Gateway(GatewayPage::GitHub),
+            "hi.gitBranch",
+            GatewayPage::GitHub,
             cx,
-        );
-        if matches!(self.client.state.git_credential, Some((true, _))) {
-            github = github.status(icon("hi.checkCircle", &palette(cx)).size(glyph::MARK));
-        }
-        let mut ssh = self.page_row(
+        )
+        .subtitle(self.github_summary());
+        let ssh = Self::gateway_row(
             "credential:ssh",
             "SSH identities",
-            Leading::Gutter,
-            PageTab::Gateway(GatewayPage::Ssh),
+            "hi.fingerprint",
+            GatewayPage::Ssh,
             cx,
         );
-        if let Some(identities) = &self.client.state.ssh_identities {
-            ssh = ssh.meta(identities.len().to_string());
-        }
+        let ssh = match &self.client.state.ssh_identities {
+            Some(identities) => ssh.value(identities.len().to_string()),
+            None => ssh,
+        };
         [github, ssh]
     }
 

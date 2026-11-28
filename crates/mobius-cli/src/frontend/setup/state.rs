@@ -5,16 +5,14 @@ use mobius::backend::model::provider::{BaseUrl, HostedWebSearch};
 use mobius::protocol::{FrontendSettingKind, FrontendSettingValue, MiddlewareFeature, ModelChoice};
 use mobius::{Error, Result};
 use mobius_gateway::wire::{
-    AgentComposition, ConfiguredModel, ExtensionRecord, MiddlewareConfig, ProviderAuthKind,
-    ProviderConfig, ProviderEndpointAuth, ProviderInstance, ProviderModel, ProviderStatus,
-    ReadyPayload,
+    AgentComposition, ExtensionRecord, MiddlewareConfig, ProviderAuthKind, ProviderConfig,
+    ProviderEndpointAuth, ProviderForm, ProviderGroupDraft, ProviderInstance, ProviderModelGroup,
+    ProviderModelKind, ProviderStatus, ReadyPayload,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use uuid::Uuid;
 
-use super::{
-    MAX_API_KEY_BYTES, MAX_ENDPOINT_BYTES, MAX_MODEL_IDS_BYTES, MAX_PROVIDER_LABEL_BYTES, SetupMode,
-};
+use super::{MAX_API_KEY_BYTES, MAX_ENDPOINT_BYTES, MAX_PROVIDER_LABEL_BYTES, SetupMode};
 use crate::frontend::wrap_step;
 
 pub(super) struct ProviderEntry {
@@ -41,6 +39,8 @@ pub(super) enum Page {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Flow {
+    EditGroup,
+    TestGroup,
     Continue,
     Authenticate,
     Remove(String),
@@ -87,9 +87,7 @@ pub(super) struct SetupState {
     pub(super) bot_model_routes: Vec<(ModelChoice, usize)>,
     /// Index of the original model in the gateway's model choices.
     pub(super) original_model_choice: Option<usize>,
-    pub(super) custom_model: String,
-    pub(super) decision_models: String,
-    pub(super) reasoning: usize,
+    pub(super) drafts: BTreeMap<ProviderModelKind, ProviderGroupDraft>,
     pub(super) web_search: usize,
     pub(super) features: Vec<MiddlewareFeature>,
     pub(super) available_extensions: Vec<ExtensionRecord>,
@@ -100,6 +98,7 @@ pub(super) struct SetupState {
     pub(super) start_chat: bool,
     pub(super) row: usize,
     pub(super) error: Option<String>,
+    pub(super) test_result: Option<String>,
     pub(super) progress: Option<Progress>,
     pub(super) remove_confirmation: Option<String>,
     /// Bot settings were changed since the page opened.
@@ -186,9 +185,7 @@ impl SetupState {
             model: 0,
             bot_model_routes: Vec::new(),
             original_model_choice: None,
-            custom_model: String::new(),
-            decision_models: String::new(),
-            reasoning: 0,
+            drafts: BTreeMap::new(),
             web_search: 0,
             features,
             available_extensions,
@@ -199,6 +196,7 @@ impl SetupState {
             start_chat: false,
             row: 0,
             error: None,
+            test_result: None,
             progress: None,
             remove_confirmation: None,
             unsaved: false,
@@ -226,13 +224,12 @@ impl SetupState {
         model_providers: &BTreeMap<Arc<str>, String>,
     ) {
         let selection = &self.original.provider;
-        let models = if self.definition().model_ids_configurable {
-            self.instance_models()
-        } else {
-            &self.definition().models
-        };
         let effort = selection.reasoning_effort.as_deref().or_else(|| {
-            models
+            self.instance()
+                .map_or_else(
+                    || self.definition().models.as_slice(),
+                    |i| i.models.as_slice(),
+                )
                 .iter()
                 .find(|model| model.id == selection.model)
                 .and_then(|model| model.default_reasoning.as_deref())
@@ -295,11 +292,6 @@ impl SetupState {
 
     pub(super) fn instance(&self) -> Option<&ProviderInstance> {
         self.entry().instance.as_ref()
-    }
-
-    /// The configured models of the edited setup, empty while adding one.
-    pub(super) fn instance_models(&self) -> &[ProviderModel] {
-        self.instance().map_or(&[], |entry| &entry.models)
     }
 
     pub(super) fn select_provider(&mut self, provider: &str) -> Result<()> {
@@ -395,54 +387,39 @@ impl SetupState {
         self.model = index;
     }
 
-    pub(super) fn model_choice_count(&self) -> usize {
-        if self.mode == SetupMode::BotModel {
-            self.bot_model_routes.len()
-        } else if self.definition().model_ids_configurable {
-            1
-        } else {
-            self.definition().models.len()
-        }
-    }
-
-    pub(super) fn selected_model_preset(&self) -> Option<&ProviderModel> {
-        if self.definition().model_ids_configurable {
-            let id = self.custom_model.split(',').next()?.trim();
-            self.instance_models()
-                .iter()
-                .find(|model| model.id == id)
-                .or_else(|| self.definition().models.iter().find(|model| model.id == id))
-        } else {
-            self.definition().models.get(self.model)
-        }
-    }
-
-    pub(super) fn reasoning_choice_count(&self) -> usize {
-        if self.mode == SetupMode::BotModel {
-            0
-        } else {
-            self.selected_model_preset()
-                .map_or(1, |model| model.reasoning.len() + 1)
-        }
-    }
-
     pub(super) fn search_choice_count(&self) -> usize {
         let count = self.definition().web_search.len();
         if count > 1 { count } else { 0 }
     }
 
-    fn search_end(&self) -> usize {
-        self.model_choice_count() + self.reasoning_choice_count() + self.search_choice_count()
+    pub(super) fn model_groups(&self) -> &[ProviderModelGroup] {
+        self.instance()
+            .map_or(&self.definition().model_groups, |instance| {
+                &instance.model_groups
+            })
     }
 
-    pub(super) fn decision_model_row(&self) -> Option<usize> {
-        (self.mode == SetupMode::Login && self.definition().decision_model_ids_configurable)
-            .then(|| self.search_end())
+    pub(super) fn active_group(&self) -> Option<&ProviderModelGroup> {
+        (self.mode == SetupMode::Login)
+            .then(|| self.model_groups().get(self.row))
+            .flatten()
+    }
+
+    pub(super) fn provider_form(&self, config: ProviderConfig) -> ProviderForm {
+        ProviderForm {
+            config,
+            label: Some(self.effective_label().into()),
+            tint: None,
+            groups: self.drafts.clone(), // rules-allow: failed submissions keep the user's edits
+        }
     }
 
     pub(super) fn models_action_start(&self) -> usize {
-        self.decision_model_row()
-            .map_or_else(|| self.search_end(), |row| row + 1)
+        if self.mode == SetupMode::Login {
+            self.model_groups().len()
+        } else {
+            self.bot_model_routes.len() + self.search_choice_count()
+        }
     }
 
     pub(super) fn agent_action_start(&self) -> usize {
@@ -569,6 +546,14 @@ impl SetupState {
         match self.page {
             Page::Provider => self.handle_provider_key(key),
             Page::Authentication => self.handle_authentication_key(key),
+            Page::Models
+                if self
+                    .active_group()
+                    .is_some_and(|g| g.test_description.is_some())
+                    && key.code == KeyCode::Char('t') =>
+            {
+                Flow::TestGroup
+            }
             Page::Models => self.handle_models_key(key),
             Page::Agent => self.handle_agent_key(key),
         }
@@ -643,8 +628,6 @@ impl SetupState {
     }
 
     pub(super) fn handle_models_key(&mut self, key: KeyEvent) -> Flow {
-        let edits_models = self.editing_chat_models();
-        let edits_decisions = self.decision_model_row() == Some(self.row);
         match key.code {
             KeyCode::Esc => {
                 if self.mode == SetupMode::BotModel {
@@ -653,34 +636,18 @@ impl SetupState {
                 self.page = Page::Authentication;
                 self.error = None;
             }
-            KeyCode::Backspace if edits_models || edits_decisions => {
-                if edits_decisions {
-                    self.decision_models.pop();
-                } else {
-                    self.model = 0;
-                    self.custom_model.pop();
-                }
-                self.error = None;
-            }
-            KeyCode::Char(character)
-                if (edits_models || edits_decisions)
-                    && character != ' '
-                    && !key
-                        .modifiers
-                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-            {
-                if edits_models {
-                    self.model = 0;
-                }
-                self.push_text(&character.to_string());
-            }
             KeyCode::Up | KeyCode::BackTab => self.move_selection(-1),
             KeyCode::Down | KeyCode::Tab => self.move_selection(1),
             KeyCode::Char(' ') | KeyCode::Enter => {
                 if self.on_apply_row() {
                     return self.finish();
                 }
-                self.select_model_row();
+                if self.active_group().is_some_and(|g| g.supported) {
+                    return Flow::EditGroup;
+                }
+                if self.mode == SetupMode::BotModel {
+                    self.select_model_row();
+                }
             }
             _ => {}
         }
@@ -781,18 +748,11 @@ impl SetupState {
     }
 
     pub(super) fn select_model_row(&mut self) {
-        let models = self.model_choice_count();
+        let models = self.bot_model_routes.len();
         if self.row < models {
-            if self.mode == SetupMode::BotModel {
-                self.select_bot_route(self.row);
-            } else if self.model != self.row {
-                self.model = self.row;
-                self.reasoning = 0;
-            }
-        } else if self.row < models + self.reasoning_choice_count() {
-            self.reasoning = self.row - models;
-        } else if self.row < self.search_end() {
-            self.web_search = self.row - models - self.reasoning_choice_count();
+            self.select_bot_route(self.row);
+        } else if self.row < self.models_action_start() {
+            self.web_search = self.row - models;
         }
         self.error = None;
     }
@@ -824,54 +784,14 @@ impl SetupState {
         if !feature.required && !self.middleware.enabled(&feature.id) {
             return Ok(());
         }
-        let value = match &setting.kind {
-            FrontendSettingKind::Integer { min, max, step } => {
-                let current = match self.middleware.setting(&feature.id, &setting.id) {
-                    Some(FrontendSettingValue::Integer(current)) => current,
-                    _ => min,
-                };
-                let step = (*step).max(1);
-                let next = if delta.is_positive() {
-                    current.saturating_add(step)
-                } else {
-                    current.saturating_sub(step)
-                };
-                FrontendSettingValue::Integer(
-                    max.map_or(next.max(*min), |max| next.max(*min).min(max)),
-                )
-            }
-            FrontendSettingKind::Select {
-                options,
-                unset_label,
-            } => {
-                let offset = usize::from(unset_label.is_some());
-                let count = options.len() + offset;
-                if count == 0 {
-                    return Ok(());
-                }
-                let current = match self.middleware.setting(&feature.id, &setting.id) {
-                    Some(FrontendSettingValue::String(value)) => options
-                        .iter()
-                        .position(|option| *option.value == **value)
-                        .map_or(0, |index| index + offset),
-                    _ => 0,
-                };
-                let next = wrap_step(current, delta, count);
-                let Some(option) = next
-                    .checked_sub(offset)
-                    .and_then(|index| options.get(index))
-                else {
-                    self.middleware.set_setting(&feature.id, &setting.id, None);
-                    self.reconcile_middleware();
-                    return Ok(());
-                };
-                FrontendSettingValue::String(option.value.to_string())
-            }
-            // Free text has no step; the setup keeps its value.
-            FrontendSettingKind::Text { .. } => return Ok(()),
-        };
-        self.middleware
-            .set_setting(&feature.id, &setting.id, Some(value));
+        if !matches!(setting.kind, FrontendSettingKind::Text { .. }) {
+            let value = step_setting(
+                &setting.kind,
+                self.middleware.setting(&feature.id, &setting.id),
+                delta,
+            );
+            self.middleware.set_setting(&feature.id, &setting.id, value);
+        }
         self.reconcile_middleware();
         Ok(())
     }
@@ -890,44 +810,24 @@ impl SetupState {
     }
 
     pub(super) fn paste(&mut self, text: &str) {
-        let edits_models = self.page == Page::Models && self.editing_chat_models();
-        if edits_models {
-            self.model = 0;
-        }
-        if self.page == Page::Authentication && self.authentication_is_editable()
-            || edits_models
-            || self.page == Page::Models && self.decision_model_row() == Some(self.row)
-        {
+        if self.page == Page::Authentication && self.authentication_is_editable() {
             self.push_text(text.trim());
         }
     }
 
-    fn editing_chat_models(&self) -> bool {
-        self.mode != SetupMode::BotModel
-            && self.row == 0
-            && self.definition().model_ids_configurable
-    }
-
     pub(super) fn push_text(&mut self, text: &str) {
-        let (target, limit) = if self.page == Page::Models {
-            let model_ids = if self.decision_model_row() == Some(self.row) {
-                &mut self.decision_models
-            } else {
-                &mut self.custom_model
-            };
-            (model_ids, MAX_MODEL_IDS_BYTES)
-        } else {
-            match self.auth_field {
-                AuthField::Label => (&mut self.label, MAX_PROVIDER_LABEL_BYTES),
-                AuthField::Endpoint => (&mut self.endpoint, MAX_ENDPOINT_BYTES),
-                AuthField::Credential => (&mut self.credential, MAX_API_KEY_BYTES),
-            }
+        let (target, limit) = match self.auth_field {
+            AuthField::Label => (&mut self.label, MAX_PROVIDER_LABEL_BYTES),
+            AuthField::Endpoint => (&mut self.endpoint, MAX_ENDPOINT_BYTES),
+            AuthField::Credential => (&mut self.credential, MAX_API_KEY_BYTES),
         };
         let rejected = crate::frontend::terminal::append_text(target, text, limit);
         self.error = rejected.then(|| format!("input is limited to {limit} bytes"));
     }
 
     pub(super) fn reset_provider_fields(&mut self) {
+        self.drafts.clear();
+        self.test_result = None;
         self.credential.clear();
         self.api_key_entered = false;
         self.authenticated = None;
@@ -935,8 +835,16 @@ impl SetupState {
             clippy::indexing_slicing,
             reason = "from_parts rejects an empty provider list and every write keeps `provider` in range"
         )]
-        let definition = &self.providers[self.provider].status;
-        let current = &self.original.provider;
+        let entry = &self.providers[self.provider];
+        let definition = &entry.status;
+        let current = if self.mode == SetupMode::Login {
+            entry
+                .instance
+                .as_ref()
+                .map_or(&self.original.provider, |instance| &instance.selection)
+        } else {
+            &self.original.provider
+        };
         let same_instance = self
             .instance()
             .is_some_and(|instance| instance.selection.instance == current.instance);
@@ -949,57 +857,7 @@ impl SetupState {
             &definition.default_base_url
         }
         .into();
-        self.model = if definition.model_ids_configurable {
-            0
-        } else if same_instance {
-            definition
-                .models
-                .iter()
-                .position(|model| model.id == current.model)
-                .unwrap_or_default()
-        } else {
-            0
-        };
-        self.custom_model = if definition.model_ids_configurable {
-            let models = self
-                .instance()
-                .map_or(definition.models.as_slice(), |instance| {
-                    instance.models.as_slice()
-                });
-            let mut model_ids = models
-                .iter()
-                .map(|model| model.id.as_str())
-                .collect::<Vec<_>>();
-            if same_instance && !model_ids.contains(&current.model.as_str()) {
-                model_ids.insert(0, current.model.as_str());
-            }
-            model_ids.join(", ")
-        } else {
-            String::new()
-        };
-        self.decision_models = self
-            .instance()
-            .filter(|_| definition.decision_model_ids_configurable)
-            .map_or_else(String::new, |instance| {
-                instance.decision_model_ids.join(", ")
-            });
-        let reasoning = if same_instance {
-            current.reasoning_effort.as_deref()
-        } else {
-            self.selected_model_preset()
-                .and_then(|model| model.default_reasoning.as_deref())
-        };
-        self.reasoning = self
-            .selected_model_preset()
-            .and_then(|model| {
-                reasoning.and_then(|effort| {
-                    model
-                        .reasoning
-                        .iter()
-                        .position(|preset| preset.id == effort)
-                })
-            })
-            .map_or(0, |index| index + 1);
+        self.model = 0;
         self.web_search = if same_instance {
             definition
                 .web_search
@@ -1012,30 +870,6 @@ impl SetupState {
         self.auth_field = AuthField::Label;
         self.row = self.model;
         self.error = None;
-    }
-
-    /// The typed model IDs, each keeping the reasoning it already has on this setup;
-    /// a new ID starts with the provider default.
-    pub(super) fn configured_models(&self) -> Vec<ConfiguredModel> {
-        self.configured_model_ids()
-            .into_iter()
-            .map(|id| ConfiguredModel {
-                id,
-                ..ConfiguredModel::default()
-            })
-            .collect()
-    }
-
-    pub(super) fn configured_model_ids(&self) -> Vec<String> {
-        if !self.definition().model_ids_configurable {
-            return Vec::new();
-        }
-        model_ids(&self.custom_model)
-    }
-
-    pub(super) fn configured_decision_models(&self) -> Option<Vec<String>> {
-        self.decision_model_row()
-            .map(|_| model_ids(&self.decision_models))
     }
 
     pub(super) fn selected_base_url(&self) -> &str {
@@ -1185,23 +1019,26 @@ impl SetupState {
             });
         }
         let definition = self.definition();
-        let model_ids = self.configured_model_ids();
-        let model = if definition.model_ids_configurable {
-            model_ids.first().map_or("", String::as_str)
-        } else {
-            self.selected_model_preset()
-                .map_or("", |model| model.id.as_str())
-        };
-        let reasoning_effort = if let Some(model) = self.selected_model_preset() {
-            self.reasoning
-                .checked_sub(1)
-                .and_then(|index| model.reasoning.get(index))
-                .map(|preset| preset.id.clone()) // rules-allow: the provider request owns the reasoning id
-        } else if current.instance == self.target_instance() && current.model == model {
-            current.reasoning_effort.clone() // rules-allow: the provider request owns a copy of the unchanged effort
-        } else {
-            None
-        };
+        let group = self
+            .model_groups()
+            .iter()
+            .find(|g| g.kind == ProviderModelKind::Language);
+        let model = group
+            .and_then(|g| {
+                let ids: Vec<&str> = self.drafts.get(&g.kind).map_or_else(
+                    || g.models.iter().map(|m| m.id.as_str()).collect(),
+                    |draft| draft.models.iter().map(|m| m.id.as_str()).collect(),
+                );
+                ids.iter()
+                    .copied()
+                    .find(|id| *id == current.model)
+                    .or_else(|| ids.first().copied())
+            })
+            .unwrap_or_default();
+        let reasoning_effort = (current.instance == self.target_instance()
+            && current.model == model)
+            .then(|| current.reasoning_effort.as_deref().map(str::to_owned))
+            .flatten();
         let web_search = definition
             .web_search
             .get(self.web_search)
@@ -1287,11 +1124,48 @@ pub(super) fn provider_rows(
     rows
 }
 
-/// Comma-separated model IDs as typed; the gateway validates each one.
-fn model_ids(text: &str) -> Vec<String> {
-    text.split(',')
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .map(str::to_owned)
-        .collect()
+pub(in crate::frontend) fn step_setting(
+    kind: &FrontendSettingKind,
+    current: Option<&FrontendSettingValue>,
+    delta: isize,
+) -> Option<FrontendSettingValue> {
+    Some(match kind {
+        FrontendSettingKind::Integer { min, max, step } => {
+            let current = match current {
+                Some(FrontendSettingValue::Integer(current)) => current,
+                _ => min,
+            };
+            let step = (*step).max(1);
+            let next = if delta.is_positive() {
+                current.saturating_add(step)
+            } else {
+                current.saturating_sub(step)
+            };
+            FrontendSettingValue::Integer(max.map_or(next.max(*min), |max| next.max(*min).min(max)))
+        }
+        FrontendSettingKind::Select {
+            options,
+            unset_label,
+        } => {
+            let offset = usize::from(unset_label.is_some());
+            let count = options.len() + offset;
+            if count == 0 {
+                return None;
+            }
+            let current = match current {
+                Some(FrontendSettingValue::String(value)) => options
+                    .iter()
+                    .position(|option| *option.value == **value)
+                    .map_or(0, |index| index + offset),
+                _ => 0,
+            };
+            let next = wrap_step(current, delta, count);
+            let option = next
+                .checked_sub(offset)
+                .and_then(|index| options.get(index))?;
+            FrontendSettingValue::String(option.value.to_string())
+        }
+        // Free text has no step; the setup keeps its value.
+        FrontendSettingKind::Text { .. } => return None,
+    })
 }

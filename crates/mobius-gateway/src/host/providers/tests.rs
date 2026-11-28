@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::bots::BotStore;
 use crate::config::{ConfigStore, CredentialStore};
-use crate::wire::{ProviderEndpointAuth, ProviderTint};
+use crate::wire::{DictationTarget, ProviderEndpointAuth, ProviderTint};
 
 use super::*;
 
@@ -256,25 +256,10 @@ async fn provider_replacement_rejects_a_bot_reference_without_changing_either_st
     let bots_before = std::fs::read(&bots_path).expect("Bot state before");
 
     let error = gateway
-        .register_provider(
-            false,
-            crate::config::ProviderRegistration {
-                selection: replacement.clone(),
-                label: Some("Secondary".into()),
-                tint: Some(ProviderTint::default()),
-                models: vec![crate::config::ConfiguredModel {
-                    id: replacement.model.clone(),
-                    reasoning_efforts: Some(Vec::new()),
-                    default_reasoning: None,
-                    ..Default::default()
-                }],
-                image_model_ids: Some(Vec::new()),
-                decision_model_ids: None,
-                operator_managed: false,
-            },
-            false,
-            false,
-        )
+        .save_provider_form(crate::auth::ProviderAccess::Paired, serde_json::from_value(serde_json::json!({
+            "config": replacement, "label": "Secondary",
+            "groups":{"language":{"models":[{"id":replacement.model, "values":{"reasoning":""}}]}}
+        })).unwrap())
         .await
         .expect_err("referenced provider replacement");
 
@@ -295,4 +280,353 @@ async fn provider_replacement_rejects_a_bot_reference_without_changing_either_st
     );
     let reopened_bots = BotStore::open(&state_dir).expect("reopen Bots");
     assert_eq!(reopened_bots.bot(&bot.id).expect("Bot"), bot);
+}
+
+#[tokio::test]
+async fn paired_form_validates_unsaved_settings_then_persists_the_same_model_defaults() {
+    use crate::harness::mobius::provider_catalog;
+    use crate::wire::{ProviderForm, ProviderModelKind};
+    use mobius::backend::model::ImageAspect;
+    use serde_json::json;
+    let config = selection("primary", "openrouter", "qa/chat");
+    let (root, gateway) = gateway_with_providers(config.clone(), None).await;
+    let path = root.path().join("state/gateway.toml");
+    let saved = std::fs::read(&path).unwrap();
+    let form = |window: i64| -> ProviderForm {
+        serde_json::from_value(json!({
+            "config": config,
+            "groups": {
+                "language": {"models":[{"id":"qa/chat","values":{"context_window":window}}]},
+                "image": {"values":{"endpoint":"qa/images"},
+                          "models":[{"id":"qa/image","values":{"image_size":"2K",
+                                      "image_aspect":"landscape","image_quality":"high"}}]}
+            }
+        }))
+        .unwrap()
+    };
+    let error = gateway
+        .prepare_provider_form(crate::auth::ProviderAccess::Paired, form(0))
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(error.code, "invalid_config");
+    gateway
+        .prepare_provider_form(crate::auth::ProviderAccess::Paired, form(24576))
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), saved);
+    gateway
+        .save_provider_form(crate::auth::ProviderAccess::Paired, form(24576))
+        .await
+        .unwrap();
+    let (_, config) = ConfigStore::open(root.path().join("state")).unwrap();
+    let saved = &config.configured_providers["primary"];
+    let definition = mobius::backend::model::provider::provider("openrouter").unwrap();
+    let groups = provider_catalog::model_groups(
+        definition,
+        saved.selection.base_url.as_ref().unwrap(),
+        Some(saved),
+    );
+    let context = groups
+        .iter()
+        .find(|g| g.kind == ProviderModelKind::Language)
+        .unwrap()
+        .models[0]
+        .fields
+        .iter()
+        .find(|f| f.setting.id == "context_window")
+        .unwrap();
+    assert!(context.editable);
+    assert_eq!(
+        context.value,
+        mobius::protocol::FrontendSettingValue::Integer(24576)
+    );
+    let defaults = provider_catalog::image_defaults(definition, saved, "qa/image");
+    assert_eq!(defaults.aspect, ImageAspect::Landscape);
+    assert_eq!(defaults.size.as_deref(), Some("2K"));
+    assert_eq!(defaults.quality.as_deref(), Some("high"));
+    assert_eq!(saved.group_endpoints[0].path, "qa/images");
+}
+
+#[tokio::test]
+async fn paired_context_override_preserves_a_locked_language_catalog() {
+    use crate::harness::mobius::provider_catalog;
+    use crate::wire::ProviderForm;
+    use serde_json::json;
+    let (_, gateway) = gateway_with_providers(selection("qa", "openrouter", "qa/chat"), None).await;
+    let definition = mobius::backend::model::provider::provider("openai_socket").unwrap();
+    assert!(definition.locked_models());
+    let primary = definition.models().first().unwrap();
+    let selection = crate::config::test_provider("preset", definition.id(), &primary.id);
+    let mut models: Vec<_> = definition
+        .models()
+        .iter()
+        .map(|m| json!({"id":m.id,"values":{}}))
+        .collect();
+    models[0]["values"] = json!({"context_window":87654});
+    let draft = |models: &[serde_json::Value]| -> ProviderForm {
+        serde_json::from_value(json!({"config":selection, "groups":{"language":{"models":models}}}))
+            .unwrap()
+    };
+    let snapshot = gateway
+        .prepare_provider_form(crate::auth::ProviderAccess::Paired, draft(&models))
+        .await
+        .unwrap();
+    let configured = &snapshot.configured_providers["preset"];
+    assert_eq!(
+        provider_catalog::selected_route(definition, Some(configured), &selection).context_window,
+        87654
+    );
+    assert_eq!(configured.models[0].reasoning, primary.reasoning);
+    models[0]["values"]["reasoning"] = json!("unlisted-effort");
+    let error = gateway
+        .prepare_provider_form(crate::auth::ProviderAccess::Paired, draft(&models))
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(error.code, "invalid_config");
+}
+
+#[tokio::test]
+async fn concurrent_form_saves_preserve_both_group_endpoints() {
+    use crate::wire::ProviderForm;
+    use serde_json::json;
+    let selection = selection("qa", "openrouter", "qa/chat");
+    let (root, gateway) = gateway_with_providers(selection.clone(), None).await;
+    let draft = |group: &str, model: &str| -> ProviderForm {
+        serde_json::from_value(json!({
+            "config": selection, "groups": { (group): {
+                "values": {"endpoint": format!("qa/{group}")}, "models":[{"id":model}]
+            }}
+        }))
+        .unwrap()
+    };
+    // Queue both submissions behind the same held write lock before either can publish.
+    let gate = gateway.begin_exclusive_mutation().await.unwrap();
+    let language = gateway.save_provider_form(
+        crate::auth::ProviderAccess::Paired,
+        draft("language", "qa/chat"),
+    );
+    let image = gateway.save_provider_form(
+        crate::auth::ProviderAccess::Paired,
+        draft("image", "qa/image"),
+    );
+    tokio::pin!(language, image);
+    assert!(futures_util::poll!(&mut language).is_pending());
+    assert!(futures_util::poll!(&mut image).is_pending());
+    drop(gate);
+    let (language, image) = tokio::join!(language, image);
+    language.unwrap();
+    image.unwrap();
+    let (_, configured) = ConfigStore::open(root.path().join("state")).unwrap();
+    let paths: std::collections::BTreeSet<_> = configured.configured_providers["qa"]
+        .group_endpoints
+        .iter()
+        .map(|e| e.path.as_str())
+        .collect();
+    assert_eq!(paths, ["qa/image", "qa/language"].into_iter().collect());
+}
+
+#[test]
+fn submitted_model_group_rejects_misspelled_fields() {
+    let draft = serde_json::json!({"models": [], "vaules": {}});
+    assert!(serde_json::from_value::<crate::wire::ProviderGroupDraft>(draft).is_err());
+}
+
+#[tokio::test]
+async fn unavailable_pinned_dictation_is_not_an_active_route() {
+    let root = tempfile::tempdir().unwrap();
+    let (store, mut config) = ConfigStore::initialize(
+        root.path().join("state"),
+        "127.0.0.1:8741".parse().unwrap(),
+        None,
+    )
+    .unwrap();
+    let missing = DictationTarget::Route {
+        id: "removed::asr".into(),
+    };
+    config.default_dictation = Some(missing.clone());
+    let gateway = crate::host::tests::start_test_gateway(store, config).await;
+    let ready = gateway.ready().await.unwrap();
+    let catalog = &ready.agent_catalog.dictation;
+    assert!(catalog.resolved.is_none());
+    assert_eq!(catalog.selection.as_ref(), Some(&missing));
+    assert!(
+        catalog
+            .choices
+            .iter()
+            .any(|choice| choice.target.as_ref() == Some(&missing))
+    );
+    let reset = gateway.configure_dictation(None).await.unwrap();
+    drop(gateway);
+    assert_eq!(
+        reset.agent_catalog.dictation.resolved,
+        Some(DictationTarget::OnDevice {})
+    );
+}
+
+#[tokio::test]
+async fn image_route_survives_resetting_model_defaults() {
+    use crate::harness::mobius::provider_catalog::media_routes;
+    use crate::wire::ProviderForm;
+    let (root, gateway) =
+        gateway_with_providers(selection("qa", "openrouter", "qa/chat"), None).await;
+    let definition = provider("openai_socket").unwrap();
+    let selection =
+        crate::config::test_provider("preset", definition.id(), &definition.models()[0].id);
+    gateway
+        .set_credential("preset", definition.id(), "fixture-only".into(), None, None)
+        .await
+        .unwrap();
+    let images = definition.image_models();
+    let model = images
+        .iter()
+        .find(|preset| !preset.variants.is_empty())
+        .unwrap();
+    let mut expected = None;
+    for aspect in ["landscape", "square"] {
+        let models: Vec<_> = images
+            .iter()
+            .map(|preset| {
+                serde_json::json!({
+                    "id":preset.id, "values":{"image_aspect":aspect}
+                })
+            })
+            .collect();
+        let form: ProviderForm = serde_json::from_value(serde_json::json!({
+            "config":selection, "groups":{"image":{"models":models}}
+        }))
+        .unwrap();
+        gateway
+            .save_provider_form(crate::auth::ProviderAccess::Paired, form)
+            .await
+            .unwrap();
+        let (_, config) = ConfigStore::open(root.path().join("state")).unwrap();
+        let media = media_routes(&config.configured_providers, None).unwrap();
+        let route = media
+            .images
+            .iter()
+            .find(|r| r.choice.model.as_ref() == model.id && r.choice.reasoning_effort.is_none())
+            .unwrap();
+        if let Some(previous) = &expected {
+            assert_eq!(previous, &route.choice.route);
+            assert!(
+                !config.configured_providers["preset"]
+                    .image_defaults
+                    .contains_key(&model.id)
+            );
+        } else {
+            let mut bot = config.bot_defaults.as_ref().unwrap().config.clone();
+            bot.middleware.set_setting(
+                "image_generation",
+                "model",
+                Some(mobius::protocol::FrontendSettingValue::String(
+                    route.choice.route.to_string(),
+                )),
+            );
+            gateway
+                .state
+                .lock()
+                .await
+                .bots
+                .create_bot("Illustrator", "Draw pictures", bot.into())
+                .unwrap();
+            expected = Some(Arc::clone(&route.choice.route));
+        }
+    }
+}
+
+#[tokio::test]
+async fn repeated_voice_ids_in_a_form_keep_the_users_order() {
+    use crate::wire::ProviderForm;
+    let (_root, gateway) =
+        gateway_with_providers(selection("qa", "openrouter", "qa/chat"), None).await;
+    let config = selection("asr", "responses", "chat");
+    let form: ProviderForm = serde_json::from_value(serde_json::json!({
+        "config": config, "groups":{"voice":{"models":[
+            {"id":"custom-voice","values":{"voice_ids":"alloy, echo, alloy"}}
+        ]}}
+    }))
+    .unwrap();
+    let snapshot = gateway
+        .prepare_provider_form(crate::auth::ProviderAccess::Paired, form)
+        .await
+        .unwrap();
+    drop(gateway);
+    let voices = snapshot.configured_providers["asr"]
+        .voice_models
+        .as_ref()
+        .unwrap();
+    assert_eq!(
+        voices[0]
+            .variants
+            .iter()
+            .map(|v| v.id.as_str())
+            .collect::<Vec<_>>(),
+        ["alloy", "echo"]
+    );
+}
+
+#[tokio::test]
+async fn dictation_form_accepts_only_the_applicable_display_mode_and_restores_native_defaults() {
+    use crate::auth::ProviderAccess::Paired;
+    use crate::wire::ProviderForm;
+    use serde_json::json;
+
+    let (root, gateway) = gateway_with_providers(selection("qa", "openrouter", "chat"), None).await;
+    let config = selection("asr", "responses", "chat");
+    let form = |path, mode| -> ProviderForm {
+        serde_json::from_value(json!({
+            "config": config,
+            "groups": {"dictation": {
+                "values": {"endpoint": path},
+                "models": [{"id":"gpt-live-transcribe", "values":{"dictation_mode":mode}}]
+            }}
+        }))
+        .unwrap()
+    };
+
+    // Clients may submit the stored value or the first matching display case.
+    gateway
+        .prepare_provider_form(Paired, form("custom/transcribe", "Live"))
+        .await
+        .unwrap();
+    gateway
+        .save_provider_form(Paired, form("custom/transcribe", "After Stop"))
+        .await
+        .unwrap();
+    let (_, stored) = ConfigStore::open(root.path().join("state")).unwrap();
+    assert_eq!(
+        stored.configured_providers["asr"].group_endpoints[0].path,
+        "custom/transcribe"
+    );
+
+    gateway
+        .save_provider_form(Paired, form("/audio/transcriptions", "Live"))
+        .await
+        .unwrap();
+    let (_, stored) = ConfigStore::open(root.path().join("state")).unwrap();
+    assert!(
+        stored.configured_providers["asr"]
+            .group_endpoints
+            .is_empty()
+    );
+
+    // Both the native and generic adapter cases match here. Only the first is effective.
+    for (path, mode) in [
+        ("/audio/transcriptions", "After Stop"),
+        ("//audio/transcriptions", "Live"),
+        ("/", "Live"),
+    ] {
+        assert_eq!(
+            gateway
+                .prepare_provider_form(Paired, form(path, mode))
+                .await
+                .err()
+                .unwrap()
+                .code,
+            "invalid_config",
+            "{path}"
+        );
+    }
 }

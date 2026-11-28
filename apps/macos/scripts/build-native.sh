@@ -10,6 +10,9 @@ python3 "$core_dir/.github/sync-gateway-contract.py" --check \
 # Keep generated sources out of FileProvider, which can recreate conflict copies.
 scratch_dir="$("$app_dir/scripts/swiftpm-cache.sh")"
 swift_build=(swift build --package-path "$app_dir/platform" --scratch-path "$scratch_dir" -c release --jobs "${NUM_JOBS:-2}")
+if [[ -n "${CARGO_FEATURE_SNAPSHOT:-}" ]]; then
+    swift_build+=(-Xswiftc -DMOBIUS_SNAPSHOT)
+fi
 "${swift_build[@]}" -Xswiftc -warnings-as-errors
 bin_dir="$("${swift_build[@]}" --show-bin-path)"
 # Replace rather than overwrite: rewriting a signed Mach-O in place leaves the kernel's

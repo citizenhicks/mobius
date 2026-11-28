@@ -1,6 +1,7 @@
 //! The shared design language: tokens, type, controls, lists, sidebar, feedback and dialogs.
 
 mod bot_face;
+mod cards;
 mod controls;
 mod dialog;
 mod feedback;
@@ -23,6 +24,7 @@ mod tokens;
 #[cfg(feature = "snapshot")]
 pub(crate) use bot_face::glide_parity;
 pub(crate) use bot_face::{BotFace, BotFaceView, BotMood, lively_face};
+pub(crate) use cards::{Card, CardGrid, CardMark, CardRects, CardZoom};
 pub(crate) use controls::*;
 pub(crate) use dialog::{
     EditKind, TextEdit, WorkspaceDialogPart, dialog_actions, dialog_body, labelled,

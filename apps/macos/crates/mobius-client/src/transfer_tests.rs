@@ -493,20 +493,14 @@ async fn create_session(
     provider.endpoint_auth = ProviderEndpointAuth::Credentialless;
     provider.reasoning_effort = None;
     sender
-        .send(ClientMessage::RegisterProvider {
+        .send(ClientMessage::SaveProviderForm {
             request_id: "provider".into(),
-            config: provider,
-            label: Some("Test".into()),
-            tint: None,
-            models: vec![mobius_gateway::wire::ConfiguredModel {
-                id: "test-model".into(),
-                ..Default::default()
-            }],
-            image_model_ids: None,
-            decision_model_ids: None,
-            operator_managed: false,
-            preserve_selection: false,
-            if_configured: false,
+            form: mobius_gateway::wire::ProviderForm {
+                config: provider,
+                label: Some("Test".into()),
+                tint: None,
+                groups: Default::default(),
+            },
         })
         .await
         .unwrap();

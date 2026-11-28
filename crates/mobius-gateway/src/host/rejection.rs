@@ -71,6 +71,52 @@ pub(super) fn harness_unavailable(error: Error) -> Rejection {
     }
 }
 
+// Only fixed descriptions and status codes are returned. Providers sometimes echo request headers in errors.
+pub(super) fn provider_failure_reason(error: &Error) -> String {
+    use mobius::FailureClass;
+    let reason = match error.failure() {
+        Some(FailureClass::Authentication) => "the provider rejected the credential",
+        Some(FailureClass::Forbidden) => "the account is not allowed to use this operation",
+        Some(FailureClass::OutOfCredits) => "the account has insufficient credit",
+        Some(FailureClass::RateLimited) => "the provider rate limit was reached",
+        Some(FailureClass::StreamInterrupted) => "the provider interrupted the response",
+        Some(FailureClass::Transient) => "the provider is temporarily unavailable",
+        Some(FailureClass::InvalidRequest) => "the provider rejected the request",
+        _ => "the provider did not return a valid result",
+    };
+    let Error::Mobius(mobius::Error::Provider(provider)) = error else {
+        return reason.into();
+    };
+    let Some(status) = provider.status() else {
+        return reason.into();
+    };
+    let reason = match status {
+        404 => "check the endpoint path and model ID",
+        415 => "the endpoint does not accept this content type",
+        _ => reason,
+    };
+    // Return only recognized setting names if the provider identified a parameter.
+    let message = provider.to_string();
+    let parameter = [
+        "reasoning_effort",
+        "aspect_ratio",
+        "quality",
+        "size",
+        "voice",
+        "model",
+    ]
+    .into_iter()
+    .find(|name| {
+        message
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .any(|word| word == *name)
+    });
+    parameter.map_or_else(
+        || format!("HTTP {status}, {reason}"),
+        |field| format!("HTTP {status}, {reason} ({field})"),
+    )
+}
+
 pub(super) fn invalid_config(error: impl std::fmt::Display) -> Rejection {
     Rejection::new("invalid_config", error.to_string())
 }

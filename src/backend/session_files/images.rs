@@ -719,7 +719,7 @@ pub async fn grant_context<T: std::borrow::Borrow<serde_json::Value> + Sync>(
     Ok(())
 }
 
-fn validate_image(bytes: &[u8]) -> Result<(&'static str, u32, u32, u8)> {
+pub(crate) fn validate_image(bytes: &[u8]) -> Result<(&'static str, u32, u32, u8)> {
     let (media_type, decoded, orientation) = decode_image(bytes)?;
     Ok((
         media_type,

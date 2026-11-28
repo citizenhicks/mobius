@@ -142,6 +142,7 @@ mod capacity;
 mod catalog;
 mod desktop;
 mod protocol;
+mod provider_form;
 mod sessions;
 mod telemetry;
 mod transport;

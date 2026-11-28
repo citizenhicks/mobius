@@ -315,8 +315,14 @@ impl ProviderError {
             "content_policy_violation" | "content_filter" => {
                 self.0.class = FailureClass::ContentPolicy;
             }
-            "authentication_error" | "permission_error" | "invalid_api_key" => {
+            "authentication_error"
+            | "permission_error"
+            | "invalid_api_key"
+            | "expired_secret_key" => {
                 self.0.class = FailureClass::Authentication;
+            }
+            "invalid_request_error" if self.0.class == FailureClass::Other => {
+                self.0.class = FailureClass::InvalidRequest;
             }
             "rate_limit_error" | "rate_limit_exceeded" => {
                 self.0.class = FailureClass::RateLimited;

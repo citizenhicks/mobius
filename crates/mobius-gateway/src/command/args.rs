@@ -243,6 +243,13 @@ pub(super) struct RegisterProviderArgs {
     #[arg(long = "image-model-id", value_name = "ID")]
     pub(super) image_model_ids: Option<Vec<String>>,
 
+    /// Replace model group endpoints with JSON records containing kind, api, and path.
+    #[arg(long, value_name = "JSON")]
+    pub(super) group_endpoints_json: Option<String>,
+
+    /// Dictation model ID; repeat to replace the list. Omit to preserve existing IDs.
+    #[arg(long = "dictation-model-id", value_name = "ID")]
+    pub(super) dictation_model_ids: Option<Vec<String>>,
     /// Decision model ID; repeat to replace the list. Omit to preserve existing IDs.
     #[arg(long = "decision-model-id", value_name = "ID")]
     pub(super) decision_model_ids: Option<Vec<String>>,

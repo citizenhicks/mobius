@@ -120,6 +120,7 @@ async fn run_interactive(resume: Option<mobius::SessionId>) -> Result<()> {
             chat.endpoint.to_string(),
             frontend::Opening {
                 choose_bot: choose_initial_bot,
+                first_message: chat.first_message.take(),
                 draft: draft.take(),
             },
         )
@@ -184,6 +185,46 @@ async fn run_interactive(resume: Option<mobius::SessionId>) -> Result<()> {
                     return Ok(());
                 };
                 chat = connection;
+            }
+            FrontendExit::NewChat {
+                workspace,
+                explicit_workspace,
+            } => {
+                let workspace = match workspace {
+                    Some(path) => path,
+                    None => gateway_home(&chat.sender, &mut chat.events, &mut chat.gateway).await?,
+                };
+                if let Some((opened, message)) = frontend::compose_new_chat(
+                    &chat.sender,
+                    &mut chat.events,
+                    &mut chat.gateway,
+                    &chat.endpoint.to_string(),
+                    workspace,
+                    Arc::clone(&chat.session.session.context.owner_id),
+                    explicit_workspace,
+                )
+                .await?
+                {
+                    chat.session = opened;
+                    chat.first_message = Some(message);
+                    if let Some(bootstrap) = chat.disposable_session.take() {
+                        discard_pristine_session(
+                            &chat.sender,
+                            &mut chat.events,
+                            &mut chat.gateway,
+                            &bootstrap,
+                        )
+                        .await?;
+                    }
+                } else {
+                    chat.session = open_session(
+                        &chat.sender,
+                        &mut chat.events,
+                        &mut chat.gateway,
+                        chat.session.session.session_id.share(),
+                    )
+                    .await?;
+                }
             }
             FrontendExit::Fresh => {
                 let Some(connection) = connect(InitialSession::Auto, None).await? else {
@@ -319,6 +360,7 @@ struct Chat {
     events: GatewayEvents,
     gateway: ReadyPayload,
     session: SessionReadyPayload,
+    first_message: Option<mobius::protocol::MessageSubmission>,
     /// The chat this launch created, discarded again if it stays pristine.
     disposable_session: Option<mobius::SessionId>,
     endpoint: Endpoint,
@@ -374,9 +416,31 @@ async fn connect(initial: InitialSession, preferred_bot: Option<&str>) -> Result
             session_id,
         } => (previous == endpoint).then_some(session_id),
     };
+    let mut first_message = None;
     let (session, disposable_session) = match requested_session {
         Some(session_id) => {
             let session = open_session(&sender, &mut events, &mut gateway, session_id).await?;
+            (session, None)
+        }
+        None if local_gateway
+            && preferred_bot.is_none()
+            && !gateway.agent_catalog.auto_routing.targets.is_empty() =>
+        {
+            let bot = resolve_bot(&gateway.bots, "@mobius")?;
+            let Some((session, message)) = frontend::compose_new_chat(
+                &sender,
+                &mut events,
+                &mut gateway,
+                &endpoint.to_string(),
+                env::current_dir()?,
+                bot,
+                false,
+            )
+            .await?
+            else {
+                return Ok(None);
+            };
+            first_message = Some(message);
             (session, None)
         }
         None if local_gateway => {
@@ -426,6 +490,7 @@ async fn connect(initial: InitialSession, preferred_bot: Option<&str>) -> Result
         events,
         gateway,
         session,
+        first_message,
         disposable_session,
         endpoint,
     }))
@@ -716,7 +781,32 @@ async fn create_session(
     .await
 }
 
-fn session_opened(
+async fn gateway_home(
+    sender: &GatewaySender,
+    events: &mut GatewayEvents,
+    gateway: &mut ReadyPayload,
+) -> Result<PathBuf> {
+    request(
+        sender,
+        events,
+        Some(gateway),
+        |request_id| ClientMessage::ListDirectories {
+            request_id,
+            path: PathBuf::from("."),
+            include_files: false,
+        },
+        |id, message| match message {
+            ServerMessage::Directories {
+                request_id,
+                listing,
+            } if request_id.as_ref() == id => ControlFlow::Break(listing.path),
+            m => ControlFlow::Continue(m),
+        },
+    )
+    .await
+}
+
+pub(crate) fn session_opened(
     request_id: &str,
     message: ServerMessage,
 ) -> ControlFlow<SessionReadyPayload, ServerMessage> {

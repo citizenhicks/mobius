@@ -1,3 +1,4 @@
+language_apis = ["responses"]
 symbol = "a2agent"
 label = "A2Agent"
 description = "A2Agent Responses API"

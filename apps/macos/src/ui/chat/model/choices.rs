@@ -9,18 +9,18 @@ impl Workspace {
     pub(in crate::ui) fn model_identity(&self, choice: &ModelChoice) -> (String, Icon) {
         let instance = self.choice_instance(choice);
         let status = self.choice_status(choice);
-        let label = status
-            .and_then(|status| {
-                let id = choice.model.as_ref();
-                let chat = status.models.iter().find(|model| model.id == id);
-                chat.map(|model| model.label.as_str()).or_else(|| {
-                    status
-                        .image_models
-                        .iter()
-                        .chain(status.voice_models.iter())
-                        .find(|model| model.id == id)
-                        .map(|model| model.label.as_str())
-                })
+        let label = instance
+            .into_iter()
+            .flat_map(|p| &p.model_groups)
+            .flat_map(|g| &g.models)
+            .find(|m| m.id == choice.model.as_ref())
+            .and_then(|m| m.label.as_deref())
+            .or_else(|| {
+                status?
+                    .models
+                    .iter()
+                    .find(|m| m.id == choice.model.as_ref())
+                    .map(|m| m.label.as_str())
             })
             .unwrap_or(&choice.model)
             .to_owned();

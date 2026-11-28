@@ -211,6 +211,13 @@ pub(super) enum VoiceApi {
 }
 
 impl VoiceApi {
+    pub(super) fn calls_path(self) -> &'static str {
+        match self {
+            Self::OpenAi => &MANIFEST.openai.calls_path,
+            Self::Codex => &MANIFEST.codex.calls_path,
+        }
+    }
+
     /// The API-key Live call accepts audio only after its session starts; the device-code
     /// call is ready once its media connects.
     pub(super) const fn waits_for_session_started(self) -> bool {
@@ -234,7 +241,7 @@ impl RealtimeTransport {
         auth: Arc<dyn OpenAiAuthorization>,
         settings: super::ModelTransportSettings,
     ) -> Result<Self> {
-        let endpoint = format!("{}/{}", base_url.root(), MANIFEST.openai.calls_path);
+        let endpoint = base_url.operation_url(&MANIFEST.openai.calls_path);
         let sideband = MANIFEST
             .openai
             .sideband_base_url
@@ -249,7 +256,7 @@ impl RealtimeTransport {
         auth: Arc<dyn OpenAiAuthorization>,
         settings: super::ModelTransportSettings,
     ) -> Result<Self> {
-        let calls_url = format!("{}/{}", base_url.root(), MANIFEST.codex.calls_path);
+        let calls_url = base_url.operation_url(&MANIFEST.codex.calls_path);
         let api_url = if default_endpoint {
             std::borrow::Cow::Borrowed(
                 MANIFEST
@@ -559,11 +566,11 @@ impl RealtimeTransport {
         }
         let extra_headers: Vec<(&str, &str)> = self.codex_headers(session_id).collect();
         super::transport::connect_authorized_websocket(
-            self.auth.as_ref(),
+            Some(self.auth.as_ref()),
             url.as_str(),
             MAX_EVENT_BYTES,
             None,
-            || self.auth.authorize_http(false, Some(session_id)),
+            |auth| auth.authorize_http(false, Some(session_id)),
             &extra_headers,
         )
         .await

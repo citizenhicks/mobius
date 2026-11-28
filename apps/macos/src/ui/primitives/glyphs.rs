@@ -73,6 +73,12 @@ pub fn preview_glyph(symbol: Option<&FrontendSymbol>) -> &'static str {
 /// rather than drawn as a placeholder (MobiusSymbol.knownGlyph).
 pub fn known_symbol_icon(symbol: Option<&FrontendSymbol>) -> Option<&'static str> {
     const SYMBOLS: &[(&str, &str)] = &[
+        ("ai_search_lines", "hi.aiSearchLines"),
+        ("ai_mic", "hi.aiMic"),
+        ("ai_image_01", "hi.aiImage01"),
+        ("ai_speech", "hi.aiSpeech"),
+        ("split", "hi.split"),
+        ("settings_01", "hi.gear"),
         ("a2agent", "provider.a2agent"),
         ("agent", "bot.face"),
         ("brain", "hi.stickyNote02"),
@@ -85,6 +91,8 @@ pub fn known_symbol_icon(symbol: Option<&FrontendSymbol>) -> Option<&'static str
         ("edit", "hi.pencilSimple"),
         ("kimi", "hi.kimiAi"),
         ("mistral", "hi.mistral"),
+        ("image", "hi.image01"),
+        ("phone", "hi.smartPhone01"),
         ("moon", "hi.moon"),
         ("open_router", "provider.openRouter"),
         ("plus", "hi.plus"),
@@ -92,6 +100,7 @@ pub fn known_symbol_icon(symbol: Option<&FrontendSymbol>) -> Option<&'static str
         ("promote", "hi.arrowCircleUp"),
         ("queue", "hi.queue01"),
         ("route", "hi.path"),
+        ("settings", "hi.slidersHorizontal"),
         ("search", "hi.magnifyingGlass"),
         ("shield", "hi.shield02"),
         ("shield_alert", "hi.shieldAlert"),

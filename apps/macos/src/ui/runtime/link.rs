@@ -235,7 +235,10 @@ fn gateway_page(page: PageTab) -> PageTab {
         PageTab::Bot(_) | PageTab::BotSettings(..) | PageTab::Empty(Section::Bots) => {
             PageTab::Empty(Section::Bots)
         }
-        PageTab::Provider(_) | PageTab::ProviderDraft(_) | PageTab::Providers => PageTab::Providers,
+        PageTab::Provider(_)
+        | PageTab::ProviderPart(..)
+        | PageTab::ProviderDraft(_)
+        | PageTab::Providers => PageTab::Providers,
         PageTab::Extension(_) | PageTab::Extensions => PageTab::Extensions,
         _ => PageTab::Draft,
     }

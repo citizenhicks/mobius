@@ -3,12 +3,12 @@
 
 use super::Scenario;
 use super::capture::catalog;
-use super::probes::{click_probe, undo_after_capture};
+use super::probes::{click_probe, strip_after_capture, undo_after_capture};
 
 use crate::host::platform::{CloudAge, CloudErrorKind, CloudStage, CloudStatus};
 use crate::ui::navigation::Section;
 
-use crate::ui::router::{GatewayPage, GatewayRef, PageTab, SettingsPage};
+use crate::ui::router::{GatewayPage, GatewayRef, PageTab, ProviderPart, SettingsPage};
 use crate::ui::theme::Accent;
 use crate::ui::{Workspace, navigation, theme};
 
@@ -182,12 +182,12 @@ fn provider_statuses() -> [serde_json::Value; 3] {
                   discovery: &str| {
         json!({
             "provider": id, "label": label, "symbol": symbol, "description": "",
-            "model_ids_configurable": id != "openai_codex", "auth": "api_key",
+            "model_groups": super::bots::model_groups(id != "openai_codex",&models),
+            "general_section":{"label":"General","symbol":"settings_01"},"auth": "api_key",
             "default_base_url": "https://api.example",
             "web_search": web, "tool_discovery": discovery,
             "supported_tool_discovery": [discovery],
-            "custom_endpoint_tool_discovery": null, "models": models, "image_models": [],
-            "image_model_ids_configurable": false, "voice_models": []
+            "custom_endpoint_tool_discovery": null, "models": models
         })
     };
     let sol_levels = SOL_LEVELS;
@@ -242,7 +242,7 @@ fn fixture_setups() -> [serde_json::Value; 4] {
                  models: Vec<serde_json::Value>,
                  effort: &str| {
         json!({
-            "label": label, "tint": tint, "tool_discovery": "native", "configured": true, "models": models,
+            "label": label, "tint": tint, "tool_discovery": "native", "configured": true, "models": models,"model_groups":super::bots::model_groups(provider != "openai_codex",&models),
             "selection": {"instance": id, "provider": provider, "model": model,
                 "base_url": null, "endpoint_auth": "provider_default",
                 "reasoning_effort": effort,
@@ -345,14 +345,20 @@ fn provider_fixture(this: &mut Workspace) {
     });
 }
 
+/// Settings → Gateway, for the connected gateway.
+fn gateway(this: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let page = GatewayPage::Machine(this.current_gateway());
+    this.open_page(PageTab::Gateway(page), window, cx);
+}
+
 fn configurable(
-    gateway: &mobius_gateway::wire::ReadyPayload,
+    _gateway: &mobius_gateway::wire::ReadyPayload,
     setup: &mobius_gateway::wire::ProviderInstance,
 ) -> bool {
-    gateway
-        .providers
+    setup
+        .model_groups
         .iter()
-        .any(|p| p.provider == setup.selection.provider && p.model_ids_configurable)
+        .any(|g| g.kind == mobius_gateway::wire::ProviderModelKind::Language && g.editable)
 }
 
 /// The first live setup whose model IDs are typed in, such as OpenRouter.
@@ -366,9 +372,21 @@ fn custom_setup(this: &Workspace) -> Option<String> {
 }
 
 pub(super) const SCENARIOS: &[Scenario] = &[
-    ("gateway-machine", |this, window, cx| {
-        this.select_section(Section::Gateway, window, cx);
+    ("settings-grid", |this, window, cx| {
+        this.select_section(Section::Settings, window, cx);
     }),
+    ("settings-grid-zoom", |this, window, cx| {
+        this.select_section(Section::Settings, window, cx);
+        strip_after_capture(|this, window, cx| {
+            settings(this, SettingsPage::Appearance, window, cx);
+        });
+    }),
+    ("settings-grid-zoom-back", |this, window, cx| {
+        this.select_section(Section::Settings, window, cx);
+        settings(this, SettingsPage::Appearance, window, cx);
+        strip_after_capture(|this, window, cx| this.navigate_history(false, window, cx));
+    }),
+    ("gateway-machine", gateway),
     ("gateway-devices", |this, window, cx| {
         this.open_page(PageTab::Gateway(GatewayPage::Devices), window, cx);
     }),
@@ -383,11 +401,11 @@ pub(super) const SCENARIOS: &[Scenario] = &[
         this.open_page(PageTab::Gateway(GatewayPage::Ssh), window, cx);
     }),
     ("gateway-pair-dialog", |this, window, cx| {
-        this.select_section(Section::Gateway, window, cx);
+        gateway(this, window, cx);
         this.pair_gateway_dialog(window, cx);
     }),
     ("gateway-rename-dialog", |this, window, cx| {
-        this.select_section(Section::Gateway, window, cx);
+        gateway(this, window, cx);
         this.rename_gateway_dialog(GatewayRef::Local, window, cx);
     }),
     ("providers-edit", |this, window, cx| {
@@ -405,6 +423,49 @@ pub(super) const SCENARIOS: &[Scenario] = &[
         let service = service.map(|provider| provider.provider.clone()); // rules-allow: the page tab owns its id while the catalog keeps the provider
         if let Some(service) = service {
             this.open_page(PageTab::ProviderDraft(service), window, cx);
+        }
+    }),
+    ("providers-grid", |this, window, cx| {
+        provider_fixture(this);
+        if let Some(id) = custom_setup(this) {
+            this.open_page(PageTab::Provider(id), window, cx);
+        }
+    }),
+    ("providers-grid-tested", |this, window, cx| {
+        use mobius_gateway::wire::ProviderModelKind;
+        provider_fixture(this);
+        if let Some(id) = custom_setup(this) {
+            this.render_provider(&id, window, cx);
+            this.snapshot_group_tested(ProviderModelKind::Language, None);
+            this.snapshot_group_tested(ProviderModelKind::Dictation, Some("Got 404."));
+            this.open_page(PageTab::Provider(id), window, cx);
+        }
+    }),
+    ("providers-grid-zoom", |this, window, cx| {
+        provider_fixture(this);
+        if let Some(id) = custom_setup(this) {
+            this.open_page(PageTab::Provider(id), window, cx);
+        }
+        strip_after_capture(|this, window, cx| {
+            if let Some(id) = custom_setup(this) {
+                let page = PageTab::ProviderPart(id, ProviderPart::General);
+                this.open_page(page, window, cx);
+            }
+        });
+    }),
+    ("providers-general", |this, window, cx| {
+        provider_fixture(this);
+        if let Some(id) = custom_setup(this) {
+            let page = PageTab::ProviderPart(id, ProviderPart::General);
+            this.open_page(page, window, cx);
+        }
+    }),
+    ("providers-model-tested", |this, window, cx| {
+        use mobius_gateway::wire::ProviderModelKind;
+        provider_fixture(this);
+        if let Some(id) = custom_setup(this) {
+            this.snapshot_model_rows(&id, None, None, window, cx);
+            this.snapshot_group_tested(ProviderModelKind::Language, Some("Got 404."));
         }
     }),
     ("providers-model-rows", |this, window, cx| {
@@ -446,6 +507,24 @@ pub(super) const SCENARIOS: &[Scenario] = &[
         if let Some(id) = id {
             this.open_page(PageTab::Provider(id), window, cx);
         }
+    }),
+    ("gateway-auto-routing", |this, window, cx| {
+        this.shell.toast = None;
+        this.open_page(PageTab::Gateway(GatewayPage::Routing), window, cx);
+    }),
+    ("live-new-provider-form", |this, window, cx| {
+        this.shell.toast = None;
+        this.open_page(PageTab::ProviderDraft("responses".into()), window, cx);
+    }),
+    ("live-group-endpoint", |this, window, cx| {
+        this.shell.toast = None;
+        let id = std::env::var("MOBIUS_SNAPSHOT_PROVIDER").unwrap_or_else(|_| "fixture".into());
+        this.open_page(PageTab::Provider(id), window, cx);
+    }),
+    ("gateway-provider-editor", |this, window, cx| {
+        let id = std::env::var("MOBIUS_SNAPSHOT_PROVIDER").unwrap_or_else(|_| "a2agent".into());
+        this.shell.toast = None;
+        this.open_page(PageTab::Provider(id), window, cx);
     }),
     ("providers-media-editor", |this, window, cx| {
         super::bots::media_fixture(this);
@@ -522,6 +601,12 @@ pub(super) const SCENARIOS: &[Scenario] = &[
         this.new_chat(window, cx);
         this.fixture_type("Hello", window, cx);
         undo_after_capture(|this| this.accent = Accent::default());
+    }),
+    // After the scenario above, which already left the fixture link ready.
+    ("gateway-ready", |this, window, cx| {
+        provider_fixture(this);
+        this.client.link = crate::ui::runtime::Link::Ready;
+        gateway(this, window, cx);
     }),
     ("settings-font-picker", |this, window, cx| {
         settings(this, SettingsPage::Appearance, window, cx);

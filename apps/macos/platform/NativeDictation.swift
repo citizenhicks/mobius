@@ -19,7 +19,7 @@ enum Cue {
     }
 }
 
-/// On-device dictation in the user's language. No audio leaves the Mac.
+/// The composer microphone feeds Apple speech or the selected gateway route.
 @MainActor
 final class NativeDictation {
     /// One engine for the app's lifetime: releasing an engine while CoreAudio still has a
@@ -36,30 +36,43 @@ final class NativeDictation {
     private var transcription: Task<Void, Never>?
     private var silence: Task<Void, Never>?
     private var generation = UUID()
+    private var remote: RemoteDictation?
     private var inputObserver: NSObjectProtocol?
     private let emit: (JSONValue) -> Void
 
     init(emit: @escaping (JSONValue) -> Void) { self.emit = emit }
 
-    func start() {
+    func start(route: String? = nil) {
         reset()
         let generation = UUID()
         self.generation = generation
+        let language = (Self.keyboardLocale ?? .current).language.languageCode?.identifier
+        remote = route.map { RemoteDictation(route: $0, language: language, emit: emit) }
         emit(.object(["type": .string("dictation_state"), "active": .bool(true)]))
         Task {
             guard self.generation == generation else { return }
+            #if MOBIUS_SNAPSHOT
+            if let file = ProcessInfo.processInfo.environment["MOBIUS_SNAPSHOT_AUDIO"], let remote {
+                do {
+                    try record(remote, generation: generation, file: URL(fileURLWithPath: file))
+                } catch { fail(error.localizedDescription) }
+                return
+            }
+            #endif
             // macOS kills a process that asks for these permissions without usage
             // descriptions, which is what an unbundled `cargo run` binary is.
-            let keys = ["NSMicrophoneUsageDescription", "NSSpeechRecognitionUsageDescription"]
+            let keys = route == nil ? ["NSMicrophoneUsageDescription", "NSSpeechRecognitionUsageDescription"] : ["NSMicrophoneUsageDescription"]
             guard keys.allSatisfy({ Bundle.main.object(forInfoDictionaryKey: $0) != nil }) else {
                 fail("Dictation needs the bundled app. Launch möbius.app instead.")
                 return
             }
-            let status = await Self.speechAuthorization()
-            guard self.generation == generation else { return }
-            guard status == .authorized else {
-                fail("Allow Speech Recognition to dictate messages.")
-                return
+            if route == nil {
+                let status = await Self.speechAuthorization()
+                guard self.generation == generation else { return }
+                guard status == .authorized else {
+                    fail("Allow Speech Recognition to dictate messages.")
+                    return
+                }
             }
             let canRecord = await AVCaptureDevice.requestAccess(for: .audio)
             guard self.generation == generation else { return }
@@ -67,7 +80,10 @@ final class NativeDictation {
                 fail("Allow microphone access to dictate messages.")
                 return
             }
-            do { try await record(generation: generation) } catch {
+            do {
+                if let remote { try record(remote, generation: generation) }
+                else { try await record(generation: generation) }
+            } catch {
                 guard self.generation == generation else { return }
                 fail(error.localizedDescription)
             }
@@ -104,34 +120,22 @@ final class NativeDictation {
         let analyzer = SpeechAnalyzer(modules: [transcriber])
         try await analyzer.prepareToAnalyze(in: format)
         guard self.generation == generation else { return }
-        let (sequence, input) = AsyncStream.makeStream(of: AnalyzerInput.self)
         self.analyzer = analyzer
-        self.input = input
-        try startEngine(analyzing: format, into: input)
-        // AirPods connecting, or any other input switch, stops the engine and changes the
-        // input's format; recording carries on from the new input.
-        inputObserver = NotificationCenter.default.addObserver(
-            forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self, self.generation == generation, self.tapped else { return }
-                do { try self.startEngine(analyzing: format, into: input) } catch {
-                    self.fail(error.localizedDescription)
-                }
-            }
-        }
+        let sequence = try capture(format, generation: generation)
         try await analyzer.start(inputSequence: sequence)
         guard self.generation == generation else { return }
         Cue.play("DictationStart")
         endAfterSilence(seconds: 10, generation: generation)
         transcription = Task { [weak self] in
             var finalized = ""
+            var latest = ""
             do {
                 for try await result in transcriber.results {
                     guard let self, self.generation == generation else { return }
                     let text = String(result.text.characters)
                     let spoken = (finalized + text).trimmingCharacters(in: .whitespaces)
                     if result.isFinal { finalized += text }
+                    latest = spoken
                     heard = heard || !spoken.isEmpty
                     emit(
                         .object([
@@ -141,6 +145,7 @@ final class NativeDictation {
                         ]))
                     if tapped { endAfterSilence(seconds: 3, generation: generation) }
                 }
+                if let self, self.generation == generation { emit(.object(["type": .string("dictation"), "text": .string(latest), "is_final": .bool(true)])) }
             } catch {
                 guard let self, self.generation == generation else { return }
                 fail(error.localizedDescription)
@@ -163,6 +168,82 @@ final class NativeDictation {
                 @unknown default: 0
                 }
         }
+    }
+
+    private func capture(_ format: AVAudioFormat, generation: UUID) throws -> AsyncStream<AnalyzerInput> {
+        let (sequence, input) = AsyncStream.makeStream(of: AnalyzerInput.self)
+        self.input = input
+        try startEngine(analyzing: format, into: input)
+        // AirPods connecting, or any other input switch, stops the engine and changes the
+        // input's format; recording carries on from the new input.
+        inputObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.generation == generation, self.tapped else { return }
+                do { try self.startEngine(analyzing: format, into: input) } catch {
+                    self.fail(error.localizedDescription)
+                }
+            }
+        }
+        return sequence
+    }
+
+    private func record(_ remote: RemoteDictation, generation: UUID, file: URL? = nil) throws {
+        guard let format = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 24_000, channels: 1, interleaved: false) else {
+            throw DesktopError("Dictation audio format is unavailable.")
+        }
+        let samples: AsyncStream<AnalyzerInput>
+        #if MOBIUS_SNAPSHOT
+        if let file {
+            let (stream, continuation) = AsyncStream.makeStream(of: AnalyzerInput.self)
+            input = continuation
+            let audio = try AVAudioFile(forReading: file)
+            // Exercise capture callbacks larger than a gateway audio frame in snapshot runs.
+            let callbackFrames: AVAudioFrameCount = 32_768
+            guard let source = AVAudioPCMBuffer(pcmFormat: audio.processingFormat, frameCapacity: callbackFrames),
+                  let converter = AVAudioConverter(from: audio.processingFormat, to: format) else { throw DesktopError("Invalid fixture audio.") }
+            while audio.framePosition < audio.length {
+                try audio.read(into: source, frameCount: callbackFrames)
+                guard let sample = Self.convert(source, with: converter) else { throw DesktopError("Failed to convert fixture audio.") }
+                continuation.yield(AnalyzerInput(buffer: sample))
+            }
+            samples = stream
+        } else { samples = try capture(format, generation: generation) }
+        #else
+        samples = try capture(format, generation: generation)
+        #endif
+        remote.start()
+        Cue.play("DictationStart")
+        transcription = Task { [weak self] in
+            for await sample in samples {
+                guard self?.generation == generation else { return }
+                let buffer = sample.buffer
+                if let channel = buffer.int16ChannelData {
+                    remote.append(Data(bytes: channel[0], count: Int(buffer.frameLength) * 2))
+                }
+            }
+            guard self?.generation == generation else { return }
+            remote.finish()
+        }
+    }
+
+    /// Late results from cancelled or superseded recordings cannot edit the composer.
+    func receive(_ message: GatewayEnvelope) -> Bool {
+        guard let remote, message.body["requestId"]?.stringValue == remote.id else { return false }
+        switch message.type {
+        case "dictation_partial", "dictation_transcript":
+            let final = message.type == "dictation_transcript"
+            if let text = message.body["text"]?.stringValue {
+                emit(.object(["type": .string("dictation"), "text": .string(text), "is_final": .bool(final)]))
+            }
+            if final { self.remote = nil; stop() }
+        case "rejected":
+            self.remote = nil
+            fail(message.body["message"]?.stringValue ?? "Dictation failed.")
+        default: return false
+        }
+        return true
     }
 
     /// A transcriber for the keyboard layout's language, else the system's, or nil where
@@ -246,6 +327,21 @@ final class NativeDictation {
     /// Stops listening but lets the analyzer deliver the words it already heard; the inactive
     /// state follows once they are in, or after a short deadline so nothing hangs.
     func finish() {
+        if remote != nil {
+            guard input != nil else {
+                if transcription == nil { stop() }
+                return
+            }
+            Cue.play("DictationStop")
+            releaseMicrophone()
+            let generation = generation
+            silence = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(90))
+                guard !Task.isCancelled, self?.generation == generation else { return }
+                self?.fail("Dictation timed out. Try again.")
+            }
+            return
+        }
         guard tapped, let analyzer, let transcription else { return stop() }
         let generation = generation
         Cue.play("DictationStop")
@@ -287,6 +383,8 @@ final class NativeDictation {
 
     private func reset() {
         generation = UUID()
+        remote?.cancel()
+        remote = nil
         heard = false
         releaseMicrophone()
         transcription?.cancel()

@@ -7,7 +7,7 @@ use mobius::protocol::{
 };
 use mobius_gateway::wire::{
     AgentComposition, ProviderAuthKind, ProviderEndpointAuth, ProviderInstance, ProviderModel,
-    ProviderStatus, ReasoningChoice,
+    ProviderModelGroup, ProviderModelKind, ProviderStatus, ReasoningChoice,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -43,18 +43,19 @@ fn status(provider: &str) -> ProviderStatus {
         ),
         _ => panic!("unknown fixture provider"),
     };
-    let model_ids_configurable = provider != "openai_socket";
     ProviderStatus {
+        general_section: mobius_gateway::wire::ProviderSectionHeader {
+            label: "General".into(),
+            symbol: FrontendSymbol::Custom("settings_01".into()),
+        },
         provider: provider.into(),
         label: provider.into(),
         symbol: FrontendSymbol::Storage,
         description: format!("{provider} provider"),
-        model_ids_configurable,
+        model_groups: Vec::new(),
+
         supported_tool_discovery: vec![ToolDiscoveryMode::Native, ToolDiscoveryMode::Rebuild],
-        image_models: Default::default(),
-        image_model_ids_configurable: false,
-        decision_model_ids_configurable: false,
-        voice_models: Default::default(),
+
         auth,
         default_base_url,
         models,
@@ -123,24 +124,24 @@ fn state(mode: SetupMode, provider: &str, configured: bool) -> SetupState {
     }
     original.provider.base_url = Some(statuses[0].default_base_url.clone());
     let instances = vec![ProviderInstance {
+        model_groups: vec![],
         operator_managed: false,
-        decision_model_ids: Vec::new(),
+
         tool_discovery: mobius::protocol::ToolDiscoveryMode::Native,
         label: provider.into(),
         tint: Default::default(),
         configured,
         credential_hint: None,
         selection: original.provider.clone(),
-        models: if statuses[0].model_ids_configurable {
+        models: if provider == "openai_socket" {
+            statuses[0].models.clone()
+        } else {
             vec![model(
                 &original.provider.model,
                 &original.provider.model,
                 original.provider.reasoning_effort.as_deref(),
             )]
-        } else {
-            Vec::new()
         },
-        image_model_ids: Vec::new(),
     }];
     let providers = provider_rows(&statuses, &instances);
     assert!(std::sync::Arc::ptr_eq(
@@ -239,20 +240,40 @@ fn features() -> Vec<MiddlewareFeature> {
 #[test]
 fn provider_setup_edits_and_clears_advertised_decision_models() {
     let mut state = state(SetupMode::Login, "kimi", true);
-    assert!(state.decision_model_row().is_none());
-    Arc::make_mut(&mut state.providers[state.provider].status).decision_model_ids_configurable =
-        true;
+    state.providers[state.provider]
+        .instance
+        .as_mut()
+        .expect("configured provider")
+        .model_groups
+        .push(ProviderModelGroup {
+            test_description: Some("Test each model".into()),
+            symbol: mobius::protocol::FrontendSymbol::Chat,
+            fields: vec![],
+            models: vec![],
+            model_presets: vec![],
+            new_model_fields: vec![],
+            kind: ProviderModelKind::Decision,
+
+            label: "Decision models".into(),
+            supported: true,
+            editable: true,
+        });
     state.page = Page::Models;
-    state.row = state.decision_model_row().expect("decision model row");
-    state.paste("fixture/a, fixture/b");
     assert_eq!(
-        state.configured_decision_models(),
-        Some(vec!["fixture/a".into(), "fixture/b".into()])
+        state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        Flow::EditGroup
     );
-    assert_eq!(state.custom_model, "kimi-k3");
-    assert_eq!(state.row + 1, state.models_action_start());
-    state.decision_models.clear();
-    assert_eq!(state.configured_decision_models(), Some(Vec::new()));
+    let kind = state.active_group().unwrap().kind;
+    let form = |s: &SetupState| s.provider_form(s.original.provider.clone());
+    assert!(!form(&state).groups.contains_key(&kind));
+    let draft = state.drafts.entry(kind).or_default();
+    draft.models.push(mobius_gateway::wire::ProviderModelDraft {
+        id: "fixture/a".into(),
+        values: Default::default(),
+    });
+    assert_eq!(form(&state).groups[&kind].models[0].id, "fixture/a");
+    state.drafts.get_mut(&kind).unwrap().models.clear();
+    assert!(form(&state).groups[&kind].models.is_empty());
 }
 
 fn feature_row(state: &SetupState, id: &str) -> usize {

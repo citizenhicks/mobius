@@ -28,6 +28,7 @@ pub struct ModelRouter {
     default: Arc<str>,
     routes: Vec<ModelRoute>,
     images: Vec<MediaRoute>,
+    image_defaults: HashMap<Arc<str>, super::ImageDefaults>,
     voices: Vec<MediaRoute>,
     files: Option<Arc<crate::backend::session_files::SessionFileStore>>,
     image_limits: super::ImageInputLimits,
@@ -64,6 +65,10 @@ struct MediaRoute {
 /// One configured image route with the provider model and quality it calls.
 #[derive(Debug, Clone, Copy)]
 pub struct ImageModel<'a> {
+    /// Provider-configured resolution.
+    pub size: Option<&'a str>,
+    /// Default shape for requests without an explicit aspect.
+    pub aspect: super::ImageAspect,
     /// The image route.
     pub route: &'a str,
     /// The provider image model.
@@ -99,6 +104,7 @@ impl ModelRouter {
             health: None,
             image_limits: super::ImageInputLimits::default(),
             images: Vec::new(),
+            image_defaults: HashMap::new(),
             voices: Vec::new(),
             routes: vec![ModelRoute {
                 choice,
@@ -199,6 +205,11 @@ impl ModelRouter {
             )));
         }
         Self::push_media(&mut self.images, provider, choice, credential)
+    }
+
+    /// Applies the configured defaults for a registered image route.
+    pub fn set_image_defaults(&mut self, route: Arc<str>, defaults: super::ImageDefaults) {
+        self.image_defaults.insert(route, defaults);
     }
 
     /// Registers a voice independently of the chat catalog.
@@ -447,10 +458,18 @@ impl ModelRouter {
     ///
     /// Returns an error when no image model matches.
     pub fn image_model(&self, image_route: Option<&str>) -> Result<ImageModel<'_>> {
-        select_media(&self.images, image_route, "image").map(|media| ImageModel {
+        let media = select_media(&self.images, image_route, "image")?;
+        let defaults = self.image_defaults.get(&media.choice.route);
+        Ok(ImageModel {
             route: &media.choice.route,
             model: &media.choice.model,
-            quality: media.choice.reasoning_effort.as_deref(),
+            quality: media
+                .choice
+                .reasoning_effort
+                .as_deref()
+                .or_else(|| defaults.and_then(|d| d.quality.as_deref())),
+            aspect: defaults.map_or_else(|| super::ImageDefaults::default().aspect, |d| d.aspect),
+            size: defaults.and_then(|d| d.size.as_deref()),
         })
     }
 
@@ -474,7 +493,7 @@ impl ModelRouter {
     ) -> Result<GeneratedImage> {
         let media = select_media(&self.images, Some(image_route), "image")?;
         if *media.choice.model != *request.model
-            || media.choice.reasoning_effort.as_deref() != request.quality
+            || self.image_model(Some(image_route))?.quality != request.quality
         {
             return Err(Error::Invalid(format!(
                 "image route `{image_route}` does not serve model `{}`",

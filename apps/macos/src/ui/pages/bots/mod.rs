@@ -1,6 +1,5 @@
 //! Bots: the list, each Bot's overview and settings, routines and agent defaults (WP4).
 
-mod auto_routing;
 mod bots_ui;
 mod capabilities;
 mod capability_rows;
@@ -21,8 +20,10 @@ mod sidebar;
 mod status;
 
 pub(in crate::ui) use capabilities::extension_metadata;
+pub(super) use capability_rows::input_row;
 pub(in crate::ui) use create::dialog_heading;
 pub(in crate::ui) use settings::AgentScope;
+pub(super) use settings::{SettingInputs, input_value, setting_inputs};
 
 pub(in crate::ui) use bots_ui::{BotsUi, Pending};
 

@@ -1,3 +1,5 @@
+language_apis = ["responses", "chat_completions"]
+image_endpoint = "openai"
 symbol = "storage"
 label = "Local"
 description = "Any local or remote OpenAI-compatible Responses endpoint"
@@ -5,3 +7,8 @@ base_url = "https://api.openai.com/v1"
 tool_discovery = "rebuild"
 search = ["off"]
 credential_env = "OPENAI_API_KEY"
+
+[dictation]
+recording = "audio/transcriptions"
+realtime = "realtime?intent=transcription"
+live_models = ["gpt-live-transcribe"]

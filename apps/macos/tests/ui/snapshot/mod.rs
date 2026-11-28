@@ -19,6 +19,7 @@ mod capture;
 mod chat;
 mod config;
 mod content;
+mod dictation;
 mod documents;
 mod harness;
 mod memory;

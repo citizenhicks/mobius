@@ -33,7 +33,7 @@ impl Workspace {
 
     /// The model of `target` as a select button that opens the composer's picker on
     /// `surface`; the choice goes into the draft, which Save sends.
-    pub(super) fn model_popover(
+    pub(in crate::ui::pages) fn model_popover(
         &self,
         surface: &'static str,
         target: ModelTarget,

@@ -115,6 +115,7 @@ pub(crate) enum UiAction {
     Exit,
     ChooseBot {
         workspace: Option<PathBuf>,
+        explicit_workspace: bool,
         clear: bool,
     },
     CreateSession {
@@ -214,6 +215,21 @@ impl UiCatalog {
             workspace: workspace.map(Path::to_path_buf),
             workspace_references: Vec::new(),
         })
+    }
+
+    pub(crate) fn for_new_chat(workspace: &Path) -> Result<Self> {
+        let mut catalog = Self::build(&[], Some(workspace))?;
+        catalog.commands.retain(|c| {
+            matches!(
+                c.handler,
+                CommandHandler::Help
+                    | CommandHandler::Bot
+                    | CommandHandler::Workspace
+                    | CommandHandler::GatewaySettings
+                    | CommandHandler::Exit
+            )
+        });
+        Ok(catalog)
     }
 
     pub(crate) fn set_workspace_paths(&mut self, paths: impl IntoIterator<Item = String>) {
@@ -366,6 +382,7 @@ impl UiCatalog {
             CommandHandler::Workspace if !arguments.is_empty() => {
                 CommandAction::Ui(UiAction::ChooseBot {
                     workspace: Some(PathBuf::from(arguments)),
+                    explicit_workspace: true,
                     clear: false,
                 })
             }
@@ -379,10 +396,12 @@ impl UiCatalog {
             CommandHandler::Profile => CommandAction::Ui(UiAction::Gateway(GatewayAction::Profile)),
             CommandHandler::Events if arguments.is_empty() => CommandAction::Ui(UiAction::Events),
             CommandHandler::New => CommandAction::Ui(UiAction::ChooseBot {
+                explicit_workspace: false,
                 workspace: self.workspace.clone(), // rules-allow: the action owns the workspace while the catalog keeps it for later commands
                 clear: false,
             }),
             CommandHandler::Clear => CommandAction::Ui(UiAction::ChooseBot {
+                explicit_workspace: false,
                 workspace: self.workspace.clone(), // rules-allow: the action owns the workspace while the catalog keeps it for later commands
                 clear: true,
             }),

@@ -1,3 +1,5 @@
+language_apis = ["responses"]
+image_endpoint = "codex"
 locked_models = true
 symbol = "chat_gpt"
 label = "Codex"

@@ -36,8 +36,12 @@ def main():
     frame_bytes = re.search(r"pub const MAX_FRAME_BYTES: usize = ([^;]+);", wire)[1]
     session_files = (core / "src/backend/session_files.rs").read_text()
     read_chunk = re.search(r"pub const MAX_READ_CHUNK_BYTES: usize = ([^;]+);", session_files)[1]
+    dictation_input = (core / "src/backend/model/dictation/input.rs").read_text()
+    dictation_chunk = re.search(r"pub const MAX_CHUNK_BYTES: usize = ([^;]+);", dictation_input)[1]
     for swift in args.swift:
         replace(swift, r"(let gatewayProtocolVersion = )\d+()", protocol, args.check)
+        if "gatewayDictationChunkBytes" in swift.read_text():
+            replace(swift, r"(let gatewayDictationChunkBytes = )[^\n]+()", dictation_chunk, args.check)
         if "maximumGatewayFrameBytes" in swift.read_text():
             replace(swift, r"(let maximumGatewayFrameBytes = )[^\n]+()", frame_bytes, args.check)
         if "gatewayReadChunkBytes" in swift.read_text():

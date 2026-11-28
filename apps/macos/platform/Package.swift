@@ -24,7 +24,7 @@ let package = Package(
             ], path: ".",
             exclude: ["tests", "resources", "Info.plist", "Mobius.entitlements"],
             sources: [
-                "NativeBridge.swift", "NativeBrowser.swift", "NativeDictation.swift",
+                "NativeBridge.swift", "NativeBrowser.swift", "NativeDictation.swift", "RemoteDictation.swift", "DictationFrames.swift",
                 "NativePanel.swift",
                 "NativeTitles.swift", "NativeRecaps.swift", "OnDeviceWriters.swift", "NativeVoice.swift", "NativePaths.swift", "NativeCloud.swift",
                 "NativeThumbnails.swift",

@@ -1,3 +1,4 @@
+language_apis = ["messages"]
 symbol = "claude"
 label = "Anthropic"
 description = "Native Messages API with adaptive thinking"

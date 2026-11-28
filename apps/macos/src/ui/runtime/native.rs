@@ -1,6 +1,7 @@
 use super::*;
 use crate::host::platform::NativeEvent;
 use mobius_gateway::wire::ClientFrame;
+use mobius_gateway::wire::DictationTarget;
 
 #[derive(serde::Serialize)]
 struct NativeFrame<'a> {
@@ -17,6 +18,8 @@ impl<'a> NativeFrame<'a> {
                 | ServerMessage::DesktopControlEnded { .. }
                 | ServerMessage::Accepted { .. }
                 | ServerMessage::Rejected { .. }
+                | ServerMessage::DictationPartial { .. }
+                | ServerMessage::DictationTranscript { .. }
                 | ServerMessage::RealtimeVoiceStarted { .. }
                 | ServerMessage::RealtimeVoiceFailed { .. }
                 | ServerMessage::RealtimeVoiceEnded { .. }
@@ -32,6 +35,7 @@ impl<'a> NativeFrame<'a> {
 #[derive(Default)]
 pub(in crate::ui) struct DictationDraft {
     original: SharedString,
+    pub(in crate::ui) send_on_final: bool,
     applied: SharedString,
 }
 
@@ -40,8 +44,16 @@ impl DictationDraft {
         let original = original.into();
         Self {
             applied: SharedString::clone(&original),
+            send_on_final: false,
             original,
         }
+    }
+
+    pub(in crate::ui) fn transcript(&self) -> &str {
+        self.applied
+            .strip_prefix(self.original.as_str())
+            .unwrap_or_default()
+            .trim_start()
     }
 
     fn update(&mut self, spoken: &str, current: &str) -> Option<SharedString> {
@@ -93,7 +105,16 @@ impl Workspace {
                     Ok(frame) => {
                         let voice =
                             matches!(frame.message, ClientMessage::StartRealtimeVoice { .. });
+                        let dictation = matches!(
+                            frame.message,
+                            ClientMessage::StartDictation { .. }
+                                | ClientMessage::DictationAudio { .. }
+                                | ClientMessage::FinishDictation { .. }
+                        );
                         if let Err(error) = self.enqueue(frame.message) {
+                            if dictation {
+                                self.stop_dictation();
+                            }
                             if voice {
                                 self.stop_voice();
                             }
@@ -114,6 +135,9 @@ impl Workspace {
                     .update(cx, |input, cx| input.set_value(text, window, cx));
                 if is_final {
                     self.dictating = false;
+                    if std::mem::take(&mut self.dictation_draft.send_on_final) {
+                        self.send_message(window, cx);
+                    }
                 }
             }
             NativeEvent::DictationState { active: false } => self.dictating = false,
@@ -179,7 +203,7 @@ impl Workspace {
 
     pub(in crate::ui) fn stop_dictation(&mut self) {
         if self.dictating {
-            self.native.dictate(false);
+            self.native.dictate(false, None);
             self.dictating = false;
         }
     }
@@ -209,7 +233,16 @@ impl Workspace {
             return;
         }
         self.dictation_draft = DictationDraft::new(self.composer.read(cx).value());
-        self.native.dictate(true);
+        let catalog = self.client.state.gateway.as_ref().map(|g| &g.agent_catalog);
+        let route = match catalog.map(|c| c.dictation.resolved.as_ref()) {
+            Some(Some(DictationTarget::Route { id })) => Some(id.as_ref()),
+            Some(None) => {
+                self.report("The selected dictation model is unavailable. Choose one in Gateway → Auto routing.");
+                return;
+            }
+            None | Some(Some(DictationTarget::OnDevice {})) => None,
+        };
+        self.native.dictate(true, route);
         self.dictating = true;
         // The waveform rolls like tape while recording, at 30 frames a second.
         cx.spawn(async move |this, cx| {

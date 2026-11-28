@@ -1,0 +1,16 @@
+v=0
+o=- 1 1 IN IP4 0.0.0.0
+s=Mobius provider connection test
+t=0 0
+a=group:BUNDLE audio
+m=audio 9 UDP/TLS/RTP/SAVPF 111
+c=IN IP4 0.0.0.0
+a=mid:audio
+a=ice-ufrag:mobius
+a=ice-pwd:SyntheticNegotiationOnly01
+a=ice-options:trickle
+a=fingerprint:sha-256 B3:7A:37:47:68:00:02:47:4F:3F:18:3A:F3:CA:41:D7:2D:F8:C5:02:24:A5:A1:F9:37:D6:94:0C:27:D5:85:7A
+a=setup:actpass
+a=recvonly
+a=rtcp-mux
+a=rtpmap:111 opus/48000/2

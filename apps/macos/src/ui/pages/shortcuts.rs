@@ -91,18 +91,23 @@ impl Workspace {
         ]
     }
 
-    pub(super) fn shortcut_settings(&self, cx: &Context<Self>) -> Page {
+    /// How many shortcuts differ from their defaults, as the page and its card say it.
+    pub(super) fn shortcut_summary(cx: &App) -> String {
         let overrides = overrides(cx);
         let customized = SHORTCUTS
             .iter()
             .filter(|shortcut| is_customized(overrides, shortcut))
             .count();
-        let subtitle = match customized {
+        match customized {
             0 => "All defaults".to_owned(),
             1 => "1 customized".to_owned(),
             count => format!("{count} customized"),
-        };
-        let header = PageHeader::new("Keyboard shortcuts").subtitle(subtitle);
+        }
+    }
+
+    pub(super) fn shortcut_settings(&self, cx: &Context<Self>) -> Page {
+        let overrides = overrides(cx);
+        let header = PageHeader::new("Keyboard shortcuts").subtitle(Self::shortcut_summary(cx));
         let mut page = page("settings-shortcuts", header);
         for area in Area::ALL {
             let rows = SHORTCUTS.iter().filter(|shortcut| shortcut.area == area);

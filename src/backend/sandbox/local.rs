@@ -1373,7 +1373,8 @@ async fn read_output(
     limit: usize,
 ) -> Result<BoundedOutput> {
     let mut output = Vec::new();
-    let mut buffer = [0; 8192];
+    // Both stdout and stderr readers live inside the joined command future.
+    let mut buffer = vec![0; 8192];
     let mut total = 0_usize;
     loop {
         let read = reader.read(&mut buffer).await?;

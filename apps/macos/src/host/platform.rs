@@ -762,9 +762,15 @@ impl Native {
         }
     }
 
-    pub fn dictate(&self, enabled: bool) {
+    pub fn dictate(&self, enabled: bool, route: Option<&str>) {
+        let route = route.and_then(|route| CString::new(route).ok());
         // SAFETY: Invoked on the main thread; audio callbacks are retained by Swift.
-        unsafe { mobius_native_dictation(enabled) }
+        unsafe {
+            mobius_native_dictation(
+                enabled,
+                route.as_ref().map_or(std::ptr::null(), |r| r.as_ptr()),
+            );
+        }
     }
 
     /// Stops listening but lets the last words arrive; an inactive state follows.
@@ -1011,7 +1017,7 @@ impl Drop for Native {
         unsafe { mobius_native_reset_panels() }
         self.hide_panel();
         self.end_voice();
-        self.dictate(false);
+        self.dictate(false, None);
         self.set_connected(false);
     }
 }
@@ -1044,7 +1050,7 @@ unsafe extern "C" {
     fn mobius_native_desktop_forget_apps();
     fn mobius_native_desktop_accent(rgb: u32);
     fn mobius_native_relaunch();
-    fn mobius_native_dictation(enabled: bool);
+    fn mobius_native_dictation(enabled: bool, route: *const c_char);
     fn mobius_native_dictation_finish();
     fn mobius_native_status_item(icon: *const u8, length: usize);
     fn mobius_native_status_usage(json: *const c_char);

@@ -1,3 +1,4 @@
+language_apis = ["chat_completions"]
 supported_tool_discovery = ["rebuild"]
 symbol = "kimi"
 label = "Kimi"

@@ -1,5 +1,6 @@
 //! Native Anthropic Messages API provider.
 
+use crate::backend::model::endpoints::EndpointApi;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -197,10 +198,11 @@ impl Anthropic {
     }
 
     async fn post(&self, body: Vec<u8>) -> Result<reqwest::Response> {
-        let mut request = self
-            .config
-            .client
-            .post(format!("{}/messages", self.config.base_url.root()));
+        let mut request = self.config.client.post(
+            self.config
+                .base_url
+                .operation_url(super::endpoints::default_path(EndpointApi::Messages)?),
+        );
         for (name, value) in &MANIFEST.headers {
             request = request.header(name, value);
         }

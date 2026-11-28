@@ -52,9 +52,10 @@ impl MobiusGroup {
     /// The group whose rows `page` belongs to.
     pub(in crate::ui) const fn of(page: &PageTab) -> Option<Self> {
         match page {
-            PageTab::Providers | PageTab::Provider(_) | PageTab::ProviderDraft(_) => {
-                Some(Self::Providers)
-            }
+            PageTab::Providers
+            | PageTab::Provider(_)
+            | PageTab::ProviderPart(..)
+            | PageTab::ProviderDraft(_) => Some(Self::Providers),
             PageTab::Extensions | PageTab::Extension(_) => Some(Self::Extensions),
             PageTab::AgentDefaults(_) => Some(Self::Defaults),
             _ => None,

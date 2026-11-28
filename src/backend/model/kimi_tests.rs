@@ -1,4 +1,7 @@
+use super::super::chat_completions::ChatStream as _;
+use super::super::transport::SseHandler as _;
 use crate::backend::model::ToolDefinition;
+use crate::protocol::ModelEvent;
 use serde_json::json;
 use std::sync::Arc;
 
@@ -30,10 +33,11 @@ async fn credentialless_post_uses_custom_path_and_omits_authorization() {
 
     super::super::chat_completions::post(
         &provider.config.client,
-        provider.config.base_url.as_str(),
+        &provider.config.base_url,
         provider.config.api_key.as_deref(),
         b"{}".to_vec(),
         "Kimi",
+        None,
     )
     .await
     .expect("credentialless request");
@@ -155,7 +159,7 @@ fn responses_history_becomes_kimi_messages_and_tools() {
 #[tokio::test]
 async fn stream_normalizes_deltas_tools_usage_and_errors() {
     let (events, seen) = crate::backend::model::test_support::record_events();
-    let mut stream = KimiStream::default();
+    let mut stream = TextStream::default();
     stream
         .apply_data(
             &json!({
@@ -211,7 +215,7 @@ async fn stream_normalizes_deltas_tools_usage_and_errors() {
         [ModelEvent::ReasoningDelta(_), ModelEvent::TextDelta(_)]
     ));
 
-    let mut failed = KimiStream::default();
+    let mut failed = TextStream::default();
     let error = failed
         .apply_data(r#"{"error":{"message":"quota"}} "#, &events)
         .await
@@ -222,7 +226,7 @@ async fn stream_normalizes_deltas_tools_usage_and_errors() {
 #[tokio::test]
 async fn stream_accepts_null_usage_before_the_final_usage_chunk() {
     let (events, _seen) = crate::backend::model::test_support::record_events();
-    let mut stream = KimiStream::default();
+    let mut stream = TextStream::default();
     for chunk in [
         json!({"choices": [{"delta": {"content": "Done."}}], "usage": null}),
         json!({"choices": [{"delta": {}}], "usage": {"prompt_tokens": 118, "completion_tokens": 53}}),

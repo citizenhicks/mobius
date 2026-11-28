@@ -9,7 +9,7 @@ pub(in crate::ui) mod shortcuts;
 mod sidebar;
 mod switcher;
 mod updates;
-pub(in crate::ui) use sidebar::{GATEWAY_ITEM, sidebar_list};
+pub(in crate::ui) use sidebar::sidebar_list;
 
 pub(super) use history::History;
 pub use menus::install_menus;
@@ -134,7 +134,6 @@ pub(super) enum Section {
     #[default]
     Chats,
     Bots,
-    Gateway,
     /// The möbius harness: its providers, extensions and agent defaults.
     Mobius,
     Settings,
@@ -142,23 +141,20 @@ pub(super) enum Section {
 }
 
 impl Section {
-    pub(super) const ALL: [Self; 6] = [
+    pub(super) const ALL: [Self; 5] = [
         Self::Chats,
         Self::Bots,
-        Self::Gateway,
         Self::Mobius,
         Self::Settings,
         Self::Events,
     ];
 
     const WORK: [Self; 2] = [Self::Chats, Self::Bots];
-    const GATEWAY: [Self; 2] = [Self::Gateway, Self::Mobius];
 
     pub(super) fn label(self) -> &'static str {
         match self {
             Self::Chats => "Chats",
             Self::Bots => "Bots",
-            Self::Gateway => "Gateway",
             Self::Settings => "Settings",
             Self::Events => "Event Centre",
             Self::Mobius => pages::harness::name(HarnessKind::Mobius),
@@ -169,7 +165,6 @@ impl Section {
         match self {
             Self::Chats => "hi.note01",
             Self::Bots => "bot.face",
-            Self::Gateway => "hi.cellTower",
             Self::Settings => "hi.gear",
             Self::Events => "hi.bell",
             Self::Mobius => pages::harness::glyph(HarnessKind::Mobius),
@@ -184,7 +179,6 @@ impl Section {
             Self::Bots => ("bot.face.line", "bot.face"),
             Self::Events if attention => ("hi.bellDot", "hi.bellDot.fill"),
             Self::Chats => ("hi.note01", "hi.note01.fill"),
-            Self::Gateway => ("hi.cellTower", "hi.cellTower.fill"),
             Self::Settings => ("hi.gear", "hi.gear.fill"),
             Self::Events => ("hi.bell", "hi.bell.fill"),
         };
@@ -233,13 +227,6 @@ impl Workspace {
                 let page = first.map_or(PageTab::Providers, PageTab::Provider);
                 self.open_page(page, window, cx);
             }
-            Section::Settings => {
-                self.open_page(PageTab::Settings(SettingsPage::Account), window, cx);
-            }
-            Section::Gateway => {
-                let page = GatewayPage::Machine(self.current_gateway());
-                self.open_page(PageTab::Gateway(page), window, cx);
-            }
             Section::Chats => {
                 if let Some(id) = self
                     .client
@@ -253,7 +240,7 @@ impl Workspace {
                     self.new_chat(window, cx);
                 }
             }
-            Section::Events => {
+            Section::Settings | Section::Events => {
                 self.open_page(PageTab::Empty(section), window, cx);
             }
         }
@@ -306,7 +293,7 @@ impl Workspace {
                     .w(px(20.))
                     .my(space::XS),
             )
-            .children(Section::GATEWAY.map(|section| self.rail_section(section, cx)))
+            .child(self.rail_section(Section::Mobius, cx))
             .child(div().flex_1())
             .child(self.update_rail_button(cx))
             .child(self.rail_section(Section::Events, cx))

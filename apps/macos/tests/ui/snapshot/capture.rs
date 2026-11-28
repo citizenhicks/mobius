@@ -36,7 +36,7 @@ pub(super) fn catalog(
     let mut agents = serde_json::json!({"limits": {"min_model_steps": 1, "default_model_steps": 2042, "model_steps_step": 100,
             "max_system_prompt_bytes": 65536, "min_routine_interval_seconds": 60}, "bot_defaults": null,
             "default_capabilities": null, "models": [], "model_providers": {}, "image_models": [],
-            "voice_models": [], "decision_models": [],
+            "voice_models": [], "decision_models": [], "dictation": {"choices": [], "resolved": {"on_device": {}}},
             "auto_routing": mobius_gateway::wire::AutoRoutingCatalog::default(),
             "middleware_features": [], "extensions": [], "contributions": []});
     fill(&mut value, &mut agents);
@@ -90,9 +90,17 @@ pub(super) fn forced_appearance() -> Option<Appearance> {
 }
 
 pub(super) fn selected(name: &str, only: Option<&str>) -> bool {
-    only.map_or(name != "live-command-stop", |only| {
-        only.split(',').any(|n| n == name)
-    })
+    only.map_or(
+        !matches!(
+            name,
+            "live-command-stop"
+                | "live-composer-dictation"
+                | "live-group-endpoint"
+                | "live-new-provider-form"
+                | "gateway-provider-editor"
+        ),
+        |only| only.split(',').any(|n| n == name),
+    )
 }
 
 /// Clicks each disclosure twice and records its changing bounds and painted frames.
@@ -106,9 +114,15 @@ pub(super) async fn capture_clicks(
     this: &WeakEntity<Workspace>,
     cx: &mut AsyncWindowContext,
 ) {
-    if name == "live-command-stop" {
-        let result = stop_live_command(dir, this, cx).await;
-        assert!(result.is_ok(), "live Stop exercise failed: {result:?}");
+    let result = match name {
+        "live-new-provider-form" => Some(super::dictation::new_provider(dir, this, cx).await),
+        "live-group-endpoint" => Some(super::dictation::edit_endpoint(dir, this, cx).await),
+        "live-composer-dictation" => Some(super::dictation::exercise(dir, this, cx).await),
+        "live-command-stop" => Some(stop_live_command(dir, this, cx).await),
+        _ => None,
+    };
+    if let Some(result) = result {
+        assert!(result.is_ok(), "native {name} exercise failed: {result:?}");
         return;
     }
     let control = match name {

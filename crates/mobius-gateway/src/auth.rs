@@ -23,6 +23,12 @@ const REVOKED_PAIRING_EXPIRY: i64 = 0;
 const LOCAL_CLIENT_ID: &str = "00000000-0000-0000-0000-000000000001";
 const LOCAL_CLIENT_LABEL: &str = "Local möbius CLI";
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ProviderAccess {
+    Paired,
+    LocalOperator,
+}
+
 pub(crate) fn is_local_operator(id: &str) -> bool {
     id == LOCAL_CLIENT_ID
 }

@@ -90,9 +90,9 @@ fn custom_openai_roots_require_endpoint_bound_stored_credentials() {
         };
 
         let error = resolve_credential(
-            provider_id,
+            &selection,
             provider(provider_id).expect("provider"),
-            selection.base_url.as_ref(),
+            selection.base_url.as_ref().unwrap(),
             &store,
             &credentials,
             &mobius::backend::model::ModelTransportSettings::default(),
@@ -116,9 +116,9 @@ fn custom_openai_roots_require_endpoint_bound_stored_credentials() {
             .expect("store endpoint-bound credential");
         assert!(
             resolve_credential(
-                provider_id,
+                &selection,
                 provider(provider_id).expect("provider"),
-                selection.base_url.as_ref(),
+                selection.base_url.as_ref().unwrap(),
                 &store,
                 &credentials,
                 &mobius::backend::model::ModelTransportSettings::default(),
@@ -135,9 +135,9 @@ fn custom_openai_roots_require_endpoint_bound_stored_credentials() {
             )
             .expect("endpoint credential");
         let (credential, _) = resolve_credential(
-            provider_id,
+            &selection,
             provider(provider_id).expect("provider"),
-            selection.base_url.as_ref(),
+            selection.base_url.as_ref().unwrap(),
             &store,
             &credentials,
             &mobius::backend::model::ModelTransportSettings::default(),

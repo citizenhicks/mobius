@@ -12,7 +12,7 @@ fn catalog() -> ReadyPayload {
         "agent_catalog": {"limits": {"min_model_steps": 1, "default_model_steps": 2042, "model_steps_step": 100, "max_system_prompt_bytes": 65536, "min_routine_interval_seconds": 60},
             "bot_defaults":null, "middleware_features":[], "extensions":[], "contributions":[],
             "models":[], "model_providers":{}, "image_models":[], "voice_models":[],
-            "decision_models":[], "auto_routing": mobius_gateway::wire::AutoRoutingCatalog::default()
+            "decision_models":[], "dictation": {"choices": [], "resolved": {"on_device": {}}}, "auto_routing": mobius_gateway::wire::AutoRoutingCatalog::default()
         },
         "session_file_limits": {
             "max_attachment_references":1, "max_file_bytes":100, "max_session_files":1,
@@ -20,7 +20,7 @@ fn catalog() -> ReadyPayload {
         },
         "provider_instances":[{
             "label":"Work", "tint":"blue", "tool_discovery": "native", "configured":true,
-            "models":[],
+            "models":[], "model_groups":[],
             "selection":{
                 "instance":"work", "provider":"openai", "model":"sol",
                 "base_url":null, "endpoint_auth":"provider_default",
@@ -121,7 +121,7 @@ fn inherited_reasoning_uses_the_selected_instances_model_default() {
     }
     gateway.providers.push(serde_json::from_value(json!({
         "provider":"openai", "label":"OpenAI", "symbol":"hi.sparkles", "description":"",
-        "model_ids_configurable":true, "auth":"api_key", "default_base_url":"https://api.example",
+        "model_groups":[], "general_section":{"label":"General","symbol":"settings_01"}, "auth":"api_key", "default_base_url":"https://api.example",
         "models":[gateway.provider_instances[1].models[0]], "web_search":[],
         "tool_discovery":"native", "supported_tool_discovery":["native"],
         "custom_endpoint_tool_discovery":null
@@ -132,18 +132,6 @@ fn inherited_reasoning_uses_the_selected_instances_model_default() {
     assert!(
         configured_model(&gateway, &selection).is_none(),
         "a missing configured model cannot inherit a built-in preset or an arbitrary first variant"
-    );
-    let mut ignored_override = gateway.providers[0].models[0].clone();
-    ignored_override.default_reasoning = Some("low".into());
-    gateway.provider_instances[0].models.push(ignored_override);
-    gateway.providers[0].model_ids_configurable = false;
-    assert_eq!(
-        configured_model(&gateway, &selection)
-            .unwrap()
-            .reasoning_effort
-            .as_deref(),
-        Some("high"),
-        "locked catalogs use the gateway's built-in default"
     );
     gateway.provider_instances.clear();
     assert_eq!(

@@ -87,6 +87,8 @@ pub(super) async fn gateway_ready(
     let models = route_choices(routes, &mut model_providers);
     let image_models = route_choices(media.images, &mut model_providers);
     let voice_models = route_choices(media.voices, &mut model_providers);
+    let dictation =
+        super::dictation::catalog(state.default_dictation, media.dictations).map_err(internal)?;
     let decision_models = route_choices(media.decisions, &mut model_providers);
     let subagent_ceilings = state.subagent_ceilings;
     let catalogs = mobius::middleware::manifest::ModelCatalogs {
@@ -151,6 +153,7 @@ pub(super) async fn gateway_ready(
             image_models,
             voice_models,
             decision_models,
+            dictation,
             auto_routing,
             middleware_features,
             extensions,

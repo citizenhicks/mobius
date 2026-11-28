@@ -10,12 +10,12 @@ import subprocess
 import tempfile
 
 root = pathlib.Path(__file__).resolve().parents[1]
-shared_writers = root / 'platform/OnDeviceWriters.swift'
-# The private iOS app keeps a byte-identical copy; checked when it sits beside this checkout.
-ios_writers = root.parents[2] / 'mobius-ios.nosync/apple/Sources/MobiusApp/Chat/OnDeviceWriters.swift'
-if ios_writers.exists():
-    assert shared_writers.read_bytes() == ios_writers.read_bytes(), (
-        f'{shared_writers} and {ios_writers} must stay byte-identical')
+# The private app keeps byte-identical copies of native capabilities it shares with desktop.
+for filename in ("OnDeviceWriters.swift", "DictationFrames.swift"):
+    shared = root / "platform" / filename
+    ios = root.parents[2] / "mobius-ios.nosync/apple/Sources/MobiusApp/Chat" / filename
+    if ios.exists():
+        assert shared.read_bytes() == ios.read_bytes(), f"{shared} and {ios} must stay byte-identical"
 gateway_wire = (root / 'platform/desktop/GatewayWire.swift').read_text()
 protocol = int(re.search(r'let gatewayProtocolVersion = (\d+)', gateway_wire).group(1))
 with tempfile.TemporaryDirectory(prefix='mobius-native-check-') as temporary:

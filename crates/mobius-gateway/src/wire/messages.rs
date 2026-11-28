@@ -4,11 +4,11 @@ use std::sync::Arc;
 use super::{
     AgentComposition, BTreeMap, BTreeSet, BackgroundApproval, BotModelSwitch, BotRecord, BotShape,
     CatalogHint, CliHarnessConfig, ClientCapabilities, ClientStatus, ConfiguredModel, Deserialize,
-    DiffTotals, DirectoryListing, FrontendContribution, GatewayNotification, GitDiffScope,
-    HarnessConfig, HarnessKind, HistoryCursor, MemoryRecord, MessageTarget, Op, PROTOCOL_VERSION,
-    PathBuf, ProfileParts, ProfileSnapshot, ProviderConfig, ProviderTint, ReadyPayload,
-    RecordedEvent, RouteTarget, Routine, RoutineChange, RoutineDefinition, RoutineRun,
-    RoutineRunPreview, RunStats, Serialize, SessionFileRecord, SessionFileReference,
+    DictationTarget, DiffTotals, DirectoryListing, FrontendContribution, GatewayNotification,
+    GitDiffScope, HarnessConfig, HarnessKind, HistoryCursor, MemoryRecord, MessageTarget, Op,
+    PROTOCOL_VERSION, PathBuf, ProfileParts, ProfileSnapshot, ProviderConfig, ProviderTint,
+    ReadyPayload, RecordedEvent, RouteTarget, Routine, RoutineChange, RoutineDefinition,
+    RoutineRun, RoutineRunPreview, RunStats, Serialize, SessionFileRecord, SessionFileReference,
     SessionReadyPayload, SessionRecord, SessionSlot, SshIdentityRecord, Submission, TranscriptOp,
     TranscriptPage, Value, WorkspaceFileRecord, WorkspaceFileScope, base64_bytes, desktop_bytes,
 };
@@ -390,6 +390,40 @@ pub enum ClientMessage {
         /// The submission.
         submission: Submission,
     },
+    /// Persist the gateway dictation preference. None selects Auto.
+    ConfigureDictation {
+        /// Correlation ID.
+        request_id: Arc<str>,
+        /// Explicit destination, or absent for automatic selection.
+        target: Option<DictationTarget>,
+    },
+    /// Open a transcription on the configured provider.
+    StartDictation {
+        /// Correlation ID reused for audio, events, and cancellation.
+        request_id: Arc<str>,
+        /// Configured dictation route.
+        route: String,
+        /// Optional language hint.
+        language: Option<String>,
+    },
+    /// Append raw PCM16 mono 24 kHz audio to a transcription.
+    DictationAudio {
+        /// Original request ID.
+        request_id: Arc<str>,
+        /// Base64 encoded audio.
+        audio: String,
+    },
+    /// Finish audio input and await the complete transcript.
+    FinishDictation {
+        /// Original request ID.
+        request_id: Arc<str>,
+    },
+    /// Discard a recording or live transcription.
+    CancelDictation {
+        /// Original request ID.
+        request_id: Arc<str>,
+    },
+
     /// Selects the start realtime voice case.
     StartRealtimeVoice {
         /// The request identifier.
@@ -719,7 +753,26 @@ pub enum ClientMessage {
         /// The expires at.
         expires_at: Option<u64>,
     },
-    /// Selects the register provider case.
+    /// Saves edits from the gateway-advertised provider form.
+    SaveProviderForm {
+        /// Request correlation.
+        request_id: Arc<str>,
+        /// Current draft.
+        form: super::ProviderForm,
+    },
+    /// Exercises the submitted group using ephemeral upstream requests.
+    TestProviderGroup {
+        /// Optional unsaved API key, used only for this probe.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        api_key: Option<String>,
+        /// Request correlation.
+        request_id: Arc<str>,
+        /// Current draft, including unsaved endpoint changes.
+        form: super::ProviderForm,
+        /// Group to exercise.
+        group: super::ProviderModelKind,
+    },
+    /// Operator-only provisioning for the local gateway CLI. Interactive clients submit a ProviderForm.
     RegisterProvider {
         /// The request identifier.
         request_id: Arc<str>,
@@ -743,6 +796,15 @@ pub enum ClientMessage {
         /// Omission retains live image models; an explicit empty list clears them.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         image_model_ids: Option<Vec<String>>,
+        /// Optional replacement for the configured voice models and variants.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        voice_models: Option<Vec<mobius::backend::model::provider::MediaModelPreset>>,
+        /// Replace operation overrides, or preserve existing ones when omitted.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        group_endpoints: Option<Vec<super::GroupEndpointOverride>>,
+        /// Omission retains live dictation models; an explicit empty list clears them.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dictation_model_ids: Option<Vec<String>>,
         /// Omission retains live decision models; an explicit empty list clears them.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         decision_model_ids: Option<Vec<String>>,
@@ -1029,6 +1091,21 @@ pub enum ServerMessage {
         /// Pinned assistant messages, in transcript order.
         pinned_messages: BTreeSet<MessageTarget>,
     },
+    /// Current cumulative transcript of a live recording.
+    DictationPartial {
+        /// Original request ID.
+        request_id: Arc<str>,
+        /// Complete text so far.
+        text: String,
+    },
+    /// Final transcript of a recording.
+    DictationTranscript {
+        /// Original request ID.
+        request_id: Arc<str>,
+        /// Complete transcription.
+        text: String,
+    },
+
     /// Selects the realtime voice started case.
     RealtimeVoiceStarted {
         /// The request identifier.
@@ -1063,6 +1140,11 @@ pub enum ServerMessage {
         /// Why a model provider call failed, when one did.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         failure: Option<mobius::FailureClass>,
+    },
+    /// The provider accepted the requests for every model in the submitted group.
+    ProviderGroupTested {
+        /// Request correlation.
+        request_id: Arc<str>,
     },
     /// Selects the gateway configured case.
     GatewayConfigured {

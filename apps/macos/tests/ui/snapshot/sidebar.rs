@@ -93,9 +93,6 @@ pub(super) const SCENARIOS: &[Scenario] = &[
     ("rail-bots", |this, window, cx| {
         rail(this, Section::Bots, window, cx);
     }),
-    ("rail-gateway", |this, window, cx| {
-        rail(this, Section::Gateway, window, cx);
-    }),
     ("rail-mobius-live", |this, window, cx| {
         rail(this, Section::Mobius, window, cx);
     }),

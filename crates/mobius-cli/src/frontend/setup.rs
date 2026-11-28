@@ -1,5 +1,7 @@
 //! Gateway-native provider login and Bot setup wizard.
 
+pub(in crate::frontend) use state::step_setting;
+mod form;
 mod runtime;
 mod state;
 pub(in crate::frontend) mod view;
@@ -15,7 +17,6 @@ use self::runtime::{apply, apply_gateway, edit};
 use self::state::{SaveTarget, SetupState};
 use super::terminal::{MAX_ENDPOINT_BYTES, Screen, open_screen};
 
-const MAX_MODEL_IDS_BYTES: usize = 16 * 1024;
 const MIN_INLINE_DESCRIPTION_WIDTH: usize = 20;
 
 const UPDATE_BOT_LABEL: &str = "Update this Bot";

@@ -890,20 +890,89 @@ fn permission_label(status: PermissionStatus) -> &'static str {
     }
 }
 
+/// One section of Settings: its label, glyph and page.
+type SettingsSection = (&'static str, &'static str, PageTab);
+
 impl Workspace {
-    /// The Settings list (WP5): one row per settings page.
+    /// Settings' sections in order, the connected gateway after Usage.
+    fn settings_sections(&self) -> Vec<SettingsSection> {
+        let mut sections: Vec<SettingsSection> = SettingsPage::ALL
+            .map(|page| (page.label(), page.glyph(), PageTab::Settings(page)))
+            .into();
+        let gateway = PageTab::Gateway(GatewayPage::Machine(self.current_gateway()));
+        let after_usage = SettingsPage::ALL
+            .iter()
+            .position(|page| *page == SettingsPage::Usage)
+            .map_or(sections.len(), |index| index + 1);
+        sections.insert(after_usage, ("Gateway", "hi.cellTower", gateway));
+        sections
+    }
+
+    /// The Settings list (WP5): one row per section; the Gateway row stays selected on
+    /// every gateway page.
     pub(in crate::ui) fn settings_list(&self, cx: &Context<Self>) -> AnyElement {
         let mut list = crate::ui::navigation::sidebar_list();
-        for page in SettingsPage::ALL {
-            list = list.child(self.page_row(
-                page.label(),
-                page.label(),
-                Leading::glyph(page.glyph()),
-                PageTab::Settings(page),
-                cx,
-            ));
+        let on_gateway = matches!(self.primary_page(), Some(PageTab::Gateway(_)));
+        for (label, glyph, page) in self.settings_sections() {
+            let gateway = matches!(page, PageTab::Gateway(_));
+            let row = self.page_row(label, label, Leading::glyph(glyph), page, cx);
+            list = list.child(if gateway {
+                row.selected(on_gateway)
+            } else {
+                row
+            });
         }
         list.into_any_element()
+    }
+
+    /// Settings' landing page: one card per section, each with what is set there now.
+    pub(in crate::ui) fn render_settings_grid(&self, cx: &Context<Self>) -> AnyElement {
+        let version = format!("möbius v{}", env!("CARGO_PKG_VERSION"));
+        let mut grid = CardGrid::new();
+        for (label, glyph, page) in self.settings_sections() {
+            let (mark, summary) = self.settings_summary(&page, cx);
+            grid = grid.card(
+                Card::new(page_key(&page), label, glyph, summary)
+                    .mark(mark)
+                    .rects(&self.config.card_rects)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_page(page.clone(), window, cx); // rules-allow: the click handler is Fn and each open owns its page
+                    })),
+            );
+        }
+        page("settings", PageHeader::new("Settings").subtitle(version))
+            .child(grid)
+            .into_any_element()
+    }
+
+    /// What a section's card says: its live state where this window already holds it.
+    fn settings_summary(&self, page: &PageTab, cx: &App) -> (Option<CardMark>, String) {
+        let summary = match page {
+            PageTab::Gateway(_) => {
+                let (tone, summary) = self.gateway_summary();
+                return (Some(CardMark::Dot(tone)), summary);
+            }
+            PageTab::Settings(SettingsPage::Account) => {
+                let cloud = &self.config.cloud;
+                match (&cloud.email, cloud.signed_in) {
+                    (Some(email), true) => email.clone(), // rules-allow: the card owns the text it shows
+                    (None, true) => "Signed in".into(),
+                    (_, false) => "Account, legal and support".into(),
+                }
+            }
+            PageTab::Settings(SettingsPage::Appearance) => {
+                format!("{} · {}", self.appearance.label(), self.accent.label())
+            }
+            PageTab::Settings(SettingsPage::Security) => "Permissions and computer control".into(),
+            PageTab::Settings(SettingsPage::Data) => "Storage on this Mac and the gateway".into(),
+            PageTab::Settings(SettingsPage::Usage) => "Tokens and activity by model".into(),
+            PageTab::Settings(SettingsPage::Shortcuts) => Self::shortcut_summary(cx),
+            PageTab::Settings(SettingsPage::WhatsNew) => {
+                format!("möbius v{}", env!("CARGO_PKG_VERSION"))
+            }
+            _ => String::new(),
+        };
+        (None, summary)
     }
 }
 

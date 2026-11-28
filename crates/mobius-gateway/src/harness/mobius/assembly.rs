@@ -8,7 +8,8 @@ use mobius::Error as MobiusError;
 use mobius::agent::{Agent, AgentConfig, create_agent};
 use mobius::backend::checkpoint::CheckpointStore;
 use mobius::backend::model::provider::{
-    HttpClient, ProviderAuth, ProviderBuildConfig, ProviderCredential, ProviderDefinition, provider,
+    BaseUrl, HttpClient, ProviderAuth, ProviderBuildConfig, ProviderCredential, ProviderDefinition,
+    provider,
 };
 use mobius::backend::model::{
     Model, ModelCredentialLifetime, ModelEventSink, ModelOutput, ModelRequest, ModelRouter,
@@ -582,6 +583,20 @@ fn build_models(
     router.set_context_group(&first.choice.route, first.instance)?;
     router.configure_choice(first.choice)?;
     for route in routes {
+        if route.capability == Some(mobius::protocol::ModelCapability::ImageGeneration)
+            && let Some(p) = gateway.configured_providers.get(&route.instance)
+            && (route.choice.reasoning_effort.is_none()
+                || p.image_defaults.contains_key(route.choice.model.as_ref()))
+        {
+            let defaults = super::provider_catalog::image_defaults(
+                provider(&p.selection.provider)?,
+                p,
+                &route.choice.model,
+            );
+            if defaults != Default::default() {
+                router.set_image_defaults(Arc::clone(&route.choice.route), defaults);
+            }
+        }
         register_route(&mut router, route)?;
     }
     Ok((Arc::new(router), selected.context_window))
@@ -615,7 +630,7 @@ pub(crate) fn instantiate_routes(
     let mut provider_credentials =
         BTreeMap::<String, (ProviderCredential, ModelCredentialLifetime)>::new();
     let mut routes: Vec<RouteValue> = Vec::with_capacity(catalog.len());
-    for mut route in catalog {
+    for route in catalog {
         // Media requests carry their selected model/variant; share the adapter,
         // keeping a separate revocation cursor for each route.
         if route.capability.is_some()
@@ -634,26 +649,22 @@ pub(crate) fn instantiate_routes(
             continue;
         }
         let definition = provider(&route.provider.provider)?;
-        let base_url = Some(definition.resolve_base_url(route.provider.base_url.take().as_ref()));
-        let (credential, lifetime) = if route.provider.endpoint_auth
-            == ProviderEndpointAuth::Credentialless
-        {
-            (ProviderCredential::Credentialless, Default::default())
-        } else if let Some(credential) = provider_credentials.get(route.provider.instance.as_str())
-        {
-            credential.clone() // rules-allow: routes of one instance share its credential
-        } else {
-            let credential = resolve_credential(
-                &route.provider.instance,
-                definition,
-                base_url.as_ref(),
-                store,
-                credentials,
-                transport,
-            )?;
-            provider_credentials.insert(route.provider.instance.clone(), credential.clone()); // rules-allow: the cache keeps the credential for later routes
-            credential
-        };
+        let base_url = definition.resolve_base_url(route.provider.base_url.as_ref());
+        let (credential, lifetime) =
+            if let Some(credential) = provider_credentials.get(route.provider.instance.as_str()) {
+                credential.clone() // rules-allow: routes of one instance share its credential
+            } else {
+                let credential = resolve_credential(
+                    &route.provider,
+                    definition,
+                    &base_url,
+                    store,
+                    credentials,
+                    transport,
+                )?;
+                provider_credentials.insert(route.provider.instance.clone(), credential.clone()); // rules-allow: the cache keeps the credential for later routes
+                credential
+            };
         routes.push(build_route(
             route, definition, credential, lifetime, base_url, &http, transport,
         )?);
@@ -661,22 +672,28 @@ pub(crate) fn instantiate_routes(
     Ok(routes)
 }
 
-fn resolve_credential(
-    instance: &str,
+pub(crate) fn resolve_credential(
+    selection: &ProviderConfig,
     definition: &ProviderDefinition,
-    base_url: Option<&mobius::backend::model::provider::BaseUrl>,
+    base_url: &BaseUrl,
     store: &ConfigStore,
     credentials: &CredentialStore,
     transport: &mobius::backend::model::ModelTransportSettings,
 ) -> Result<(ProviderCredential, ModelCredentialLifetime)> {
+    if selection.endpoint_auth == ProviderEndpointAuth::Credentialless {
+        return Ok((
+            ProviderCredential::Credentialless,
+            ModelCredentialLifetime::default(),
+        ));
+    }
     match definition.auth() {
         ProviderAuth::ApiKey(default_env) => {
-            if let Some(value) = credentials.get(instance, definition.id(), base_url)? {
+            if let Some(value) =
+                credentials.get(&selection.instance, definition.id(), Some(base_url))?
+            {
                 return Ok((ProviderCredential::ApiKey(value.api_key), value.lifetime));
             }
-            if !definition.uses_default_endpoint(
-                base_url.map(mobius::backend::model::provider::BaseUrl::as_str),
-            ) {
+            if !definition.uses_default_endpoint(Some(base_url.as_str())) {
                 return Err(Error::Invalid(format!(
                     "set a credential for `{}`",
                     definition.id()
@@ -702,15 +719,16 @@ fn resolve_credential(
     }
 }
 
-fn build_route(
+pub(crate) fn build_route(
     route: CatalogRoute,
     definition: &'static ProviderDefinition,
     credential: ProviderCredential,
     lifetime: ModelCredentialLifetime,
-    base_url: Option<mobius::backend::model::provider::BaseUrl>,
+    base_url: BaseUrl,
     http: &HttpClient,
     transport: &mobius::backend::model::ModelTransportSettings,
 ) -> Result<RouteValue> {
+    let base_url = Some(route.operation_base(definition, base_url)?);
     let config = ProviderBuildConfig {
         capability: route.capability,
         credential,
@@ -816,8 +834,9 @@ fn unavailable_models(
         tool_discovery: configured.zip(preset).map_or_else(
             || definition.tool_discovery(&selection.model, selection.base_url.as_deref()),
             |(configured, model)| {
-                crate::harness::mobius::provider_catalog::effective_tool_discovery(
+                crate::harness::mobius::provider_catalog::catalog_tool_discovery(
                     definition,
+                    configured,
                     &configured.selection,
                     model,
                 )

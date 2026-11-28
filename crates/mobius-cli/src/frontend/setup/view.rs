@@ -147,7 +147,7 @@ pub(super) fn page_prompt(state: &SetupState) -> (&'static str, String) {
         ),
         Page::Models => (
             "Models & reasoning",
-            "Choose a model and reasoning level, or enter a custom model ID.".into(),
+            "Open a model group to edit its settings and configured models.".into(),
         ),
         Page::Agent if state.discard_armed => (
             "Bot settings",
@@ -263,86 +263,43 @@ fn render_authentication_page(lines: &mut Vec<Line<'static>>, state: &SetupState
 
 fn render_models_page(lines: &mut Vec<Line<'static>>, state: &SetupState) {
     let theme = current();
-    lines.push(Line::styled(
-        if state.mode == SetupMode::BotModel {
-            "  Available models"
-        } else if state.definition().model_ids_configurable {
-            "  Model IDs"
-        } else {
-            "  Model"
-        },
-        theme.style(Role::Muted),
-    ));
-    if state.mode == SetupMode::BotModel {
-        for (index, (route, _)) in state.bot_model_routes.iter().enumerate() {
-            choice(
-                lines,
-                &route.group,
-                route
-                    .reasoning_effort
-                    .as_deref()
-                    .unwrap_or("Default reasoning"),
-                state.row == index,
-                if state.model == index { "●" } else { "○" },
-            );
+    if state.mode == SetupMode::Login {
+        for (index, group) in state.model_groups().iter().enumerate() {
+            let count = state
+                .drafts
+                .get(&group.kind)
+                .map_or(group.models.len(), |d| d.models.len());
+            let detail = if group.supported {
+                format!("{count} models")
+            } else {
+                "Unavailable".into()
+            };
+            choice(lines, &group.label, &detail, state.row == index, "");
         }
-    } else {
-        for (index, model) in state
-            .definition()
-            .models
-            .iter()
-            .filter(|_| !state.definition().model_ids_configurable)
-            .enumerate()
+        if let Some(detail) = state
+            .active_group()
+            .and_then(|g| g.test_description.as_deref())
         {
-            choice(
-                lines,
-                &model.label,
-                &model.description,
-                state.row == index,
-                if state.model == index { "●" } else { "○" },
-            );
+            lines.push(Line::from(terminal_text(detail)));
         }
-        if state.definition().model_ids_configurable {
-            choice(
-                lines,
-                "Model IDs",
-                if state.custom_model.is_empty() {
-                    "Comma-separated; the first model is selected"
-                } else {
-                    &state.custom_model
-                },
-                state.row == 0,
-                "●",
-            );
+        if let Some(result) = &state.test_result {
+            lines.push(Line::from(result.to_owned()));
         }
-        lines.push(Line::from(""));
-        lines.push(Line::styled("  Reasoning", theme.style(Role::Muted)));
-        let reasoning_start = state.model_choice_count();
+        render_apply_actions(lines, state, state.models_action_start(), None);
+        return;
+    }
+    lines.push(Line::styled("  Available models", theme.style(Role::Muted)));
+    for (index, (route, _)) in state.bot_model_routes.iter().enumerate() {
         choice(
             lines,
-            "Provider default",
-            "Use the selected model's default reasoning",
-            state.row == reasoning_start,
-            if state.reasoning == 0 { "●" } else { "○" },
+            &route.group,
+            route
+                .reasoning_effort
+                .as_deref()
+                .unwrap_or("Default reasoning"),
+            state.row == index,
+            if state.model == index { "●" } else { "○" },
         );
-        for (index, preset) in state
-            .selected_model_preset()
-            .into_iter()
-            .flat_map(|model| &model.reasoning)
-            .enumerate()
-        {
-            choice(
-                lines,
-                &preset.label,
-                &preset.description,
-                state.row == reasoning_start + index + 1,
-                if state.reasoning == index + 1 {
-                    "●"
-                } else {
-                    "○"
-                },
-            );
-        }
     }
     lines.push(Line::from(""));
     lines.push(Line::styled(
@@ -352,7 +309,7 @@ fn render_models_page(lines: &mut Vec<Line<'static>>, state: &SetupState) {
     if let [search] = state.definition().web_search.as_slice() {
         choice(lines, &search.label, &search.description, false, "[fixed]");
     } else {
-        let search_start = state.model_choice_count() + state.reasoning_choice_count();
+        let search_start = state.bot_model_routes.len();
         for (index, search) in state.definition().web_search.iter().enumerate() {
             choice(
                 lines,
@@ -366,20 +323,6 @@ fn render_models_page(lines: &mut Vec<Line<'static>>, state: &SetupState) {
                 },
             );
         }
-    }
-    if let Some(row) = state.decision_model_row() {
-        lines.push(Line::from(""));
-        choice(
-            lines,
-            "Decision model IDs",
-            if state.decision_models.is_empty() {
-                "Optional, comma-separated"
-            } else {
-                &state.decision_models
-            },
-            state.row == row,
-            "●",
-        );
     }
     render_apply_actions(lines, state, state.models_action_start(), None);
 }
@@ -535,7 +478,14 @@ pub(super) fn middleware_setting_value<'a>(
     middleware: &str,
     setting: &'a FrontendSetting,
 ) -> (Cow<'a, str>, Role) {
-    match (&setting.kind, config.setting(middleware, &setting.id)) {
+    setting_value(setting, config.setting(middleware, &setting.id))
+}
+
+pub(in crate::frontend) fn setting_value<'a>(
+    setting: &'a FrontendSetting,
+    current_value: Option<&'a FrontendSettingValue>,
+) -> (Cow<'a, str>, Role) {
+    match (&setting.kind, current_value) {
         (FrontendSettingKind::Integer { .. }, Some(FrontendSettingValue::Integer(value))) => {
             (value.to_string().into(), Role::Accent)
         }
@@ -831,7 +781,7 @@ pub(super) fn footer(state: &SetupState) -> &'static str {
         Page::Models if state.mode == SetupMode::BotModel => {
             "  ↑↓ move · space select · enter activate · esc cancel"
         }
-        Page::Models => "  ↑↓ move · space select · enter activate · esc back",
+        Page::Models => "  ↑↓ move · enter open/apply · t test group · esc back",
         Page::Agent => {
             "  ↑↓ move · space change · ←→ close/open/adjust · enter open/apply · ctrl+s apply · esc cancel"
         }

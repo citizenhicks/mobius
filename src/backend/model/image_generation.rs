@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use base64::Engine as _;
 use image::ImageFormat;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::{ImageInputLimits, image_data_url, usage_i64, validate_usage};
@@ -32,6 +32,8 @@ pub struct ImageGenerationRequest<'a> {
     pub model: &'a str,
     /// The requested image or edit.
     pub prompt: &'a str,
+    /// Provider resolution tier when explicitly configured.
+    pub size: Option<&'a str>,
     /// Explicit output shape.
     pub image_aspect: ImageAspect,
     /// Quality level advertised by the selected model, or `None` when it has none.
@@ -41,7 +43,7 @@ pub struct ImageGenerationRequest<'a> {
 }
 
 /// Requested shape of a generated image.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ImageAspect {
     /// Equal width and height.
@@ -53,15 +55,89 @@ pub enum ImageAspect {
     Portrait,
 }
 
-impl ImageAspect {
-    const fn image_size(self) -> &'static str {
-        match self {
-            Self::Square => "1024x1024",
-            Self::Landscape => "1536x1024",
-            Self::Portrait => "1024x1536",
-        }
+/// Defaults attached to one image model by its provider setup.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+#[non_exhaustive]
+pub struct ImageDefaults {
+    /// Optional resolution tier, interpreted by the provider adapter.
+    pub size: Option<String>,
+    /// Shape used when the image request omits its aspect.
+    pub aspect: ImageAspect,
+    /// Default quality if the selected route has no explicit variant.
+    pub quality: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct Geometry {
+    resolutions: BTreeMap<String, BTreeMap<ImageAspect, String>>,
+    defaults: ImageGeometry,
+}
+#[derive(Deserialize)]
+struct ImageGeometry {
+    size: String,
+    aspect: ImageAspect,
+}
+crate::embedded_config! {
+    static GEOMETRY: Geometry = include_str!("image_defaults.toml");
+}
+
+impl ImageDefaults {
+    /// Maximum byte length accepted by image adapters for a quality identifier.
+    pub const MAX_QUALITY_BYTES: usize = 64;
+
+    fn valid_quality(value: &str) -> bool {
+        !value.is_empty()
+            && value.len() <= Self::MAX_QUALITY_BYTES
+            && value.trim() == value
+            && !value.chars().any(char::is_control)
     }
 
+    /// Resolution tiers understood by the image adapters.
+    pub fn sizes() -> impl Iterator<Item = &'static str> {
+        GEOMETRY.resolutions.keys().map(String::as_str)
+    }
+
+    /// Checks the geometry and quality before sending the provider request.
+    /// # Errors
+    /// Returns an error when a tier or quality cannot be represented.
+    pub fn validate(&self) -> Result<()> {
+        if self
+            .size
+            .as_ref()
+            .is_some_and(|v| !GEOMETRY.resolutions.contains_key(v))
+        {
+            return Err(Error::Invalid("unsupported image size".into()));
+        }
+        if self
+            .quality
+            .as_deref()
+            .is_some_and(|v| !Self::valid_quality(v))
+        {
+            return Err(Error::Invalid("invalid image quality".into()));
+        }
+        Ok(())
+    }
+}
+impl Default for ImageDefaults {
+    fn default() -> Self {
+        Self {
+            size: None,
+            quality: None,
+            aspect: GEOMETRY.defaults.aspect,
+        }
+    }
+}
+
+impl ImageAspect {
+    fn image_size(self, size: Option<&str>) -> Result<&'static str> {
+        GEOMETRY
+            .resolutions
+            .get(size.unwrap_or(&GEOMETRY.defaults.size))
+            .and_then(|r| r.get(&self))
+            .map(String::as_str)
+            .ok_or_else(|| Error::Invalid("unsupported image geometry".into()))
+    }
     const fn aspect_ratio(self) -> &'static str {
         match self {
             Self::Square => "1:1",
@@ -77,7 +153,7 @@ impl ImageGenerationRequest<'_> {
             .text("model", self.model.to_owned())
             .text("prompt", self.prompt.to_owned())
             .text("n", "1")
-            .text("size", self.image_aspect.image_size());
+            .text("size", self.image_aspect.image_size(self.size)?);
         if let Some(quality) = self.quality {
             form = form.text("quality", quality.to_owned());
         }
@@ -107,7 +183,7 @@ impl ImageGenerationRequest<'_> {
         }
         if self
             .quality
-            .is_some_and(|quality| quality.trim().is_empty() || quality.len() > 64)
+            .is_some_and(|quality| !ImageDefaults::valid_quality(quality))
         {
             return Err(Error::Tool("image quality must contain 1–64 bytes".into()));
         }
@@ -146,6 +222,19 @@ pub struct GeneratedImage {
     pub usage: Option<TokenUsage>,
 }
 
+impl GeneratedImage {
+    /// Decodes the response with the same bounds used for session image attachments.
+    /// # Errors
+    /// Rejects invalid data and images whose MIME type disagrees with the decoded bytes.
+    pub fn validate(&self) -> Result<(u32, u32)> {
+        let (mime, width, height, _) = crate::backend::session_files::validate_image(&self.bytes)?;
+        if mime != self.media_type {
+            return Err(Error::Provider("generated image MIME type mismatch".into()));
+        }
+        Ok((width, height))
+    }
+}
+
 crate::embedded_config! {
     pub(super) static IMAGE_APIS: BTreeMap<String, ImageApi> = include_str!("image_generation.toml");
 }
@@ -159,7 +248,7 @@ pub(super) fn image_api(name: &str) -> Result<&'static ImageApi> {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ImageApi {
-    generation_path: String,
+    pub(super) generation_path: String,
     pub(super) edit_path: String,
     reference_format: ImageReferenceFormat,
     size_format: ImageSizeFormat,
@@ -181,6 +270,17 @@ enum ImageReferenceFormat {
     Multipart,
     ImageUrls,
     InputReferences,
+}
+
+impl super::provider::ProviderDefinition {
+    /// Resolution sent when a user leaves the image size at its default.
+    /// Ratio-based APIs can choose the output resolution upstream.
+    #[must_use]
+    pub fn default_image_resolution(&self) -> Option<&'static str> {
+        let api = image_api(self.image_endpoint?).ok()?;
+        matches!(api.size_format, ImageSizeFormat::Pixels)
+            .then_some(GEOMETRY.defaults.size.as_str())
+    }
 }
 
 impl ImageApi {
@@ -213,9 +313,16 @@ impl ImageApi {
         let mut body = json!({"model": model, "prompt": request.prompt, "n": 1});
         match self.size_format {
             ImageSizeFormat::Pixels => {
-                super::set_field(&mut body, "size", json!(request.image_aspect.image_size()));
+                super::set_field(
+                    &mut body,
+                    "size",
+                    json!(request.image_aspect.image_size(request.size)?),
+                );
             }
             ImageSizeFormat::AspectRatio => {
+                if let Some(size) = request.size {
+                    super::set_field(&mut body, "resolution", json!(size));
+                }
                 super::set_field(
                     &mut body,
                     "aspect_ratio",
@@ -339,12 +446,37 @@ mod tests {
     ];
 
     #[test]
+    fn saved_quality_and_image_requests_accept_the_same_byte_limit() {
+        for (length, valid) in [(64, true), (65, false)] {
+            let quality = "x".repeat(length);
+            let defaults = ImageDefaults {
+                quality: Some(quality),
+                ..Default::default()
+            };
+            let selected = ImageGenerationRequest {
+                quality: defaults.quality.as_deref(),
+                model: "image",
+                prompt: "paint",
+                size: None,
+                image_aspect: ImageAspect::Square,
+                references: &[],
+            };
+            assert_eq!(defaults.validate().is_ok(), valid);
+            assert_eq!(
+                selected.validate(ImageInputLimits::default()).is_ok(),
+                valid
+            );
+        }
+    }
+
+    #[test]
     fn native_image_wire_and_response_are_bounded_and_provider_neutral() {
         let references = [ImageGenerationReference {
             media_type: "image/png",
             bytes: PNG,
         }];
         let request = ImageGenerationRequest {
+            size: None,
             model: "gpt-image-2.5-sunburst",
             prompt: "paint this blue",
             image_aspect: ImageAspect::Landscape,
@@ -358,6 +490,20 @@ mod tests {
         assert_eq!(endpoint, "images/edits");
         assert_eq!(openai["model"], "gpt-image-2.5-sunburst");
         assert_eq!(openai["size"], "1536x1024");
+        let large = ImageGenerationRequest {
+            size: Some("2K"),
+            quality: Some("high"),
+            ..request
+        };
+        let (_, pixels) = IMAGE_APIS["codex"].wire(&large).expect("pixel tier");
+        let (_, ratio) = IMAGE_APIS["openrouter"]
+            .wire(&large)
+            .expect("resolution tier");
+        assert_eq!(pixels["size"], "3072x2048");
+        assert_eq!(pixels["quality"], "high");
+        assert_eq!(ratio["resolution"], "2K");
+        assert_eq!(ratio["aspect_ratio"], "3:2");
+        assert_eq!(ratio["quality"], "high");
         assert!(
             openai["images"][0]["image_url"]
                 .as_str()
@@ -367,6 +513,7 @@ mod tests {
         assert!(IMAGE_APIS["openai"].wire(&request).is_err());
         let (endpoint, openrouter) = IMAGE_APIS["openrouter"]
             .wire(&ImageGenerationRequest {
+                size: None,
                 model: "openai/gpt-image-2.5-sunburst",
                 ..request
             })
@@ -380,6 +527,7 @@ mod tests {
 
         let (endpoint, portrait) = IMAGE_APIS["openai"]
             .wire(&ImageGenerationRequest {
+                size: None,
                 model: "gpt-image-2.5-flare",
                 prompt: "a tall painting",
                 image_aspect: ImageAspect::Portrait,
@@ -400,6 +548,7 @@ mod tests {
         assert_eq!(decoded.usage.unwrap().total_tokens, 5);
         assert!(
             ImageGenerationRequest {
+                size: None,
                 model: "gpt-image-2.5-sunburst",
                 prompt: "edit",
                 image_aspect: ImageAspect::Portrait,

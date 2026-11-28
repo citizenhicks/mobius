@@ -419,6 +419,7 @@ async fn image_generation_does_not_replay_ambiguous_failures() {
             router.generate_image(
                 "image",
                 ImageGenerationRequest {
+                    size: None,
                     model: "test-image",
                     prompt: "draw",
                     image_aspect: crate::backend::model::ImageAspect::Square,

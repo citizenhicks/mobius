@@ -8,7 +8,7 @@ use super::{SessionActivities, providers};
 use crate::bots::BotStore;
 
 use crate::config::{ConfigStore, CredentialStore, GatewayConfig};
-use crate::wire::{AgentComposition, ReadyPayload};
+use crate::wire::{AgentComposition, DictationTarget, ReadyPayload};
 use mobius::SessionId;
 use mobius::backend::checkpoint::CheckpointStore;
 use mobius::backend::session_files::SessionFileStore;
@@ -48,6 +48,7 @@ pub(super) struct GatewayReadySnapshot {
     pub(super) store: ConfigStore,
     pub(super) configured_providers: BTreeMap<String, crate::config::ConfiguredProvider>,
     pub(super) bot_defaults: Option<crate::wire::VersionedAgentConfig<AgentComposition>>,
+    pub(super) default_dictation: Option<DictationTarget>,
     pub(super) auto_routing: crate::config::auto_routing::Values,
     pub(super) subagent_ceilings: mobius::middleware::subagents::SubagentCeilings,
     pub(super) extensions: Vec<crate::wire::ExtensionRecord>,
@@ -111,6 +112,7 @@ impl GatewayState {
             store: self.store.clone(), // rules-allow: the ready snapshot outlives the state lock
             configured_providers: config.configured_providers.clone(), // rules-allow: the ready snapshot outlives the config lock
             bot_defaults: config.bot_defaults.clone(), // rules-allow: the ready snapshot outlives the config lock
+            default_dictation: config.default_dictation.clone(), // rules-allow: the ready snapshot outlives the config lock
             auto_routing: config.auto_routing().clone(), // rules-allow: the ready snapshot outlives the config lock
             subagent_ceilings: config.execution.subagent_ceilings,
             extensions: crate::harness::mobius::extensions::records(&config),

@@ -1,5 +1,6 @@
 //! Provider-owned setup metadata and model construction.
 
+use super::endpoints::Operation;
 use std::any::Any;
 use std::sync::Arc;
 
@@ -16,6 +17,8 @@ use crate::protocol::ToolDiscoveryMode;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ProviderMetadata {
+    pub(super) language_apis: Vec<super::endpoints::EndpointApi>,
+    pub(super) image_endpoint: Option<String>,
     pub(super) label: String,
     pub(super) symbol: String,
     pub(super) description: String,
@@ -41,6 +44,8 @@ pub(super) struct ProviderMetadata {
     /// Path under the base URL that answers decision-model requests.
     #[serde(default)]
     pub(super) decisions_path: Option<String>,
+    /// Transcription dialect and realtime models offered through this provider protocol.
+    pub(super) dictation: Option<super::dictation::DictationApi>,
 }
 
 /// One request's wire `tool_choice`: `auto`, or the manifest value forcing its required tool.
@@ -575,7 +580,13 @@ pub struct ProviderDefinition {
     builder: ProviderBuilder,
     pub(super) replay_reasoning_field: Option<&'static str>,
     pub(super) web_search_type: Option<&'static str>,
-    decisions_path: Option<&'static str>,
+    pub(super) decisions_path: Option<&'static str>,
+    pub(super) max_output_tokens: Option<u64>,
+    pub(super) language_apis: &'static [super::endpoints::EndpointApi],
+    pub(super) image_endpoint: Option<&'static str>,
+    pub(super) voice_endpoint: Option<super::realtime::VoiceApi>,
+    pub(super) dictation: Option<&'static super::dictation::DictationApi>,
+    pub(super) headers: &'static std::collections::BTreeMap<String, String>,
 }
 
 impl std::fmt::Debug for ProviderDefinition {
@@ -603,6 +614,12 @@ impl ProviderDefinition {
             replay_reasoning_field: None,
             web_search_type: metadata.web_search_type.as_deref(),
             decisions_path: metadata.decisions_path.as_deref(),
+            max_output_tokens: metadata.max_output_tokens,
+            language_apis: &metadata.language_apis,
+            image_endpoint: metadata.image_endpoint.as_deref(),
+            voice_endpoint: None,
+            dictation: metadata.dictation.as_ref(),
+            headers: &metadata.headers,
             id,
             label: &metadata.label,
             symbol: &metadata.symbol,
@@ -647,6 +664,7 @@ impl ProviderDefinition {
         models: &'static [MediaModelPreset],
         api: super::realtime::VoiceApi,
     ) -> Self {
+        self.voice_endpoint = Some(api);
         self.voice_models = models;
         self.voice_waits_for_session_started = api.waits_for_session_started();
         self
@@ -754,6 +772,36 @@ impl ProviderDefinition {
             && self.supports(capability)
     }
 
+    /// Whether an operator can explicitly provision this adapter at the selected endpoint.
+    /// Compatible media adapters accept opt-in models even when native presets do not apply.
+    #[must_use]
+    pub fn can_configure_at(&self, capability: ModelCapability, base_url: Option<&str>) -> bool {
+        self.supports_at(capability, base_url)
+            || (self.supports_credentialless_endpoints()
+                && self.supports(capability)
+                && matches!(
+                    capability,
+                    ModelCapability::ImageGeneration | ModelCapability::RealtimeVoice
+                ))
+    }
+
+    /// Built-in media presets available at the selected origin.
+    #[must_use]
+    pub fn media_presets_at(
+        &self,
+        capability: ModelCapability,
+        base_url: Option<&str>,
+    ) -> &'static [MediaModelPreset] {
+        if !self.supports_at(capability, base_url) {
+            return &[];
+        }
+        match capability {
+            ModelCapability::ImageGeneration => self.image_models(),
+            ModelCapability::RealtimeVoice => self.voice_models(),
+            ModelCapability::Decisions => &[],
+        }
+    }
+
     /// Resolves cache behavior for one model and endpoint selection.
     #[must_use]
     pub fn tool_discovery(&self, model: &str, base_url: Option<&str>) -> ToolDiscoveryMode {
@@ -854,12 +902,15 @@ impl ProviderDefinition {
                     .map(str::to_owned);
             }
             self.validate_model(&config.model, config.reasoning_effort.as_deref())?;
-            self.validate_web_search(config.web_search)?;
+            self.validate_endpoint_web_search(&base_url, config.web_search)?;
         } else if config.model.trim().is_empty() {
             return Err(Error::Invalid(format!(
                 "provider `{}` requires a model",
                 self.id
             )));
+        }
+        if config.capability.is_none() && base_url.endpoint_tool_discovery().is_some() {
+            return super::chat_completions::build_compatible(self, config, base_url);
         }
         let tool_discovery = config
             .tool_discovery
@@ -887,6 +938,26 @@ impl ProviderDefinition {
     ) -> Result<()> {
         self.model_config_is_valid(model, reasoning_effort)?;
         self.validate_web_search(web_search)
+    }
+
+    /// Validates the selected search mode against the provider and the operation's wire format.
+    /// # Errors
+    /// Returns an error when the language adapter cannot encode the selected hosted tool.
+    pub fn validate_endpoint_web_search(
+        &self,
+        base: &BaseUrl,
+        search: HostedWebSearch,
+    ) -> Result<()> {
+        self.validate_web_search(search)?;
+        if search != HostedWebSearch::Off
+            && base.endpoint_tool_discovery().is_some()
+            && self.web_search_type.is_none()
+        {
+            return Err(Error::Invalid(
+                "this Chat Completions API requires hosted search to be off".into(),
+            ));
+        }
+        Ok(())
     }
 
     fn validate_web_search(&self, web_search: HostedWebSearch) -> Result<()> {
@@ -985,9 +1056,30 @@ fn same_origin(left: &reqwest::Url, right: &reqwest::Url) -> bool {
 }
 
 /// A provider API root checked once, preserving its exact credential-scope spelling.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(try_from = "String")]
-pub struct BaseUrl(Arc<str>);
+pub struct BaseUrl {
+    root: Arc<str>,
+    operation: Option<Arc<Operation>>,
+}
+
+// Operations are ephemeral adapter state. The serialized root identifies the credential scope.
+impl PartialEq for BaseUrl {
+    fn eq(&self, other: &Self) -> bool {
+        self.root == other.root
+    }
+}
+
+impl Eq for BaseUrl {}
+
+impl Serialize for BaseUrl {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
 
 impl BaseUrl {
     /// Accepts HTTPS, or loopback HTTP, without credentials, a query or a fragment.
@@ -1015,23 +1107,77 @@ impl BaseUrl {
                 "base URL cannot contain credentials, a query, or a fragment".into(),
             ));
         }
-        Ok(Self(base_url))
+        Ok(Self {
+            root: base_url,
+            operation: None,
+        })
     }
 
     /// Returns the unchanged, validated root.
     #[must_use]
     pub fn as_str(&self) -> &str {
-        &self.0
+        &self.root
     }
 
     /// Shares this validated root without copying or checking its text again.
     #[must_use]
     pub fn share(&self) -> Self {
-        Self(Arc::clone(&self.0))
+        Self {
+            root: Arc::clone(&self.root),
+            operation: self.operation.as_ref().map(Arc::clone),
+        }
+    }
+
+    pub(super) fn operation_dictation_mode(&self) -> Option<super::dictation::DictationMode> {
+        self.operation.as_ref()?.dictation_mode
+    }
+
+    pub(super) fn with_operation(&self, operation: Arc<Operation>) -> Self {
+        Self {
+            root: Arc::clone(&self.root),
+            operation: Some(operation),
+        }
+    }
+
+    /// Effective URL of this model's explicitly selected operation.
+    #[must_use]
+    pub fn model_endpoint_url(&self) -> Option<&str> {
+        self.operation.as_ref().map(|op| op.url.as_str())
+    }
+
+    /// Tool discovery mode imposed by a per-model protocol selection.
+    #[must_use]
+    pub fn endpoint_tool_discovery(&self) -> Option<ToolDiscoveryMode> {
+        self.operation
+            .as_ref()
+            .filter(|op| op.compatible_chat)
+            .map(|_| ToolDiscoveryMode::Rebuild)
+    }
+
+    pub(super) fn operation_url(&self, path: &str) -> String {
+        if let Some(operation) = self
+            .operation
+            .as_deref()
+            .filter(|op| op.default_path == path || op.edit_path == Some(path))
+        {
+            // A prefixed native image API keeps its sibling edit route. A custom
+            // operation name is a single endpoint for both request shapes.
+            if path != operation.default_path
+                && let Some(prefix) = operation
+                    .url
+                    .strip_prefix(self.root())
+                    .and_then(|suffix| suffix.strip_suffix(operation.default_path))
+                    .filter(|prefix| prefix.ends_with('/'))
+            {
+                return format!("{}{prefix}{path}", self.root());
+            }
+            return operation.url.clone(); // rules-allow: the request owns its URL
+        }
+        format!("{}/{path}", self.root())
     }
 
     pub(super) fn root(&self) -> &str {
-        self.0.trim_end_matches('/')
+        self.root.trim_end_matches('/')
     }
 }
 
@@ -1117,6 +1263,64 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
+
+    #[test]
+    fn custom_image_operation_covers_edits_and_preserves_serialized_root_identity() {
+        use super::super::endpoints::ProviderModelKind;
+        let provider = provider("openai_socket").unwrap();
+        let base = provider.default_base_url();
+        let overridden = provider
+            .with_group_endpoint(ProviderModelKind::Image, base, "images", "custom/images")
+            .unwrap();
+        for path in ["images/generations", "images/edits"] {
+            assert_eq!(
+                overridden.operation_url(path),
+                format!("{}/custom/images", base.root())
+            );
+            assert_eq!(base.operation_url(path), format!("{}/{path}", base.root()));
+        }
+        let restored: BaseUrl =
+            serde_json::from_value(serde_json::to_value(&overridden).unwrap()).unwrap();
+        assert_eq!(&overridden, base);
+        assert_eq!(overridden, restored);
+    }
+
+    #[test]
+    fn native_image_overrides_preserve_sibling_edit_paths_under_a_prefix() {
+        use super::super::endpoints::ProviderModelKind;
+        for id in ["openai_socket", "openai_codex", "responses"] {
+            let definition = provider(id).unwrap();
+            let base = definition.default_base_url();
+            for (generation, edit) in [
+                ("images/generations", "images/edits"),
+                ("/images/generations", "images/edits"),
+                ("/v2/images/generations", "v2/images/edits"),
+                ("v2/notimages/generations", "v2/notimages/generations"),
+                ("custom/images", "custom/images"),
+            ] {
+                let bound = definition
+                    .with_group_endpoint(ProviderModelKind::Image, base, "images", generation)
+                    .unwrap();
+                assert_eq!(
+                    bound.operation_url("images/generations"),
+                    format!("{}/{}", base.root(), generation.trim_start_matches('/'))
+                );
+                assert_eq!(
+                    bound.operation_url("images/edits"),
+                    format!("{}/{edit}", base.root())
+                );
+            }
+        }
+        let base = BaseUrl::new("https://proxy.example/images").unwrap();
+        let bound = provider("responses")
+            .unwrap()
+            .with_group_endpoint(ProviderModelKind::Image, &base, "images", "generations")
+            .unwrap();
+        assert_eq!(
+            bound.operation_url("images/edits"),
+            "https://proxy.example/images/generations"
+        );
+    }
 
     #[test]
     fn current_provider_catalogs_advertise_supported_models_and_efforts() {

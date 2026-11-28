@@ -82,11 +82,19 @@ pub(super) async fn register_provider_command(
         })
         .unwrap_or_default();
     let registration = ProviderRegistration {
+        image_defaults: None,
         selection,
         label: options.label,
         tint: None,
         models,
         image_model_ids: options.image_model_ids,
+        voice_models: None,
+        group_endpoints: options
+            .group_endpoints_json
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()?,
+        dictation_model_ids: options.dictation_model_ids,
         decision_model_ids: options.decision_model_ids,
         operator_managed: options.operator_managed,
     };
@@ -198,6 +206,9 @@ async fn request_provider_registration(
             tint: registration.tint,
             models: registration.models,
             image_model_ids: registration.image_model_ids,
+            voice_models: registration.voice_models,
+            group_endpoints: registration.group_endpoints,
+            dictation_model_ids: registration.dictation_model_ids,
             decision_model_ids: registration.decision_model_ids,
             operator_managed: registration.operator_managed,
         },

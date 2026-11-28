@@ -20,6 +20,7 @@ use crate::{Error, Result};
 mod images;
 pub use images::ImagePresentation;
 pub use images::grant_context;
+pub(crate) use images::validate_image;
 mod storage;
 
 pub use storage::media_type;

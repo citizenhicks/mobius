@@ -28,6 +28,8 @@ mod cancellation;
 mod chat_completions;
 pub mod decisions;
 pub mod deepseek;
+pub mod dictation;
+pub mod endpoints;
 mod image_generation;
 pub mod kimi;
 pub(crate) mod media;
@@ -45,7 +47,7 @@ mod router;
 pub use cancellation::{ModelCancellation, ModelCancellationReason};
 pub(crate) use image_generation::MAX_IMAGE_PROMPT_CHARS;
 pub use image_generation::{
-    GeneratedImage, ImageAspect, ImageGenerationReference, ImageGenerationRequest,
+    GeneratedImage, ImageAspect, ImageDefaults, ImageGenerationReference, ImageGenerationRequest,
 };
 pub use media::{ImageInputLimits, MediaPreparation};
 mod transport;

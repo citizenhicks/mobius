@@ -148,7 +148,7 @@ impl Workspace {
 }
 
 /// A typed setting's field: a stepper for a count, a text field for text.
-pub(super) fn input_row(
+pub(in crate::ui::pages) fn input_row(
     row: Row,
     setting: &FrontendSetting,
     input: Option<&Entity<InputState>>,

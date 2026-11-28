@@ -142,7 +142,15 @@ impl Workspace {
                 cx,
             )
         });
-        palette.group("Go to", sections.into());
+        let mut places: Vec<_> = sections.into();
+        let gateway = GatewayPage::Machine(self.current_gateway());
+        places.push(page(
+            "Gateway",
+            "hi.cellTower",
+            Target::Page(PageTab::Gateway(gateway)),
+            cx,
+        ));
+        palette.group("Go to", places);
         let gateway = self.client.state.gateway.as_ref();
         let bots = gateway.iter().flat_map(|gateway| &gateway.bots).map(|bot| {
             let label = SharedString::from(format!("{} · @{}", bot.name, bot.handle));

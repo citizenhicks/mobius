@@ -2,14 +2,15 @@
 
 use super::*;
 use mobius_gateway::wire::{
-    ClientMessage, ConfiguredModel, ProviderAuthKind, ProviderConfig, ProviderEndpointAuth,
-    ProviderInstance, ProviderStatus, ProviderTint, ServerMessage,
+    ClientMessage, ProviderAuthKind, ProviderConfig, ProviderEndpointAuth, ProviderInstance,
+    ProviderStatus, ProviderTint, ServerMessage,
 };
 use std::collections::BTreeSet;
 
 mod credential;
 mod editor;
-use editor::{ProviderDraft, SavedModel};
+mod fields;
+use editor::ProviderDraft;
 
 /// What the last credential or sign-in request is doing (ProviderActionState).
 #[derive(Clone, Default, PartialEq, Debug)]
@@ -35,13 +36,14 @@ pub(in crate::ui) struct ProviderSetup {
     pending: BTreeMap<Arc<str>, ClientMessage>,
     /// Every request the editor sent, so its rejections show inline.
     requests: BTreeSet<Arc<str>>,
+    group_tests: BTreeSet<Arc<str>>,
     action: ProviderAction,
     editor: Option<ProviderDraft>,
 }
 
 fn registration_label(message: &ClientMessage) -> String {
     match message {
-        ClientMessage::RegisterProvider { label, .. } => label.clone().unwrap_or_default(), // rules-allow: the action and the pending registration each own the label
+        ClientMessage::SaveProviderForm { form, .. } => form.label.clone().unwrap_or_default(), // rules-allow: the action and the pending registration each own the label
         _ => String::new(),
     }
 }
@@ -56,7 +58,6 @@ impl ProviderSetup {
 
     fn apply(&mut self, message: &ServerMessage) -> Option<ClientMessage> {
         match message {
-            ServerMessage::Ready { .. } => self.reset(),
             ServerMessage::ProviderLoginStarted {
                 request_id,
                 verification_url,
@@ -79,7 +80,7 @@ impl ProviderSetup {
                 } else {
                     ProviderAction::Saved(label)
                 };
-                if let ClientMessage::RegisterProvider { request_id, .. } = &registration {
+                if let ClientMessage::SaveProviderForm { request_id, .. } = &registration {
                     self.requests.insert(Arc::clone(request_id));
                 }
                 return Some(registration);
@@ -103,7 +104,26 @@ impl Workspace {
         &mut self,
         message: &ServerMessage,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
+        if matches!(message, ServerMessage::Ready { .. }) && !self.client.link.is_ready() {
+            self.provider_setup.reset();
+        }
+        let handled = match message {
+            ServerMessage::ProviderGroupTested { request_id }
+            | ServerMessage::Rejected {
+                request_id,
+                fatal: false,
+                ..
+            } => self.provider_setup.group_tests.remove(request_id),
+            _ => false,
+        };
+        if handled && let Some(editor) = self.provider_setup.editor.as_mut() {
+            editor.test_response(message);
+            // The test's detail is a toast; the titlebar and the group's card show its state.
+            if let ServerMessage::Rejected { message, .. } = message {
+                self.report(message);
+            }
+        }
         let before = std::mem::discriminant(&self.provider_setup.action);
         let registration = self.provider_setup.apply(message);
         if std::mem::discriminant(&self.provider_setup.action) != before {
@@ -112,6 +132,7 @@ impl Workspace {
         if let Some(registration) = registration {
             self.send(registration, cx);
         }
+        handled
     }
 
     /// Credential progress and results arrive as toasts; a device code stays on the page
@@ -140,19 +161,34 @@ impl Workspace {
     /// Opens a new setup's page once the gateway lists it.
     pub(in crate::ui) fn provider_registered(
         &mut self,
+        request_id: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let editor = self.provider_setup.editor.as_ref();
-        let editor = editor.filter(|editor| editor.is_new);
-        let id = editor.map(|editor| editor.record.selection.instance.clone()); // rules-allow: the page tab owns the id while the editor keeps its own
-        let Some(id) = id else {
+        self.provider_setup.requests.remove(request_id);
+        let Some(editor) = self.provider_setup.editor.as_mut() else {
             return;
         };
-        if self.provider_record(&id).is_some() {
-            if let Some(editor) = &mut self.provider_setup.editor {
-                editor.is_new = false;
-            }
+        let Some(live) = self.client.state.gateway.as_ref().and_then(|gateway| {
+            gateway
+                .provider_instances
+                .iter()
+                .find(|record| record.selection.instance == editor.selection.instance)
+        }) else {
+            return;
+        };
+        if editor
+            .saving
+            .as_ref()
+            .is_some_and(|(id, _)| id.as_ref() == request_id)
+            && let Some((_, submitted)) = editor.saving.take()
+            && editor.form(cx, |g| g.dirty(cx)).as_ref() == Ok(&submitted)
+        {
+            editor.reload(live, submitted.config, window, cx);
+        }
+        if editor.is_new {
+            editor.is_new = false;
+            let id = editor.selection.instance.clone(); // rules-allow: tabs own their ID while the editor remains open
             self.open_page(PageTab::Provider(id), window, cx);
         }
     }
@@ -166,8 +202,8 @@ impl Workspace {
         })
     }
 
-    /// Opens setup `id` with model row `expand` open and, optionally, one more local model;
-    /// nothing is sent to the gateway.
+    /// Opens setup `id`'s first model group with model row `expand` open and, optionally,
+    /// one more local model; nothing is sent to the gateway.
     #[cfg(feature = "snapshot")]
     pub(in crate::ui) fn snapshot_model_rows(
         &mut self,
@@ -177,34 +213,20 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_page(PageTab::Provider(id.to_owned()), window, cx);
         self.render_provider(id, window, cx);
-        if let Some((model, efforts)) = extra {
-            self.push_provider_model(model, efforts, window, cx);
-        }
-        if let Some(editor) = &mut self.provider_setup.editor {
-            editor.expand(expand);
-        }
-    }
-
-    /// The setup's own models; a new setup of an editable provider starts from its catalog,
-    /// or from its selected model when the provider has none.
-    fn seeded_models(record: &ProviderInstance, definition: &ProviderStatus) -> Vec<SavedModel> {
-        let saved = |model: &mobius_gateway::wire::ProviderModel| -> SavedModel {
-            let efforts = model.reasoning.iter();
-            let efforts = efforts.map(|effort| effort.id.clone()).collect(); // rules-allow: the editor owns its copy of the gateway's models
-            let id = model.id.clone(); // rules-allow: the editor owns its copy of the gateway's models
-            let default = model.default_reasoning.clone(); // rules-allow: the editor owns its copy of the gateway's models
-            (id, efforts, default)
-        };
-        if record.selection.model.is_empty() {
-            Vec::new()
-        } else if !record.models.is_empty() {
-            record.models.iter().map(saved).collect()
-        } else if !definition.models.is_empty() {
-            definition.models.iter().map(saved).collect()
-        } else {
-            vec![(record.selection.model.clone(), Vec::new(), None)] // rules-allow: the editor owns its copy of the selected model
+        if let Some(editor) = &mut self.provider_setup.editor
+            && let Some(group) = editor.groups.first_mut()
+        {
+            let part = ProviderPart::Models(group.schema.kind);
+            if let Some((id, _)) = extra {
+                group.add(id, window, cx);
+            }
+            if let Some(index) = expand
+                && let Some(model) = group.models.get_mut(index)
+            {
+                model.open = true;
+            }
+            self.open_page(PageTab::ProviderPart(id.to_owned(), part), window, cx);
         }
     }
 
@@ -259,23 +281,30 @@ impl Workspace {
             .provider_setup
             .editor
             .as_ref()
-            .is_some_and(|editor| !editor.is_new && editor.record.selection.instance == id);
-        if !current {
-            let record = self.provider_record(id).cloned(); // rules-allow: the editor edits its own snapshot of the setup
-            let definition = record
-                .as_ref()
-                .and_then(|record| self.provider_definition(&record.selection.provider));
-            let definition = definition.cloned(); // rules-allow: the editor keeps its own snapshot of the provider
-            let (Some(record), Some(definition)) = (record, definition) else {
-                return self.provider_unavailable();
-            };
-            let models = Self::seeded_models(&record, &definition);
-            self.provider_setup.action = ProviderAction::Idle;
-            self.provider_setup.editor = Some(ProviderDraft::new(
-                record, definition, false, models, window, cx,
-            ));
+            .is_some_and(|editor| !editor.is_new && editor.selection.instance == id);
+        if !current && !self.open_provider_editor(id, window, cx) {
+            return self.provider_unavailable();
         }
         self.provider_editor(cx)
+    }
+
+    /// Starts editing the saved setup `id` from its live record, if the gateway has it.
+    fn open_provider_editor(
+        &mut self,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(record) = self.provider_record(id) else {
+            return false;
+        };
+        let Some(definition) = self.provider_definition(&record.selection.provider) else {
+            return false;
+        };
+        let editor = ProviderDraft::new(record, definition.clone(), false, window, cx); // rules-allow: editor retains the gateway definition
+        self.provider_setup.action = ProviderAction::Idle;
+        self.provider_setup.editor = Some(editor);
+        true
     }
 
     /// A setup that is not on the gateway yet.
@@ -296,37 +325,11 @@ impl Workspace {
                 return self.provider_unavailable();
             };
             let record = new_record(&definition);
-            let models = Self::seeded_models(&record, &definition);
             self.provider_setup.action = ProviderAction::Idle;
-            self.provider_setup.editor = Some(ProviderDraft::new(
-                record, definition, true, models, window, cx,
-            ));
+            self.provider_setup.editor =
+                Some(ProviderDraft::new(&record, definition, true, window, cx));
         }
         self.provider_editor(cx)
-    }
-
-    /// The provider editor's actions, while it edits the setup `page` shows.
-    pub(in crate::ui) fn provider_actions_for(
-        &self,
-        page: &PageTab,
-        cx: &Context<Self>,
-    ) -> Vec<AnyElement> {
-        let current = self
-            .provider_setup
-            .editor
-            .as_ref()
-            .is_some_and(|editor| match page {
-                PageTab::Provider(id) => !editor.is_new && editor.record.selection.instance == *id,
-                PageTab::ProviderDraft(service) => {
-                    editor.is_new && editor.definition.provider == *service
-                }
-                _ => false,
-            });
-        if current {
-            self.provider_page_actions(cx)
-        } else {
-            Vec::new()
-        }
     }
 
     fn provider_unavailable(&self) -> AnyElement {
@@ -394,25 +397,24 @@ impl Workspace {
 
     /// Sends the credential first when a key was entered, then the registration.
     fn save_provider(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(editor) = &self.provider_setup.editor else {
+        let Some(editor) = &mut self.provider_setup.editor else {
             return;
         };
         let registration = match editor.registration(cx) {
             Ok(Some(registration)) => registration,
             Ok(None) => return,
             Err(error) => {
-                self.report(error.to_string());
+                self.report(error);
                 cx.notify();
                 return;
             }
         };
         let key = editor.api_key.read(cx).value().trim().to_owned();
-        let ClientMessage::RegisterProvider {
-            request_id, config, ..
-        } = &registration
-        else {
+        let ClientMessage::SaveProviderForm { request_id, form } = &registration else {
             return;
         };
+        editor.saving = Some((Arc::clone(request_id), form.clone())); // rules-allow: remember the submitted form so a late ACK preserves newer edits
+        let config = &form.config;
         if key.is_empty() || editor.definition.auth == ProviderAuthKind::DeviceCode {
             self.provider_setup.requests.insert(Arc::clone(request_id));
             self.send(registration, cx);
@@ -452,7 +454,7 @@ impl Workspace {
             Ok(Some(registration)) => registration,
             Ok(None) => return,
             Err(error) => {
-                self.report(error.to_string());
+                self.report(error);
                 cx.notify();
                 return;
             }
@@ -478,9 +480,12 @@ impl Workspace {
         let Some(editor) = &self.provider_setup.editor else {
             return;
         };
-        let id = editor.record.selection.instance.clone(); // rules-allow: the 'static confirm callback owns the id
+        let id = editor.selection.instance.clone(); // rules-allow: the 'static confirm callback owns the id
         self.confirm_destructive(
-            format!("Remove {}?", editor.record.label),
+            format!(
+                "Remove {}?",
+                self.provider_record(&id).map_or(id.as_str(), |r| &r.label)
+            ),
             "This removes the provider setup from the gateway. This cannot be undone.",
             "Remove provider",
             window,
@@ -511,6 +516,7 @@ impl Workspace {
 fn new_record(definition: &ProviderStatus) -> ProviderInstance {
     let model = definition.default_model();
     ProviderInstance {
+        model_groups: definition.model_groups.clone(), // rules-allow: a new setup owns its editable copy of the gateway definition
         label: definition.label.clone(), // rules-allow: the new setup owns its copy of the provider defaults
         tint: ProviderTint::default(),
         configured: false,
@@ -527,8 +533,6 @@ fn new_record(definition: &ProviderStatus) -> ProviderInstance {
             tool_discovery: None,
         },
         models: Vec::new(),
-        image_model_ids: Vec::new(),
-        decision_model_ids: Vec::new(),
         operator_managed: false,
         tool_discovery: model.map_or(definition.tool_discovery, |model| model.tool_discovery),
     }
@@ -562,6 +566,9 @@ impl Workspace {
                     cx,
                 )
                 .meta(service);
+            if matches!(self.primary_page(), Some(PageTab::ProviderPart(open, _)) if open == id) {
+                row = row.selected(true);
+            }
             if self.provider_usage_error(id).is_some() {
                 row = row.status(icon("hi.warning", &palette(cx)).size(glyph::MARK));
             } else if !record.configured {

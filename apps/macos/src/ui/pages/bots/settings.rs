@@ -54,18 +54,17 @@ pub(super) struct AgentDraft {
     /// Typed capability settings (counts and text) by feature and setting ID, with the
     /// initial value.
     pub(super) inputs: BTreeMap<String, SettingInputs>,
-    /// Auto routing's typed settings; they save when they lose focus, apart from the draft.
-    pub(super) routing: SettingInputs,
     pub(super) saving: Option<Arc<str>>,
     pub(super) rejected: Option<Arc<str>>,
     _subscriptions: Vec<Subscription>,
 }
 
 /// Typed setting fields by setting ID, each with the value it started from.
-pub(super) type SettingInputs = BTreeMap<String, (Entity<InputState>, FrontendSettingValue)>;
+pub(in crate::ui::pages) type SettingInputs =
+    BTreeMap<String, (Entity<InputState>, FrontendSettingValue)>;
 
 /// A field for each counted or text setting, starting from `value_of` or the kind's floor.
-fn setting_inputs<'a>(
+pub(in crate::ui::pages) fn setting_inputs<'a>(
     settings: impl IntoIterator<Item = &'a FrontendSetting>,
     value_of: impl Fn(&str) -> Option<&'a FrontendSettingValue>,
     window: &mut Window,
@@ -96,7 +95,7 @@ fn setting_inputs<'a>(
 
 /// What a typed setting field holds now, in its starting value's kind; `None` while it does
 /// not parse or is empty.
-pub(super) fn input_value(
+pub(in crate::ui::pages) fn input_value(
     input: &Entity<InputState>,
     initial: &FrontendSettingValue,
     cx: &App,
@@ -156,13 +155,6 @@ impl AgentDraft {
                 }
             }
         }
-        let auto_routing = &gateway.agent_catalog.auto_routing;
-        let routing = setting_inputs(
-            &auto_routing.feature.settings,
-            |setting| auto_routing.values.get(setting),
-            window,
-            cx,
-        );
         let notify = |cx: &mut Context<Workspace>, input: &Entity<InputState>| {
             cx.subscribe(input, |_, _, _: &InputEvent, cx| cx.notify())
         };
@@ -178,13 +170,6 @@ impl AgentDraft {
                 .flat_map(|settings| settings.values())
                 .map(|(input, _)| notify(cx, input)),
         );
-        subscriptions.extend(routing.values().map(|(input, _)| {
-            cx.subscribe(input, |this, _, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
-                    this.save_auto_routing(None, cx);
-                }
-            })
-        }));
         Self {
             config: saved.config.clone(), // rules-allow: the draft edits its own copy while `base` keeps the saved values (a möbius composition is shared until first edited)
             tint,
@@ -195,7 +180,6 @@ impl AgentDraft {
             prompt,
             steps,
             inputs,
-            routing,
             saving: None,
             rejected: None,
             _subscriptions: subscriptions,

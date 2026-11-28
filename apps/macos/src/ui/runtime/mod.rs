@@ -307,8 +307,10 @@ impl Workspace {
         }
         self.storage_message(&message, cx);
         self.forward_native(&message);
-        self.provider_event(&message, cx);
-        if let Some(error) = self.client.apply(&mut message) {
+        let shown_in_form = self.provider_event(&message, cx);
+        if let Some(error) = self.client.apply(&mut message)
+            && !shown_in_form
+        {
             self.report(error);
         }
         if matches!(message, ServerMessage::Ready { .. }) {

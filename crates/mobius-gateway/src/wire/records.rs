@@ -2,7 +2,7 @@ use mobius::SessionId;
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use mobius::backend::model::provider::{BaseUrl, MediaModelPreset};
+use mobius::backend::model::provider::BaseUrl;
 pub use mobius::backend::model::provider::{
     ModelPreset as ProviderModel, ReasoningPreset as ReasoningChoice,
 };
@@ -72,6 +72,53 @@ pub struct ReadyPayload {
     pub omitted: BTreeSet<ReadySection>,
 }
 
+/// Explicit dictation preference. An absent preference selects automatically.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum DictationTarget {
+    /// Use the client's local speech recognizer.
+    OnDevice {},
+    /// Transcribe using the named gateway route.
+    Route {
+        /// Instance-qualified model route.
+        id: Arc<str>,
+    },
+}
+
+/// A gateway-authored choice; separate text components support native localization.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DictationChoice {
+    /// Absent for the automatic choice.
+    pub target: Option<DictationTarget>,
+    /// Display title.
+    pub label: Arc<str>,
+    /// Ordered secondary labels.
+    pub detail: Vec<Arc<str>>,
+}
+
+impl DictationChoice {
+    /// Combines title and detail for single-line pickers.
+    pub fn display(&self) -> String {
+        let mut line = self.label.to_string();
+        for part in &self.detail {
+            line.push_str(" · ");
+            line.push_str(part);
+        }
+        line
+    }
+}
+
+/// One gateway's dictation settings and currently available execution target.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DictationCatalog {
+    /// Saved preference, including a retained unavailable pin.
+    pub selection: Option<DictationTarget>,
+    /// Effective target. Absent if an explicitly pinned route is unavailable.
+    pub resolved: Option<DictationTarget>,
+    /// Picker rows in display order.
+    pub choices: Vec<DictationChoice>,
+}
+
 /// The models, middleware, extensions and defaults Bots are composed from.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentCatalog {
@@ -89,6 +136,8 @@ pub struct AgentCatalog {
     pub voice_models: Vec<ModelChoice>,
     /// Selectable decision model routes, keyed into `model_providers` like `models`.
     pub decision_models: Vec<ModelChoice>,
+    /// Gateway dictation choices and the destination currently usable by a composer.
+    pub dictation: DictationCatalog,
     /// How new chats left on Auto pick their Bot and workspace.
     pub auto_routing: AutoRoutingCatalog,
     /// The middleware features.
@@ -648,9 +697,169 @@ pub enum ProviderEndpointAuth {
     Credentialless,
 }
 
+pub use mobius::backend::model::endpoints::{ModelEndpointApi, ProviderModelKind};
+
+/// The configured operation for one catalog group in a provider instance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GroupEndpointOverride {
+    /// The model catalog section.
+    pub kind: ProviderModelKind,
+    /// Compatible provider protocol.
+    pub api: String,
+    /// Operation suffix under the instance master URL.
+    pub path: String,
+}
+
+/// A display value selected by the current values of group fields, in priority order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderDisplayCase {
+    /// Every named group field must match for this value to apply.
+    pub when: BTreeMap<String, String>,
+    /// Display text for this combination.
+    pub value: FrontendSettingValue,
+}
+
+/// A gateway-owned setting with its effective value and editing permissions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderField {
+    /// Read-only display values that depend on unsaved group fields.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub display_cases: Vec<ProviderDisplayCase>,
+    /// Dependent field defaults keyed by a newly selected value.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub on_change: BTreeMap<String, BTreeMap<String, FrontendSettingValue>>,
+    /// Renderer, accessible label, validation bounds and options.
+    #[serde(flatten)]
+    pub setting: mobius::protocol::FrontendSetting,
+    /// Effective value displayed before editing.
+    pub value: FrontendSettingValue,
+    /// Whether this particular setup accepts edits.
+    pub editable: bool,
+}
+
+impl ProviderField {
+    /// Applies the first advertised display condition that matches the current form.
+    pub fn display_override(
+        &self,
+        mut matches: impl FnMut(&str, &str) -> bool,
+    ) -> Option<&FrontendSettingValue> {
+        self.display_cases
+            .iter()
+            .find(|case| case.when.iter().all(|(key, value)| matches(key, value)))
+            .map(|case| &case.value)
+    }
+}
+
+/// Fields for one configured model.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderModelFields {
+    /// Catalog display name when it differs from the model identifier.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Stable model identifier.
+    pub id: String,
+    /// Ordered fields for this model.
+    pub fields: Vec<ProviderField>,
+}
+
+/// A complete provider settings draft can be saved, or tested without publication.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderForm {
+    /// Provider identity, base URL and authentication selection.
+    pub config: ProviderConfig,
+    /// Display name.
+    pub label: Option<String>,
+    /// Display tint.
+    pub tint: Option<ProviderTint>,
+    /// Edited groups keyed by their advertised identity.
+    pub groups: BTreeMap<ProviderModelKind, ProviderGroupDraft>,
+}
+
+/// Edits are keyed by the opaque identifiers advertised in the settings schema.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderGroupDraft {
+    /// Group-wide field values.
+    #[serde(default)]
+    pub values: BTreeMap<String, FrontendSettingValue>,
+    /// Configured models, in display and selection order.
+    pub models: Vec<ProviderModelDraft>,
+}
+
+impl ProviderGroupDraft {
+    /// Resolves a field's advertised display value against the edited group settings.
+    pub fn display_override<'a>(
+        &self,
+        group: &ProviderModelGroup,
+        field: &'a ProviderField,
+    ) -> Option<&'a FrontendSettingValue> {
+        field.display_override(|key, expected| {
+            self.values
+                .get(key)
+                .or_else(|| {
+                    group
+                        .fields
+                        .iter()
+                        .find(|f| f.setting.id == key)
+                        .map(|f| &f.value)
+                })
+                .is_some_and(|v| matches!(v, FrontendSettingValue::String(s) if s == expected))
+        })
+    }
+}
+
+/// Submitted settings for an individual model.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderModelDraft {
+    /// Model identifier.
+    pub id: String,
+    /// Field values as edited in the form.
+    #[serde(default)]
+    pub values: BTreeMap<String, FrontendSettingValue>,
+}
+
+/// Presentation and editing capabilities of a provider catalog section.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderModelGroup {
+    /// Scope of the provider test, absent when the group cannot be tested.
+    pub test_description: Option<Arc<str>>,
+    /// Icon from the shared semantic SVG catalog.
+    pub symbol: FrontendSymbol,
+    /// Group-level fields in presentation order.
+    pub fields: Vec<ProviderField>,
+    /// Individual models with their resolved settings.
+    pub models: Vec<ProviderModelFields>,
+    /// Fields for known IDs that may be added, without registering them as configured models.
+    pub model_presets: Vec<ProviderModelFields>,
+    /// Fields used when entering a new model.
+    pub new_model_fields: Vec<ProviderField>,
+    /// Stable kind independent of its displayed name.
+    pub kind: ProviderModelKind,
+    /// Display name.
+    pub label: String,
+    /// Whether this provider supports the capability.
+    pub supported: bool,
+    /// Whether this setup accepts an explicit list of model IDs.
+    pub editable: bool,
+}
+
+/// Presentation of the shared provider setup section.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderSectionHeader {
+    /// Display name.
+    pub label: String,
+    /// Semantic icon used by native settings.
+    pub symbol: FrontendSymbol,
+}
+
 /// Credential availability exposed without returning credential material.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderStatus {
+    /// Header for settings shared by the provider's model groups.
+    pub general_section: ProviderSectionHeader,
     /// The provider.
     pub provider: String,
     /// The label.
@@ -659,26 +868,14 @@ pub struct ProviderStatus {
     pub symbol: FrontendSymbol,
     /// The description.
     pub description: String,
-    /// The model identifiers configurable.
-    pub model_ids_configurable: bool,
+    /// Provider model sections, including unavailable capabilities.
+    pub model_groups: Vec<ProviderModelGroup>,
     /// The auth.
     pub auth: ProviderAuthKind,
     /// The default base URL.
     pub default_base_url: BaseUrl,
     /// The models.
     pub models: Vec<ProviderModel>,
-    /// Image models the provider advertises; empty when setups list their own.
-    #[serde(default)]
-    pub image_models: Cow<'static, [MediaModelPreset]>,
-    /// Whether setups list their own image model identifiers.
-    #[serde(default)]
-    pub image_model_ids_configurable: bool,
-    /// Whether setups list decision model identifiers.
-    #[serde(default)]
-    pub decision_model_ids_configurable: bool,
-    /// Realtime voice models the provider advertises, default first.
-    #[serde(default)]
-    pub voice_models: Cow<'static, [MediaModelPreset]>,
     /// The web search.
     pub web_search: Vec<FrontendSettingOption>,
     /// The tool discovery.
@@ -794,14 +991,10 @@ pub struct ProviderInstance {
     pub credential_hint: Option<String>,
     /// The selection.
     pub selection: ProviderConfig,
-    /// Configured model overrides; built-in catalogs remain in [`ProviderStatus::models`].
+    /// Model groups available at this configured endpoint.
+    pub model_groups: Vec<ProviderModelGroup>,
+    /// Effective language catalog for this setup, including inherited provider presets.
     pub models: Vec<ProviderModel>,
-    /// Image model identifiers listed by this setup.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub image_model_ids: Vec<String>,
-    /// Decision model identifiers listed by this setup.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub decision_model_ids: Vec<String>,
     /// Credential and usage limits are supplied by the gateway operator.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub operator_managed: bool,
@@ -865,7 +1058,7 @@ pub struct ConfiguredModel {
     /// Operator-only description; omission preserves the stored value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// Operator-only context window in tokens; omission preserves the stored value.
+    /// Context window in tokens; omission preserves the stored value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<i64>,
 }

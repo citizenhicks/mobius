@@ -5,27 +5,23 @@ use super::*;
 impl Workspace {
     pub(super) fn provider_credential(
         &self,
+        group: Group,
         editor: &ProviderDraft,
         live: Option<&ProviderInstance>,
         cx: &Context<Self>,
-    ) -> Section {
+    ) -> Group {
         let p = self.palette;
         let label = &editor.definition.label;
-        let section = Section::new("Credential").children(self.device_code_group());
-        let mut group = Group::new();
-        if let Some(live) = live {
-            let attention = self.provider_usage_error(&live.selection.instance);
-            let (text, color) = match attention {
-                Some(_) => ("Needs attention", p.warning),
-                None if live.configured => ("Configured on gateway", p.signal),
-                None => ("Not configured", p.warning),
-            };
-            let mut status =
-                Row::new("provider-status", "Status").control(status_label(color, text, cx));
-            if let Some(error) = attention {
-                status = status.subtitle(error.to_owned());
-            }
-            group = group.child(status);
+        let mut group = group;
+        // The header says how the credential stands; only a usage failure needs its own row.
+        if let Some(error) =
+            live.and_then(|live| self.provider_usage_error(&live.selection.instance))
+        {
+            group = group.child(
+                Row::new("provider-status", "Status")
+                    .subtitle(error.to_owned())
+                    .control(status_label(p.warning, "Needs attention", cx)),
+            );
         }
         if editor.definition.auth == ProviderAuthKind::DeviceCode {
             let busy = matches!(
@@ -44,21 +40,29 @@ impl Workspace {
                     .control(sign_in),
             );
         } else {
-            if let Some(hint) = live.and_then(|live| live.credential_hint.as_deref()) {
-                group = group
-                    .child(Row::new("provider-saved-key", "Saved key").mono(format!("••••{hint}")));
-            }
+            let saved = live.is_some_and(|live| live.credential_hint.is_some());
+            let key = text_field(&editor.api_key);
+            #[cfg(feature = "snapshot")]
+            let key = div()
+                .relative()
+                .child(key)
+                .child(crate::ui::snapshot::probe("provider-key".into()));
             group = group.child(
                 StackedField::new("API key")
                     .info("Sent once to the gateway and never returned to this app. Sending a new one replaces the stored key for this setup.")
-                    .control(text_field(&editor.api_key)),
+                    .help(if saved {
+                        "Saved on the gateway. Type to replace it."
+                    } else {
+                        "Sent to the gateway when you save."
+                    })
+                    .control(key),
             );
         }
-        section.child(group)
+        group
     }
 
     /// The device code to enter while a device sign-in waits for it.
-    fn device_code_group(&self) -> Option<AnyElement> {
+    pub(super) fn device_code_group(&self) -> Option<AnyElement> {
         match &self.provider_setup.action {
             ProviderAction::DeviceCode { label, url, code } => {
                 Some(self.device_code(label, url, code))

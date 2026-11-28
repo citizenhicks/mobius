@@ -39,23 +39,23 @@ use gpui_component::input::{InputEvent, InputState, TextareaState};
 use gpui_component::{ResizableState, Sizable, WindowExt};
 use mobius::SessionId;
 use primitives::{
-    BotFace, BotFaceView, BotMood, EditKind, EmptyState, Group, Handler, Leading, MenuChoice, Page,
-    PageHeader, RailGlyph, Row, Section, Shape, SidebarRow, Spinner, StackedField, TextEdit,
-    ToggleExt, Tone, Type, Typography, accent_tile_picker, ago, alpha, apple_toolbar_button,
-    back_icon, breathing, button, button_row, byte_count, chat_menu_trigger, chevron,
-    compact_count, compact_duration, composer_button, counted, dialog_actions, dialog_body, face,
-    field, filled_glyph, forward_icon, gauge_button, glyph, hairline, heading, height, icon,
-    inline_button, inline_code_ring, inset, known_symbol_icon, labelled, leading_item, lively_face,
-    loading_rows, markdown_style, menu_select, mini_button, motion, organic, page, palette,
-    percent, pill, pill_quad, preview_glyph, primary_button, radius, rail_button,
-    rail_section_button, row_actions_inset, row_button, segmented, settings_button, show_more_row,
-    sidebar_header, sidebar_label, sidebar_note, single_line, space, status_dot, status_label,
-    swatch_picker, symbol_icon_or, text_field, text_tooltip, textarea, toggle, toolbar_button,
-    unavailable, width, workspace_item,
+    BotFace, BotFaceView, BotMood, Card, CardGrid, CardMark, CardRects, CardZoom, EditKind,
+    EmptyState, Group, Handler, Leading, MenuChoice, Page, PageHeader, RailGlyph, Row, Section,
+    Shape, SidebarRow, Spinner, StackedField, TextEdit, ToggleExt, Tone, Type, Typography,
+    accent_tile_picker, ago, alpha, apple_toolbar_button, back_icon, breathing, button, button_row,
+    byte_count, chat_menu_trigger, chevron, compact_count, compact_duration, composer_button,
+    counted, dialog_actions, dialog_body, face, field, filled_glyph, forward_icon, gauge_button,
+    glyph, hairline, heading, height, icon, inline_button, inline_code_ring, inset,
+    known_symbol_icon, labelled, leading_item, lively_face, loading_rows, markdown_style,
+    menu_select, mini_button, motion, organic, page, palette, percent, pill, pill_quad,
+    preview_glyph, primary_button, radius, rail_button, rail_section_button, row_actions_inset,
+    row_button, segmented, settings_button, show_more_row, sidebar_header, sidebar_label,
+    sidebar_note, single_line, space, status_dot, status_label, swatch_picker, symbol_icon_or,
+    text_field, text_tooltip, textarea, toggle, toolbar_button, unavailable, width, workspace_item,
 };
 use router::{
-    AgentSection, GatewayPage, GatewayRef, PageTab, SettingsPage, activate_page, host, is_cloud,
-    selected_after_close,
+    AgentSection, GatewayPage, GatewayRef, PageTab, ProviderPart, SettingsPage, activate_page,
+    host, is_cloud, selected_after_close,
 };
 use runtime::LinkTone;
 use std::collections::BTreeMap;
@@ -400,15 +400,7 @@ impl Render for Workspace {
         snapshot::count_render(0);
         self.track_panel_motion(window, cx);
         self.track_disclosure(window, cx);
-        let body = self.render_page(window, cx);
-        // Fade the new section in without shifting its layout; re-renders keep the same id.
-        let page = SharedString::from(format!("page:{:?}", self.page_tabs.get(self.active_page)));
-        let body = motion::fade_in(
-            div().size_full().min_h_0().flex().flex_col().child(body),
-            page,
-            motion::QUICK,
-            cx,
-        );
+        let body = self.page_body(window, cx);
         let body = self.workspace_body(body, cx);
         self.sync_window_background(window);
         div()
