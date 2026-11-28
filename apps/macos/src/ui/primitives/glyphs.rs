@@ -80,6 +80,7 @@ pub fn known_symbol_icon(symbol: Option<&FrontendSymbol>) -> Option<&'static str
         ("split", "hi.split"),
         ("settings_01", "hi.gear"),
         ("a2agent", "provider.a2agent"),
+        ("aimlapi", "provider.aimlapi"),
         ("agent", "bot.face"),
         ("brain", "hi.stickyNote02"),
         ("branch", "hi.gitBranch"),

@@ -1000,3 +1000,25 @@ fn custom_compatible_origin_only_offers_explicit_voice_models() {
     );
     assert!(!routes.voices.is_empty());
 }
+
+#[test]
+fn aimlapi_advertises_its_native_chat_endpoint_and_model_presets() {
+    use crate::wire::ProviderModelKind;
+    use mobius::protocol::FrontendSettingValue;
+
+    assert_eq!(
+        AgentComposition::default().provider.provider,
+        "openai_socket"
+    );
+    let definition = provider("aimlapi").unwrap();
+    let groups = provider_catalog::model_groups(definition, definition.default_base_url(), None);
+    let supported: Vec<_> = groups.iter().filter(|g| g.supported).collect();
+    let [language] = supported.as_slice() else {
+        panic!("only the language group is supported")
+    };
+    assert_eq!(language.kind, ProviderModelKind::Language);
+    assert!(language.editable && language.test_description.is_some());
+    assert!(language.fields.iter().any(|f| f.setting.id == "endpoint"
+        && f.value == FrontendSettingValue::String("chat/completions".into())));
+    assert!(language.models.iter().any(|m| m.id == "openai/gpt-6.1-sol"));
+}

@@ -1,0 +1,54 @@
+# Provider-owned model catalog, verified 2026-11-27 against
+# https://api.aimlapi.com/v1/models?include=all: every entry is an `openai/chat-completions`
+# model advertising tools, vision and streaming. Any other catalog ID can be typed in setup.
+# No reasoning presets: effort parameters differ between upstream vendors.
+default_model = "openai/gpt-6.1-sol"
+
+[[models]]
+id = "openai/gpt-6.1-sol"
+label = "GPT-6.1 Sol"
+description = "OpenAI's general agentic model"
+context_window = 1050000
+tool_discovery = "rebuild"
+
+[[models]]
+id = "openai/gpt-6-luna"
+label = "GPT-6 Luna"
+description = "OpenAI's fast low-cost model"
+context_window = 1050000
+tool_discovery = "rebuild"
+
+[[models]]
+id = "anthropic/claude-sonnet-5.5"
+label = "Claude Sonnet 5.5"
+description = "Anthropic's balanced coding model"
+context_window = 1000000
+tool_discovery = "rebuild"
+
+[[models]]
+id = "google/gemini-3.8-flash"
+label = "Gemini 3.8 Flash"
+description = "Google's fast multimodal model"
+context_window = 1048576
+tool_discovery = "rebuild"
+
+[[models]]
+id = "deepseek/deepseek-v4.1-flash"
+label = "DeepSeek V4.1 Flash"
+description = "DeepSeek's fast agentic model"
+context_window = 1048576
+tool_discovery = "rebuild"
+
+[[models]]
+id = "moonshot/kimi-k3-1-pro"
+label = "Kimi K3.1 Pro"
+description = "Moonshot's agentic coding model"
+context_window = 1048576
+tool_discovery = "rebuild"
+
+[[models]]
+id = "z-ai/glm-5.3-flash"
+label = "GLM 5.3 Flash"
+description = "Z.ai's fast coding model"
+context_window = 1048576
+tool_discovery = "rebuild"

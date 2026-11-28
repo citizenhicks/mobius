@@ -894,6 +894,15 @@ impl ProviderDefinition {
             self.validate_credentialless_endpoint(config.base_url.as_ref())?;
         }
         let base_url = self.resolve_base_url(config.base_url.as_ref());
+        if base_url
+            .operation
+            .as_ref()
+            .is_some_and(|operation| operation.provider != self.id())
+        {
+            return Err(Error::Invalid(
+                "model endpoint belongs to a different provider".into(),
+            ));
+        }
         if config.capability.is_none() {
             if self.locked_models && config.reasoning_effort.is_none() {
                 config.reasoning_effort = self
@@ -1217,7 +1226,7 @@ impl std::fmt::Display for BaseUrl {
     }
 }
 
-static PROVIDERS: std::sync::LazyLock<[ProviderDefinition; 9]> = std::sync::LazyLock::new(|| {
+static PROVIDERS: std::sync::LazyLock<[ProviderDefinition; 10]> = std::sync::LazyLock::new(|| {
     [
         super::openai_socket::provider(),
         super::openai_codex::provider(),
@@ -1226,6 +1235,7 @@ static PROVIDERS: std::sync::LazyLock<[ProviderDefinition; 9]> = std::sync::Lazy
         super::mistral::provider(),
         super::openrouter::provider(),
         super::a2agent::provider(),
+        super::aimlapi::provider(),
         super::anthropic::provider(),
         super::openai::generic_provider(),
     ]
@@ -1392,6 +1402,7 @@ mod tests {
             "openai_socket",
             "responses",
             "openrouter",
+            "aimlapi",
             "a2agent",
             "anthropic",
             "deepseek",

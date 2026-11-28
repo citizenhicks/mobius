@@ -137,6 +137,7 @@ fn operation(id: EndpointApi, path: Option<&'static str>) -> Option<AdapterEndpo
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct Operation {
+    pub(super) provider: &'static str,
     pub(super) dictation_mode: Option<DictationMode>,
     pub(super) default_path: &'static str,
     pub(super) edit_path: Option<&'static str>,
@@ -262,6 +263,7 @@ impl ProviderDefinition {
         }
         let compatible_chat = self.group_api_tool_discovery(kind, api).is_some();
         Ok(base.with_operation(Arc::new(Operation {
+            provider: self.id(),
             // The native recording path leaves each model's manifest mode in effect.
             dictation_mode: DictationMode::for_endpoint_api(api)
                 .filter(|mode| *mode != DictationMode::AfterStop || suffix != op.path),

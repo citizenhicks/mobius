@@ -454,8 +454,11 @@ pub(super) const SCENARIOS: &[Scenario] = &[
         });
     }),
     ("providers-general", |this, window, cx| {
-        provider_fixture(this);
-        if let Some(id) = custom_setup(this) {
+        let id = std::env::var("MOBIUS_SNAPSHOT_PROVIDER").ok().or_else(|| {
+            provider_fixture(this);
+            custom_setup(this)
+        });
+        if let Some(id) = id {
             let page = PageTab::ProviderPart(id, ProviderPart::General);
             this.open_page(page, window, cx);
         }
