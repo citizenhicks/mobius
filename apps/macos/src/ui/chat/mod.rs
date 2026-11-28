@@ -6,7 +6,7 @@ mod controls;
 mod conversation;
 mod detail;
 #[cfg(feature = "snapshot")]
-#[path = "../../../tests/ui/fixtures/chat.rs"]
+#[path = "../../../tests/ui/fixtures/chat.rs"] // rules-allow: snapshot fixture in tests/ui/
 mod fixtures;
 mod fork;
 mod mention;

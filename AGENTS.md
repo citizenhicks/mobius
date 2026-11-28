@@ -90,9 +90,15 @@ some of them. Where another section of this file is stricter, that section wins.
 Modules and imports:
 
 - A module that declares submodules holds only `mod` lines, re-exports, and a little
-  glue. Implement in leaf modules, and name a leaf after its primary item.
+  glue. Implement in leaf modules, and name a leaf after its primary item. Declaring
+  `#[cfg(test)] mod tests;` in a leaf module does not violate this rule.
+- Organize unit tests with Rust's native module layout: keep small leaf unit tests inline
+  in `#[cfg(test)] mod tests { ... }`, and place larger (roughly >= 150 lines) or
+  multi-file unit suites in `#[cfg(test)] mod tests;` -> `<module>/tests.rs` (and
+  `<module>/tests/<topic>.rs`). Put crate integration tests in `tests/<suite>/main.rs`
+  (or `tests/<suite>.rs`). Do not use `#[path = ...]` or `*_tests.rs`/`*_tests/` siblings.
 - One module per `use`: no `::` inside braces. No glob imports except `use super::*` in
-  an inline test module and `pub use child::*` in the parent that re-exports it.
+  a `#[cfg(test)]` test module and `pub use child::*` in the parent that re-exports it.
 - Import types and write them unqualified (`Arc`, not `std::sync::Arc`). Call free
   functions through their module (`mem::take`, `fs::read`). Qualify a type only to
   disambiguate it (`io::Error`, `fmt::Result`).

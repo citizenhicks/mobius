@@ -1,6 +1,6 @@
 #!/bin/sh
 # AGENTS.md rules that Clippy cannot express. Prints each violation as file:line and
-# exits non-zero when any remain. Test code (`#[cfg(test)]` items, `*_tests.rs`,
+# exits non-zero when any remain. Test code (`#[cfg(test)]` items, `tests.rs`,
 # `tests/`) is exempt, as AGENTS.md exempts it. A line may opt out with a trailing
 # `// rules-allow: <reason>` comment that says why the rule does not apply there.
 set -eu
@@ -9,7 +9,7 @@ cd "$(dirname "$0")/.."
 # Production Rust sources, without test files.
 sources() {
     find crates -name '*.rs' \
-        ! -name '*_tests.rs' ! -name 'tests.rs' ! -path '*/tests/*' ! -path '*_tests/*' \
+        ! -name 'tests.rs' ! -path '*/tests/*' \
         ! -path '*/target/*'
 }
 
@@ -40,6 +40,18 @@ production_matches() {
     done
 }
 
+# Prints file:line:text across all Rust files (including tests) for structural rules.
+all_matches() {
+    pattern=$1
+    find crates -name '*.rs' ! -path '*/target/*' | while read -r file; do
+        awk -v pattern="$pattern" -v file="$file" '
+            $0 ~ pattern && $0 !~ /^[[:space:]]*\/\// && $0 !~ /rules-allow: / {
+                print file ":" NR ":" $0
+            }
+        ' "$file"
+    done
+}
+
 failures=0
 report() {
     rule=$1
@@ -58,6 +70,12 @@ report "No hosted-service specifics: Cloud, Cloud Plus, billing or service domai
 
 report "No compatibility code: no serde aliases." \
     "$(production_matches 'serde[(][^)]*alias')"
+
+report "Use native Rust test modules (<module>/tests.rs or <module>/tests/*.rs), not *_tests.rs or *_tests/." \
+    "$(find crates \( -name '*_tests.rs' -o -name '*_tests' \) ! -path '*/target/*')"
+
+report "Use Rust's native module hierarchy instead of #[path = ...]." \
+    "$(all_matches '^[[:space:]]*#[[]path[[:space:]]*=')"
 
 report "Provider IDs are matched only in provider code." \
     "$(production_matches '"(anthropic|claude|kimi|deepseek|mistral|openai|openai_codex|openrouter|chat_gpt|open_router)"' \

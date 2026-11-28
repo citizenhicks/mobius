@@ -1,6 +1,6 @@
 #!/bin/sh
 # Rules that Clippy cannot express. Prints each violation as file:line and exits non-zero
-# when any remain. Test code (`#[cfg(test)]` items, `*_tests.rs`, `tests/`) is exempt. A
+# when any remain. Test code (`#[cfg(test)]` items, `tests.rs`, `tests/`) is exempt. A
 # line may opt out with a trailing `// rules-allow: <reason>` comment that says why the
 # rule does not apply there.
 set -eu
@@ -9,7 +9,7 @@ cd "$(dirname "$0")/.."
 # Production Rust sources, without test files.
 sources() {
     find src browser-helper/src -name '*.rs' \
-        ! -name '*_tests.rs' ! -name 'tests.rs' ! -path '*/tests/*' ! -path '*_tests/*' \
+        ! -name 'tests.rs' ! -path '*/tests/*' \
         ! -path '*/target/*'
 }
 
@@ -42,6 +42,18 @@ production_matches() {
     done
 }
 
+# Prints file:line:text across all Rust files (including tests) for structural rules.
+all_matches() {
+    pattern=$1
+    find src browser-helper/src -name '*.rs' ! -path '*/target/*' | while read -r file; do
+        awk -v pattern="$pattern" -v file="$file" '
+            $0 ~ pattern && $0 !~ /^[[:space:]]*\/\// && $0 !~ /rules-allow: / {
+                print file ":" NR ":" $0
+            }
+        ' "$file"
+    done
+}
+
 failures=0
 report() {
     rule=$1
@@ -57,6 +69,12 @@ report "No clones in production code (.clone(), .cloned(), Type::clone): borrow,
 
 report "No serde aliases in production code (no legacy compatibility contract)." \
     "$(production_matches 'serde[(][^)]*alias[[:space:]]*=')"
+
+report "Use native Rust test modules (<module>/tests.rs or <module>/tests/*.rs), not *_tests.rs or *_tests/." \
+    "$(find src browser-helper/src \( -name '*_tests.rs' -o -name '*_tests' \) ! -path '*/target/*')"
+
+report "Use Rust's native module hierarchy instead of #[path = ...]." \
+    "$(all_matches '^[[:space:]]*#[[]path[[:space:]]*=')"
 
 dependencies=$(cargo tree -p mobius-desktop -p mobius-browser-helper --all-features --locked -e normal --prefix none)
 report "The app uses ring: a second TLS crypto backend makes automatic provider selection panic." \

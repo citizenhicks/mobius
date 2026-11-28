@@ -12,7 +12,7 @@ mod region;
 mod router;
 mod runtime;
 #[cfg(feature = "snapshot")]
-#[path = "../../tests/ui/snapshot/mod.rs"]
+#[path = "../../tests/ui/snapshot/mod.rs"] // rules-allow: snapshot harness in tests/ui/
 mod snapshot;
 mod storage;
 pub mod theme;
